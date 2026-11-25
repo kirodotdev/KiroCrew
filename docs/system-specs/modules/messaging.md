@@ -1234,24 +1234,54 @@ storing a transport built from a superseded document. Shutdown cancels any recon
 before closing the handles. Slack is not in that loop — its socket is
 host-managed. See [slack-gateway](slack-gateway.md) § Live configuration.
 
+**A channel with an in-place reconnect is offered the change first.** A
+descriptor may also declare `reconnect` (an async call taking the orchestrator
+and returning whether it applied the change) and `reconnect_keys` (live config
+keys that change what it connects with). When a reload touches only that
+channel's credentials or `reconnect_keys`, and no `boot_keys`
+(`registry.reconnects_in_place`), the applier does NOT close the channel inline:
+the tracked background task calls `reconnect` first and falls back to
+`restart_channel` when it returns False or raises. A change to `reconnect_keys`
+alone never restarts the channel, even when the reconnect declines, because
+those keys were live before. Discord is the one channel that declares it
+(`discord.gateway.reconnect_discord`, `reconnect_keys` = `allowed_thread_ids`,
+`allowed_channel_ids`). Under a per-client lock it reads the current config and
+credentials and re-IDENTIFYs the running `DiscordClient` only when the token or
+the intents differ, or when a fatal close stopped it. The intents are `DIRECT_MESSAGES`, plus `GUILD_MESSAGES` and
+`MESSAGE_CONTENT` while an allow-list or a thread the transport admitted at
+runtime names a server thread. The dispatcher, the transport, running turns and
+the HTTP session are kept; the old WebSocket, heartbeat and Gateway loop task
+are closed and awaited first. A new token is checked with `GET /users/@me`
+before anything is touched. A 401 or 403 keeps the old connection and records
+the reason. A token for another bot, an unreachable or erroring Discord, a
+cleared token, Discord turned off and a `channels` policy denial each return
+False, which means a restart. A refused thread intent (close 4014) reconnects
+DM-only and records the refusal, and a client that never reached READY gets its
+slash-menu publish and owner-DM reopen scheduled again.
+
 **`restart_required` is answered from schema metadata.** A channel save's
 response does not guess: `dashboard/channel_folders.py::channel_restart_required`
 asks `kiro_crew.config.schema.requires_restart(path)`, which reads the `restart`
 flag on that field's `_meta(...)` in its `config/sections_*.py` owner. A field nothing marks
 is live, so the settings page tells the truth instead of promising a restart the
 user does not need — which is how a panel trains people to restart for
-everything. A `.env` write always reports `True`, because the credential file is
-not watched.
+everything. A `.env` write reports `True` on a save that passes it as
+`env_updates`. Discord's passes none while the config watcher runs, because the
+watcher applies the token through the reconnect above or a channel restart.
+Slack's never passes it and answers `reconnect_required` instead.
 
 **The exceptions**, and they are the whole list:
 
 - **`whatsapp.db_path`** — the linked-device session store is opened once by the
   `neonize` client. Marked `restart=True`.
 - **Credentials in `config_dir/.env`** — bot tokens, app passwords and secrets
-  are not in `config.json` and the watcher does not read that file, so a
-  credential save reports a restart even for a channel whose config fields are
-  all live. A channel whose token also lives in a legacy `config.json` fallback
-  restarts through `boot_keys` when that copy changes.
+  are not in `config.json`. The watcher dispatches a `.env` change as a
+  synthetic `credentials.<KEY>` path (see [config](config.md)), but a channel
+  save that passes the write as `env_updates` still reports a restart for it.
+  Discord's reports one only when no config watcher runs, and Slack's answers
+  `reconnect_required` instead. A channel
+  whose token also lives in a legacy `config.json` fallback restarts through
+  `boot_keys` when that copy changes.
 
 ## Proactive sends (`send_message`'s `channel_type`)
 
@@ -4056,8 +4086,10 @@ owner-only grant, `slack.shared_access`, with its own routes
 
 **Transport (`kiro_crew/discord/`).** A concrete `MessagingTransport` over a
 pure-aiohttp Discord Gateway WebSocket client (`client_gateway.py`): identify with
-`DIRECT_MESSAGES` for DM-only installs; when `allowed_thread_ids` is non-empty,
-also request `GUILD_MESSAGES` and privileged `MESSAGE_CONTENT`. Heartbeat uses
+`DIRECT_MESSAGES` for DM-only installs; when `allowed_thread_ids` or
+`allowed_channel_ids` is non-empty, also request `GUILD_MESSAGES` and privileged
+`MESSAGE_CONTENT`. A later change to either list re-IDENTIFYs the live client
+in place (§ Connection fields restart ONE channel). Heartbeat uses
 the server interval with jitter (a missing, non-finite or non-positive interval
 takes Discord's 41.25s; the rest is clamped to 1-300s),
 resume via `resume_gateway_url`/sequence tracking, exponential-backoff
@@ -4617,9 +4649,16 @@ re-link carrying a refreshed admission is left in place.
   `config.json` under `discord`. Every field applies live, so
   `restart_required` is false for a config-only save: the allow-lists are pushed
   into the transport by `DiscordTransport.reconfigure` and the render toggles and
-  thresholds are re-read per turn, while a token change reconnects the Discord
-  channel alone rather than the gateway. Promising a restart the user does not
-  need is how a settings page trains people to restart for everything.
+  thresholds are re-read per turn, while a token change reconnects the running
+  Discord client in place (§ Connection fields restart ONE channel), so a token
+  save reports `restart_required: false` too while the config watcher runs.
+  After the write the save runs `discord.gateway.reconcile_after_save` outside
+  the config lock, bounded at 20s, so a save that changed nothing on disk still
+  retries intents Discord refused earlier. The response then carries
+  `reconnect_error`: what the running bot could not take (a rejected token,
+  refused thread intents), never a token value, rendered by `DiscordPanel` as a
+  partial `ErrorNotice`. Promising a restart the user does not need is how a
+  settings page trains people to restart for everything.
   Setting OR clearing the token also purges the legacy `discord.bot_token`
   field from `config.json`, and the commit order is config.json FIRST then
   `.env`, matching the Telegram and Webex saves: the gateway falls back to that
