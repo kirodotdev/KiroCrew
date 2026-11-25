@@ -738,6 +738,11 @@ class McpSessionReport:
     #: failed bucket lists. Set by :meth:`record_pruned_omitted`; counted and said
     #: in the payload and the summary like :attr:`no_tools_omitted`.
     pruned_omitted: int = 0
+    #: The servers :meth:`record_pruned` recorded: the ones Crew left out of this
+    #: session before it was sent (an array prune, or a spec-writer drop). Read for
+    #: the session-start notice that names them; not part of :meth:`payload`, whose
+    #: failed bucket already lists each.
+    crew_left_out: tuple[str, ...] = ()
     #: Bumped by every :meth:`begin_session`, so a session-open mount check
     #: (:mod:`kiro_crew.acp.mcp_mount_check`) started for one attempt can tell
     #: that the report has moved on to another and write nothing.
@@ -861,6 +866,7 @@ class McpSessionReport:
         self.no_tools = ()
         self.no_tools_omitted = 0
         self.pruned_omitted = 0
+        self.crew_left_out = ()
         self.generation += 1
         self.declared = ()
         self.declared_omitted = 0
@@ -1177,9 +1183,12 @@ class McpSessionReport:
         clean = sanitize_sink_text(str(name or ""), _NAME_CAP)
         if not clean:
             return False
-        return self._record(
+        changed = self._record(
             _ACTION_INIT_FAILURE, clean, sanitize_sink_text(str(reason or ""), _ERROR_CAP)
         )
+        if clean in self._failed and clean not in self.crew_left_out:
+            self.crew_left_out = (*self.crew_left_out, clean)
+        return changed
 
     def has_reported(self, name: Any) -> bool:
         """True when *name* is in any bucket: it sent a frame of its own."""
