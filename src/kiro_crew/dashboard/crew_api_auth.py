@@ -16,7 +16,8 @@ authorization issues to an app, and judges it by the matched route's row in
 :data:`APP_SERVED_ROUTES` names and refuses it on every other.
 
 :data:`OWNER_ONLY_PUBLIC_ROUTES` names the Public routes (``/v1/models``,
-``/v1/responses``) served through :func:`kiro_crew.dashboard.crew_api_owner.owner_route`.
+``/v1/responses``, ``/v1/crew/capabilities``, ``/v1/crew/info``) served through
+:func:`kiro_crew.dashboard.crew_api_owner.owner_route`.
 
 The frozen ``/v1/chat/completions`` is outside this module: it keeps the credentials
 it has always read.
@@ -61,6 +62,9 @@ QUERY_TOKEN_REFUSED = "Send the credential in the Authorization header, not in ?
 OWNER_ONLY_PUBLIC_ROUTES = {
     "/v1/models": "crew_api.models.list",
     "/v1/responses": "crew_api.responses.create",
+    "/v1/crew/capabilities": "crew_api.capabilities.read",
+    # Not a ``.read``: the first call on a data home makes and keeps the instance id.
+    "/v1/crew/info": "crew_api.info.resolve",
 }
 
 #: The routes that serve an app credential, by their ``crew_api_scopes.ROUTES`` key.

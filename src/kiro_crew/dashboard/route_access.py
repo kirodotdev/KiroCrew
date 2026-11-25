@@ -108,4 +108,11 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/connected-computers/local/off"): RouteAccess(
         "connected_computers.off", UNSTABLE
     ),
+    # Owner gate, then the machine owner alone; reads the model catalog, writes nothing.
+    # Contract test: test_crew_api_instance.py.
+    ("GET", "/v1/crew/capabilities"): RouteAccess("crew_api.capabilities.read", PREVIEW),
+    # Owner gate, then the machine owner alone. The first call on a data home makes
+    # and keeps the instance id (relay_client.lease.crew_instance_id), so the verb is
+    # not ``read``; it changes nothing after that.
+    ("GET", "/v1/crew/info"): RouteAccess("crew_api.info.resolve", PREVIEW),
 }
