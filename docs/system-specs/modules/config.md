@@ -3561,8 +3561,8 @@ handlers answer HTTP 409 `agent_home_not_owned` (listed in learn-cron-dashboard.
 instead of recording a change the file never took. Every admitted or refused shared-home
 write is audited as the SEL `agent_home_write` operation, allowed or denied.
 The provider applier only schedules the switch: `reload_provider_factory` clears
-the session registry and then shuts the retired providers down one at a time,
-which can outlast the applier bound, and a timed-out applier is retried on the
+the session registry and then shuts the retired providers down concurrently,
+each shutdown waiting out its runtime's exit, which can outlast the applier bound, and a timed-out applier is retried on the
 next tick — a retried switch would clear the sessions created with the new
 provider in between. So the switch runs off the cycle as a task tracked in
 `state._background_tasks` (the same shape as a channel reconnect), the applier

@@ -162,6 +162,16 @@ caller started, or an Install press), answers `browser_repairing` ("being
 installed; try again in a minute"), which the tool passes to the agent as
 written.
 
+**No start while the venv is rebuilt.** A job that installs the Harness clears
+the venv in place, so a daemon or worker spawned then would find no interpreter.
+The job sets the supervisor's `installing_harness` from its `creating_venv` stage
+until the first stage past `installing_harness`; while it is set, a start sets the
+status to `disconnected` with "Browser Harness is being reinstalled; try again
+when it finishes" (`HARNESS_REINSTALLING_DETAIL`) and raises
+`HarnessNotInstalled`. A spawn whose venv interpreter vanished between the
+install read and the spawn (`FileNotFoundError`) answers the same. An install
+that keeps the venv, and the Chromium download, hold nothing.
+
 The daemon starts with a scrubbed environment built by one function and pinned
 by one test:
 
