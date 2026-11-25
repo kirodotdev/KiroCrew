@@ -620,12 +620,19 @@ re-adds, once:
    team-lead conductors run their own skills), and a crewmate's DM thread under the
    gate session start appends `conductor.patrol` with (dispatch tools held, ledger
    tools on the binding). Workers, plain chats and minimal turns get nothing.
+10. `[CRITICAL RULES]` — the reply contract (the `[OPTIONS:]` rule, diff blocks,
+    path and link rules, the ask policy) in the session's own variant
+    (`_critical_rules_for`), after the agent contract. Same opt-out as session
+    start (`includeCrewContext: false` gets none), and left out where the session
+    head holds that exact text (`session_head.holds`): the KAS agent prompt that
+    carries it outlives the compaction. A slim resume that re-injects sends it
+    here only, not a second time in its resume block.
 
 If that turn does not land (cancelled, refused, errored), `rearm_reinjection` puts
 the flag back, so the context is never lost to a failed turn. A minimal-context turn
-gets back only the agent contract and the reply-style preferences; the memory index,
-skills index, lessons, steering resources, folder steering, member section and work
-ledger stay withheld
+gets back only the agent contract and the reply-style preferences; the critical
+rules, memory index, skills index, lessons, steering resources, folder steering,
+member section and work ledger stay withheld
 (`post_compaction_parts(minimal_context=True)`).
 
 ### The `[work ledger]` snapshot

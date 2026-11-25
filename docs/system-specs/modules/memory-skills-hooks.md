@@ -7413,9 +7413,10 @@ itself. What that message holds depends on the turn. A session's first turn carr
 the session-start context: `[AGENT SYSTEM PROMPT]` and `build_session_context`'s
 critical rules, memory and session context, which `context_assembly/turn_message.py`
 adds only under `is_new_session`. The first turn after a confirmed compaction gets
-the agent contract, memory index, skills and lessons back
-(`context_assembly/turn.post_compaction_parts`), never the critical rules or the rest
-of `build_session_context`. A `minimal_context` turn (a shared or guest channel turn,
+the agent contract, the critical rules (same opt-out as session start), memory
+index, skills and lessons back (`context_assembly/turn.post_compaction_parts`),
+never the rest of `build_session_context`. A `minimal_context` turn (a shared or
+guest channel turn,
 a minimal cron) gets the minimal session start and, after a compaction, only the
 contract and the reply-style preferences back, so no rules or memory at either
 point. A warm turn carries per-turn lines instead (the runtime refresh, the active

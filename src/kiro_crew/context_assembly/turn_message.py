@@ -485,9 +485,10 @@ def build_message(
                 # Re-anchor the critical rules (UI output contracts): they sit
                 # deep in, and may be compacted out of, the restored transcript,
                 # and cost ~1.5K chars. Same variant and opt-out as session start.
+                # A re-injecting resume gets them from the post-compaction parts below.
                 _resume_rules = (
                     ctx._critical_rules_for(session_key, runtime_source)
-                    if ctx._agent_includes_crew_context(agent)
+                    if ctx._agent_includes_crew_context(agent) and not reinject_on_resume
                     else ""
                 )
                 # SLIM_RESUME leg of the member lifecycle (see the

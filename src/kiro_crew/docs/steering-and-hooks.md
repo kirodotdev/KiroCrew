@@ -540,8 +540,9 @@ kiro-cli runs the agent spec's `userPromptSubmit` hooks itself, on the text Kiro
 Crew sends the model, with your message inside it. A session's first message
 carries the full session-start context: the agent prompt, the critical rules,
 memory and session context. The first message after a compaction carries part of
-it again (the agent prompt, the memory index, skills and lessons), and later
-messages carry Kiro Crew's per-turn context instead. A room or guest conversation
+it again (the agent prompt, the critical rules, the memory index, skills and
+lessons), and later messages carry Kiro Crew's per-turn context instead. A room or
+guest conversation
 gets less at both points, without the rules or memory. In every case that hook's
 stdin `prompt` is not the message you typed, and a hook that checks `prompt` for
 words also checks text you did not write. A Hooks-tab `UserPromptSubmit` hook
