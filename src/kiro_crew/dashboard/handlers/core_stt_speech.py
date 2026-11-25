@@ -27,7 +27,9 @@ from kiro_crew.dashboard.handlers.core_stt_access import (
     _deny_app_token,
 )
 from kiro_crew.transcribe import audio_exceeds_secs, availability_detail, batch_duration_cap_secs
+from kiro_crew.apple_speech import _NATIVE_AUDIO_SUFFIXES
 from kiro_crew.transcribe_ffmpeg import _DEMUXER_BY_SUFFIX
+from kiro_crew.transcribe_local import _WAV_SUFFIXES
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
 
@@ -59,11 +61,14 @@ _POLISH_MAX_RATIO = 1.8
 #: an aborted upload kept the recogniser busy until the whole clip was decoded.
 _CLIENT_GONE_POLL_SECS = 0.5
 
-#: Suffixes the upload's temp file may carry: the ones the decoder pins to a
-#: demuxer, plus the containers Apple Speech opens without it. The suffix is
-#: the only part of the client's filename that reaches the temp path, so any
-#: other one (``.webm:x`` names an NTFS stream on Windows) becomes ``.webm``.
-_UPLOAD_SUFFIXES = frozenset(_DEMUXER_BY_SUFFIX) | {".aiff", ".aif", ".aifc", ".caf"}
+#: Suffixes the upload's temp file may carry: every suffix a backend branches
+#: on (the decoder's demuxer pins, the local WAV reader, the containers Apple
+#: Speech opens directly). The suffix is the only part of the client's filename
+#: that reaches the temp path, so any other one (``.webm:x`` names an NTFS
+#: stream on Windows) becomes ``.webm``.
+_UPLOAD_SUFFIXES = (
+    frozenset(_DEMUXER_BY_SUFFIX) | frozenset(_WAV_SUFFIXES) | _NATIVE_AUDIO_SUFFIXES
+)
 
 
 class _ClientGone(Exception):

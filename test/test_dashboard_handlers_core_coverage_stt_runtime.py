@@ -887,6 +887,9 @@ class TestSttTranscribe:
             ("rec.mp4", ".mp4"),
             ("rec.ogg", ".ogg"),
             ("rec.wav", ".wav"),
+            ("rec.wave", ".wave"),
+            ("rec.caf", ".caf"),
+            ("rec.mkv", ".mkv"),
             ("rec", ".webm"),
             ("rec.", ".webm"),
             (".webm", ".webm"),
@@ -898,7 +901,7 @@ class TestSttTranscribe:
     ) -> None:
         """The client's filename must not shape the temp path: on Windows a colon
         in the suffix names an NTFS stream, the publish rename fails with a 500,
-        and a zero-byte base file is left in the temp folder (#42588)."""
+        and a zero-byte base file is left in the temp folder."""
         seen: list[str] = []
 
         async def transcribe(path, _cfg):
