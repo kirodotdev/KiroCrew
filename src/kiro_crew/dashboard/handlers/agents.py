@@ -874,15 +874,12 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
                     "description": "Configured default",
                 },
             )
-    # Enrich every row with a context_window via the central authority so the CC
-    # dropdown carries the same field the kiro branch does (the frontend picker
-    # + tooltip read it uniformly). None -> reference (never a silent 200k).
+    # A row carries only the window a source backs: the dashboard learns a row's
+    # window as the model's real one, so the 1M budget reference would read as fact.
     for entry in merged:
-        if "context_window" not in entry:
-            name = entry.get("model_name", "")
-            entry["context_window"] = (
-                model_registry.model_window(name) or model_registry.REFERENCE_WINDOW_TOKENS
-            )
+        window = model_registry.model_window(entry.get("model_name", ""))
+        if window and "context_window" not in entry:
+            entry["context_window"] = window
     return merged
 
 
@@ -926,11 +923,10 @@ def _advertised_backend_models(
         rows.insert(
             1, {"model_name": default, "display_name": default, "description": "Configured default"}
         )
-    for entry in rows:
-        entry["context_window"] = (
-            model_registry.model_window(entry["model_name"])
-            or model_registry.REFERENCE_WINDOW_TOKENS
-        )
+    for entry in rows:  # only a source's window, as in ``_cc_models``
+        window = model_registry.model_window(entry["model_name"])
+        if window:
+            entry["context_window"] = window
     return rows
 
 
