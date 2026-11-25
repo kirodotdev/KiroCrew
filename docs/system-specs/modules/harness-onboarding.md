@@ -1080,6 +1080,19 @@ tool call in Crew's gate envelope. A read-back boot of the same argv proves the 
 loaded from Crew's file under this session's nonce before the session's own process
 starts, and the completed-unasked tripwire watches the session itself.
 
+A read-back that sees no marker says why. The probe's stdout and stderr are drained
+on threads into buffers of at most 64 KiB each (`acp/harness/strands_readback.py`:
+the head of stdout, the tail of stderr), so the capture is bounded however much the
+child writes. A reader whose pipe a descendant still holds open is stopped once the
+probe is reaped and closes the pipe: it waits in bounded selects on POSIX, and on
+Windows it peeks the pipe rather than leave a read pending. The refusal says whether the CLI exited, with its code, or ran out the
+90 s wait. It then quotes the error the CLI answered `session/new` with, which is
+where Strands CLI 0.2.4 reports a project worker's exception while it stays up, and
+the last five stderr lines. A read-back that fails after the probe started, such as
+a CLI that died before taking the requests, quotes the same detail. Each quote passes
+the stderr-tail check (`acp/stderr_tail.py`), which withholds a quote whole when it
+carries a credential (`test/test_acp_strands_readback.py`).
+
 **The second is the operator's project.** `agent.strands_project` points the gate at
 the operator's own `agent.py`; the gate imports it with every `Agent` already gated,
 re-creates it per session through its `create_agent` (awaited when it is `async`) or

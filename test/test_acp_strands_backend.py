@@ -1115,6 +1115,8 @@ class _ReadbackProbe:
 
     def __init__(self, *args, **kwargs) -> None:
         self.stdin = io.BytesIO()
+        self.stdout = None
+        self.stderr = None
         self.killed = False
         self.tree_killed = False
         self.waited = False

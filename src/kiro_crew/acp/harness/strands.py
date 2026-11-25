@@ -53,7 +53,7 @@ from typing import Any, Awaitable, Callable
 from kiro_crew import acp_tool_gate, agent_scratch, agent_sdk, model_scope, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.harness import pi as pi_mod
-from kiro_crew.acp.harness import pi_node
+from kiro_crew.acp.harness import pi_node, strands_readback
 from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
 from kiro_crew.acp.harness.copilot import _config_directory
 from kiro_crew.acp.harness.strands_keys import (
@@ -822,14 +822,21 @@ def _verify_strands_gate(
             cwd=session._spawn_work_dir or None,
             env=env,
             stdin=subprocess_mod.PIPE,
-            stdout=subprocess_mod.DEVNULL,
-            stderr=subprocess_mod.DEVNULL,
+            stdout=subprocess_mod.PIPE,
+            stderr=subprocess_mod.PIPE,
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
     except (OSError, subprocess_mod.SubprocessError) as exc:
         return f"the gate's load marker could not be read back ({exc})", remedy
+    # Both pipes are drained into bounded buffers, so a refusal can quote what the
+    # probe printed and a chatty child never blocks on a full pipe.
+    out = strands_readback.OutputCapture(process.stdout, keep_tail=False)
+    err = strands_readback.OutputCapture(process.stderr, keep_tail=True)
     published = False
+    # The CLI's own exit code when it ended before the wait ran out.
+    exited: int | None = None
+    failure: BaseException | None = None
     try:
         if process.stdin is not None:
             write_frames_blocking(process.stdin, requests)
@@ -837,7 +844,8 @@ def _verify_strands_gate(
             if os.path.lexists(marker_path):
                 published = True
                 break
-            if process.poll() is not None:
+            exited = process.poll()
+            if exited is not None:
                 break
             time.sleep(_READBACK_POLL_S)
         with suppress(OSError):
@@ -850,7 +858,9 @@ def _verify_strands_gate(
             with suppress(subprocess_mod.SubprocessError, OSError):
                 process.wait(timeout=_READBACK_EXIT_S)
     except (OSError, subprocess_mod.SubprocessError, ValueError) as exc:
-        return f"the gate's load marker could not be read back ({exc})", remedy
+        failure = exc
+        # Read before the cleanup below kills it: a CLI that died at once has a code.
+        exited = process.poll()
     finally:
         # Whatever ended the read-back, the probe child never outlives it.
         if process.poll() is None:
@@ -861,13 +871,20 @@ def _verify_strands_gate(
                 platform_compat.kill_popen_tree(process)
             with suppress(OSError, subprocess_mod.SubprocessError):
                 process.wait(timeout=_READBACK_EXIT_S)
-    if not published and not os.path.lexists(marker_path):
+        stdout = out.finish(_READBACK_EXIT_S)
+        stderr = err.finish(_READBACK_EXIT_S)
+    if failure is not None:
         return (
-            "the Strands project did not load Kiro Crew's gate within "
-            f"{_READBACK_TIMEOUT_S:.0f}s of starting the harness (the project failed to "
-            "load, or its agent could not be gated), so its tools would not ask",
+            strands_readback.readback_failed_issue(
+                failure, exited, stdout, stderr, _READBACK_SESSION_ID
+            ),
             remedy,
         )
+    if not published and not os.path.lexists(marker_path):
+        issue = strands_readback.gate_not_loaded_issue(
+            exited, _READBACK_TIMEOUT_S, stdout, stderr, _READBACK_SESSION_ID
+        )
+        return issue, remedy
     marker = _read_marker(marker_path)
     issue = acp_tool_gate.gate_marker_issue(
         ACP_BACKEND_STRANDS,
