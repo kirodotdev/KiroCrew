@@ -228,8 +228,12 @@ code.
      manifest names today
      (`https://desktop-release.q.us-east-1.amazonaws.com/latest/manifest.json`)
      and decide whether to bump it — after testing the app against the newer
-     release, never blind. A bump is two files in one commit: the version in
-     `packaging/kiro-cli-version`, and in `packaging/kiro-cli-sha256` the
+     release, never blind. That manifest names the newest release only;
+     `index.json` on the same host lists every release with its sha256s, for
+     a pin older than latest. No 3.x release publishes `Kiro CLI.dmg`, the
+     file the macOS bundle stages. A bump is two files in one commit: the
+     version in `packaging/kiro-cli-version`, and in
+     `packaging/kiro-cli-sha256` the
      manifest's `sha256` for each staged artifact (`<version>/Kiro CLI.dmg`,
      `<version>/kirocli-x86_64-linux.zip`, `<version>/kirocli-aarch64-linux.zip`,
      `<version>/kiro-cli-x86_64-pc-windows-msvc.msi`, and the two
