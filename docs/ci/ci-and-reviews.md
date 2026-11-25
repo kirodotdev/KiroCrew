@@ -701,7 +701,7 @@ limits to it:
 
 | Limit | Rule | On 10,000 points | What it bounds |
 |---|---|---|---|
-| reserve (`--reserve-points`) | half the bucket, plus 120 | 5,120 | The census stops, and says Partial, before a call that would start with less: other workflows keep half of every hour's bucket |
+| reserve (`--reserve-points`) | half the bucket, plus 120 | 5,120 | Before a call that would start with less, the census waits for the bucket's reset if it comes within the 30 minutes a run may wait in all (`--wait-for-reset-seconds 1800`), and otherwise stops and says Partial: other workflows keep half of every hour's bucket |
 | most (`--max-points`) | two fifths of the bucket, less 120 | 3,880 | The most one run spends. A weekday is about 3,000 |
 
 The 120 points are one call for each of the 4 workers at about 30 points, the
@@ -718,8 +718,13 @@ wrapper may sleep inside it on a spent limit and 300 for the call itself: the
 wrapper charges a sleep before it starts, so a call ended mid-sleep would have
 spent the wait budget and read nothing.
 
-The census never waits for a bucket: a job that sleeps holds a
-runner. A `schedule` event carries no inputs and no `repository` object, so
+The census waits for a bucket only at the reserve, and only for a reset that
+is near: it starts late in the bucket's hour while the rest of CI draws on the
+same bucket, and both weekday reads before the wait (2026-11-23 and
+2026-11-24) stopped Partial minutes before the reset (#39700). A reset further
+away than the time left of the 30 minutes still ends the census Partial, and
+the day job's 90-minute limit holds the wait. A `schedule` event carries no
+inputs and no `repository` object, so
 an empty `day` means yesterday and the default branch falls back to
 `github.ref_name`; a test evaluates every step's `env:` under both events.
 
