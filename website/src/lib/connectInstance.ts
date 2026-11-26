@@ -36,6 +36,7 @@
 import { api } from '../api/client'
 import { paneLog } from './paneLog'
 import { paneCredentialFor } from './paneCredential'
+import { clearConnectBackoff } from './connectBackoff'
 import { setConnectError, setWarm, type WarmConn } from '../store/instancesSlice'
 import type { AppDispatch } from '../store'
 import { errMessage } from '../utils/thunkError'
@@ -78,6 +79,9 @@ export async function connectInstanceInto(
 ) {
   const rebuild = !!opts.rebuild
   const onlyIfConnected = !!opts.onlyIfConnected
+  // A person asked for this crew, so auto-connect's backoff starts over: they may
+  // have just fixed what kept it failing (lib/connectBackoff.ts).
+  if (via === 'select' || via === 'retry') clearConnectBackoff(id)
   let st
   try {
     // The options object is passed only when set, so the plain call keeps the
@@ -121,6 +125,7 @@ export async function connectInstanceInto(
     // leave the flag off and take the fresh token.
     const keepTokenIfPortUnchanged = onlyIfConnected
     opts.beforeWarm?.()
+    clearConnectBackoff(id)
     dispatch(setWarm({ id, conn, keepTokenIfPortUnchanged }))
     paneLog('warm', { id, port: conn.port, via, rebuild: rebuild || undefined })
   } else {

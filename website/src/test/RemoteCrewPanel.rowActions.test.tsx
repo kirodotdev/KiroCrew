@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { renderWithProviders } from './helpers'
+import { createConnectedTestStore, renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 import { copyToClipboard } from '../utils/clipboard'
 import { consumeChatHandoff, __resetErrorJournalForTests } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
+import { __resetConnectBackoffForTests, autoConnectDue, noteAutoConnectFailed } from '../lib/connectBackoff'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
 
@@ -94,6 +95,7 @@ beforeEach(() => {
   sessionStorage.clear()
   __resetErrorJournalForTests()
   __resetInstanceFailuresForTests()
+  __resetConnectBackoffForTests()
   vi.mocked(api.cloudProvisioners).mockResolvedValue({ provisioners: [] })
 })
 
@@ -205,5 +207,24 @@ describe('row actions a contributed provisioner draws on its crews', () => {
     const prompt = consumeChatHandoff() || ''
     expect(prompt).toContain('crew-row-detail:seam_panel_broken')
     errors.mockRestore()
+  })
+})
+
+describe('Connect on a crew row', () => {
+  it('starts the auto-connect backoff over: a person asked for the crew', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.connectInstance).mockResolvedValue({ state: 'connected', local_port: 7781, token: 't' } as never)
+    // The record takes its clock as an argument, so a fixed instant needs no clock.
+    const at = 1_800_000_000_000
+    noteAutoConnectFailed('m1', at)
+    expect(autoConnectDue('m1', at)).toBe(false)
+    // Connected: Connect is disabled while the gateway reads offline.
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
+
+    const row = (await screen.findByText('dev-box-1')).closest('[data-crew-id]') as HTMLElement
+    await userEvent.setup().click(within(row).getByRole('button', { name: /Connect/i }))
+    await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('m1'))
+    expect(autoConnectDue('m1', at)).toBe(true)
   })
 })

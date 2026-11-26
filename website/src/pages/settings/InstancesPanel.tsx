@@ -37,6 +37,7 @@ import { removeWarm, setCrewAddForm } from '../../store/instancesSlice'
 import { i18nT } from '../../i18n/t'
 import { fmtDuration, fmtUnit } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
+import { clearConnectBackoff } from '../../lib/connectBackoff'
 import { Trans } from 'react-i18next'
 
 import { SettingRef } from '../../components/settingRef/SettingRef'
@@ -308,7 +309,11 @@ export function InstancesPanel() {
 
   const connectMutation = useMutation({
     mutationFn: (id: string) => api.connectInstance(id),
-    onMutate: clearNotices,
+    onMutate: (id: string) => {
+      clearNotices()
+      // A person asked for this crew, so auto-connect's backoff starts over.
+      clearConnectBackoff(id)
+    },
     onSuccess: (st, id) => {
       if (st.state === 'connected') {
         const name = instances.find(i => i.id === id)?.name || id

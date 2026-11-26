@@ -39,6 +39,7 @@ from kiro_crew.instances.constants import (
 from kiro_crew.instances.ssh_tunnel_manager_child_text import _strip_benign_ssh_noise
 from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.security import redact
+from kiro_crew.ssh_auth_refusal import is_ssh_auth_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,20 @@ class HopRetiredError(TokenMintError):
     the caller would have to infer "gone" from "failed" and would tear down a
     working chain on a network blip.
     """
+
+
+class SshAuthRefusedError(TokenMintError):
+    """ssh itself was refused the sign-in at the crew's host.
+
+    Exit status 255 (ssh's own failure, not the remote command's) with ssh's own
+    refusal in stderr, ``Permission denied (<methods>)``: the key or certificate
+    ssh offered was not accepted. A live forwarder keeps the session it opened
+    before, so the tunnel can still read connected while every mint meets this.
+    Retrying cannot fix it until the person renews the credential, and the remote
+    gateway is not the thing to check.
+    """
+
+    code = "ssh_auth_refused"
 
 
 def _validate_ttl(ttl: str) -> str:
@@ -971,7 +986,18 @@ async def mint_remote_token(
         # 255 is ssh's OWN failure status. A remote command that is not found
         # exits 127 with the same "command not found" wording from the REMOTE
         # shell, which is not a ProxyCommand problem and must not be named one.
+        # The same gate keeps a remote shell's "Permission denied" (126, a
+        # launcher it cannot execute) from reading as a refused sign-in.
         low = stderr.lower()
+        # ssh's own refusal names the methods it tried, "Permission denied
+        # (publickey)", and an expired certificate ends in the same line. A bare
+        # "Permission denied", or one followed by "(os error 13)", is a ProxyCommand
+        # that could not run, and a stray "publickey" or "certificate has expired"
+        # can come from a verbose log or a proxy's TLS, none of which a new key fixes.
+        if proc.returncode == 255 and is_ssh_auth_refusal(shown_stderr.lower()):
+            raise SshAuthRefusedError(
+                f"remote token mint on {ssh_host} exited {proc.returncode}: {detail}"
+            )
         if proc.returncode == 255 and any(sig in low for sig in PROXY_TOOL_MISSING_SIGNALS):
             refused = await asyncio.to_thread(refused_plugin_message)
             # Off the loop too: it waits for the trust lock a sweep may hold.

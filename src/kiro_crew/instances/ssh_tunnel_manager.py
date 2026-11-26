@@ -315,6 +315,7 @@ class SshTunnelManager:
     _token_refresh_loop = _tokens._token_refresh_loop
     _refresh_token_once = _tokens._refresh_token_once
     refresh_token = _tokens.refresh_token
+    last_refresh_error = _tokens.last_refresh_error
     # Self-heal after a child exits: ``ssh_tunnel_manager_self_heal``.
     _track_recovery = _self_heal._track_recovery
     _cancel_recovery = _self_heal._cancel_recovery
@@ -508,6 +509,9 @@ class SshTunnelManager:
         self._refresh_tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         self._token_minted_at: dict[str, float] = {}
         self._token_ttl_secs: dict[str, int] = {}
+        # Why the latest re-mint failed, as (code, bounded text), kept until the
+        # next one starts or the crew disconnects, so the route that asked can say why.
+        self._refresh_errors: dict[str, tuple[str, str]] = {}
         # The transport tunables above are copies of instances.*, so a config write
         # reaches them only through apply_config(). Held on self because the watcher
         # holds the owner weakly. ``fail_closed=False``: the section carries no

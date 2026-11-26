@@ -33,8 +33,12 @@ import {
   __resetErrorJournalForTests,
 } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
+import { __resetConnectBackoffForTests, autoConnectDue, noteAutoConnectFailed } from '../lib/connectBackoff'
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  __resetConnectBackoffForTests()
+})
 
 describe('InstancesPanel', () => {
   it('shows an Enable toggle when the feature is disabled (403) and calls patchConfig', async () => {
@@ -294,6 +298,27 @@ describe('InstancesPanel', () => {
 
     await u.click(await screen.findByRole('button', { name: /^Connect$/i }))
     expect(await screen.findByText(/ssh exited 255/i)).toBeInTheDocument()
+  })
+
+  it('a Connect here starts the auto-connect backoff over: a person asked for the crew', async () => {
+    const inst = {
+      id: 'i1', name: 'box', ssh_host: 'box', remote_port: 7777, local_port: 7801,
+      ttl: '20h', connection_method: 'ssh', ssm_target: '', aws_profile: '', aws_region: '',
+      ssm_run_as: '', remote_bin: '', was_connected: false,
+      status: { state: 'disconnected' as const },
+    }
+    ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, instances: [inst], warm_set_cap: 5 } as never)
+    ;vi.mocked(api.connectInstance).mockResolvedValue({ state: 'error', error: 'ssh exited 255' } as never)
+    // The record takes its clock as an argument, so a fixed instant needs no clock.
+    const at = 1_800_000_000_000
+    noteAutoConnectFailed('i1', at)
+    expect(autoConnectDue('i1', at)).toBe(false)
+    const u = userEvent.setup()
+    renderWithProviders(<InstancesPanel />)
+
+    await u.click(await screen.findByRole('button', { name: /^Connect$/i }))
+    expect(await screen.findByText(/ssh exited 255/i)).toBeInTheDocument()
+    expect(autoConnectDue('i1', at)).toBe(true)
   })
 
   it('surfaces a diagnosis reason on the row that asked for it', async () => {

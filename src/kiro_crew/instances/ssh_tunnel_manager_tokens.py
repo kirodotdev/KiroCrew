@@ -12,8 +12,8 @@ on the one class.
 
 Instance fields written: ``_chained_hop_identity``, ``_chained_hop_port``,
 ``_chained_ttl``, ``_last_error``, ``_lent_hops``, ``_pending_lends``,
-``_refresh_tasks``, ``_retirements``, ``_token_minted_at``, ``_token_ttl_secs``,
-``_tokens``.
+``_refresh_errors``, ``_refresh_tasks``, ``_retirements``, ``_token_minted_at``,
+``_token_ttl_secs``, ``_tokens``.
 
 Instance fields read: ``_lock``, ``_mint_token``, ``_reconfiguring``, ``_registry``,
 ``_tunnel_epoch``, ``_tunnels``.
@@ -41,6 +41,21 @@ if TYPE_CHECKING:
 
 #: The manager's own logger: this code logs under the facade module's name.
 logger = logging.getLogger("kiro_crew.instances.ssh_tunnel_manager")
+
+#: How much of a failed re-mint's error text is kept for the route to show.
+_REFRESH_ERROR_MAX_CHARS = 600
+
+
+def _bounded(text: str) -> str:
+    """*text* cut to ``_REFRESH_ERROR_MAX_CHARS``, keeping both ends.
+
+    The start says which mint failed and the end is ssh's own last line, which a
+    verbose log ahead of it would otherwise push out.
+    """
+    if len(text) <= _REFRESH_ERROR_MAX_CHARS:
+        return text
+    half = _REFRESH_ERROR_MAX_CHARS // 2
+    return f"{text[:half]} ... {text[-half:]}"
 
 
 class _Moved(NamedTuple):
@@ -786,6 +801,7 @@ def _cancel_token_refresh(self: SshTunnelManager, instance_id: str) -> None:
         task.cancel()
     self._token_minted_at.pop(instance_id, None)
     self._token_ttl_secs.pop(instance_id, None)
+    self._refresh_errors.pop(instance_id, None)
 
 
 def _schedule_chained_retirement(self: SshTunnelManager, instance_id: str, reason: str) -> None:
@@ -918,6 +934,8 @@ async def _refresh_token_once(self: SshTunnelManager, instance_id: str) -> bool:
     if the instance is still connected (guards a disconnect mid-mint). Uses
     whichever transport the instance is configured for.
     """
+    # A failure from an earlier attempt is not this attempt's reason.
+    self._refresh_errors.pop(instance_id, None)
     # A reconfiguration is about to move the coordinates this mint would read,
     # so starting one now can only produce a token for a machine the user is
     # leaving. The caller reports "no token" and the client retries.
@@ -947,8 +965,13 @@ async def _refresh_token_once(self: SshTunnelManager, instance_id: str) -> bool:
         self._schedule_chained_retirement(instance_id, str(e))
         return False
     except TokenMintError as e:
+        # This runs for the request-driven refresh and the connect re-mint too,
+        # not only the proactive loop, so the line does not call itself proactive.
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the format names a token, its arguments never carry one
-        logger.warning("Proactive token refresh failed for %s: %s", instance_id, e)
+        logger.warning("Token refresh failed for %s: %s", instance_id, e)
+        # The text, bounded, not the exception: that would keep its traceback's
+        # frames alive, and its stderr is proxy-controlled and unbounded.
+        self._refresh_errors[instance_id] = (getattr(e, "code", ""), _bounded(str(e)))
         return False
     async with self._lock:
         if instance_id not in self._tunnels:
@@ -957,7 +980,7 @@ async def _refresh_token_once(self: SshTunnelManager, instance_id: str) -> bool:
             return False
     await self._prime_peer_session(instance_id)
     # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the format names a token, its arguments never carry one
-    logger.info("Proactively refreshed token for %s", instance_id)  # no token in logs
+    logger.info("Refreshed token for %s", instance_id)  # no token in logs
     return True
 
 
@@ -978,3 +1001,16 @@ async def refresh_token(self: SshTunnelManager, instance_id: str) -> str | None:
     if not await self._chained_far_end_holds(instance_id):
         return None
     return self.get_token(instance_id) or None
+
+
+def last_refresh_error(self: SshTunnelManager, instance_id: str) -> tuple[str, str] | None:
+    """Why the latest re-mint for *instance_id* failed, as ``(code, text)``, or None.
+
+    ``code`` is the mint error's own (``ssh_auth_refused``), or ``""`` when it has
+    none; ``text`` is its message, cut to ``_REFRESH_ERROR_MAX_CHARS``. Kept from a
+    failed mint until the next re-mint starts or the crew disconnects, so the
+    route answering for a :meth:`refresh_token` that returned ``None`` can name
+    the cause instead of guessing one. The text carries ssh's redacted stderr,
+    never a token: a token only ever arrives on stdout.
+    """
+    return self._refresh_errors.get(instance_id)
