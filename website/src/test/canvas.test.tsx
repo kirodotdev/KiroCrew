@@ -1471,7 +1471,7 @@ describe('the canvas', () => {
     expect(screen.queryAllByTestId('connect-dot')).toHaveLength(0)
   })
 
-  it('marquee selects what it touches, and a selection of several shows no toolbar', () => {
+  it('marquee selects what it touches, and a selection of mixed kinds shows no toolbar', () => {
     const rect: Shape = { ...sticky('b', 300, 0), kind: 'rect' }
     render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0), rect, sticky('c', 0, 600)] }} />)
     press(-50, -50)
@@ -1484,6 +1484,63 @@ describe('the canvas', () => {
     press(100, 700)
     release(100, 700)
     expect(screen.getByTestId('canvas-toolbar-place')).toBeTruthy()
+  })
+
+  it('a selection of one kind keeps its toolbar over the whole group, and a pick restyles every shape in it', () => {
+    const a: Shape = { ...sticky('a', 0, 300), kind: 'rect', color: 'blue' }
+    const b: Shape = { ...sticky('b', 400, 600), kind: 'rect', color: 'green' }
+    const c: Shape = { ...sticky('c', 0, 1200) }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [a, b, c] }} />)
+    press(100, 400)
+    release(100, 400)
+    press(500, 700, { shiftKey: true })
+    release(500, 700)
+    const place = screen.getByTestId('canvas-toolbar-place')
+    // Centred on the two rectangles together (world x 0..600 at zoom 1, view +120),
+    // above the top of the higher one (world y 300, view +100, less the gap).
+    expect(place.style.left).toBe('420px')
+    expect(place.style.top).toBe('386px')
+    expect(place.style.transform).toBe('translate(-50%, -100%)')
+    expect(screen.getByTestId('canvas-toolbar')).toBeTruthy()
+    // No single value to show while the colours differ; a pick gives both one.
+    fireEvent.click(screen.getByLabelText('Colour'))
+    fireEvent.click(screen.getByLabelText('Colour: Mint'))
+    expect(latest().shapes.filter(s => s.kind === 'rect').map(s => s.color)).toEqual(['mint', 'mint'])
+    expect(latest().shapes.find(s => s.id === 'c')?.color).toBe('yellow')
+    // Resize handles stay for a single shape only.
+    expect(screen.queryByTestId('handle-se')).toBeNull()
+    // Adding a sticky to the rectangles mixes the kinds, and the toolbar goes.
+    press(100, 1300, { shiftKey: true })
+    release(100, 1300)
+    expect(screen.queryByTestId('canvas-toolbar-place')).toBeNull()
+  })
+
+  it('a group whose custom colours differ highlights no palette swatch, even when the shapes record the same one underneath', () => {
+    const a: Shape = { ...sticky('a', 0, 300), kind: 'rect', color: 'blue', hex: '#FFC83D' }
+    const b: Shape = { ...sticky('b', 400, 600), kind: 'rect', color: 'blue', hex: '#112233' }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [a, b] }} />)
+    press(100, 400)
+    release(100, 400)
+    press(500, 700, { shiftKey: true })
+    release(500, 700)
+    fireEvent.click(screen.getByLabelText('Colour'))
+    const panel = screen.getByTestId('swatch-panel')
+    // Neither rectangle is blue: each shows its own custom colour, so nothing is ringed.
+    expect(within(panel).getByRole('button', { name: 'Colour: Blue' }).style.outline).not.toContain('var(--accent)')
+    expect(within(panel).getByRole('button', { name: 'Colour: custom colour' }).style.outline).not.toContain('var(--accent)')
+  })
+
+  it('several text boxes share the text toolbar, and bold applies to all of them', () => {
+    const t1: Shape = { ...sticky('t1', 0, 0, 'one'), kind: 'text', w: 160, h: 40 }
+    const t2: Shape = { ...sticky('t2', 0, 200, 'two'), kind: 'text', w: 160, h: 40 }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [t1, t2] }} />)
+    press(-50, -50)
+    moveTo(200, 300)
+    release(200, 300)
+    expect(screen.getByTestId('canvas-text-toolbar')).toBeTruthy()
+    expect(screen.queryByTestId('canvas-toolbar')).toBeNull()
+    fireEvent.click(screen.getByLabelText('Bold'))
+    expect(latest().shapes.map(s => s.bold)).toEqual([true, true])
   })
 
 })

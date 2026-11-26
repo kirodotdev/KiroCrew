@@ -1999,6 +1999,13 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   right-aligns panels that would cross the right edge, clamping them at the left
   edge when needed; in a pane narrower than a panel it caps the panel's width so
   its rows wrap.
+- **The selection toolbar acts on one kind.** It shows for a single shape and for
+  a selection of several shapes of the same kind, centred over the whole group,
+  and every pick (colour, fill, outline, kind, text size, alignment, bold) applies
+  to all of them as one undo step; a value they do not share shows as mixed. A
+  selection that mixes kinds has no shared controls and gets no toolbar; it still
+  moves, deletes and copies as one. Resize handles and connect dots stay with a
+  single shape.
 - **Zoom is one menu.** Its trigger shows the zoom; zoom in, zoom out, 100% and
   fit are its items, as in FigJam's corner control.
 - **Read-only where a save could do harm.** A past version opens pan-and-zoom

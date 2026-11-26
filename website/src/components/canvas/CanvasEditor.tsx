@@ -254,6 +254,11 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
   const byId = useMemo(() => new Map(canvas.shapes.map(s => [s.id, s])), [canvas.shapes])
   const selShapes = canvas.shapes.filter(s => selected.has(s.id))
   const selBox = boundsOf(selShapes)
+  // The selection toolbar acts on shapes of one kind: a single shape, or several
+  // of the same kind so ten cards take a colour at once. Kinds mixed together
+  // share no controls, so the toolbar stays away; such a selection still moves,
+  // deletes and copies as one.
+  const oneKind = selShapes.length > 0 && selShapes.every(s => s.kind === selShapes[0].kind)
   const hoveredShape = hovered ? byId.get(hovered) : undefined
   // Connect dots: on the hovered shape or the one selected, never on a section, and not
   // when zoomed out so far that you are looking at the overall picture, not joining things.
@@ -997,9 +1002,8 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
         }} />
       )}
 
-      {/* The selection toolbar: kind, colours, outline, delete. It is for one
-          shape only; a selection of several moves, deletes and copies as one. */}
-      {showChrome && selShapes.length === 1 && selBox && !editing && (() => {
+      {/* The selection toolbar: kind, colours, outline, delete, over the whole selection. */}
+      {showChrome && oneKind && selBox && !editing && (() => {
         const r = screenBox(selBox)
         return (
           <ToolbarPlace narrow={narrow} at={toolbarAt(r.x + r.w / 2, r.y, r.y + r.h)}>
