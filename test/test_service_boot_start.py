@@ -81,7 +81,7 @@ def test_service_disable_and_enable_parse(action) -> None:
 )
 def test_service_disable_and_enable_dispatch_and_audit(monkeypatch, sel_rec, action, fn) -> None:
     result = (1, False) if action == "disable" else 1
-    monkeypatch.setattr(cli_server.service_controller, fn, lambda: result)
+    monkeypatch.setattr(cli_server.service_controller, fn, lambda _on_stop=None: result)
     assert cli_server._service_cmd(argparse.Namespace(service_action=action)) == 1
     assert sel_rec.operations == [f"service_{action}"]
     assert sel_rec.calls[0]["outcome"] == "error"
@@ -90,8 +90,12 @@ def test_service_disable_and_enable_dispatch_and_audit(monkeypatch, sel_rec, act
 class TestLinuxDisableEnable:
     def test_disable_runs_disable_then_stop_with_sudo_in_the_system_scope(self) -> None:
         run = _fake_systemctl(system=_RUNNING, user=None)
+        sent: list[int] = []
         with _linux(run):
-            assert svc_linux.disable() == ([], [], True)
+            # on_stop fires before the stop call, so a Ctrl+C inside it still counts
+            assert svc_linux.disable(lambda: sent.append(len(run.calls))) == ([], [], True)
+        assert len(sent) == 1
+        assert run.calls[sent[0]][:3] == ["sudo", "systemctl", "stop"], run.calls
         verbs = [c for c in run.calls if c[:2] == ["sudo", "systemctl"]]
         assert verbs == [
             ["sudo", "systemctl", "disable", _UNIT],
@@ -100,8 +104,11 @@ class TestLinuxDisableEnable:
 
     def test_disable_acts_on_a_stopped_user_unit_without_sudo(self) -> None:
         run = _fake_systemctl(system=None, user=_DEAD)
+        sent: list[int] = []
         with _linux(run):
-            assert svc_linux.disable() == ([], [], False)  # no process: no stop ran
+            # no process: no stop ran, and none counts as sent
+            assert svc_linux.disable(lambda: sent.append(1)) == ([], [], False)
+        assert sent == []
         assert ["systemctl", "--user", "disable", _UNIT] in run.calls
         assert ["systemctl", "--user", "stop", _UNIT] in run.calls
         assert not any(c[0] == "sudo" for c in run.calls), run.calls
@@ -291,7 +298,7 @@ class TestControllerDisableEnable:
         return patch("kiro_crew.service.controller.current_platform", return_value=Platform.SYSTEMD)
 
     def test_disable_reports_success(self, monkeypatch, capsys) -> None:
-        monkeypatch.setattr(svc_linux, "disable", lambda: ([], [], True))
+        monkeypatch.setattr(svc_linux, "disable", lambda _on_stop=None: ([], [], True))
         with self._systemd():
             assert controller.disable_service() == (0, True)
         out = capsys.readouterr().out
@@ -305,7 +312,7 @@ class TestControllerDisableEnable:
         assert "sudo systemctl enable kirocrew" in capsys.readouterr().err
 
     def test_nothing_installed_exits_3(self, monkeypatch, capsys) -> None:
-        monkeypatch.setattr(svc_linux, "disable", lambda: None)
+        monkeypatch.setattr(svc_linux, "disable", lambda _on_stop=None: None)
         with self._systemd():
             assert controller.disable_service() == (3, False)
         assert "kirocrew service install" in capsys.readouterr().out
@@ -330,7 +337,7 @@ class TestControllerDisableEnable:
     def test_a_failed_disable_says_whether_a_stop_ran(
         self, monkeypatch, capsys, report, stop_ran
     ) -> None:
-        monkeypatch.setattr(svc_linux, "disable", lambda: report)
+        monkeypatch.setattr(svc_linux, "disable", lambda _on_stop=None: report)
         with self._systemd():
             assert controller.disable_service() == (1, stop_ran)
         assert "did not finish" in capsys.readouterr().err

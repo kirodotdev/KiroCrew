@@ -74,6 +74,7 @@ import importlib as _importlib
 import os as _os
 import sys as _sys
 import time
+from collections import abc as _abc  # private: a public name would join __all__
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -279,7 +280,9 @@ def stop() -> list[str]:
     return refused
 
 
-def _set_boot_start(verbs: tuple[str, str]) -> tuple[list[str], list[str], bool] | None:
+def _set_boot_start(
+    verbs: tuple[str, str], on_stop: _abc.Callable[[], None] | None = None
+) -> tuple[list[str], list[str], bool] | None:
     """Run *verbs* (``disable`` + ``stop``, or ``enable`` + ``start``) on our unit
     in every scope whose manager has it loaded, running or not.
 
@@ -343,6 +346,10 @@ def _set_boot_start(verbs: tuple[str, str]) -> tuple[list[str], list[str], bool]
                 )
                 continue
             for i, verb in enumerate(verbs):
+                if verb == "stop" and state.running and on_stop is not None:
+                    # Before the call: a Ctrl+C during a blocking stop leaves the
+                    # job running inside systemd, so the stop counts as begun.
+                    on_stop()
                 if _systemctl(verb, f"{SERVICE_NAME}.service", user=user).returncode != 0:
                     lines += [f"{spelled} {left} {SERVICE_NAME}" for left in verbs[i:]]
                     break
@@ -406,12 +413,16 @@ def _link_entry(fragment: str, *, user: bool) -> str | None:
     return None
 
 
-def disable() -> tuple[list[str], list[str], bool] | None:
+def disable(
+    on_stop: _abc.Callable[[], None] | None = None,
+) -> tuple[list[str], list[str], bool] | None:
     """Keep the unit installed but stop it starting at boot or login, and stop it
     now: ``systemctl disable`` then ``stop`` in every scope that has it. Same
     return as :func:`_set_boot_start`: its last value says whether a ``stop``
-    ran and took in any scope."""
-    return _set_boot_start(("disable", "stop"))
+    ran and took in any scope. *on_stop* is called just before a ``stop`` on a
+    running unit is sent, so a caller still knows a stop began when a raise
+    (Ctrl+C) cuts the call short."""
+    return _set_boot_start(("disable", "stop"), on_stop)
 
 
 def enable() -> tuple[list[str], list[str]] | None:

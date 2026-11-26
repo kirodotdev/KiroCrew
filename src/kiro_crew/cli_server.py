@@ -633,18 +633,20 @@ def _service_cmd(args: argparse.Namespace) -> int:
 
             earlier = (kept_grants.kept_dir() / kept_grants.USER_STOP_FILE).exists()
             marked = kept_grants.mark_user_stop("service_disable")
-            stop_ran = False
+            begun: list[bool] = []
             try:
-                rc, stop_ran = service_controller.disable_service()
-            finally:
-                # Keep a new mark only when a stop ended a running gateway,
-                # whatever the exit code; an interrupt (Ctrl+C at the sudo
-                # prompt) before any stop takes it back too. shortcut: an
-                # interrupt after one scope's stop took also takes it back, so
-                # that stop keeps the grants; track stops across raises if that
-                # window matters.
-                if marked and not earlier and not stop_ran:
+                rc, stop_ran = service_controller.disable_service(lambda: begun.append(True))
+            except BaseException:
+                # Ctrl+C before any stop was sent (the sudo prompt): the gateway
+                # runs on. Once a stop was sent it may still land, so keep it.
+                if marked and not earlier and not begun:
                     kept_grants.withdraw_user_stop()
+                raise
+            # Keep a new mark only when a stop ended a running gateway, whatever
+            # the exit code; a refused disable or stop, or a unit that was
+            # already stopped, leaves the gateway as it was.
+            if marked and not earlier and not stop_ran:
+                kept_grants.withdraw_user_stop()
         else:
             rc = service_controller.enable_service()
         sel().log_api_access(

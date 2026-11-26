@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from kiro_crew.service import linux, macos
@@ -449,7 +450,7 @@ def uninstall_service() -> int:
     return 2
 
 
-def _set_boot_start(enable: bool) -> tuple[int, bool]:
+def _set_boot_start(enable: bool, on_stop: Callable[[], None] | None = None) -> tuple[int, bool]:
     """Shared body of :func:`disable_service` and :func:`enable_service`.
 
     Returns the exit code and, for a disable, whether a stop ran and the
@@ -466,7 +467,7 @@ def _set_boot_start(enable: bool) -> tuple[int, bool]:
         if enable:
             report = linux.enable()
         else:
-            full = linux.disable()
+            full = linux.disable(on_stop)
             report = None if full is None else (full[0], full[1])
             stop_ran = full is not None and full[2]
         refused, unreached = report if report is not None else ([], [])
@@ -476,7 +477,7 @@ def _set_boot_start(enable: bool) -> tuple[int, bool]:
         if enable:
             mac_report = macos.enable()
         else:
-            mac_full = macos.disable()
+            mac_full = macos.disable(on_stop)
             mac_report = None if mac_full is None else (mac_full[0], mac_full[1])
             stop_ran = mac_full is not None and mac_full[2]
         accepted, skipped = mac_report if mac_report is not None else (None, [])
@@ -542,10 +543,12 @@ def _set_boot_start(enable: bool) -> tuple[int, bool]:
     return 0, stop_ran
 
 
-def disable_service() -> tuple[int, bool]:
+def disable_service(on_stop: Callable[[], None] | None = None) -> tuple[int, bool]:
     """Stop the service and keep it from starting at boot or login, leaving it
-    installed. Returns ``(exit code, stop_ran)``; see :func:`_set_boot_start`."""
-    return _set_boot_start(False)
+    installed. Returns ``(exit code, stop_ran)``; see :func:`_set_boot_start`.
+    *on_stop* is called just before a stop is sent to a running service, so it
+    still counts when a raise (Ctrl+C) cuts the call short."""
+    return _set_boot_start(False, on_stop)
 
 
 def enable_service() -> int:

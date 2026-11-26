@@ -15,6 +15,7 @@ import plistlib
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
@@ -629,7 +630,7 @@ def stop() -> bool:
     return _bootout(wait=True)
 
 
-def disable() -> tuple[bool, list[str], bool] | None:
+def disable(on_stop: Callable[[], None] | None = None) -> tuple[bool, list[str], bool] | None:
     """Keep the plist installed but stop the agent loading at login, and stop it
     now: ``launchctl disable`` in every domain, then ``bootout``.
 
@@ -645,7 +646,8 @@ def disable() -> tuple[bool, list[str], bool] | None:
     lasting stop. ``booted_out`` is True only when launchd accepted the
     ``bootout``, False when none ran (a refused or unrecorded disable) or it was
     refused. The bootout is waited out, so an ``enable`` right after it never
-    sees a job that is still leaving.
+    sees a job that is still leaving. *on_stop* is called just before the
+    ``bootout``, so a caller still knows a stop began when a raise cuts it short.
     """
     if not PLIST_PATH.exists():
         return None
@@ -665,6 +667,11 @@ def disable() -> tuple[bool, list[str], bool] | None:
             return False, skipped, False
     if not accepted:
         return False, skipped, False
+    if on_stop is not None:
+        # Before the bootout and its settle wait, so a Ctrl+C there still
+        # counts as a begun stop. shortcut: also fires for a job that is not
+        # loaded, keeping the mark only if that bootout is interrupted.
+        on_stop()
     booted_out = _bootout(wait=True)
     return not is_loaded(), skipped, booted_out
 
