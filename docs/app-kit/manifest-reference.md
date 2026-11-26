@@ -1893,7 +1893,7 @@ height is clamped to 40-800 pixels. A link the user clicks in the frame opens
 through the host's link bridge, as for every app frame.
 
 **When it cannot be drawn.** The host draws a card that names the reason and
-keeps the payload readable under **Show the widget's data** when: no enabled app
+keeps the payload readable under **Show the raw data** when: no enabled app
 has that name, the app declares no such widget, `use` is not `<app>:<id>`, the
 body is not one JSON object within the cap, the mint is refused, or the module
 does not say it is ready within 10 seconds, reports a failure or navigates the

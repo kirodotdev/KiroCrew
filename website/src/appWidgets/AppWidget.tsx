@@ -263,7 +263,8 @@ function fallbackText(reason: FallbackReason, app: string, use: string): string 
     case 'bad-use': return i18nT('components.appWidget.reason_bad_use', { use })
     case 'not-installed': return i18nT('components.appWidget.reason_not_installed', { app })
     case 'app-off': return i18nT('components.appWidget.reason_app_off', { app })
-    case 'no-widget': return i18nT('components.appWidget.reason_no_widget', { app, use })
+    // `use` parsed as `<app>:<id>`, so the widget's own id follows the one colon.
+    case 'no-widget': return i18nT('components.appWidget.reason_no_widget', { app, widget: use.slice(use.indexOf(':') + 1) })
     case 'too-large': return i18nT('components.appWidget.reason_too_large')
     case 'not-object': return i18nT('components.appWidget.reason_not_object')
     case 'apps-unavailable': return i18nT('components.appWidget.reason_apps_unavailable')
@@ -319,16 +320,19 @@ export function AppWidgetFallback({ title, use, reason, body, appLabel }: {
   const appName = use.split(':', 1)[0] || use
   const app = appLabel || appName
   const why = fallbackText(reason, app, use)
-  const loadFailed = reason === 'failed' || reason === 'apps-unavailable'
+  // The user fixes a missing or turned-off app on its page. Every other reason is
+  // a bad draw or a failed load, which the agent can redraw or explain.
+  const appMissing = reason === 'not-installed' || reason === 'app-off'
   return (
     <section className="my-2 rounded-lg border border-border bg-bg-elevated/40 px-3 py-2" role="note" data-testid="app-widget-fallback" data-reason={reason}>
       <div className="text-[12px] font-semibold text-muted truncate">{title}</div>
-      {loadFailed
+      {appMissing
+        ? <p className="mt-1 text-[12px] text-text-strong">{why}</p>
         // The rest of the chat works and the payload stays below, so the loss is partial.
-        ? <ErrorNotice impact="partial" className="mt-1" message={why} askAgent testId="app-widget-error" />
-        : <p className="mt-1 text-[12px] text-text-strong">{why}</p>}
-      {reason === 'not-installed' && <AppPageLink appName={appName} label={i18nT('components.appWidget.install_app', { app })} />}
-      {reason === 'app-off' && <AppPageLink appName={appName} label={i18nT('components.appWidget.turn_on_app', { app })} />}
+        : <ErrorNotice impact="partial" className="mt-1" message={why} askAgent testId="app-widget-error" />}
+      {/* The labels say the link opens the app's page; nothing is installed or turned on from here. */}
+      {reason === 'not-installed' && <AppPageLink appName={appName} label={i18nT('components.appWidget.open_to_install', { app })} />}
+      {reason === 'app-off' && <AppPageLink appName={appName} label={i18nT('components.appWidget.open_to_turn_on', { app })} />}
       <details className="mt-1 text-[12px]">
         <summary className="cursor-pointer text-muted">{i18nT('components.appWidget.show_data')}</summary>
         <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded bg-bg px-2 py-1 font-mono text-[11px] text-text-strong">{body.trim()}</pre>

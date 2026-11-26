@@ -185,8 +185,8 @@ describe('AppWidget', () => {
   })
 
   it.each([
-    ['not-installed', [], 'Install issue-radar'],
-    ['app-off', [app({ enabled: false })], 'Turn on Issue Radar'],
+    ['not-installed', [], 'Go to the issue-radar page to install it'],
+    ['app-off', [app({ enabled: false })], 'Go to the Issue Radar page to turn it on'],
   ])('links to the app\'s page when the app is %s', async (reason, apps, label) => {
     listApps.mockResolvedValue(apps)
     render(withQuery(
@@ -221,6 +221,13 @@ describe('AppWidget', () => {
     expect(card.querySelector('pre')?.textContent).toBe('{"number": 7, "title": "Chart fences"}')
   })
 
+  it('names the missing widget by its own id, not the whole use value', async () => {
+    listApps.mockResolvedValue([app()])
+    render(withQuery(<AppWidget use="issue-radar:pull-card" body='{"n": 1}' title="Pull request 9" />))
+    const card = await screen.findByTestId('app-widget-fallback')
+    expect(card.querySelector('[data-testid="app-widget-error"]')?.textContent).toContain('The Issue Radar app has no widget named "pull-card".')
+  })
+
   it('says the app list failed, not the app, when the list does not load', async () => {
     listApps.mockRejectedValue(new Error('offline'))
     render(withQuery(<AppWidget use="issue-radar:issue-card" body='{"n": 1}' title="Issue 7" />))
@@ -230,16 +237,20 @@ describe('AppWidget', () => {
   })
 
   it.each([
-    ['not-installed', [], '{"n": 1}', 'issue-radar:issue-card'],
-    ['app-off', [app({ enabled: false })], '{"n": 1}', 'issue-radar:issue-card'],
-    ['no-widget', [app({ manifest: { contributes: { widgets: [] } } })], '{"n": 1}', 'issue-radar:issue-card'],
-    ['not-object', [app()], 'not json', 'issue-radar:issue-card'],
-    ['bad-use', [app()], '{"n": 1}', 'issue radar'],
-  ])('draws the fallback card with its reason: %s', async (reason, apps, body, use) => {
+    ['not-installed', [], '{"n": 1}', 'issue-radar:issue-card', 'link'],
+    ['app-off', [app({ enabled: false })], '{"n": 1}', 'issue-radar:issue-card', 'link'],
+    ['no-widget', [app({ manifest: { contributes: { widgets: [] } } })], '{"n": 1}', 'issue-radar:issue-card', 'notice'],
+    ['not-object', [app()], 'not json', 'issue-radar:issue-card', 'notice'],
+    ['too-large', [app()], JSON.stringify({ s: 'x'.repeat(17_000) }), 'issue-radar:issue-card', 'notice'],
+    ['bad-use', [app()], '{"n": 1}', 'issue radar', 'notice'],
+  ])('draws the fallback card with its reason and a next step: %s', async (reason, apps, body, use, next) => {
     listApps.mockResolvedValue(apps)
     render(withQuery(<AppWidget use={use} body={body} title="Issue 7" />))
     const card = await screen.findByTestId('app-widget-fallback')
     expect(card.dataset.reason).toBe(reason)
+    // A missing or turned-off app links to its page. Every other card offers the agent hand-off.
+    expect(card.querySelector('[data-testid="app-widget-app-link"]') !== null).toBe(next === 'link')
+    expect(card.querySelector('[data-testid="app-widget-error"]') !== null).toBe(next === 'notice')
     // The payload stays readable.
     expect(card.querySelector('pre')?.textContent).toBe(body)
     expect(mint).not.toHaveBeenCalled()

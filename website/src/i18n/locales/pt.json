@@ -11874,14 +11874,14 @@
       "reason_bad_use": "Este widget indica \"{{use}}\", que não é um nome de widget de app.",
       "reason_not_installed": "Este widget precisa do app {{app}}, que não está instalado.",
       "reason_app_off": "Este widget precisa do app {{app}}, que está desligado.",
-      "reason_no_widget": "O app {{app}} não tem nenhum widget chamado \"{{use}}\".",
+      "reason_no_widget": "O app {{app}} não tem nenhum widget chamado \"{{widget}}\".",
       "reason_too_large": "Os dados deste widget são grandes demais para serem exibidos.",
       "reason_not_object": "Os dados deste widget não são válidos, então ele não pode ser exibido.",
       "reason_apps_unavailable": "Não foi possível carregar os apps, então este widget não pode ser exibido.",
       "reason_failed": "O app {{app}} não conseguiu exibir este widget.",
-      "install_app": "Instalar {{app}}",
-      "turn_on_app": "Ligar {{app}}",
-      "show_data": "Mostrar os dados do widget"
+      "open_to_install": "Ir para a página de {{app}} para instalar",
+      "open_to_turn_on": "Ir para a página de {{app}} para ligar",
+      "show_data": "Mostrar os dados brutos"
     },
     "messageActions": {
       "popover_label": "{{app}}: {{title}}",

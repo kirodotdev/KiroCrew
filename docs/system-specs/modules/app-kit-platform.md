@@ -6721,8 +6721,11 @@ serialized, so it is covered by the signing payload, and `widgets` is in
   list that does not load, a refused mint, a frame that fails, navigates away or is
   not ready in time: each draws `AppWidgetFallback`, which names the reason and
   keeps the payload in a closed `<details>` block. The not-installed and turned-off
-  cards link to `/apps/detail/<app>`, through the page-leave check. The three load
-  failures render through `ErrorNotice` with the agent hand-off.
+  cards link to `/apps/detail/<app>`, through the page-leave check. The link label
+  names the app's page ("Go to the {{app}} page to install it"), because nothing
+  is installed or turned on from the card. Every other card renders its reason
+  through `ErrorNotice` with the agent hand-off, so each card offers a next step.
+  The no-widget card names the widget by its id, the part of `use` after the colon.
 
 Writers: `apps/manifest_widgets.py`, `apps/widget_frame.py`, `apps/app_frame.py`,
 `widget_parse.py`, `widget_artifacts.py`, `website/src/appWidgets/*`,

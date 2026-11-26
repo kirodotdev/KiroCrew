@@ -11354,14 +11354,14 @@
       "reason_bad_use": "此小组件指定了“{{use}}”，但这不是应用小组件名称。",
       "reason_not_installed": "此小组件需要 {{app}} 应用，但该应用未安装。",
       "reason_app_off": "此小组件需要 {{app}} 应用，但该应用已关闭。",
-      "reason_no_widget": "{{app}} 应用没有名为“{{use}}”的小组件。",
+      "reason_no_widget": "{{app}} 应用没有名为“{{widget}}”的小组件。",
       "reason_too_large": "此小组件的数据太大，无法显示。",
       "reason_not_object": "此小组件的数据无效，因此无法显示。",
       "reason_apps_unavailable": "无法加载应用，因此无法显示此小组件。",
       "reason_failed": "{{app}} 应用无法显示此小组件。",
-      "install_app": "安装 {{app}}",
-      "turn_on_app": "开启 {{app}}",
-      "show_data": "显示小组件的数据"
+      "open_to_install": "前往 {{app}} 页面进行安装",
+      "open_to_turn_on": "前往 {{app}} 页面以开启",
+      "show_data": "显示原始数据"
     },
     "messageActions": {
       "popover_label": "{{app}}：{{title}}",
