@@ -284,6 +284,9 @@ and the note that a Bot's carried-over limits now ask a person
 Bot's `name` param and a link to its profile);
 the paused MCP share note (`mcp_share_paused`, `notifications/mcp_share_paused_note.py`);
 and the two Team Crew notes on `system.relay` (`relay_crew_added`, `relay_crews_available`);
+and the conductor mode migration notes, chats that stayed on their own agent
+(`crew_mode_chats_not_moved`) and an `agent.crew_mode_agent` that names no agent
+template (`crew_mode_agent_unusable`), in `dashboard/crew_mode_migration.py::NOTE_COPY`;
 every other producer writes English only. An action button's label comes from
 `noteActionLabel`: a note's `open` action reads "Open" in the dashboard's language
 when its id is in the maps, and every other action keeps the label its producer sent. `test_notification_dashboard_copy.py` pins the turn-ceiling
@@ -292,6 +295,7 @@ producer, its English against the catalog and the meta refusal;
 `test_turn_died_notify.py` pins each `chat_stopped_*` id and its English;
 `test_folder_agent_member_key.py` pins the folder Default agent notes (`folder_agent_label`, `folder_agent_key`) and their English;
 `test_slot_retention.py` pins both History ids, their params and their English;
+`test_crew_mode_migration_edges.py` pins both conductor mode ids, their params and their English;
 `NotificationCard.systemNote.test.tsx` pins the zh-CN render of every id and the
 fallback.
 

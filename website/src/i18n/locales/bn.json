@@ -8775,7 +8775,11 @@
         "relay_crew_added_body": "ক্রু বদলানোর মেনুতে রিমোট Crew থেকে এটি খোলো।",
         "relay_crews_available_title_one": "তোমার {{count}}টি শেয়ার্ড Crew-এ অ্যাক্সেস আছে",
         "relay_crews_available_title_other": "তোমার {{count}}টি শেয়ার্ড Crew-এ অ্যাক্সেস আছে",
-        "relay_crews_available_body": "ক্রু বদলানোর মেনুতে রিমোট Crew থেকে এগুলো খোলো।"
+        "relay_crews_available_body": "ক্রু বদলানোর মেনুতে রিমোট Crew থেকে এগুলো খোলো।",
+        "crew_mode_chats_not_moved_title": "Conductor mode-এর একটি চ্যাট বদলায়নি",
+        "crew_mode_chats_not_moved_body": "এই চ্যাটগুলো {{target}}-এর বদলে নিজেদের এজেন্টেই থাকছে: {{names}}। পরের কনফিগ বদল বা রিস্টার্টের পর {{productName}} আবার চেষ্টা করে।",
+        "crew_mode_agent_unusable_title": "Conductor mode-এর এজেন্ট বদলায়নি",
+        "crew_mode_agent_unusable_body": "agent.crew_mode_agent-এ {{configured}} লেখা আছে, যা কোনো এজেন্ট টেমপ্লেট নয় ({{why}})। এটি ইনস্টল না হওয়া বা সেটিং না বদলানো পর্যন্ত Conductor mode-এর চ্যাটগুলো {{fallback}}-এ থাকে।"
       },
       "notificationBanner": {
         "dismiss_notification": "বিজ্ঞপ্তি সরাও",

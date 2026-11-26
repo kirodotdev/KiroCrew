@@ -63,6 +63,20 @@ describe('a gateway-written note', () => {
     expect(screen.getByText(/^Archived 1 session idle past the 7-day mark/)).toBeInTheDocument()
   })
 
+  // The conductor mode migration notes: chats that did not move, and an unusable agent name.
+  it.each([
+    ['crew_mode_chats_not_moved', { target: 'better-conductor', names: 'r1 (agent_choice_unavailable)' }],
+    ['crew_mode_agent_unusable', { configured: 'typo-conductr', why: 'agent_not_found', fallback: 'kirocrew-conductor' }],
+  ] as const)('renders the %s copy in the dashboard language', async (id, params) => {
+    await i18next.changeLanguage('zh-CN')
+    renderWithProviders(<NotificationCard n={note({ title: 'English title', body: 'English body', i18n: { id, params } })} />)
+    const copy = zh.components.notifications.systemNote
+    const body = Object.entries(params).reduce((text, [k, v]) => text.replace(`{{${k}}}`, v), copy[`${id}_body`])
+      .replace('{{productName}}', 'Kiro Crew')
+    expect(screen.getByText(copy[`${id}_title`])).toBeInTheDocument()
+    expect(screen.getByText(body.slice(0, 140))).toBeInTheDocument()
+  })
+
   it.each(['not_a_copy', 'constructor'])('keeps the stored English for the id %s', async (id) => {
     await i18next.changeLanguage('zh-CN')
     renderWithProviders(<NotificationCard n={note({ title: 'Build finished', body: '42 rows', i18n: { id } })} />)

@@ -128,6 +128,8 @@ const SYSTEM_NOTE_TITLE_KEY = {
   moved_to_history_idle: 'components.notifications.systemNote.moved_to_history_title',
   relay_crew_added: 'components.notifications.systemNote.relay_crew_added_title',
   relay_crews_available: 'components.notifications.systemNote.relay_crews_available_title',
+  crew_mode_chats_not_moved: 'components.notifications.systemNote.crew_mode_chats_not_moved_title',
+  crew_mode_agent_unusable: 'components.notifications.systemNote.crew_mode_agent_unusable_title',
 } as const
 type SystemNoteId = keyof typeof SYSTEM_NOTE_TITLE_KEY
 const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
@@ -151,6 +153,8 @@ const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
   moved_to_history_idle: 'components.notifications.systemNote.moved_to_history_idle_body',
   relay_crew_added: 'components.notifications.systemNote.relay_crew_added_body',
   relay_crews_available: 'components.notifications.systemNote.relay_crews_available_body',
+  crew_mode_chats_not_moved: 'components.notifications.systemNote.crew_mode_chats_not_moved_body',
+  crew_mode_agent_unusable: 'components.notifications.systemNote.crew_mode_agent_unusable_body',
 }
 
 /** The note's title and body, in the dashboard's language when the gateway

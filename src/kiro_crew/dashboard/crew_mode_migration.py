@@ -152,9 +152,28 @@ def _audit(slot_key: str, before: str, after: str, outcome: str, error: str = ""
         logger.debug("crew mode migration audit failed", exc_info=True)
 
 
-def _notify(state: Any, title: str, body: str) -> None:
+#: Each note's English, by the dashboard copy it names (notifMeta.tsx), so the
+#: bell reads in the dashboard's language. The catalog writes ``{{name}}`` and
+#: ``{{productName}}`` where these write ``{name}`` and the product name.
+NOTE_COPY = {
+    "crew_mode_chats_not_moved": (
+        "A conductor mode chat did not move",
+        "These chats stay on their own agent instead of {target}: {names}. "
+        "Kiro Crew tries again after the next config change or restart.",
+    ),
+    "crew_mode_agent_unusable": (
+        "Conductor mode agent not changed",
+        "agent.crew_mode_agent names {configured}, which is not an agent "
+        "template ({why}). Conductor mode chats stay on {fallback} until it is "
+        "installed or the setting changes.",
+    ),
+}
+
+
+def _notify(state: Any, copy_id: str, **params: str) -> None:
+    title, body = NOTE_COPY[copy_id]
     try:
-        state.notify("agent", title, body)
+        state.notify("agent", title, body.format(**params), i18n={"id": copy_id, "params": params})
     except Exception:
         logger.debug("crew mode migration notice failed", exc_info=True)
 
@@ -285,12 +304,7 @@ async def migrate(
             _failed.pop(key, None)
         if newly_failed:
             names = ", ".join(f"{k} ({c})" for k, c in sorted(newly_failed.items()))
-            _notify(
-                state,
-                "A conductor mode chat did not move",
-                f"These chats stay on their own agent instead of {target}: {names}. "
-                "Kiro Crew tries again after the next config change or restart.",
-            )
+            _notify(state, "crew_mode_chats_not_moved", target=target, names=names)
         if (
             not _pending
             and not _failed
@@ -390,10 +404,10 @@ async def reconcile(state: Any, *, retry_failed: bool = True) -> dict[str, list[
                 _audit("*", fallback, configured, "denied", why)
                 _notify(
                     state,
-                    "Crew Mode conductor not changed",
-                    f"agent.crew_mode_agent names {configured}, which is not an agent "
-                    f"template ({why}). Crew Mode chats stay on {fallback} until it is "
-                    "installed or the setting changes.",
+                    "crew_mode_agent_unusable",
+                    configured=configured,
+                    why=why,
+                    fallback=fallback,
                 )
             return None
     crew_mode.clear_unusable()

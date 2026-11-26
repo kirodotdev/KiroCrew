@@ -8989,7 +8989,11 @@
         "relay_crews_available_title_one": "Hai accesso a {{count}} Crew condivisa",
         "relay_crews_available_title_many": "Hai accesso a {{count}} Crew condivise",
         "relay_crews_available_title_other": "Hai accesso a {{count}} Crew condivise",
-        "relay_crews_available_body": "Aprile da Crew remote nel selettore di crew."
+        "relay_crews_available_body": "Aprile da Crew remote nel selettore di crew.",
+        "crew_mode_chats_not_moved_title": "Una chat in Conductor mode non è stata spostata",
+        "crew_mode_chats_not_moved_body": "Queste chat restano sul proprio agente invece che su {{target}}: {{names}}. {{productName}} riprova dopo la prossima modifica della configurazione o il prossimo riavvio.",
+        "crew_mode_agent_unusable_title": "Agente del Conductor mode non cambiato",
+        "crew_mode_agent_unusable_body": "agent.crew_mode_agent indica {{configured}}, che non è un modello di agente ({{why}}). Le chat in Conductor mode restano su {{fallback}} finché non viene installato o l'impostazione cambia."
       },
       "notificationBanner": {
         "dismiss_notification": "Ignora notifica",
