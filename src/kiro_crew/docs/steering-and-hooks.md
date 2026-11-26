@@ -545,6 +545,21 @@ hook, which Kiro Crew does not fire, takes no number. The list applies where Kir
 fires the hooks (Kiro Agent, goose, opencode, Strands); on the kiro-cli
 backend kiro-cli runs them itself.
 
+A hook document with a `name` of its own also answers to
+`<agent>/<Event>/<name>`, such as `my-agent/PreToolUse/read-guard`, which
+reordering does not change, and the refusal prints it beside the number. It
+names the hook, not its command: an update that keeps the name and changes the
+command is still admitted. A deny of either name refuses the hook. Each name
+is judged by the policy and the profile together, so when both carry a `hooks`
+list, name the hook the same way in both. These keep only the number: a
+document with no `name`, whose `<Trigger>-<n>` name is positional too, a name
+that is all digits or holds `/`, `\`, `*`, `?` or `[`, a name two of the
+agent's hook documents share, and every hook in the object form, which has no
+name. The list takes `fnmatch` globs: `my-agent/PreToolUse/*` lets
+every `preToolUse` hook of that agent run, including one a later update adds,
+and a glob meets these names too, so `*-guard` admits a document named
+`read-guard`.
+
 **On kiro-cli's v2 engine a `userPromptSubmit` hook reads the whole prompt.** A
 session runs on that older engine when a Kiro CLI choice meets a kiro-cli without
 its v3 engine (the gateway log then says Kiro Crew "keeps running kiro-cli's v2

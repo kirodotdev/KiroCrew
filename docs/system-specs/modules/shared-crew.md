@@ -801,6 +801,12 @@ a response. The status read reports `connected`, the tailnet name, the key's
 `expires` (from `GET /tailnet/-/keys/{keyId}`) and `key_expires_soon` (within 7
 days) or `key_expired`. `DELETE .../credential` removes it.
 
+**State file.** Invites, members and display records live in `invites.json` beside
+the vault. A missing file reads as empty and the first update creates it. A file
+that exists but cannot be read, decoded or parsed still reads as empty for display,
+but `update_state` raises `StateUnreadableError` and writes nothing, so the action
+fails instead of rewriting the file from an empty state.
+
 **This machine's device.** `connect` matches the local daemon's `Self.PublicKey`
 against `devices[].nodeKey`, then `Self.TailscaleIPs` against `devices[].addresses`,
 and keeps the `nodeId`. Never by name; no match refuses `device_not_found`.

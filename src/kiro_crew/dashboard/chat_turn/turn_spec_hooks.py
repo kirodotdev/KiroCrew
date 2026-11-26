@@ -295,7 +295,8 @@ async def _prepare_spec_hooks(
     # so a read/parse failure degrades to fewer hooks rather than failing the turn,
     # a JSON hook whose command is an autoimported *.sh is not fired twice, and the
     # auto-approve withhold always has a hook to fire. Returns the spec hooks
-    # unchanged off KAS (goose and opencode do not read a user's standalone files).
+    # unchanged on a harness without ``crew_merges_user_hook_files`` (goose and
+    # opencode do not read a user's standalone files).
     is_kas = capabilities_of(client).backend == ACP_BACKEND_KAS
     try:
         hooks = await asyncio.to_thread(merge_user_hook_files, client, hooks)
@@ -345,10 +346,11 @@ async def _prepare_spec_hooks(
         )
         # Standalone <project>/.kiro/hooks/*.json files are not run either, on the
         # same trust verdict Crew cannot read for a checkout. Say so when
-        # such files exist, so they are never withheld silently. KAS only, to match
-        # where the user files now run.
-        if is_kas:
+        # such files exist, so they are never withheld silently. Only where the
+        # user's own files are folded in (``crew_merges_user_hook_files``), to match.
+        if capabilities_of(client).crew_merges_user_hook_files:
             await _surface_withheld_project_hook_files(state, slot, client)
+        if is_kas:
             await _surface_kas_project_hooks(state, slot, client, agent)
             # The user's own agent file that lists no tools runs with none on KAS;
             # the chat says so once, with a link to where its tools are chosen.

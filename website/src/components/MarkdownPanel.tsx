@@ -441,6 +441,16 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
 
   const { diffData, diffChecking, diffQueryError, originalContent, comparedContent, gitPatch, diffUnavailable, diffViewShown, zeroDiff, zeroDiffText, diffErrorText, diffNoBaselineText, reportLiveDiffDegraded } =
     useMarkdownPanelDiff({ filePath, isRichType, canTextDiff, partial, editing, dirty, diffMode, content, initialDiffMode, onDiffModeChange, setDiffMode, diskTickRef, diffStartTickRef, patchOwedTick, qc })
+  // The buffer is on screen as the editor or a preview: the binary card, the
+  // zero-diff and diff-unavailable notices and the diff view each replace it.
+  const previewShown = !showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown
+  // Outside the editor the same buffer feeds a preview, which cannot say so
+  // itself: a cut landing inside an HTML `<style>` block renders a blank frame.
+  // The byte-backed viewers (image, pdf, sheet, office, video, audio) fetch the
+  // real file themselves, so the capped buffer does not describe what they show.
+  // The notice follows the condition that renders the preview, so a state that
+  // replaces the preview cannot show it.
+  const partialPreview = !showsEditor && previewShown && !BYTE_BACKED_FILE_TYPES.has(fileType) && partial
   // Every failure the panel owns, rendered in ONE place (both layouts mount it
   // under the header). The three background reads used to fail silently: a
   // rejected knowledge / artifact / diff query rendered as "not added" / no
@@ -451,9 +461,11 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // lose, and a failed gateway read or write is what the agent can diagnose).
   // The save failure itself is always OFF: by definition the buffer holds the
   // edits that were NOT persisted.
-  const panelNotices = (partialSaveBlocked || saveError || actionError || knowledge.queryError || artifactState.queryError || diffQueryError) ? (
+  const panelNotices = (partialSaveBlocked || partialPreview || saveError || actionError || knowledge.queryError || artifactState.queryError || diffQueryError) ? (
     <div className="flex flex-col gap-1.5">
       {partialSaveBlocked && <div role="status" className="text-[12px] text-muted" data-testid="markdown-panel-partial-notice">{i18nT('components.markdownPanel.partial_copy_cannot_save', { reason: partialReason(partialSaveBlocked) })}</div>}
+      {/* A missing file's banner already names the partial copy and its cause. */}
+      {partialPreview && !lastCopy && <div role="status" className="text-[12px] text-muted" data-testid="markdown-panel-partial-notice">{i18nT('components.markdownPanel.partial_copy_preview', { reason: partialReason(partialPreview) })}</div>}
       {/* No hand-off: the editor buffer holds the unsaved edits this save failed to write. */}
       <ErrorNotice message={saveError} onDismiss={() => setSaveError(null)} testId="markdown-panel-save-error" />
       <ErrorNotice message={actionError} askAgent={!dirty} onDismiss={() => setActionError(null)} testId="markdown-panel-action-error" />
@@ -1455,7 +1467,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && (
               <DiffViewBlock flush sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} autoLineByLine={active} />
             )}
-            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer flush isRichType={isRichType} richSource={canEditRich && editing} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
+            {previewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer flush isRichType={isRichType} richSource={canEditRich && editing} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged} onLiveDiffDegraded={reportLiveDiffDegraded}
               previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
           </div>
@@ -1552,7 +1564,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             )}
             {!showBinaryCard && diffNoBaselineText && !editing && <ZeroDiffNotice message={diffNoBaselineText} onExitDiff={readOnly ? undefined : toggleDiffMode} />}
             {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && <DiffViewBlock sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} autoLineByLine={active} />}
-            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer isRichType={isRichType} richSource={canEditRich && editing} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
+            {previewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer isRichType={isRichType} richSource={canEditRich && editing} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged} onLiveDiffDegraded={reportLiveDiffDegraded}
               previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={fullscreenFileOpen} onFolderOpen={fullscreenFolderOpen} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
           </div>

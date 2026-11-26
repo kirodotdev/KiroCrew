@@ -315,3 +315,12 @@ def parse_widgets(raw: str) -> List[ParsedWidget]:
     if state in ("widget", "widget-fence"):
         flush_widget(len(raw), truncated=True)
     return widgets
+
+
+#: Mirrors ``HTML_ELEMENT_RE`` in ``MarkdownRenderer.tsx``: an HTML element tag.
+_HTML_ELEMENT_RE = re.compile(rf"</?[A-Za-z][A-Za-z0-9_-]*(?:{_JS_SPACE}[^<>]*)?/?>")
+
+
+def is_markdown_widget_body(body: str) -> bool:
+    """Port of ``isMarkdownWidgetBody`` (``MarkdownRenderer.tsx``): text and no element tag."""
+    return bool(_js_trim(body)) and not _HTML_ELEMENT_RE.search(body)

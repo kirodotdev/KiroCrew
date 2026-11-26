@@ -93,6 +93,9 @@ READONLY_REASONS: dict[str, str] = {
     # Off, a vault read leaves no row in the security event log
     # (secrets/read_audit.py note_reads), so only the operator turns it.
     "dashboard.audit_secret_reads": WHY_SIGN_IN,
+    # Whether a session-less internal call from a sandboxed process is refused
+    # (dashboard/token_auth_sessionless.py): only the operator turns it.
+    "dashboard.sessionless_internal_calls": WHY_REACH,
     # The decision judge's provider timeout: its owner control lives behind the
     # consent route, not in config.json.
     "decisions.provider.timeout_ms": WHY_OWNED,

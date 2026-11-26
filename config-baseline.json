@@ -10995,6 +10995,7 @@
         "restore_sessions": false,
         "dynamic_dashboard_cards": false,
         "audit_secret_reads": false,
+        "sessionless_internal_calls": "log",
         "turn_cache_estimate": false,
         "crewmate_threads": false,
         "crewmates_in_agent_picker": false,
@@ -11449,6 +11450,23 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.sessionless_internal_calls",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session-less internal calls",
+      "help": "What the gateway does with an internal call that names no session and comes from a process it cannot place outside the agent sandbox. 'log' admits it and writes a security log row (one per caller and path every 10 minutes); 'enforce' refuses it. Stays 'log' until the log shows no Kiro Crew tool of this shape. Takes effect on the next call; no restart.",
+      "hasChildren": false,
+      "enumValues": [
+        "log",
+        "enforce"
+      ],
+      "defaultValue": "log"
     },
     {
       "path": "dashboard.turn_cache_estimate",

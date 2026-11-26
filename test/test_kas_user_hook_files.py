@@ -18,6 +18,8 @@ import shutil
 import sys
 from pathlib import Path
 
+import pytest
+
 import kiro_crew.hooks as hooks_mod
 from kiro_crew.agent_sdk import spec_hooks
 from kiro_crew.hooks import (
@@ -301,6 +303,55 @@ def test_g_kas_session_does_load_user_files(tmp_path, monkeypatch):
     )
     assert unreadable is False
     assert [h.command for h in hooks if h.spec_origin == "user_file"] == ["echo hi"]
+
+
+@pytest.mark.parametrize("merges", [True, False])
+def test_g2_the_fold_and_its_notice_follow_the_capability_not_the_backend_name(
+    tmp_path, monkeypatch, merges
+):
+    """``crew_merges_user_hook_files``, not KAS's name, folds the user's files in
+    and shows the withheld project hook-files notice."""
+    import dataclasses
+
+    home = tmp_path / "home"
+    _write_user_hook(
+        home,
+        "zz.json",
+        [
+            {
+                "name": "probe",
+                "trigger": "UserPromptSubmit",
+                "action": {"type": "command", "command": "echo hi"},
+            }
+        ],
+    )
+    project = tmp_path / "proj"
+    (project / ".kiro" / "hooks").mkdir(parents=True)
+    (project / ".kiro" / "hooks" / "p.json").write_text(
+        json.dumps({"version": "v1", "hooks": []}), encoding="utf-8"
+    )
+    _point_hooks_dir(monkeypatch, home)
+    _agents_dir(tmp_path, monkeypatch)
+    notices: list = []
+    monkeypatch.setattr(
+        chat_runner,
+        "append_and_surface",
+        lambda state, slot, role, text, cls, **kw: notices.append(text),
+    )
+    # goose's record with the field set, or KAS's with it cleared.
+    base = ACP_BACKEND_GOOSE if merges else ACP_BACKEND_KAS
+    caps = dataclasses.replace(capabilities_for(base), crew_merges_user_hook_files=merges)
+    client = _NS(capabilities=caps, cwd=str(project))
+
+    slot = _NS(_project_hook_files_notice_shown="")
+    hooks, unreadable, _ = _asyncio.run(
+        chat_runner._prepare_spec_hooks(_NS(), slot, client, "a1", is_new=True)
+    )
+
+    assert unreadable is False
+    user_file = [h.command for h in hooks if h.spec_origin == "user_file"]
+    assert user_file == (["echo hi"] if merges else [])
+    assert any("hook files in .kiro/hooks" in n for n in notices) is merges
 
 
 # (h) F-A: a KAS sub-agent / task-runner turn fires a user-file PreToolUse hook,
