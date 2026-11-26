@@ -15,6 +15,7 @@ import pytest
 
 from kiro_crew import seed as seed_mod
 from kiro_crew.apps import manager
+from kiro_crew.apps.host_exec_grants import host_exec_granted
 from kiro_crew.testing.fixtures import seeded_home
 
 # Register ``seeded_home_fixture`` as a pytest plugin rather than importing
@@ -317,6 +318,8 @@ def test_seeded_home_rich_enables_the_default_off_builtin_apps(
     leaves them off and their pages answer ``app_not_enabled``.
     ``register_builtin_apps()`` keeps an existing record's enabled state, so
     the seeded ``apps/<name>/installed.json`` records are what turn them on.
+    The scaffolder's host routes also need the owner-enable marker an owner's
+    enable writes, so the fixture ships that too.
     """
     # register_builtin_apps() and list_apps() refresh this process-global
     # cache; scope it so a later test on this worker does not read the set
@@ -325,7 +328,9 @@ def test_seeded_home_rich_enables_the_default_off_builtin_apps(
     with seeded_home("rich"):
         manager.register_builtin_apps()
         installed = {app["name"]: app for app in manager.list_apps()}
+        scaffolder_recorded = host_exec_granted("project-scaffolder")
 
+    assert scaffolder_recorded
     names = ("design-tweak", "project-scaffolder")
     enabled = {name: installed[name]["enabled"] for name in names}
     assert enabled == dict.fromkeys(names, True)

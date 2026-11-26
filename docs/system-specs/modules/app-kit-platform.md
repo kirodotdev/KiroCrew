@@ -855,6 +855,9 @@ Notes' gate (`test/test_core_md_notebook_decoupling.py`) pins the rows that stil
 it: the masks, stubs, sweeps and moves for its earlier state layouts, which core keeps
 for a host still holding them, and the security-posture row for its error middleware
 (`md-notebook.md`, "State Layout").
+Create Folders From Project's gate (`test/test_core_project_scaffolder_decoupling.py`)
+pins that no core string names it: the two host routes its page calls are turned on by
+an enabled app's approved `permissions.api` grant (section 30.2).
 
 ## 0. Three-axis classification: origin, resources, lifecycle
 
@@ -6151,8 +6154,10 @@ with `minAppSdkLevel` 7, the level of this export, so a host whose record is
 builtin-owned swaps it in place onto that tree at a restart, keeping `data/`,
 `.app_secret`, the approved grants and `enabled`; the rail keeps `/project-scaffolder`
 and the `FolderPlus` glyph. Its repository's `app.json` declares the same four families
-as the wheel copy and nothing else. A fix to the app lands in that repository first; a
-change to the wheel copy needs its `App repo:` line.
+as the wheel copy and nothing else. Its own family, `/api/project-scaffold`, is also
+what turns its two host routes on (section 30.2), so core never names the app. A fix to
+the app lands in that repository first; a change to the wheel copy needs its `App repo:`
+line.
 
 Writers: `website/src/app-sdk/ProjectPicker.tsx`, `website/src/app-sdk/index.ts`,
 `website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/app-sdk/sdkLevel.ts`,
@@ -7710,6 +7715,92 @@ Writers: `apps/manifest_agent_tools.py`, `apps/manifest.py`, `apps/discovery.py`
 `website/src/app-sdk/sdkLevel.ts`, `apps/builtins/dev_fleet/app.json`,
 `apps/builtins/dev_fleet/agent_tools.py`,
 `apps/builtin_adoption_gate.py` (`adopted_under_pin_trust`, for an adopted former built-in).
+
+### 30.2 A core route an app's page calls is turned on by the app's grant, never its name
+
+Some host routes exist only for what an app's page does, and must not answer on a host
+where no app that uses them is on: a dashboard-user token bypasses the app-token scope
+check, and these routes are not behind the app-backend proxy's enablement gate. The
+folder scaffold's `POST /api/project-scaffold/scan` and `/create`
+(`dashboard/chat_folder_scaffold.py`) are such a pair. Each route asks
+`apps/core_route_grants.core_route_grant(path, namespace)` with its own path and
+namespace (`/api/project-scaffold`), off the event loop, and answers only while an
+enabled app holds an approved `permissions.api` entry that admits the path and the
+owner's enable of that app is recorded. The seam names no app, so an app can leave this
+repository and another app can use the routes with no core change.
+
+The grant is the one the app-token check honours (`token_auth_app_scope`): the live
+manifest's entries less what `staged_app_grants` holds back, matched with
+`_api_pattern_matches`, and honoured only while the sealed owner-enable marker
+`<crew-home>/host-exec-grants/<name>` stands (`apps/host_exec_grants.host_exec_granted`).
+So declaring the entry reaches nothing on its own: an install is granted at the
+owner's enable, an update that adds the entry keeps the app enabled without it until
+the owner approves it on the app's page, and an entry written into the app's own
+`app.json` copy is outside the approved set.
+
+The marker, not the record, is the owner's enable. `apps/<name>/installed.json` is
+writable from the sandbox (`apps/host_exec_grants.py`), and `install_app` stores the
+app's approved entries while it leaves the app off with no owner-disable mark, so an
+agent that flips that record to `enabled: true` would otherwise turn the routes on
+through any installed app whose approved entries cover them. A record that reads
+enabled without the marker therefore holds nothing. The order of the reads is the
+manifest, then `enabled`, then the marker, then the approved set, every one fresh on
+every call, as the token check re-reads the marker on every request. Only an owner
+action writes the marker (`enable_app`, including its "already enabled" branch, and
+`register_external_app`), and every disabling write and uninstall removes it; a marker
+left on a disabled record holds nothing either, because `enabled` is read first.
+
+A built-in approves what it ships (`register_builtin_apps`, every start), and an
+adopted copy keeps the record's approved set and its `enabled` flag; the marker is
+per-name under `host-exec-grants/`, outside the app's tree, so the swap leaves it in
+place. The shipped Create Folders From Project app declares `/api/project-scaffold` in
+the wheel copy and in its pinned repository alike and ships `defaultEnabled: false`,
+so the owner turns it on through `enable_app`, which writes the marker: the routes
+answer exactly while it is enabled and its enable is recorded (E9 holds nothing back).
+One cost is accepted: the marker first shipped in v0.12.1 (#30816), so a record the
+owner enabled on 0.12.0 or earlier and never toggled since reads enabled with no
+marker, and both routes answer 403 until the owner turns the app off and on again.
+Every call reads the records, markers, manifests and approved sets fresh, so a
+disable or uninstall turns the routes off on the next request.
+
+One rule is narrower than the token check: only an entry that starts at or under the
+route's namespace counts (`entry_grants_route`). A broad entry (`/api`, `/api/*`,
+`/*`, `*`, or a string prefix such as `/api/project-scaff*`) still admits the path for
+that app's own token, but it names no feature, so it turns no route on for the person;
+without the rule, an enabled app holding a broad entry would turn the routes on for a
+host where no app that uses them is on.
+
+A refusal keeps the shape the app proxy's has: 403 `app_not_enabled`, audited as a SEL
+denial (`chat.folder_scaffold_disabled_app`, `app is not enabled`), whichever case it
+is. Its `error` first names the first installed app, in app-name order, whose record
+reads enabled and whose counting entry is approved but whose marker is missing
+(`app '<name>' reads enabled, but its enable was not recorded; turn it off and on
+again`, the recovery `_owner_enable_unrecorded` in `apps/manager_activation.py` also
+names). Otherwise it names the first one that declares a counting entry and is turned
+off (`app '<name>' is not enabled`), and it reads `no enabled app is approved to use
+this route` when none does. `RouteGrant.unrecorded_declarers` and
+`RouteGrant.disabled_declarers` carry those names and only word the refusal. An
+unreadable app grants nothing and the others still answer; an unlistable apps folder
+grants nothing. Neither route has a `route_access` label: both stay in
+`.github/route-access-baseline.txt`, with their paths and methods unchanged.
+
+`test/test_apps_core_route_grants.py` pins the seam: an enabled declaring app holds
+both routes and its enable wrote the marker, a disabled one words the refusal, a disable
+and an uninstall turn them off, a record forged to read enabled with no marker holds
+nothing and is named as unrecorded, the same record with the marker holds, a marker on a
+disabled record holds nothing, a forged record whose entry is not approved words
+nothing, a pre-marker enable holds again after a re-enable or an off and on, an
+update's added entry waits for the owner's approval, an in-place manifest edit grants
+nothing, the broad entries turn nothing on while the token matcher admits them,
+an exact entry turns on its own route only, a failing read grants nothing, and neither
+the seam nor `chat_folder_scaffold.py` holds a string naming a pinned or shipped app.
+`test/test_chat_folder_scaffold.py` pins the routes end to end against real records,
+including a forged record refused with the unrecorded wording, the same code and the
+same audit row as a turned-off app, and `test/test_core_project_scaffolder_decoupling.py`
+is the app's core gate.
+
+Writers: `apps/core_route_grants.py`, `dashboard/chat_folder_scaffold.py`,
+`apps/host_exec_grants.py` (the marker it reads).
 
 ## 31. A marketplace app installs disabled and is trusted by its listing
 

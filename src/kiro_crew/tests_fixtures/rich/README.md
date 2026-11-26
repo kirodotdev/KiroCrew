@@ -24,6 +24,10 @@ lands you on a dashboard where:
 - **Apps**: `design-tweak` and `project-scaffolder` are installed and
   enabled. Both builtins ship disabled by default, and the gateway keeps
   an existing record's enabled state when it registers builtins at start.
+  `project-scaffolder` also carries the owner-enable marker
+  `host-exec-grants/project-scaffolder` that an owner's enable writes: its
+  two folder-scaffold host routes answer only while it stands, not on the
+  record alone.
 
 ## Layout
 
@@ -38,6 +42,8 @@ rich/
 ├── apps/               # 2 builtin apps seeded enabled (both default to disabled)
 │   ├── design-tweak/installed.json
 │   └── project-scaffolder/installed.json
+├── host-exec-grants/
+│   └── project-scaffolder  # empty owner-enable marker; its host routes need it
 ├── artifacts/          # 3 saved artifacts (same set as artifacts-library)
 │   ├── release-checklist/   # widget, v2 (meta.json, current.html, versions/)
 │   ├── pagination-design/   # markdown, v1
