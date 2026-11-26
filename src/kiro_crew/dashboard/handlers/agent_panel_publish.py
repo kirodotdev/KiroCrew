@@ -137,12 +137,12 @@ async def _resolve_publishing_crew(
 
     # The secret says only that the caller is local. Any process holding it can
     # name another session's key over TCP loopback, where there is no kernel
-    # peer check, so the panel routes take the key only behind an attestation:
-    # the Unix-socket peer check or the signed per-session token, which every
-    # ``kirocrew-panel`` call carries. The dynamic dashboard's routes
-    # (``root_session``) do not take this check. Off the loop: the token
-    # branch reads a mapping file.
-    if not root_session and not await asyncio.to_thread(session_key_is_attested, request, sk):
+    # peer check, so every route through here, the publish routes and the
+    # dynamic dashboard's alike, takes the key only behind an attestation: the
+    # Unix-socket peer check or the signed per-session token, which every
+    # ``kirocrew-panel`` call carries. Off the loop: the token branch reads a
+    # mapping file.
+    if not await asyncio.to_thread(session_key_is_attested, request, sk):
         sel().log_api_access(
             caller=sk,
             operation=operation,

@@ -1,10 +1,11 @@
-"""The panel publish routes take ``X-Session-Key`` only behind an attestation.
+"""The panel routes take ``X-Session-Key`` only behind an attestation.
 
 The internal secret proves only that a caller is local. Over TCP loopback there is
 no kernel peer check, so a process holding the secret could name another session's
-key and publish into that session's crew panel. The routes accept the key on the
-Unix-socket peer attestation or on the signed per-session token, and refuse it
-otherwise.
+key and publish into that session's crew panel, or read and rewrite its dynamic
+dashboard. The publish routes and the ``/api/agent-panel/dashboard/*`` routes accept
+the key on the Unix-socket peer attestation or on the signed per-session token, and
+refuse it otherwise.
 """
 
 from __future__ import annotations
@@ -130,3 +131,76 @@ async def test_the_real_panel_tool_call_carries_its_token_and_publishes(
         )
         assert resp.status == 200, await resp.text()
     assert agent_panel.read(SLUG)["data"] == {"cycle": 2}
+
+
+#: Every ``/api/agent-panel/dashboard/*`` route behind the shared resolver, with its
+#: SEL operation. The record door is not here: it vets an attested cron key itself.
+DASHBOARD_ROUTES = [
+    ("GET", "/api/agent-panel/dashboard/fields", "dashboard_fields"),
+    ("GET", "/api/agent-panel/dashboard/types", "dashboard_types"),
+    ("POST", "/api/agent-panel/dashboard/write", "dashboard_write"),
+    ("POST", "/api/agent-panel/dashboard/save", "dashboard_save"),
+    ("GET", "/api/agent-panel/dashboard/templates", "dashboard_templates"),
+    ("POST", "/api/agent-panel/dashboard/preview", "dashboard_preview"),
+    ("POST", "/api/agent-panel/dashboard/apply", "dashboard_apply"),
+    ("POST", "/api/agent-panel/dashboard/rollback", "dashboard_rollback"),
+    ("GET", "/api/agent-panel/dashboard/snapshot", "dashboard_snapshot"),
+]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"X-Session-Token": OTHER_TOKEN}, {"X-Session-Token": "e" * 64}],
+    ids=["no-token", "another-sessions-token", "unpublished-token"],
+)
+@pytest.mark.parametrize(
+    ("method", "path", "operation"), DASHBOARD_ROUTES, ids=[r[2] for r in DASHBOARD_ROUTES]
+)
+async def test_an_unattested_key_is_refused_on_every_dashboard_route(
+    vetted, tokens, denials, extra, method, path, operation
+):
+    """The dynamic dashboard's routes take the same check as the publish routes."""
+    async with _client(attested=False) as c:
+        resp = await c.request(
+            method,
+            path,
+            json={} if method == "POST" else None,
+            headers={"X-Session-Key": CREW_KEY, **extra},
+        )
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == "session_unattested"
+    refused = [e for e in denials if e.get("error") == "session key not attested"]
+    assert [e["operation"] for e in refused] == [operation]
+    assert refused[0]["outcome"] == "denied" and refused[0]["caller"] == CREW_KEY
+
+
+async def test_the_real_dashboard_tool_call_carries_its_token_and_is_answered(
+    vetted, tokens, monkeypatch
+):
+    """The panel server's own ``dashboard_types`` request, replayed over TCP, is answered.
+
+    The dashboard tools resolve their key through the same strict gate as
+    ``panel_publish`` and send through the same ``mcp_core`` verbs, so the token
+    rides along and the attestation check lets the request through.
+    """
+    monkeypatch.setenv(STUB_SESSION_TOKEN_ENV, CREW_TOKEN)
+    sent: list[dict[str, Any]] = []
+
+    def _send(path, *, data=None, headers, method="GET", **_kw):
+        sent.append({"path": path, "data": data, "headers": dict(headers), "method": method})
+        return {"types": [], "rendering": {}}
+
+    monkeypatch.setattr(mcp_core, "_send", _send)
+    monkeypatch.setattr(mcp_core, "_internal_secret", lambda: "test-secret")
+    await asyncio.to_thread(mcp_panel._call_tool_inner, "dashboard_types", {})
+    assert len(sent) == 1, sent
+    request = sent[0]
+    assert request["path"] == "/api/agent-panel/dashboard/types"
+    assert request["headers"]["X-Session-Key"] == CREW_KEY
+    assert request["headers"]["X-Session-Token"] == CREW_TOKEN
+    async with _client(attested=False) as c:
+        resp = await c.request(
+            request["method"], request["path"], data=request["data"], headers=request["headers"]
+        )
+        assert resp.status == 200, await resp.text()
+        assert "types" in await resp.json()
