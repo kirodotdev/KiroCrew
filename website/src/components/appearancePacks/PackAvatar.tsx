@@ -43,8 +43,9 @@
  * permanent ghost. Unmounting on failure (which a caller's own latch would do)
  * drops the observer, and the refetch has nobody to draw for.
  */
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ComponentType, type ReactNode } from 'react'
 
+import type { LottieRenderer as LottiePlayer } from './LottieRenderer'
 import { SpriteRenderer } from './SpriteRenderer'
 import { packSlotUrl } from '../../lib/appearancePacks/library'
 import { resolveSlot, spriteRowFor, type PackDetail } from '../../lib/appearancePacks/detail'
@@ -53,7 +54,7 @@ import { useReducedMotion } from '../../hooks/useReducedMotion'
 
 /** Stands in for the player when its chunk will not load: reports it as the
  *  load failure it is, so the crew gets its fallback face instead of a blank box. */
-function LottieLoadFailed({ onError }: { onError?: () => void }) {
+function LottieLoadFailed({ onError }: ComponentProps<typeof LottiePlayer>) {
   useEffect(() => {
     onError?.()
   }, [onError])
@@ -64,7 +65,7 @@ function LottieLoadFailed({ onError }: { onError?: () => void }) {
 // whose art is a Lottie clip draws with it.
 // shortcut: lazy() caches a failed load, so every Lottie avatar shows its
 // fallback until the page reloads; use lazyRetry-style re-loading if that bites.
-const LottieRenderer = lazy(() =>
+const LottieRenderer = lazy((): Promise<{ default: ComponentType<ComponentProps<typeof LottiePlayer>> }> =>
   import('./LottieRenderer').then(
     (m) => ({ default: m.LottieRenderer }),
     () => ({ default: LottieLoadFailed }),
