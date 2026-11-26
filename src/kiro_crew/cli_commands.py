@@ -961,6 +961,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _warn_hooks_need_restart,
     )
     from kiro_crew.cli_commands_cron import (  # noqa: F401
+        _CHANNEL_ID_HINT,
         _CRON_LIST_UNGROUPED,
         _cron,
         _cron_add,
