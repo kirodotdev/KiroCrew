@@ -456,7 +456,7 @@ export default function App() {
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
     kiroUsageState, kiroSignInPrompt, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
     updateFlow, updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, updateError,
-    setUpdateError, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
+    setUpdateError, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, foldBesideList, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
   } = shell
   // A calm offline view covers <main> and the docked terminal (see `offlineCover`).
@@ -789,7 +789,13 @@ export default function App() {
           // collapse toggle) — content-driven resizes of the auto track (e.g.
           // the Activity panel opening) don't alter the value, so keeping this
           // unconditional is safe and avoids the gated-pulse snap regression.
-          transition: 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
+          // Beside a fold on the chat route the track snaps instead: the
+          // sessions list is sized to the rail's new width at once, so an
+          // animated track would carry the list across the fold while it ran,
+          // whether the fold holds the rail or the person toggles it.
+          // shortcut: focus mode toggled while folded snaps too; give it its
+          // own transition if that reads badly on a device.
+          transition: foldBesideList ? 'none' : 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
         }),
         // Focus mode collapses the chrome tracks. Inline so it beats the Tailwind
         // `grid-rows-[42px_...]` class rather than having to fight it there, and

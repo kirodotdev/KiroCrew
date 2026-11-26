@@ -285,6 +285,7 @@
     "resource_posture_tooltip_critical": "Queda muy poca memoria en esta computadora ({{gb}} GB libres). Evita el trabajo pesado en paralelo.",
     "resource_posture_tooltip_tight": "Queda poca memoria en esta computadora ({{gb}} GB libres). El trabajo pesado puede ir más lento.",
     "resource_tight": "Memoria baja",
+    "sidebar_compact_while_folded": "La barra lateral permanece compacta mientras el dispositivo está plegado",
     "subagent_cap": "límite: {{cap}}",
     "notifications": "Notificaciones",
     "notifications_failed_to_load": "No se pudieron cargar las notificaciones",

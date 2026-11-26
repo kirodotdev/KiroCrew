@@ -285,6 +285,7 @@
     "resource_posture_tooltip_critical": "Il reste très peu de mémoire sur cet ordinateur ({{gb}} Go libres). Évite les tâches lourdes en parallèle.",
     "resource_posture_tooltip_tight": "Il reste peu de mémoire sur cet ordinateur ({{gb}} Go libres). Les tâches lourdes peuvent ralentir.",
     "resource_tight": "Mémoire faible",
+    "sidebar_compact_while_folded": "La barre latérale reste compacte tant que l'appareil est plié",
     "subagent_cap": "limite : {{cap}}",
     "notifications": "Notifications",
     "notifications_failed_to_load": "Échec du chargement des notifications",

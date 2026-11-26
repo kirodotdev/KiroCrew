@@ -233,6 +233,7 @@
     "resource_posture_tooltip_critical": "Memory is very low on this computer ({{gb}} GB free). Avoid heavy parallel work.",
     "resource_posture_tooltip_tight": "Memory is low on this computer ({{gb}} GB free). Heavy work may be slower.",
     "resource_tight": "Tight",
+    "sidebar_compact_while_folded": "Sidebar stays compact while folded",
     "subagent_cap": "cap: {{cap}}",
     "show_fewer_apps": "Show fewer apps",
     "show_less": "Show less",

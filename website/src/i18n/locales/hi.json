@@ -273,6 +273,7 @@
     "resource_posture_tooltip_critical": "इस कंप्यूटर में मेमोरी बहुत कम है ({{gb}} GB खाली)। एक साथ भारी काम चलाने से बचो।",
     "resource_posture_tooltip_tight": "इस कंप्यूटर में मेमोरी कम है ({{gb}} GB खाली)। भारी काम धीमा हो सकता है।",
     "resource_tight": "मेमोरी कम",
+    "sidebar_compact_while_folded": "डिवाइस मुड़ा होने पर साइडबार कॉम्पैक्ट रहता है",
     "subagent_cap": "सीमा: {{cap}}",
     "notifications": "सूचनाएँ",
     "notifications_failed_to_load": "सूचनाएँ लोड नहीं हो सकीं",

@@ -46,8 +46,10 @@ export function RailHeaderGlyph({ avatar, boxClass, iconSize }: { avatar: string
 }
 
 /** The rail header: the brand mark that is also the collapse toggle. */
-export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, branding, botName }: {
+export function RailBrandToggle({ effectiveCollapsed, locked = false, toggleNav, avatar, branding, botName }: {
   effectiveCollapsed: boolean
+  /** A reported fold holds the rail compact, so the toggle has nothing to do. */
+  locked?: boolean
   toggleNav: () => void
   avatar: string
   branding: ReturnType<typeof getThemeBranding>
@@ -58,6 +60,8 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
   // Collapsed, the logo is the only expand control and carries no text, so it
   // gets the same instant hover/focus label as the collapsed nav rows (#25743).
   const { tip, tipOn, rowRef, showTip, hideTip, dismissTip, pointerProps } = useNavTip<HTMLButtonElement>(effectiveCollapsed)
+  // A locked toggle does nothing, so its name says why instead of offering an expand.
+  const label = locked ? i18nT('app.sidebar_compact_while_folded') : effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')
   /*
    * mb-1.5 (6px) + the container's gap-0.5 (2px) = 8px between the
    * header and the first nav item, without widening the 2px item gaps.
@@ -94,15 +98,20 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
           brand block makes the row taller. */}
       <button
         type="button"
-        className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left"
-        onClick={() => { dismissTip(); toggleNav() }}
+        // aria-disabled, not disabled: a disabled button leaves the tab order and
+        // drops focus, so a keyboard or screen-reader user would never reach
+        // the name that says why the rail is held.
+        aria-disabled={locked || undefined}
+        className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer aria-disabled:cursor-default text-left"
+        onClick={() => { dismissTip(); if (!locked) toggleNav() }}
         {...pointerProps}
         onMouseEnter={showTip}
         onMouseLeave={hideTip}
         onFocus={showTip}
         onBlur={hideTip}
-        title={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
-        aria-label={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
+        title={label}
+        // Spelled out (same keys and condition as `label`): the ui-index reader registers literals and catalog keys only.
+        aria-label={locked ? i18nT('app.sidebar_compact_while_folded') : effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
         aria-expanded={!effectiveCollapsed}
         {...uiLocation('shell.nav-toggle', rowRef)}
       >
@@ -161,7 +170,7 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
             className={`fixed flex items-center px-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
             style={{ top: tip.top, left: tip.left + tip.width + 4, height: tip.height }}
           >
-            {i18nT('app.expand_sidebar')}
+            {label}
           </div>
         </OverlayPortal>}
       </button>

@@ -184,12 +184,13 @@ export const CHUNK_BUDGETS = {
   // 5% rule (#39726): it was 1,940 B over its 1179 KB ceiling after first-load
   // growth spread across many features; the other parts were still under.
   'first-load-1': 1164 * KB, // measured 1,134,732 B
-  'first-load-2': 1240 * KB, // measured 1,209,236 B
   //
   // `main` re-measured on an analyze build of main @ d95060b87c, same 5% rule
   // (#43195): it was 338 B over its 1410 KB ceiling, its headroom spent by
   // first-load growth across many features since 666d93c742.
   main: 1481 * KB, // measured 1,444,178 B
+  // +11 KB for #41140's fold companion pane: first-load-2 1,263,322 B on main @ f56fd50096, 1,274,495 B with the pane.
+  'first-load-2': 1251 * KB, // measured 1,274,495 B
 
   // `heic-to/csp`: libheif and its HEVC decoder compiled to plain JavaScript,
   // which is why one decoder is this large. `utils/heicImage.ts`

@@ -69,6 +69,15 @@
 @keyframes kc-sessions-out-to-left { to { transform: translateX(-100%); opacity: 0; } }
 @keyframes kc-sessions-out-to-right { to { transform: translateX(100%); opacity: 0; } }
 
+/* A side panel closing beside a fold (`runPaneAllocationChange`): set inside
+ * the update, after the old snapshot, so its column leaves the new layout at
+ * once and the transcript's new box is the trailing segment it moves into. The
+ * column's own exit ends a frame later. The media rule is FOLD_TWO_PANE_QUERY
+ * (hooks/useViewportSegments.ts), verbatim. */
+@media (min-width: 640px) and (horizontal-viewport-segments: 2) {
+  :root[data-layout-morph-panel="closing"] [data-vt-panel] { display: none; }
+}
+
 /* The script already skips the transition under reduced motion; this holds if a
  * transition starts anyway (the preference flipping mid-resize). */
 @media (prefers-reduced-motion: reduce) {

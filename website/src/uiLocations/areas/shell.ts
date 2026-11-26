@@ -205,7 +205,9 @@ export const LOCATIONS = {
   'shell.nav-toggle': {
     kind: 'toggle',
     label: { from: 'attr', attr: 'aria-label', key: 'app.expand_sidebar' },
-    aliasKeys: ['app.collapse_sidebar'],
+    // While a fold holds the rail compact on the chat route the button reads
+    // the locked name (app.sidebar_compact_while_folded), so the record carries it.
+    aliasKeys: ['app.collapse_sidebar', 'app.sidebar_compact_while_folded'],
     stateLabels: [
       { key: 'app.expand_sidebar', when: 'nav_rail_collapsed' },
       { key: 'app.collapse_sidebar', when: 'nav_rail_expanded' },
