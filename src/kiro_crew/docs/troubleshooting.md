@@ -27,11 +27,17 @@ This writes a zip to `~/.kiro/crew/diagnostics/` holding the gateway logs (the
 current run and up to four earlier ones, `gateway.log.prev` and `logs/gateway-boots/`) and
 crash reports, `versions.txt` and `manifest.json`. Every text file in it passes
 through the credential redaction first, and the command prints how many secrets it
-removed. Home-directory paths are shortened to `~`, and this machine's current
-host name is replaced with `<host>`, including its escaped, percent-encoded and
-IDNA spellings. A name the machine had before, the domain after a short name, a
-name followed by `-`, `_` or a digit, or a less common spelling of the name can
-remain, so look through the zip before you attach it.
+removed. Home-directory paths are shortened to `~` (on Windows also where they
+are written with the 8.3 short name, such as `JONATH~1`), your login name becomes
+`<user>` wherever it stands as a word of its own (so a login that is also an
+ordinary word, such as `dev`, or the product's own name, as the `kirocrew` user
+of the container image, is replaced as that word too), and this machine's
+current host name is replaced with `<host>`, including its escaped,
+percent-encoded and IDNA spellings. A login joined into a longer name by `-`, `_`
+or `.`, a login written escaped or percent-encoded, a profile folder named
+differently from the login, a name the machine had before, the domain after a
+short name, a name followed by `-`, `_` or a digit, or a less common spelling of
+the name can remain, so look through the zip before you attach it.
 It then prints a GitHub new-issue link on the bug-report form; drag the
 zip into that issue. The link fills in the version and the release channel from
 the build's own release record. When the build cannot prove its channel, the
