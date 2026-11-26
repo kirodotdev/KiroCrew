@@ -34,6 +34,7 @@ from kiro_crew import member_memory_backup, platform_compat, portability
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_redact as redact
 from kiro_crew.memory import INDEX_DB_FILE
+from kiro_crew.memory_graph_files import GRAPH_LAYOUT_FILE, building_name, is_graph_layout_file
 from kiro_crew.memory_stores import (
     EXECUTION_LOGS_DIR_NAME,
     MEMBER_API_KEY_FILE,
@@ -186,6 +187,26 @@ def src(tmp_path, monkeypatch) -> Path:
 
 
 class TestTheLayoutPredicates:
+    @pytest.mark.parametrize("prefix", [(), (ROOT, STORE)])
+    @pytest.mark.parametrize("name", [GRAPH_LAYOUT_FILE, building_name(4242)])
+    @pytest.mark.parametrize("suffix", ["", "-journal", "-wal", "-shm"])
+    def test_graph_layout_and_sidecars_are_excluded(self, tmp_path, prefix, name, suffix):
+        parts = (*prefix, name + suffix)
+        assert is_graph_layout_file(parts)
+        assert redact._is_derived_index("/".join(parts))
+        tree = ROOT if prefix else "."
+        root = tmp_path / tree
+        directory = root / STORE if prefix else root
+        assert snap._staging_ignore(tree, root)(str(directory), [parts[-1]]) == {parts[-1]}
+
+    @pytest.mark.parametrize("prefix", [(), (ROOT, STORE)])
+    @pytest.mark.parametrize(
+        "tail",
+        [(MEMORY_DB_FILE,), (MEMORY_DB_FILE + "-journal",), ("deeper", GRAPH_LAYOUT_FILE)],
+    )
+    def test_other_files_are_not_graph_layouts(self, prefix, tail):
+        assert not is_graph_layout_file((*prefix, *tail))
+
     @pytest.mark.parametrize("rel", HOST_LOCAL_FILES)
     def test_host_local_state_is_recognised_by_position(self, rel):
         assert is_host_local_store_state(Path(rel).parts)
@@ -221,6 +242,35 @@ class TestTheLayoutPredicates:
 
 
 class TestSnapshotCarriesNamedStores:
+    @pytest.mark.parametrize("prefix", [(), (ROOT, STORE)])
+    def test_hot_graph_layout_journal_never_reaches_backup(self, src, tmp_path, prefix):
+        directory = src.joinpath(*prefix)
+        layout = directory / GRAPH_LAYOUT_FILE
+        _make_store_db(layout, 1)
+        journal = directory / (GRAPH_LAYOUT_FILE + "-journal")
+        # A nonempty header and more than 512 bytes make SQLite require recovery.
+        journal.write_bytes(b"\xd9\xd5\x05\xf9\x20\xa1\x63\xd7" + b"\x00" * 1016)
+        with closing(sqlite3.connect(layout.as_uri() + "?mode=ro", uri=True)) as db:
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                db.execute("PRAGMA schema_version").fetchone()
+        excluded = [layout, journal]
+        for name in (GRAPH_LAYOUT_FILE, building_name(4242)):
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                path = directory / (name + suffix)
+                if path not in excluded:
+                    path.write_bytes(b"unfinished layout")
+                    excluded.append(path)
+        before = {path: path.read_bytes() for path in excluded}
+
+        tarball = _make_snapshot(src, tmp_path / "out", ["--components", "memory"])
+
+        members = _members(tarball)
+        assert MEMORY_DB_FILE in members
+        assert f"{ROOT}/{STORE}/{MEMORY_DB_FILE}" in members
+        for path in excluded:
+            assert path.relative_to(src).as_posix() not in members
+            assert path.read_bytes() == before[path]
+
     def test_the_memory_component_declares_the_tree(self):
         assert ROOT in snap.COMPONENTS["memory"].trees
         assert ROOT in snap.COMPONENT_TREES["memory"]
@@ -617,6 +667,26 @@ class TestRedactionKnowsAStoreDatabase:
         # The fixed paths still answer as before.
         assert redact._is_derived_index("memory_index.db")
         assert redact._is_product_database("memory.db")
+
+    def test_the_memory_graph_layout_is_dropped_for_a_rebuild_not_refused(self, tmp_path):
+        stage = tmp_path / "bundle"
+        (stage / ROOT / STORE).mkdir(parents=True)
+        (stage / "MANIFEST.json").write_text(json.dumps({"components": {}}), encoding="utf-8")
+        (stage / "notes.md").write_text("real memory\n", encoding="utf-8")
+        layouts = [
+            GRAPH_LAYOUT_FILE,
+            f"{ROOT}/{STORE}/{GRAPH_LAYOUT_FILE}",
+            f"{ROOT}/{STORE}/{building_name(4242)}",
+            f"{ROOT}/{STORE}/{building_name(4242)}-journal",
+        ]
+        for rel in layouts:
+            # Binary SQLite pages: the text redactor cannot read them.
+            (stage / rel).write_bytes(b"SQLite format 3\x00" + bytes(range(256)) * 8)
+
+        report = redact.redact_bundle_for_egress(stage)
+
+        assert sorted(report.rebuilt_indexes) == sorted(layouts)
+        assert not any((stage / rel).exists() for rel in layouts)
 
 
 class TestTheDashboardExportCarriesNamedStores:

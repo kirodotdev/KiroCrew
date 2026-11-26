@@ -283,6 +283,24 @@ def test_a_prefixed_source_counts_and_filters_under_its_prefix():
     assert all(memory_record_facets.matches(s, {"source": ["consolidation"]}) for s in summaries)
 
 
+def test_box_counts_follow_the_ids_the_box_holds_now():
+    summaries = [
+        {
+            "id": f"f{n}",
+            "kind": "fact",
+            "confidence": 0.9,
+            "facets": memory_record_facets.summary_facets("fact", "1", "", "user_explicit"),
+        }
+        for n in range(3)
+    ]
+    box = {"box": [0.0, 0.0, 1.0, 1.0]}
+    before = {**box, memory_record_facets.BOX_IDS: frozenset({"f0"})}
+    after = {**box, memory_record_facets.BOX_IDS: frozenset({"f0", "f1", "f2"})}
+
+    assert memory_edit._cached_facets(summaries, before, "all")["kind"] == {"fact": 1}
+    assert memory_edit._cached_facets(summaries, after, "all")["kind"] == {"fact": 3}
+
+
 def test_a_repeated_listing_reuses_its_pass_until_the_store_changes(
     store, monkeypatch  # noqa: F811
 ):

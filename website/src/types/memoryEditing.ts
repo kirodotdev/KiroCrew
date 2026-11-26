@@ -7,7 +7,11 @@ export type MemoryRecordFilters = Partial<Record<MemoryRecordFacetGroup, string[
   /** Exactly these records (`memory_record_facets.record_ref`): a graph selection. */
   ref?: string[]
   /** A date range on the sort's time, as UTC ISO: `since` is inclusive, `until` exclusive. */
-  since?: string; until?: string; date_field?: 'updated' | 'created' }
+  since?: string; until?: string; date_field?: 'updated' | 'created'
+  /** Every record the memory graph places in this box (`x0,y0,x1,y1`), of `box_kinds` when set. */
+  box?: string; box_layout?: string; box_kinds?: string[]
+  /** How many records the box held when it was picked: the chip's count, never sent. */
+  box_count?: number }
 export type MemoryRecordQuery = { q: string; kind: MemoryRecordKind | 'all'; filters?: MemoryRecordFilters }
 export type MemoryRecordSort = 'updated' | 'created' | 'confidence' | 'importance' | 'strength' | 'key' | 'match'
 /** Per group, how many rows each value would list (`kind` counts ignore the kind). */

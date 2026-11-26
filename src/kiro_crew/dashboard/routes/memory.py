@@ -65,6 +65,10 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/session/archive/{name}", handlers.api_session_archive_read)
     app.router.add_get("/api/memory/observability", handlers.api_memory_observability)
     app.router.add_get("/api/memory/graph", handlers.api_memory_graph)
+    app.router.add_get("/api/memory/graph/overview", handlers.api_memory_graph_overview)
+    app.router.add_get("/api/memory/graph/nodes", handlers.api_memory_graph_nodes)
+    app.router.add_get("/api/memory/graph/search", handlers.api_memory_graph_search)
+    app.router.add_get("/api/memory/graph/select", handlers.api_memory_graph_select)
     app.router.add_post("/api/memory/promote", handlers.api_memory_promote)
 
     # Memory store administration (owner-gated; handlers/memory_admin.py).

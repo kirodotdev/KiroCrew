@@ -1002,6 +1002,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/memory.py",
         "dashboard/handlers/memory_embeddings.py",
         "dashboard/handlers/memory_graph.py",
+        "dashboard/handlers/memory_graph_layout_api.py",
         "dashboard/handlers/optimizer.py",
         "dashboard/handlers/prompts_authoring.py",
         "dashboard/handlers/prompts_reading.py",

@@ -18120,23 +18120,18 @@
         "tools_count_other": "{{n}} टूल"
       },
       "memoryGraphTab": {
-        "all_count": "सभी ({{count}})",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "पूरी {{productName}} मेमोरी का GPU-रेंडर किया गया विज़ुअलाइज़ेशन। नोड्स प्रकार के अनुसार रंग से चिह्नित हैं। लेबल देखने के लिए ज़ूम इन करें, जाँचने के लिए नोड पर क्लिक करें, फ़ोकस के लिए फ़िल्टर इस्तेमाल करें।",
-        "group_history_count": "इतिहास ({{count}})",
-        "group_lessons_count": "सीख ({{count}})",
-        "group_preferences_count": "प्राथमिकताएँ ({{count}})",
-        "group_projects_count": "प्रोजेक्ट ({{count}})",
-        "group_semantic_count": "सिमैंटिक ({{count}})",
         "loading_graph_data": "ग्राफ़ डेटा लोड हो रहा है…",
         "memory_graph": "मेमोरी ग्राफ़",
         "no_memory_data_to_visualize_add_preferences_proj": "विज़ुअलाइज़ करने के लिए कोई मेमोरी डेटा नहीं। पहले प्राथमिकताएँ, प्रोजेक्ट या सीख जोड़ें।",
-        "partial_notice": "यहाँ तुम्हारी मेमोरी का केवल एक हिस्सा दिखाया गया है, इसलिए खोज केवल इन्हीं नोड को ढूँढती है।",
         "refresh": "रीफ़्रेश करें",
         "search_memory_nodes": "मेमोरी नोड खोजें",
         "search_nodes": "नोड खोजें…",
         "load_failed": "मेमोरी ग्राफ़ लोड नहीं हो सका",
         "load_failed_unknown": "पढ़ना बिना किसी कारण के विफल हुआ।",
-        "retry": "फिर कोशिश करो"
+        "retry": "फिर कोशिश करो",
+        "canvas_unavailable": "यह ब्राउज़र ग्राफ़ नहीं बना सकता। खोज और स्मृतियाँ टैब अब भी काम करते हैं।",
+        "fit_view": "पूरा दिखाओ",
+        "keyboard_hint": "तीर कुंजियों से मेमोरी के बीच जाओ, Enter से एक खोलो।"
       },
       "memoryTab": {
         "actions": "कार्रवाइयाँ",
@@ -24673,6 +24668,7 @@
     "scope_all_repos": "सभी रिपो",
     "search_filters": "फ़िल्टर खोजें",
     "scroll_more": "और देखने के लिए स्क्रॉल करो",
+    "graph_changed": "यह बॉक्स बनाने के बाद ग्राफ़ बदल गया है। बॉक्स फिर से बनाओ।",
     "graph_selected": "{{formatted}} चुने गए",
     "show_in_memories": "मेमोरी में देखो",
     "filters_width": "फ़िल्टर की चौड़ाई",

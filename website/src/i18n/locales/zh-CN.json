@@ -17640,23 +17640,18 @@
         "tools_count_other": "{{n}} 个工具"
       },
       "memoryGraphTab": {
-        "all_count": "全部（{{count}}）",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "由 GPU 渲染的全部 {{productName}} 记忆可视化视图。节点按类型着色。放大可显示标签，点击节点可检查，使用筛选器可聚焦。",
-        "group_history_count": "历史（{{count}}）",
-        "group_lessons_count": "经验（{{count}}）",
-        "group_preferences_count": "偏好设置（{{count}}）",
-        "group_projects_count": "项目（{{count}}）",
-        "group_semantic_count": "语义（{{count}}）",
         "loading_graph_data": "正在加载图谱数据…",
         "memory_graph": "记忆图谱",
         "no_memory_data_to_visualize_add_preferences_proj": "没有可视化的记忆数据。请先添加偏好设置、项目或经验。",
-        "partial_notice": "这里只显示了你的部分记忆，因此搜索只能找到这些节点。",
         "refresh": "刷新",
         "search_memory_nodes": "搜索记忆节点",
         "search_nodes": "搜索节点…",
         "load_failed": "无法加载记忆图谱",
         "load_failed_unknown": "读取失败，未给出原因。",
-        "retry": "重试"
+        "retry": "重试",
+        "canvas_unavailable": "此浏览器无法绘制图谱。搜索和“记忆”标签页仍可使用。",
+        "fit_view": "适应视图",
+        "keyboard_hint": "用方向键在记忆之间移动，按 Enter 打开。"
       },
       "memoryTab": {
         "actions": "操作",
@@ -24070,6 +24065,7 @@
     "scope_all_repos": "所有仓库",
     "search_filters": "搜索筛选项",
     "scroll_more": "滚动查看更多",
+    "graph_changed": "画框后图谱已发生变化，请重新画框。",
     "graph_selected": "已选 {{formatted}} 条",
     "show_in_memories": "在记忆中查看",
     "filters_width": "筛选栏宽度",

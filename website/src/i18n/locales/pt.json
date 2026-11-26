@@ -18600,23 +18600,18 @@
         "tools_count_other": "{{n}} ferramentas"
       },
       "memoryGraphTab": {
-        "all_count": "Todos ({{count}})",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "Visualização de toda a memória do {{productName}} renderizada por GPU. Os nós são coloridos por tipo. Amplie para revelar os rótulos, clique em um nó para inspecionar e use os filtros para focar.",
-        "group_history_count": "Histórico ({{count}})",
-        "group_lessons_count": "Lições ({{count}})",
-        "group_preferences_count": "Preferências ({{count}})",
-        "group_projects_count": "Projetos ({{count}})",
-        "group_semantic_count": "Semântica ({{count}})",
         "loading_graph_data": "Carregando dados do grafo…",
         "memory_graph": "Grafo de memória",
         "no_memory_data_to_visualize_add_preferences_proj": "Nenhum dado de memória para visualizar. Adicione preferências, projetos ou lições primeiro.",
-        "partial_notice": "Apenas parte da sua memória é exibida aqui, então a busca encontra só estes nós.",
         "refresh": "Atualizar",
         "search_memory_nodes": "Buscar nós de memória",
         "search_nodes": "Buscar nós…",
         "load_failed": "Não foi possível carregar o grafo de memória",
         "load_failed_unknown": "A leitura falhou sem informar o motivo.",
-        "retry": "Tentar novamente"
+        "retry": "Tentar novamente",
+        "canvas_unavailable": "Este navegador não consegue desenhar o grafo. A busca e a aba Lembranças continuam funcionando.",
+        "fit_view": "Ajustar à tela",
+        "keyboard_hint": "As setas te movem entre memórias; Enter abre uma."
       },
       "memoryTab": {
         "actions": "Ações",
@@ -25276,6 +25271,7 @@
     "scope_all_repos": "Todos os repositórios",
     "search_filters": "Buscar filtros",
     "scroll_more": "Role para ver mais",
+    "graph_changed": "O grafo mudou depois que você desenhou este retângulo. Desenhe-o novamente.",
     "graph_selected": "{{formatted}} selecionados",
     "show_in_memories": "Ver em Memórias",
     "filters_width": "Largura dos filtros",

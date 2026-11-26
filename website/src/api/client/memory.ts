@@ -33,12 +33,46 @@ export function memoryRecordParams(store: string, query: MemoryRecordQuery, offs
   const filters = query.filters || {}
   for (const group of RECORD_FACET_GROUPS) for (const value of filters[group] || []) params.append(group, value)
   for (const ref of filters.ref || []) params.append('ref', ref)
+  if (filters.box) {
+    params.set('box', filters.box)
+    if (filters.box_layout) params.set('box_layout', filters.box_layout)
+  }
+  for (const kind of filters.box ? filters.box_kinds || [] : []) params.append('box_kinds', kind)
   if (filters.conf_min !== undefined) params.set('conf_min', String(filters.conf_min))
   if (filters.conf_max !== undefined) params.set('conf_max', String(filters.conf_max))
   if (filters.since) params.set('since', filters.since)
   if (filters.until) params.set('until', filters.until)
   if ((filters.since || filters.until) && filters.date_field === 'created') params.set('date_field', 'created')
   return params
+}
+
+/** A box in layout units: `[x0, y0, x1, y1]`. */
+export type GraphBbox = [number, number, number, number]
+export type GraphKind = 'episode' | 'fact' | 'lesson'
+export type GraphCluster = { id: number; x: number; y: number; r: number; count: number; label: string | null }
+/** `layout` names the full build a reply was read from; a rebuild changes it and moves positions. */
+export type GraphOverview = { status: 'ready' | 'building'; clusters?: GraphCluster[]; totals?: Partial<Record<GraphKind, number>>; bounds?: GraphBbox; layout?: string }
+/** One node of a box page: `ref` and `record` open it in the Memories list. */
+export type GraphNodeRow = { id: string; kind: GraphKind; x: number; y: number; cluster: number; weight: number; label: string; ref: string; record: { kind: 'episode' | 'fact' | 'directive'; id: string }
+  /** Related memories by embedding cosine, `[other id, cosine]`, both ways. */
+  links?: [string, number][] }
+
+function graphParams(store: string, extra: Record<string, string | string[] | undefined>): URLSearchParams {
+  // `store` only when one is named, as `memoryStoreQuery` sends it: an explicit
+  // store makes the request owner-only.
+  const params = new URLSearchParams(store ? { store } : {})
+  for (const [key, value] of Object.entries(extra)) {
+    if (Array.isArray(value)) for (const v of value) params.append(key, v)
+    else if (value !== undefined) params.set(key, value)
+  }
+  return params
+}
+
+/** A selection as the server takes it: `box_count` only labels the list's chip. */
+function sentSelection<T extends MemoryRecordSelection>(selection: T): T {
+  if (typeof selection !== 'object' || !selection || !('query' in selection) || !selection.query.filters?.box_count) return selection
+  const { box_count: _count, ...filters } = selection.query.filters
+  return { ...selection, query: { ...selection.query, filters } }
 }
 
 /**
@@ -211,13 +245,13 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
     memoryRecords: (store: string, query: MemoryRecordQuery, offset = 0, limit = 50, view: MemoryRecordView = {}) =>
       fetch('/api/memory/records?' + memoryRecordParams(store, query, offset, limit, view)).then(j) as Promise<{ entries: MemoryRecord[]; total: number; has_more: boolean; facets?: MemoryRecordFacets; hidden?: number; decay?: MemoryStoreDecay }>,
     memoryEditPreview: (store: string, selection: MemoryRecordSelection, operation: MemoryEditOperation) =>
-      post('/api/memory/bulk/preview', { store: store || 'default', selection, operation }).then(j) as Promise<MemoryEditPreview>,
+      post('/api/memory/bulk/preview', { store: store || 'default', selection: sentSelection(selection), operation }).then(j) as Promise<MemoryEditPreview>,
     memoryEditPreviewPage: (store: string, previewId: string, offset: number) =>
       post('/api/memory/bulk/preview', { store: store || 'default', preview_id: previewId, offset }).then(j) as Promise<MemoryEditPreview>,
     memoryRecordsRefresh: (store: string, items: MemoryRecordRef[]) =>
       post('/api/memory/records/refresh', { store: store || 'default', items }).then(j) as Promise<{ entries: MemoryRecord[]; missing: MemoryRecordRef[] }>,
     memoryQuerySelectionRefresh: (store: string, selection: Extract<MemoryRecordSelection, { query: MemoryRecordQuery }>) =>
-      post('/api/memory/records/refresh', { store: store || 'default', selection }).then(j) as Promise<{ matched_count: number }>,
+      post('/api/memory/records/refresh', { store: store || 'default', selection: sentSelection(selection) }).then(j) as Promise<{ matched_count: number }>,
     memoryRecordHistory: (store: string, record: MemoryRecordRef, limit = 25, offset = 0) =>
       fetch('/api/memory/records/history?' + new URLSearchParams({ store: store || 'default', kind: record.kind, id: record.id, limit: String(limit), ...(offset ? { offset: String(offset) } : {}) })).then(j) as Promise<{ entries: MemoryRecordRevision[]; has_more: boolean; current_revision: number }>,
     memoryEditApply: (store: string, previewId: string) =>
@@ -249,7 +283,15 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
     vectorDisableEmbeddings: () => post('/api/memory/disable-embeddings').then(j),
     vectorImport: (data: object) => post('/api/memory/import', data).then(j),
     vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
-    memoryGraph: (store?: string) => fetch('/api/memory/graph' + memoryStoreQuery(store)).then(j),
+    /** The server-built layout of every memory in a store (`memory_graph_layout_api`). */
+    memoryGraphOverview: (store: string) =>
+      fetch('/api/memory/graph/overview?' + graphParams(store, {})).then(j) as Promise<GraphOverview>,
+    memoryGraphNodes: (store: string, bbox: GraphBbox, opts: { kinds?: string[]; cursor?: string | null; limit?: number } = {}) =>
+      fetch('/api/memory/graph/nodes?' + graphParams(store, { bbox: String(bbox), kind: opts.kinds, cursor: opts.cursor || undefined, limit: opts.limit ? String(opts.limit) : undefined })).then(j) as Promise<{ status: string; nodes: GraphNodeRow[]; cursor: string | null; layout?: string }>,
+    memoryGraphSearch: (store: string, q: string, opts: { meaning?: boolean; kinds?: string[] } = {}) =>
+      fetch('/api/memory/graph/search?' + graphParams(store, { q, mode: opts.meaning ? 'meaning' : undefined, kind: opts.kinds })).then(j) as Promise<{ status: string; matches: { id: string; x: number; y: number }[]; total: number; layout?: string }>,
+    memoryGraphSelect: (store: string, bbox: GraphBbox, kinds?: string[]) =>
+      fetch('/api/memory/graph/select?' + graphParams(store, { bbox: String(bbox), kind: kinds })).then(j) as Promise<{ status: string; count: number; layout?: string }>,
     consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),
   }
 

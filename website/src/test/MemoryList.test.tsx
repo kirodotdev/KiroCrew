@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { memoryRecordParams } from '../api/client/memory'
+import { ApiError } from '../api/apiError'
 
 /**
  * The memory page's record list: it asks the records route for a sorted page
@@ -69,6 +70,28 @@ describe('the memory list selection', () => {
 })
 
 describe('the memory list', () => {
+  it('sends the picked layout with the box, including after a kind change', async () => {
+    const box = { bbox: '0,0,1,1', layout: 'L1', count: 2, kinds: ['fact', 'lesson'] }
+    renderWithProviders(<List jump={{ refs: [], box, seq: 1 }} />)
+    await waitFor(() => expect(lastView()[1].filters).toEqual({ box: box.bbox, box_layout: 'L1', box_count: 2, box_kinds: box.kinds }))
+    const params = memoryRecordParams(STORE, lastView()[1], 0, 50)
+    expect(params.get('box_layout')).toBe('L1')
+    expect(params.get('box')).toBe(box.bbox)
+    fireEvent.click(screen.getByRole('radio', { name: /^Lessons/ }))
+    await waitFor(() => expect(lastView()[1].kind).toBe('directive'))
+    expect(lastView()[1].filters.box_layout).toBe('L1')
+  })
+
+  it('shows a stale box refusal instead of an empty list or a meaning error', async () => {
+    api.memoryRecords.mockRejectedValue(new ApiError(409, 'server detail', JSON.stringify({ code: 'stale_memory_box' })))
+    renderWithProviders(<List jump={{ refs: [], box: { bbox: '0,0,1,1', layout: 'L1', count: 2 }, seq: 1 }} />)
+    expect(await screen.findByText('The graph changed since this box was drawn. Draw it again.')).toBeVisible()
+    expect(screen.queryByRole('list', { name: 'Memories' })).toBeNull()
+    expect(screen.queryByText('No memories match your search')).toBeNull()
+    expect(screen.queryByText('Search by meaning is not available')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Search by words', exact: true })).toBeNull()
+  })
+
   it('asks for the newest first with facet counts, and labels each pill and score', async () => {
     renderWithProviders(<List />)
     expect(await screen.findByText('Work in a worktree')).toBeVisible()

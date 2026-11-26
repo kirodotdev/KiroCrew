@@ -24,6 +24,7 @@ import {
 import { precompressPlugin } from './scripts/precompress.mjs'
 import { compileHintsPlugin } from './scripts/compile-hints.mjs'
 import { stripHtmlCommentsPlugin } from './scripts/strip-html-comments.mjs'
+import { cosmosRoundedMarksPlugin } from './scripts/cosmos-rounded-marks.mjs'
 import { atomicPublishPlugin } from './scripts/publish-dist.mjs'
 import { firstLoadGroups } from './scripts/lib/firstLoadGroup.mjs'
 import { uiAutoStampPlugin } from './scripts/lib/ui-auto-stamp.mjs'
@@ -786,7 +787,7 @@ export default defineConfig({
     // the Babel pass costs per listed file instead of per module. After the
     // stamp (it reads source offsets), before react() (it needs JSX intact).
     ...reactCompilerPlugins(),
-    react(), tokenProxyPlugin(), appImportMapPlugin(), stripHtmlCommentsPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), compileHintsPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
+    react(), cosmosRoundedMarksPlugin(), tokenProxyPlugin(), appImportMapPlugin(), stripHtmlCommentsPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), compileHintsPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
   // Worker bundles do not inherit `plugins`; the hljs worker needs the edition
   // languages module (see editionLanguagesPlugin).
   worker: { plugins: () => [editionLanguagesPlugin()] },
@@ -1174,6 +1175,15 @@ export default defineConfig({
               name: 'vendor-dompurify',
               priority: 30,
               test: /[\\/]node_modules[\\/]dompurify[\\/]/,
+            },
+            {
+              // The memory graph's WebGL renderer (cosmos.gl, luma.gl and their
+              // own helpers) in one chunk of its own. Only the lazy Graph tab
+              // imports it; left to automatic chunking its modules re-cut the
+              // shared chunks of unrelated pages.
+              name: 'vendor-graph-gl',
+              priority: 21,
+              test: /[\\/]node_modules[\\/](@cosmos\.gl|@luma\.gl|@math\.gl|@probe\.gl|gl-bench|gl-matrix|random|seedrandom)[\\/]/,
             },
             {
               // Graph/network visualization stack (vis-network, vis-data, sigma,

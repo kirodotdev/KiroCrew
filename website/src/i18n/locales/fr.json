@@ -18600,23 +18600,18 @@
         "tools_count_other": "{{n}} outils"
       },
       "memoryGraphTab": {
-        "all_count": "Tous ({{count}})",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "Visualisation GPU de toute la mémoire de {{productName}}. Les nœuds sont colorés par type. Zoome pour afficher les libellés, clique sur un nœud pour l’inspecter, utilise les filtres pour cibler.",
-        "group_history_count": "Historique ({{count}})",
-        "group_lessons_count": "Leçons ({{count}})",
-        "group_preferences_count": "Préférences ({{count}})",
-        "group_projects_count": "Projets ({{count}})",
-        "group_semantic_count": "Sémantique ({{count}})",
         "loading_graph_data": "Chargement des données du graphe…",
         "memory_graph": "Graphe de mémoire",
         "no_memory_data_to_visualize_add_preferences_proj": "Aucune donnée de mémoire à visualiser. Ajoutez d'abord des préférences, des projets ou des leçons.",
-        "partial_notice": "Seule une partie de ta mémoire est affichée ici, la recherche ne trouve donc que ces nœuds.",
         "refresh": "Actualiser",
         "search_memory_nodes": "Rechercher des nœuds de mémoire",
         "search_nodes": "Rechercher des nœuds…",
         "load_failed": "Impossible de charger le graphe de mémoire",
         "load_failed_unknown": "La lecture a échoué sans raison indiquée.",
-        "retry": "Réessayer"
+        "retry": "Réessayer",
+        "canvas_unavailable": "Ce navigateur ne peut pas dessiner le graphe. La recherche et l’onglet Souvenirs fonctionnent toujours.",
+        "fit_view": "Tout afficher",
+        "keyboard_hint": "Les flèches passent d’une mémoire à l’autre, Entrée en ouvre une."
       },
       "memoryTab": {
         "actions": "Actions",
@@ -25276,6 +25271,7 @@
     "scope_all_repos": "Tous les dépôts",
     "search_filters": "Rechercher dans les filtres",
     "scroll_more": "Fais défiler pour voir la suite",
+    "graph_changed": "Le graphe a changé depuis que tu as tracé ce rectangle. Trace-le à nouveau.",
     "graph_selected": "{{formatted}} sélectionnés",
     "show_in_memories": "Voir dans Mémoires",
     "filters_width": "Largeur des filtres",

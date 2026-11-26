@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew.lesson_validation import LESSON_APPLIES_UNSTATED, LESSON_APPLIES_VALUES
 from kiro_crew.validation_parts.input_bounds import normalize_lesson_category
@@ -34,8 +35,13 @@ SORTS = ("updated", "created", "confidence", "importance", "strength", "key", "m
 # A date range filters on one of these times: the list's sort field, updated unless sorted by created.
 DATE_FIELDS = ("updated", "created")
 _MAX_VALUES = 50
-# A graph selection: at most this many record refs (the graph draws at most 400 records).
+# Records named one by one: at most this many refs. A graph box selection of any
+# size travels as a ``box`` filter instead.
 _MAX_REFS = 500
+#: The kinds a ``box_kinds`` filter may name: the memory graph's node kinds.
+BOX_KINDS = ("episode", "fact", "lesson")
+#: Where :func:`resolve_box` puts the ids inside the box, for :func:`matches`.
+BOX_IDS = "_box_ids"
 _REF = re.compile(r"[0-9a-f]{10}")
 _MAX_VALUE_LENGTH = 512
 
@@ -179,6 +185,19 @@ def parse_filters(raw: dict[str, Any]) -> dict[str, Any]:
             raise FacetError(f"Use at most {_MAX_REFS} record refs of ten hex digits.")
         if refs:
             filters["ref"] = list(dict.fromkeys(refs))
+    if "box" in raw:
+        filters["box"] = parse_box(raw["box"])
+        layout = raw.get("box_layout")
+        if not isinstance(layout, str) or not layout.strip() or len(layout) > _MAX_VALUE_LENGTH:
+            raise FacetError("A box needs the layout it was drawn on (box_layout).")
+        filters["box_layout"] = layout
+    if "box_kinds" in raw:
+        kinds = raw["box_kinds"] if isinstance(raw["box_kinds"], list) else [raw["box_kinds"]]
+        if not kinds or not all(k in BOX_KINDS for k in kinds):
+            raise FacetError("box_kinds names episode, fact or lesson.")
+        if "box" not in filters:
+            raise FacetError("box_kinds needs a box.")
+        filters["box_kinds"] = sorted(set(kinds))
     low = _bound(raw["conf_min"], "conf_min") if "conf_min" in raw else None
     high = _bound(raw["conf_max"], "conf_max") if "conf_max" in raw else None
     if low is not None and high is not None and low > high:
@@ -237,8 +256,41 @@ def _in_range(summary: dict[str, Any], filters: dict[str, Any]) -> bool:
     return not ("until" in filters and when >= datetime.fromisoformat(filters["until"]))
 
 
+def parse_box(raw: Any) -> list[float]:
+    """A memory graph box, ``"x0,y0,x1,y1"`` in layout units, as four floats."""
+    if isinstance(raw, list) and len(raw) == 1:
+        raw = raw[0]
+    try:
+        parts = [float(p) for p in str(raw).split(",")] if isinstance(raw, str) else None
+    except ValueError:
+        parts = None
+    if not parts or len(parts) != 4 or not all(math.isfinite(p) for p in parts):
+        raise FacetError("A box is four numbers: x0,y0,x1,y1.")
+    return parts
+
+
+def resolve_box(
+    filters: dict[str, Any], ids_in_box: Callable[[list[float], list[str]], Any]
+) -> dict:
+    """*filters* with a ``box`` resolved, once, into the ids the graph places
+    inside it (:data:`BOX_IDS`); unchanged without a box.
+
+    *ids_in_box* answers ``(box, kinds)`` from the store's graph layout. A summary's
+    ``id`` is the graph's id for it: an experience's id, a fact's or lesson's key.
+    """
+    if "box" not in filters:
+        return filters
+    return {**filters, BOX_IDS: frozenset(ids_in_box(filters["box"], filters.get("box_kinds", [])))}
+
+
 def matches(summary: dict[str, Any], filters: dict[str, Any], *, skip: str | None = None) -> bool:
-    """Whether a summary passes every filter group except *skip*."""
+    """Whether a summary passes every filter group except *skip*.
+
+    A ``box`` filter must have gone through :func:`resolve_box` first; an
+    unresolved box matches nothing, so a box can never widen a selection.
+    """
+    if "box" in filters and summary.get("id") not in filters.get(BOX_IDS, ()):
+        return False
     facets = summary["facets"]
     for group in FACET_GROUPS:
         if group == skip or group not in filters:

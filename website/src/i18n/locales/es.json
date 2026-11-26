@@ -18600,23 +18600,18 @@
         "tools_count_other": "{{n}} herramientas"
       },
       "memoryGraphTab": {
-        "all_count": "Todos ({{count}})",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "Visualización de toda la memoria de {{productName}} renderizada por GPU. Los nodos se codifican por color según su tipo. Acerca el zoom para mostrar las etiquetas, haz clic en un nodo para inspeccionarlo y usa los filtros para enfocar.",
-        "group_history_count": "Historial ({{count}})",
-        "group_lessons_count": "Lecciones ({{count}})",
-        "group_preferences_count": "Preferencias ({{count}})",
-        "group_projects_count": "Proyectos ({{count}})",
-        "group_semantic_count": "Semántica ({{count}})",
         "loading_graph_data": "Cargando datos del grafo…",
         "memory_graph": "Grafo de memoria",
         "no_memory_data_to_visualize_add_preferences_proj": "No hay datos de memoria para visualizar. Añade primero preferencias, proyectos o lecciones.",
-        "partial_notice": "Aquí solo se muestra una parte de tu memoria, así que la búsqueda solo encuentra estos nodos.",
         "refresh": "Actualizar",
         "search_memory_nodes": "Buscar nodos de memoria",
         "search_nodes": "Buscar nodos…",
         "load_failed": "No se pudo cargar el grafo de memoria",
         "load_failed_unknown": "La lectura falló sin indicar el motivo.",
-        "retry": "Reintentar"
+        "retry": "Reintentar",
+        "canvas_unavailable": "Este navegador no puede dibujar el gráfico. La búsqueda y la pestaña Recuerdos siguen funcionando.",
+        "fit_view": "Ajustar a la vista",
+        "keyboard_hint": "Las flechas te mueven entre memorias; Intro abre una."
       },
       "memoryTab": {
         "actions": "Acciones",
@@ -25276,6 +25271,7 @@
     "scope_all_repos": "Todos los repositorios",
     "search_filters": "Buscar filtros",
     "scroll_more": "Desplázate para ver más",
+    "graph_changed": "El gráfico cambió después de dibujar este recuadro. Vuelve a dibujarlo.",
     "graph_selected": "{{formatted}} seleccionados",
     "show_in_memories": "Ver en Memorias",
     "filters_width": "Ancho de los filtros",

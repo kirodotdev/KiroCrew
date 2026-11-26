@@ -139,6 +139,10 @@ export const CHUNK_BUDGETS = {
   // Graph/network visualization stack (vis-network, sigma, graphology,
   // cytoscape) -- one deliberate `codeSplitting` group, see vite.config.ts.
   'vendor-graph': 606 * KB, // measured 577 KB
+  // The memory graph's WebGL renderer (cosmos.gl 3.6 + luma.gl 9.3), its own
+  // group in vite.config.ts, loaded only when the Graph tab opens. The size is
+  // the libraries': nothing of ours is in it.
+  'vendor-graph-gl': 722 * KB, // measured 704,017 B
 
   // The first load, bundled by the `firstLoadGroups(...)` call in vite.config.ts
   // (cut rules: scripts/lib/firstLoadGroup.mjs). They replace the App, `t` and

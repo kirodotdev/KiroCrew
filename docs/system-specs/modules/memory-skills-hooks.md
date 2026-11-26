@@ -1924,17 +1924,30 @@ always reachable. The rail and the record detail open and shut over 225 ms
 (width with the list reflowing beside it, the content clipped; the detail also
 slides and fades, and switching records only crossfades); reduced motion snaps.
 `ref` filters to exact records by ten hex digits of `sha256("kind:id")`
-(`memory_record_facets.record_ref`, at most 500), the Graph tab's hand-off: a
-fact or lesson node carries its `record`, a click on one opens that memory in the
-Memories tab, and a box drawn on empty canvas offers "N selected" and Show in
-Memories, which replaces the list's search, kind and filters with one removable
-chip. The Graph fills the content width and the window height below it (at least
-420 px) and re-fits on resize. On desktop it follows the Figma model: wheel or
-two-finger swipe pans, pinch or Ctrl/Cmd + wheel zooms at the pointer, drag on
-empty canvas selects, Space + drag or middle-drag pans (Space is taken only while
-focus is on the page body or inside the graph, so a focused control elsewhere
-keeps it); touch keeps sigma's own
-pan and pinch. Tags are filter toggles in rows and in the detail panel, which
+(`memory_record_facets.record_ref`, at most 500). `box` (`x0,y0,x1,y1` in layout
+units, `memory_record_facets.parse_box`) requires `box_layout`, the layout revision the
+Graph drew from, and accepts optional `box_kinds`. It filters to the
+rows whose stored layout point lies in that box (`resolve_box`, read from the
+layout file with no cap). List, selection refresh, preview and apply reject a
+missing revision with 400 and a changed revision with 409 `stale_memory_box`,
+before resolving any rows; the list shows the error and asks for a new box.
+The Graph tab's hand-off carries the box and layout revision: a fact or lesson node
+carries its `record`, a click on one opens that memory in the Memories tab, and
+a box drawn on empty canvas offers "N selected" (`/api/memory/graph/select`)
+and Show in Memories, which replaces the list's search, kind and filters with
+one removable chip. The Graph fills the content width and the window height
+below it (at least 420 px) and re-fits on resize. On desktop it follows the
+Figma model: wheel or two-finger swipe pans, pinch or Ctrl/Cmd + wheel zooms at
+the pointer, drag on empty canvas selects, Space + drag or middle-drag pans
+(Space is taken only while focus is on the page body or inside the graph, so a
+focused control elsewhere keeps it); touch pans with one finger and pinches with
+two (`memoryGraphGestures.ts`). The arrow keys move focus to the nearest node
+(or cluster) on screen in that direction, Enter opens the focused memory or
+zooms into the focused cluster, and Escape clears it; Escape anywhere on the
+page also cancels an active box drag or a pending count and clears the selection,
+through the shared Escape stack (`useEscapeLayer`); a cancelled drag selects
+nothing on pointer-up, and a cancelled count cannot restore the selection.
+Labels and the focus ring are DOM text over the canvas. Tags are filter toggles in rows and in the detail panel, which
 shows each score as its bare value, the grouped source label (raw source on
 hover), one Created time and plain-text revisions ("Edited · time", "Current").
 New memory saves a fact or a lesson, picked at the top of its form; the ⋯ menu
@@ -1950,10 +1963,133 @@ themes; each kind's icon has its own theme colour (fact `--info-text`, lesson
 `--accent`, experience `--ok-text`); Global memory's avatar is the `--tile-blue`
 tile; only Confidence below 0.5 is red.
 
-The page's Graph tab, after Memories, draws the selected store
-(`GET /api/memory/graph?store=`, the same owner-gated resolver as the profile
-documents; a bot's lessons come from its own vector tier, never the Global
-lessons file). It mounts on first visit only. Settings > Developer has no memory
+The page's Graph tab, after Memories, draws every fact, lesson and experience
+of the selected store from a layout the server builds and keeps
+(`memory_graph_layout.py`, `memory_graph_sidecar.py`, `memory_graph_service.py`;
+routes `/api/memory/graph/{overview,nodes,search,select}?store=`, the same
+owner-gated resolver as the profile documents; a bot's lessons come from its own
+vector tier, never the Global lessons file). The layout lives in
+`graph_layout.sqlite` beside the store's database: a background build projects
+the stored vectors to 64 dimensions (PCA), groups them with k-means, places the
+cluster centres with classical MDS and spreads each cluster's rows with that
+cluster's own 2-axis PCA, evenly over a disc whose area grows with its row count
+(`spread_disc`), with a gap of a fifth of their radii between discs so the
+clusters read apart; a row with no vector goes near the rows that share its
+tags or key namespace, and what is still unplaced goes in a band outside the
+layout. The file holds positions and the per-cluster maps, never memory text.
+Snapshot staging excludes the layout, unfinished builds and their SQLite sidecars
+before opening databases (`memory_graph_files.is_graph_layout_file`,
+`snapshot_archive._staging_ignore`), so a hot layout journal cannot fail a backup.
+Redaction keeps the same exclusion as defence in depth
+(`snapshot_redact._is_derived_index`); the next graph read rebuilds the layout. Each graph read first
+reconciles the file with the store (`StoreGraph.refresh`, keyed on the store
+file's stat and a 16-byte fingerprint of each row's vector): new rows are
+placed through their cluster's stored linear map, gone rows are removed, and
+when more rows were placed this way than 20% of the rows the last build laid
+out (`REBUILD_DRIFT`; a build of an empty store counts as one row), or the layout
+version or vector width changed, a full build runs in the background while the
+old file keeps serving. A build writes `.graph_layout.sqlite.<pid>.building`
+until it is adopted; starting a build first removes every such file left beside
+the store, so a build that a gateway restart cut short leaves nothing behind
+(`memory_graph_service._drop_unadopted_builds`). A memory write never touches the layout, so a graph
+failure cannot fail a write. Until the first build finishes every route answers
+`{"status": "building"}` and the tab says so. Each node carries
+`weight`, recall's weight for it (`episodic_search.recall_weight`, the same age
+decay recall ranks by), refreshed on a new day or when the tier's effective
+default or per-tag decay rates change, which sets an experience's fade (never below 45%
+opacity); a V2 store does not decay (`memory_decay.applies`), so its
+experiences carry weight 1 and none fades. The look follows data-map tools
+(DataMapPlot, Embedding Atlas, deepscatter). A memory takes its topic cluster's
+colour (`graphColors.topicColors`): a muted OKLCH hue that the cluster centre's
+angle around the middle of the layout sets, so neighbouring topics get related
+hues. A row with no cluster is grey (`--muted`). Kind is the dot's shape, a
+fact ●, a lesson ■ and an experience ▲ (`KIND_SHAPE`), and each kind pill shows
+its shape as the key. The square and triangle have slightly rounded corners, on
+the canvas and on the pills; cosmos.gl has no corner option, so a build-time
+transform rewrites its point shader (`website/scripts/cosmos-rounded-marks.mjs`,
+which fails the build if the pinned cosmos.gl shader changes) and also turns its
+triangle point-up. A dot is 3 px with the whole store in view and grows to
+12 px zoomed in (`dotPxAt`). Its opacity follows the screen-saturation rule (`inkAlpha`): a
+cluster's dots ink about 60% of its disc on screen, never below 18% opacity,
+so a crowded topic reads light at the overview and turns solid as it spreads.
+Labels are plain text with a halo. A topic's name sits over its cluster in a
+deeper (light theme) or paler (dark theme) shade of its colour, semibold, 13 to
+16 px by size (13 on a canvas under 600 px), with no count. The overview shows
+6, one more per 2× zoom up to 12 (`labelBudget`), never closer than 8 px to
+another (`LABEL_GAP`) and never the same text twice. Memory names replace topic
+names once few memories are on screen: a fact by its key's last part with `_`
+and `-` read as spaces, a lesson or an experience by its text, each cut at a
+word to at most 32 characters with "…" (`canvasLabel`); hover shows the whole
+label. A memory's name sits beside its mark, vertically centred, 6 px from its
+edge: on the right, or on the left when that side covers fewer other marks; a
+name that would still cover more than 2 other marks is not drawn
+(`placeLabels`). The marks of the three kinds cover about the same area
+(`KIND_SIZE`: a square 1.14 and a triangle 1.55 times a circle's point size),
+so kind never reads as size. Related memories are joined by thin links: the
+build gives each vector row its 3 nearest rows by embedding cosine (`LINK_K`),
+searched in its own cluster and the 2 whose centres sit nearest, kept at or
+above recall's admission floor of 0.55 (`LINK_FLOOR`), as undirected pairs
+stored in the layout's `links` table (`memory_graph_layout.memory_links`); a row
+with no vector gets none, a row placed after the build gets none until the next
+build, and forgetting a memory drops its links. Each node reply names its links
+(`[other id, cosine]`, both ways). The canvas draws a link only between two
+memories it shows, 1 CSS px wide in the colour of the first one's cluster, its
+opacity rising from 0.05 with the whole store in view to 0.35 by 16× zoom and
+higher for a closer pair (`linkAlpha`); a link longer than 60 px on screen fades
+to a trace by 220 px. Hovering or focusing a memory lights its own links and
+dims the rest. Once the view settles it draws at most 6,000 links, the closest
+pairs with both ends in view (`linksInView`, `LINK_BUDGET`): drawing all 54k of
+the 23k-memory store stalled frames for 0.5 to 1 s in software WebGL. Links of
+one chat are not drawn. The + and − buttons and keys and Fit to view move the
+camera over 250 ms, easing out (instant under reduced motion); a pan or zoom by
+hand stops a move where it is, and a second press during a move zooms on from
+where the first was going. The overlay and the gestures measure the canvas's
+content box, inside its 1 px border, which is the box cosmos.gl draws in. A topic is named by its two most
+distinctive tags or key namespaces, skipping ids (an `issue-`, `pr` or `#`
+reference, any run of 4+ digits, a bare number) and spellings that differ only
+by `-`, `_` or `.`. On a phone the kind pills keep one row that scrolls
+sideways, its clipped edges faded, so the canvas stays on screen. Up to 50,000
+memories of the selected kinds (`NODE_BUDGET`) are drawn as memories at every
+zoom: the tab sums those kinds' overview totals (all kinds when none is selected)
+and reads them whole, in parallel, on one fixed grid of tiles per layout (`gridStep`, 4 × 4;
+a selection of one page is one read), following the cursor over pages of at most
+2,000 (`PAGE_CAP`), and shows the clusters with their topic labels only until
+the tiles in view are in. A larger selection draws clusters zoomed out and reads
+the grid tiles around the view as it opens into nodes. Overview clusters still
+include all kinds until cluster replies carry per-kind counts. A tile is read once, in
+the background, and joins the drawing when it arrives, so panning and zooming
+never clear the canvas or read a tile again. A tile is cached only after its
+last cursor is exhausted, even when it holds more rows than the drawing budget.
+The + and − buttons (and keys) zoom about the centre, and Fit to view
+(key `0`) shows the whole store. At the bottom right, Fit to view has its own
+group above a vertical +/− group, with a gap between them. A failed node, search or box read shows an error with Retry, never
+an empty result, and Refresh reads the overview, the nodes in view and the search
+again. Search runs on the server (up to 50,000 matches), the canvas dims what does not
+match and the camera fits the matches. The canvas is
+cosmos.gl (WebGL, loaded on first visit in its own bundle chunk); when the chunk
+fails to load or WebGL cannot start, an error inside the canvas says so and search
+and filters stay usable. Each kind pill carries a dot in the colour its nodes are
+drawn in, the graph's colour key. Nodes and search replies pass through the same
+whole-reply memory redaction as the Memories list, including node ids, record ids
+and search match ids, so search still highlights the redacted nodes. The record
+ref stays opaque. A node's label is redacted whole, then cut to
+80 characters (`LABEL_CHARS`). A box count and its Retry stay bound to the layout
+on which the box was drawn: after that layout changes, Retry clears the selection
+without a request, and a count is accepted only for the drawn layout. The hand-off
+carries that layout as `box_layout`. A node, search or box reply that comes back after
+the filter changed, or after Refresh, is dropped. Every graph reply names the layout revision it
+was read from (`layout`, always `built_at.positions`): the build time plus a
+placement counter in the sidecar's meta table. Each nonempty `place()` increments
+that counter in the same transaction as its new or moved rows; removals do not
+increment it. An adopted full build starts at zero with its new build time.
+A reply from another revision makes the tab drop its cached nodes and box count
+and read the overview again. The build
+child reads both of its passes in one SQLite read transaction, starts with `-P`
+and `embeddings_child._child_creationflags()`, and files the vector fingerprint
+of every row that has one, whatever its width, so a mixed-width store is not
+placed again on every read. Reduced motion
+turns off the cluster-to-node transition. It mounts on first visit only.
+Settings > Developer has no memory
 page any more; `/settings/developer/memory` opens `/settings/memory?focus=graph`.
 
 The embedded line under the header reads "X of Y embedded": X is every fact,
@@ -3902,7 +4038,11 @@ before reading transcript bodies, opening learned memory or billing a model.
 | PUT | `/api/memory/semantic` | Create/update (validates key, allowlist, injection; gated) |
 | DELETE | `/api/memory/semantic/{key}` | Tombstone + log event (gated). Optional JSON body for `kirocrew memory forget`: `expect_value_json` (compare-and-delete, 409 `value_changed`) and `superseded_by` (must be live and differ from the key: 409 `superseded_by_absent` / 400 `superseded_by_self`); other fields 400 `invalid_forget_body`. The dashboard sends no body |
 | GET | `/api/memory/events` | Recent audit trail |
-| GET | `/api/memory/graph` | Memory as nodes and edges for the graph view: preferences, projects, recent history, at most 200 semantic rows (first by key, lessons excluded, read on the key index) and the 200 newest lessons; `partial` (`{"semantic": bool, "lessons": bool}`) says which capped population left rows out |
+| GET | `/api/memory/graph` | Memory as nodes and edges for the graph view: preferences, projects, recent history, at most 200 semantic rows (first by key, lessons excluded, read on the key index) and the 200 newest lessons; `partial` (`{"semantic": bool, "lessons": bool}`) says which capped population left rows out | (no longer read by the dashboard)
+| GET | `/api/memory/graph/overview` | The store's laid-out clusters (centre, radius, count, topic label) and the layout's bounds and counts, or `{"status": "building"}` |
+| GET | `/api/memory/graph/nodes` | The nodes whose layout point lies in `bbox` (`x0,y0,x1,y1`), optional repeated `kind`, paged by `cursor` with `limit` up to 2,000; each carries `ref`, `record` and `weight` (recall's weight, `episodic_search.recall_weight`) |
+| GET | `/api/memory/graph/search` | Laid-out points matching `q` by words, or by meaning with `mode=meaning`; optional `kind`; at most 50,000 matches plus the `total` |
+| GET | `/api/memory/graph/select` | How many nodes lie in `bbox` for the optional `kind`s, the count behind "N selected" |
 | GET/PUT | `/api/memory/settings` | Consolidation settings; see the memory settings card above |
 | GET | `/api/memory/carve` | Filter or count one crew store by carve facet. Query: the five facet names, `kind`, `count_by`, `limit`, `offset`, plus the shared `?store=`. Absent, it reads the global store; present, it is owner-gated like every other store-scoped route. 409 `facets_unsupported` on the v1 lineage, 400 `unknown_facet`, 400 `invalid_pagination`, 503 `store_unavailable`. Every answer echoes the `store` it read. See [Who reads a facet](#who-reads-a-facet) |
 | GET | `/api/memory/episodic` | Paginated episodic list |

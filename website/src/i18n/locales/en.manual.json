@@ -8637,14 +8637,9 @@
         "temp_refusal_check_failed": "Declared {{key}}={{path}} was ignored because the location check failed. The probe used the managed temp folder instead."
       },
       "memoryGraphTab": {
-        "all_count": "All ({{count}})",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "GPU-rendered visualization of all {{productName}} memory. Nodes are color-coded by type. Zoom in to reveal labels, click a node to inspect, use filters to focus.",
-        "group_history_count": "History ({{count}})",
-        "group_lessons_count": "Lessons ({{count}})",
-        "group_preferences_count": "Preferences ({{count}})",
-        "group_projects_count": "Projects ({{count}})",
-        "group_semantic_count": "Semantic ({{count}})",
-        "partial_notice": "Only part of your memory is drawn here, so search finds only these nodes."
+        "canvas_unavailable": "This browser can't draw the graph. Search and the Memories tab still work.",
+        "fit_view": "Fit to view",
+        "keyboard_hint": "Arrow keys move between memories. Enter opens one."
       },
       "memoryTab": {
         "consolidated_sessions_failed": "Summarized {{succeeded}}/{{total}} sessions ({{failed}} failed)",
@@ -12503,6 +12498,7 @@
     "scope_all_repos": "All repos",
     "search_filters": "Search filters",
     "scroll_more": "Scroll to see more",
+    "graph_changed": "The graph changed since this box was drawn. Draw it again.",
     "graph_selected": "{{formatted}} selected",
     "show_in_memories": "Show in Memories",
     "filters_width": "Filter width",
