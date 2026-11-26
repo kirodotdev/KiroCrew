@@ -8,6 +8,7 @@
  * Layout uses CSS multi-column with break-inside:avoid per section to pack tight
  * and eliminate the ~400px dead space the old card grid left.
  */
+import { Fragment } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
 import { useAppSelector } from '../../store'
@@ -165,6 +166,19 @@ export default function ServicesTab() {
       },
     )
   })()
+  // Each `·`-separated part holds together, so a narrow column breaks the
+  // breakdown at its separators and never mid-phrase ("36 acp" / "36 mcp)").
+  const mcpParts = mcpBreakdown.split(' · ')
+  const mcpValue = mcpParts.length < 2 ? mcpBreakdown : (
+    <span data-testid="services-mcp-breakdown">
+      {mcpParts.map((part, i) => (
+        <Fragment key={i}>
+          {i > 0 && ' · '}
+          <span className="whitespace-nowrap">{part}</span>
+        </Fragment>
+      ))}
+    </span>
+  )
 
   // child_processes reads /proc/<pid>/task (threads), contradicting thread_count.
   // Excluded deliberately — thread_count is the accurate metric.
@@ -182,7 +196,7 @@ export default function ServicesTab() {
         { label: i18nT('pages.servicesTab.memory_rss'), value: d?.proc_mem_mb != null ? fmtUnit(d.proc_mem_mb, 'megabyte', { maximumFractionDigits: 0 }) : '—' },
         { label: i18nT('pages.servicesTab.threads'), value: d?.thread_count != null ? fmtNumber(d.thread_count) : '—' },
         { label: i18nT('pages.servicesTab.cpu'), value: d?.proc_cpu_pct != null ? fmtPercent(d.proc_cpu_pct / 100, { maximumFractionDigits: 1 }) : '—' },
-        { label: i18nT('pages.servicesTab.mcp_processes'), value: mcpBreakdown },
+        { label: i18nT('pages.servicesTab.mcp_processes'), value: mcpValue },
       ],
     },
   ]
@@ -282,17 +296,22 @@ export default function ServicesTab() {
             it were dead: measured at a 390px viewport the container still
             reported `column-count: 3` and each card got 119px, which is what
             squeezed the value column to roughly 24px. As classes all three
-            participate in the cascade, so 390px resolves to one column. */}
-        <div className="columns-3 gap-6 max-[900px]:columns-2 max-[600px]:columns-1">
-          {gatewaySections.map(sec => (
-            <SectionBlock key={sec.title} section={sec} />
-          ))}
-          {embeddingSections.map(sec => (
-            <SectionBlock key={sec.title} section={sec} />
-          ))}
-          {integrationSections.map(sec => (
-            <SectionBlock key={sec.title} section={sec} />
-          ))}
+            participate in the cascade, so 390px resolves to one column.
+            The breakpoints read the CARD's width (`@container`), not the
+            viewport's: a grouped settings frame caps the card at 720px, so a
+            viewport query kept three ~210px columns on every desktop window. */}
+        <div className="@container">
+          <div className="columns-1 gap-6 @min-[480px]:columns-2 @min-[840px]:columns-3">
+            {gatewaySections.map(sec => (
+              <SectionBlock key={sec.title} section={sec} />
+            ))}
+            {embeddingSections.map(sec => (
+              <SectionBlock key={sec.title} section={sec} />
+            ))}
+            {integrationSections.map(sec => (
+              <SectionBlock key={sec.title} section={sec} />
+            ))}
+          </div>
         </div>
       </Card>
 
@@ -323,9 +342,11 @@ function SectionBlock({ section }: { section: Section }) {
       {section.rows.map(row => (
         <div
           key={row.label}
-          className="flex justify-between gap-3 py-1.5 border-b border-border text-[12.5px] last:border-b-0"
+          className="flex flex-wrap justify-between gap-x-3 gap-y-0.5 py-1.5 border-b border-border text-[12.5px] last:border-b-0"
         >
           <span className="text-muted shrink-0">{row.label}</span>
+          {/* `flex-wrap` + `ml-auto min-w-0`: a value too wide to sit beside its
+              label drops under it, right-aligned, instead of overflowing. */}
           {/* `break-words`, not `break-all`. `break-all` breaks between letters
               whether or not anything would overflow, so it split values mid-digit:
               a 5,289 MB reading rendered as `5,` / `28` / `9 MB`, and an uptime of
@@ -333,7 +354,7 @@ function SectionBlock({ section }: { section: Section }) {
               corrupted data. `break-words` breaks only where a line cannot
               otherwise fit, which still contains a long value such as a path.
               `tabular-nums` keeps the column from shifting as values update. */}
-          <span className="text-text-strong font-mono tabular-nums text-right break-words">{row.value}</span>
+          <span className="text-text-strong font-mono tabular-nums text-right break-words ml-auto min-w-0">{row.value}</span>
         </div>
       ))}
     </div>

@@ -22,14 +22,24 @@ async function read(mod: string): Promise<string> {
   return (await import(mod)).default as string
 }
 
-describe('ServicesTab card columns', () => {
-  it('declares the column count as a class so the responsive overrides can win', async () => {
-    const src = await read('../pages/system/ServicesTab.tsx?raw')
-    const el = src.match(/className="columns-3[^"]*"/)
-    expect(el, 'expected a columns-3 class on the card container').not.toBeNull()
-    expect(el![0]).toContain('max-[600px]:columns-1')
-    expect(el![0]).toContain('max-[900px]:columns-2')
+describe.each([
+  ['ServicesTab', '../pages/system/ServicesTab.tsx?raw'],
+  ['TasksCapacityCard', '../pages/system/TasksCapacityCard.tsx?raw'],
+])('%s card columns', (_name, mod) => {
+  // The breakpoints read the CARD's width, not the viewport's: a grouped
+  // settings frame caps the card at 720px, so a viewport query kept three
+  // ~210px columns at every desktop width and the values overflowed them.
+  it('declares the column count as classes keyed to its own container', async () => {
+    const src = await read(mod)
+    const el = src.match(/<div className="@container">\s*<div className="(columns-1[^"]*)"/)
+    expect(el, 'expected a columns-1 class inside an @container wrapper').not.toBeNull()
+    expect(el![1]).toContain('@min-[480px]:columns-2')
+    expect(el![1]).toContain('@min-[840px]:columns-3')
+    expect(src).not.toMatch(/max-\[900px\]:columns-2/)
   })
+})
+
+describe('ServicesTab card columns', () => {
 
   it('does not set the column count inline, which would outrank those classes', async () => {
     const src = await read('../pages/system/ServicesTab.tsx?raw')

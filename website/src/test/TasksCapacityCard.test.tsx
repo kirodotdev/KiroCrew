@@ -420,6 +420,12 @@ describe('TasksCapacityCard', () => {
       expect(line.className).not.toContain('whitespace-nowrap')
       expect(line.className).toContain('font-body')
     }
+    // A lane too wide to sit beside its label drops under it and shrinks to its
+    // column, rather than printing over the Recovery column beside it.
+    const cell = subagents.parentElement!
+    expect(cell.className).toContain('min-w-0')
+    expect(cell.className).toContain('ml-auto')
+    expect(cell.parentElement!.className).toContain('flex-wrap')
   })
 
   it('prints one cause once when TWO lanes are lowered, in the row and on neither lane', async () => {
