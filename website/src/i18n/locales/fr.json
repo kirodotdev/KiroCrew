@@ -12093,9 +12093,9 @@
       "unmute_short": "Réactiver"
     },
     "promptStash": {
-      "badge_full_hint": "Il n’y a plus de place pour les brouillons. Supprimes-en ou récupères-en un avant d’en mettre un autre de côté ; {{chord}} dans une zone de saisie vide récupère le dernier.",
+      "badge_full_hint": "Il n’y a plus de place pour les brouillons. Supprimes-en ou récupères-en un avant d’en mettre un autre de côté ; {{chord}} dans une zone de saisie vide les affiche en liste.",
       "badge_full_hint_touch": "Il n’y a plus de place pour les brouillons. Supprimes-en ou récupères-en un avant d’en mettre un autre de côté ; les deux se trouvent dans le menu {{menu}}.",
-      "badge_hint": "Brouillons mis de côté pour cette discussion. {{chord}} dans une zone de saisie vide récupère le dernier.",
+      "badge_hint": "Brouillons mis de côté pour cette discussion. {{chord}} dans une zone de saisie vide en récupère un.",
       "badge_hint_touch": "Brouillons mis de côté pour cette discussion. Récupère le dernier depuis le menu {{menu}}.",
       "badge_many": "{{count}} brouillons mis de côté",
       "badge_one": "{{count}} brouillon mis de côté",
@@ -12105,9 +12105,9 @@
       "full": "Il n’y a plus de place pour les brouillons ({{max}} au maximum). Supprime un brouillon mis de côté pour faire de la place.",
       "menu_restore": "Récupérer le brouillon mis de côté",
       "menu_restore_has_draft": "Mets d’abord ton brouillon de côté ou envoie-le.",
-      "menu_restore_desc_many": "{{count}} brouillons mis de côté ; le dernier revient. {{chord}} dans une zone de saisie vide fait la même chose.",
+      "menu_restore_desc_many": "{{count}} brouillons mis de côté ; le dernier revient. {{chord}} dans une zone de saisie vide te laisse choisir.",
       "menu_restore_desc_one": "{{count}} brouillon mis de côté. {{chord}} dans une zone de saisie vide fait la même chose.",
-      "menu_restore_desc_other": "{{count}} brouillons mis de côté ; le dernier revient. {{chord}} dans une zone de saisie vide fait la même chose.",
+      "menu_restore_desc_other": "{{count}} brouillons mis de côté ; le dernier revient. {{chord}} dans une zone de saisie vide te laisse choisir.",
       "menu_stash": "Mettre le brouillon de côté",
       "menu_stash_desc": "Met le texte de côté et vide la zone de saisie ({{chord}}).",
       "notice_attachments": "Retire les pièces jointes pour mettre de côté ou récupérer.",
@@ -12120,9 +12120,9 @@
       "restored_other": "Brouillon récupéré. {{count}} brouillons restent mis de côté.",
       "save_failed": "Impossible de mettre le brouillon de côté : le stockage du navigateur est plein ou indisponible. Ton brouillon est toujours dans la zone de saisie.",
       "shortcut_label": "Mettre le brouillon de côté, ou le récupérer dans une zone de saisie vide",
-      "stashed_many": "Brouillon mis de côté. {{count}} brouillons sont mis de côté ; appuie sur {{chord}} dans une zone de saisie vide pour récupérer le dernier.",
+      "stashed_many": "Brouillon mis de côté. {{count}} brouillons sont mis de côté ; appuie sur {{chord}} dans une zone de saisie vide pour en choisir un.",
       "stashed_one": "Brouillon mis de côté. {{count}} brouillon est mis de côté ; appuie sur {{chord}} dans une zone de saisie vide pour le récupérer.",
-      "stashed_other": "Brouillon mis de côté. {{count}} brouillons sont mis de côté ; appuie sur {{chord}} dans une zone de saisie vide pour récupérer le dernier.",
+      "stashed_other": "Brouillon mis de côté. {{count}} brouillons sont mis de côté ; appuie sur {{chord}} dans une zone de saisie vide pour en choisir un.",
       "stashed_touch_many": "Brouillon mis de côté. {{count}} brouillons sont mis de côté ; récupère le dernier depuis le menu {{menu}}.",
       "stashed_touch_one": "Brouillon mis de côté. {{count}} brouillon est mis de côté ; récupère-le depuis le menu {{menu}}.",
       "stashed_touch_other": "Brouillon mis de côté. {{count}} brouillons sont mis de côté ; récupère le dernier depuis le menu {{menu}}.",
@@ -12146,7 +12146,9 @@
       "undo_failed": "Impossible de remettre le brouillon de côté : il n’y a plus de place ou le stockage du navigateur est indisponible.",
       "discarded_many": "Brouillon supprimé. {{count}} brouillons restent mis de côté.",
       "discarded_one": "Brouillon supprimé. {{count}} brouillon reste mis de côté.",
-      "discarded_other": "Brouillon supprimé. {{count}} brouillons restent mis de côté."
+      "discarded_other": "Brouillon supprimé. {{count}} brouillons restent mis de côté.",
+      "picker_label": "Brouillons mis de côté",
+      "picker_hint": "↑ ↓ pour naviguer · Entrée pour récupérer · Suppr pour supprimer · Échap pour fermer"
     },
     "globalChatSearch": {
       "title": "Rechercher dans tous les chats",

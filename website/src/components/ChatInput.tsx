@@ -1652,7 +1652,7 @@ function ChatInput({
 
         <PromptLengthNotice value={value} blocks={pasteBlocks} contextWindowTokens={contextWindowTokens} confirmPending={overLimitPending} />
 
-        {promptStashEnabled && <PromptStashStatusRegion stash={promptStash} chordLabel={promptStashChord} touch={isTouchDevice()} menuGlyph={stashMenuGlyph} />}
+        {promptStashEnabled && <PromptStashStatusRegion stash={promptStash} chordLabel={promptStashChord} touch={isTouchDevice()} menuGlyph={stashMenuGlyph} onFocusInput={() => composerControl()?.focus()} />}
 
         {/* Bottom icon row. Inline (`inlineToolbar`), the row itself is
             `contents`: its two clusters become flex items of the box, ordered
