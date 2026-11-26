@@ -81,8 +81,9 @@ def test_control_characters_are_dropped_and_the_file_opens(tmp_path) -> None:
         "| a |\n|---|\n" + "| 1 |\n" * 100_000,
         "| a |\n|---|\n| " + "x" * 32_768 + " |\n",
         "x" * 1_000_001,
+        "|a" * 400 + "|\n" + "|-" * 400 + "|\n" + "| x |\n" * 170,
     ],
-    ids=["too-many-tables", "too-many-cells", "cell-too-long", "too-many-characters"],
+    ids=["tables", "cells", "cell-length", "characters", "padding"],
 )
 def test_over_a_cap_writes_nothing(tmp_path, content, capsys) -> None:
     with pytest.raises(SystemExit) as exc:
@@ -90,6 +91,36 @@ def test_over_a_cap_writes_nothing(tmp_path, content, capsys) -> None:
     assert exc.value.code == 1
     assert "too large" in capsys.readouterr().err
     assert not (tmp_path / "out.xlsx").exists()
+
+
+WIDE = ["|a" * 400 + "|", "|-" * 400 + "|"] + ["x"] * 400
+LISTED = "* x\n" + WIDE[0] + "\n  " + "\n".join(WIDE[1:]) + "\n"
+WIDE_TEXTS = ["\n".join(WIDE) + "\n", "".join(f"> {r}\n" for r in WIDE), LISTED]
+
+
+@pytest.mark.parametrize("text", WIDE_TEXTS, ids=["top-level", "in-a-quote", "after-a-list"])
+def test_a_wide_header_over_short_lines_is_refused_before_its_cells_are_built(
+    monkeypatch, text
+) -> None:
+    # The parser pads short rows to the header's width: no body cell may be built here.
+    from markdown_it.rules_block.state_block import StateBlock
+
+    built, push = [], StateBlock.push
+
+    def counting_push(state, kind, *rest):
+        if kind == "td_open":
+            built.append(kind)
+        return push(state, kind, *rest)
+
+    monkeypatch.setattr(StateBlock, "push", counting_push)
+    with pytest.raises(artifact_xlsx.XlsxTooLarge):
+        artifact_xlsx.build(text)
+    assert built == []
+
+
+def test_tables_under_headings_with_no_blank_line_between_are_all_written(tmp_path) -> None:
+    table = "|" + " a |" * 10 + "\n" + "|---" * 10 + "|\n" + ("|" + " 1 |" * 10 + "\n") * 20
+    assert len(_sheets(tmp_path, "".join(f"## T{n}\n{table}" for n in range(40)))) == 40
 
 
 def test_a_cell_of_exactly_the_limit_is_written(tmp_path) -> None:

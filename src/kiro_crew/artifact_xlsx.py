@@ -1,12 +1,9 @@
 """Write the tables of a text or markdown artifact as a new spreadsheet workbook.
 
-Each pipe table is one sheet, named after the heading above it (or ``Table N``).
-Tables are found from the Markdown parser's block tokens, so a table-looking
-line inside a code block is not one. Every cell is stored as text, exactly as
-typed: a cell that starts with ``=``, ``+``, ``-`` or ``@`` stays text and is
-never a formula, and ``007`` keeps its zeros. Inline marks stay characters.
-
-Only the tables are written; the rest of the artifact is not.
+Each pipe table, found from the Markdown parser's block tokens (so not one inside a
+code block), is one sheet named after the heading above it (or ``Table N``). Every
+cell is text as typed: one that starts with ``=``, ``+``, ``-`` or ``@`` is never a
+formula, ``007`` keeps its zeros, and inline marks stay characters.
 """
 
 from __future__ import annotations
@@ -16,15 +13,13 @@ from typing import Any
 
 from kiro_crew.artifact_docx import MAX_CHARS, _xml_safe
 
-#: Largest workbook written. Checked while the tables are read, so a refused
-#: artifact builds nothing.
+#: Largest workbook written, checked before the parser builds a table. MAX_CELLS is the
+#: table rule's own limit on padded cells (0x10000), so no table under it is cut short.
 MAX_TABLES = 50
-MAX_CELLS = 100_000
-#: The longest text one cell can hold in the common spreadsheet format.
-MAX_CELL_CHARS = 32_767
-#: The longest sheet title, and the characters a title cannot hold.
-_TITLE_CHARS = 31
-_TITLE_FORBIDDEN = "[]:*?/\\"
+MAX_CELLS = 0x10000
+MAX_CELL_CHARS = 32_767  # the longest text one cell holds in the common spreadsheet format
+_TITLE_CHARS = 31  # the longest sheet title
+_TITLE_FORBIDDEN = "[]:*?/\\"  # the characters a sheet title cannot hold
 
 
 class XlsxTooLarge(ValueError):
@@ -38,14 +33,38 @@ class NoTables(ValueError):
 def _tables(text: str) -> list[tuple[str, list[list[str]]]]:
     """Every table of markdown *text* in order: (heading above it, rows of cell text).
 
-    One pass over the block tokens. The inline pass is turned off, so a cell is
-    the inline token's ``content`` as typed.
+    One pass over the block tokens; with the inline pass off, a cell is ``content`` as typed.
     """
     from markdown_it import MarkdownIt
+    from markdown_it.rules_block.table import table as table_rule
 
     parser = (
         MarkdownIt("commonmark", {"html": True}).enable("table").disable(["inline", "text_join"])
     )
+    # The table rule pads every body row to the header's width. A rule run just before it,
+    # in the block that parses the table, reads the table's lines as the table rule ends
+    # them (blank, less indented, code, or another block's start) and refuses past MAX_CELLS.
+    bound = [0]
+
+    def cell_bound(state: Any, start: int, end: int, silent: bool) -> bool:
+        if silent or not table_rule(state, start, end, True):
+            return False
+        line = start + 1
+        delimiter = state.src[state.bMarks[line] + state.tShift[line] : state.eMarks[line]]
+        enders = state.md.block.ruler.getRules("blockquote")
+        line += 1
+        while line < end and 0 <= state.sCount[line] - state.blkIndent < 4:
+            body = state.src[state.bMarks[line] + state.tShift[line] : state.eMarks[line]]
+            if not body.strip() or any(ender(state, line, end, True) for ender in enders):
+                break
+            line += 1
+        columns = sum(1 for part in delimiter.split("|") if part.strip())
+        bound[0] += columns * (line - start - 1)
+        if bound[0] > MAX_CELLS:
+            raise XlsxTooLarge("cells")
+        return False
+
+    parser.block.ruler.before("table", "cell_cap", cell_bound)
     tokens = parser.parse(text)
     found: list[tuple[str, list[list[str]]]] = []
     heading = ""
