@@ -209,6 +209,7 @@ from kiro_crew.dashboard.chat_turn.queue_cycle import (
     _note_failed_before_the_try,
     _turn_record_outcome,
     _TurnExit,
+    note_message_failed_before_start,
 )
 from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
     _RESTORED_DRAIN_IDS,
@@ -331,6 +332,7 @@ from kiro_crew.dashboard.chat_turn.turn_marker import (  # noqa: F401
     _clear_local_turn_marker,
     _gateway_shutdown_requested,
     register_turn_observer,
+    unanswered_turn_opener,
 )
 from kiro_crew.dashboard.chat_turn.turn_reply_seams import _flush_thinking_stream, _notify_turn_died
 from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _turn_stop_hook

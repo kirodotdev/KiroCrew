@@ -960,6 +960,11 @@ class SessionManager:
         # surface that can reach the user (a dashboard notification, a Slack DM)
         # decides what to do with it. Args: (session_key, parked_secs).
         self.on_stuck_turn: Callable[[str, float], None] | None = None
+        # Fired by the idle sweep after it reset a session on the idle clock
+        # (not an orphan reap). The same kind of seam as ``on_stuck_turn``: the
+        # dashboard checks the chat for a message whose turn never took the
+        # session. Args: (session_key,).
+        self.on_idle_expired: Callable[[str], None] | None = None
         # Fired once per turn by the RSS tick for a session over the ceiling whose
         # memory is held by processes outside its runtime's tree. Args: (key, notice).
         self.on_leftover_memory: Callable[[str, str], None] | None = None
