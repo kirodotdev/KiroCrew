@@ -1,10 +1,10 @@
 ---
 title: Retire the Vector Memory card; add Audit, Test recall and decay weights
-status: accepted
+status: partial
 author: buluoray
 created: 2026-11-25
 last-audited: 2026-11-26
-audited-at: 867ca8eab20
+audited-at: d8d692dbf1
 doc-pr: 42890
 implementation-prs: [43031, 42798]
 tracking-issues: [42180, 42787]
@@ -14,12 +14,14 @@ superseded-by: []
 
 # RFC: Retire the Vector Memory card; add Audit, Test recall and decay weights
 
-**Status:** accepted. Accepted at team review, 2026-11-26 (maintainer Ray Xu). The document merged in
-[#42890](https://github.com/kirodotdev/KiroCrew/pull/42890). Nothing in this document is on main. The new Memory page it
+**Status:** partial. Accepted at team review, 2026-11-26 (maintainer Ray Xu). The document merged in
+[#42890](https://github.com/kirodotdev/KiroCrew/pull/42890). Only §7 is on main: the bot memory
+tools `memory_list` and `propose_memory_changes` (one `crewmate.memory` card of at most 20 changes)
+merged in [#42798](https://github.com/kirodotdev/KiroCrew/pull/42798) (`src/kiro_crew/mcp_mate.py`,
+`src/kiro_crew/change_card_memory.py`). The new Memory page it
 builds on, with its Graph tab (§8), is in
 [#43031](https://github.com/kirodotdev/KiroCrew/pull/43031), which squashes
-the earlier drafts #42246 and #42276. The bot memory
-tools in §7 are in [#42798](https://github.com/kirodotdev/KiroCrew/pull/42798).
+the earlier drafts #42246 and #42276.
 Every `file:line` below was read at `867ca8eab20` unless it names a branch.
 
 The maintainer (@buluoray) made each decision below this week. This document
