@@ -1039,3 +1039,135 @@ class TestWhoIsToldTheNames:
         body = json.loads((await restart_gate.api_restart_when_idle(req)).body)
 
         assert body["background"] == 1 and "holders" not in body
+
+
+_NIGHTLY = {"kind": "script", "name": "nightly-sync", "since_secs": 21, "count": 1}
+# A made-up PEM header, split so the source holds no key marker.
+_PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
+
+
+def _named_busy(*holders, more=0):
+    from kiro_crew.work_holders import describe
+
+    return idle_cli._Verdict(
+        "busy",
+        0,
+        len(holders),
+        waiting_on=describe(list(holders), more),
+        holders=tuple(holders),
+        holders_more=more,
+    )
+
+
+def _hub_reads(out: str):
+    """What the hub reads from *out* through its own stdout pipeline."""
+    from kiro_crew.instances.remote_update import read_gate_answer
+    from kiro_crew.instances.token_mint import _redacted_output_tail, _with_stdout_tail
+
+    return read_gate_answer(idle_cli.EXIT_BUSY, _with_stdout_tail("", _redacted_output_tail(out)))
+
+
+def test_the_verdict_keeps_the_entries_a_busy_gateway_named(monkeypatch):
+    busy = {"idle": False, "turns": 0, "background": 1, "holders": [_NIGHTLY], "holders_more": 2}
+    monkeypatch.setattr(
+        idle_cli,
+        "_owner_verified_secret_urlopen",
+        lambda req, port, timeout, *, operation: _Resp(json.dumps(busy).encode()),
+    )
+
+    verdict = idle_cli._ask_gate(5476)
+
+    assert (verdict.holders, verdict.holders_more) == ((_NIGHTLY,), 2)
+
+
+class TestCapturedBusyNames:
+    """A captured busy exit names the work on one stdout line before the marker."""
+
+    @pytest.fixture(autouse=True)
+    def _captured_host_cli(self, _floor_monkeypatch):
+        from kiro_crew.cloud import aws
+
+        # A host CLI: no agent marker and no agent confinement, stdout captured.
+        for name in aws._AGENT_ENV_MARKERS:
+            _floor_monkeypatch.delenv(name, raising=False)
+        _floor_monkeypatch.setattr(aws, "_agent_confinement", lambda: False)
+        _floor_monkeypatch.setattr(idle_cli, "_stdout_is_terminal", lambda: False)
+
+    def _busy_exit(self, cli, capsys, verdict):
+        cli.answers.append(verdict)
+        with pytest.raises(SystemExit) as exc:
+            idle_cli._restart_when_idle(None, max_wait_secs=0)
+        assert exc.value.code == idle_cli.EXIT_BUSY
+        return capsys.readouterr()
+
+    def test_the_names_line_sits_just_before_the_unchanged_marker_on_stdout_only(self, cli, capsys):
+        captured = self._busy_exit(cli, capsys, _named_busy(_NIGHTLY, more=2))
+
+        lines = captured.out.splitlines()
+        assert lines[-1] == 'kirocrew-restart-busy {"turns":0,"background":1}'
+        assert lines[-2] == (
+            'kirocrew-restart-holders {"holders":[{"kind":"script","name":"nightly-sync",'
+            '"since_secs":21,"count":1}],"holders_more":2}'
+        )
+        # The human sentence of a captured run keeps the counts alone.
+        assert "nightly-sync" not in "\n".join(lines[:-2])
+        assert captured.err.splitlines() == [lines[-1]]
+
+    @pytest.mark.parametrize("marker", ["KIROCREW_SESSION_KEY", "KIROCREW_RUNTIME_AGENT"])
+    def test_a_run_acting_for_an_agent_session_prints_the_counts_alone(
+        self, cli, capsys, monkeypatch, marker
+    ):
+        monkeypatch.setenv(marker, "cron:probe")
+
+        captured = self._busy_exit(cli, capsys, _named_busy(_NIGHTLY))
+
+        assert "nightly-sync" not in captured.out + captured.err
+        assert captured.out.splitlines()[-1] == idle_cli.busy_marker(0, 1)
+
+    def test_a_terminal_run_prints_no_names_line(self, cli, capsys, monkeypatch):
+        monkeypatch.setattr(idle_cli, "_stdout_is_terminal", lambda: True)
+
+        captured = self._busy_exit(cli, capsys, _named_busy(_NIGHTLY))
+
+        assert idle_cli.HOLDERS_MARKER not in captured.out
+        assert "(nightly-sync script (21 s))" in captured.out
+        assert captured.out.splitlines()[-1] == idle_cli.busy_marker(0, 1)
+
+    def test_long_names_are_dropped_from_the_end_until_the_hubs_tail_keeps_the_line(
+        self, cli, capsys
+    ):
+        holders = [{**_NIGHTLY, "name": f"{i}-" + "n" * 62} for i in range(5)]
+
+        captured = self._busy_exit(cli, capsys, _named_busy(*holders, more=3))
+
+        names, marker = captured.out.splitlines()[-2:]
+        body = json.loads(names.removeprefix(idle_cli.HOLDERS_MARKER + " "))
+        kept = body["holders"]
+        assert 0 < len(kept) < 5
+        assert kept == holders[: len(kept)]
+        assert body["holders_more"] == 3 + (5 - len(kept))
+        assert len(f"{names}\n{marker}") <= 300
+        answer = _hub_reads(captured.out)
+        assert (answer.outcome, answer.background) == ("busy", 5)
+        assert list(answer.holders) == kept
+
+    def test_an_armour_shaped_name_is_dropped_so_the_hub_still_reads_busy(self, cli, capsys):
+        armour = {**_NIGHTLY, "name": _PEM_BEGIN}
+
+        captured = self._busy_exit(cli, capsys, _named_busy(_NIGHTLY, armour))
+
+        assert "BEGIN" not in captured.out
+        answer = _hub_reads(captured.out)
+        assert (answer.outcome, answer.turns, answer.background) == ("busy", 0, 2)
+        assert [h["name"] for h in answer.holders] == ["nightly-sync"]
+        assert answer.holders_more == 1
+
+    def test_an_armour_shaped_first_name_prints_no_names_line(self, cli, capsys):
+        from kiro_crew.instances.remote_update import GateAnswer
+
+        armour = {**_NIGHTLY, "name": _PEM_BEGIN}
+
+        captured = self._busy_exit(cli, capsys, _named_busy(armour, _NIGHTLY))
+
+        assert idle_cli.HOLDERS_MARKER not in captured.out
+        assert _hub_reads(captured.out) == GateAnswer("busy", 0, 2)

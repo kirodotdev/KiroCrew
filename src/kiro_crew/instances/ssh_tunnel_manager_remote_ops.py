@@ -448,7 +448,8 @@ async def _restart_when_idle(
     Each ask is one remote ``restart --when-idle --max-wait 0``: the crew checks
     its own turns, subagents and workflows, and restarts only when there are
     none. While it is busy the job shows ``waiting_for_idle`` with the counts
-    and asks again every ``_remote_update_idle_poll_secs``, for up to
+    (and the work the crew named, never logged) and asks again every
+    ``_remote_update_idle_poll_secs``, for up to
     ``_remote_update_idle_wait_secs``; then it fails ``still_busy``. A crew
     whose build has no idle check fails ``peer_cannot_wait``. Either is
     retried with ``force``, which restarts at once.
@@ -481,7 +482,7 @@ async def _restart_when_idle(
             job.advance(PHASE_RESTARTING)
             job.fail(err or f"restart exited {rc}")
             return False
-        job.wait_for_idle(answer.turns, answer.background)
+        job.wait_for_idle(answer.turns, answer.background, answer.holders, answer.holders_more)
         if loop.time() >= deadline:
             logger.info("Remote update for %s: still busy when the wait ran out", iid)
             job.fail(
