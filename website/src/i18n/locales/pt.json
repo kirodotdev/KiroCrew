@@ -7047,6 +7047,8 @@
       "closing_terminal": "Fechando terminal…",
       "fullscreen": "Tela cheia",
       "exit_fullscreen": "Sair da tela cheia",
+      "fullscreen_shortcut": "Tela cheia ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Sair da tela cheia ({{shortcut}})",
       "find": "Localizar"
     },
     "tabCloseMenu": {
@@ -7126,7 +7128,8 @@
       "gateway_offline_message_will_not_send": "Gateway offline — a mensagem não será enviada",
       "killing": "Forçando a parada…",
       "killing_session": "Forçando a parada da sessão",
-      "list_indent_hint": "Em uma linha de lista, Tab aumenta o recuo e Shift+Tab o reduz. Pressione Esc e depois Tab para sair da entrada de mensagem.",
+      "list_indent_hint": "Pressione Esc e depois Tab para sair da entrada de mensagem.",
+      "list_indent_keys": "Em uma linha de lista, Tab aumenta o recuo e Shift+Tab o reduz.",
       "message_input": "Entrada de mensagem",
       "message_placeholder": "Enviar mensagem para {{bot}}… (/command · @file · $skill)",
       "message_placeholder_crewmate": "Enviar mensagem para {{bot}}…",
@@ -8533,6 +8536,7 @@
     "markdownPanel": {
       "open_in_remote_editor": "Abrir no {{editor}}",
       "partial_copy_cannot_save": "Só uma parte deste arquivo foi carregada ({{reason}}), então não pode ser salvo por cima do arquivo no disco.",
+      "partial_copy_preview": "Só uma parte deste arquivo foi carregada ({{reason}}), então a pré-visualização mostra só essa parte. Baixe o arquivo pelo menu ⋯ para tê-lo por inteiro.",
       "add_to_artifact_library": "Adicionar à biblioteca de artefatos",
       "add_to_artifacts": "Adicionar aos artefatos",
       "add_to_knowledge": "Adicionar ao Conhecimento",
@@ -9747,6 +9751,7 @@
       "desktop_app_only": "Somente aplicativo desktop",
       "panel_toggles": "Alternar painéis",
       "unset": "Não definido",
+      "terminal_focus_only": "Somente em um terminal com foco",
       "save_refused": "Não foi salvo: o armazenamento do navegador está cheio. Libere espaço e tente novamente."
     },
     "sidePanelLayout": {
@@ -10785,7 +10790,7 @@
       "trust_off_title": "Permitir acesso pelo nome de rede deste computador",
       "trust_off_body": "O painel recusa solicitações de endereços que não reconhece. Permita o seu próprio nome de rede privada para que um telefone possa alcançá-lo. Isso não abre nenhuma porta para a internet e não altera a forma como você faz login.",
       "restart_gateway_title": "Reinicie o {{productName}} para concluir",
-      "restart_gateway_body": "Um nome de rede já está disponível, mas este servidor não resolveu nenhum ao iniciar, então o nome ainda não é confiável. Reinicie o {{productName}} uma vez e a última etapa estará pronta.",
+      "restart_gateway_body": "Este servidor precisa reiniciar para usar o endereço atual da tailnet. Reinicie o {{productName}} uma vez e a última etapa estará pronta.",
       "occupied_title": "Já existe outra coisa servida aqui",
       "occupied_body": "O Tailscale já está servindo outra coisa neste endereço. Publicar iria substituí-la, então nada foi alterado.",
       "occupied_replace": "Se for seguro substituir, execute <cmd/>",
@@ -12383,6 +12388,7 @@
       "toggle_side_terminal": "Alternar terminal do painel lateral",
       "previous_terminal": "Terminal anterior",
       "next_terminal": "Próximo terminal",
+      "clear_terminal": "Limpar o terminal",
       "toggle_dictation_mute": "Silenciar ou ativar o ditado"
     },
     "useNativeNotification": {
@@ -19856,7 +19862,15 @@
         "strict_off": "Permitir um pequeno atraso aleatório",
         "strict_off_hint": "Começa um pouco depois para distribuir a carga",
         "strict_on": "Executar no horário exato",
-        "strict_on_hint": "Começa exatamente no horário agendado"
+        "strict_on_hint": "Começa exatamente no horário agendado",
+        "send_to_telegram": "Definir destino no Telegram",
+        "telegram_failed": "{{name}} (falha)",
+        "telegram_failed_reason": "{{name}} (falha: {{reason}})",
+        "telegram_failed_heading": "Algumas tarefas marcadas não puderam ser atualizadas. Elas continuam selecionadas.",
+        "telegram_kept_slack_heading": "Estas tarefas marcadas mantêm o canal do Slack e não foram atualizadas. Elas continuam selecionadas.",
+        "telegram_updated_many": "{{count}} tarefas agora reportam para {{destination}}.",
+        "telegram_updated_one": "{{count}} tarefa agora reporta para {{destination}}.",
+        "telegram_updated_other": "{{count}} tarefas agora reportam para {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_many": "Não foi possível mover {{count}} de {{total}} tarefas",
@@ -22195,7 +22209,8 @@
         "clear_shortcut": "Limpar",
         "panel_toggles": "Alternar painéis",
         "skips_shell_hint": "Também funciona dentro do terminal, por isso o seu shell deixa de receber esta tecla — não escolha Ctrl+C nem Ctrl+R.",
-        "skips_shell_hint_mac": "Também funciona dentro do terminal, por isso o seu shell deixa de receber esta tecla — não escolha ⌃C (Ctrl+C) nem ⌃R (Ctrl+R)."
+        "skips_shell_hint_mac": "Também funciona dentro do terminal, por isso o seu shell deixa de receber esta tecla — não escolha ⌃C (Ctrl+C) nem ⌃R (Ctrl+R).",
+        "terminal_focus_hint": "Só funciona enquanto um terminal tem o foco, por isso pode partilhar uma tecla com Pesquisar em tudo. O seu shell deixa de receber esta tecla."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analisa cada sessão concluída e cria um rascunho de SKILL.md reutilizável quando ela demonstra um procedimento recorrente — um que uma sessão futura, trabalhando em um alvo diferente, executaria novamente. Desativado por padrão. Os rascunhos vão para a fila de pendentes em Personalizar → Habilidades para revisão — nada entra em vigor sem a sua aprovação (veja abaixo).",
@@ -25235,6 +25250,7 @@
       "chat_model_picker": "O botão de modelo na caixa de mensagem. Mostra o modelo deste chat e abre o seletor de modelos.",
       "chat_session_title": "O título da sessão no topo do chat. Mostra o nome da sessão; clique nele para renomear a sessão.",
       "composer_approval_mode": "O seletor do modo de aprovação na linha de controles da caixa de mensagem. Define se só as consultas rodam sem perguntar, se as próprias buscas na memória, nos chats, nas habilidades e no conhecimento também rodam, se esta sessão é confiável ou se tudo é aprovado automaticamente (YOLO).",
+      "composer_project_aws_profile": "A linha do perfil da AWS no fim do seletor de projeto, que o botão de pasta sob a caixa de mensagem abre. Ela mostra a pasta deste chat e o perfil da AWS que os novos chats nessa pasta usam; abra-a para escolher um perfil registrado no app AWS Control ou já vinculado a uma pasta em aws.project_profiles, digitar outro nome de perfil ou voltar ao login da AWS do próprio gateway. Perfis que estão só na configuração da AWS do computador não aparecem: se nenhuma das duas fontes tiver um, a linha não é exibida, então registre um em AWS Control → Adicionar contas → Registrar selecionados. A página de documentação Configuration, seção An AWS profile per project, explica isso.",
       "composer_voice_input": "O botão do microfone na caixa de mensagem. Pressione-o para ditar em vez de digitar; numa tela sensível ao toque, alterna entre o teclado e segurar para falar.",
       "members_bot_sessions_switch": "O interruptor no topo da aba Sessões, no cartão de perfil de um bot. O rótulo traz o nome do bot; ligado, as sessões desse bot também aparecem na sua própria lista de sessões."
     }

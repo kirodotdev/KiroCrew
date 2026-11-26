@@ -1387,11 +1387,12 @@ the stream is `absent (not_retained)` rather than `absent (no_record)`.
 **The workflow side is the run's events, not one call's.** The row id's call
 number is a 1-based counter in the agent pool; an event's `call_index` is a
 0-based counter in the runner. They count different things, so no event is
-attributed to one row. Every `agent_*` event of the run is shown with its own
-`agent_id` (a required data key of `agent_started`, `agent_progress` and
-`agent_finished`); the run-level events (`log`, `phase_started`, `budget_update`,
-`approval_requested`, `run_*`) carry no agent id. A sibling call's events appear
-beside this call's.
+attributed to one row. Every `agent_started` and `agent_finished` event of the
+run is shown with its own `agent_id` (a required data key of both); a running
+call's `agent_progress` is left out, since as rows it would push the run's other
+events out of the kept window. The run-level events (`log`, `phase_started`,
+`budget_update`, `approval_requested`, `run_*`) carry no agent id. A sibling
+call's events appear beside this call's.
 
 **Order.** Each stream's time is normalised to epoch seconds (`task_events.ts`
 is seconds, a crew-log entry's `time` is milliseconds, a workflow event's `ts` is

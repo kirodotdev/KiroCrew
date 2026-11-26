@@ -6863,6 +6863,8 @@
       "closing_terminal": "Terminal wird geschlossen…",
       "fullscreen": "Vollbild",
       "exit_fullscreen": "Vollbild beenden",
+      "fullscreen_shortcut": "Vollbild ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Vollbild beenden ({{shortcut}})",
       "find": "Suchen"
     },
     "tabCloseMenu": {
@@ -6941,7 +6943,8 @@
       "gateway_offline_message_will_not_send": "Gateway offline — Nachricht wird nicht gesendet",
       "killing": "Stopp wird erzwungen…",
       "killing_session": "Stopp der Sitzung wird erzwungen",
-      "list_indent_hint": "In einer Listenzeile rückt Tab ein und Umschalt+Tab aus. Drücke Esc und dann Tab, um die Nachrichteneingabe zu verlassen.",
+      "list_indent_hint": "Drücke Esc und dann Tab, um die Nachrichteneingabe zu verlassen.",
+      "list_indent_keys": "In einer Listenzeile rückt Tab ein und Umschalt+Tab aus.",
       "message_input": "Nachrichteneingabe",
       "message_placeholder": "Nachricht an {{bot}}… (/command · @file · $skill)",
       "message_placeholder_crewmate": "Nachricht an {{bot}}…",
@@ -8322,6 +8325,7 @@
     "markdownPanel": {
       "open_in_remote_editor": "In {{editor}} öffnen",
       "partial_copy_cannot_save": "Nur ein Teil dieser Datei wurde geladen ({{reason}}), daher kann sie nicht über die Datei auf dem Datenträger gespeichert werden.",
+      "partial_copy_preview": "Nur ein Teil dieser Datei wurde geladen ({{reason}}), daher zeigt die Vorschau nur diesen Teil. Lade die Datei über das ⋯-Menü herunter, um sie vollständig zu erhalten.",
       "add_to_artifact_library": "Zur Artefaktbibliothek hinzufügen",
       "add_to_artifacts": "Zu Artefakten hinzufügen",
       "add_to_knowledge": "Zum Wissen hinzufügen",
@@ -9513,6 +9517,7 @@
       "desktop_app_only": "Nur Desktop-App",
       "panel_toggles": "Panels umschalten",
       "unset": "Nicht festgelegt",
+      "terminal_focus_only": "Nur in einem fokussierten Terminal",
       "save_refused": "Nicht gespeichert: Der Browserspeicher ist voll. Gib etwas Speicher frei und versuche es erneut."
     },
     "sidePanelLayout": {
@@ -10542,7 +10547,7 @@
       "trust_off_title": "Zugriff über den Netzwerknamen dieses Computers erlauben",
       "trust_off_body": "Das Dashboard weist Anfragen von Adressen ab, die es nicht kennt. Erlauben Sie seinen eigenen Namen im privaten Netzwerk, damit ein Telefon es erreichen kann. Dies öffnet keinen Port zum Internet und ändert nicht, wie Sie sich anmelden.",
       "restart_gateway_title": "{{productName}} neu starten, um abzuschließen",
-      "restart_gateway_body": "Ein Netzwerkname ist jetzt verfügbar, aber dieser Server hat beim Start keinen aufgelöst, sodass der Name noch nicht vertrauenswürdig ist. Starten Sie {{productName}} einmal neu, und der letzte Schritt ist bereit.",
+      "restart_gateway_body": "Dieser Server muss neu starten, um seine aktuelle Tailnet-Adresse zu verwenden. Starte {{productName}} einmal neu, dann ist der letzte Schritt bereit.",
       "occupied_title": "Hier wird bereits etwas anderes bereitgestellt",
       "occupied_body": "Tailscale stellt an dieser Adresse bereits etwas anderes bereit. Ein Veröffentlichen würde es ersetzen, daher wurde nichts geändert.",
       "occupied_replace": "Wenn das Ersetzen unbedenklich ist, führe <cmd/> aus",
@@ -12109,6 +12114,7 @@
       "toggle_side_terminal": "Seitenpanel-Terminal umschalten",
       "previous_terminal": "Vorheriges Terminal",
       "next_terminal": "Nächstes Terminal",
+      "clear_terminal": "Terminal leeren",
       "toggle_dictation_mute": "Diktat stummschalten oder fortsetzen"
     },
     "useNativeNotification": {
@@ -19335,7 +19341,14 @@
         "strict_off": "Kleine zufällige Verzögerung erlauben",
         "strict_off_hint": "Startet etwas später, um die Last zu verteilen",
         "strict_on": "Zur exakten Zeit ausführen",
-        "strict_on_hint": "Startet genau nach Zeitplan"
+        "strict_on_hint": "Startet genau nach Zeitplan",
+        "send_to_telegram": "Telegram-Ziel festlegen",
+        "telegram_failed": "{{name}} (fehlgeschlagen)",
+        "telegram_failed_reason": "{{name}} (fehlgeschlagen: {{reason}})",
+        "telegram_failed_heading": "Einige ausgewählte Jobs konnten nicht aktualisiert werden. Diese bleiben ausgewählt.",
+        "telegram_kept_slack_heading": "Diese ausgewählten Jobs behalten ihren Slack-Kanal, wurden nicht aktualisiert und bleiben ausgewählt.",
+        "telegram_updated_one": "{{count}} Job berichtet jetzt an {{destination}}.",
+        "telegram_updated_other": "{{count}} Jobs berichten jetzt an {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_one": "{{count}} von {{total}} Job konnte nicht verschoben werden",
@@ -21626,7 +21639,8 @@
         "clear_shortcut": "Leeren",
         "panel_toggles": "Panels umschalten",
         "skips_shell_hint": "Funktioniert auch im Terminal, sodass deine Shell diese Taste nicht mehr erhält — wähle nicht Strg+C oder Strg+R.",
-        "skips_shell_hint_mac": "Funktioniert auch im Terminal, sodass deine Shell diese Taste nicht mehr erhält — wähle nicht ⌃C (Strg+C) oder ⌃R (Strg+R)."
+        "skips_shell_hint_mac": "Funktioniert auch im Terminal, sodass deine Shell diese Taste nicht mehr erhält — wähle nicht ⌃C (Strg+C) oder ⌃R (Strg+R).",
+        "terminal_focus_hint": "Wirkt nur, solange ein Terminal den Fokus hat, und kann sich daher eine Taste mit „Überall suchen“ teilen. Deine Shell erhält diese Taste nicht mehr."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Jede abgeschlossene Sitzung analysieren und eine wiederverwendbare SKILL.md entwerfen, wenn die Sitzung ein wiederkehrendes Verfahren zeigt — eines, das eine künftige Sitzung an einem anderen Ziel erneut ausführen würde. Standardmäßig aus. Entwürfe werden in der Warteschlange unter „Anpassen → Fähigkeiten“ zur Überprüfung bereitgestellt — nichts geht ohne deine Genehmigung live (siehe unten).",
@@ -24631,6 +24645,7 @@
       "chat_model_picker": "Die Modell-Schaltfläche im Nachrichtenfeld. Sie zeigt das Modell dieses Chats und öffnet die Modellauswahl.",
       "chat_session_title": "Der Sitzungstitel oben im Chat. Er zeigt den Namen der Sitzung; klicke darauf, um die Sitzung umzubenennen.",
       "composer_approval_mode": "Die Auswahl des Freigabemodus in der Steuerleiste des Nachrichtenfelds. Sie legt fest, ob nur Nachschlagen ohne Nachfrage läuft, ob auch seine eigenen Suchen in Erinnerungen, Chats, Skills und Wissen ohne Nachfrage laufen, ob dieser Sitzung vertraut wird oder ob alles automatisch freigegeben wird (YOLO).",
+      "composer_project_aws_profile": "Die AWS-Profilzeile unten in der Projektauswahl, die du mit der Ordner-Schaltfläche unter dem Nachrichtenfeld öffnest. Sie nennt den Ordner dieses Chats und das AWS-Profil, das neue Chats in diesem Ordner nutzen; öffne sie, um ein Profil zu wählen, das in der App AWS Control registriert oder in aws.project_profiles bereits an einen Ordner gebunden ist, einen anderen Profilnamen einzugeben oder zur eigenen AWS-Anmeldung des Gateways zurückzukehren. Profile, die nur in der AWS-Konfiguration des Computers stehen, werden nicht aufgeführt: Hat keine der beiden Quellen eines, fehlt die Zeile, also registriere eines unter AWS Control → Konten hinzufügen → Ausgewählte registrieren. Die Doku-Seite Configuration, Abschnitt An AWS profile per project, erklärt das.",
       "composer_voice_input": "Die Mikrofon-Schaltfläche im Nachrichtenfeld. Drücke sie, um zu diktieren statt zu tippen; auf einem Touchscreen wechselt sie zwischen Tastatur und Gedrückthalten zum Sprechen.",
       "members_bot_sessions_switch": "Der Schalter oben im Sitzungen-Tab auf der Profilkarte eines Bots. Seine Beschriftung nennt den Bot; eingeschaltet erscheinen dessen Sitzungen auch in deiner eigenen Sitzungsliste."
     }

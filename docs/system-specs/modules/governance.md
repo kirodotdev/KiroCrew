@@ -2677,7 +2677,16 @@ read-your-writes should add it deliberately, with its own tests.
   events a hook may fire on; an unnamed list permits every event; then
   `hooks:<name>` for its inner `hooks` list, where an agent spec's hook is
   `<agent>/<Event>/<n>`, the `#n` of its name, and a Hooks-page hook is its
-  name; an unnamed list permits every hook, a refused PreToolUse hook still
+  name; a spec hook document with a name of its own is also
+  `<agent>/<Event>/<name>` (`hook_stable_name`; never the normalizer's
+  `<Trigger>-<n>` default, never all digits, never holding `/`, `\`, `*`, `?`
+  or `[`, never shared by two of the spec's documents, see `with_stable_names`).
+  Each name is asked once through `vet_and_audit`, so policy and profile
+  together, with one audit row per name: an explicit deny of either, or an LTS
+  evaluation error on either, refuses, and short of that a permit of either
+  admits the hook; a policy that lists only the number beneath a profile that
+  lists only the name refuses it; an unnamed list permits every
+  hook, a refused PreToolUse hook still
   blocks the tool, and a listed hook still meets the shell deny list and the
   sandbox; `hook_event_governance.hook_refusal`); inbound
   webhook sources in `webhook_sources.source_refusal` (the `webhooks` scope,
@@ -3657,7 +3666,8 @@ bare "Telemetry", because this scope governs the outbound heartbeat and OTLP exp
 
 `dashboard.tailscale.enabled` lets the gateway ask the local Tailscale daemon for
 this machine's MagicDNS name at startup and add `https://<name>` to the CSRF origin
-allowlist and the DNS-rebinding `Host` barrier, so `tailscale serve` reaches the
+allowlist (`https://<name>:<port>` in its place when `dashboard.tailscale.https_port`
+is not 443) and the DNS-rebinding `Host` barrier, so `tailscale serve` reaches the
 dashboard without a hand-written `dashboard.url` (`dashboard/tailnet.py`; RFC
 `request-for-change/rfc-tailnet-dashboard-access.md`). Governed by the
 `capabilities.tailnet_origin` `SCOPE_CATALOG` capability row

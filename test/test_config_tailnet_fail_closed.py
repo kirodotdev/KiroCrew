@@ -14,6 +14,7 @@ import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from multidict import CIMultiDict
 
 from kiro_crew.config import validation
@@ -633,3 +634,23 @@ class TestGovernanceCeilingStillWins:
         ):
             trust = asyncio.run(governed_tailnet_trust(False, (), "node", identity_unknown=True))
         assert trust.enforces_identity is True
+
+
+class TestHttpsPort:
+    """``dashboard.tailscale.https_port`` is kept when it is a port and reads as 443
+    otherwise, with one warning naming the key; it is never clamped."""
+
+    def test_the_default_is_443(self) -> None:
+        assert getattr(_tailscale_config_from({}), "https_port", None) == 443
+
+    @pytest.mark.parametrize("raw", [5479, "5479"])
+    def test_a_port_is_kept(self, raw: object) -> None:
+        assert getattr(_tailscale_config_from({"https_port": raw}), "https_port", None) == 5479
+
+    @pytest.mark.parametrize("raw", [0, -1, 70000, "abc", True])
+    def test_anything_else_reads_as_443_with_one_warning(self, raw: object, caplog) -> None:
+        with caplog.at_level("WARNING", logger="kiro_crew.config.loader"):
+            cfg = _tailscale_config_from({"https_port": raw})
+        assert getattr(cfg, "https_port", None) == 443
+        warned = [r for r in caplog.records if "dashboard.tailscale.https_port" in r.getMessage()]
+        assert len(warned) == 1

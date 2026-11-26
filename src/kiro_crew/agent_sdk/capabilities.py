@@ -381,6 +381,15 @@ class SessionCapabilities:
     #: no such list is read and no row is shown.
     reports_mcp_sign_in_suspects: bool
 
+    #: Whether Crew folds the user's standalone ``~/.kiro/hooks/*.json`` files into
+    #: the hooks it fires for this harness's turns, and tells the chat when a
+    #: checkout's own hook files are withheld.
+    #:
+    #: True for KAS. False everywhere else, an unknown backend included: goose and
+    #: opencode have Crew fire their spec hooks but do not read a user's standalone
+    #: files, so none are added.
+    crew_merges_user_hook_files: bool
+
     #: Whether the harness keeps the same native session across its ``/compact``
     #: boundary, so Crew compacts in place: it waits for the turn permit, sends
     #: ``/compact`` and leaves the durable session mapping untouched.
@@ -432,6 +441,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         model_auto_switches_in_place=backend == ACP_BACKEND_KAS,
         harness_loads_agent_context=backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS),
         reports_mcp_sign_in_suspects=backend == ACP_BACKEND_OPENCODE,
+        crew_merges_user_hook_files=backend == ACP_BACKEND_KAS,
         keeps_session_across_compaction=is_claude_backend_name(backend),
     )
 
@@ -479,6 +489,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     model_auto_switches_in_place=False,
     harness_loads_agent_context=False,
     reports_mcp_sign_in_suspects=False,
+    crew_merges_user_hook_files=False,
     keeps_session_across_compaction=False,
 )
 

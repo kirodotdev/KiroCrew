@@ -1,7 +1,7 @@
 import type { ComponentType } from 'react'
 import type { ChatMessage, ChatSlot, SourceProviderId } from '../types'
 import { reportSeamCollision } from '../apps/seamCollision'
-import { safeSetItem } from './safeStorage'
+import { safeGetItem, safeSetItem } from './safeStorage'
 import { bitbucketServerHostSet, bitbucketServerLink, gerritHostSet, gerritLink } from './selfHostedForgeLinks'
 
 /** A provider brand glyph. Rendered by the chip / tab sites at THEIR size, so a
@@ -1086,9 +1086,9 @@ const MAX_WRITABLE_STAMP_MS = MAX_PLAUSIBLE_STAMP_MS - 1
  * allowlist arrives asynchronously from dashboard config.
  */
 function readStoredRevealed(): StoredRevealed[] {
-  if (typeof localStorage === 'undefined') return []
   const out: StoredRevealed[] = []
   try {
+    if (typeof localStorage === 'undefined') return out
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index)
       if (!key) continue
@@ -1234,10 +1234,9 @@ export function commitDismissedSource(slot: string, url: string, dismissed: bool
  * are ignored instead of entering source-selection state.
  */
 export function loadSeenPullRequestLinks(): Map<string, Set<string>> {
-  if (typeof localStorage === 'undefined') return new Map()
   let parsed: unknown
   try {
-    parsed = JSON.parse(localStorage.getItem(SEEN_SOURCES_STORAGE_KEY) || '[]')
+    parsed = JSON.parse(safeGetItem(SEEN_SOURCES_STORAGE_KEY) || '[]')
   } catch {
     return new Map()
   }
@@ -1378,9 +1377,9 @@ interface StoredSelection {
  *  transcript before it selects anything, so this validation is bounding rather
  *  than authorization. */
 function readStoredSelections(): StoredSelection[] {
-  if (typeof localStorage === 'undefined') return []
   const out: StoredSelection[] = []
   try {
+    if (typeof localStorage === 'undefined') return out
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index)
       if (!key) continue

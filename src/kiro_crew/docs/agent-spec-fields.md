@@ -1299,9 +1299,16 @@ An edition build can name some of its own servers for your agent too
 credential vendor. On kiro-cli and KAS each one it names and supplies on this host
 is added the same way, at spawn and never in your file, with the entry Crew's default agent carries
 and without its `autoApprove`, whether or not your `tools` grants `tool_search`.
-The same opt-outs apply, it is not added while a wildcard in your `allowedTools`
-would cover it, and a Crew Mode conductor gets none. You approve each call unless
-your own `allowedTools` names the server. On KAS its tools follow the rule for
+The same opt-outs apply and a Crew Mode conductor gets none. On kiro-cli it is not
+added while a wildcard in your `allowedTools` would cover it. On KAS it is: when
+`allowedTools` is a non-empty list, Crew adds an `ask` rule for `<server>/*` to
+`permissions` in the spec your session runs, unless the list names the server
+and no wildcard reaches it after trimming entries. The rule keeps calls asking
+regardless of a wildcard's `allow`. If the rule cannot reach KAS, Crew leaves
+that server out. An agent
+whose `tools` is empty also gets it there. To keep it out, exclude it
+(`excludedTools: ["@<server>"]`) or deny it in `permissions`. You approve each call
+unless your own `allowedTools` names the server (and, on KAS, no wildcard does). On KAS its tools follow the rule for
 your own servers, not the deferral of Crew's. Claude Code and Codex add none, for
 the reason they add no app server.
 

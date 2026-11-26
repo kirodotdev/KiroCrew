@@ -365,10 +365,21 @@ the same and the difference is the whole security story:
   enables its daemon-derived origin, restarts through the gateway's formal
   single-flight restart path, waits for the replacement listener to prove the
   new startup boundary is active, publishes through Tailscale Serve, verifies
-  the 443 mapping, and only then displays a short-lived sign-in QR. Tailscale
-  creates and renews the private certificate after HTTPS is enabled; there is no
-  certificate file to create or install manually. The action still refuses to
-  replace a different service already mounted at `443/`.
+  the mapping on `dashboard.tailscale.https_port` (443 unless set), and only then
+  displays a short-lived sign-in QR. Tailscale creates and renews the private
+  certificate after HTTPS is enabled; there is no certificate file to create or
+  install manually. The action still refuses to replace a different service
+  already mounted at `/` on that port.
+
+  **Port 443 already taken.** When another service owns port 443 on this tailnet
+  name, set `dashboard.tailscale.https_port` (for example `kirocrew config set
+  dashboard.tailscale.https_port 8443`) and restart. Kiro Crew then publishes,
+  checks and withdraws only that port, and trusts `https://<name>:<port>` in place
+  of `https://<name>`; until the restart the card asks for one instead of showing a
+  QR. Run `kirocrew tailnet down` before changing the port: Kiro Crew manages only
+  the port it is set to, so a handler left on the old port stays until you remove
+  it. Cookies are scoped by host name, not port, so every service on the same
+  tailnet name receives the dashboard's cookies, as it already does on 443.
 
   The same click enrolls this machine's daemon-reported Tailscale login in the
   explicit allowlist and makes the phone session survive gateway restarts and
@@ -392,8 +403,9 @@ the same and the difference is the whole security story:
   card is the path that safely discovers the local login and atomically enables
   identity-bound restart persistence without asking you to hand-edit an
   allowlist.
-  `kirocrew tailnet up` runs `tailscale serve` for you — HTTPS on 443 in front of
-  the dashboard's loopback port — and prints the URL to open on your phone.
+  `kirocrew tailnet up` runs `tailscale serve` for you — HTTPS on
+  `dashboard.tailscale.https_port` (443 unless set) in front of the dashboard's
+  loopback port — and prints the URL to open on your phone.
 
   The URL `tailnet up` prints carries **no session**, so opening it alone lands on a
   login you cannot complete from the phone. `kirocrew token` is the step that hands you
@@ -402,9 +414,10 @@ the same and the difference is the whole security story:
   trusted origin at startup.
 
   It prints that line only when **this** dashboard is the verified service behind that
-  name — `tailscale serve` must be proxying 443 to this gateway's port. That URL carries
-  a session, so handing it out while some other service holds the name would deliver your
-  session to it. Since `tailnet up` refuses to overwrite a foreign `443/` handler, a host
+  name — `tailscale serve` must be proxying `dashboard.tailscale.https_port`, the port the
+  line carries, to this gateway's port. That URL carries a session, so handing it out
+  while some other service holds the name would deliver your session to it. Since
+  `tailnet up` refuses to overwrite a foreign handler on that port, a host
   can legitimately have the setting on and a resolvable name while the mount belongs to
   something else; in that case `token` says so instead of printing the line.
 
@@ -442,25 +455,29 @@ the same and the difference is the whole security story:
   `kirocrew tailnet status` shows the three things that are independently
   required — whether the setting is on, whether a MagicDNS name resolves right
   now, and whether serve is actually pointing at this dashboard. Any one of them
-  being wrong looks identical from your phone. `kirocrew tailnet down` stops
+  being wrong looks identical from your phone. It also prints the HTTPS port it
+  read (`Port: 8443 (dashboard.tailscale.https_port)`), so a value that fell back
+  to 443 is visible. `kirocrew tailnet down` stops
   publishing and leaves the setting alone, since the trusted origin is unreachable
   without serve anyway.
 
   Both directions refuse rather than clobber: `tailscale serve` **replaces**
-  whatever handler is at `443/`, and `off` removes it — so if you published
+  whatever handler is at `/` on `dashboard.tailscale.https_port` (443 unless
+  set), and `off` removes it — so if you published
   something else there by hand, `up` and `down` both stop and print the command
   instead of overwriting or deleting your mapping.
 
   A serve configuration that sits entirely on **other** ports — another project
   on this machine published on port 80 or 8443, say — blocks neither direction.
-  Publishing touches only `443/`, so when Tailscale's own status shows every
-  mapping on some other port, the card and `tailnet up` treat 443 as free and
-  proceed, and `down` leaves the other mappings alone. Only a serve entry
-  naming port 443, or a status this build cannot read or attribute, triggers
-  the refusal.
+  Publishing touches only `/` on the configured HTTPS port, so when Tailscale's
+  own status shows every mapping on some other port, the card and `tailnet up`
+  treat that port as free and proceed, and `down` leaves the other mappings
+  alone. Only a serve entry naming the configured port, or a status this build
+  cannot read or attribute, triggers the refusal.
 
   At startup the setting reads your own MagicDNS name from the local Tailscale
-  daemon and trusts `https://<that name>` as an origin, so you do **not** have to
+  daemon and trusts `https://<that name>` as an origin (`https://<that name>:<port>`
+  when `dashboard.tailscale.https_port` is not 443), so you do **not** have to
   look the name up and hand-write `dashboard.url`. The Overview one-click flow
   performs and waits for the restart required when it turns the setting on. If
   Tailscale is absent, stopped, or MagicDNS is off during a later gateway start,
@@ -472,7 +489,7 @@ the same and the difference is the whole security story:
 
   If you would rather do it by hand, the equivalent is:
   ```bash
-  tailscale serve --bg --https 443 http://127.0.0.1:5476
+  tailscale serve --bg --https 443 http://127.0.0.1:5476   # 443: dashboard.tailscale.https_port
   kirocrew config set dashboard.tailscale.enabled true
   kirocrew restart
   ```

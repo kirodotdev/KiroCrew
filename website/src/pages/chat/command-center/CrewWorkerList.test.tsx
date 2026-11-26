@@ -12,9 +12,10 @@ vi.mock('../../../hooks/usePanelTabs', () => ({ openPanelView: panel.openPanelVi
 import { setQuestionCard, switchSlot } from '../../../store/chatSlice'
 import { sseSlotPatch } from '../../../store/dashboardSlice'
 import { ApiError } from '../../../api/apiError'
-import { CREW_WORKERS_FAILED_POLL_MS, CREW_WORKERS_FALLBACK_POLL_MS, CREW_WORKERS_PUSH_COALESCE_MS, CrewWorkersTab, crewWorkersPollMs, reopenCrewSession } from './CrewWorkerList'
+import { CREW_WORKERS_FAILED_POLL_MS, CREW_WORKERS_FALLBACK_POLL_MS, CREW_WORKERS_PUSH_COALESCE_MS, CrewWorkersTab, crewWorkerQueryKey, crewWorkersPollMs, reopenCrewSession } from './CrewWorkerList'
 import ConductorModeCrewPanel, { CREW_BOARD_EXPANDED_KEY } from './ConductorModeCrewPanel'
 import { setCrewModeCatalog } from '../../../lib/crewMode'
+import { resetCrewWorkersPoll } from '../../../lib/crewWorkersPoll'
 
 const W = (key: string, title: string, status: string, group: string) =>
   ({ key, title, agent: 'kirocrew-worker', status, group, last_activity: '', ledger_item: '', created_by: 'root-1' })
@@ -56,7 +57,7 @@ describe('Conductor mode Crew tab', () => {
     api.crewBoard.mockResolvedValue(BOARD)
     api.sessionSummary.mockResolvedValue({ enabled: false, stale: false, intents: [], constraints: [], generated_at: null, user_turns: null, last_activity: null })
   })
-  afterEach(() => vi.clearAllMocks())
+  afterEach(() => { vi.clearAllMocks(); resetCrewWorkersPoll() })
 
   it('opens on Status: Overview from the ledger goal, Needs your input, Milestones and Recap', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
@@ -121,6 +122,34 @@ describe('Conductor mode Crew tab', () => {
     const finished = screen.getByTestId('conductor-mode-finished')
     expect(finished).toHaveTextContent('Finished · 1')
     expect(within(finished).getByText('Old one')).toBeInTheDocument()
+  })
+
+  it('List: Finished counts the closed members the answer left out, and Show more reads the next page', async () => {
+    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [D('live', 'Live one', 'root-1'), { ...D('old', 'Old one', 'root-1', 'done'), status: 'closed' }], closed_omitted: 250 })
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    await screen.findByText('Old one')
+    const finished = screen.getByTestId('conductor-mode-finished')
+    expect(finished).toHaveTextContent('Finished · 251')
+    const older = within(finished).getByTestId('crew-show-older')
+    expect(older).toHaveTextContent('Show 200 more')
+    expect(api.crewWorkers).toHaveBeenLastCalledWith('root-1', undefined)
+    fireEvent.click(older)
+    // One page more than the one closed member listed.
+    await waitFor(() => expect(api.crewWorkers).toHaveBeenLastCalledWith('root-1', 201))
+  })
+
+  it('List: a search counts its finished matches only, not the closed members the answer left out', async () => {
+    sessionStorage.setItem(crewWorkerQueryKey('root-1'), 'Old')
+    try {
+      api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [D('live', 'Live one', 'root-1'), { ...D('old', 'Old one', 'root-1', 'done'), status: 'closed' }], closed_omitted: 250 })
+      renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />)
+      await toList()
+      await screen.findByText('Old one')
+      expect(screen.getByTestId('conductor-mode-finished')).toHaveTextContent('Finished · 1')
+    } finally {
+      sessionStorage.removeItem(crewWorkerQueryKey('root-1'))
+    }
   })
 
   it('List: a lead folds and unfolds its crew, and a folded lead shows its counts', async () => {
@@ -272,7 +301,7 @@ describe('Conductor mode Crew tab', () => {
   it('the Crew tab finds the root from a crew member row', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
     renderWith(<CrewWorkersTab slot="w-need" active />, [{ key: 'w-need', crew_root: 'root-1', messages: 1 }, { key: 'plain' }])
-    await waitFor(() => expect(api.crewWorkers).toHaveBeenCalledWith('root-1'))
+    await waitFor(() => expect(api.crewWorkers).toHaveBeenCalledWith('root-1', undefined))
   })
 
   it('reopenCrewSession says whether the reopened session took the view', async () => {

@@ -259,6 +259,35 @@ class TestEndpoint:
         assert data["agent"] is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "pct", "agent"),
+        [
+            pytest.param("template", None, None, id="a_template_pick_names_no_crew"),
+            pytest.param("member", 80.0, "worker", id="a_crewmate_pick_names_its_crew"),
+        ],
+    )
+    async def test_get_without_a_live_session_reads_the_name_in_the_slots_namespace(
+        self, kind: str, pct: float | None, agent: str | None
+    ) -> None:
+        """A slot stamped with a template whose name a crewmate also uses starts a
+        template session, as its first turn resolves it, so it follows the global and
+        names no crew; the same name stamped as a crewmate reads that crewmate's value."""
+        cfg = _crew_cfg(worker=80.0)
+        slot = _ChatSlot("test")
+        slot.agent = "worker"
+        slot.agent_kind = kind
+        state = MagicMock(spec=DashboardState)
+        state._slots = {slot.key: slot}
+        state.sessions = _manager()
+        state.conversation_log = MagicMock()
+        with unittest.mock.patch.object(KiroCrewConfig, "load", return_value=cfg):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.get("/api/chat/slots/test/autocompact")
+                data = await resp.json()
+        assert data["agent_pct"] == pct
+        assert data["agent"] == agent
+
+    @pytest.mark.asyncio
     async def test_a_credential_shaped_crew_name_is_redacted_in_the_label(self) -> None:
         """The name is display text: a token-shaped crew name never reaches the browser."""
         token = github_classic(seed=137)

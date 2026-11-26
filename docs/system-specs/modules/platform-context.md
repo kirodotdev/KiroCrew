@@ -1661,8 +1661,13 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `extra_mcp_servers()` entry this host supplies to the spec a custom agent's
   session runs, at spawn and never in the user's file, built as
   `mcp_sources.seed_edition_servers` builds it and without `autoApprove`, under
-  the custom-agent opt-outs; not while a wildcard of the agent's own
-  `allowedTools` reaches it, and not for a Crew Mode conductor. An edition check
+  the custom-agent opt-outs, and not for a Crew Mode conductor. Where a wildcard
+  of the agent's own `allowedTools` reaches it, kiro-cli does not get it. KAS
+  adds an `ask` rule for `<server>/*` whenever `allowedTools` is a non-empty
+  list, unless it names the server and no wildcard reaches it after trimming
+  entries. Its calls still prompt otherwise, and a KAS agent that grants no
+  tools gets it too. A `permissions` block that would not carry the required
+  rule keeps it out there as well. An edition check
   that reports where it is mounted judges the spec
   `default_crew_servers.session_spec_on(backend, agent, spec)` returns, the one
   list of the spawns that add it, so it never counts the server where a spawn

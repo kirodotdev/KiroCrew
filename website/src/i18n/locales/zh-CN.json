@@ -6679,6 +6679,8 @@
       "closing_terminal": "正在关闭终端…",
       "fullscreen": "全屏",
       "exit_fullscreen": "退出全屏",
+      "fullscreen_shortcut": "全屏 ({{shortcut}})",
+      "exit_fullscreen_shortcut": "退出全屏 ({{shortcut}})",
       "find": "查找"
     },
     "tabCloseMenu": {
@@ -6756,7 +6758,8 @@
       "gateway_offline_message_will_not_send": "网关离线 — 消息不会发送",
       "killing": "正在强制停止…",
       "killing_session": "正在强制停止会话",
-      "list_indent_hint": "在列表行中，Tab 增加缩进，Shift+Tab 减少缩进。要离开消息输入框，先按 Esc，再按 Tab。",
+      "list_indent_hint": "要离开消息输入框，先按 Esc，再按 Tab。",
+      "list_indent_keys": "在列表行中，Tab 增加缩进，Shift+Tab 减少缩进。",
       "message_input": "消息输入",
       "message_placeholder": "给 {{bot}} 发消息… (/command · @file · $skill)",
       "message_placeholder_crewmate": "给 {{bot}} 发消息…",
@@ -8111,6 +8114,7 @@
     "markdownPanel": {
       "open_in_remote_editor": "在 {{editor}} 中打开",
       "partial_copy_cannot_save": "此文件只加载了一部分（{{reason}}），因此无法保存覆盖磁盘上的文件。",
+      "partial_copy_preview": "此文件只加载了一部分（{{reason}}），因此预览只显示这一部分。要获取完整文件，请从 ⋯ 菜单下载。",
       "add_to_artifact_library": "添加到产物库",
       "add_to_artifacts": "添加到产物",
       "add_to_knowledge": "添加到知识库",
@@ -9279,6 +9283,7 @@
       "desktop_app_only": "仅桌面应用",
       "panel_toggles": "面板开关",
       "unset": "未设置",
+      "terminal_focus_only": "仅在获得焦点的终端中",
       "save_refused": "未保存：浏览器存储空间已满。请释放一些空间后重试。"
     },
     "sidePanelLayout": {
@@ -10299,7 +10304,7 @@
       "trust_off_title": "允许通过这台电脑的网络名称访问",
       "trust_off_body": "仪表板会拒绝来自它不认识的地址的请求。允许它自己的专用网络名称，手机才能访问。这不会向互联网开放任何端口，也不会改变你的登录方式。",
       "restart_gateway_title": "重启 {{productName}} 以完成设置",
-      "restart_gateway_body": "现在已经能取到网络名称，但本服务启动时还没取到，所以该名称尚未被信任。重启 {{productName}} 一次，最后一步就绪。",
+      "restart_gateway_body": "本服务需要重启才能使用当前的 tailnet 地址。重启 {{productName}} 一次，最后一步就绪。",
       "occupied_title": "该地址已被其他服务占用",
       "occupied_body": "Tailscale 已在这个地址上提供其他服务。发布会覆盖它，因此本次未做任何改动。",
       "occupied_replace": "如果确认可以覆盖，请运行 <cmd/>",
@@ -11835,6 +11840,7 @@
       "toggle_side_terminal": "切换侧边面板终端",
       "previous_terminal": "上一个终端",
       "next_terminal": "下一个终端",
+      "clear_terminal": "清空终端",
       "toggle_dictation_mute": "切换听写静音"
     },
     "useNativeNotification": {
@@ -18814,7 +18820,13 @@
         "strict_off": "允许少量随机延迟",
         "strict_off_hint": "稍晚一点开始，以分散负载",
         "strict_on": "按准确时间运行",
-        "strict_on_hint": "严格按计划时间开始"
+        "strict_on_hint": "严格按计划时间开始",
+        "send_to_telegram": "设置 Telegram 目标",
+        "telegram_failed": "{{name}}（失败）",
+        "telegram_failed_reason": "{{name}}（失败：{{reason}}）",
+        "telegram_failed_heading": "部分勾选的任务未能更新，仍保持选中。",
+        "telegram_kept_slack_heading": "这些勾选的任务保留其 Slack 频道，未更新，仍保持选中。",
+        "telegram_updated_other": "{{count}} 个任务的目标现已设为 {{destination}}。"
       },
       "cronFolders": {
         "batch_move_failed_other": "{{total}} 个任务中有 {{count}} 个无法移动",
@@ -21057,7 +21069,8 @@
         "clear_shortcut": "清除",
         "panel_toggles": "面板开关",
         "skips_shell_hint": "在终端内也会生效，因此 shell 将不再收到该按键——请不要选择 Ctrl+C 或 Ctrl+R。",
-        "skips_shell_hint_mac": "在终端内也会生效，因此 shell 将不再收到该按键——请不要选择 ⌃C (Ctrl+C) 或 ⌃R (Ctrl+R)。"
+        "skips_shell_hint_mac": "在终端内也会生效，因此 shell 将不再收到该按键——请不要选择 ⌃C (Ctrl+C) 或 ⌃R (Ctrl+R)。",
+        "terminal_focus_hint": "仅在终端获得焦点时生效，因此可以与全局搜索共用同一按键。shell 将不再收到该按键。"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "分析每个已完成会话，当该会话展示出会复现的流程（即未来会话在处理不同目标时仍会再次执行的流程）时起草可复用 SKILL.md。默认关闭。草稿会暂存到“自定义 → 技能”的待审队列中供审阅 — 未经你批准不会生效（见下文）。",
@@ -24027,6 +24040,7 @@
       "chat_model_picker": "消息框中的模型按钮，显示当前会话使用的模型，点击可打开模型选择器。",
       "chat_session_title": "会话顶部的标题，文字就是会话名称，点击即可重命名会话。",
       "composer_approval_mode": "消息框控制栏中的审批模式选择器，用于设置是只有查找类操作直接运行（常规）、它自己的记忆、对话、技能和知识搜索也直接运行（读取）、信任本会话（信任），还是全部自动批准（YOLO）。",
+      "composer_project_aws_profile": "项目选择器底部的 AWS profile 行，点消息框下方的文件夹按钮即可打开选择器。它显示这个聊天所在的文件夹，以及该文件夹里新聊天使用的 AWS profile；展开后可以选择在 AWS Control 应用中注册过的 profile，或在 aws.project_profiles 中已绑定到文件夹的 profile，也可以输入其他 profile 名，或改回网关自身 AWS 登录。只存在于电脑 AWS 配置里的 profile 不会列出：两个来源都没有 profile 时此行不显示，请到 AWS Control → 添加账户 → 注册所选中注册一个。文档 Configuration 页的 An AWS profile per project 一节有说明。",
       "composer_voice_input": "消息框中的麦克风按钮，按下即可用语音输入代替打字；在触摸屏上它会在键盘和按住说话之间切换。",
       "members_bot_sessions_switch": "bot 资料卡“会话”标签页顶部的开关，标签里写着这个 bot 的名字。打开后，这个 bot 的会话也会显示在你自己的会话列表中。"
     }

@@ -367,3 +367,26 @@ class TestOriginSet:
         origins = build_allowed_origins(5476, local_only=True, tailnet_host=_GOOD)
         assert "http://127.0.0.1:5476" in origins
         assert "http://localhost:5476" in origins
+
+    def test_a_configured_https_port_replaces_the_bare_origin(self) -> None:
+        """Not added beside it: the bare name would trust whatever owns 443."""
+        from kiro_crew.dashboard.urls import origin_floor
+
+        baseline = build_allowed_origins(5476, local_only=True)
+        contributed = build_allowed_origins(
+            5476, local_only=True, tailnet_host=_GOOD, tailnet_https_port=5479
+        )
+        assert contributed - baseline == {f"https://{_GOOD}:5479"}
+        floor = origin_floor(5476, _GOOD, 5479)
+        assert f"https://{_GOOD}:5479" in floor
+        assert f"https://{_GOOD}" not in floor
+
+    def test_443_keeps_the_bare_origin(self) -> None:
+        from kiro_crew.dashboard.urls import origin_floor
+
+        origins = build_allowed_origins(
+            5476, local_only=True, tailnet_host=_GOOD, tailnet_https_port=443
+        )
+        assert f"https://{_GOOD}" in origins
+        assert f"https://{_GOOD}:443" not in origins
+        assert f"https://{_GOOD}" in origin_floor(5476, _GOOD, 443)

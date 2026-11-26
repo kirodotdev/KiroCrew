@@ -7047,6 +7047,8 @@
       "closing_terminal": "Fermeture du terminal…",
       "fullscreen": "Plein écran",
       "exit_fullscreen": "Quitter le plein écran",
+      "fullscreen_shortcut": "Plein écran ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Quitter le plein écran ({{shortcut}})",
       "find": "Rechercher"
     },
     "tabCloseMenu": {
@@ -7126,7 +7128,8 @@
       "gateway_offline_message_will_not_send": "Passerelle hors ligne — le message ne partira pas",
       "killing": "Arrêt forcé en cours…",
       "killing_session": "Arrêt forcé de la session en cours",
-      "list_indent_hint": "Sur une ligne de liste, Tab ajoute un retrait et Maj+Tab le retire. Appuie sur Échap puis sur Tab pour quitter la saisie du message.",
+      "list_indent_hint": "Appuie sur Échap puis sur Tab pour quitter la saisie du message.",
+      "list_indent_keys": "Sur une ligne de liste, Tab ajoute un retrait et Maj+Tab le retire.",
       "message_input": "Saisie du message",
       "message_placeholder": "Envoyer un message à {{bot}}… (/command · @file · $skill)",
       "message_placeholder_crewmate": "Envoyer un message à {{bot}}…",
@@ -8533,6 +8536,7 @@
     "markdownPanel": {
       "open_in_remote_editor": "Ouvrir dans {{editor}}",
       "partial_copy_cannot_save": "Seule une partie de ce fichier a été chargée ({{reason}}) : il ne peut donc pas remplacer le fichier sur le disque.",
+      "partial_copy_preview": "Seule une partie de ce fichier a été chargée ({{reason}}) : l'aperçu n'en montre donc que cette partie. Télécharge le fichier depuis le menu ⋯ pour l'obtenir en entier.",
       "add_to_artifact_library": "Ajouter à la bibliothèque d'artefacts",
       "add_to_artifacts": "Ajouter aux artefacts",
       "add_to_knowledge": "Ajouter aux connaissances",
@@ -9747,6 +9751,7 @@
       "desktop_app_only": "Application de bureau uniquement",
       "panel_toggles": "Affichage des panneaux",
       "unset": "Non défini",
+      "terminal_focus_only": "Uniquement dans un terminal qui a le focus",
       "save_refused": "Non enregistré : le stockage du navigateur est plein. Libère de l’espace et réessaie."
     },
     "sidePanelLayout": {
@@ -10785,7 +10790,7 @@
       "trust_off_title": "Autoriser l'accès par le nom réseau de cet ordinateur",
       "trust_off_body": "Le tableau de bord refuse les requêtes provenant d'adresses qu'il ne reconnaît pas. Autorisez son propre nom de réseau privé pour qu'un téléphone puisse l'atteindre. Cela n'ouvre aucun port vers Internet et ne modifie pas votre façon de vous connecter.",
       "restart_gateway_title": "Redémarrer {{productName}} pour terminer",
-      "restart_gateway_body": "Un nom de réseau est désormais disponible, mais ce serveur n'en a résolu aucun à son démarrage ; le nom n'est donc pas encore approuvé. Redémarrez {{productName}} une fois et la dernière étape sera prête.",
+      "restart_gateway_body": "Ce serveur doit redémarrer pour utiliser son adresse tailnet actuelle. Redémarre {{productName}} une fois et la dernière étape sera prête.",
       "occupied_title": "Quelque chose d'autre est déjà servi ici",
       "occupied_body": "Tailscale sert déjà autre chose à cette adresse. La publication le remplacerait, donc rien n'a été modifié.",
       "occupied_replace": "Si le remplacement est sans risque, exécute <cmd/>",
@@ -12383,6 +12388,7 @@
       "toggle_side_terminal": "Afficher/masquer le terminal du panneau latéral",
       "previous_terminal": "Terminal précédent",
       "next_terminal": "Terminal suivant",
+      "clear_terminal": "Effacer le terminal",
       "toggle_dictation_mute": "Couper ou réactiver le micro de la dictée"
     },
     "useNativeNotification": {
@@ -19856,7 +19862,15 @@
         "strict_off": "Autoriser un léger délai aléatoire",
         "strict_off_hint": "Démarre un peu en retard pour répartir la charge",
         "strict_on": "Exécuter à l’heure exacte",
-        "strict_on_hint": "Démarre exactement à l’heure prévue"
+        "strict_on_hint": "Démarre exactement à l’heure prévue",
+        "send_to_telegram": "Définir la destination Telegram",
+        "telegram_failed": "{{name}} (échec)",
+        "telegram_failed_reason": "{{name}} (échec : {{reason}})",
+        "telegram_failed_heading": "Certaines tâches cochées n’ont pas pu être mises à jour. Elles restent cochées.",
+        "telegram_kept_slack_heading": "Ces tâches cochées gardent leur canal Slack et n’ont pas été mises à jour. Elles restent cochées.",
+        "telegram_updated_many": "{{count}} tâches transmettent désormais leurs résultats à {{destination}}.",
+        "telegram_updated_one": "{{count}} tâche transmet désormais ses résultats à {{destination}}.",
+        "telegram_updated_other": "{{count}} tâches transmettent désormais leurs résultats à {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_many": "{{count}} tâches sur {{total}} n'ont pas pu être déplacées",
@@ -22195,7 +22209,8 @@
         "clear_shortcut": "Effacer",
         "panel_toggles": "Affichage des panneaux",
         "skips_shell_hint": "Fonctionne aussi dans le terminal, donc votre shell ne reçoit plus cette touche — ne choisissez pas Ctrl+C ni Ctrl+R.",
-        "skips_shell_hint_mac": "Fonctionne aussi dans le terminal, donc votre shell ne reçoit plus cette touche — ne choisissez pas ⌃C (Ctrl+C) ni ⌃R (Ctrl+R)."
+        "skips_shell_hint_mac": "Fonctionne aussi dans le terminal, donc votre shell ne reçoit plus cette touche — ne choisissez pas ⌃C (Ctrl+C) ni ⌃R (Ctrl+R).",
+        "terminal_focus_hint": "Ne fonctionne que lorsqu’un terminal a le focus, et peut donc partager une touche avec Rechercher partout. Ton shell ne reçoit plus cette touche."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analyser chaque session terminée et rédiger un SKILL.md réutilisable lorsqu'elle démontre une procédure récurrente — une procédure qu'une session future, travaillant sur une autre cible, exécuterait à nouveau. Désactivé par défaut. Les brouillons sont placés dans la file d'attente de Personnaliser → Compétences pour relecture — rien n'est activé sans ton approbation (voir ci-dessous).",
@@ -25235,6 +25250,7 @@
       "chat_model_picker": "Le bouton du modèle dans la zone de message. Il affiche le modèle de cette discussion et ouvre le sélecteur de modèle.",
       "chat_session_title": "Le titre de la session en haut de la discussion. Il affiche le nom de la session ; clique dessus pour la renommer.",
       "composer_approval_mode": "Le sélecteur du mode d'approbation dans la rangée de commandes de la zone de message. Il définit si seules les consultations s'exécutent sans demander, si ses propres recherches dans la mémoire, les chats, les compétences et les connaissances s'exécutent aussi, si cette session est approuvée ou si tout est approuvé automatiquement (YOLO).",
+      "composer_project_aws_profile": "La ligne du profil AWS en bas du sélecteur de projet, que le bouton du dossier sous la zone de message ouvre. Elle indique le dossier de ce chat et le profil AWS que les nouveaux chats de ce dossier utilisent ; ouvre-la pour choisir un profil enregistré dans l'app AWS Control ou déjà associé à un dossier dans aws.project_profiles, saisir un autre nom de profil ou revenir à la connexion AWS propre à la passerelle. Les profils présents seulement dans la configuration AWS de l'ordinateur ne sont pas listés : si aucune des deux sources n'en a, la ligne n'apparaît pas, alors enregistres-en un dans AWS Control → Ajouter des comptes → Enregistrer la sélection. La page de doc Configuration, section An AWS profile per project, l'explique.",
       "composer_voice_input": "Le bouton du micro dans la zone de message. Appuie dessus pour dicter au lieu de taper ; sur un écran tactile, il bascule entre le clavier et le maintien pour parler.",
       "members_bot_sessions_switch": "L’interrupteur en haut de l’onglet Sessions sur la fiche de profil d’un bot. Son libellé nomme le bot ; activé, les sessions de ce bot apparaissent aussi dans ta propre liste de sessions."
     }

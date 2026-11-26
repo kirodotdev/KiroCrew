@@ -91,10 +91,10 @@ describe('TerminalTabsView dock variant — pop out', () => {
     expect(disposeTerminalConnection).not.toHaveBeenCalled()
   })
 
-  it('shows dock chrome: hide button present, no Return control', () => {
+  it('shows dock chrome: Fullscreen toggle present, no Return control', () => {
     openBottomTerminal()
     renderWithProviders(<TerminalTabsView variant="dock" />)
-    expect(screen.getByRole('button', { name: 'Hide terminal panel' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Fullscreen' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Return to main window/ })).not.toBeInTheDocument()
   })
 })

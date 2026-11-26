@@ -290,17 +290,32 @@ class TestEnsureReadyWorkDir:
         one off-loop mkdir on the FIRST call and no syscall afterwards —
         restoring a per-prompt mkdir fails this test."""
         loop_thread = threading.current_thread()
-        client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
+        work_dir = tmp_path / "workspace"
+        client = AcpClient(work_dir=work_dir, session_key="k")
         proc = MagicMock()
         proc.returncode = None
         client._process = proc
         client._session_id = "sess-1"
 
+        # ``Path.mkdir`` is patched for the whole process, so a thread that has
+        # nothing to do with this client (the audit writer, a pool worker) can
+        # make a directory of its own inside the block. Only the work dir's
+        # mkdir is counted, and every call goes through to the real one.
+        real_mkdir = Path.mkdir
         mkdir_threads: list[threading.Thread] = []
-        with patch(
-            "pathlib.Path.mkdir",
-            side_effect=lambda *a, **kw: mkdir_threads.append(threading.current_thread()),
-        ):
+
+        def _rec_mkdir(self, *a, **kw):
+            if self == work_dir:
+                mkdir_threads.append(threading.current_thread())
+            return real_mkdir(self, *a, **kw)
+
+        bystander = threading.Thread(
+            target=lambda: (tmp_path / "elsewhere").mkdir(), name="bystander-mkdir"
+        )
+        with patch.object(Path, "mkdir", autospec=True, side_effect=_rec_mkdir):
+            bystander.start()
+            await asyncio.to_thread(bystander.join, 30)
+            assert (tmp_path / "elsewhere").is_dir(), "another thread's mkdir must go through"
             await client.ensure_ready()
             assert len(mkdir_threads) == 1, "first ensure_ready must create the work dir"
             assert mkdir_threads[0] is not loop_thread, "work-dir mkdir ran on the loop thread"

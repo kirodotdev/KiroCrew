@@ -290,7 +290,10 @@ def workflow_result(name: str, args: dict[str, Any]) -> str:
         "status": d.get("status"),
         "result": _redact_obj(d.get("result")),
         "error": _redact_obj(d.get("error")),
-        "events": _redact_obj(d.get("events", [])),
+        # A running call's ``agent_progress`` is for the run view, not the model.
+        "events": _redact_obj(
+            [e for e in d.get("events", []) if e.get("type") != "agent_progress"]
+        ),
     }
     if d.get("agent_results"):
         wf_payload["agent_results"] = _redact_obj(d.get("agent_results"))

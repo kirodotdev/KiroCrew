@@ -10979,6 +10979,7 @@
           "allowed_logins": [],
           "pin_scope": "node",
           "bind_refresh_chains": true,
+          "https_port": 443,
           "keep_awake": true
         },
         "shared_crew": {
@@ -10995,6 +10996,7 @@
         "restore_sessions": false,
         "dynamic_dashboard_cards": false,
         "audit_secret_reads": false,
+        "sessionless_internal_calls": "log",
         "turn_cache_estimate": false,
         "crewmate_threads": false,
         "crewmates_in_agent_picker": false,
@@ -11146,6 +11148,7 @@
         "allowed_logins": [],
         "pin_scope": "node",
         "bind_refresh_chains": true,
+        "https_port": 443,
         "keep_awake": true
       }
     },
@@ -11236,6 +11239,21 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.tailscale.https_port",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tailscale HTTPS Port",
+      "help": "The HTTPS port `tailscale serve` fronts the dashboard on. The trusted tailnet origin carries it when it is not 443 (https://<name>:<port>). Run `kirocrew tailnet down` before changing it: Kiro Crew manages only the port it is set to. A value outside 1-65535 reads as 443. Takes effect at the next gateway start.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 443,
       "requiresRestart": true
     },
     {
@@ -11449,6 +11467,23 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.sessionless_internal_calls",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session-less internal calls",
+      "help": "What the gateway does with an internal call that names no session and comes from a process it cannot place outside the agent sandbox. 'log' admits it and writes a security log row (one per caller and path every 10 minutes); 'enforce' refuses it. Stays 'log' until the log shows no Kiro Crew tool of this shape. Takes effect on the next call; no restart.",
+      "hasChildren": false,
+      "enumValues": [
+        "log",
+        "enforce"
+      ],
+      "defaultValue": "log"
     },
     {
       "path": "dashboard.turn_cache_estimate",

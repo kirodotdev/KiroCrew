@@ -3315,7 +3315,8 @@ controls in `change_card_catalog.DASHBOARD_SETTINGS` (Response Verbosity and the
 other Chat toggles) write `PUT /api/dashboard/config` with a one-key partial
 body, a registry `configKey` the config route accepts writes
 `PATCH /api/config/kirocrew`, and anything else is refused `no_write_path` with a
-pointer to the `settings.show` guide. The value must be one of the control's
+pointer to the `settings.show` guide; so is a `str_list` key such as
+`skills.extra_paths`, since a card carries no list value. The value must be one of the control's
 own options. A string-list setting (`change_card_catalog.DASHBOARD_LIST_SETTINGS`:
 Selectable Models' hidden models) takes `op` (`add`/`remove`) and one `item`
 instead of `value`, and writes the Settings page's own one-item delta key

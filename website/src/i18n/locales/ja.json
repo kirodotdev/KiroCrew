@@ -6679,6 +6679,8 @@
       "closing_terminal": "ターミナルを閉じています…",
       "fullscreen": "全画面",
       "exit_fullscreen": "全画面を終了",
+      "fullscreen_shortcut": "全画面 ({{shortcut}})",
+      "exit_fullscreen_shortcut": "全画面を終了 ({{shortcut}})",
       "find": "検索"
     },
     "tabCloseMenu": {
@@ -6756,7 +6758,8 @@
       "gateway_offline_message_will_not_send": "ゲートウェイがオフラインです — メッセージは送信されません",
       "killing": "強制停止中…",
       "killing_session": "セッションを強制停止中",
-      "list_indent_hint": "リストの行では、Tab でインデント、Shift+Tab でインデント解除します。メッセージ入力から出るには、Esc を押してから Tab を押します。",
+      "list_indent_hint": "メッセージ入力から出るには、Esc を押してから Tab を押します。",
+      "list_indent_keys": "リストの行では、Tab でインデント、Shift+Tab でインデント解除します。",
       "message_input": "メッセージ入力",
       "message_placeholder": "{{bot}} にメッセージ… (/command · @file · $skill)",
       "message_placeholder_crewmate": "{{bot}} にメッセージ…",
@@ -8111,6 +8114,7 @@
     "markdownPanel": {
       "open_in_remote_editor": "{{editor}} で開く",
       "partial_copy_cannot_save": "このファイルは一部しか読み込まれていません（{{reason}}）。そのため、ディスク上のファイルに上書き保存できません。",
+      "partial_copy_preview": "このファイルは一部しか読み込まれていません（{{reason}}）。そのため、プレビューにはその部分だけが表示されます。ファイル全体は ⋯ メニューからダウンロードしてください。",
       "add_to_artifact_library": "アーティファクトライブラリに追加",
       "add_to_artifacts": "アーティファクトに追加",
       "add_to_knowledge": "ナレッジに追加",
@@ -9279,6 +9283,7 @@
       "desktop_app_only": "デスクトップアプリのみ",
       "panel_toggles": "パネルの表示切り替え",
       "unset": "未設定",
+      "terminal_focus_only": "フォーカス中のターミナルでのみ",
       "save_refused": "保存されませんでした。ブラウザーのストレージがいっぱいです。空き容量を作ってからもう一度お試しください。"
     },
     "sidePanelLayout": {
@@ -10299,7 +10304,7 @@
       "trust_off_title": "このコンピューターのネットワーク名によるアクセスを許可する",
       "trust_off_body": "ダッシュボードは認識できないアドレスからのリクエストを拒否します。スマートフォンからアクセスできるよう、このコンピューター自身のプライベートネットワーク名を許可してください。これによりインターネットへのポートは開かれず、サインイン方法も変わりません。",
       "restart_gateway_title": "完了するには {{productName}} を再起動してください",
-      "restart_gateway_body": "ネットワーク名は利用可能になりましたが、このサーバーは起動時に名前を解決できなかったため、その名前はまだ信頼されていません。{{productName}} を一度再起動すると、最後のステップの準備が整います。",
+      "restart_gateway_body": "このサーバーが現在の tailnet アドレスを使うには再起動が必要です。{{productName}} を一度再起動すると、最後のステップの準備が整います。",
       "occupied_title": "ここでは既に別のものが提供されています",
       "occupied_body": "Tailscale はこのアドレスで既に別のものを提供しています。公開するとそれが置き換えられるため、何も変更していません。",
       "occupied_replace": "置き換えても安全な場合は、<cmd/> を実行してください",
@@ -11835,6 +11840,7 @@
       "toggle_side_terminal": "サイドパネルのターミナルの表示を切り替え",
       "previous_terminal": "前のターミナル",
       "next_terminal": "次のターミナル",
+      "clear_terminal": "ターミナルをクリア",
       "toggle_dictation_mute": "音声入力のミュートを切り替え"
     },
     "useNativeNotification": {
@@ -18814,7 +18820,13 @@
         "strict_off": "わずかなランダム遅延を許可",
         "strict_off_hint": "負荷を分散するため少し遅れて開始",
         "strict_on": "正確な時刻に実行",
-        "strict_on_hint": "スケジュールどおりに正確に開始"
+        "strict_on_hint": "スケジュールどおりに正確に開始",
+        "send_to_telegram": "Telegram の送信先を設定",
+        "telegram_failed": "{{name}}（失敗）",
+        "telegram_failed_reason": "{{name}}（失敗：{{reason}}）",
+        "telegram_failed_heading": "チェックしたジョブの一部を更新できませんでした。選択されたままです。",
+        "telegram_kept_slack_heading": "これらのチェックしたジョブは Slack チャネルを維持するため、更新されていません。選択されたままです。",
+        "telegram_updated_other": "{{count}} 件のジョブの送信先が {{destination}} になりました。"
       },
       "cronFolders": {
         "batch_move_failed_other": "{{total}}件中{{count}}件のジョブを移動できませんでした",
@@ -21057,7 +21069,8 @@
         "clear_shortcut": "クリア",
         "panel_toggles": "パネルの表示切り替え",
         "skips_shell_hint": "ターミナル内でも動作するため、シェルはこのキーを受け取らなくなります。Ctrl+C や Ctrl+R は選ばないでください。",
-        "skips_shell_hint_mac": "ターミナル内でも動作するため、シェルはこのキーを受け取らなくなります。⌃C (Ctrl+C) や ⌃R (Ctrl+R) は選ばないでください。"
+        "skips_shell_hint_mac": "ターミナル内でも動作するため、シェルはこのキーを受け取らなくなります。⌃C (Ctrl+C) や ⌃R (Ctrl+R) は選ばないでください。",
+        "terminal_focus_hint": "ターミナルにフォーカスがあるときだけ動作するため、「すべてを検索」と同じキーを共有できます。シェルはこのキーを受け取らなくなります。"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "完了したセッションを分析し、繰り返し使われる手順 — 将来のセッションが別の対象に対して再び実行するような手順 — が示されたときに再利用可能な SKILL.md を作成します。デフォルトではオフです。ドラフトは「カスタマイズ → スキル」の保留キューにステージされます。レビュー用です。何もライブにはなりません（以下を参照してください）。",
@@ -24027,6 +24040,7 @@
       "chat_model_picker": "メッセージ入力欄のモデルボタンです。このチャットのモデルを表示し、モデルピッカーを開きます。",
       "chat_session_title": "チャット上部のセッションタイトルです。表示はセッション名で、クリックするとセッション名を変更できます。",
       "composer_approval_mode": "メッセージ入力欄のコントロール行にある承認モードの選択ボタンです。調べものだけを確認なしで実行するか、自分のメモリ、チャット、スキル、ナレッジの検索も実行するか、このセッションを信頼するか、すべて自動承認するか（YOLO）を設定します。",
+      "composer_project_aws_profile": "プロジェクトピッカーの下部にある AWS プロファイルの行です。ピッカーはメッセージ入力欄の下のフォルダーボタンで開きます。このチャットのフォルダーと、そのフォルダーの新しいチャットが使う AWS プロファイルを示します。開くと AWS Control アプリに登録したプロファイル、または aws.project_profiles でフォルダーに紐づけたプロファイルを選べます。別のプロファイル名の入力や、ゲートウェイ自身の AWS サインインへの切り替えもできます。コンピューターの AWS 設定にしかないプロファイルは表示されません。どちらにもプロファイルがないとこの行は表示されないので、AWS Control → アカウントを追加 → 選択したものを登録で登録します。ドキュメントの Configuration ページ、An AWS profile per project の節で説明しています。",
       "composer_voice_input": "メッセージ入力欄のマイクボタンです。押すと入力の代わりに音声で話せます。タッチスクリーンではキーボードと長押しで話すモードを切り替えます。",
       "members_bot_sessions_switch": "bot のプロフィールカードの「セッション」タブ上部にあるスイッチです。ラベルにはその bot の名前が入ります。オンにすると、その bot のセッションがあなた自身のセッション一覧にも表示されます。"
     }

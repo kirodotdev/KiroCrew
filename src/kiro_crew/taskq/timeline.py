@@ -469,6 +469,9 @@ def _workflow_stream(
         return [], StreamReport(STREAM_WORKFLOW, STATUS_UNAVAILABLE, reason=REASON_READ_FAILED)
     if events is None:
         return [], StreamReport(STREAM_WORKFLOW, STATUS_ABSENT, reason=REASON_NO_RECORD)
+    # A running call's ``agent_progress`` is a live display signal: as rows here it
+    # would push the run's other events out of the kept window.
+    events = (e for e in events if _field(e, "type") != "agent_progress")
     kept, readable, dropped = _newest(events, _workflow_time, WORKFLOW_EVENTS_MAX)
     items = [
         _Item(

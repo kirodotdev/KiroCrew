@@ -2182,7 +2182,9 @@ a present value the reader cannot use takes the reader's value:
   `dashboard.tailscale.bind_refresh_chains`, `false` for a non-boolean
   `slack.show_in_session_list` (a malformed value reads as the default, which
   keeps Slack conversations out of the list), `node` for an unrecognised
-  `dashboard.tailscale.pin_scope`, `auto` for an unknown `agent.jail`, `false` for
+  `dashboard.tailscale.pin_scope`, `443` for a `dashboard.tailscale.https_port`
+  that is not an integer from 1 to 65535 (with one logged warning, never clamped),
+  `auto` for an unknown `agent.jail`, `false` for
   a present non-boolean `agent.dangerously_skip_permissions` (never a grant),
   `per-channel-peer` for an unknown `messaging.dm_scope` (never one session for
   two people's DMs).
@@ -5421,8 +5423,9 @@ writer, and the `SkillsLoader` watcher applies it live (no restart): the loader'
 screening (expansion, resolution, sensitive-path exclusion, existence) stays the only judge of
 a path. Settings → Skills trims each line and drops blank ones before it sends the list; the
 same list is what `kirocrew config set skills.extra_paths --value-base64=…` stores.
-`dashboard.change_cards.check_setting_value` calls the same `_str_list_problem`, so a card is held
-to the same bounds and item pattern and fails up front rather than falling through (no card can carry the list; see crew-mode).
+`dashboard.change_cards.check_setting_value` calls the same `_str_list_problem`, for a card that
+could carry the list; none can today: `resolve_setting` refuses a `str_list` key `no_write_path`
+before any value is read (see crew-mode).
 
 ### Default context discovery
 

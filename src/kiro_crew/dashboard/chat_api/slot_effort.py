@@ -165,7 +165,8 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
                     state,
                     backend,
                     model,
-                    slot.agent or "",
+                    # A template pick runs no crew, whatever crew shares its name.
+                    "" if slot.agent_kind == "template" else slot.agent or "",
                     model_answers=backend not in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
                 ),
             }

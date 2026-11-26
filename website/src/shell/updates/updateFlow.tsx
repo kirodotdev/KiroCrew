@@ -5,7 +5,7 @@ import { useAppSelector } from '../../store'
 import { api } from '../../api/client'
 import { updateAffordance } from '../../utils/updateAffordance'
 import { baseRelease, compareVersions, isNewSection, notesPredateRunningRelease } from '../../utils/releaseVersion'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import Clickable from '../../components/Clickable'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -62,7 +62,7 @@ export function useUpdateFlow() {
   // Show changelog on first load after version change (auto-update)
   useEffect(() => {
     if (!version || version === '—') return
-    const lastSeen = localStorage.getItem('mc-last-version')
+    const lastSeen = safeGetItem('mc-last-version')
     if (lastSeen === version) return
     // First visit — no baseline to diff, just record current version
     if (!lastSeen) { safeSetItem('mc-last-version', version); return }

@@ -1429,6 +1429,7 @@ async def run(self: GatewayOrchestrator) -> None:
             )
             from kiro_crew.dashboard.bind_refresh import restart_if_bind_refused
             from kiro_crew.dashboard.origin import withdraw_refused_origins
+            from kiro_crew.dashboard.tailnet import running_tailnet_https_port
             from kiro_crew.dashboard.tailnet_serve import (
                 revoke_if_governance_now_pins_off,
             )
@@ -1448,7 +1449,14 @@ async def run(self: GatewayOrchestrator) -> None:
             # written under a looser ceiling keeps auto-approving what the fleet has
             # since forbidden.
             _tailnet_port = self._dashboard_port
-            register_post_install_hook(lambda: revoke_if_governance_now_pins_off(_tailnet_port))
+            _https_port = self._cfg.dashboard.tailscale.https_port
+            if self._dashboard_runner is not None:
+                _https_port = running_tailnet_https_port(self._dashboard_runner.app)
+            register_post_install_hook(
+                lambda: revoke_if_governance_now_pins_off(
+                    _tailnet_port, startup_https_port=_https_port
+                )
+            )
             if self._dashboard_runner is not None:
                 _app, _loop = self._dashboard_runner.app, asyncio.get_running_loop()
                 register_post_install_hook(lambda: withdraw_refused_origins(_app, _loop))

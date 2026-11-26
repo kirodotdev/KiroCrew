@@ -471,7 +471,8 @@ def node_bin_dirs() -> tuple[str, ...]:
     3. The highest version found under each per-version manager root
        (mise / asdf / nvm / fnm; nvm under both ``~/.nvm`` and the XDG config
        dir; on Windows also fnm and nvm-windows under ``%APPDATA%``).
-    4. Shim dirs (mise shims, volta, n; on Windows also Volta's two roots).
+    4. Shim and single-dir roots (mise shims, volta, n; on Windows also Volta's
+       two roots and the nodejs.org installer's ``%ProgramFiles%\\nodejs``).
     5. Standalone Node trees -- the glibc-2.17 build ``ensure-node.sh`` unpacks
        into the data home (:data:`_NODE_TREE_DATA_HOME_DIRS`), then a
        hand-unpacked nodejs.org tarball under ``~/.local``
@@ -511,6 +512,7 @@ def node_bin_dirs() -> tuple[str, ...]:
 
     ordered.extend(d.format(home=home, mise_data=mise_data) for d in _NODE_MANAGER_DIRS)
     ordered.extend(env_node_windows.manager_dirs(home))
+    ordered.extend(env_node_windows.manager_dirs(home, templates=env_node_windows.INSTALLER_DIRS))
     # Under a KIROCREW_HOME override data_home() mkdirs, so it can raise on an
     # unwritable path. Only the data-home candidates depend on it; swallowing here
     # keeps a failure from taking out the manager and $HOME tiers with them.
@@ -879,6 +881,8 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     an ``npx`` server and its ``#!/usr/bin/env node`` reach a Node chosen for
     this host before nvm's newest, which may not load (Amazon Linux 2). Each
     must hold an executable ``node``; a pinned ``home`` gets neither.
+    On Windows the nodejs.org installer's folder is the last extra, behind every
+    version manager's dirs.
 
     The interpreter's own dir and its console-scripts dir (they differ only on
     the Windows desktop backend, ``python.exe`` at the root and scripts in
@@ -935,6 +939,7 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     extra += _node_all_bin_dirs(
         resolved_home, mise_data, _xdg_config_dir(resolved_home), windows_globs
     )
+    extra += env_node_windows.manager_dirs(resolved_home, home, env_node_windows.INSTALLER_DIRS)
     # No anchors on Windows: System32 comes first there and _SYSTEM_BIN_DIRS never
     # matches, so anchoring would push every extra behind System32.
     entries = env_node_pins.without_dirs(base_path.split(os.pathsep) if base_path else [], lead)
