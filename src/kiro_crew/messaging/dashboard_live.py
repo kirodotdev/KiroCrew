@@ -10,9 +10,10 @@ tab had nothing to draw, so it said "Thinking..." for the whole turn.
 Two pieces put the turn on the tab as it happens:
 
 * :class:`DashboardLiveRenderer` is a second renderer for the same turn. It reads
-  the events the driver already produces (streamed text, tool calls) plus the raw
-  provider events the driver's ``event_tap`` shows it (a tool call's arguments and
-  identity, a tool's result), and hands them to a :class:`LiveSink` that projects
+  the events the driver already produces (streamed text, tool calls, a call's
+  refined title) plus the raw provider events the driver's ``event_tap`` shows it
+  (a tool call's arguments and identity, the update that refines it, a tool's
+  result), and hands them to a :class:`LiveSink` that projects
   them into the tab. The sink is the dashboard's half (see
   ``dashboard/channel_live.py``); this module never imports the dashboard.
 * :class:`TeeRenderer` lets the driver feed both: the channel's renderer FIRST,
@@ -30,8 +31,19 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
-from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_TOOL_CALL, EVENT_TOOL_RESULT
-from kiro_crew.messaging.renderer import DONE, TEXT_CHUNK, TOOL_CALL, OutputEvent, Renderer
+from kiro_crew.agent_sdk.drivers.acp_vocab import (
+    EVENT_TOOL_CALL,
+    EVENT_TOOL_CALL_UPDATE,
+    EVENT_TOOL_RESULT,
+)
+from kiro_crew.messaging.renderer import (
+    DONE,
+    TEXT_CHUNK,
+    TOOL_CALL,
+    TOOL_TITLE,
+    OutputEvent,
+    Renderer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +67,9 @@ class LiveSink(Protocol):
     def on_tool_step(self, raw: Any | None, event: OutputEvent) -> None:
         """A tool call the driver rendered; *raw* is its provider event, if seen."""
 
+    def on_tool_title(self, raw: Any) -> None:
+        """The ``tool_call_update`` that gave a rendered call its refined title."""
+
     def on_tool_result(self, raw: Any) -> None:
         """A tool's result, as the provider sent it."""
 
@@ -75,6 +90,9 @@ class DashboardLiveRenderer(Renderer):
         self._sink = sink
         self._disabled = False
         self._pending_calls: dict[str, Any] = {}
+        # The last raw update the tap saw: the driver sends its ``TOOL_TITLE``,
+        # if any, before it reads the next provider event.
+        self._last_update: Any = None
 
     @property
     def disabled(self) -> bool:
@@ -101,6 +119,8 @@ class DashboardLiveRenderer(Renderer):
                 if len(self._pending_calls) >= _MAX_PENDING_CALLS:
                     self._pending_calls.pop(next(iter(self._pending_calls)))
                 self._pending_calls[str(getattr(raw, "tool_call_id", "") or "")] = raw
+            elif kind == EVENT_TOOL_CALL_UPDATE:
+                self._last_update = raw
             elif kind == EVENT_TOOL_RESULT:
                 self._sink.on_tool_result(raw)
         except Exception:
@@ -116,6 +136,11 @@ class DashboardLiveRenderer(Renderer):
             elif event.kind == TOOL_CALL:
                 raw = self._pending_calls.pop(str(event.tool_call_id or ""), None)
                 self._sink.on_tool_step(raw, event)
+            elif event.kind == TOOL_TITLE:
+                # The step takes its refined title from the update the tap just saw.
+                raw, self._last_update = self._last_update, None
+                if raw is not None and str(raw.tool_call_id or "") == str(event.tool_call_id or ""):
+                    self._sink.on_tool_title(raw)
             # Everything else is the channel's to render (approval prompts,
             # compaction notices) or arrives on the tab through the transcript
             # the transport writes (the reply, the empty-turn notice).

@@ -10,7 +10,10 @@ dashboard turn on the tab while it runs, in the dashboard's own shapes:
   frame, both built by the dashboard runner's own helpers
   (``tool_rows._tool_call_ws_payload`` / ``_tool_meta``) so the labels cannot
   drift. The frame is what draws the tool pill and the sidebar's current-step
-  line; a result arrives as the same ``tool_result`` frame.
+  line; a refined title (the driver's ``TOOL_TITLE``, on a backend that sends a
+  call's real title in a later ``tool_call_update``) arrives in the same shape
+  as a dashboard turn's ``is_update`` frame, and a result as the same
+  ``tool_result`` frame.
 * **Streamed text** goes out as ``chat_chunk`` frames on the slot's own chunk
   counter, so the tab streams the answer instead of "Thinking...".
 
@@ -133,6 +136,26 @@ class ChannelLiveSink:
         self._writes.append((tool_row("call", str(payload["tool"])), _tool_meta(source) or {}))
         if self._writer is None or self._writer.done():
             self._writer = asyncio.ensure_future(self._write_steps())
+
+    def on_tool_title(self, raw: Any) -> None:
+        # The dashboard runner's refinement frame for the call, built by the same
+        # helper as the step's own frame: the tab merges it by tool_call_id, so
+        # the pill and the current-step line take the refined title and input in
+        # place. The transcript row keeps the title it was written with.
+        from kiro_crew.dashboard.chat_runner import _tool_call_ws_payload
+
+        slot = self._slot()
+        if slot is None:
+            return
+        payload = _tool_call_ws_payload(raw)
+        payload["slot"] = slot.key
+        payload["is_update"] = True
+        if not payload["purpose"]:
+            # Omitted rather than empty, as the runner's: the tab merges a
+            # refinement field by field, and an empty purpose would blank the
+            # one the call opened with.
+            del payload["purpose"]
+        self._state.broadcast_ws("tool_call", payload)
 
     def on_tool_result(self, raw: Any) -> None:
         slot = self._slot()

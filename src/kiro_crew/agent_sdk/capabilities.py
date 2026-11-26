@@ -273,7 +273,8 @@ class SessionCapabilities:
     #: ``tool_call`` that named it before its input had streamed
     #: (:data:`ACP_BACKENDS_TOOL_TITLE_REFINEMENT`), so a Crew-spawned subagent's
     #: Subagents card takes the refined title for that call's row, and a channel
-    #: turn's task card for that call (``messaging.driver``'s ``TOOL_TITLE``).
+    #: turn's task card for that call (``messaging.driver``'s ``TOOL_TITLE``, and
+    #: the native thread turn in ``slack.handler_runtime.turn``).
     #:
     #: True for claude, whose first frame of a call carries the tool's generic title
     #: ("Terminal", "Read File"). False keeps each card on the titles its call (and,

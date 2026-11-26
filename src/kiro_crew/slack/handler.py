@@ -206,6 +206,7 @@ from kiro_crew.providers.base import (
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_CALL_UPDATE,
     LLMEvent,
     LLMProvider,
 )
@@ -439,6 +440,8 @@ from kiro_crew.slack.handler_runtime.stream import (  # noqa: F401
     _safe_final_update,
     _safe_update,
     _settle_marker_line,
+    _shown_tool_name,
+    _tool_line,
     _ts_before,
 )
 from kiro_crew.slack.handler_runtime.turn import (  # noqa: F401
