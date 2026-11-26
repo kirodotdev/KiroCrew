@@ -1101,11 +1101,14 @@ class SlotBufferCoordinator:
             slot._pending_release_deferred = True
             return 0
         slot._pending_release_deferred = False
-        before = len(slot._pending)
-        if not before:
-            return 0
-        slot._pending = [message for message in slot._pending if message.get("role") != "chunk"]
-        return before - len(slot._pending)
+        # With no reader the queue can never be read: the next reader's stream
+        # opens by draining it as stale. So every row goes, not only chunks; a
+        # slot whose turns nobody streams (a worker, a cron) otherwise keeps
+        # every row it ever appended, including the ones its window released.
+        released = len(slot._pending)
+        if released:
+            slot._pending = []
+        return released
 
     @staticmethod
     def purge_chunks(slot: Any) -> int:
