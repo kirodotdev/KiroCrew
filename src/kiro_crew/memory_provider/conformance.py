@@ -326,7 +326,7 @@ def _main(argv: list[str] | None = None) -> int:
         report = _ask_gateway(provider_id, args.port)
     except OSError as exc:
         print(
-            f"The gateway is not reachable ({exc}). Start it with `kirocrew start`.",
+            f"The gateway is not reachable ({exc}). Start it with `kirocrew gateway`.",
             file=sys.stderr,
         )
         return 2
