@@ -1562,6 +1562,7 @@ class TeamsDispatcher:
         from kiro_crew.dashboard.token_auth import (
             MAX_SESSION_TTL_SECS,
             generate_token,
+            owner_mint_extra,
             parse_duration,
         )
         from kiro_crew.dashboard.urls import dashboard_origin, parse_dashboard_url
@@ -1571,7 +1572,28 @@ class TeamsDispatcher:
             parse_dashboard_ttl(arg, parse_duration=parse_duration), MAX_SESSION_TTL_SECS
         )
         try:
-            token = generate_token(identity or "teams", ttl_seconds=ttl_secs)
+            # The owner's own link carries the owner's dashboard session, as the
+            # owner's Slack link does: the sender must be the identity the owner
+            # named as theirs (``teams.owner_id``, the KIROCREW_OWNER_ID of this
+            # channel), read live so a removed owner stops at once, and compared
+            # case-insensitively as the allow-list is, against both forms the
+            # activity attests (email and AAD object id): the allow-list may have
+            # admitted the sender on the other one. Being the only allow-listed
+            # identity is NOT that proof. The subject is the one the dashboard's
+            # owner gate admits (its owner id, else ``local-app``), so the link
+            # needs the dashboard attached. Every other link stays under the
+            # sender's own identity, which the owner's chat refuses.
+            owner_id = self._live_cfg().teams.owner_id
+            owner = owner_id.strip().lower() if isinstance(owner_id, str) else ""
+            attested = {f.lower() for f in (inbound.user_email, inbound.aad_object_id) if f}
+            state = getattr(self, "dashboard_state", None)
+            if state is not None and owner and owner in attested:
+                from kiro_crew.shared_crew.owner import DEFAULT_OWNER_SUBJECT
+
+                subject = str(getattr(state, "owner_id", "") or "") or DEFAULT_OWNER_SUBJECT
+                token = generate_token(subject, ttl_seconds=ttl_secs, extra=owner_mint_extra())
+            else:
+                token = generate_token(identity or "teams", ttl_seconds=ttl_secs)
             origin = dashboard_origin(self.cfg.dashboard.url)
             if not origin:
                 # No configured dashboard.url: fall back to the local port, which

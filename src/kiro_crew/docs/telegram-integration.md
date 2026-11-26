@@ -120,7 +120,9 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
 - `/spawn <task>` (or `/bg`) — run a task in a background subagent.
   `/spawn list` shows what is running.
 - `/task` (or `/tasks`) `run <spec> | status | cancel` — drive the unattended task runner.
-- `/kirocrew dashboard [<N>h|<N>m]` — get a dashboard login link (DM only).
+- `/kirocrew dashboard [<N>h|<N>m]` — get a dashboard login link (DM only). The
+  link opens your own dashboard session, chat included, only when your ID is
+  `telegram.owner_user_id`; anyone else's link cannot chat in your sessions.
 - `/temporary` — this conversation reads and saves no memory: no memories or
   lessons are added to the prompt, and nothing is written to the transcript. A bare
   `/temporary` just marks the conversation; `/temporary <question>` marks it and

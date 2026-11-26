@@ -89,7 +89,7 @@ and `/sessions` there lists the space's history rather than yours.
 | `/link` | Resume mirroring dashboard replies here (on by default) |
 | `/unlink` | Stop mirroring dashboard replies here |
 | `/stop` (or `/cancel`) | Stop the current reply and clear the queue |
-| `/kirocrew dashboard [2h]` | Get a dashboard login link (**DM only**) |
+| `/kirocrew dashboard [2h]` | Get a dashboard login link (**DM only**); it reaches your chats only when your email is `webex.owner_email` |
 | `/help` | Show available commands |
 
 `/help` is generated from the same table the parser uses, so it cannot go stale.

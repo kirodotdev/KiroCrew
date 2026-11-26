@@ -17,6 +17,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_runner_coverage_helpers import _drive, _runner_state, _slot
 from chat_test_helpers import _make_app, _make_state
+from teammate_caller import enable_teammates, publish_relay_teammate, publish_teammate
 
 from kiro_crew import redaction_seams
 from kiro_crew.dashboard import host_sandbox_refusal as hsr
@@ -248,7 +249,9 @@ def _legacy_detail(text: str) -> bool:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("shape", sorted(_LEGACY_ROWS))
-@pytest.mark.parametrize("user", ["local-app", "teammate-7"], ids=["owner", "teammate"])
+@pytest.mark.parametrize(
+    "user", ["local-app", "teammate-7", "relay-7"], ids=["owner", "teammate", "relay-teammate"]
+)
 async def test_a_legacy_refusal_row_reaches_a_teammate_as_the_plain_line(
     state, off, user, shape
 ) -> None:
@@ -391,19 +394,37 @@ async def test_a_teammates_socket_gets_the_plain_line_and_the_owners_the_diagnos
 
 
 def _as_caller(user: str):
+    """Name who sent the request; ``teammate-7`` (SSM invite) and ``relay-7`` (Kiro relay)
+    are admitted Shared Crew teammates.
+
+    The owner's chat routes answer the owner and teammates only, so a bare subject
+    that is neither would be refused before the row under test is drawn.
+    """
     from aiohttp import web
 
     @web.middleware
     async def caller(request, handler):
-        request["user"] = user
-        request["app"] = ""
+        if user == "teammate-7":
+            publish_teammate(request)
+        elif user == "relay-7":
+            publish_relay_teammate(request)
+        else:
+            request["user"] = user
+            request["app"] = ""
         return await handler(request)
 
     return caller
 
 
+@pytest.fixture(autouse=True)
+def _teammates_admitted(_floor_monkeypatch):
+    enable_teammates(_floor_monkeypatch)
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("user", ["local-app", "teammate-7"], ids=["owner", "teammate"])
+@pytest.mark.parametrize(
+    "user", ["local-app", "teammate-7", "relay-7"], ids=["owner", "teammate", "relay-teammate"]
+)
 async def test_a_history_read_holds_the_diagnostic_only_for_the_owner(state, off, user) -> None:
     state.get_slot(_SLOT).append(
         "error", hsr.row_text(_DIAGNOSTIC), "msg msg-err", meta=hsr.row_meta(_refusal())
@@ -448,7 +469,9 @@ def test_a_body_that_only_names_the_code_goes_out_as_it_is() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("user", ["local-app", "teammate-7"], ids=["owner", "teammate"])
+@pytest.mark.parametrize(
+    "user", ["local-app", "teammate-7", "relay-7"], ids=["owner", "teammate", "relay-teammate"]
+)
 async def test_a_gzipped_history_read_holds_the_diagnostic_only_for_the_owner(
     state, off, user
 ) -> None:
@@ -472,7 +495,9 @@ async def test_a_gzipped_history_read_holds_the_diagnostic_only_for_the_owner(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("user", ["local-app", "teammate-7"], ids=["owner", "teammate"])
+@pytest.mark.parametrize(
+    "user", ["local-app", "teammate-7", "relay-7"], ids=["owner", "teammate", "relay-teammate"]
+)
 async def test_a_chat_sse_stream_holds_the_diagnostic_only_for_the_owner(
     state, off, monkeypatch, user
 ) -> None:

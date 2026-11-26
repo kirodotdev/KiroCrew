@@ -733,6 +733,18 @@ class WebexConfig:
             tags=["webex"],
         ),
     )
+    owner_email: str = field(
+        default="",
+        metadata=_meta(
+            "Owner Email",
+            "Your own Webex account email, the way KIROCREW_OWNER_ID names you on "
+            "Slack. A /kirocrew dashboard link you request in a direct message "
+            "then opens your own dashboard session, chat included; every other "
+            "allow-listed user's link stays theirs. The email must also be in "
+            "Allowed Emails. Empty = no owner here.",
+            tags=["webex"],
+        ),
+    )
     allow_group_rooms: bool = field(
         default=False,
         metadata=_meta(
@@ -963,6 +975,17 @@ class TeamsConfig:
             "often absent), so listing object ids works out of the box; emails "
             "are matched when Teams supplies them. Empty = deny all (fail "
             "closed): a Teams bot is reachable by anyone in the org.",
+            tags=["teams"],
+        ),
+    )
+    owner_id: str = field(
+        default="",
+        metadata=_meta(
+            "Owner ID",
+            "Your own Teams identity, your UPN/email or your AAD object id, the "
+            "way KIROCREW_OWNER_ID names you on Slack. A /dashboard link you request "
+            "then opens your own dashboard session, chat included; every other "
+            "allow-listed user's link stays theirs. Empty = no owner here.",
             tags=["teams"],
         ),
     )
