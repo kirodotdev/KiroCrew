@@ -337,6 +337,10 @@ describe('ShareMessageModal', () => {
       <ShareMessageModal onClose={onClose} messageText="Triaged 47 issues overnight." shareEnabled={false} />,
     )
     expect(screen.getByTestId('share-withdrawn')).toHaveTextContent(/policy/i)
+    // The notice's warn tint swallows a stock Btn's plain edge.
+    expect(screen.getByTestId('share-copy-text')).toHaveClass('bg-bg-elevated', 'border-border-strong')
+    expect(screen.getByTestId('share-copy-text')).not.toHaveClass('bg-transparent')
+    expect(screen.getByTestId('share-copy-text')).not.toHaveClass('border-border')
     for (const id of ['share-download', 'share-copy', 'share-x', 'share-linkedin']) {
       expect(screen.getByTestId(id)).toBeDisabled()
     }
