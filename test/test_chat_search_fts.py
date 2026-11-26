@@ -299,6 +299,27 @@ def test_a_chat_whose_cache_alone_passes_the_cap_is_not_kept(log, monkeypatch):
     assert not store.path(KEY).exists()
 
 
+def test_rows_read_again_that_pass_the_cap_remove_the_cache(log, monkeypatch):
+    _plums(log, 20)
+    _update(log)
+    store = _store(log)
+    stem = csc._safe_key(KEY)
+    monkeypatch.setattr(csc, "DISK_CAP_BYTES", store._disk_size(stem) + 64 * 1024)
+    rows = _rows(log)
+    # No new row: only the verify window's re-read commits the longer text.
+    long_text = " ".join(f"w{i}x{i * 7919 % 100003}" for i in range(40_000))
+    rows[-3] = {**rows[-3], "content": long_text}
+    _rewrite(log, rows)
+    decoded = _decoded(log, monkeypatch)
+
+    with pytest.raises(csc.CacheTooLarge):
+        _update(log)
+
+    assert decoded[0] <= csc.VERIFY_ROWS
+    assert list(store.dir.glob(store.path(KEY).name + "*")) == []
+    assert store.too_large(KEY)
+
+
 def test_a_deleted_chat_takes_its_search_cache_with_it(log):
     log.append(KEY, "user", "plum")
     _update(log)

@@ -40,13 +40,14 @@ Where it lives. ``<sessions>/.search-cache/<stem>.db``, one SQLite file per chat
 owner-only from creation like the session search index, in WAL mode with
 ``secure_delete`` on. All files together stay under ``DISK_CAP_BYTES``: the least
 recently searched go first (a search touches its file's mtime at most once every
-``TOUCH_EVERY_SECS``). A chat whose file alone passes the cap after a committed
-page is removed and not built again in the process (:class:`CacheTooLarge`): its
+``TOUCH_EVERY_SECS``). A chat whose file alone passes the cap after any commit
+of an update (a new page, re-read rows or a reset) is removed and not built again in the process (:class:`CacheTooLarge`): its
 search stays the paged scan. A chat's file is removed when the chat is deleted or
 moved to trash (:func:`drop`), together with every cache whose chain of
 transcripts reads it. Closing a chat keeps its file, since a closed chat can be
 reopened and searched; the disk cap bounds the folder. No build starts while the
-chat's delete is in flight.
+chat's delete is in flight, nor on a chain that reads a chat moved to the trash
+(``drop(..., trashed=True)``) until it is restored (:meth:`ChatSearchCache.untrash`).
 
 Deletes and builds. A file is written in place, page by page, so the store keeps
 a drop log: each dropped transcript, in order. A drop writes its entry first and
@@ -56,7 +57,10 @@ page and once more before it records the cache as current, removes its own file
 and raises :class:`CacheDropped` when the log names a transcript of its chain
 since. A search reads the log the same way before it reads the file
 (:meth:`ChatSearchCache.reading`). So a page committed before the drop is swept,
-and one committed after it is voided by its build or the next search.
+and one committed after it is voided by its build or the next search. A build that
+starts after the drop and before the transcript is gone finds no entry after its
+own position, so it is refused up front: by ``delete_in_flight`` for a delete, and
+by the trashed stems, which the drop log keeps for a move to trash until restore.
 
 Connections. One connection per chat file, shared by the threads that use it and
 held only under that file's lock, so a drop can close it before the file is
@@ -401,6 +405,12 @@ class ChatSearchCache:
         #: void when an entry after N names a transcript of its chain.
         self._drops: deque[tuple[int, str]] = deque(maxlen=DROP_LOG_MAX)
         self._drop_pos = 0
+        #: Stems moved to the trash (``drop(..., trashed=True)``), until
+        #: :meth:`untrash`: no build starts on a chain that reads one, since the
+        #: move drops the cache before it moves the transcript out. In memory only:
+        #: a restart forgets them, which is safe, because a moved transcript is
+        #: outside the sessions directory, where no build reads.
+        self._trashed: set[str] = set()
         self._touched: dict[str, float] = {}
         #: Chats whose cache alone passed the disk cap: never built again here.
         self._too_large: set[str] = set()
@@ -416,21 +426,28 @@ class ChatSearchCache:
 
     # ----------------------------------------------------------- drop log
 
-    def _tombstone(self, stems: Iterable[str]) -> None:
-        """Append *stems* to the drop log."""
+    def _tombstone(self, stems: Iterable[str], *, trashed: bool = False) -> None:
+        """Append *stems* to the drop log; with *trashed*, also keep them as
+        trashed until :meth:`untrash`."""
+        stems = set(stems)
         with self._lock:
-            for stem in sorted(set(stems)):
+            if trashed:
+                self._trashed |= stems
+            for stem in sorted(stems):
                 self._drop_pos += 1
                 self._drops.append((self._drop_pos, stem))
 
     def _dropped_since(self, since: int, stems: set[str]) -> bool:
-        """Whether the drop log names one of *stems* after position *since*; also
-        True when the log's oldest kept entry is past *since*. Caller holds ``_lock``.
+        """Whether the drop log names one of *stems* after position *since*, or one
+        of them is trashed; also True when the log's oldest kept entry is past
+        *since*. Caller holds ``_lock``.
 
         shortcut: past ``DROP_LOG_MAX`` drops in one process every older cache
         counts as dropped and is built again; keep a per-cache floor if mass
         deletes make that common.
         """
+        if not self._trashed.isdisjoint(stems):
+            return True
         if self._drops and self._drops[0][0] > since + 1:
             return True
         for pos, stem in reversed(self._drops):
@@ -578,17 +595,18 @@ class ChatSearchCache:
         stem = _safe_key(key)
         rules = loaded_rules_marker()
         with _BUILD_LOCK:
-            # Taken before the delete-in-flight check below: a delete that check
-            # misses writes its drop log entry after this position.
+            # Taken before the delete-in-flight and trash checks below: a delete or
+            # a move to trash they miss writes its drop log entry after this position.
+            keys = {key, *(item[0] for item in probe.revision)}
             with self._lock:
                 since = self._drop_pos
-            # A build that starts during a delete, after its drop and before the
-            # transcript is unlinked, would read what the delete removes, and no
-            # drop log entry after ``since`` names it: refused until it is done.
+                trashed = not self._trashed.isdisjoint(_safe_key(k) for k in keys)
+            # A build that starts during a delete or a move to trash, after its
+            # drop and before the transcript is unlinked or moved, would read what
+            # the delete or the move removes, and no drop log entry after ``since``
+            # names it: refused until the delete is done, or the chat is restored.
             in_flight = getattr(log, "delete_in_flight", None)
-            if in_flight is not None and any(
-                in_flight(k) for k in {key, *(item[0] for item in probe.revision)}
-            ):
+            if trashed or (in_flight is not None and any(in_flight(k) for k in keys)):
                 raise CacheDropped(key)
             for attempt in range(1, UPDATE_ATTEMPTS + 1):
                 try:
@@ -621,9 +639,10 @@ class ChatSearchCache:
         entry_of: EntryOf,
         pause: Callable[[], None] | None,
     ) -> tuple[Any, int]:
-        """One pass of :meth:`update`. After each commit it checks the drop log
-        (:meth:`_void_if_dropped`): a page committed with a dropped transcript's
-        rows is readable at once, so the check follows the commit, never precedes it."""
+        """One pass of :meth:`update`. Each commit (the reset, every :meth:`_verify`
+        and every :meth:`_append`) is followed by :meth:`_after_commit`: a page
+        committed with a dropped transcript's rows is readable at once, so the
+        check follows the commit, never precedes it."""
         probe = log.read_messages_chained_page(key, limit=0)
         revision, total = probe.revision, probe.total
         chain = [item[0] for item in revision]
@@ -640,6 +659,7 @@ class ChatSearchCache:
                 conn.execute("INSERT INTO rows_fts(rows_fts) VALUES ('delete-all')")
                 conn.execute("DELETE FROM rows")
                 _write_state(conn, state)
+            self._after_commit(key, since, state.chain)
         while state.total < total:
             if pause is not None:
                 pause()
@@ -648,15 +668,20 @@ class ChatSearchCache:
                 key, limit=end - state.total, before=end, expected_revision=revision
             )
             state = self._append(key, gen, since, state, page.next_before, page.messages, entry_of)
-            stem = _safe_key(key)
-            if self._disk_size(stem) > DISK_CAP_BYTES:
-                # One chat alone past the cap: it is never cached, and its
-                # search stays the paged scan.
-                self._remove(stem)
-                with self._lock:
-                    self._too_large.add(key)
-                raise CacheTooLarge(key)
         return revision, total
+
+    def _after_commit(self, key: str, since: int, chain: Iterable[str]) -> None:
+        """The step after every commit of a build or update: the drop log check
+        (:meth:`_void_if_dropped`), then the disk cap. A chat whose file alone
+        passes ``DISK_CAP_BYTES`` is removed and never cached again in the process
+        (:class:`CacheTooLarge`), so its search stays the paged scan."""
+        self._void_if_dropped(key, since, chain)
+        stem = _safe_key(key)
+        if self._disk_size(stem) > DISK_CAP_BYTES:
+            self._remove(stem)
+            with self._lock:
+                self._too_large.add(key)
+            raise CacheTooLarge(key)
 
     def _verify(
         self,
@@ -723,7 +748,7 @@ class ChatSearchCache:
             _delete(conn, [index for index, _msg in changed])
             _insert(conn, entries)
             _write_state(conn, state)
-        self._void_if_dropped(key, since, state.chain)
+        self._after_commit(key, since, state.chain)
         return state
 
     def _append(
@@ -752,7 +777,7 @@ class ChatSearchCache:
             conn.execute("BEGIN IMMEDIATE")
             _insert(conn, entries)
             _write_state(conn, state)
-        self._void_if_dropped(key, since, state.chain)
+        self._after_commit(key, since, state.chain)
         return state
 
     # ------------------------------------------------------------ removal
@@ -781,11 +806,16 @@ class ChatSearchCache:
                 ok = False
         return ok
 
-    def drop(self, names: Iterable[str]) -> bool:
+    def drop(self, names: Iterable[str], *, trashed: bool = False) -> bool:
         """Remove the caches of *names* (every spelling of one chat), and every
         cache whose chain of transcripts reads one of them: a tab's later
         transcript holds its predecessors' rows. False on a file that exists and
         could not be removed, or a cache directory that could not be listed.
+
+        *trashed*: the chats are moving to the trash, so no build reads them
+        again until :meth:`untrash` (the move to trash runs this before it moves
+        the transcripts, and a build that starts in between has no later drop log
+        entry to stop it).
 
         The drop log entry comes first, the sweep of the files second, and never
         waits for a build (``_BUILD_LOCK``). A build commits a page first and reads
@@ -794,12 +824,19 @@ class ChatSearchCache:
         that commits after it voids itself; a search reads the drop log too
         (:meth:`reading`)."""
         stems = {_safe_key(name) for name in names}
-        self._tombstone(stems)
+        self._tombstone(stems, trashed=trashed)
         holders = self._holders(stems)
         ok = holders is not None
         for stem in stems | (holders or set()):
             ok = self._remove(stem) and ok
         return ok
+
+    def untrash(self, names: Iterable[str]) -> None:
+        """Let *names* be cached again: they are back from the trash, or their
+        move to trash left them in place. No IO."""
+        stems = {_safe_key(name) for name in names}
+        with self._lock:
+            self._trashed -= stems
 
     def _holders(self, stems: set[str]) -> set[str] | None:
         """The other cache files whose stored chain names a transcript in *stems*;
@@ -920,9 +957,14 @@ def store_for(sessions_dir: Path) -> ChatSearchCache:
         return store
 
 
-def drop(sessions_dir: Path, names: Iterable[str]) -> bool:
+def drop(sessions_dir: Path, names: Iterable[str], *, trashed: bool = False) -> bool:
     """Remove the search caches of *names* under *sessions_dir*; see :meth:`ChatSearchCache.drop`."""
-    return store_for(sessions_dir).drop(names)
+    return store_for(sessions_dir).drop(names, trashed=trashed)
+
+
+def untrash(sessions_dir: Path, names: Iterable[str]) -> None:
+    """Let *names* under *sessions_dir* be cached again; see :meth:`ChatSearchCache.untrash`."""
+    store_for(sessions_dir).untrash(names)
 
 
 def reset_stores() -> None:
@@ -948,4 +990,5 @@ __all__ = [
     "reset_stores",
     "row_digest",
     "store_for",
+    "untrash",
 ]
