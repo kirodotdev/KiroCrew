@@ -16391,6 +16391,7 @@
         "could_not_read_account_name": "无法读取 Kiro CLI 账号名称",
         "could_not_check_kiro_cli": "无法检查 Kiro CLI 登录",
         "could_not_check_kiro_crew": "无法检查 {{productName}} 中保存的登录",
+        "could_not_check_kiro_crew_hint": "重新登录即可替换它。",
         "maybe_two_accounts_body_by_place": "如果是不同账号，Kiro Agent 就没有使用你的 Kiro CLI 账号的额度。Kiro Agent 以存储在 {{productName}} 中的登录运行。Kiro CLI 也有登录，{{productName}} 无法判断它们是不是同一个账号。",
         "two_accounts_body_by_place": "Kiro Agent 没有使用你的 Kiro CLI 账号的额度。Kiro Agent 以存储在 {{productName}} 中的登录运行，而 Kiro CLI 登录的是另一个账号。",
         "using_kiro_cli_body_unnamed": "Kiro Agent 以 Kiro CLI 登录的账号运行。你不需要在这里登录。如果你在下面登录，Kiro Agent 会改用那个账号。",

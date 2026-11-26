@@ -560,6 +560,20 @@ Error split at the store API: an unknown identity kind raises `ValueError` (HTTP
 400 at the API layer); a vault read/write failure raises `TokenStoreError` (coded
 HTTP 500) — a logout that could not remove the credential never reports success.
 
+A vault no key can open again is replaced by the next save (a sign-in, or a
+refresh), never deleted (`TokenStore._set_aside_unopenable_vault`). Unopenable means `secrets.enc` exists
+and `.vault_key` is missing or not 32 bytes, or the store is not a vault envelope.
+`SecretVault` refuses to mint a key over an existing store, so before this every
+later sign-in failed with `token_store_failed` and the sign-in card said only
+"Could not check the sign-in stored in Kiro Crew". When `save` hits that refusal it
+renames `secrets.enc` (and a wrong-length key) to `<name>.corrupt-<UTC time>`
+beside the vault, under the vault's flock, and writes a new vault. A wrong-length
+key moves before its store, so a rename that fails part way leaves a store with no
+key, which the next save recovers. A key file that
+exists but cannot be read (a lock, a privacy prompt) is not lost: the files stay and
+the save fails as before. The card's notice for an unreadable store says to sign in
+again, which is the way forward with no terminal.
+
 Priority when multiple credentials exist (`store._PRIORITY`, mirroring kiro-cli
 `auth/mod.rs`): **External IdP > Builder ID > Identity Center > Social**, then
 `KIRO_API_KEY` env as final fallback.
