@@ -1557,7 +1557,11 @@ describe('the committed index', () => {
           continue
         }
         const hit = matchRoute(routes, p.route) as { redirect: string | null } | null
-        if (!hit) expect(appOnly.has(p.route.split('?')[0])).toBe(true)
+        if (loc.id.startsWith('apppage.')) {
+          // A packaged app's page is served by the built-in-app arm, never a core route.
+          expect(hit).toBeNull()
+          expect(routes.some((r) => r.path === '/:builtinApp/*')).toBe(true)
+        } else if (!hit) expect(appOnly.has(p.route.split('?')[0])).toBe(true)
         else expect(hit.redirect).toBeNull()
       }
     }
