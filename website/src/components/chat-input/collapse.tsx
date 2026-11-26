@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
 import { COMPOSER_EXPAND_EVENT } from '../../pages/chat/composerFocus'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import type { ComposerControl } from '../composerControl'
@@ -54,7 +54,7 @@ export function useComposerCollapse({ collapsible, composerControl, value }: {
     // MAIN composer wrote and comes up collapsed, which is how "hiding is not
     // collapsing" gets shipped by accident. `collapsible` is host-supplied and
     // constant for a mount, so a lazy initializer is the whole story.
-    () => collapsible && localStorage.getItem(COMPOSER_COLLAPSED_LS_KEY) === '1',
+    () => collapsible && safeGetItem(COMPOSER_COLLAPSED_LS_KEY) === '1',
   )
   const collapsedBarRef = useRef<HTMLButtonElement | null>(null)
   /** Latest-value mirror for the window listener below, which is bound once. */

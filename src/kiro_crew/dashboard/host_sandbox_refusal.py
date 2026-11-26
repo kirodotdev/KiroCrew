@@ -88,13 +88,19 @@ def row_meta(refusal: Any) -> dict[str, object]:
     """The typed meta for the error row of *refusal*: the code and when it happened.
 
     ``retryable`` marks a momentary refusal (``kind == "transient"``), which a
-    retry can clear, so the card keeps Resume for it.
+    retry can clear, so the card keeps Resume for it. A cap read as 0 is transient
+    (never cached) but not momentary: only the host's owner can clear it.
     """
+    from kiro_crew.sandbox import REMEDY_USERNS_CAP_ZERO
+
     meta: dict[str, object] = {
         "code": HOST_SANDBOX_UNAVAILABLE,
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    if getattr(refusal, "kind", "") == "transient":
+    if (
+        getattr(refusal, "kind", "") == "transient"
+        and getattr(refusal, "remedy", "") != REMEDY_USERNS_CAP_ZERO
+    ):
         meta["retryable"] = True
     return meta
 

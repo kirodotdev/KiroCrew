@@ -51,7 +51,9 @@ singleton) is per-process with a 90s TTL. Two ``kirocrew computer call``
 invocations therefore cannot share indices at all — the second would refuse with
 "no state for …". ``--calls`` exists so a snapshot-then-act sequence is
 reproducible from one command line, which is the shape the reference
-implementation's ``call --calls`` has for the same reason.
+implementation's ``call --calls`` has for the same reason. ``--calls-file`` reads
+the same array from a file (``-`` is standard input), for a shell whose argument
+quoting does not pass the JSON through intact, as on Windows.
 
 Hand-rolled dispatch mirroring ``browser/cli.py`` rather than argparse
 subparsers: the command surface is two words plus free-form arguments, and the
@@ -147,6 +149,10 @@ Commands:
   call --calls '[{"tool": "...", "args": {...}}, ...]'
                    Run several tools in ONE process, so element_index values from
                    an earlier computer_get_state are still valid for later calls
+  call --calls-file <path>
+                   The same batch read from a file (- reads standard input).
+                   Use this on Windows (PowerShell, cmd.exe); the single-quoted
+                   --calls form is for POSIX shells (bash, zsh)
   call ... --json  Emit the replies as a JSON array instead of prose
 
 A key=value argument is parsed as JSON when it can be (element_index=3,
@@ -435,11 +441,12 @@ def _cmd_call(argv: list[str]) -> None:
 def _parse_calls(argv: list[str]) -> list[tuple[str, dict[str, Any]]]:
     """Turn the argv tail into an ordered ``(tool_name, args)`` list.
 
-    Two accepted forms, and never a mix — ``--calls`` carries its own tool names,
+    Three accepted forms, and never a mix — ``--calls`` carries its own tool names,
     so a positional tool beside it is ambiguous about ordering and is rejected
     rather than guessed at:
 
     * ``--calls '<json array>'`` — the batch form;
+    * ``--calls-file <path>`` — the same batch read from a file, ``-`` for stdin;
     * ``<tool> [key=value ...]`` — the single form.
 
     Raises :class:`ValueError` with a user-facing sentence for every malformed
@@ -457,6 +464,12 @@ def _parse_calls(argv: list[str]) -> list[tuple[str, dict[str, Any]]]:
         if len(argv) > 2:
             raise ValueError("--calls takes exactly one JSON array; quote it as one argument")
         return _parse_batch(argv[1])
+    if argv[0] == "--calls-file":
+        if len(argv) < 2:
+            raise ValueError("--calls-file needs a file path argument, or - for standard input")
+        if len(argv) > 2:
+            raise ValueError("--calls-file takes exactly one file path")
+        return _parse_batch(_read_calls_file(argv[1]), source="--calls-file")
     if "--calls" in argv:
         raise ValueError("use either --calls or a positional tool name, not both")
 
@@ -466,20 +479,47 @@ def _parse_calls(argv: list[str]) -> list[tuple[str, dict[str, Any]]]:
     return [(tool_name, _parse_kv_args(argv[1:]))]
 
 
-def _parse_batch(raw: str) -> list[tuple[str, dict[str, Any]]]:
-    """Parse the ``--calls`` JSON array into ``(tool_name, args)`` pairs."""
+def _read_calls_file(path: str) -> str:
+    """The text of a ``--calls-file`` batch: *path*, or standard input for ``-``.
+
+    Both are read as bytes and decoded as UTF-8: text-mode stdin uses the locale
+    code page (cp1252 on Windows), and the byte reader screens a Windows UNC path
+    before anything resolves it. One leading BOM is dropped, since Windows
+    PowerShell 5.1 writes one into a UTF-8 file and ``json.loads`` refuses it.
+    """
+    from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
+
+    try:
+        data = sys.stdin.buffer.read() if path == "-" else safe_read_file_bytes(path)
+    except FileTooLargeError as exc:
+        raise ValueError(f"cannot read --calls-file: {exc}") from None
+    except OSError as exc:
+        raise ValueError(f"cannot read --calls-file: {exc.strerror}") from None
+    if data is None:
+        raise ValueError(
+            "cannot read --calls-file: it is missing, unreadable, or in a protected location"
+        )
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("--calls-file must be UTF-8 text") from None
+    return text.removeprefix("\ufeff")
+
+
+def _parse_batch(raw: str, source: str = "--calls") -> list[tuple[str, dict[str, Any]]]:
+    """Parse a batch JSON array into ``(tool_name, args)`` pairs; *source* names the option."""
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"--calls is not valid JSON: {exc}") from exc
+        raise ValueError(f"{source} is not valid JSON: {exc}") from exc
     if not isinstance(parsed, list):
-        raise ValueError('--calls must be a JSON array of {"tool": ..., "args": ...} objects')
+        raise ValueError(f'{source} must be a JSON array of {{"tool": ..., "args": ...}} objects')
     if not parsed:
-        raise ValueError("--calls array is empty")
+        raise ValueError(f"{source} array is empty")
 
     calls: list[tuple[str, dict[str, Any]]] = []
     for position, entry in enumerate(parsed):
-        label = f"--calls entry {position + 1}"
+        label = f"{source} entry {position + 1}"
         if not isinstance(entry, dict):
             raise ValueError(f"{label} must be a JSON object")
         unknown = sorted(set(entry) - _CALL_KEYS)

@@ -42,6 +42,7 @@ from kiro_crew.hooks import (
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
     ScriptHook,
+    ScriptHookResult,
     run_script_hook,
 )
 
@@ -365,7 +366,7 @@ def _hook_fire_block() -> str:
         if turn_file.name != "__init__.py"
     )
     start = text.index('logger.info("Hook %s stdout: %s", r.hook_name, r.stdout[:200])')
-    end = text.index('logger.warning("Hook %s (%s) failed: %s", r.hook_name, event, detail)', start)
+    end = text.index('BLOCKED (no verdict): {detail[:100]}",', start)
     return text[start : text.index("\n", end)]
 
 
@@ -373,15 +374,20 @@ def test_chat_runner_hook_excerpts_anchor_by_exit_semantics() -> None:
     """``_fire`` reads the turn's state, so its anchors are pinned by text.
 
     Authored text (stdout, the exit-2 deny reason) keeps the head; the crashed-
-    hook paths (fail-closed detail and the non-gating warning) keep the tail.
+    hook paths (fail-closed detail, and the failed-hook warning ``fire`` logs from
+    ``failure_detail``) keep the tail.
     """
     block = _hook_fire_block()
     assert block.count("r.stdout[:200]") == 1
     # BLOCKED payload + warning log
     assert block.count("r.stderr[:HOOK_DENY_REASON_MAX_CHARS] if r.stderr else") == 2
     assert block.count("r.stderr[:100] if r.stderr else") == 1  # BLOCKED activity event
-    assert "r.stderr[-200:] if r.stderr else" in block  # crash detail: fail-closed + warning
+    assert "r.stderr[-200:] if r.stderr else" in block  # fail-closed crash detail
     assert "r.stderr[:200])" not in block
+    crashed = ScriptHookResult(
+        hook_id="h", hook_name="h", event="Stop", stderr="x" * 300 + "DIAGNOSIS", exit_code=1
+    )
+    assert crashed.failure_detail.endswith("DIAGNOSIS")  # non-gating crash warning
 
 
 def test_slack_pip_failure_logs_keep_the_redacted_tail() -> None:

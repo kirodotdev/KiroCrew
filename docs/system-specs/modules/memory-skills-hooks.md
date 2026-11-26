@@ -7370,6 +7370,16 @@ a hook is therefore **not portable across platforms**. A Hooks-page tool hook's 
 Both platforms receive the same `KIROCREW_HOOK_EVENT` / `KIROCREW_HOOK_CONTEXT`
 env vars and the same hook-event JSON on stdin.
 
+**A failed hook is logged once, by `fire()`.** A hook command whose exit is
+neither 0 nor 2 logs one WARNING, `Hook <name> (<event>) failed: <failure_detail>`;
+exit 0 and exit 2 log the INFO `Hook <name> (<event>): <status> in Nms (exit=N)`.
+The SessionLaneChanged runner (`_run_one_lane_hook`), which calls
+`run_script_hook` without `fire()`, logs the same WARNING. Callers decide what
+the failure blocks, allows or injects and do not log it again: the spec-hook
+PreToolUse "tool allowed" lines are INFO records of the gate's decision, and the
+dashboard turn logs a blocked Hooks-page PreToolUse call's block, at ERROR. Pinned
+by `test/test_script_hook_failure_warning.py`.
+
 **`KIROCREW_SESSION_MODEL`** is the model the firing session runs on, passed to
 `fire()` as `session_model` and set on every hook that fire runs, stored and
 `extra_hooks` alike; a spec hook kiro-cli runs itself is outside that fire and
@@ -7492,6 +7502,7 @@ supplies them, so a hook reads them with a default:
 | `agent_role` | the agent template the firing session runs |
 | `session_id` | on an `extra_hooks` (agent spec) hook only: the firing session's ACP session id, under the stdin key kiro-cli's own hook payload uses, on every event Crew fires them on for a dashboard chat turn, a subagent run, the task runner's PreToolUse gate (`tool_permission.SpecHooks`), or the PreToolUse gate an agent-channel member, a native Slack turn, `kirocrew chat`, a sub-agent report turn in its parent's session or a plain Slack auto-nudge asks before any approval (`channel_spec_hooks.pre_tool_refusal`). A subagent's hooks get the child's own id, read from its client when they fire; a call a harness-native nested child makes carries the id of the session it ran under. Also set as `KIRO_SESSION_ID` in that hook's env, the env name kiro-cli uses. Absent (and the env var unset) before `session/new` and on stored hooks |
 | `acp_session_id` | the same value as `session_id`, present exactly when it is; the key the first KAS release of this field used, kept for hooks written against it |
+| `replay` | on a dashboard chat's `UserPromptSubmit` only: `true` when Kiro Crew sends the prompt again, unchanged, after the prompt hooks already ran for an earlier attempt of it; absent otherwise. When it is set and when not: [injected-messages](../common/injected-messages.md) |
 
 A human's dashboard turn therefore carries `session_key` and no `subagent_id`.
 A hook deciding "did a person type this?" keys on `subagent_id`; it must not
@@ -7980,7 +7991,10 @@ directory on its own unless a suppressed document names it: an `action` of type
 the per-hook `name`, `description` and `timeout`. Crew's own conversion
 (`agent_sdk/spec_hooks._from_documents`) gives a `PreCompact` or `PostCompact`
 document no number, so the other documents' `<agent>/<Event>/<n>` policy names
-are the ones they would have without it. `enabled: false` and
+are the ones they would have without it. A document's own `name` rides on the
+in-memory `ScriptHook.spec_name` (never saved, like `spec_origin`) when
+`hook_event_governance.with_stable_names` lets it name the hook in a policy's
+`hooks` list too (governance.md). `enabled: false` and
 `confirm: true` are NOT in that class: each grants less execution than the object
 form can express, so either one keeps the hook out of the kiro-cli spec entirely,
 with a log line and a SEL audit naming which. `hook_documents_suppressed_commands()`

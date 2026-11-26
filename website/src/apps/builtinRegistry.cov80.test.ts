@@ -34,6 +34,7 @@ import {
   registerBuiltinComponents,
   type LazyComponent,
 } from './builtinRegistry'
+import { wheelCopyDrift } from '../test/shippedWheelCopies'
 
 /**
  * The import factory React.lazy was handed. Reaching for `_payload` is the only
@@ -54,7 +55,8 @@ const CORE_ROUTES = Object.keys(BUILTIN_COMPONENT_REGISTRY)
 
 describe('BUILTIN_COMPONENT_REGISTRY', () => {
   it('registers every builtin under a single plain path segment', () => {
-    expect(CORE_ROUTES.length).toBeGreaterThan(15)
+    const appIds = CORE_ROUTES.map((route) => BUILTIN_COMPONENT_REGISTRY[route].appId)
+    expect(wheelCopyDrift(appIds), 'a page for every shipped wheel copy').toEqual({ added: [], dropped: [] })
     for (const route of CORE_ROUTES) {
       expect(route).toMatch(/^\/[A-Za-z0-9][A-Za-z0-9._~-]*$/)
     }

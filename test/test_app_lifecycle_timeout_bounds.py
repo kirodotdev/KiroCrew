@@ -186,7 +186,7 @@ def test_a_run_time_clamp_is_logged_every_run(
 ) -> None:
     from kiro_crew.apps.manifest import lifecycle_timeout_seconds
 
-    with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.manifest_sections"):
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.manifest_lifecycle_timeouts"):
         got = lifecycle_timeout_seconds(raw, app_name="timeout-app", field_name="onEnableTimeout")
         lifecycle_timeout_seconds(raw, app_name="timeout-app", field_name="onEnableTimeout")
     assert got == expected and type(got) is int
@@ -203,7 +203,7 @@ def test_a_value_used_as_written_logs_nothing(
 ) -> None:
     from kiro_crew.apps.manifest import lifecycle_timeout_seconds
 
-    with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.manifest_sections"):
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.manifest_lifecycle_timeouts"):
         got = lifecycle_timeout_seconds(raw, app_name="timeout-app", field_name="onEnableTimeout")
     assert got == expected
     assert caplog.records == []
@@ -293,7 +293,7 @@ async def test_an_installed_app_runs_onenable_clamped_and_logged(
 
     monkeypatch.setattr(routes_mod, "_run_lifecycle_script", _script)
     monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
-    with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.manifest_sections"):
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.manifest_lifecycle_timeouts"):
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/enable")
             assert resp.status == 200, await resp.text()

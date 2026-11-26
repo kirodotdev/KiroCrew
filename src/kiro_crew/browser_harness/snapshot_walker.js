@@ -1020,6 +1020,53 @@
     return { content: parts.join("\n\n"), skippedFrames: scan.unreadable - scan.deep, deepRoots: scan.deep };
   }
 
+  // App recipes (`browser_harness/recipes.py`). An embedded document takes input with
+  // no top-document event, and a custom element with no readable shadow root may hide
+  // one, so neither counts as part of the matched element.
+  var RC_EMB = /^(IFRAME|FRAME|OBJECT|EMBED)$/;
+  // `browser_sites.url_matches` for one entry: the exact origin (https, host, no
+  // port), no escaped separator, and the path glob (`*`: any run) matched linearly.
+  function rcSite(site) {
+    var s = String(site || ""), i = s.indexOf("/", 8), p = location.pathname, c = s.slice(i).split("*"), h = c[0], t = c.pop(), n = h.length;
+    if (i < 0 || location.origin !== s.slice(0, i) || /%2e|%2f|%5c|\\/i.test(p) || p.slice(0, n) !== h) return false;
+    if (!c.length) return p === h;
+    for (var k = 1; k < c.length; k++) if ((n = p.indexOf(c[k], n)) < 0) return false; else n += c[k].length;
+    return p.length - t.length >= n && p.slice(p.length - t.length) === t;
+  }
+  function rcNo(code) { return { ok: false, code: code }; }
+  function rcOk(el, n) {
+    if (!n || RC_EMB.test(n.tagName) || (n !== el && /-/.test(n.tagName || "") && !n.shadowRoot)) return false;
+    // Up the composed tree: a shadow root's parent is its host.
+    for (; n; n = n.parentNode || n.host) if (n === el) return true;
+    return false;
+  }
+  // The first match in the top document, shown inside the viewport, and the element
+  // actually drawn at its centre (through open shadow roots, which document hit
+  // testing retargets to their host). Never scrolls, reads no page text, never a
+  // password box. With *click*, it then clicks that element itself (`el.click()`),
+  // so nothing moved under the point takes the click; the event is untrusted.
+  function rcFind(sel, click, site, sites) {
+    var el;
+    if (probeSelectorBlocked(sel)) return rcNo("bad_selector");
+    try { el = document.querySelector(String(sel)); } catch (e) { return rcNo("bad_selector"); }
+    if (!el) return rcNo("not_found");
+    if (inputType(el) === "password") return rcNo("password_field");
+    if (RC_EMB.test(el.tagName)) return rcNo("covered");
+    var r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (!visible(el) || !(r.width > 0 && r.height > 0) || x < 0 || y < 0 || x > innerWidth || y > innerHeight) return rcNo("hidden");
+    var hit = document.elementFromPoint(x, y), d;
+    // A root that cannot hit-test makes the hit unknown: refused below.
+    while (hit && (d = hit.shadowRoot) && (d = d.elementFromPoint ? d.elementFromPoint(x, y) : null) !== hit) hit = d;
+    if (!rcOk(el, hit)) return rcNo("covered");
+    if (click) {
+      // The recipe's site and the session's sites, judged in this same call, so a page
+      // that moved after the gateway's checks gets no click.
+      if (!rcSite(site) || !(sites || []).some(rcSite)) return rcNo("wrong_site");
+      el.click();
+    }
+    return { ok: true, x: x, y: y };
+  }
+
   var api = {
     // `cap`: the node budget left (the gateway walks cross-origin frames after this
     // document and hands each the rest). Same-origin frames are walked in place;
@@ -1456,6 +1503,14 @@
     // (`probeSelectorBlocked`): the gateway asks before a Harness helper runs one.
     selectorBlocked: function (selector) {
       return probeSelectorBlocked(selector);
+    },
+
+    recipeTarget: function (sel) {
+      return rcFind(sel, false);
+    },
+
+    recipeClick: function (sel, site, sites) {
+      return rcFind(sel, true, site, sites);
     },
 
     // Visible elements matching a CSS selector, as {t, x, y} (short text and the

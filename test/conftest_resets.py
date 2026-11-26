@@ -141,6 +141,27 @@ def _fresh_released_sessions_warning(_floor_monkeypatch):
 
 
 @per_test_guard
+def _fresh_harness_floor_warnings():
+    """Clear the bad ``agent.harness_sandbox`` warn-once set before and after each test.
+
+    ``agent_sdk.tool_gate._FLOOR_WARNED`` holds the (harness, value) pairs this
+    process logged once, so one test's entry would silence a later test's WARNING.
+    """
+
+    def clear():
+        tool_gate = sys.modules.get("kiro_crew.agent_sdk.tool_gate")
+        warned = getattr(tool_gate, "_FLOOR_WARNED", None)
+        if warned is not None:
+            warned.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _approve_every_mcp_launch(request, _floor_monkeypatch):
     """Treat every gatewayd launch as operator-approved, except where it is the subject.
 
@@ -1203,42 +1224,6 @@ def _disarm_agent_slice_memory_high():
         _sb._SLICE_MEMHIGH_CLIMB_WARNED = saved_climb_warned
         _sb._SLICE_MEMHIGH_EPOCH = saved_memhigh_epoch
         _sb._SLICE_LIMITS_EPOCH = saved_limits_epoch
-
-
-@per_test_guard
-def _reset_crewmate_worker_slots():
-    """A test that registers a session key as a crewmate worker must not leak it.
-
-    ``_CREWMATE_WORKER_SLOTS``, ``_CREWMATE_WORKER_MEMBERS``,
-    ``_CREWMATE_WORKER_PROMPT_IN_CONTEXT`` and ``_SESSION_BACKEND_PICKS`` are
-    process-wide in ``kiro_crew.members_parts.member_sessions``, and so is the
-    thread-born mark in ``kiro_crew.members_parts.worker_conducts``.
-    ``note_crewmate_worker_session`` mutates them directly (not through a
-    monkeypatch), so a test that calls ``resolve_session_agent_bindings`` or
-    ``note_worker_session`` with a worker execution silently contaminates every
-    later test on the same xdist worker that calls ``get_or_create`` on the same
-    key: the allocation's crewmate-worker gate fires and raises
-    ``CapabilityStartupError("capability_harness_unsupported")`` against a plain
-    mock provider that never set ``mate_worker_kit_supported = True``.
-    """
-
-    def clear():
-        module = sys.modules.get("kiro_crew.members_parts.member_sessions")
-        if module is not None:
-            module._CREWMATE_WORKER_SLOTS.clear()
-            module._CREWMATE_WORKER_MEMBERS.clear()
-            module._CREWMATE_WORKER_PROMPT_IN_CONTEXT.clear()
-            module._SESSION_BACKEND_PICKS.clear()
-        marks = sys.modules.get("kiro_crew.members_parts.worker_conducts")
-        if marks is not None:
-            marks._THREAD_BORN_WORKER_SLOTS.clear()
-            marks._LOGGED_PLAIN.clear()
-
-    clear()
-    try:
-        yield
-    finally:
-        clear()
 
 
 @per_test_guard

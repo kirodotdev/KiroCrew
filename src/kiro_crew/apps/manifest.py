@@ -199,9 +199,7 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _l10n_quoted,
     _sidebar_order,
     bot_grant_entries,
-    clamp_lifecycle_timeout,
     lifecycle_timeout_error,
-    lifecycle_timeout_seconds,
     logger,
 )
 from kiro_crew.apps.store_links import sanitize_links
@@ -1603,13 +1601,16 @@ def requirements_verdict(app_root: Path, req_file: Path) -> tuple[tuple[Path, Pa
     return (root_resolved, target), ""
 
 
-#: Cron helpers served as attributes of this module on first access, so
+#: Helpers served as attributes of this module on first access, so
 #: ``kiro_crew.apps.manifest.<name>`` is the object its home module holds. The
-#: cron service is heavy and the stdio MCP servers read manifests at start-up.
+#: cron service is heavy and the stdio MCP servers read manifests at start-up; the
+#: lifecycle-timeout bound runs only when a script is about to run.
 _LAZY_CRON_NAMES: dict[str, str] = {
     "is_valid_skip_date": "kiro_crew.cron",
     "is_valid_timezone": "kiro_crew.cron",
     "validate_create_timeouts": "kiro_crew.cron_service.fields",
+    "clamp_lifecycle_timeout": "kiro_crew.apps.manifest_lifecycle_timeouts",
+    "lifecycle_timeout_seconds": "kiro_crew.apps.manifest_lifecycle_timeouts",
 }
 
 

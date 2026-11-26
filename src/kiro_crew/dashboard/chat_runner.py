@@ -252,7 +252,9 @@ from kiro_crew.dashboard.chat_turn.session_events import (
     _on_clear_status,
     _on_compaction_status,
     _on_harness_notice,
+    _on_model_fallback,
     _on_todo_update,
+    _restore_refused_text,
 )
 from kiro_crew.dashboard.chat_turn.session_reset import (
     _arm_pending_reset_retry,
@@ -1357,13 +1359,7 @@ async def _run_chat(
             elif event.kind == EVENT_HARNESS_NOTICE:
                 _on_harness_notice(turn, event)
             elif event.kind == EVENT_MODEL_FALLBACK:
-                # kiro-cli moved this turn onto another model, or could not. The
-                # handle already moved the resolved model; the slot follows a
-                # promotion, and the finally ends the walk with one notice.
-                if event.model_fallback is not None:
-                    _engine_fallback.record_engine_fallback(
-                        state, slot, client, turn._engine_fallback_walk, event.model_fallback
-                    )
+                _on_model_fallback(turn, event)
             elif event.kind == EVENT_SUBAGENT_LIST:
                 await _on_subagent_list(turn, event)
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
@@ -1383,6 +1379,7 @@ async def _run_chat(
 
         await _turn_compact_command(turn)
 
+        _restore_refused_text(turn)
         await _turn_settle_answer(turn)
         # After the reply's last segment and before the turn is saved.
         _finish_harness_notices(turn)

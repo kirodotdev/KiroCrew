@@ -151,11 +151,14 @@ import sys as _sys  # noqa: E402
 from kiro_crew import _facade_mirror  # noqa: E402
 from kiro_crew.dashboard.state_parts.bot_worker_cap import (  # noqa: E402,F401 -- re-exported; see state_parts
     bot_max_workers,
+    bot_member,
     bot_worker_cap_refusal,
     count_restored_workers,
+    note_bot_session,
     note_new_worker,
     own_worker_member,
     read_worker_execution,
+    refresh_bot_session,
     worker_cap_refusal,
 )
 from kiro_crew.dashboard.state_parts.chat_slot import (  # noqa: E402,F401 -- re-exported; see state_parts

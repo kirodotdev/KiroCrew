@@ -236,7 +236,7 @@ def _agent_roster_hint() -> str:
         # caller needs: naming any agent will be refused, so say so rather than
         # advertising nothing and letting it guess.
         return (
-            " This agent's toolsSettings.subagent.availableAgents allows none of the "
+            " This agent's availableAgents allows none of the "
             "installed agents, so every spawn is refused; ask the operator to widen the list."
             if restricted
             else ""
@@ -245,7 +245,7 @@ def _agent_roster_hint() -> str:
     if withheld:
         hint += f" (+{withheld} more)"
     if restricted:
-        hint += " (restricted by this agent's toolsSettings.subagent.availableAgents)"
+        hint += " (restricted by this agent's availableAgents)"
     return hint + "."
 
 

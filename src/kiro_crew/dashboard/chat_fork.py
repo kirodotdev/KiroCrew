@@ -743,7 +743,7 @@ async def fork_slot(
     audit_caller: str,
     audit_operation: str = FORK_AUDIT_OPERATION,
     stamp: "Callable[[_ChatSlot], None] | None" = None,
-    recheck: "Callable[[], None] | None" = None,
+    recheck: "Callable[[_ChatSlot | None], None] | None" = None,
     reveal_folder: bool = True,
     to_template: str = "",
     memory_mode: object = None,
@@ -779,7 +779,9 @@ async def fork_slot(
     and again immediately before the transcript is copied into it, adjacent to
     the two points where this function re-compares the source's own frozen
     identity (when no memory bind runs, nothing suspends after the mint, so the
-    first call covers the copy too). It may raise; a raise before the mint
+    first call covers the copy too). The first call is handed ``None``, the second
+    the minted child, so a check that counts slots can leave the child out. It
+    may raise; a raise before the mint
     leaves nothing behind, and a raise after the bind withdraws the empty child. This is how
     ``session_control.fork_session`` keeps its containment answers -- caller
     eligibility, the source's addressability, the folder's existence -- true at
@@ -1312,7 +1314,7 @@ async def fork_slot(
     if recheck is not None:
         # Adjacent to the mint: nothing suspends between here and
         # `get_or_create_slot`, so what this asserts is true of the child's birth.
-        recheck()
+        recheck(None)
 
     # Mint, bind and shape the child inside ONE ``suspend_slots_push`` block.
     # ``get_or_create_slot`` pushes the slot list as it registers the child, and
@@ -1373,7 +1375,7 @@ async def fork_slot(
                     # refused with ITS code rather than as an identity drift. A raise
                     # here takes the withdrawal path below (no rows copied yet), and
                     # nothing suspends between here and the copy.
-                    recheck()
+                    recheck(new_slot)
                 if not _source_identity_unchanged():
                     raise UnknownMemoryStore(
                         "The fork source changed before its history was copied"

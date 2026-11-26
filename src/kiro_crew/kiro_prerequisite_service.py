@@ -511,7 +511,7 @@ class KiroPrerequisiteService:
 
         def sandbox_facts() -> tuple[bool, bool, list[str]]:
             from kiro_crew.agent_sdk.backends import registered_backends
-            from kiro_crew.agent_sdk.tool_gate import is_enforced
+            from kiro_crew.agent_sdk.tool_gate import configured_harness_sandbox_mode, is_enforced
 
             available = sandbox.detect_backend() != "none"
             # Whether a session could START with no OS backend: the platform
@@ -524,10 +524,19 @@ class KiroPrerequisiteService:
                 sandbox.unsandboxed_exec_permitted_by()
             ) and not sandbox._floor_mandates_sandbox(sandbox._governance_sandbox_floor())
             mask_applies = sandbox.credential_mask_applies(sandbox.configured_sandbox_mode())
+            # Where the configured tier drops the mask, a harness whose
+            # ``agent.harness_sandbox`` floor applies it is not held back.
             blocked = (
                 []
                 if mask_applies
-                else sorted(backend for backend in registered_backends() if is_enforced(backend))
+                else sorted(
+                    backend
+                    for backend in registered_backends()
+                    if is_enforced(backend)
+                    and not sandbox.credential_mask_applies(
+                        configured_harness_sandbox_mode(backend)
+                    )
+                )
             )
             return available, unsandboxed_permitted, blocked
 

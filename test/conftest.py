@@ -318,6 +318,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _fresh_config_load_debug_memories,
     _fresh_dev_fleet_service_reads,
     _fresh_hardlink_spec_warnings,
+    _fresh_harness_floor_warnings,
     _fresh_reexec_environment,
     _fresh_released_sessions_warning,
     _fresh_unhashable_agents_dir_warnings,
@@ -352,7 +353,6 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_cjk_segmenter,
     _reset_code_channel_owner_only_notices,
     _reset_create_rate_limit_buckets,
-    _reset_crewmate_worker_slots,
     _reset_degraded_config_observations,
     _reset_env_boot_record_and_ownership,
     _reset_kas_machine_fence_config,
@@ -391,6 +391,9 @@ from conftest_resets_computer_use import (  # noqa: E402,F401 -- bound for pytes
 from conftest_resets_connected_computers import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_connected_computers_state,
 )
+from conftest_resets_crewmate import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_crewmate_worker_slots,
+)
 from conftest_resets_decisions import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_decision_provider_error_warnings,
 )
@@ -406,6 +409,9 @@ from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and imp
 )
 from conftest_resets_relay_client import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_unsaved_relay_instance_ids,
+)
+from conftest_resets_search import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_search_shown_text_memo,
 )
 from conftest_resets_token_auth import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_would_refuse_session_key_log,
@@ -673,6 +679,21 @@ def _fresh_update_ownership(_floor_monkeypatch):
     yield
     open_steps = [entry.step.label for entry in registry]
     assert not open_steps, f"the test left update steps open: {open_steps}"
+
+
+@per_test_guard
+def _cold_sessionless_log_window(_floor_monkeypatch):
+    """Give each test fresh session-less log counts and last-emission timestamps.
+
+    A row one test wrote must not suppress a later test's first row or count toward
+    its total. Patched only when the module is already imported.
+    """
+    from collections import Counter
+
+    module = sys.modules.get("kiro_crew.dashboard.token_auth_sessionless")
+    if module is not None:
+        _floor_monkeypatch.setattr(module, "_SESSIONLESS_COUNTS", Counter())
+        _floor_monkeypatch.setattr(module, "_sessionless_log_last", {})
 
 
 @per_test_guard

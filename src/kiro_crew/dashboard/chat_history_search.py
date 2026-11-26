@@ -53,7 +53,7 @@ from kiro_crew.messaging.outbound_files import (
 )
 from kiro_crew.security import redact
 from kiro_crew.validation import sanitize_string
-from kiro_crew.widget_parse import parse_widgets
+from kiro_crew.widget_parse import is_markdown_widget_body, parse_widgets
 
 logger = logging.getLogger(__name__)
 
@@ -419,9 +419,13 @@ def _read_row(
         prose = readable_text(_without_widgets(content, widgets) if widgets else content)
         row = _Row(role, row_files(msg), prose, None)
         row.widgets = [w.title for w in widgets]
-        row.images = row_images(msg, row.files)
+        # An HTML widget's body is drawn in its frame, never as the reply's media;
+        # a markdown one is drawn as markdown, its pictures and videos included.
+        framed = [w for w in widgets if not is_markdown_widget_body(w.content)]
+        media = {**msg, "content": _without_widgets(content, framed)} if framed else msg
+        row.images = row_images(media, row.files)
         row.links = row_links(prose)
-        row.videos = row_videos(msg, row.files)
+        row.videos = row_videos(media, row.files)
         if artifact_kind is not None and _ARTIFACT_LINK in prose:
             # A saved html artifact is an HTML file the chat links instead of attaching.
             row.html_labels.extend(

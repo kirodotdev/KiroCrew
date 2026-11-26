@@ -316,6 +316,18 @@ class DashboardConfig:
             "30 seconds in the MCP gateway process).",
         ),
     )
+    sessionless_internal_calls: str = field(
+        default="log",
+        metadata=_meta(
+            "Session-less internal calls",
+            "What the gateway does with an internal call that names no session and comes "
+            "from a process it cannot place outside the agent sandbox. 'log' admits it and "
+            "writes a security log row (one per caller and path every 10 minutes); "
+            "'enforce' refuses it. Stays 'log' until the log shows no Kiro Crew tool of "
+            "this shape. Takes effect on the next call; no restart.",
+            enum=["log", "enforce"],
+        ),
+    )
     turn_cache_estimate: bool = field(
         default=False,
         metadata=_meta(

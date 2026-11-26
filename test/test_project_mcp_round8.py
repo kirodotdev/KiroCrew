@@ -194,7 +194,13 @@ async def test_a_hold_alone_is_stopped_on_an_unverified_adapter(
     from kiro_crew.acp.transport_errors import AcpToolGateUnroutable
 
     client, sent, killed = _handshake_client(tmp_path, monkeypatch, version, **hold)
-    with pytest.raises(AcpToolGateUnroutable, match="not verified to honour"):
+    # A held server can be allowed, so that refusal names where.
+    wording = (
+        "Allow them in a dashboard Claude Code chat"
+        if "_claude_held_project_servers" in hold
+        else "verified"
+    )
+    with pytest.raises(AcpToolGateUnroutable, match=wording):
         await client._pin_claude_starting_mode(_RESP)
     assert killed == [True]
     assert sent == []

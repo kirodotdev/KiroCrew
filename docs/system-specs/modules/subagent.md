@@ -1783,10 +1783,11 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   check only narrows what the spec grants; it never widens a governance denial.
 - **Refusal**: a policy refusal before the row is persisted, audited as
   `outcome="denied"`, with `error_code=agent_not_available`
-  (`subagent.AGENT_NOT_AVAILABLE_CODE`) and prose naming the parent, the key
-  and the allowed globs (grammar-checked, redacted, bounded like every rendered
-  roster). `spawn_run` short-circuits the rest of a wave on this code exactly
-  as it does on `agent_not_found`.
+  (`subagent.AGENT_NOT_AVAILABLE_CODE`) and prose naming the parent,
+  `availableAgents` (the setting's own name, which every sub-agent spelling
+  shares) and the allowed globs (grammar-checked, redacted, bounded like every
+  rendered roster). `spawn_run` short-circuits the rest of a wave on this code
+  exactly as it does on `agent_not_found`.
 - **Not covered yet**: a project-scope parent whose project directory the
   gate cannot resolve (see "Unresolved parent = surfaced" above) is audited,
   not refused. The advisory spawn-tool roster and the Slack cron default
@@ -4478,10 +4479,10 @@ backend (`agent_sdk/spec_hooks.py:turn_spec_hooks`):
 
 The tool name is cached on `EVENT_TOOL_CALL` by `tool_call_id` and looked up
 when the result arrives. The `Running: ` prefix is stripped so both hooks
-receive identical tool_name strings. A raise from either fire is caught so a
-misbehaving hook cannot break the subagent loop: the informational `PreToolUse`
-fire logs it at debug level, the `PostToolUse` fire at WARNING. A `PostToolUse`
-hook that exits other than 0 or 2 logs one WARNING with its `failure_detail`.
+receive identical tool_name strings. A raise from either fire is caught and
+logged at WARNING, so a misbehaving hook cannot break the subagent loop. A hook
+that exits other than 0 or 2 is logged once, as a WARNING with its
+`failure_detail`, by `ScriptHookStore.fire()` itself.
 
 ### Hook Payload Metadata
 

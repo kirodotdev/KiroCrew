@@ -4711,7 +4711,8 @@
       "force_reset_taking_longer_than_expected": "Force stop again — taking longer than expected",
       "killing": "Force stopping…",
       "killing_session": "Force stopping session",
-      "list_indent_hint": "On a list line, Tab indents and Shift+Tab outdents. Press Escape, then Tab, to leave the message input.",
+      "list_indent_hint": "Press Escape, then Tab, to leave the message input.",
+      "list_indent_keys": "On a list line, Tab indents and Shift+Tab outdents.",
       "message_input": "Message input",
       "model": "Model",
       "optimizing_prompt": "Optimizing prompt…",
@@ -11995,6 +11996,7 @@
         "aws_check_no_sandbox": "The AWS check could not run because this computer has no sandbox for the aws command. Your credentials were not checked. Run kirocrew doctor in a terminal for the fix, then re-check.",
         "aws_check_outer_sandbox": "The AWS check could not run because another sandbox already confines {{productName}}, so it cannot start its own sandbox for the aws command. Your credentials were not checked. Start {{productName}} outside that sandbox, then re-check.",
         "aws_check_sandbox_busy": "The AWS check could not run because the sandbox for the aws command hit a temporary limit. Your credentials were not checked. Re-check in a moment.",
+        "aws_check_userns_cap_zero": "The AWS check could not run because user namespaces are disabled on this host (user.max_user_namespaces is 0), so the aws command has no sandbox. Your credentials were not checked. Run kirocrew doctor in a terminal for the fix.",
         "before_you_start": "Before you start — your AWS setup",
         "billing_pricing_calculator": "This runs in your AWS account and is billed to you — one EC2 instance, its disk, and a small S3 bucket used during setup. Charges depend on your region, size, and any discounts. <link/>",
         "cancel": "Cancel",
@@ -12743,6 +12745,7 @@
       "chat_model_picker": "The model button in the message box. It shows this chat's model and opens the model picker.",
       "chat_session_title": "The session's title at the top of the chat. Its text is the session's name; click it to rename the session.",
       "composer_approval_mode": "The approval-mode picker in the message box's control row. It sets whether only lookups run without asking (Normal), its own memory, chat, skill and knowledge searches run too (Reads), this session is trusted (Trust), or everything is auto-approved (YOLO).",
+      "composer_project_aws_profile": "The AWS profile row at the bottom of the project picker, which the folder button under the message box opens. It names this chat's folder and the AWS profile that new chats in that folder use; open it to pick a profile registered in the AWS Control app or already bound to a folder in aws.project_profiles, type another profile name, or go back to the gateway's own AWS sign-in. Profiles that are only in the computer's AWS config are not listed: when neither source has one, the row is not drawn, so register one in AWS Control → Add accounts → Register selected. The docs page Configuration, section An AWS profile per project, explains it.",
       "composer_voice_input": "The microphone button in the message box. Press it to dictate instead of typing; on a touchscreen it switches between the keyboard and hold-to-talk.",
       "members_bot_sessions_switch": "The switch at the top of a bot's Sessions tab, on its profile card. Its label names the bot; on, that bot's sessions also show in your own Sessions list."
     }

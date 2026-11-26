@@ -55,6 +55,7 @@
         "strands_model": "auto",
         "sweep_agents_backups": false,
         "sandbox": "auto",
+        "harness_sandbox": {},
         "sandbox_allow_no_isolation": false,
         "sandbox_allow_unsandboxed_exec": false,
         "sandbox_readonly_paths": [],
@@ -866,6 +867,34 @@
         "off"
       ],
       "defaultValue": "auto"
+    },
+    {
+      "path": "agent.harness_sandbox",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Per-harness sandbox floor",
+      "help": "Optional sandbox floor per harness, as {\"<harness id>\": \"auto\" or \"strict\"}, for example {\"antigravity\": \"auto\"}. A session on a listed harness starts at the stricter of agent.sandbox and its floor, with its credential mask applied, so that harness runs in Kiro Crew's OS sandbox while agent.sandbox stays 'off' for every other harness, cron and MCP server. The floor only raises a tier. It is read only for the harnesses that are refused while the sandbox is off; an entry for Kiro CLI, KAS or Claude Code, 'off', or any other value sets no floor. Applies to sessions started after the change. Empty by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "agent.harness_sandbox.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "agent.sandbox_allow_no_isolation",
@@ -10966,6 +10995,7 @@
         "restore_sessions": false,
         "dynamic_dashboard_cards": false,
         "audit_secret_reads": false,
+        "sessionless_internal_calls": "log",
         "turn_cache_estimate": false,
         "crewmate_threads": false,
         "crewmates_in_agent_picker": false,
@@ -11420,6 +11450,23 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.sessionless_internal_calls",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session-less internal calls",
+      "help": "What the gateway does with an internal call that names no session and comes from a process it cannot place outside the agent sandbox. 'log' admits it and writes a security log row (one per caller and path every 10 minutes); 'enforce' refuses it. Stays 'log' until the log shows no Kiro Crew tool of this shape. Takes effect on the next call; no restart.",
+      "hasChildren": false,
+      "enumValues": [
+        "log",
+        "enforce"
+      ],
+      "defaultValue": "log"
     },
     {
       "path": "dashboard.turn_cache_estimate",
@@ -14052,7 +14099,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Workers at once",
-      "help": "How many of this Bot's own worker sessions (on its worker template) may be open at once. A session_create, session_revive or session_fork past it is refused with bot_worker_cap_reached until one of them is closed. Set by the owner on the Bot's settings page; the Bot cannot change it. 0 (the default) sets no limit while Workers can conduct is off; while it is on, 0 means at most 4. Otherwise 1 to 32, used as set.",
+      "help": "How many sessions that run as this Bot may be open at once: its worker sessions and the sessions they open, on any template or as the Bot, at any depth (not the Bot's own chat, a person's chats or sub-agent runs). A session_create, session_revive or session_fork past it is refused with bot_worker_cap_reached until one of them is closed. Set by the owner on the Bot's settings page; the Bot cannot change it. 0 (the default) sets no limit while Workers can conduct is off; while it is on, 0 means at most 4. Otherwise 1 to 32, used as set.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
