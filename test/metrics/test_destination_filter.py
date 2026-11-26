@@ -535,11 +535,10 @@ class TestTheWrapperKeepsTheCoresDecisions:
 APP_PRESENT = "kirocrew.app.present"
 
 
-@pytest.fixture(autouse=True)
-def _edition_names_apps(monkeypatch, request):
-    """Say a registry row declares ``appNamespace``, for the tests of this section."""
-    if request.cls is TestNamedEntityNamespaces:
-        monkeypatch.setattr("kiro_crew.apps.store_origin.edition_names_apps", lambda: True)
+@pytest.fixture
+def _edition_names_apps(monkeypatch):
+    """Say a registry row declares ``appNamespace``."""
+    monkeypatch.setattr("kiro_crew.apps.store_origin.edition_names_apps", lambda: True)
 
 
 def _listing(namespaces: "frozenset[str]" = frozenset({"acme"})) -> OtlpDestination:
@@ -577,6 +576,7 @@ def _record_entities(h) -> None:
     h.meter.create_counter(ALLOWED).add(1, attributes={"status": "on"})
 
 
+@pytest.mark.usefixtures("_edition_names_apps")
 class TestNamedEntityNamespaces:
     def test_a_destination_that_says_nothing_gets_private(self, harness):
         h = harness([_operator()])
