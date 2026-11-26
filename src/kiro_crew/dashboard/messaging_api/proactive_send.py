@@ -422,7 +422,7 @@ async def _update_message(request: web.Request) -> web.Response:
             {"error": "invalid channel ID format", "code": "invalid_channel"}, status=400
         )
     channel = channel.strip()
-    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
+    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(channel):
         return web.json_response(
             {"error": "invalid channel ID format", "code": "invalid_channel"}, status=400
         )

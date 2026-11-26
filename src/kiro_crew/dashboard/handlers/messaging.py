@@ -449,7 +449,7 @@ def _is_slack_ts(value: object) -> bool:
     return (
         isinstance(value, str)
         and len(value) <= _SLACK_TS_MAX_LEN
-        and bool(SLACK_THREAD_TS_RE.match(value))
+        and bool(SLACK_THREAD_TS_RE.fullmatch(value))
     )
 
 
@@ -677,10 +677,10 @@ async def api_send_message(request: web.Request) -> web.Response:
 
     # Validate format first, then redact (#2)
     if target_channel and (
-        len(target_channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(target_channel)
+        len(target_channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(target_channel)
     ):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
-    if target_user and not USER_ID_RE.match(target_user):
+    if target_user and not USER_ID_RE.fullmatch(target_user):
         return web.json_response({"error": "invalid user ID format"}, status=400)
 
     # Redact after format validation
@@ -807,7 +807,7 @@ async def api_send_message(request: web.Request) -> web.Response:
         # Validate the cron session format before trusting it to escalate
         # routing from notification-only to owner Slack DM — a malformed or
         # injected value must not abuse that upgrade.
-        is_cron_caller = bool(CRON_SESSION_RE.match(caller_session))
+        is_cron_caller = bool(CRON_SESSION_RE.fullmatch(caller_session))
         # A channel session takes the routing over, INCLUDING the cron default:
         # a cron asking for a Discord DM did not ask for a Slack one as well.
         send_to_slack = not channel_target and (

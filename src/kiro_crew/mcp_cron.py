@@ -288,7 +288,7 @@ def _default_cron_channel() -> str | None:
     can never pass that field's check. A job without a channel is routed by its origin.
     """
     channel = _caller_channel_id() or os.environ.get("KIROCREW_CHANNEL_ID") or ""
-    if len(channel) <= CHANNEL_MAX_LEN and CHANNEL_ID_RE.match(channel):
+    if len(channel) <= CHANNEL_MAX_LEN and CHANNEL_ID_RE.fullmatch(channel):
         return channel
     return None
 

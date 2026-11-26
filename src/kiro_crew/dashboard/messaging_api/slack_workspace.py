@@ -57,7 +57,7 @@ async def api_slack_pins(request: web.Request) -> web.Response:
     if not isinstance(channel, str):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
     channel = channel.strip()
-    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
+    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(channel):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
 
     ts = body.get("ts", "")
@@ -160,7 +160,7 @@ async def api_slack_reactions(request: web.Request) -> web.Response:
     if not isinstance(channel, str):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
     channel = channel.strip()
-    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
+    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(channel):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
     ts = body.get("ts", "")
     if not _is_slack_ts(ts):
@@ -265,7 +265,7 @@ async def api_slack_profile(request: web.Request) -> web.Response:
     if not user_id:
         return web.json_response({"error": "user required"}, status=400)
     # Validate format first, then redact (#2)
-    if not USER_ID_RE.match(user_id):
+    if not USER_ID_RE.fullmatch(user_id):
         return web.json_response({"error": "invalid user ID format"}, status=400)
     user_id = redact(user_id)
 
@@ -392,7 +392,7 @@ async def api_slack_history(request: web.Request) -> web.Response:
     if (
         not isinstance(channel, str)
         or len(channel) > CHANNEL_MAX_LEN
-        or not CHANNEL_ID_RE.match(channel)
+        or not CHANNEL_ID_RE.fullmatch(channel)
     ):
         return web.json_response(
             {"error": "invalid channel ID format", "code": "invalid_channel"}, status=400

@@ -550,7 +550,7 @@ async def _deliver_result(
             # agent to append entries, so ``chan`` is untrusted input. An
             # unattended post reaches a NEW audience, which is what
             # ``api_send_message``'s tracked-channel allowlist governs.
-            allowed = bool(chan and CHANNEL_ID_RE.match(chan) and is_tracked_channel(chan))
+            allowed = bool(chan and CHANNEL_ID_RE.fullmatch(chan) and is_tracked_channel(chan))
             owner_dm: str | None = None
             if slack and not allowed and self._owner_id:
                 # Resolved only off the allowed path, where it serves twice: as

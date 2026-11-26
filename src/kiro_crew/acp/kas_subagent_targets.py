@@ -1220,7 +1220,7 @@ def _on_its_own_model(entry: dict[str, Any], spec: dict[str, Any]) -> dict[str, 
     from kiro_crew.validation import MODEL_ID_RE
 
     model = spec.get("model")
-    if not isinstance(model, str) or not MODEL_ID_RE.match(model):
+    if not isinstance(model, str) or not MODEL_ID_RE.fullmatch(model):
         return entry
     return {**entry, "model": model}
 

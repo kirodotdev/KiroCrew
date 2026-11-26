@@ -441,7 +441,7 @@ class AcpRuntime:
         # so the chat withdraws the dead link -- see set_mcp_sign_in_ended_hook.
         self._mcp_sign_in_ended_hooks: dict[str, Callable[[str], None]] = {}
         if model is not None:
-            if not MODEL_ID_RE.match(model):
+            if not MODEL_ID_RE.fullmatch(model):
                 raise ValueError(
                     f"Invalid model identifier: {model!r} — must match "
                     f"^[a-zA-Z0-9][a-zA-Z0-9._-]{{0,127}}$"

@@ -373,7 +373,7 @@ def dismiss_notification(name: str, args: dict[str, Any]) -> str:
 def delete_message(name: str, args: dict[str, Any]) -> str:
     channel = args.get("channel", "")
     msg_ts = args.get("ts", "")
-    if len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
+    if len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(channel):
         mcp_core.sel().log_tool_invocation(
             session_key=mcp_core._resolve_session_key(),
             source="mcp",
@@ -381,7 +381,7 @@ def delete_message(name: str, args: dict[str, Any]) -> str:
             outcome="error",
         )
         return "Error: invalid channel ID format."
-    if not _SLACK_TS_RE.match(msg_ts):
+    if not _SLACK_TS_RE.fullmatch(msg_ts):
         mcp_core.sel().log_tool_invocation(
             session_key=mcp_core._resolve_session_key(),
             source="mcp",
@@ -434,10 +434,10 @@ def update_message(name: str, args: dict[str, Any]) -> str:
             outcome=outcome,
         )
 
-    if not CHANNEL_ID_RE.match(channel):
+    if not CHANNEL_ID_RE.fullmatch(channel):
         _audit("error")
         return "Error: invalid channel ID format."
-    if not _SLACK_TS_RE.match(msg_ts):
+    if not _SLACK_TS_RE.fullmatch(msg_ts):
         _audit("error")
         return "Error: invalid message timestamp format."
     if not text and not blocks:
