@@ -88,7 +88,9 @@ stay in the ledger and are reported apart.
 
 Two more reasons are decided at report time
 (`scripts/ci_test_selection_ledger_causes.py`). `flake`: another `source`
-failed the file and passed it on a rerun within 14 days. `from_main`, with
+failed the file and passed it on a rerun within 14 days. A failure that stays
+caused by the diff, was never rerun and is the file's only failure in the
+ledger carries the note `one_off`, which clears nothing. `from_main`, with
 `--notes`: a main-red issue the watcher wrote named the file while the run was
 created, whether the issue was still open when the pass ran or not. Each pass
 writes the spans of the issues it listed, and whether it left a listed run
@@ -1234,7 +1236,8 @@ def _marked(
             "from_main": causes.from_main(row, notes),
         }
         caused = not (row["rerun_green"] or row["main_red"] or any(marks.values()))
-        out.append({**row, **marks, "diff_caused": caused})
+        one_off = caused and causes.one_off(row, by_file.get(row["file"], []))
+        out.append({**row, **marks, "diff_caused": caused, "one_off": one_off})
     return out
 
 
@@ -1358,10 +1361,12 @@ def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> st
                     row["tier"],
                     causes.reasons(row),
                     _covered_cell(covered.get((row["run"], row["attempt"]), {})),
+                    "one_off" if row["one_off"] else "",
                 ]
                 for row in picked
             ]
             head = ["PR", "Head", "Run", "File", "Tier", "Not diff-caused", "Covered paths"]
+            head.append("Note")
             lines += ["", *_table(head, body)]
     return "\n".join(lines)
 
@@ -1431,10 +1436,12 @@ def summarize_windows(rows: list[Row], failures: list[Row], status: Row) -> str:
                     source_of.get(row["run"], ""),
                     "fork" if row["fork"] else "",
                     causes.reasons(row),
+                    "one_off" if row["one_off"] else "",
                 ]
                 for row in picked
             ]
             head = ["PR", "Head", "Run", "File", "Label", "Source", "Fork", "Not diff-caused"]
+            head.append("Note")
             lines += ["", *_table(head, body)]
     return "\n".join(lines + ["", json.dumps(status, sort_keys=True)])
 
