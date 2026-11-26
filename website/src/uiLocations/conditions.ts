@@ -93,6 +93,7 @@ export const UI_CONDITIONS = {
   // Added with the demand-gap batch (each checked against its render site).
   // Composer
   voice_input_supported: 'this browser can record from a microphone (the mic button is not drawn otherwise)',
+  project_aws_profile_shown: "the open session has a project folder and its project picker is open (press the folder button under the message box); the AWS profile row is drawn only when the AWS Control app has a registered profile or a folder is already bound in aws.project_profiles (profiles that are only in the computer's AWS config are not listed); to add one, turn on the AWS Control app, then AWS Control → Add accounts → Register selected",
   // Schedule
   job_enabled: 'the open job is active (not paused)',
   job_paused: 'the open job is paused',
