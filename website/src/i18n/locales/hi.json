@@ -6863,6 +6863,8 @@
       "closing_terminal": "टर्मिनल बंद हो रहा है…",
       "fullscreen": "पूर्ण स्क्रीन",
       "exit_fullscreen": "पूर्ण स्क्रीन से बाहर निकलें",
+      "fullscreen_shortcut": "पूर्ण स्क्रीन ({{shortcut}})",
+      "exit_fullscreen_shortcut": "पूर्ण स्क्रीन से बाहर निकलें ({{shortcut}})",
       "find": "खोजें"
     },
     "tabCloseMenu": {

@@ -947,7 +947,7 @@ export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible
   onSendToChat?: (text: string) => void
   /** Hold a never-opened terminal behind a focus stand-in until this turns false. */
   deferOpen?: boolean
-  /** Toggle the app-wide dock panel fullscreen (Cmd+Shift+F on macOS; the menu item elsewhere). Passed ONLY
+  /** Toggle the app-wide dock panel fullscreen (Cmd+Shift+F on macOS; the header button elsewhere). Passed ONLY
    *  by the dock's TerminalTabsView — a chat side-panel terminal leaves it
    *  undefined so its chord does not maximize the unrelated dock panel. */
   onToggleFullscreen?: () => void

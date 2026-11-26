@@ -6863,6 +6863,8 @@
       "closing_terminal": "Terminal wird geschlossen…",
       "fullscreen": "Vollbild",
       "exit_fullscreen": "Vollbild beenden",
+      "fullscreen_shortcut": "Vollbild ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Vollbild beenden ({{shortcut}})",
       "find": "Suchen"
     },
     "tabCloseMenu": {

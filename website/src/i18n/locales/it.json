@@ -7047,6 +7047,8 @@
       "closing_terminal": "Chiusura del terminale…",
       "fullscreen": "Schermo intero",
       "exit_fullscreen": "Esci da schermo intero",
+      "fullscreen_shortcut": "Schermo intero ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Esci da schermo intero ({{shortcut}})",
       "find": "Trova"
     },
     "tabCloseMenu": {

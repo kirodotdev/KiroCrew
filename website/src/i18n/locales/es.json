@@ -7047,6 +7047,8 @@
       "closing_terminal": "Cerrando terminal…",
       "fullscreen": "Pantalla completa",
       "exit_fullscreen": "Salir de pantalla completa",
+      "fullscreen_shortcut": "Pantalla completa ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Salir de pantalla completa ({{shortcut}})",
       "find": "Buscar"
     },
     "tabCloseMenu": {

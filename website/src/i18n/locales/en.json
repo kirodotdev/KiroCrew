@@ -4682,6 +4682,8 @@
       "more_actions": "More actions",
       "fullscreen": "Fullscreen",
       "exit_fullscreen": "Exit fullscreen",
+      "fullscreen_shortcut": "Fullscreen ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Exit fullscreen ({{shortcut}})",
       "find": "Find"
     },
     "chatInput": {
