@@ -2156,7 +2156,8 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   (`FrameLinkChip`), with the full URL as its title, appears at the frame's top
   right corner and takes focus, and the person's click on it opens the link.
   It has no timer, so a slow reader does not lose it. It goes on the next click
-  or key elsewhere, on a scroll or resize, or on Escape. So a page that focuses its own frame cannot open a web URL or a new tab on a click
+  or key elsewhere, on a scroll that moves the frame (a chat transcript
+  scrolling beside it does not count), on a resize, or on Escape. So a page that focuses its own frame cannot open a web URL or a new tab on a click
   made in the dashboard or in another frame. Under the pointer tie it can, right after a dashboard click and with no click in the
   frame, move this window to a listed dashboard page, behind that page's leave check and within the activation's lifespan: the
   residual `rfc-in-app-dashboard-links.md` §3.4 and §4 accept. Each web link gets its resolved URL

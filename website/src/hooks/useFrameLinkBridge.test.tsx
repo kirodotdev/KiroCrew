@@ -468,6 +468,53 @@ describe('tying the click to the asking frame', () => {
     expect(document.activeElement).toBe(holder)
     expect(open).not.toHaveBeenCalled()
   })
+
+  it('keeps the button while something beside the frame scrolls, and takes it away when the frame moves', () => {
+    const other = realFrame().frame
+    const { frame, win } = realFrame()
+    let top = 100
+    frame.getBoundingClientRect = () => new DOMRect(0, top, 400, 300)
+    const transcript = document.createElement('div')
+    document.body.appendChild(transcript)
+    render(<Real frame={frame} open={vi.fn()} />)
+    enter(other)
+    frame.focus()
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, win)
+    expect(chip()).not.toBeNull()
+    // A streaming chat transcript scrolls on every line, and the frame stays put.
+    act(() => { transcript.dispatchEvent(new Event('scroll')) })
+    expect(chip()).not.toBeNull()
+    // A scroll that carries the frame strands the button, so it goes.
+    top = 40
+    act(() => { document.dispatchEvent(new Event('scroll')) })
+    expect(chip()).toBeNull()
+  })
+
+  it('measures from the frame now asking when a second frame asks while the button shows', () => {
+    const other = realFrame().frame
+    const a = realFrame()
+    const b = realFrame()
+    a.frame.getBoundingClientRect = () => new DOMRect(0, 100, 400, 300)
+    b.frame.getBoundingClientRect = () => new DOMRect(0, 500, 400, 300)
+    function Two() {
+      const refA = useRef<HTMLIFrameElement | null>(a.frame)
+      const refB = useRef<HTMLIFrameElement | null>(b.frame)
+      return <>{useFrameLinkBridge([refA, refB], vi.fn(), focused)}</>
+    }
+    const transcript = document.createElement('div')
+    document.body.appendChild(transcript)
+    render(<Two />)
+    enter(other)
+    a.frame.focus()
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, a.win)
+    expect(chip()).not.toBeNull()
+    // A click inside frame B never reaches the dashboard, so the button stays and moves to B.
+    b.frame.focus()
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, b.win)
+    expect(chip()).not.toBeNull()
+    act(() => { transcript.dispatchEvent(new Event('scroll')) })
+    expect(chip()).not.toBeNull()
+  })
 })
 
 describe('a page of this dashboard', () => {
