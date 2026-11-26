@@ -223,7 +223,7 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
 
     if "owner_id" in body:
         owner = str(body.get("owner_id", "")).strip()
-        if owner and not USER_ID_RE.match(owner):
+        if owner and not USER_ID_RE.fullmatch(owner):
             return _deny("owner_id must be a Slack member ID (starts with U or W)")
         # Only stage a real change: the UI sends the field on every save, and
         # staging an unchanged value would flag restart_required on every

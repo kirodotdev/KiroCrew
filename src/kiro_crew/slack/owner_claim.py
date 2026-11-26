@@ -486,7 +486,7 @@ class OwnerClaim:
         if not current_context().slack_gate.check_message_origin(self._team):
             return False
         user = event.get("user")
-        if not isinstance(user, str) or not USER_ID_RE.match(user):
+        if not isinstance(user, str) or not USER_ID_RE.fullmatch(user):
             return False
         info = await self._user_info(user)
         if info is None or not self.is_open:

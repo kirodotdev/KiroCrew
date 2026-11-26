@@ -769,7 +769,7 @@ def _verify_slack_owner_id(bot_token: str, owner_id: str) -> tuple[bool | None, 
     Only :data:`_SLACK_OWNER_REJECTIONS` indicts the id; every other Slack error
     degrades to unverifiable.
     """
-    if not USER_ID_RE.match(owner_id):
+    if not USER_ID_RE.fullmatch(owner_id):
         return False, (
             "not a member ID — 'C…' is a channel and 'B…' is a bot; yours starts "
             "with U (or W on Enterprise Grid), from your profile → ⋯ More → Copy member ID"
