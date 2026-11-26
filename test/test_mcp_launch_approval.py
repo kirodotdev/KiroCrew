@@ -293,6 +293,43 @@ def test_gatewayd_fails_closed_without_a_store(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_an_unapproved_launch_is_reported_as_unapproved_not_as_a_missing_mapping(
+    tmp_path, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.mcp_gateway import gatewayd
+    from kiro_crew.mcp_gateway.pool import BackendPool
+    from kiro_crew.mcp_gateway.stub_link import must_degrade_unknown_target
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        gatewayd, "spawn_backend", AsyncMock(side_effect=AssertionError("spawned unapproved"))
+    )
+
+    async def refusal() -> str:
+        with pytest.raises(gatewayd._TargetUnknown) as raised:
+            await gatewayd._acquire_backend(
+                BackendPool(max_backends=2), _pool_key("srv"), gatewayd.env_target_resolver
+            )
+        return str(raised.value)
+
+    unmapped = await refusal()
+    monkeypatch.setenv("KIROCREW_MCP_TARGET_SRV", _target_spec(_APPROVED_CMD))
+    unapproved = await refusal()
+
+    assert unmapped == (
+        "no target mapping for server 'srv'; "
+        "set KIROCREW_MCP_TARGET_<SERVER> env var or pass a target_resolver"
+    )
+    assert unapproved == (
+        "no target mapping for server 'srv': its launch is not an approved one; "
+        "review it in MCP Servers > Sharing"
+    )
+    assert must_degrade_unknown_target(unapproved)
+
+
+@pytest.mark.asyncio
 async def test_gateway_resolution_reads_approval_store_off_loop(tmp_path, monkeypatch):
     from kiro_crew.mcp_gateway import gatewayd
 
