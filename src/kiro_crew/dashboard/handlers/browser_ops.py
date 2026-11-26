@@ -417,6 +417,7 @@ def build_context(
         staging_dir=config_dir() / IPC_LEAF / "shots",
         upload_dir=config_dir() / IPC_LEAF / "uploads",
         sleep=asyncio.sleep,
+        sites=tuple(sites),
         url_allowed=(
             _site_gate(sites, own_origins)
             if sites

@@ -135,7 +135,7 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     changeAppBrowserSite: (name: string, action: AppBrowserSiteAction, site: string) => post('/api/apps/' + encodeURIComponent(name) + '/browser-sites', { action, site }).then(j) as Promise<AppBrowserSites>,
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
     // grantsConsent names the staged entries the owner was shown; only those are approved.
-    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; bots?: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; frameSources?: string[]; browserSites?: string[]; kiroOperations?: string[]; browser?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
+    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; bots?: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; frameSources?: string[]; browserSites?: string[]; kiroOperations?: string[]; browserRecipes?: string[]; browserRecipeWatch?: string[]; browser?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
       sessionApprovalConsent,
       // Only a consent whose disclosure named member threads says so; the
       // server refuses a consent that omits a scope the live manifest declares.
@@ -143,6 +143,8 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
       ...(grantsConsent ? { grantsConsent } : {}),
     }).then(j),
     disableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/disable').then(j),
+    /** `POST /api/browser/recipe-watch-off`: takes back one watch recipe's run-by-itself yes (owner only). */
+    stopAppRecipeWatch: (name: string, recipe: string) => post('/api/browser/recipe-watch-off', { app: name, recipe }).then(j) as Promise<{ ok: boolean; removed?: boolean; error?: string }>,
     openApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/open').then(j),
     uninstallApp: (name: string, keepData = true, keepDependencies?: boolean, keepSpecific?: string[]) =>
       post('/api/apps/' + encodeURIComponent(name) + '/uninstall', {

@@ -1294,6 +1294,48 @@ browser's autoplay rule; the route then clicks the element once, which counts as
 gesture. The hook draws nothing, so the buttons are yours. Only the dashboard owner's own
 page can call it: the agent's tools and app tokens are refused.
 
+### Browser recipes
+
+`runRecipe(name)` (`APP_SDK_LEVEL >= 15`) runs one of your approved
+[`permissions.browserRecipes`](manifest-reference.md) on the same tab: fixed clicks on
+CSS selectors, with no agent turn and no guessed wait. It resolves to `{ ok: true }`, or
+`{ ok: false, code, step }` naming the step that failed (from 0), so your page can ask its
+agent instead. A click is `el.click()` on the matched element (`"click": "script"` in the
+answer): the site sees `isTrusted` false, and one that ignores such clicks does nothing
+while the answer is still `ok: true`. Check the effect (for play, `state`) and fall back to
+your agent then too.
+
+```tsx
+const { runRecipe } = sdk.useBrowserMedia(sessionKey)
+const played = await runRecipe('play')
+if (!played.ok) chat.send('The play button did not work. Press play on the video.')
+```
+
+The route is the same `POST /api/browser/media`, with every gate above, and body
+`{"session_key", "action": "recipe", "recipe": "<name>"}` (success adds `"click":
+"script"`). Recipes sit behind the
+`app_browser_sdk` Feature Preview (Settings > Developer > Feature previews), off by
+default. Answers: `{"ok": true, "session_key", "recipe", "steps"}`; HTTP 403
+`preview_off` while that preview is off; HTTP 403 `recipe_not_approved` for a name that is
+not an approved recipe (undeclared, waiting for the owner, or changed since approval); or
+`{"ok": false, "code", "error", "recipe", "step"}` with `code` one of `not_found` (no
+element matches), `hidden` (it matches but is not shown in the viewport), `covered` (something else is
+drawn over it),
+`wait_timeout`, `bad_selector`, `password_field`, `wrong_site` (the page is not the
+recipe's `site`) or `redirect_refused` (the page left your approved sites).
+
+A recipe with `"watch": true` can also run by itself, once the owner turns on its own
+"runs by itself" switch on your app's page (approving the recipe alone lets your page run
+it, nothing more). The owner can turn that switch off again; the recipe then runs only
+when your page asks. Then, while the gateway watches your agent's
+tab (above), each 3-second tick while the media plays (never while it is paused or has ended) runs it when its first click's element is shown, so
+`{"name": "skip_ad", "watch": true, "steps": [{"click": "button.ytp-skip-ad-button"}]}`
+presses "Skip ad" with nobody in a turn. Each run writes an audit row. It is skipped while
+the person has taken the tab over, and stops when the tab closes, the app is turned off or
+untrusted, the preview is turned off, or the recipe is no longer approved. Every click lands in the owner's own
+signed-in browser; it is bounded to the selectors the owner approved, on your approved
+sites.
+
 ## Browser View
 
 `BrowserView` shows the live browser of one of your app's own chat slots, and lets the
@@ -2583,7 +2625,8 @@ adds the [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk)'s `canonical_file_
 its outbound URL check (`vet_public_url`, `UrlRejectedError` and
 `address_is_not_public`), its raster sniff (`sniff_raster_mime` and
 `RASTER_SNIFF_BYTES`) and its pinned path walk and copy (`pin_parent`,
-`copy_file_pinned` and their helpers); each level includes every level below it. Several seams
+`copy_file_pinned` and their helpers), and level 15 adds `permissions.browserRecipes`
+with [`runRecipe`](#browser-recipes); each level includes every level below it. Several seams
 share level 7, three share level 8, level 10 is shared by the seams of the batch it
 opens, and level 14 by the backend SDK names of its batch, so an app that needs one
 feature-detects it, never the level alone. Read it

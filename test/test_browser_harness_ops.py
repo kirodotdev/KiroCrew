@@ -142,6 +142,34 @@ def test_every_page_side_call_goes_through_the_walker(fake: FakeBrowser) -> None
     assert page_expr == ops.WALKER_SOURCE + ".consoleMessages(0)"
 
 
+@pytest.mark.parametrize("frame_refs", [False, True])
+def test_page_frame_refs_are_optional(fake: FakeBrowser, frame_refs: bool) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    frames = SimpleNamespace(
+        url_for_ref=AsyncMock(return_value="https://example.com/"),
+        call=AsyncMock(return_value={"ok": True, "frame": True}),
+    )
+    fake.page["recipeTarget"] = lambda selector: {"ok": True, "selector": selector}
+    ctx = fake.ctx()
+    ctx.frames = lambda: frames
+    if frame_refs:
+        assert run(ops._page(ctx, "recipeTarget", "f1e1")) == {"ok": True, "frame": True}
+        frames.call.assert_awaited_once_with(1, "recipeTarget", "e1")
+        assert fake.calls == []
+    else:
+        assert run(ops._page(ctx, "recipeTarget", "f1e1", frame_refs=False)) == {
+            "ok": True,
+            "selector": "f1e1",
+        }
+        frames.call.assert_not_called()
+        frames.url_for_ref.assert_not_called()
+        assert fake.calls == [
+            ("js_isolated", {"expression": ops.WALKER_SOURCE + '.recipeTarget("f1e1")'})
+        ]
+
+
 # --- dispatch ------------------------------------------------------------------
 
 

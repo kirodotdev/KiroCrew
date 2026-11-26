@@ -26,6 +26,11 @@ and ``RASTER_SNIFF_BYTES``: the gateway's own raster sniffer, by reference. Leve
 also adds the descriptor-pinned path walk and copy: ``supports_pinned_walk``,
 ``is_reparse_point``, ``pin_parent``, ``copy_file_pinned``, ``fd_real_path`` and
 ``PinnedPathRefusal``.
+
+Level 15 adds ``permissions.browserRecipes``: fixed clicks on CSS selectors the gateway
+runs on the app's own agent's tab, through ``POST /api/browser/media`` (``action:
+"recipe"``, the SDK's ``useBrowserMedia().runRecipe``) and, for a ``watch`` recipe, by
+itself while the app's media plays.
 """
 
-APP_SDK_LEVEL = 14
+APP_SDK_LEVEL = 15

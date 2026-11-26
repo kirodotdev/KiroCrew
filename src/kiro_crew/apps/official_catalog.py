@@ -589,6 +589,12 @@ def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | N
 
     if operations := declared_operations(permissions.get(KIRO_OPERATIONS_KEY)):
         disclosed[KIRO_OPERATIONS_KEY] = operations
+    from kiro_crew.apps.browser_recipes import GRANT_FAMILY as BROWSER_RECIPES_KEY
+    from kiro_crew.apps.browser_recipes import browser_recipe_grant_entries
+
+    if recipes := browser_recipe_grant_entries(permissions)[BROWSER_RECIPES_KEY]:
+        # Disclosed as the raw recipes, each one exactly as it will be approved.
+        disclosed[BROWSER_RECIPES_KEY] = [json.loads(e) for e in recipes]
     api = permissions.get("api")
     if isinstance(api, list) and (paths := [p for p in api if isinstance(p, str) and p.strip()]):
         disclosed["api"] = paths

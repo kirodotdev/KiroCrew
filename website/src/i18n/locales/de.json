@@ -6587,6 +6587,8 @@
         "browser_note": "Die Installation genehmigt nichts davon: Du genehmigst es auf der Seite der App. Solange die App aus ist, kann sie nichts davon nutzen; schaltest du sie wieder ein, gilt wieder, was du genehmigt hast. Nur die Tabs der eigenen Chats dieser App, nie deine anderen Tabs.",
         "kiro_operations_heading": "Kiro-Operationen, die diese App in deinem Namen aufrufen möchte",
         "kiro_operations_note": "Die Installation genehmigt keine davon: Du genehmigst sie auf der Seite der App. Danach führt {{productName}} jeden Aufruf mit deiner Kiro-Anmeldung aus, und die App bekommt nur die Antwort.",
+        "browser_recipes_heading": "Automatische Klicks in deinem Browser",
+        "browser_recipes_note": "{{productName}} macht diese Klicks nur auf Seiten der genehmigten Websites der App, ohne den Assistenten zu fragen. Das ist dein eigener, angemeldeter Browser. Die Installation genehmigt nichts davon: Du genehmigst sie auf der Seite der App.",
         "browser_preview_off": "App-Browserzugriff ist auf diesem Gateway aus, daher wirkt das noch nicht. Einschalten unter Einstellungen > Entwickler > Funktionsvorschauen.",
         "host_api_heading": "Die App kann auch Teile von {{productName}} außerhalb der App nutzen",
         "host_api_chat": "Sie kann eigene Chats mit dem Agenten starten und darin Nachrichten senden.",
@@ -6629,6 +6631,14 @@
         "failed_generic_next_offline": "{{productName}} ist gerade nicht verbunden, daher bleibt „Vertrauen und erneut versuchen“ aus, bis die Verbindung wieder steht.",
         "failed_desktop_unsupported": "„{{app}}“ kann in der Desktop-Version von {{productName}} nicht installiert werden, und es wurde nichts geändert.",
         "failed_desktop_unsupported_help": "Sie braucht Python-Pakete, die der Desktop-Build nicht hinzufügen kann; bitte den Autor der App, sie mit der App auszuliefern, oder öffne {{productName}} statt in der Desktop-Version in einem Webbrowser."
+      },
+      "browserRecipeList": {
+        "on_site": "Auf {{site}}",
+        "runs_by_itself": "Läuft von selbst, während Medien spielen",
+        "runs_by_itself_if_allowed": "Läuft, wenn die App es anfordert. Von selbst während der Wiedergabe erst, wenn du es erlaubst",
+        "runs_when_asked": "Läuft, wenn die App darum bittet",
+        "step_click": "Klicke auf das Element, das zu <sel/> passt",
+        "step_wait": "Warte bis zu {{duration}} auf das Element, das zu <sel/> passt"
       },
       "registryTier": {
         "curated": "Vom Team geprüft",
@@ -12515,7 +12525,12 @@
       "grants_approved": "Genehmigt: {{entries}}. Die App kann sie jetzt nutzen.",
       "grants_reconsent_browser_sites": "Besuchte Websites: Der eigene Agent der App kann diese Seiten in deinem Browser, mit deiner Anmeldung, öffnen, lesen, darauf tippen und klicken, ohne jedes Mal zu fragen.",
       "grants_reconsent_kiro_operations": "Kiro-Operationen: Die App kann sie in deinem Namen mit deiner Kiro-Anmeldung aufrufen. Sie bekommt die Antworten, nie die Anmeldung.",
+      "grants_reconsent_browser_recipes": "Automatische Klicks in deinem Browser: {{productName}} macht diese Klicks für die App, ohne den Assistenten zu fragen.",
       "kiro_operations_card_heading": "Kiro-Operationen, die diese App in deinem Namen aufrufen kann",
+      "browser_recipes_card_heading": "Automatische Klicks in deinem Browser",
+      "browser_recipes_card_note": "Nur auf den genehmigten Websites der App. Ein Klick, der von selbst läuft, passiert, während die Medien der App spielen, etwa um Werbung zu überspringen.",
+      "browser_recipe_watch_switch": "{{name}} läuft von selbst, während Medien spielen",
+      "browser_recipe_watch_note": "Ein Klick, der von selbst läuft, etwa um Werbung zu überspringen, braucht dieses eigene Ja. Schaltest du ihn hier aus, stoppt nur dieser Klick und die App bleibt an.",
       "kiro_operations_first_notice": "{{name}} möchte diese Kiro-Operationen in deinem Namen aufrufen.",
       "approve_kiro_operations": "Diese Kiro-Operationen genehmigen",
       "grants_reconsent_browser": "Browser-Tabs der eigenen Chats: Mit Neue Berechtigungen genehmigen gilt jeder Punkt unten sofort, ohne weitere Abfrage. Schaltest du die App aus, stoppt alles, bis du sie wieder einschaltest.",

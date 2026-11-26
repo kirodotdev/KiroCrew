@@ -42,6 +42,7 @@ LAYERS: dict[str, frozenset[str]] = {
     "kiro_crew.apps.manifest_contributes": frozenset({"kiro_crew.apps.manifest_memory_providers"}),
     "kiro_crew.apps.manifest_agent_tools": frozenset(),
     "kiro_crew.apps.manifest_memory_providers": frozenset(),
+    "kiro_crew.apps.manifest_lifecycle_timeouts": frozenset({"kiro_crew.apps.manifest_sections"}),
 }
 OWNERS = (
     "kiro_crew.apps.manifest_names",
@@ -50,6 +51,7 @@ OWNERS = (
     "kiro_crew.apps.manifest_contributes",
     "kiro_crew.apps.manifest_agent_tools",
     "kiro_crew.apps.manifest_memory_providers",
+    "kiro_crew.apps.manifest_lifecycle_timeouts",
 )
 APPS_DIR = Path(manifest.__file__).resolve().parent
 _THIS_FILE = Path(__file__).resolve()

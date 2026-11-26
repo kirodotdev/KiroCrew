@@ -6368,6 +6368,8 @@
         "browser_note": "インストールではどれも承認されません。アプリのページで承認します。アプリがオフの間はどれも使えず、オンに戻すと承認した分が戻ります。このアプリ自身のチャットのタブだけで、ほかのタブには触れません。",
         "kiro_operations_heading": "このアプリがあなたとして呼び出す許可を求める Kiro の操作",
         "kiro_operations_note": "インストールではどれも承認されません。アプリのページで承認します。その後 {{productName}} があなたの Kiro サインインで各呼び出しを行い、アプリが受け取るのは結果だけです。",
+        "browser_recipes_heading": "ブラウザーでの自動クリック",
+        "browser_recipes_note": "{{productName}} は、アプリの承認済みサイトのページでだけ、アシスタントに確認せずにこれらのクリックを行います。これはあなたがサインインしているブラウザーです。インストールではどれも承認されません。アプリのページで承認してください。",
         "browser_preview_off": "このゲートウェイではアプリのブラウザーアクセスがオフなので、まだ何も起きません。設定 > 開発者 > 機能プレビュー でオンにできます。",
         "host_api_heading": "このアプリは、アプリの外にある {{productName}} の機能も使えます",
         "host_api_chat": "エージェントとの自分専用のチャットを始め、そこにメッセージを送れます。",
@@ -6410,6 +6412,14 @@
         "failed_generic_next_offline": "{{productName}} は今接続されていないため、再接続するまで「信頼して再試行」は使えません。",
         "failed_desktop_unsupported": "「{{app}}」は {{productName}} のデスクトップ版にはインストールできず、何も変更されませんでした。",
         "failed_desktop_unsupported_help": "デスクトップ版では追加できない Python パッケージが必要です。アプリの作者にアプリへ同梱してもらうか、デスクトップ版ではなくウェブブラウザーで {{productName}} を開いてください。"
+      },
+      "browserRecipeList": {
+        "on_site": "対象: {{site}}",
+        "runs_by_itself": "メディア再生中に自動で実行",
+        "runs_by_itself_if_allowed": "アプリが求めたときに実行。別途許可した場合だけ、メディア再生中に自動で実行",
+        "runs_when_asked": "アプリが求めたときに実行",
+        "step_click": "<sel/> に一致する要素をクリック",
+        "step_wait": "<sel/> に一致する要素を最大 {{duration}} 待つ"
       },
       "registryTier": {
         "curated": "チーム確認済み",
@@ -12236,7 +12246,12 @@
       "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。",
       "grants_reconsent_browser_sites": "閲覧サイト：アプリ自身のエージェントが、毎回確認せずに、あなたのブラウザーであなたのログインのまま、これらのページを開き、読み、入力し、クリックできます。",
       "grants_reconsent_kiro_operations": "Kiro の操作: アプリはあなたの Kiro サインインで、あなたとしてこれらを呼び出せます。受け取るのは結果だけで、サインイン情報は受け取りません。",
+      "grants_reconsent_browser_recipes": "ブラウザーでの自動クリック: {{productName}} がアプリのために、アシスタントに確認せずにこれらのクリックを行います。",
       "kiro_operations_card_heading": "このアプリがあなたとして呼び出せる Kiro の操作",
+      "browser_recipes_card_heading": "ブラウザーでの自動クリック",
+      "browser_recipes_card_note": "アプリの承認済みサイトでだけ動きます。自動で動くクリックは、アプリのメディア再生中に行われます (例: 広告のスキップ)。",
+      "browser_recipe_watch_switch": "{{name}} をメディア再生中に自動で実行",
+      "browser_recipe_watch_note": "自動で行うクリック (例: 広告のスキップ) には、ここでの別の許可が必要です。ここでオフにすると、そのクリックだけが止まり、アプリはそのまま使えます。",
       "kiro_operations_first_notice": "{{name}} はあなたとしてこれらの Kiro の操作を呼び出す許可を求めています。",
       "approve_kiro_operations": "これらの Kiro の操作を承認",
       "grants_reconsent_browser": "自分のチャットのブラウザータブ：「新しい権限を承認」を押すと、下の各項目はすぐに有効になり、確認はもう出ません。アプリをオフにすると、オンに戻すまですべて止まります。",

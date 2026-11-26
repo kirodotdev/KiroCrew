@@ -6357,6 +6357,8 @@
         "browser_note": "설치만으로는 아무것도 승인되지 않습니다. 앱 페이지에서 승인합니다. 앱이 꺼져 있는 동안에는 하나도 쓸 수 없고, 다시 켜면 승인한 항목이 돌아옵니다. 이 앱 자체 채팅의 탭만 해당하며 다른 탭은 건드리지 않습니다.",
         "kiro_operations_heading": "이 앱이 당신으로서 호출하도록 요청할 Kiro 작업",
         "kiro_operations_note": "설치만으로는 아무것도 승인되지 않습니다. 앱 페이지에서 승인합니다. 그다음 {{productName}}이(가) 당신의 Kiro 로그인으로 각 호출을 하고, 앱은 결과만 받습니다.",
+        "browser_recipes_heading": "브라우저의 자동 클릭",
+        "browser_recipes_note": "{{productName}}은(는) 앱의 승인된 사이트 페이지에서만, 어시스턴트에게 묻지 않고 이 클릭을 합니다. 이 브라우저는 내가 로그인한 브라우저입니다. 설치로는 아무것도 승인되지 않으며, 앱 페이지에서 승인합니다.",
         "browser_preview_off": "이 게이트웨이에서 앱 브라우저 접근이 꺼져 있어 아직 아무 효과가 없습니다. 설정 > 개발자 > 기능 미리 보기에서 켤 수 있습니다.",
         "host_api_heading": "이 앱은 앱 밖의 {{productName}} 기능도 사용할 수 있습니다",
         "host_api_chat": "에이전트와 자체 채팅을 시작하고 그 채팅에 메시지를 보낼 수 있습니다.",
@@ -6406,6 +6408,14 @@
         "source": "게시처",
         "title": "‘{{app}}’이(가) 자체 코드를 실행하도록 신뢰하시겠습니까?",
         "working": "신뢰하고 활성화하는 중…"
+      },
+      "browserRecipeList": {
+        "on_site": "사이트: {{site}}",
+        "runs_by_itself": "미디어 재생 중 저절로 실행",
+        "runs_by_itself_if_allowed": "앱이 요청할 때 실행. 따로 허용한 경우에만 미디어 재생 중 저절로 실행",
+        "runs_when_asked": "앱이 요청할 때 실행",
+        "step_click": "<sel/>와(과) 일치하는 요소를 클릭",
+        "step_wait": "<sel/>와(과) 일치하는 요소를 최대 {{duration}} 기다림"
       },
       "types": {
         "built_in": "기본 제공",
@@ -12236,7 +12246,12 @@
       "grants_approved": "승인됨: {{entries}}. 이제 앱에서 사용할 수 있습니다.",
       "grants_reconsent_browser_sites": "탐색 사이트: 앱 자체 에이전트가 매번 묻지 않고 브라우저에서 내 로그인 상태로 이 페이지들을 열고, 읽고, 입력하고, 클릭할 수 있습니다.",
       "grants_reconsent_kiro_operations": "Kiro 작업: 앱이 당신의 Kiro 로그인으로, 당신으로서 이 작업을 호출할 수 있습니다. 앱은 결과만 받고 로그인 정보는 받지 않습니다.",
+      "grants_reconsent_browser_recipes": "브라우저의 자동 클릭: {{productName}}이(가) 앱을 위해 어시스턴트에게 묻지 않고 이 클릭을 합니다.",
       "kiro_operations_card_heading": "이 앱이 당신으로서 호출할 수 있는 Kiro 작업",
+      "browser_recipes_card_heading": "브라우저의 자동 클릭",
+      "browser_recipes_card_note": "앱의 승인된 사이트에서만 동작합니다. 저절로 실행되는 클릭은 앱의 미디어가 재생되는 동안 실행됩니다. 예: 광고 건너뛰기.",
+      "browser_recipe_watch_switch": "{{name}}을(를) 미디어 재생 중 저절로 실행",
+      "browser_recipe_watch_note": "저절로 실행되는 클릭(예: 광고 건너뛰기)은 여기서 따로 허용해야 합니다. 여기서 끄면 그 클릭만 멈추고 앱은 그대로 쓸 수 있습니다.",
       "kiro_operations_first_notice": "{{name}} 앱이 당신으로서 이 Kiro 작업을 호출하도록 요청합니다.",
       "approve_kiro_operations": "이 Kiro 작업 승인",
       "grants_reconsent_browser": "자체 채팅의 브라우저 탭: 새 권한 승인을 누르면 아래 항목이 바로 적용되며 다시 확인하지 않습니다. 앱을 끄면 다시 켤 때까지 모두 멈춥니다.",

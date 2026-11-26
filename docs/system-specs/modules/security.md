@@ -2016,6 +2016,24 @@ Security properties:
   hidden IPC leaf, never the agent's path, so a file or link swapped in after the
   check never reaches the page. One
   SEL row per file names the path and size, never the content.
+- **App browser recipes click in the person's signed-in browser, with no model.** An
+  app's approved `permissions.browserRecipes` (see
+  [app-kit-platform](app-kit-platform.md) §45) are clicks and waits on CSS selectors
+  only: no script, no `js`/`cdp`, no typed text, no navigation. Crew runs them on the
+  app's own agent's tab, which holds the owner's logins for those sites, when the app's
+  page asks (`POST /api/browser/media`, owner only, no internal secret) or, for a
+  `watch` recipe the owner gave a second, separate yes (`browserRecipeWatch`), by itself
+  during the media watch. All of it sits behind the default-off `app_browser_sdk`
+  Feature Preview. The bound is threefold: the page
+  must match the app's approved `browserSites` (else it is blanked) and the recipe's own
+  `site`, judged again right before each click; only the selectors the owner approved run
+  (the grant entry is the whole recipe, so a changed selector waits for approval again);
+  and the element is the first match in the top document, shown, never a password box,
+  found in the isolated world with the secret-probe selector guard. A click on an approved
+  site can still do whatever that site's button does; the owner approves each selector
+  knowing that. The click is `el.click()` on the matched element, so a frame the page
+  moves under its point cannot take it; it is an untrusted event, which a site may
+  ignore. Every run writes an audit row naming the recipe and `click=script`.
 - **Browser `js`, `cdp` and `http_get` run Harness's own helpers in the gateway.**
   The owner opened them
   (`docs/decisions/2026-11-19-the-browser-tool-runs-harness-js-cdp-and-http-get.md`;

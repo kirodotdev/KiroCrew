@@ -331,6 +331,16 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             return web.json_response(result.to_dict(), status=400)
 
         resp: dict[str, Any] = result.to_dict()
+        if grants_consent and grants_consent.get("browserRecipeWatch"):
+            # A watch with nothing to run has ended; the new yes starts it again.
+            from kiro_crew.dashboard.handlers.browser_media_watch import (  # noqa: PLC0415
+                watch_app_tabs,
+            )
+
+            try:
+                watch_app_tabs(request.app.get("state"), name)
+            except Exception:  # noqa: BLE001 - the approval is stored; a watch starts later
+                logger.warning("could not restart the media watch of an app", exc_info=True)
 
         # Register resources if gateway-managed
         if resources == "gateway":

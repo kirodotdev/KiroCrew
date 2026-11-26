@@ -6765,6 +6765,8 @@
         "browser_note": "L’installation n’approuve rien de tout cela : tu l’approuves sur la page de l’app. Tant que l’app est désactivée, elle ne peut rien en utiliser ; la réactiver rétablit ce que tu as approuvé. Seulement les onglets des chats de cette app, jamais tes autres onglets.",
         "kiro_operations_heading": "Opérations Kiro que cette app demandera à appeler en ton nom",
         "kiro_operations_note": "L'installation n'en approuve aucune : tu les approuves sur la page de l'app. {{productName}} fait ensuite chaque appel avec ta connexion Kiro, et l'app ne reçoit que la réponse.",
+        "browser_recipes_heading": "Clics automatiques dans ton navigateur",
+        "browser_recipes_note": "{{productName}} fait ces clics seulement sur les pages des sites approuvés de l'app, sans demander à l'assistant. C'est ton propre navigateur connecté. L'installation n'en approuve aucun : tu les approuves sur la page de l'app.",
         "browser_preview_off": "L’accès des apps au navigateur est désactivé sur ce gateway, donc cela n’a encore aucun effet. Active-le dans Paramètres > Développeur > Aperçus de fonctionnalités.",
         "host_api_heading": "L’application peut aussi utiliser des parties de {{productName}} hors de l’application",
         "host_api_chat": "Elle peut ouvrir ses propres discussions avec l’agent et y envoyer des messages.",
@@ -6807,6 +6809,14 @@
         "failed_generic_next_offline": "{{productName}} n'est pas connecté pour le moment, donc « Faire confiance et réessayer » reste désactivé jusqu'au rétablissement de la connexion.",
         "failed_desktop_unsupported": "«{{app}}» ne peut pas être installée dans la version de bureau de {{productName}}, et rien n'a été modifié.",
         "failed_desktop_unsupported_help": "Elle a besoin de paquets Python que la version de bureau ne peut pas ajouter ; demande à l’auteur de l’app de les livrer avec l’app, ou ouvre {{productName}} dans un navigateur web plutôt que dans la version de bureau."
+      },
+      "browserRecipeList": {
+        "on_site": "Sur {{site}}",
+        "runs_by_itself": "S'exécute tout seul pendant la lecture des médias",
+        "runs_by_itself_if_allowed": "S'exécute quand l'app le demande. Tout seul pendant la lecture des médias, seulement si tu l'autorises",
+        "runs_when_asked": "S'exécute quand l'app le demande",
+        "step_click": "Clique sur l'élément correspondant à <sel/>",
+        "step_wait": "Attends jusqu'à {{duration}} l'élément correspondant à <sel/>"
       },
       "registryTier": {
         "curated": "Vérifié par l'équipe",
@@ -12794,7 +12804,12 @@
       "grants_approved": "Approuvées : {{entries}}. L’app peut les utiliser dès maintenant.",
       "grants_reconsent_browser_sites": "Sites de navigation : l'agent de l'application peut ouvrir, lire, saisir du texte et cliquer sur ces pages dans ton navigateur, connecté avec ton compte, sans demander à chaque fois.",
       "grants_reconsent_kiro_operations": "Opérations Kiro : l'app peut les appeler en ton nom, avec ta connexion Kiro. Elle reçoit les réponses, jamais la connexion.",
+      "grants_reconsent_browser_recipes": "Clics automatiques dans ton navigateur : {{productName}} fait ces clics pour l'app sans demander à l'assistant.",
       "kiro_operations_card_heading": "Opérations Kiro que cette app peut appeler en ton nom",
+      "browser_recipes_card_heading": "Clics automatiques dans ton navigateur",
+      "browser_recipes_card_note": "Seulement sur les sites approuvés de l'app. Un clic qui s'exécute tout seul le fait pendant la lecture des médias de l'app, par exemple pour passer une publicité.",
+      "browser_recipe_watch_switch": "{{name}} s'exécute tout seul pendant la lecture des médias",
+      "browser_recipe_watch_note": "Un clic qui s'exécute tout seul, par exemple pour passer une publicité, demande ce oui séparé. Désactive-le ici pour arrêter seulement ce clic et garder l'app.",
       "kiro_operations_first_notice": "{{name}} demande à appeler ces opérations Kiro en ton nom.",
       "approve_kiro_operations": "Approuver ces opérations Kiro",
       "grants_reconsent_browser": "Onglets du navigateur de ses propres chats : Approuver les nouvelles autorisations active aussitôt chaque point ci-dessous, sans autre confirmation. Si tu désactives l’app, tout s’arrête jusqu’à ce que tu la réactives.",

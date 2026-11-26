@@ -6765,6 +6765,8 @@
         "browser_note": "Instalar no aprueba nada de esto: lo apruebas en la página de la app. Mientras la app está desactivada no puede usar nada de esto; al volver a activarla vuelve lo que aprobaste. Solo las pestañas de los chats de esta app, nunca tus otras pestañas.",
         "kiro_operations_heading": "Operaciones de Kiro que esta app pedirá llamar en tu nombre",
         "kiro_operations_note": "Instalar no aprueba ninguna: las apruebas en la página de la app. Después {{productName}} hace cada llamada con tu inicio de sesión de Kiro, y la app solo recibe la respuesta.",
+        "browser_recipes_heading": "Clics automáticos en tu navegador",
+        "browser_recipes_note": "{{productName}} hace estos clics solo en páginas de los sitios aprobados de la app, sin preguntar al asistente. Es tu propio navegador con sesión iniciada. Instalar no aprueba ninguno: los apruebas en la página de la app.",
         "browser_preview_off": "El acceso de apps al navegador está desactivado en este gateway, así que esto aún no hace nada. Actívalo en Ajustes > Desarrollador > Vistas previas de funciones.",
         "host_api_heading": "También puede usar partes de {{productName}} fuera de la app",
         "host_api_chat": "Puede iniciar sus propios chats con el agente y enviar mensajes en ellos.",
@@ -6807,6 +6809,14 @@
         "failed_generic_next_offline": "{{productName}} no está conectado ahora mismo, así que “Confiar y reintentar” queda desactivado hasta que se reconecte.",
         "failed_desktop_unsupported": "No se puede instalar “{{app}}” en la versión de escritorio de {{productName}}, y no se cambió nada.",
         "failed_desktop_unsupported_help": "Necesita paquetes de Python que la versión de escritorio no puede añadir; pide al autor de la app que los incluya con la app, o abre {{productName}} en un navegador web en lugar de la versión de escritorio."
+      },
+      "browserRecipeList": {
+        "on_site": "En {{site}}",
+        "runs_by_itself": "Se ejecuta solo mientras suena el contenido",
+        "runs_by_itself_if_allowed": "Se ejecuta cuando la app lo pide. Por sí solo durante la reproducción, únicamente si lo permites",
+        "runs_when_asked": "Se ejecuta cuando la app lo pide",
+        "step_click": "Haz clic en el elemento que coincide con <sel/>",
+        "step_wait": "Espera hasta {{duration}} al elemento que coincide con <sel/>"
       },
       "registryTier": {
         "curated": "Revisado por el equipo",
@@ -12794,7 +12804,12 @@
       "grants_approved": "Aprobados: {{entries}}. La app ya puede usarlos.",
       "grants_reconsent_browser_sites": "Sitios de navegación: el agente propio de la aplicación puede abrir, leer, escribir y hacer clic en estas páginas en tu navegador, con tu sesión iniciada, sin preguntar cada vez.",
       "grants_reconsent_kiro_operations": "Operaciones de Kiro: la app puede llamarlas en tu nombre, con tu inicio de sesión de Kiro. Recibe las respuestas, nunca el inicio de sesión.",
+      "grants_reconsent_browser_recipes": "Clics automáticos en tu navegador: {{productName}} hace estos clics para la app sin preguntar al asistente.",
       "kiro_operations_card_heading": "Operaciones de Kiro que esta app puede llamar en tu nombre",
+      "browser_recipes_card_heading": "Clics automáticos en tu navegador",
+      "browser_recipes_card_note": "Solo en los sitios aprobados de la app. Un clic que se ejecuta solo lo hace mientras suena el contenido de la app, por ejemplo para saltar un anuncio.",
+      "browser_recipe_watch_switch": "{{name}} se ejecuta solo mientras suena el contenido",
+      "browser_recipe_watch_note": "Un clic que se ejecuta solo, por ejemplo para saltar un anuncio, necesita este sí aparte. Desactívalo aquí para detener solo ese clic y conservar la app.",
       "kiro_operations_first_notice": "{{name}} pide llamar a estas operaciones de Kiro en tu nombre.",
       "approve_kiro_operations": "Aprobar estas operaciones de Kiro",
       "grants_reconsent_browser": "Pestañas del navegador de sus propios chats: Aprobar los nuevos permisos activa al momento cada punto de abajo, sin otra confirmación. Si desactivas la app, todo se detiene hasta que la vuelvas a activar.",
