@@ -549,6 +549,57 @@ def _app_token_spawn_refusal(
     return _app_token_parent_refusal(request, parent_session, "spawn.create")
 
 
+def _granted_approval_mode(
+    request: web.Request, state: Any, parent_session: str, asked: str
+) -> str:
+    """The approval mode the run is admitted with: *asked*, or ``""`` when it would
+    approve more than the caller's own session already does.
+
+    ``"auto"`` approves every tool call of the run, so it is kept only where it was
+    already chosen: the owner's own dashboard request, an app token (its run is held
+    to the app's own agents, as for the App Kit SDK), a parent session that is
+    trusted, a scheduled job set to auto (the mode its ``spawn_run`` forwards), or a
+    sub-agent that itself runs auto. The internal secret shows only that the caller
+    runs on this machine, so an internal caller with no session keeps nothing; the
+    manager still applies the global ``agent.approval_mode`` to a run with no parent.
+    The parent named here was matched to the caller's own session by
+    ``internal_memory_scope`` before this runs. ``""`` never approves more than the
+    session, so it is the safe answer when a check cannot be read.
+    """
+    if asked != "auto":
+        return asked
+    if request.get("internal_auth") is not True and (
+        request.get("app") == "" or _app_token_caller(request)
+    ):
+        return asked
+    from kiro_crew.cron import cron_job_id_from_session_key
+    from kiro_crew.cron_service.fields import effective_job_approval_mode
+    from kiro_crew.subagent_manager.turn_session import approval_policy_of
+
+    manager = state.subagents
+    try:
+        if parent_session and approval_policy_of(manager, parent_session) == "auto":
+            return asked
+        job_id = cron_job_id_from_session_key(parent_session)
+        get_job = getattr(getattr(state, "crons", None), "get_job", None)
+        job = get_job(job_id) if job_id and callable(get_job) else None
+        if job is not None and effective_job_approval_mode(job.approval_mode) == "auto":
+            return asked
+        if parent_session.startswith("subagent:"):
+            run = manager.get(parent_session.removeprefix("subagent:"))
+            if run is not None and not run.done and run.approval_mode == "auto":
+                return asked
+    except Exception:  # noqa: BLE001 - an unreadable grant keeps the session's own mode
+        pass
+    _record_isolation_denial(
+        "internal",
+        "spawn.approval_mode",
+        f"parent_session={parent_session}" if parent_session else "parent_session=",
+        "approval_mode 'auto' is not granted to this caller; the run keeps its session's mode",
+    )
+    return ""
+
+
 async def api_spawn(request: web.Request) -> web.Response:
     """POST /api/spawn — spawn a subagent.
 
@@ -670,11 +721,12 @@ async def api_spawn(request: web.Request) -> web.Response:
     # (docs/decisions/, "a silent parent's sub-agent completions never ring
     # the bell").
     #
-    # Security: this endpoint requires X-Internal-Secret (internal_paths
-    # in server.py), so only local MCP server processes can call it.
+    # The internal secret admits any local process, so ``auto`` is kept only where
+    # the caller's own session already has it (``_granted_approval_mode``).
     approval_mode = body.get("approval_mode", "")
     if approval_mode not in ("", "auto"):
         return web.json_response({"error": "approval_mode must be '' or 'auto'"}, status=400)
+    approval_mode = _granted_approval_mode(request, state, parent_session, approval_mode)
     silent = body.get("silent", False)
     if not isinstance(silent, bool):
         silent = str(silent).lower() in ("true", "1", "yes")
