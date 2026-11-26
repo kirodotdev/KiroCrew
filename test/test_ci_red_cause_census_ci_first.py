@@ -267,3 +267,86 @@ def test_four_workers_cut_short_after_the_ci_suites_have_every_ci_row(
     assert (summary["ci_read_in_full"], summary["workflows_read_in_full"]) == (True, 1)
     assert summary["suites_unread"] == 30
     assert workflows_csv(tmp_path) == {CI: "yes", **{name: "no" for name in OTHERS}}
+
+
+def mixed_batch(passes_cursor: str | None = "PASSED1") -> FakeGh:
+    """One `CI` suite and a rerun of another workflow in one batch, a second `CI` suite a tier up.
+
+    The rerun has more passed jobs than one page holds, so it needs a further call.
+    """
+    runs = {
+        f"W_{CI}": [
+            run_node(1000, f"{DAY}T10:00:00Z", red=1, sha=f"{1000:040x}"),
+            run_node(1001, f"{DAY}T10:01:00Z", red=6, sha=f"{1001:040x}"),
+        ],
+        f"W_{OTHER}": [run_node(5000, f"{DAY}T10:02:00Z", red=1, sha=f"{5000:040x}")],
+    }
+    passes = [check_run(6000 + at, conclusion="SUCCESS", failed_step=None) for at in range(100)]
+    suites = {
+        "CS_1000": (connection([check_run(1000, notes=[failing()])]), connection([])),
+        "CS_1001": (connection([check_run(1001, notes=[failing()])]), connection([])),
+        "CS_5000": (
+            connection([check_run(5000, notes=[failing()])]),
+            connection(passes, passes_cursor),
+        ),
+    }
+    last = check_run(6100, conclusion="SUCCESS", failed_step=None)
+    return FakeGh(
+        workflows=workflows_page(OTHER, CI),
+        runs=lambda fields: {"node": {"runs": connection(runs[fields["workflow"]])}},
+        suites=suites_of(suites),
+        suite_page=lambda fields: {"node": {"page": connection([last])}},
+    )
+
+
+def suite_calls(gh: FakeGh) -> list[Any]:
+    """The calls of the suite stage in order: a batch's ids, or the suite a page was asked of."""
+    return [
+        fields["ids"] if kind == "suites" else fields["suite"]
+        for kind, fields in gh.calls
+        if kind in ("suites", "suite_page")
+    ]
+
+
+def test_another_workflows_further_page_waits_until_every_ci_suite_is_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Two points a call: the bucket, the issues, two listings and TWO calls for suites.
+    gh = mixed_batch()
+    args = census_args(tmp_path, "--max-points", "12", "--workers", "1")
+
+    status = CENSUS.main(args, api=api_for(gh), clock=ticks(0.0, 1.0))
+
+    assert status == CENSUS.PARTIAL_EXIT
+    # The mixed batch, then the `CI` suite a tier up: the rerun's page is the call not made.
+    assert suite_calls(gh) == [["CS_1000", "CS_5000"], ["CS_1001"]]
+    assert sorted(int(row["run_id"]) for row in read_csv(tmp_path)) == [1000, 1001]
+    assert "GraphQL calls: 6 (12 points)\n" in capsys.readouterr().out
+    summary = summary_of(tmp_path)
+    assert (summary["ci_read_in_full"], summary["workflows_read_in_full"]) == (True, 1)
+    assert summary["suites_unread"] == 1
+    assert workflows_csv(tmp_path) == {CI: "yes", OTHER: "no"}
+
+
+def test_a_page_that_waited_is_read_once_and_costs_no_further_call(tmp_path: Path) -> None:
+    gh = mixed_batch()
+
+    assert CENSUS.main(census_args(tmp_path), api=api_for(gh), clock=ticks(0.0, 1.0)) == 0
+
+    # The same three calls a census in the other order makes, the page last.
+    assert suite_calls(gh) == [["CS_1000", "CS_5000"], ["CS_1001"], "CS_5000"]
+    assert sorted(int(row["run_id"]) for row in read_csv(tmp_path)) == [1000, 1001, 5000]
+    assert summary_of(tmp_path)["suites_unread"] == 0
+
+
+def test_a_suite_of_another_workflow_that_is_whole_in_its_batch_does_not_wait(
+    tmp_path: Path,
+) -> None:
+    gh = mixed_batch(passes_cursor=None)
+    args = census_args(tmp_path, "--max-points", "10", "--workers", "1")
+
+    assert CENSUS.main(args, api=api_for(gh), clock=ticks(0.0, 1.0)) == CENSUS.PARTIAL_EXIT
+
+    # One call for suites: the rerun needed no page, so its row is kept with the `CI` one.
+    assert suite_calls(gh) == [["CS_1000", "CS_5000"]]
+    assert sorted(int(row["run_id"]) for row in read_csv(tmp_path)) == [1000, 5000]

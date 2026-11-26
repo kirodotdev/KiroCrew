@@ -929,10 +929,56 @@ def _merge(passed: Passed, more: Passed) -> None:
         passed.setdefault(key, []).extend(stamps)
 
 
+# A suite a batch answered whose further pages wait: its run, its answer, the red jobs asked for.
+_Waiting = tuple[Run, dict[str, Any], int]
+
+
+def _pages_left(suite: dict[str, Any], first: int) -> bool:
+    """Whether a suite a batch answered needs a further call to be whole."""
+    if not first:
+        return False
+    red, cursor = _connection(suite.get("red"), "red check runs")
+    if cursor is not None:
+        return True
+    return bool(red) and _connection(suite.get("passed"), "passed check runs")[1] is not None
+
+
+def _whole_suite(api: Api, run: Run, suite: dict[str, Any], first: int) -> tuple[list[Job], Passed]:
+    """``(jobs, passes)`` of one suite a batch answered, each read to its last page."""
+    red = _all_pages(api, run.suite_id, "red", suite.get("red")) if first else []
+    green = _all_pages(api, run.suite_id, "passed", suite.get("passed")) if red else []
+    jobs = [_job(run, node) for node in red]
+    cancelled = suite.get("cancelled") or {}
+    if int(cancelled.get("totalCount") or 0) <= CANCELLED_READ_MAX:
+        jobs += [_job(run, node) for node in cancelled.get("nodes") or []]
+    passed: Passed = {}
+    for node in green:
+        stamp = (str(node.get("completedAt") or ""), int(node.get("databaseId") or 0))
+        passed.setdefault(passed_key(run, str(node.get("name") or "")), []).append(stamp)
+    return jobs, passed
+
+
+def _finish_suite(api: Api, waiting: _Waiting) -> tuple[list[Job], Passed, list[str]]:
+    """``(jobs, passes, suites left unread)`` of one suite whose further pages waited."""
+    try:
+        jobs, passed = _whole_suite(api, *waiting)
+    except BudgetStop:
+        return [], {}, [waiting[0].suite_id]
+    return jobs, passed, []
+
+
 def _read_suites(
-    api: Api, by_suite: dict[str, Run], ids: list[str], first: int
+    api: Api,
+    by_suite: dict[str, Run],
+    ids: list[str],
+    first: int,
+    waiting: list[_Waiting] | None = None,
 ) -> tuple[list[Job], Passed, list[str]]:
     """``(jobs, passes, suites left unread)`` from one call for ``ids``.
+
+    With ``waiting``, a suite of another workflow than `CI` that needs a
+    further call is put there, neither read on nor counted unread:
+    ``_finish_suite`` reads it once every `CI` suite is whole.
 
     ``first`` is the red jobs to ask each suite for; 0 asks for its cancelled
     jobs only. A batch GitHub cannot answer in time is read as two halves.
@@ -955,7 +1001,7 @@ def _read_suites(
         if len(ids) < 2:
             raise
         for half in (ids[: len(ids) // 2], ids[len(ids) // 2 :]):
-            found, passes, missed = _read_suites(api, by_suite, half, first)
+            found, passes, missed = _read_suites(api, by_suite, half, first, waiting)
             jobs += found
             _merge(passed, passes)
             unread += missed
@@ -970,19 +1016,16 @@ def _read_suites(
         number = pulls[0].get("number") if pulls and isinstance(pulls[0], dict) else None
         if run.event == "pull_request" and isinstance(number, int):
             run = run._replace(pr=number)
+        if waiting is not None and not _is_ci(run) and _pages_left(suite, first):
+            waiting.append((run, suite, first))
+            continue
         try:
-            red = _all_pages(api, run.suite_id, "red", suite.get("red")) if first else []
-            green = _all_pages(api, run.suite_id, "passed", suite.get("passed")) if red else []
+            found, passes = _whole_suite(api, run, suite, first)
         except BudgetStop:
             unread.append(run.suite_id)
             continue
-        jobs += [_job(run, node) for node in red]
-        cancelled = suite.get("cancelled") or {}
-        if int(cancelled.get("totalCount") or 0) <= CANCELLED_READ_MAX:
-            jobs += [_job(run, node) for node in cancelled.get("nodes") or []]
-        for node in green:
-            stamp = (str(node.get("completedAt") or ""), int(node.get("databaseId") or 0))
-            passed.setdefault(passed_key(run, str(node.get("name") or "")), []).append(stamp)
+        jobs += found
+        _merge(passed, passes)
     return jobs, passed, unread + [suite for suite in ids if suite not in answered]
 
 
@@ -1012,7 +1055,10 @@ def read_jobs(
     order, so the order costs nothing; it decides what a stop leaves unread.
     The batches that hold a `CI` suite are all answered before the workers
     are handed the rest: side by side, a batch of another workflow could
-    spend the points a `CI` batch was about to.
+    spend the points a `CI` batch was about to. A batch can hold suites of
+    both; a suite of another workflow in it that needs a further page waits
+    for that page until every `CI` batch is answered, so the call is made
+    later and no call is added.
     Every workflow with a suite left unread is added to ``part_read``.
     """
     wanted = [run for run in runs if (run.red_jobs or run.cancelled) and run.suite_id]
@@ -1035,10 +1081,16 @@ def read_jobs(
     jobs: list[Job] = []
     passed: Passed = {}
     unread: set[str] = set()
-    for part in ci_first:
-        for found, passes, missed in _each(
-            workers, lambda batch: _read_suites(api, by_suite, batch[1], batch[0]), part
-        ):
+    waiting: list[_Waiting] = []
+    for part, held in ((ci_first[0], waiting), (ci_first[1], None)):
+        answers = _each(
+            workers,
+            lambda batch, held=held: _read_suites(api, by_suite, batch[1], batch[0], held),
+            part,
+        )
+        if held:
+            answers += _each(workers, lambda suite: _finish_suite(api, suite), waiting)
+        for found, passes, missed in answers:
             jobs += found
             _merge(passed, passes)
             unread.update(missed)
