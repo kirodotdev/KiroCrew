@@ -68,6 +68,8 @@ from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.mcp_discovery import list_servers
+from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
+from kiro_crew.messaging.attachments import unlink_temp
 from kiro_crew.messaging.commands import note_user_stop
 from kiro_crew.messaging.dispatch import admit_inbound_callback
 from kiro_crew.messaging.identity import channel_inbound_permitted
@@ -1147,19 +1149,11 @@ async def _route_message(
 
     # Bail out if we still have no text after attempting transcription
     if not text:
-        for p in _attachment_temp_paths:
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+        cleanup_attachments(_attachment_temp_paths)
         return
 
     def _cleanup_attachment_temps() -> None:
-        for p in _attachment_temp_paths:
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+        cleanup_attachments(_attachment_temp_paths)
 
     # Record messages in channel history buffer (observe channels already
     # pushed above, so skip them here to avoid duplicates).
