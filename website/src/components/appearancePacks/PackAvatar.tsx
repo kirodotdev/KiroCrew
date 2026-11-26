@@ -43,14 +43,42 @@
  * permanent ghost. Unmounting on failure (which a caller's own latch would do)
  * drops the observer, and the refetch has nobody to draw for.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ComponentType, type ReactNode } from 'react'
 
-import { LottieRenderer } from './LottieRenderer'
+import type { LottieRenderer as LottiePlayer } from './LottieRenderer'
 import { SpriteRenderer } from './SpriteRenderer'
 import { packSlotUrl } from '../../lib/appearancePacks/library'
 import { resolveSlot, spriteRowFor, type PackDetail } from '../../lib/appearancePacks/detail'
 import { usePackDetail } from '../../hooks/usePackDetail'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
+
+/** Stands in for the player when its chunk will not load: reports it as the
+ *  load failure it is, so the crew gets its fallback face instead of a blank box. */
+function LottieLoadFailed({ onError }: ComponentProps<typeof LottiePlayer>) {
+  useEffect(() => {
+    onError?.()
+  }, [onError])
+  return null
+}
+
+// Loaded on demand, off the first load: the player's chunk is ~170 KB
+// minified, and only a pack whose art is a Lottie clip draws with it.
+//
+// lazy() keeps whatever its loader resolved to, so a failed load is NOT left in
+// place: the attempt that failed draws `LottieLoadFailed`, and a fresh lazy()
+// replaces this one so the next mount imports again. A gateway blip therefore
+// costs one fallback face, and the art returns on the next read of the pack
+// (a refetch hands a new `detail`, which clears `refused` and remounts the player).
+function loadPlayer(): Promise<{ default: ComponentType<ComponentProps<typeof LottiePlayer>> }> {
+  return import('./LottieRenderer').then(
+    (m) => ({ default: m.LottieRenderer }),
+    () => {
+      LottieRenderer = lazy(loadPlayer)
+      return { default: LottieLoadFailed }
+    },
+  )
+}
+let LottieRenderer = lazy(loadPlayer)
 
 export interface PackAvatarProps {
   /** The pack id from the crew's `avatar` record — already validated by
@@ -206,17 +234,25 @@ export default function PackAvatar({ id, state, size, className = '', onError, f
       data-pack-playing={playing ? 'true' : 'false'}
     >
       {art.format === 'lottie' ? (
-        <LottieRenderer
-          animationData={art.content}
-          width={size}
-          height={size}
-          loop
-          autoplay={playing}
-          // Malformed art is a load failure like a missing file: the importer only
-          // checks that a pack's `.json` is non-empty, so a clip this player
-          // cannot parse reaches here and must fall back rather than draw nothing.
-          onError={reportFailed}
-        />
+        // While the player's chunk loads, the box keeps the pending shimmer, so
+        // the first Lottie avatar does not flash an empty circle.
+        <Suspense
+          fallback={
+            <span className="skeleton block" style={{ width: size, height: size }} data-testid="pack-avatar-player-loading" />
+          }
+        >
+          <LottieRenderer
+            animationData={art.content}
+            width={size}
+            height={size}
+            loop
+            autoplay={playing}
+            // Malformed art is a load failure like a missing file: the importer only
+            // checks that a pack's `.json` is non-empty, so a clip this player
+            // cannot parse reaches here and must fall back rather than draw nothing.
+            onError={reportFailed}
+          />
+        </Suspense>
       ) : art.format === 'sprite' ? (
         <SpriteRenderer
           // The sheet as an IMAGE, from the slot route — which base64-decodes it
