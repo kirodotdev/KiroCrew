@@ -1767,11 +1767,13 @@ def test_open_dump_file_header_survives_an_undecodable_install_path(
     """A path byte that is not UTF-8 is escaped, so the strict header write still lands."""
     from kiro_crew import install_liveness
 
-    monkeypatch.setattr(install_liveness, "_PACKAGE_ROOT", Path("/opt/kiro-\udcff/kiro_crew"))
+    root = Path("/opt") / "kiro-\udcff" / "kiro_crew"
+    escaped = str(root).replace("\udcff", "\\udcff")  # the separator is the host's own
+    monkeypatch.setattr(install_liveness, "_PACKAGE_ROOT", root)
     identity = install_liveness._read_build_identity()
-    assert identity[1] == "/opt/kiro-\\udcff/kiro_crew"
+    assert identity[1] == escaped
     monkeypatch.setattr(install_liveness, "BUILD_IDENTITY", identity)
     with opened_dump_file(dumps_dir) as dump_file:
         lines = dump_file.path.read_text(encoding="utf-8").splitlines()
-        assert lines[0].endswith("install=/opt/kiro-\\udcff/kiro_crew")
+        assert lines[0].endswith(f"install={escaped}")
         assert len(lines) == crash_dump_store._HEADER_LINES
