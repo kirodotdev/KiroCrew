@@ -1,9 +1,9 @@
 ---
 title: Retire the Vector Memory card; add Audit, Test recall and decay weights
-status: draft
+status: accepted
 author: buluoray
 created: 2026-11-25
-last-audited: 2026-11-25
+last-audited: 2026-11-26
 audited-at: 867ca8eab20
 doc-pr: 42890
 implementation-prs: [42246, 42276, 42798]
@@ -14,7 +14,8 @@ superseded-by: []
 
 # RFC: Retire the Vector Memory card; add Audit, Test recall and decay weights
 
-**Status:** draft. Nothing in this document is on main. The new Memory page it
+**Status:** accepted. Accepted at team review, 2026-11-26 (maintainer Ray Xu). The document merged in
+[#42890](https://github.com/kirodotdev/KiroCrew/pull/42890). Nothing in this document is on main. The new Memory page it
 builds on is in draft PRs
 [#42246](https://github.com/kirodotdev/KiroCrew/pull/42246) and
 [#42276](https://github.com/kirodotdev/KiroCrew/pull/42276). The bot memory

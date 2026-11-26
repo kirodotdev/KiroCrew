@@ -1,11 +1,11 @@
 ---
 title: A per-chat SQLite FTS5 search index for "Search this chat", built only when someone searches
-status: draft
+status: accepted
 author: buluoray
 created: 2026-11-25
-last-audited: 2026-11-25
+last-audited: 2026-11-26
 audited-at: 867ca8eab20
-doc-pr: null
+doc-pr: 42880
 implementation-prs: []
 tracking-issues: [42872]
 supersedes: []
@@ -14,13 +14,13 @@ superseded-by: []
 
 # RFC: A per-chat search index for "Search this chat"
 
-**Status:** draft. This is a proposal for a maintainer to accept, change or
-reject. It is an RFC because it adds a file format that stays on users'
+**Status:** accepted. Accepted at team review, 2026-11-26 (maintainer Ray Xu). The document merged in
+[#42880](https://github.com/kirodotdev/KiroCrew/pull/42880). It is an RFC because it adds a file format that stays on users'
 machines (CONTRIBUTING.md, "a one-way door"). The repository owner (buluoray) ruled on
 2026-11-25 that the per-chat index is a SQLite FTS5 table with the `trigram`
 tokenizer rather than a format of our own; this revision records that. The implementation for
 [#42872](https://github.com/kirodotdev/KiroCrew/issues/42872) is being written
-now; it waits for a decision here before it merges. Every main-side reference
+now. Every main-side reference
 was read at `867ca8eab20`.
 
 **Where this belongs.** Neither existing search RFC is the right home.
