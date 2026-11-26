@@ -1691,12 +1691,12 @@ def _isolate_tempfile_base(tmp_path_factory):
         # Removed even when it is empty, and even when the report below raises:
         # leaving the root behind would itself be the accumulation this guards.
         _remove_tree(base)
-        if not leaked:
-            return
-        report = _tmp_residue_report(base, leaked, per_test=per_test, creators=creators)
-        if os.environ.get(_TMP_RESIDUE_STRICT_ENV):
-            raise AssertionError(report)
-        warnings.warn(report, stacklevel=1)
+        # No `return` here: inside `finally` it is a SyntaxWarning from Python 3.14.
+        if leaked:
+            report = _tmp_residue_report(base, leaked, per_test=per_test, creators=creators)
+            if os.environ.get(_TMP_RESIDUE_STRICT_ENV):
+                raise AssertionError(report)
+            warnings.warn(report, stacklevel=1)
 
 
 # ── the repository checkout is host state too ─────────────────────────
