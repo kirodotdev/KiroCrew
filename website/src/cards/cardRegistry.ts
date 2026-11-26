@@ -133,6 +133,15 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
     reasonLabel: () => i18nT('components.changeCards.reason_why'),
     Body: NoBody, Option: McpServerOptions,
   },
+  'mcp.project_server': {
+    icon: PackageOpen, label: () => i18nT('components.changeCards.kind_template_mcp_server'),
+    primary: card => card?.params.server
+      ? i18nT('components.changeCards.primary_mcp_project_server_named', { server: String(card.params.server) })
+      : i18nT('components.changeCards.primary_mcp_project_server'),
+    decline: () => i18nT('components.changeCards.decline_mcp_project_server'),
+    reasonLabel: () => i18nT('components.changeCards.reason_why'),
+    Body: NoBody,
+  },
   'connection.connect': {
     icon: Link2, label: () => i18nT('components.changeCards.kind_connection_connect'),
     primary: () => i18nT('components.changeCards.primary_connection_connect'), Body: NoBody,
