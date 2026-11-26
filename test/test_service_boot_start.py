@@ -92,15 +92,43 @@ class TestLinuxDisableEnable:
         run = _fake_systemctl(system=_RUNNING, user=None)
         sent: list[int] = []
         with _linux(run):
-            # on_stop fires before the stop call, so a Ctrl+C inside it still counts
+            # on_stop fires once the stop call returns
             assert svc_linux.disable(lambda: sent.append(len(run.calls))) == ([], [], True)
         assert len(sent) == 1
-        assert run.calls[sent[0]][:3] == ["sudo", "systemctl", "stop"], run.calls
+        assert run.calls[sent[0] - 1][:3] == ["sudo", "systemctl", "stop"], run.calls
         verbs = [c for c in run.calls if c[:2] == ["sudo", "systemctl"]]
         assert verbs == [
             ["sudo", "systemctl", "disable", _UNIT],
             ["sudo", "systemctl", "stop", _UNIT],
         ], run.calls
+
+    @pytest.mark.parametrize(
+        "sent_first,probe_fails,counted",
+        [(False, False, False), (True, False, True), (False, True, True)],
+    )
+    def test_a_ctrl_c_in_the_stop_counts_as_begun_only_once_systemd_got_it(
+        self, sent_first, probe_fails, counted
+    ) -> None:
+        # Ctrl+C at the stop's sudo prompt (sudo timestamp_timeout=0) sends no
+        # stop, and the unit reads as before; one after the job was queued, or
+        # a read that cannot tell, still counts.
+        inner = _fake_systemctl(system=_RUNNING, user=None)
+        stopping = []
+
+        def run(argv, *a, **k):
+            if list(argv)[:3] == ["sudo", "systemctl", "stop"]:
+                stopping.append(True)
+                if sent_first:
+                    inner(argv, *a, **k)
+                raise KeyboardInterrupt
+            if stopping and probe_fails:
+                raise KeyboardInterrupt
+            return inner(argv, *a, **k)
+
+        sent: list[bool] = []
+        with _linux(run), pytest.raises(KeyboardInterrupt):
+            svc_linux.disable(lambda: sent.append(True))
+        assert sent == ([True] if counted else [])
 
     def test_disable_acts_on_a_stopped_user_unit_without_sudo(self) -> None:
         run = _fake_systemctl(system=None, user=_DEAD)

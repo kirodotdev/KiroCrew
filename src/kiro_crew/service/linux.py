@@ -346,11 +346,19 @@ def _set_boot_start(
                 )
                 continue
             for i, verb in enumerate(verbs):
-                if verb == "stop" and state.running and on_stop is not None:
-                    # Before the call: a Ctrl+C during a blocking stop leaves the
-                    # job running inside systemd, so the stop counts as begun.
-                    on_stop()
-                if _systemctl(verb, f"{SERVICE_NAME}.service", user=user).returncode != 0:
+                tell = on_stop if verb == "stop" and state.running else None
+                try:
+                    res = _systemctl(verb, f"{SERVICE_NAME}.service", user=user)
+                except BaseException:
+                    # A Ctrl+C during a blocking stop leaves the job running
+                    # inside systemd, so it counts as begun; one at the sudo
+                    # prompt sent nothing, which the unit shows unchanged.
+                    if tell is not None and not _stop_not_sent(state, user=user):
+                        tell()
+                    raise
+                if tell is not None:
+                    tell()
+                if res.returncode != 0:
                     lines += [f"{spelled} {left} {SERVICE_NAME}" for left in verbs[i:]]
                     break
             else:
@@ -395,6 +403,26 @@ def _set_boot_start(
     if not found:
         return (unreached, [], False) if unreached else None
     return lines, unreached, ran
+
+
+def _stop_not_sent(before: _UnitState, *, user: bool) -> bool:
+    """After an interrupted ``stop``: True only when the unit reads exactly as
+    it did before the call and holds no job, so no stop reached systemd (a
+    Ctrl+C at sudo's password prompt). Any change, a queued job, or a read
+    that fails or is itself interrupted answers False: the stop may have been
+    sent, and the caller keeps counting it as begun."""
+    from kiro_crew.service import linux_systemctl
+
+    try:
+        after = _unit_state(user=user)
+        job = linux_systemctl._loaded_property("Job", user=user)
+    except BaseException:  # a second Ctrl+C: unknown, so treat it as sent
+        return False
+    return (
+        after.load is not None
+        and (after.active, after.sub, after.started) == (before.active, before.sub, before.started)
+        and job in (None, "", "0")
+    )
 
 
 def _link_entry(fragment: str, *, user: bool) -> str | None:
