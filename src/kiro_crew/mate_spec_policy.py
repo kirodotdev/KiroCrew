@@ -458,14 +458,16 @@ def conditional_denies(spec: dict[str, Any]) -> list[str]:
 #: The ``toolsSettings`` keys carried onto a worker, by tool family: the ones KAS
 #: or Crew's gate is shown to apply on a worker session, exactly as on an ordinary
 #: KAS session of the same agent. Crew's gate answers ``denyByDefault``,
-#: ``autoAllowReadonly`` and the ``allowedPaths``; KAS turns ``trustedAgents`` into
-#: a ``subagent`` allow. Every other key (``fallbackAction``, ``web_fetch.trusted``,
-#: a key Crew does not know), in any form, is refused by name (owner decision,
-#: ``docs/decisions``).
+#: ``autoAllowReadonly``, the ``allowedPaths`` and the write tool's
+#: ``fallbackAction: "deny"``; KAS turns ``trustedAgents`` into a ``subagent``
+#: allow. A write ``fallbackAction`` value KAS's translation does not apply is
+#: still refused by name (:func:`_layer_tools_settings`), and so is every other
+#: key (``fallbackAction`` on another tool, ``web_fetch.trusted``, a key Crew does
+#: not know), in any form (owner decision, ``docs/decisions``).
 CARRIED_TOOLS_SETTINGS: dict[str, frozenset[str]] = {
     "shell": frozenset({"deniedCommands", "allowedCommands", "denyByDefault", "autoAllowReadonly"}),
     "read": frozenset({"deniedPaths", "allowedPaths"}),
-    "write": frozenset({"deniedPaths", "allowedPaths"}),
+    "write": frozenset({"deniedPaths", "allowedPaths", "fallbackAction"}),
     "web_fetch": frozenset({"blocked"}),
     # KAS turns ``availableAgents`` into a ``subagent`` deny, and Crew's spawn gate
     # reads the worker's merged spec for it (``agent_policy.parent_template_allowlists``).

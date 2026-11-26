@@ -5526,7 +5526,9 @@ owner each:
   this package ships register at the bottom of the module.
 - **One frame runtime.** The document is `_RUNTIME` (config island, sub-path mount,
   capability and renewal, `ctx.fetch`, module load, `init` / `capability` /
-  `theme` / `dispose`, the link bridge, `escape`) plus `_INVOCATION` plus the
+  `theme` / `dispose`, the link bridge, which posts a middle or modified click
+  with `tab: true` as the widget shim does so the dashboard opens a new tab for it
+  rather than one of its own pages in place, `escape`) plus `_INVOCATION` plus the
   point's script, which defines `POINT = { ctx, accepts(handler), missing, message(m) }`.
 - **The invocation contract**, for a point whose work starts with one user act.
   The host mints a string `invocationId` per act and sends it in the point's own
@@ -9667,11 +9669,12 @@ manifest rather than run the app with the directory unmasked; `scripts/adoption_
 reports a directory entry as a level-8 use.
 
 **Residual.** An agent's file tools cannot rewrite a fencing `app.json` or record (the
-write-only rows above, #38959), but the installed tree is still sandbox-writable, so a
-mask is as strong as the manifest that declares it: an agent's shell that rewrites an
-installed app's `app.json` drops that app's masks from the next spawn, as it could
-rewrite the app's code. Sealing an installed tree is a sandbox widening for the operator
-to choose. A declared file absent
+write-only rows above, #38959), and every installed `app.json` is also sealed read-only
+in the agent's sandbox (`app_manifest_files`, security.md). The rest of the installed
+tree is still sandbox-writable, so an agent's shell that rewrites a retained record
+drops the fence it holds on data left behind, as it could rewrite the app's code.
+Sealing the rest of an installed tree is a sandbox widening for the operator to
+choose. A declared file absent
 at spawn is not masked for that spawn, as for a core file leaf. Likewise a session that
 started while nothing of an app was on disk (before its install, or after a purge) carries
 none of its masks, directory entries included: a namespace gains no mount after launch, so
@@ -9847,9 +9850,8 @@ canonical root (`sandbox_plan.fold_crew_home_alias`), as the namespace plan fold
 lifts no core seal. The staged spelling is not handed back. An in-gateway backend (both
 built-ins below) runs outside every sandbox and is unaffected.
 
-**Residual.** §37's: the agent's file tools are refused a fencing `app.json` or record,
-but the installed tree is sandbox-writable, so an agent's shell that rewrites an
-installed app's `app.json` drops its declaration from the next spawn. A file inside a
+**Residual.** §37's: every installed `app.json` is sealed, but the rest of the
+installed tree, the retained records included, is sandbox-writable. A file inside a
 declared directory that already had a second hard link elsewhere before the seal is
 writable through that other name, as for a core `READONLY` directory. A link at a
 component below the data home refuses every sandboxed spawn on the host until it is

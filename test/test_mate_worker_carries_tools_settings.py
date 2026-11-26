@@ -186,6 +186,7 @@ def _judge(event: AcpEvent) -> ToolHookResult:
         {"shell": {"autoAllowReadonly": True}},
         {"read": {"allowedPaths": ["inside/**"]}},
         {"write": {"allowedPaths": ["inside/**"]}},
+        {"write": {"allowedPaths": ["inside/**"], "fallbackAction": "deny"}},
         {"subagent": {"trustedAgents": ["gpu-coder"]}},
         {"shell": {"deniedCommands": MIXED_DENIED}},
     ],
@@ -200,7 +201,7 @@ def test_each_key_is_carried_onto_the_worker_as_written(settings: dict[str, Any]
     ("settings", "named"),
     [
         ({"use_subagent": {"trustedAgents": ["x"]}}, "toolsSettings.use_subagent.trustedAgents"),
-        ({"fs_write": {"fallbackAction": "deny"}}, "toolsSettings.fs_write.fallbackAction"),
+        ({"fs_write": {"fallbackAction": "allow"}}, "toolsSettings.fs_write.fallbackAction"),
         ({"web_fetch": {"trusted": ["docs"]}}, "toolsSettings.web_fetch.trusted"),
     ],
 )
@@ -246,6 +247,17 @@ def test_a_write_inside_the_allowed_paths_runs_and_one_outside_asks(bot, work, t
     assert (inside.action, inside.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
     outside = _judge(_own_request(_write("outside/w.txt"), batch, work))
     assert outside.action == TOOL_ALLOW
+
+
+def test_a_fallback_deny_refuses_a_write_outside_the_allowed_paths_unasked(
+    bot, work, tmp_path
+) -> None:
+    bot({"write": {"allowedPaths": ["inside/**"], "fallbackAction": "deny"}})
+    batch = _worker_batch(tmp_path)
+    inside = _judge(_own_request(_write("inside/w.txt"), batch, work))
+    assert (inside.action, inside.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+    outside = _judge(_own_request(_write("outside/w.txt"), batch, work))
+    assert (outside.action, outside.tier) == (TOOL_DENY, "spec-write-allowlist")
 
 
 def test_deny_by_default_refuses_touch_and_auto_allow_readonly_runs_ls(bot, work, tmp_path) -> None:

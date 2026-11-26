@@ -275,6 +275,8 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
       const error = await screen.findByTestId('kiro-sign-in-kiro-crew-unreadable')
       expect(error).toHaveAttribute('role', 'alert')
       expect(error).toHaveTextContent('Could not check the sign-in stored in Kiro Crew')
+      // The way forward: a new sign-in replaces a store no key opens.
+      expect(error).toHaveTextContent('Sign in again to replace it.')
       // No hand-off beside the embedded sign-in form.
       expect(within(error).queryByText('Ask the agent')).toBeNull()
       // The Kiro CLI store was read: no error for it.

@@ -9,7 +9,8 @@ import { type SourceLinkKind, parseSourceLinkUrl, commitRevealedSource, type Rev
 import { useShellSlot } from '../../../hooks/useShellSlot'
 import { isTouchDevice } from '../../../utils/isTouchDevice'
 import { safeAreaLeft, registerDrawerTargets, animateDrawer, takeOverDrawer, useDrawerSwipe } from '../../../hooks/useDrawerSwipe'
-import { resumeFromHistory, requestFolderReveal, openActivityPanel, openActivityToTab } from '../../../store/chatSlice'
+import { requestFolderReveal, openActivityPanel, openActivityToTab } from '../../../store/chatSlice'
+import { openClosedSession } from '../../../lib/openClosedSession'
 import { api } from '../../../api/client'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { openPanelView } from '../../../hooks/usePanelTabs'
@@ -18,7 +19,6 @@ import { useAppSelector } from '../../../store'
 import { PREVIEW_EXPAND_EVENT } from '../../../components/WebPreviewPanel'
 import { useHoverIntent } from '../../../hooks/useHoverIntent'
 import { shouldMountSidePanel, isSidePanelHidden } from '../sidePanelMount'
-import { i18nT } from '../../../i18n/t'
 import { foldersForSessionList } from '../../../utils/mateFolders'
 
 /**
@@ -275,21 +275,7 @@ export function useSessionsDrawer({
     // The click: ask again, because the session may have been deleted since
     // the chip appeared. A failed check is said by the chip itself, inline at
     // the spot clicked, with a retry (`ClosedSessionNotice`).
-    open: async ({ key, title }) => {
-      let row: Awaited<ReturnType<typeof api.sessionMeta>>
-      try {
-        row = await api.sessionMeta(key)
-      } catch {
-        return 'failed'
-      }
-      if (!row) {
-        showActionError(i18nT('store.chatSlice.session_gone_open_failed_named', { name: title }))
-        return 'gone'
-      }
-      // The resume payload keeps its raw title (the key when untitled), never the label.
-      void dispatch(resumeFromHistory({ key: row.key, title: row.title || row.key }))
-      return 'opened'
-    },
+    open: session => openClosedSession(session, dispatch, showActionError),
   }), [dispatch, showActionError])
   // A chip reveals a Sessions-list row, so it names only folders that list draws:
   // a Bot's home leaves it while none of its sessions is listed there.

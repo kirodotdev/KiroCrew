@@ -108,6 +108,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert "If arming is refused outright" in prompt
         assert "drive that one round with `wait`" in prompt
         assert "autonudge_stop" in prompt
+        assert "Patrol with `monitor_start`, never with `wait`" in prompt
+        assert "a worker's report cannot wake a busy turn" in prompt
 
     def test_prompt_names_the_tools_it_expects_to_be_used(self, tmp_path, monkeypatch):
         """The charter mounts whole servers, so the prompt must name what it wants.

@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest'
 import { ApiError } from '../../api/apiError'
 import { i18nT } from '../../i18n/t'
-import { workerKitErrorText } from './workerKitErrors'
+import { refusedWriteFallback, workerKitErrorText } from './workerKitErrors'
 
 const refusal = (code: string) => new ApiError(409, code, JSON.stringify({ error: code, code }))
 
@@ -36,6 +36,29 @@ describe('workerKitErrorText', () => {
     const text = workerKitErrorText(named(code, detail))
     expect(text).toBe(i18nT(key, { [slot]: detail }))
     expect(text).toContain(detail)
+  })
+
+  it.each(['write', 'fsWrite', 'fs_write'])(
+    'says a %s fallbackAction lets writes skip approval, and offers to add without it',
+    tool => {
+      const detail = `toolsSettings.${tool}.fallbackAction`
+      const text = workerKitErrorText(named('template_restrictions_uncarried', detail))
+      expect(text).toBe(i18nT('crewWorkerKit.error_template_write_fallback_not_deny'))
+      expect(text).toBe('This agent lets writes outside its allowed folders skip approval. A bot can\'t keep that.')
+      expect(text).not.toContain(detail)
+      expect(refusedWriteFallback(named('template_restrictions_uncarried', detail))).toBe(detail)
+    },
+  )
+
+  it('keeps the general refusal when fallbackAction is on another tool or beside another field', () => {
+    for (const detail of [
+      'toolsSettings.execute_bash.fallbackAction',
+      'toolsSettings.write.fallbackAction, toolsSettings.web_fetch.trusted',
+    ]) {
+      expect(workerKitErrorText(named('template_restrictions_uncarried', detail)))
+        .toBe(i18nT('crewWorkerKit.error_template_restrictions_uncarried_named', { fields: detail }))
+      expect(refusedWriteFallback(named('template_restrictions_uncarried', detail))).toBe('')
+    }
   })
 
   it('points at the preview on screen, not at a button', () => {

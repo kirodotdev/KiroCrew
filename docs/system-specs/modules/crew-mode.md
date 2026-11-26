@@ -4857,19 +4857,16 @@ parts:
   (`mate_spec_policy._carry_builtin_allow`, `kas_tool_view.builtin_allow_tool`);
   a name-scoped one is never widened to it. Only when those entries cannot
   grant the rule exactly is it refused. **`toolsSettings` is an allowlist**
-  (`mate_spec_policy.CARRIED_TOOLS_SETTINGS`): only `deniedCommands` and
-  `allowedCommands` on the shell (`execute_bash` / `shell`), `deniedPaths` on
-  the read and write tools, `web_fetch.blocked`, and `availableAgents` under the
-  `subagent` key (not `use_subagent`), each only when KAS's
+  (`mate_spec_policy.CARRIED_TOOLS_SETTINGS`, listed below with the keys an
+  ordinary KAS session of the agent applies), each only when KAS's
   translation keeps every entry (`kas_tool_view.tools_settings_unenforced`).
   A carried `availableAgents` binds both spawn paths: KAS's own sub-agent tool
   through its `subagent` deny, and `spawn_run` / `spawn_sub_agents` because the
   spawn gate reads a worker parent's merged session spec
   (`agent_policy._bot_worker_allowlist`) and refuses when that spec cannot be read.
-  Every other key or tool, in any form (`allowedPaths`, `fallbackAction`,
-  `denyByDefault`, `trusted`, `subagent.trustedAgents`), is
-  refused by name. One that cannot land as written (anything outside the
-  allowlist, an entry for a tool the base sets differently or under another
+  Every other key or tool, in any form (`web_fetch.trusted`, a
+  `use_subagent` key), is refused by name. One that cannot land as written
+  (anything outside the allowlist, an entry for a tool the base sets differently or under another
   spelling of it, a `permissions` block KAS would refuse whole, a built-in
   `allow` rule KAS's projection drops beside the worker's `allowedTools` list
   (`kas_tool_view.permission_allow_derivable`) that no `allowedTools` entry can
@@ -5299,12 +5296,17 @@ The worker carries the `toolsSettings` keys of
 `mate_spec_policy.CARRIED_TOOLS_SETTINGS`, the same ones an ordinary KAS session
 of that agent applies: shell `deniedCommands`, `allowedCommands`,
 `denyByDefault` and `autoAllowReadonly`, read and write `deniedPaths` and
-`allowedPaths`, `web_fetch.blocked`, and `subagent.availableAgents` and
-`trustedAgents` under the `subagent` spelling only. Crew's gate answers the
-shell keys and the `allowedPaths`; KAS turns `trustedAgents` into a `subagent`
-allow. Every other key (`fallbackAction`, `web_fetch.trusted` in a file, a key
-Crew does not know) is refused by name. A shell `allowedCommands` or a read or
-write `allowedPaths` is carried whole even when an entry of it is one Crew
+`allowedPaths`, the write tool's `fallbackAction`, `web_fetch.blocked`, and
+`subagent.availableAgents` and `trustedAgents` under the `subagent` spelling
+only. Crew's gate answers the shell keys, the `allowedPaths` and a write
+`fallbackAction` of `"deny"`, whose `spec-write-allowlist` row refuses every
+write-tool call of the worker's own agent that no usable `allowedPaths` entry
+covers, unasked; KAS turns `trustedAgents` into a `subagent` allow. A write
+`fallbackAction` value KAS's translation does not apply (anything but a deny and
+the default `"interactive"`, such as `"allow"`) is refused by name, and so is
+every other key (`fallbackAction` on another tool, `web_fetch.trusted` in a
+file, a key Crew does not know). A shell
+`allowedCommands` or a read or write `allowedPaths` is carried whole even when an entry of it is one Crew
 cannot read, since that entry grants nothing and the call asks. A
 `deniedCommands` list is carried whole too. When an entry of it is one neither
 KAS (a glob in the entry's `permissions`) nor the gate (`kas_spec_denies._refusable_deny`)
@@ -5372,7 +5374,18 @@ Other refusals: `not_a_mate_file`,
 `template_unreadable`, `template_required`, `revision_required`,
 `invalid_spec`, and `503 capabilities_unavailable` for a GET whose read did
 not finish in time. Each code reads as a localized sentence
-(`components/crew/workerKitErrors.ts`), never as the code. The surface is **Add
+(`components/crew/workerKitErrors.ts`), never as the code. A
+`template_restrictions_uncarried` whose `detail` is only the write tool's
+`fallbackAction` (any write spelling) offers **Add without auto-run writes**: a preview and
+apply that send `without_write_fallback: true` leave that key out of the bot's
+file (only a value the worker refuses; a carried deny stays), so a write no
+`allowedPaths` entry covers is answered by the bot's approval mode (it asks
+unless that mode skips asking), and list it in the preview's
+`left_out`, whose tool row reads "<tool> (without auto-run writes)". The agent's
+own file is not changed. A second line names the field to set to deny in the
+agent's file, whose path Customize > Custom agents shows (no dashboard screen
+edits `toolsSettings`), and the retry button reads **Try again after editing**.
+The surface is **Add
 abilities** in the editor's Abilities section (`components/crew/WorkerKitPane.tsx`,
 only for `mode: "mate"`): picking an agent previews at once. A `stale_revision`
 or `revision_required` apply makes a fresh preview for the same agent and keeps
