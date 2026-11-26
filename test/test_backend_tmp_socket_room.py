@@ -32,7 +32,7 @@ pytestmark = pytest.mark.usefixtures("_real_socket_budget")
 
 @pytest.fixture
 def _real_socket_budget(monkeypatch):
-    monkeypatch.setattr(bt, "_SUN_PATH_BYTES", _REAL_SUN_PATH_BYTES)
+    monkeypatch.setattr(bt, "_SUN_PATH_BYTES", _REAL_SUN_PATH_BYTES, raising=False)
 
 
 @pytest.mark.parametrize(

@@ -117,5 +117,5 @@ def _fresh_backend_tmp_socket_room_warnings(_floor_monkeypatch):
     """
     from kiro_crew.mcp_gateway import backend_tmp
 
-    _floor_monkeypatch.setattr(backend_tmp, "_warned_roots", set())
-    _floor_monkeypatch.setattr(backend_tmp, "_SUN_PATH_BYTES", sys.maxsize)
+    _floor_monkeypatch.setattr(backend_tmp, "_warned_roots", set(), raising=False)
+    _floor_monkeypatch.setattr(backend_tmp, "_SUN_PATH_BYTES", sys.maxsize, raising=False)
