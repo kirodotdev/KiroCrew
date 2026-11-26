@@ -3,7 +3,7 @@
 
 Reads only: `gh` (completed pull_request `CI` runs, each run's verdict artifact,
 its Linux `Backend Tests` jobs, their annotations and, where those may not be the
-whole answer, their logs; the open main-red issue). Appends to a JSONL ledger,
+whole answer, their logs; the main-red issues, in one call). Appends to a JSONL ledger,
 writes proposed tier rates as JSON and a markdown summary. It never edits the
 checked-in rates file: a person moves the proposal in by PR.
 
@@ -84,8 +84,16 @@ a rerun (`rerun_green`), the watcher's open main-red issue named its file when
 the row was recorded and the run is no older than the first red run on main
 (`main_red`), or the same file failed under another `source` within
 `--window-days` (`shared`, decided over the ledger at report time). Those rows
-stay in the ledger and are reported apart. An issue that closed before the pass
-ran clears nothing, so its failures count as caused by the diff.
+stay in the ledger and are reported apart.
+
+Two more reasons are decided at report time
+(`scripts/ci_test_selection_ledger_causes.py`). `flake`: another `source`
+failed the file and passed it on a rerun within 14 days. `from_main`, with
+`--notes`: a main-red issue the watcher wrote named the file while the run was
+created, whether the issue was still open when the pass ran or not. Each pass
+writes the spans of the issues it listed, and whether it left a listed run
+unread, to the notes file. Without `--notes` an issue that closed before the
+pass ran clears nothing, so its failures count as caused by the diff.
 
 Each tier's rate is its diff-caused failing files over the files `select`
 verdicts placed in it, with the upper bound of the two-sided 95% Wilson
@@ -129,7 +137,10 @@ names none). `shared` reads Linux and Windows failures alike; every Windows
 number is reported apart from the Linux ones, ending in one JSON status line
 (`windows_status`) that turns Windows selection off. Only a trial under a
 `select` Windows verdict can show a miss, so the status counts those apart
-(`trials_that_can_miss`) and holds them to the same minimum. A `windows` block
+(`trials_that_can_miss`) and holds them to the same minimum. With `--notes` the
+line says whether the pass was `settled`; an unsettled pass holds the answer
+of the newest settled one of the last 36 hours (`held_from`), and is judged on
+its own rows when there is none. A `windows` block
 of the wrong shape excludes the Windows half alone; the Linux half still counts.
 
 Exit codes: 0 the proposal was written; 2 the pass ended on a ledger line of the
@@ -167,6 +178,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import ci_main_red_skip as red_skip  # noqa: E402  (path set immediately above)
 import ci_test_map_shadow as shadow  # noqa: E402
+import ci_test_selection_ledger_causes as causes  # noqa: E402
 
 # ci.yml's `backend-test` job runs this step only when `steps.scope.outputs.reduced`
 # is 'false'; `test_the_full_suite_step_is_the_one_ci_gates_on_scope` pins that.
@@ -640,16 +652,22 @@ def read_run(
     return failing
 
 
-def main_red_files(root: Path) -> tuple[int, set[str]]:
+def main_red_issues(root: Path) -> object:
+    """The main-red issues, open and closed, most recently updated first: one call.
+
+    Not narrowed by date: an open issue no run of `main` has touched for days
+    still says `main` is red.
+    """
+    query = f"state=all&labels={red_skip.LABEL}&sort=updated&direction=desc&per_page=100"
+    return shadow._gh_json(["api", f"repos/{shadow.REPO}/issues?{query}"], root)
+
+
+def main_red_files(issues: object) -> tuple[int, set[str]]:
     """`(first red run on main, the test files named)` from the watcher's open main-red issue.
 
     Read with the watcher's own `pick_issue` and `parse_state`. With no such issue
     the set is empty.
     """
-    issues = shadow._gh_json(
-        ["api", f"repos/{shadow.REPO}/issues?state=open&labels={red_skip.LABEL}&per_page=100"],
-        root,
-    )
     watch = shadow.watch_module()
     issue = watch.pick_issue(red_skip.as_watcher_rows(issues if isinstance(issues, list) else []))
     state = watch.parse_state(str(issue.get("body") or "")) if issue else None
@@ -848,6 +866,14 @@ def recorded_lanes(rows: list[Row]) -> tuple[dict[int, int], dict[int, int]]:
     return linux, windows
 
 
+class Seen:
+    """What a pass saw beside its rows: the main-red issues, and why a run was left unread."""
+
+    def __init__(self) -> None:
+        self.issues: object = None
+        self.left: list[str] = []
+
+
 class BudgetSpent(Exception):
     """A pass is at a limit of its budget: the call it was about to make is not made."""
 
@@ -938,6 +964,7 @@ def collect(
     recorded: tuple[dict[int, int], dict[int, int]],
     root: Path,
     budget: Budget,
+    saw: Seen | None = None,
 ) -> Iterator[list[Row]]:
     """The rows of each run attempt a lane of the ledger lacks, newest run first.
 
@@ -947,10 +974,13 @@ def collect(
     Every row passes `valid_row`, so the ledger never holds a line a later pass
     refuses. A run the ledger holds costs no call beyond the listing. A run the
     budget ends in the middle of yields nothing: no part of it is recorded.
+    `saw` takes the issues listed and a line for each run left unread.
     """
+    saw = saw or Seen()
     try:
-        yield from _each_run(args, recorded, root, budget)
+        yield from _each_run(args, recorded, root, budget, saw)
     except BudgetSpent as spent:
+        saw.left.append(str(spent))
         print(f"stopped early: {spent}; a later pass reads the rest", file=sys.stderr)
 
 
@@ -959,18 +989,22 @@ def _each_run(
     recorded: tuple[dict[int, int], dict[int, int]],
     root: Path,
     budget: Budget,
+    saw: Seen,
 ) -> Iterator[list[Row]]:
     """`collect`, without the end a spent budget puts to it."""
     parse = shadow._nodeid_parser()
-    red_since, red_files = main_red_files(root)
+    saw.issues = main_red_issues(root)
+    red_since, red_files = main_red_files(saw.issues)
     verdicts = Verdicts(root, args.artifact)
     taken = 0
     on_linux, on_windows = recorded
     for run in runs_to_read(root, args):
         if taken >= args.limit:
+            saw.left.append(f"the pass recorded its {args.limit} run attempts")
             break
         ended = budget.ended()
         if ended:
+            saw.left.append(ended)
             print(f"stopped early: {ended}; a later pass reads the rest", file=sys.stderr)
             break
         if _dict(run).get("conclusion") in _NOT_YET:
@@ -1011,6 +1045,8 @@ def _each_run(
                 fresh += more
         else:
             win_unread = False
+        if seen is None or win_unread:
+            saw.left.append(f"run {key['run']} could not be read")
         if seen is None or (win_unread and not need_linux):
             print(f"run {key['run']}: gh could not read it; a later pass will", file=sys.stderr)
             continue
@@ -1155,28 +1191,32 @@ def current(rows: list[Row], since: str | None) -> list[Row]:
     ]
 
 
-def classify(rows: list[Row], window_days: float) -> list[Row]:
-    """The failure rows of `select` runs, each with `shared` and `diff_caused` set.
+def classify(rows: list[Row], window_days: float, notes: list[Row] | None = None) -> list[Row]:
+    """The failure rows of `select` runs, each with its reasons and `diff_caused` set.
 
     Only a same-repository failure is evidence that a file fails elsewhere; under
     a `full` verdict it has no tier to fit, but it is evidence all the same.
     """
     select = {row["run"] for row in rows if row["kind"] == "run" and row["verdict"] == "select"}
     picked = [r for r in rows if r["kind"] == "failure" and r["run"] in select]
-    return _marked(picked, rows, ("failure",), window_days)
+    return _marked(picked, rows, ("failure",), window_days, notes or [])
 
 
-def classify_windows(rows: list[Row], window_days: float) -> list[Row]:
+def classify_windows(
+    rows: list[Row], window_days: float, notes: list[Row] | None = None
+) -> list[Row]:
     """The Windows-only failure rows, marked as `classify` marks Linux ones.
 
     A same-repository failure of the file on either OS under another `source` is
     evidence it fails elsewhere.
     """
     picked = [r for r in rows if r["kind"] == "windows_failure"]
-    return _marked(picked, rows, ("failure", "windows_failure"), window_days)
+    return _marked(picked, rows, ("failure", "windows_failure"), window_days, notes or [])
 
 
-def _marked(picked: list[Row], rows: list[Row], kinds: tuple[str, ...], days: float) -> list[Row]:
+def _marked(
+    picked: list[Row], rows: list[Row], kinds: tuple[str, ...], days: float, notes: list[Row]
+) -> list[Row]:
     by_file: dict[str, list[Row]] = {}
     for row in rows:
         if row["kind"] in kinds and not row["fork"]:
@@ -1188,8 +1228,13 @@ def _marked(picked: list[Row], rows: list[Row], kinds: tuple[str, ...], days: fl
             and abs((_when(other) - _when(row)).total_seconds()) <= days * 86400
             for other in by_file.get(row["file"], ())
         )
-        caused = not (shared or row["rerun_green"] or row["main_red"])
-        out.append({**row, "shared": shared, "diff_caused": caused})
+        marks = {
+            "shared": shared,
+            "flake": causes.flake(row, by_file.get(row["file"], [])),
+            "from_main": causes.from_main(row, notes),
+        }
+        caused = not (row["rerun_green"] or row["main_red"] or any(marks.values()))
+        out.append({**row, **marks, "diff_caused": caused})
     return out
 
 
@@ -1311,7 +1356,7 @@ def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> st
                 [
                     *_where(row),
                     row["tier"],
-                    ", ".join(k for k in ("rerun_green", "main_red", "shared") if row[k]),
+                    causes.reasons(row),
                     _covered_cell(covered.get((row["run"], row["attempt"]), {})),
                 ]
                 for row in picked
@@ -1385,7 +1430,7 @@ def summarize_windows(rows: list[Row], failures: list[Row], status: Row) -> str:
                     row["label"],
                     source_of.get(row["run"], ""),
                     "fork" if row["fork"] else "",
-                    ", ".join(k for k in ("rerun_green", "main_red", "shared") if row[k]),
+                    causes.reasons(row),
                 ]
                 for row in picked
             ]
@@ -1406,7 +1451,26 @@ def _artifact(value: str) -> str:
     return value
 
 
-def main(argv: list[str] | None = None) -> int:
+def _with_spans(path: Path | None, notes: list[Row], saw: Seen, now: datetime) -> list[Row]:
+    """`notes` with the spans of the issues this pass listed; unchanged when no notes are kept."""
+    if path is None:
+        return notes
+    spans = causes.issue_spans(saw.issues, shadow.watch_module(), red_skip.LABEL, now)
+    return causes.merge_notes(notes, spans, now)
+
+
+def _keep_notes(
+    path: Path | None, notes: list[Row], now: datetime, settled: bool, ok: bool | None
+) -> list[Row]:
+    """`notes` with this pass's own note, written to `path`: what a later pass starts from."""
+    if path is None:
+        return notes
+    notes = causes.merge_notes(notes, [causes.pass_note(now, settled, ok)], now)
+    causes.write_notes(path, notes)
+    return notes
+
+
+def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 1)[0])
     parser.add_argument("--ledger", required=True, help="JSONL ledger to read and append to")
     parser.add_argument("--rates-out", required=True, help="where the proposed tier rates go")
@@ -1422,6 +1486,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--windows-status-out", help="where the Windows auto-off JSON goes")
     parser.add_argument(
+        "--notes",
+        help="JSONL of main-red spans and settled passes, read and kept beside the ledger",
+    )
+    parser.add_argument(
         "--max-calls", type=int, default=0, help="gh calls this pass makes at most; 0: no limit"
     )
     parser.add_argument(
@@ -1435,6 +1503,10 @@ def main(argv: list[str] | None = None) -> int:
     ledger_path = Path(args.ledger)
     root = Path(args.root)
     budget = Budget(args.max_calls, args.reserve, root)
+    now = now or datetime.now(timezone.utc)
+    notes_path = Path(args.notes) if args.notes else None
+    notes = causes.read_notes(notes_path) if notes_path else []
+    saw = Seen()
     new: list[Row] = []
     kept = 0
     try:
@@ -1446,7 +1518,11 @@ def main(argv: list[str] | None = None) -> int:
         with budget.counting():
             try:
                 for number, fresh in enumerate(
-                    collect(args, recorded_lanes(ledger), root, budget) if args.limit > 0 else [],
+                    (
+                        collect(args, recorded_lanes(ledger), root, budget, saw)
+                        if args.limit > 0
+                        else []
+                    ),
                     1,
                 ):
                     new += fresh
@@ -1458,18 +1534,30 @@ def main(argv: list[str] | None = None) -> int:
                 append_rows(ledger_path, new[kept:])
     except (ValueError, subprocess.CalledProcessError) as error:
         print(f"stopped after {budget.spent} calls, {len(new)} rows kept: {error}", file=sys.stderr)
+        if args.limit > 0:
+            _keep_notes(notes_path, _with_spans(notes_path, notes, saw, now), now, False, None)
         return EXIT_NOT_RECORDED
     print(f"gh calls this pass: {budget.spent}", file=sys.stderr)
     rows = current(ledger + new, args.since)
-    failures = classify(rows, args.window_days)
+    if args.limit > 0:
+        notes = _with_spans(notes_path, notes, saw, now)
+    failures = classify(rows, args.window_days, notes)
     tiers = fit(rows, failures)
     text = summarize(rows, failures, tiers)
     if args.windows:
-        on_windows = classify_windows(rows, args.window_days)
-        status = windows_status(rows, on_windows, datetime.now(timezone.utc))
+        on_windows = classify_windows(rows, args.window_days, notes)
+        status = windows_status(rows, on_windows, now)
+        if args.limit > 0:
+            notes = _keep_notes(
+                notes_path, notes, now, not saw.left, status["windows_selection_ok"]
+            )
+        if notes_path:
+            status = causes.settle(status, notes, now)
         text += "\n\n" + summarize_windows(rows, on_windows, status)
         if args.windows_status_out:
             Path(args.windows_status_out).write_text(json.dumps(status) + "\n", encoding="utf-8")
+    elif args.limit > 0:
+        _keep_notes(notes_path, notes, now, not saw.left, None)
     if args.summary_out:
         Path(args.summary_out).write_text(text + "\n", encoding="utf-8")
     print(text)
