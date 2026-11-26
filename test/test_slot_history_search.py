@@ -256,6 +256,25 @@ def test_a_widget_reply_is_found_by_its_title_and_prose_never_its_body():
     assert [h["index"] for h in _search(log, query=shs.message_query("sales"))["hits"]] == [0]
 
 
+def test_only_a_markdown_widget_body_counts_its_pictures_and_videos(tmp_path):
+    quoted, shot = tmp_path / "example.png", tmp_path / "shot.png"
+    replies = [
+        f'<mcwidget title="Ex"><pre>![example](<{quoted.as_posix()}>)</pre></mcwidget>',
+        '<mcwidget title="Ex"><pre>![clip](/home/u/clip.mp4)</pre></mcwidget>',
+        f'<mcwidget title="Board">![shot](<{shot.as_posix()}>)</mcwidget>',
+        '<mcwidget title="Reel">![reel](/home/u/reel.mp4)</mcwidget>',
+    ]
+    log = _PagedRows([_row(i, text, role="assistant") for i, text in enumerate(replies)])
+
+    images = _search(log, kind="images")
+    videos = _search(log, kind="videos")
+
+    assert [h["index"] for h in images["hits"]] == [2]
+    assert images["hits"][0]["images"] == [str(shot)]
+    assert [h["index"] for h in videos["hits"]] == [3]
+    assert videos["hits"][0]["video_names"] == ["reel.mp4"]
+
+
 def test_a_sent_video_is_a_video_and_a_file():
     log = _PagedRows([_file_row(0, "clip.mp4", "/out/clip.mp4", "video/mp4")])
 
