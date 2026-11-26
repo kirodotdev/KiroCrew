@@ -267,6 +267,42 @@ def _grant_linked_trust(linked_entry: _LinkedApproval, sessions: SessionManager 
     return True
 
 
+def grant_own_trust(
+    sessions: SessionManager | None,
+    session_key: str,
+    user_id: str,
+    channel: str,
+    thread_ts: str,
+    pressed_on: Any = None,
+) -> bool:
+    """Grant a shared user's Trust press: their own turns on *session_key*, nothing else.
+
+    The grant that person's ``!trust`` makes, through the same code
+    (``thread_trust.grant_from_card``): it covers no other sender's turn and writes
+    no approval policy, so the owner's turns, another shared user's and a spawned
+    subagent still ask. ``!trust status`` shows it, ``!trust off`` removes it, and it
+    ends when ``!trust``'s does. It is made only where ``!trust`` grants a shared
+    user one.
+
+    False, with nothing granted, everywhere else and on any raise; the caller then
+    approves the one tool. Never awaits, so a caller that found its prompt live
+    grants before anything else can answer it. A caller that awaits between the
+    press and the grant passes *pressed_on*, the ``thread_trust.session_binding`` it
+    read at the press: a session replaced since then gets no grant.
+    """
+    from kiro_crew.slack import thread_trust
+
+    if not session_key:
+        return False
+    try:
+        return thread_trust.grant_from_card(
+            _dashboard_state, sessions, session_key, channel, thread_ts, user_id, pressed_on
+        )
+    except Exception:
+        logger.warning("Failed to grant a shared user's own Trust", exc_info=True)
+        return False
+
+
 async def post_linked_approval(
     slack: SlackClientOps,
     channel: str,

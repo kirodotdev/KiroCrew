@@ -394,9 +394,13 @@ confirmed by Slack: remove them, or fix what their row says, first.
   command; `!stop`, Trust and worker cards there stay the owner's), answer
   question cards, answer the tool-approval
   prompts their own turns post (Approve, Reject, and **Trust session** where
-  the card offers it, which turns on the same per-session Trust the owner's
-  click does; the audit log names who clicked), and send or edit the review-mode draft of their own
-  turn. They can also put a channel on a Crew Bot with `!channel agent <Bot>` and take
+  the card offers it; the audit log names who clicked), and send or edit the review-mode draft of their own
+  turn. That button covers only their own messages in that thread, exactly as
+  the `!trust` command above does for them: your messages, other people's and
+  helper agents still ask, and the same things end it. In a thread that runs a
+  dashboard chat or a schedule's session the press lets that one call through, and
+  the card says so. On a card a linked dashboard chat posts, the press still does
+  for that chat what your click does. They can also put a channel on a Crew Bot with `!channel agent <Bot>` and take
   it off with `!channel agent off`, when the channel has no agent or a shared user set
   the one it has. After that, every new thread in that channel runs as that Bot for
   everyone, you included: its template, workspace and memory, and the tools that
