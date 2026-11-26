@@ -23,12 +23,13 @@ import asyncio
 import logging
 import re
 from collections import OrderedDict
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import ACTIVATION_REVIEW
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.sel import sel
 from kiro_crew.session import unlink_queued_temp_paths
+from kiro_crew.slack.channel_policy import SlackChannelRefused
 from kiro_crew.slack.enterprise import validated_self_user_id
 from kiro_crew.slack.handler import is_allowed_user, is_shared_user
 from kiro_crew.slack.shared_access import prime_shared_user
@@ -298,3 +299,30 @@ def _thread_follow_admits(
         error=error,
     )
     return False
+
+
+async def _post_stop_notice(orch: Any, channel: str, text: str, ts: str | None) -> str:
+    """Post a ``!stop`` reply; ``""`` when the channel policy refuses the write.
+
+    A pure ``!stop`` is exempt from the channel list so a withdrawn channel can
+    still halt its turn; its replies are not, and a refused one must not abort
+    the stop or the audit that follows it.
+    """
+    try:
+        return await orch.slack.post_message(channel, text, ts)
+    except SlackChannelRefused:
+        logger.info("!stop notice withheld: channel refused by policy")
+        return ""
+
+
+def _without_leading_mention(text: str, is_mention: bool) -> str:
+    """*text* past its leading bot ``<@BOTID>`` mention, or *text* itself.
+
+    An app_mention event always starts with ``<@BOTID> ...``, so this slices past
+    the first ``>`` and the whitespace after it.
+    """
+    if is_mention and text.startswith("<@"):
+        end = text.find(">")
+        if end != -1:
+            return text[end + 1 :].lstrip()
+    return text

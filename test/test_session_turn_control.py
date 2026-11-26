@@ -404,6 +404,29 @@ class TestRecordSuccessFailure:
 class TestMessageQueue:
     """Tests for enqueue, dequeue, cancel_queued, is_cancelled."""
 
+    @pytest.mark.parametrize(
+        ("live_key", "read_key"),
+        [("k1", "k1"), ("100.0", "slack:100.0"), ("slack:100.0", "100.0")],
+    )
+    @pytest.mark.asyncio
+    async def test_has_queued_is_a_read_only_folded_key_check(self, cfg, live_key, read_key):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        try:
+            assert not mgr.has_queued(read_key)
+            assert not mgr.has_session(live_key)
+            await mgr.get_or_create(live_key)
+            assert not mgr.has_queued(read_key)
+            assert mgr.enqueue(live_key, "ts1", "!incognito")
+            assert mgr.enqueue(live_key, "ts2", "my secret")
+            assert mgr.has_queued(read_key)
+            assert mgr.has_queued(read_key)
+            assert mgr.dequeue(live_key) == ("ts1", "!incognito", {})
+            assert mgr.has_queued(read_key)
+            assert mgr.dequeue(live_key) == ("ts2", "my secret", {})
+            assert not mgr.has_queued(read_key)
+        finally:
+            await mgr.close_all()
+
     @pytest.mark.asyncio
     async def test_enqueue_when_busy(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())

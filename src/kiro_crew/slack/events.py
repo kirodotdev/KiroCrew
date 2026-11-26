@@ -154,6 +154,8 @@ from kiro_crew.slack.handler import (
 )
 from kiro_crew.slack.interactions import dispatch as dispatch_interactive
 from kiro_crew.slack.linked_thread_images import set_inbound_files as set_linked_thread_files
+from kiro_crew.slack.midturn import parse_override, steer_if_busy
+from kiro_crew.slack.midturn import take_override as take_mid_override
 from kiro_crew.slack.sessions_view import (
     _HOME_TAB_SESSIONS_PER_KIND,
     _SESSION_KIND_DASHBOARD,
@@ -483,33 +485,6 @@ async def init_socket_mode(
 
     orch._socket_client.socket_mode_request_listeners.append(_on_event)  # type: ignore[arg-type]
     register_drain(_CHANNEL, lambda session_key: _drain_slack_queue(orch, session_key))
-
-
-async def _post_stop_notice(orch: Any, channel: str, text: str, ts: str | None) -> str:
-    """Post a ``!stop`` reply; ``""`` when the channel policy refuses the write.
-
-    A pure ``!stop`` is exempt from the channel list so a withdrawn channel can
-    still halt its turn; its replies are not, and a refused one must not abort
-    the stop or the audit that follows it.
-    """
-    try:
-        return await orch.slack.post_message(channel, text, ts)
-    except SlackChannelRefused:
-        logger.info("!stop notice withheld: channel refused by policy")
-        return ""
-
-
-def _without_leading_mention(text: str, is_mention: bool) -> str:
-    """*text* past its leading bot ``<@BOTID>`` mention, or *text* itself.
-
-    An app_mention event always starts with ``<@BOTID> ...``, so this slices past
-    the first ``>`` and the whitespace after it.
-    """
-    if is_mention and text.startswith("<@"):
-        end = text.find(">")
-        if end != -1:
-            return text[end + 1 :].lstrip()
-    return text
 
 
 async def _route_message(
@@ -1507,6 +1482,17 @@ async def _route_message(
         await _handle_restart(orch, sender_id, "", _restart_respond)
         return
 
+    # ── !queue / !steer <msg>: this message's mid-turn mode (slack/midturn.py) ──
+    _steerable = not (files or from_trusted_bot or _shared_sender or activation == "review")
+    _mid = await take_mid_override(
+        orch, channel, thread_ts or msg_ts, msg_ts, sender_id, clean_text, steerable=_steerable
+    )
+    if _mid is None:
+        _cleanup_attachment_temps()
+        return
+    # The prefix leaves the gate text too: a shared user's refusal judges the text that runs.
+    _spool_text = parse_override(_spool_text)[1] if _mid != clean_text else _spool_text
+    clean_text = _mid
     agent_override = ch_cfg.agent or None
 
     # ── Trusted-bot turn ledger (loop guard bookkeeping) ──
@@ -1564,6 +1550,11 @@ async def _route_message(
     session_key = (
         flat_dm_session_key(channel, thread_ts, enabled=_dm_single_session) or thread_ts or msg_ts
     )
+    _task_busy = _key_busy(orch, session_key)
+    if await steer_if_busy(
+        orch, session_key, clean_text, channel=channel, msg_ts=msg_ts, task_busy=_task_busy
+    ):
+        return
     _task_busy = _key_busy(orch, session_key)
     if _task_busy:
         # A task is already running for this session key.  Try the session-level
@@ -1756,7 +1747,7 @@ async def _route_message(
                 had_voice_input=_had_voice_input,
             )
         )
-        _track_router_task(orch, session_key, t, thread_ts)
+        _track_router_task(orch, session_key, t, thread_ts, sender_id)
 
         def _on_transport_done(task: asyncio.Task) -> None:  # type: ignore[type-arg]
             orch._handler_tasks.discard(task)
@@ -1787,7 +1778,7 @@ async def _route_message(
                                 orch, session_key, _q_ts, _q_text, _q_kw, slack=orch.slack
                             )
                         )
-                        _track_router_task(orch, session_key, _q_t, _q_kw.get("thread_ts"))
+                        _track_drained_task(orch, session_key, _q_t, _q_kw)
                         orch._handler_tasks.add(_q_t)
                         _q_t.add_done_callback(_on_transport_done)
             except Exception:
@@ -1831,7 +1822,7 @@ async def _route_message(
         _cleanup_attachment_temps()
         return
 
-    _track_router_task(orch, session_key, t, thread_ts)
+    _track_router_task(orch, session_key, t, thread_ts, sender_id)
 
     def _on_done(task: asyncio.Task) -> None:  # type: ignore[type-arg]
         orch._handler_tasks.discard(task)
@@ -1858,7 +1849,7 @@ async def _route_message(
                     _q_t = asyncio.ensure_future(
                         _dispatch_queued(orch, session_key, _q_ts, _q_text, _q_kw, slack=orch.slack)
                     )
-                    _track_router_task(orch, session_key, _q_t, _q_kw.get("thread_ts"))
+                    _track_drained_task(orch, session_key, _q_t, _q_kw)
                     orch._handler_tasks.add(_q_t)
                     _q_t.add_done_callback(_on_done)
         except Exception:
@@ -1890,8 +1881,10 @@ from kiro_crew.slack.events_inbound import _dm_single_session_enabled  # noqa: E
 from kiro_crew.slack.events_inbound import _dm_stop_flat_key  # noqa: E402
 from kiro_crew.slack.events_inbound import _handle_message_deleted  # noqa: E402
 from kiro_crew.slack.events_inbound import _maybe_prompt_owner  # noqa: E402
+from kiro_crew.slack.events_inbound import _post_stop_notice  # noqa: E402
 from kiro_crew.slack.events_inbound import _thread_follow_admits  # noqa: E402
 from kiro_crew.slack.events_inbound import _trusted_bot_turns  # noqa: E402
+from kiro_crew.slack.events_inbound import _without_leading_mention  # noqa: E402
 from kiro_crew.slack.events_queue import _CHANNEL  # noqa: E402
 from kiro_crew.slack.events_queue import _configured_approval_mode  # noqa: E402
 from kiro_crew.slack.events_queue import _dispatch_queued  # noqa: E402
@@ -1904,6 +1897,7 @@ from kiro_crew.slack.events_queue import _resolve_approval_mode  # noqa: E402
 from kiro_crew.slack.events_queue import _settle_stop_hold  # noqa: E402
 from kiro_crew.slack.events_queue import _StopHold  # noqa: E402
 from kiro_crew.slack.events_queue import _stops_in_flight  # noqa: E402
+from kiro_crew.slack.events_queue import _track_drained_task  # noqa: E402
 from kiro_crew.slack.events_queue import _track_router_task  # noqa: E402
 from kiro_crew.slack.events_queue import hold_if_slack_down  # noqa: E402
 from kiro_crew.slack.events_queue import notify_slack_undelivered  # noqa: E402
@@ -1948,8 +1942,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.events_queue import _notice_channel  # noqa: F401
     from kiro_crew.slack.events_queue import _notice_subject  # noqa: F401
     from kiro_crew.slack.events_queue import _on_tracked_done  # noqa: F401
+    from kiro_crew.slack.events_queue import _router_task_openers  # noqa: F401
     from kiro_crew.slack.events_queue import _router_task_threads  # noqa: F401
     from kiro_crew.slack.events_queue import _spawn_tracked  # noqa: F401
+    from kiro_crew.slack.events_queue import router_task_opener  # noqa: F401
     from kiro_crew.slack.events_queue import router_task_thread  # noqa: F401
     from kiro_crew.slack.events_queue import _take_queued  # noqa: F401
     from kiro_crew.slack.events_queue import _unmark  # noqa: F401
