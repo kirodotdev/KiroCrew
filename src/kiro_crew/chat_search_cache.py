@@ -22,7 +22,9 @@ is committed with the count of rows it covers, so a build a write interrupts kee
 what it read.
 
 How a cache stays current. Each update probes the chain's revision. The revision
-the process last brought the cache to answers at once. Otherwise the cache checks
+the process last brought the cache to answers at once (:meth:`ChatSearchCache.current`
+checks only that, so a search can run it without waiting for the build thread).
+Otherwise the cache checks
 the rows it already holds against the transcript by content, not by inode: the
 dashboard's save replaces the file on every turn, so an inode or mtime test would
 rebuild every chat after every turn. Row 0, the last ``VERIFY_ROWS`` rows it
@@ -67,7 +69,7 @@ from typing import Any, NamedTuple
 from kiro_crew._sqlite_compat import fts5_available, sqlite3
 from kiro_crew.history_files import _safe_key
 from kiro_crew.history_index import loaded_rules_marker
-from kiro_crew.history_projection_contract import TranscriptRevisionChanged
+from kiro_crew.history_projection import TranscriptRevisionChanged
 from kiro_crew.owner_only_files import (
     SQLITE_SIDECAR_SUFFIXES,
     mkdirs_owner_only,
@@ -424,7 +426,32 @@ class ChatSearchCache:
         with contextlib.suppress(OSError):
             os.utime(self.dir / f"{stem}{SUFFIX}")
 
+    def refuses(self, key: str) -> bool:
+        """Whether *key*'s cache passed the disk cap alone in this process, so no
+        update builds it again (:class:`CacheTooLarge`). No IO."""
+        with self._lock:
+            return key in self._too_large
+
     # ------------------------------------------------------------- update
+
+    def current(self, log: Any, key: str) -> Snapshot | None:
+        """*key*'s cache as it is, when it already matches the transcript; else None.
+
+        One probe of the chain and no build: it never waits for the build thread,
+        so a search of an up-to-date chat is not queued behind another chat's
+        build. Blocking IO (the probe), off the loop.
+        """
+        return self._matching(key, log.read_messages_chained_page(key, limit=0))[0]
+
+    def _matching(self, key: str, probe: Any) -> tuple[Snapshot | None, int]:
+        """``(snapshot, gen)``: the snapshot when the cache held for *key* matches
+        *probe*'s revision under the current drop generation and rules, else None."""
+        with self._lock:
+            gen = self._gen.get(_safe_key(key), 0)
+            held = self._current.get(key)
+        if held == (probe.revision, gen, loaded_rules_marker()):
+            return Snapshot(key, gen, probe.total), gen
+        return None, gen
 
     def update(
         self, log: Any, key: str, entry_of: EntryOf, pause: Callable[[], None] | None = None
@@ -432,26 +459,23 @@ class ChatSearchCache:
         """*key*'s cache brought up to the transcript; blocking IO, off the loop.
 
         Builds it on first use, appends rows written since, rebuilds it when the
-        rows it holds changed (see the module docstring). Raises
+        rows it holds changed (see the module docstring); a cache that already
+        matches answers as :meth:`current` does. Raises
         ``TranscriptRevisionChanged`` when writes keep moving the transcript
-        through ``UPDATE_ATTEMPTS`` probes, :class:`CacheDropped` when the cache is
+        through ``UPDATE_ATTEMPTS`` probes, :class:`CacheTooLarge` for a chat
+        :meth:`refuses`, :class:`CacheDropped` when the cache is
         dropped meanwhile, and ``OSError`` / ``sqlite3.Error`` when it cannot be
         read or written. *pause*, when given, runs before each page is read, so
         the caller can hold the build while other reads need the time.
         """
         probe = log.read_messages_chained_page(key, limit=0)
+        ready, gen = self._matching(key, probe)
+        if ready is not None:
+            return ready
+        if self.refuses(key):
+            raise CacheTooLarge(key)
         stem = _safe_key(key)
         rules = loaded_rules_marker()
-        with self._lock:
-            gen = self._gen.get(stem, 0)
-            held = self._current.get(key)
-        # A cache that matches the transcript answers without waiting for a build
-        # of another chat.
-        if held == (probe.revision, gen, rules):
-            return Snapshot(key, gen, probe.total)
-        with self._lock:
-            if key in self._too_large:
-                raise CacheTooLarge(key)
         with _BUILD_LOCK:
             # A build during a delete of this chat would write back what the
             # delete just removed: refused until the delete is done.

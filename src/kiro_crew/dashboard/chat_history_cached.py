@@ -20,8 +20,11 @@ The first search of a chat in this process never waits for the cache: the paged
 scan answers it with ``indexing: true``, and only then does :func:`start_build`
 start the build in a worker thread, so the build does not slow that reply. A
 request that arrives while it runs is answered the same way, and no second build
-starts. Once this process holds the chat's cache, a request waits at most
-``BUILD_WAIT_SECS`` for it to catch up with rows written since; a longer update
+starts. A chat whose cache passed the disk cap alone starts no build and gets
+no ``indexing``. Once this process holds the chat's cache, a cache that matches
+the transcript answers at once, off the build thread, so it never waits behind
+another chat's build; one with rows written since is caught up on the build
+thread, and a request waits at most ``BUILD_WAIT_SECS`` for it; a longer update
 keeps running and the paged scan answers.
 """
 
@@ -414,7 +417,8 @@ def _update_task(store: csc.ChatSearchCache, log: Any, key: str) -> asyncio.Futu
 
 
 async def cached_search(log: Any, key: str, **search: Any) -> dict[str, Any] | None:
-    """The reply from *key*'s cache, brought up to date first.
+    """The reply from *key*'s cache, brought up to date first (on the build
+    thread only when it is behind the transcript).
 
     None when the cache cannot answer: the log keeps no sessions directory, this
     SQLite has no FTS5, this process has not built the chat's cache yet (the
@@ -425,12 +429,16 @@ async def cached_search(log: Any, key: str, **search: Any) -> dict[str, Any] | N
     if store is None or not store.holds(key):
         # A first search never waits for a build: the paged scan is faster.
         return None
-    task = _update_task(store, log, key)
-    finished, _pending = await asyncio.wait({task}, timeout=BUILD_WAIT_SECS)
-    if not finished:
-        return None
     try:
-        snap = task.result()
+        # An up-to-date cache answers without the build thread, which may be
+        # busy building another chat.
+        snap = await asyncio.to_thread(store.current, log, key)
+        if snap is None:
+            task = _update_task(store, log, key)
+            finished, _pending = await asyncio.wait({task}, timeout=BUILD_WAIT_SECS)
+            if not finished:
+                return None
+            snap = task.result()
         return await asyncio.to_thread(search_cached, store, snap, **search)
     except (
         OSError,
@@ -470,9 +478,11 @@ def _yield() -> None:
 def start_build(log: Any, key: str) -> bool:
     """Start bringing *key*'s cache up to date in a worker thread, unless an
     update already runs; whether one runs. Call it after the paged scan has
-    answered, so the build does not slow that reply."""
+    answered, so the build does not slow that reply. A chat whose cache the
+    store refuses (it passed the disk cap alone) starts nothing: no build of it
+    can finish."""
     store = _store_of(log)
-    if store is None:
+    if store is None or store.refuses(key):
         return False
     return not _update_task(store, log, key).done()
 

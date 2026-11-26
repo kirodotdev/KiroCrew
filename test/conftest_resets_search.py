@@ -40,7 +40,8 @@ def _reset_search_shown_text_memo():
 def _reset_chat_search_cache_stores():
     """Start each test with no chat history search cache store open.
 
-    ``chat_search_cache`` keeps one store per sessions directory with its open
+    ``chat_search_cache`` keeps one store per sessions directory (``_stores``,
+    emptied by ``reset_stores``) with its open
     SQLite connections and the transcript revision each chat was last brought to,
     and ``chat_history_cached`` keeps the builds in flight. A store one test left
     would hold a connection into that test's removed ``tmp_path``.

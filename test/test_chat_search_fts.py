@@ -350,7 +350,9 @@ async def _get(client, route: str, query: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_every_tab_shows_the_same_counts_for_the_whole_chat(log):
+async def test_every_tab_shows_the_same_counts_for_the_whole_chat(log, monkeypatch):
+    # The cache must answer: no wall-clock window decides it.
+    monkeypatch.setattr(chc, "BUILD_WAIT_SECS", FALLBACK_TIMEOUT_SECS)
     for i in range(120):
         if i % 3 == 0:
             log.append(KEY, "user", f"plum picture {i}", extra_meta={"files": [f"/p/{i}.png"]})
@@ -372,6 +374,7 @@ async def test_every_tab_shows_the_same_counts_for_the_whole_chat(log):
 
 @pytest.mark.asyncio
 async def test_a_cursor_past_the_chat_is_its_end_in_the_cache(log, monkeypatch):
+    monkeypatch.setattr(chc, "BUILD_WAIT_SECS", FALLBACK_TIMEOUT_SECS)
     _plums(log, 3)
     _update(log)
 
@@ -391,6 +394,7 @@ async def test_counts_come_from_the_cache_without_the_row_walk(log, monkeypatch)
     _plums(log, 50)
     # A walk this short would stop before the chat's first row.
     monkeypatch.setattr(shs, "COUNT_BUDGET_ROWS", 10)
+    monkeypatch.setattr(chc, "BUILD_WAIT_SECS", FALLBACK_TIMEOUT_SECS)
     _update(log)
     async with TestClient(TestServer(_app(log))) as client:
         body = await _get(client, COUNTS, "q=plum")
@@ -564,6 +568,80 @@ async def test_builds_run_on_their_own_thread(log, monkeypatch):
         await _built(client, log)
 
     assert len(threads) == 1 and threads[0].startswith("chat-search-cache")
+
+
+@pytest.mark.asyncio
+async def test_an_up_to_date_chat_answers_while_another_chat_builds(log, monkeypatch):
+    other = "dashboard:other"
+    log.append(other, "user", "a pear note")
+    _plums(log, 3)
+    _update(log)
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    builds = []
+    real = csc.ChatSearchCache.update
+
+    def blocked(self, *args, **kwargs):
+        builds.append(args[1])
+        if args[1] == other:
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(FALLBACK_TIMEOUT_SECS)
+        return real(self, *args, **kwargs)
+
+    def no_scan(*args, **kwargs):
+        raise AssertionError("the cache must answer")
+
+    monkeypatch.setattr(csc.ChatSearchCache, "update", blocked)
+    try:
+        async with TestClient(TestServer(_app(log))) as client:
+            assert chc.start_build(log, other)
+            await asyncio.wait_for(entered.wait(), FALLBACK_TIMEOUT_SECS)
+            monkeypatch.setattr(shs, "search_history", no_scan)
+            body = await _get(client, SEARCH, "q=plum")
+            counts = await _get(client, COUNTS, "q=plum")
+    finally:
+        release.set()
+
+    # Chat KEY was answered from its cache, never queued behind the other build.
+    assert builds == [other]
+    assert body["complete"] is True and "indexing" not in body
+    assert [h["index"] for h in body["hits"]] == [2, 1, 0]
+    assert counts["complete"] is True and "indexing" not in counts
+    assert counts["counts"][""] == 3
+
+
+@pytest.mark.asyncio
+async def test_a_chat_too_large_to_cache_starts_no_build_and_shows_no_indexing(log, monkeypatch):
+    _plums(log, 20)
+    # Smaller than any cache file: the first committed page passes it.
+    monkeypatch.setattr(csc, "DISK_CAP_BYTES", 1024)
+    builds = []
+    real = csc.ChatSearchCache.update
+
+    def recorded(self, *args, **kwargs):
+        builds.append(args[1])
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(csc.ChatSearchCache, "update", recorded)
+    async with TestClient(TestServer(_app(log))) as client:
+        first = await _get(client, SEARCH, "q=plum")
+        build = chc._updates.get(f"{_store(log).dir}\0{KEY}")
+        if build is not None:
+            with pytest.raises(csc.CacheTooLarge):
+                await asyncio.wait_for(asyncio.shield(build), FALLBACK_TIMEOUT_SECS)
+        # None: the build ended, and was forgotten, before the reply was read.
+        assert _store(log).refuses(KEY)
+        later = await _get(client, SEARCH, "q=plum")
+        counts = await _get(client, COUNTS, "q=plum")
+
+    # The first reply's build could still finish; none after it can.
+    assert first["indexing"] is True
+    assert "indexing" not in later and "indexing" not in counts
+    assert builds == [KEY]
+    assert f"{_store(log).dir}\0{KEY}" not in chc._updates
+    assert [h["index"] for h in later["hits"]][:3] == [19, 18, 17]
+    assert counts["counts"][""] == 20
 
 
 def test_a_build_waits_between_pages_while_a_paged_scan_runs(monkeypatch):
