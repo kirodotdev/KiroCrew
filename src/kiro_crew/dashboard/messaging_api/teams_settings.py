@@ -35,6 +35,12 @@ if TYPE_CHECKING:
 
 async def api_teams_config_get(request: web.Request) -> web.Response:
     """GET /api/teams/config — read Teams channel status + config summary."""
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "teams.config.read")
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_MICROSOFT_APP_ID,
         CRED_MICROSOFT_APP_PASSWORD,

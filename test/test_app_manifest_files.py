@@ -25,6 +25,22 @@ def _install(home: Path, name: str) -> Path:
     return manifest
 
 
+def _write_fields(info: os.stat_result) -> tuple[int, ...]:
+    """What a write, a replace or a chmod changes; ``st_atime`` is left out on
+    purpose, because under ``relatime`` the first read after a write moves it."""
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_uid,
+        info.st_gid,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
 @pytest.mark.parametrize(
     "rel", ["apps/weather/app.json", "apps/weather/APP.JSON", "APPS/Weather/app.json"]
 )
@@ -124,7 +140,7 @@ def test_a_linked_manifest_is_skipped_without_writing(
         target.chmod(0o640)
     manifest = folder / "app.json"
     manifest.symlink_to(target)
-    before = {p.name: p.lstat() for p in folder.iterdir()}
+    before = {p.name: _write_fields(p.lstat()) for p in folder.iterdir()}
     target_before = target.stat()
     assert app_manifest_leaves(str(home)) == ()
     assert len(caplog.records) == 1
@@ -133,9 +149,8 @@ def test_a_linked_manifest_is_skipped_without_writing(
     assert manifest.is_symlink()
     assert target.read_bytes() == b'{"name": "weather"}\n'
     assert target.stat().st_mtime_ns == target_before.st_mtime_ns
-    after = {p.name: p.lstat() for p in folder.iterdir()}
-    assert before.keys() == after.keys()
-    assert all(before[name] == after[name] for name in before)
+    after = {p.name: _write_fields(p.lstat()) for p in folder.iterdir()}
+    assert after == before
     host, plan = _host(monkeypatch, backend)
     assert not any(t.endswith("app.json") for t in host.kiro_agents_targets)
     assert plan.refusals == ()
