@@ -479,21 +479,66 @@ describe('the canvas', () => {
     expect(latest().shapes[1]).toMatchObject({ x: 600, y: 0, w: 264, h: 264 })
   })
 
-  it('holding Alt drags, resizes and draws off the grid', () => {
+  it('holding Ctrl drags, resizes and draws off the grid', () => {
     render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0)] }} />)
     press(100, 100)
-    moveTo(160, 140, { altKey: true })
+    moveTo(160, 140, { ctrlKey: true })
     release(160, 140)
     expect(latest().shapes[0]).toMatchObject({ x: 60, y: 40 })
     act(() => { fireEvent.pointerDown(screen.getByTestId('handle-se'), at(260, 240)) })
-    moveTo(310, 250, { altKey: true })
+    moveTo(310, 250, { ctrlKey: true })
     release(310, 250)
     expect(latest().shapes[0]).toMatchObject({ w: 250, h: 250 })
     fireEvent.click(screen.getByTestId('tool-rect'))
     press(500, 500)
-    moveTo(570, 530, { altKey: true })
+    moveTo(570, 530, { ctrlKey: true })
     release(570, 530)
     expect(latest().shapes[1]).toMatchObject({ kind: 'rect', x: 500, y: 500, w: 70, h: 30 })
+  })
+
+  it('Alt no longer turns the grid off', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0)] }} />)
+    press(100, 100)
+    moveTo(163, 140, { altKey: true })
+    release(163, 140)
+    expect(latest().shapes[0].x).not.toBe(63)
+  })
+
+  it('Option held at the start of a drag moves a copy, leaves the original, and undoes in one step', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0, 'Idea'), sticky('b', 400, 0)], connectors: [{ id: 'c', from: 'a', to: 'b' }] }} />)
+    press(100, 100, { altKey: true })
+    moveTo(160, 140, { ctrlKey: true })
+    release(160, 140)
+    const shapes = latest().shapes
+    expect(shapes).toHaveLength(3)
+    expect(shapes[0]).toMatchObject({ id: 'a', x: 0, y: 0 })
+    expect(shapes[2]).toMatchObject({ text: 'Idea', x: 60, y: 40 })
+    expect(shapes[2].id).not.toBe('a')
+    expect(latest().connectors).toHaveLength(1)
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes).toHaveLength(2)
+  })
+
+  it('pressing Option mid-drag does not copy, and an Option press without movement adds nothing', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0)] }} />)
+    press(100, 100)
+    moveTo(160, 140, { altKey: true })
+    release(160, 140)
+    expect(latest().shapes).toHaveLength(1)
+    press(160, 140, { altKey: true })
+    release(160, 140)
+    expect(latest().shapes).toHaveLength(1)
+  })
+
+  it('Option+drag copies a section with the shapes inside it', () => {
+    const section: Shape = { id: 's', kind: 'section', x: 0, y: 0, w: 300, h: 400, text: 'To do', color: 'smoke' }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [section, sticky('in', 20, 20)] }} />)
+    press(10, -10, { altKey: true })
+    moveTo(106, 86)
+    release(106, 86)
+    const copies = latest().shapes.slice(2)
+    expect(copies.map(c => c.kind).sort()).toEqual(['section', 'sticky'])
+    expect(latest().shapes.slice(0, 2).map(c => c.id)).toEqual(['s', 'in'])
   })
 
   it('the connector tool links two shapes, and the link follows the shapes', () => {
