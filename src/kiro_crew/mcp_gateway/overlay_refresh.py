@@ -5,18 +5,19 @@ starts. An app registered later (install, reinstall, enable, update) writes its
 agent specs into ``~/.kiro/agents`` after that pass, so its agents had no
 overlay -- and no gateway-routed MCP servers -- until the next gateway start.
 A Bot's own file edited later (a change card that adds or changes a
-gateway-routed server on it) likewise left its ``mates/<id>.json`` overlay on
-the start pass's content.
+gateway-routed server on it, or **Add abilities** copying one into it) likewise
+left its ``mates/<id>.json`` overlay on the start pass's content.
 
 The broker owner (the gateway process) registers one refresher here while it
-serves a broker. Two callers run their spec write as the refresh's
+serves a broker. Three callers run their spec write as the refresh's
 ``register`` step: the app lifecycle, when it registers agents, and the
-capabilities save (``dashboard/handlers/agent_capabilities.py``), when it gives a
-Bot that owns its file a gateway-routed server; that save's change card says a
-restart is needed unless the refresh applied and its ``serving_stub_servers``
-holds every such server. With no broker running nothing is registered and the
-call does nothing: there is no overlay to keep current, and the next broker
-start builds it from scratch.
+capabilities save and the worker-kit add (``save_and_refresh_overlays`` in
+``dashboard/handlers/agent_capabilities.py``), which ask for a rewrite only when
+the write gave a Bot that owns its file a gateway-routed server; that change
+card, or the Add abilities pane, says a restart is needed unless the refresh
+applied and its ``serving_stub_servers`` holds every such server. With no
+broker running nothing is registered and the call does nothing: there is no
+overlay to keep current, and the next broker start builds it from scratch.
 """
 
 from __future__ import annotations

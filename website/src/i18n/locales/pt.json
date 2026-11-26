@@ -25681,6 +25681,7 @@
     "retry": "Tentar novamente",
     "done_added": "{{count}} adicionados a {{name}}.",
     "done_approvals": "As ferramentas em Aprovações automáticas agora são executadas sem perguntar.",
+    "done_restart_required": "Um servidor MCP que esta adição copiou só chega ao worker deste Bot pelo gateway depois que você reiniciar o gateway (Configurações → Sobre → Reiniciar o gateway).",
     "open_approvals": "Abrir Aprovações",
     "group_directions": "Diretrizes de comportamento",
     "change_replaced": "Substitui as atuais",

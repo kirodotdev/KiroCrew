@@ -8,11 +8,13 @@ refuses when a setting fixed at start has moved, a routed target is new, or any
 launch approval decision would change; it never writes launch approvals.
 
 A change card that gives a Bot owning its file a gateway-routed server saves it
-through the same refresh, and says on the card when a restart is needed.
+through the same refresh, and says on the card when a restart is needed; so does
+**Add abilities** when it copies one into that file.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import sys
 from pathlib import Path
@@ -125,6 +127,20 @@ def _clear_refresher():
 def _routed(home, stem: str, server: str = "srv") -> bool:
     entry = json.loads((home.overlay / f"{stem}.json").read_text())["mcpServers"][server]
     return STUB_MODULE in entry["args"]
+
+
+def _bot_overlay_entry(overlay: Path, server: str) -> dict:
+    """*server*'s entry in a Bot's overlay, asserted present first."""
+    servers = json.loads(overlay.read_text())["mcpServers"]
+    assert server in servers, f"{server} is not in the Bot's overlay: {sorted(servers)}"
+    return servers[server]
+
+
+def _stub_agent(entry: dict) -> str:
+    """The ``--agent`` identity a gateway stub entry carries."""
+    flags = next(a for a in entry["args"] if a.startswith("--stub-flags-b64="))
+    parsed = json.loads(base64.b64decode(flags.split("=", 1)[1]))
+    return parsed[parsed.index("--agent") + 1]
 
 
 @pytest.mark.asyncio
@@ -492,8 +508,6 @@ async def test_a_bot_save_adding_a_routed_server_refreshes_or_says_to_restart(
     ``stub_servers`` runs no rewrite at all; and one added to ``stub_servers``
     since the broker started, by name or by a ``secret://`` server's alias,
     also answers ``gateway_restart_required``."""
-    import base64
-
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
@@ -565,11 +579,6 @@ async def test_a_bot_save_adding_a_routed_server_refreshes_or_says_to_restart(
         assert resp.status == 200, await resp.text()
         return await resp.json()
 
-    def _stub_agent(entry: dict) -> str:
-        flags = next(a for a in entry["args"] if a.startswith("--stub-flags-b64="))
-        parsed = json.loads(base64.b64decode(flags.split("=", 1)[1]))
-        return parsed[parsed.index("--agent") + 1]
-
     async with TestClient(TestServer(app)) as client:
         before = overlay.read_bytes()
         unserved = await _save(client, "srv", _srv(["-V"]))
@@ -578,7 +587,7 @@ async def test_a_bot_save_adding_a_routed_server_refreshes_or_says_to_restart(
 
         served = await _save(client, "srv", _srv())
         assert "gateway_restart_required" not in served
-        entry = json.loads(overlay.read_text())["mcpServers"]["srv"]
+        entry = _bot_overlay_entry(overlay, "srv")
         assert STUB_MODULE in entry["args"] and _stub_agent(entry) == "crewmate:scout"
 
         rewrites.clear()
@@ -593,3 +602,91 @@ async def test_a_bot_save_adding_a_routed_server_refreshes_or_says_to_restart(
         # Routed under its raw name, as the rewriter routes a ``secret://`` server.
         aliased = await _save(client, "acme-mcp", _srv(["-c", "pass"], {"TOK": "secret://acme"}))
         assert aliased.get("gateway_restart_required") is True
+
+
+@pytest.mark.asyncio
+async def test_add_abilities_routes_a_copied_gateway_server_or_says_to_restart(
+    home, monkeypatch
+) -> None:
+    """**Add abilities** (``PUT .../worker-kit``) writes the Bot's file inside the
+    same refresh. A copied server the daemon serves is published at once under the
+    Bot's ``crewmate:<id>`` identity and its workers reload onto it; a server
+    outside ``stub_servers`` runs no rewrite and reloads nothing; one added to
+    ``stub_servers`` since the broker started answers ``gateway_restart_required``."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.config.loader import _invalidate_config_cache
+    from kiro_crew.dashboard.handlers import member_worker_kit as route
+    from kiro_crew.mate_config import write_mate_config
+    from kiro_crew.slack import gateway as gw
+
+    monkeypatch.setenv("KIRO_HOME", str(home.tmp / "kiro"))
+    config = home.tmp / "crew" / "config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        json.dumps(
+            {
+                "agents": {"scout": {"kiro_agent": "scout"}},
+                "mcp_gateway": {"stub_servers": ["srv", "late"]},
+            }
+        )
+    )
+    _invalidate_config_cache()
+    write_mate_config("scout")
+    mates = home.tmp / "kiro" / "mates" / "agents"
+    _seed_store(srv=([], None, {}))
+    _spec(home.agents, "host", {"srv": _srv()})
+    _spec(home.agents, "plainer", {"plain": _srv(["-c", "pass"])})
+    _spec(home.agents, "later", {"late": _srv(["-c", "pass"])})
+    _boot(home, frozenset({"srv"}), mates)
+    overlay = home.overlay / "mates" / "scout.json"
+    assert json.loads(overlay.read_text())["mcpServers"] == {}
+
+    async def _owner(_request, _operation):
+        return None
+
+    rewrites: list[int] = []
+    reloads: list[str] = []
+    real_rewrite = gw.rewrite_agents
+
+    def _counted(**kwargs):
+        rewrites.append(1)
+        return real_rewrite(**kwargs)
+
+    monkeypatch.setattr(route, "require_owner_dashboard_request", _owner)
+    monkeypatch.setattr(gw, "rewrite_agents", _counted)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.crewmate_worker_reload.schedule_reload_workers",
+        lambda _state, member: reloads.append(member),
+    )
+    app = web.Application()
+    app["state"] = SimpleNamespace(push_refresh=lambda *_a: None)
+    app.router.add_post("/k/{name}/preview", route.api_member_worker_kit)
+    app.router.add_put("/k/{name}", route.api_member_worker_kit)
+
+    async def _add(client, template: str) -> dict:
+        preview = await client.post("/k/scout/preview", json={"template": template})
+        assert preview.status == 200, await preview.text()
+        body = {"template": template, "revision": (await preview.json())["revision"]}
+        resp = await client.put("/k/scout", json=body)
+        assert resp.status == 200, await resp.text()
+        return await resp.json()
+
+    async with TestClient(TestServer(app)) as client:
+        served = await _add(client, "host")
+        assert "gateway_restart_required" not in served
+        entry = _bot_overlay_entry(overlay, "srv")
+        assert STUB_MODULE in entry["args"] and _stub_agent(entry) == "crewmate:scout"
+        assert reloads == ["scout"]
+
+        rewrites.clear()
+        reloads.clear()
+        refreshed = overlay.read_bytes()
+        unrouted = await _add(client, "plainer")
+        assert "gateway_restart_required" not in unrouted
+        assert rewrites == [] and reloads == [] and overlay.read_bytes() == refreshed
+
+        late = await _add(client, "later")
+        assert late.get("gateway_restart_required") is True
+        assert reloads == ["scout"]

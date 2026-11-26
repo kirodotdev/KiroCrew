@@ -25074,6 +25074,7 @@
     "retry": "Erneut versuchen",
     "done_added": "{{count}} zu {{name}} hinzugefügt.",
     "done_approvals": "Die Tools unter „Automatische Freigaben“ laufen jetzt ohne Nachfrage.",
+    "done_restart_required": "Ein MCP-Server, den dieses Hinzufügen kopiert hat, erreicht den Worker dieses Bot über das Gateway erst, nachdem du das Gateway neu gestartet hast (Einstellungen → Über → Gateway neu starten).",
     "open_approvals": "Freigaben öffnen",
     "group_directions": "Verhaltensanweisungen",
     "change_replaced": "Ersetzt aktuelle",

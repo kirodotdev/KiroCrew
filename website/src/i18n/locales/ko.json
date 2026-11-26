@@ -24467,6 +24467,7 @@
     "retry": "다시 시도",
     "done_added": "{{name}}에 {{count}}개를 추가했습니다.",
     "done_approvals": "이제 자동 승인에 있는 도구는 확인 없이 실행됩니다.",
+    "done_restart_required": "이번 추가로 복사된 MCP 서버는 게이트웨이를 다시 시작한 후에만 게이트웨이를 통해 이 Bot의 워커에 전달됩니다(설정 → 정보 → 게이트웨이 다시 시작).",
     "open_approvals": "승인 열기",
     "group_directions": "행동 지침",
     "change_replaced": "현재 지침 대체",
