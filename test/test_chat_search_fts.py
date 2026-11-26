@@ -631,7 +631,7 @@ async def test_a_chat_too_large_to_cache_starts_no_build_and_shows_no_indexing(l
             with pytest.raises(csc.CacheTooLarge):
                 await asyncio.wait_for(asyncio.shield(build), FALLBACK_TIMEOUT_SECS)
         # None: the build ended, and was forgotten, before the reply was read.
-        assert _store(log).refuses(KEY)
+        assert _store(log).too_large(KEY)
         later = await _get(client, SEARCH, "q=plum")
         counts = await _get(client, COUNTS, "q=plum")
 

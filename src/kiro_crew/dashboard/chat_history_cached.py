@@ -482,7 +482,7 @@ def start_build(log: Any, key: str) -> bool:
     store refuses (it passed the disk cap alone) starts nothing: no build of it
     can finish."""
     store = _store_of(log)
-    if store is None or store.refuses(key):
+    if store is None or store.too_large(key):
         return False
     return not _update_task(store, log, key).done()
 

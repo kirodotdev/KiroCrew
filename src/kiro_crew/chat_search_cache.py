@@ -426,7 +426,7 @@ class ChatSearchCache:
         with contextlib.suppress(OSError):
             os.utime(self.dir / f"{stem}{SUFFIX}")
 
-    def refuses(self, key: str) -> bool:
+    def too_large(self, key: str) -> bool:
         """Whether *key*'s cache passed the disk cap alone in this process, so no
         update builds it again (:class:`CacheTooLarge`). No IO."""
         with self._lock:
@@ -463,7 +463,7 @@ class ChatSearchCache:
         matches answers as :meth:`current` does. Raises
         ``TranscriptRevisionChanged`` when writes keep moving the transcript
         through ``UPDATE_ATTEMPTS`` probes, :class:`CacheTooLarge` for a chat
-        :meth:`refuses`, :class:`CacheDropped` when the cache is
+        :meth:`too_large`, :class:`CacheDropped` when the cache is
         dropped meanwhile, and ``OSError`` / ``sqlite3.Error`` when it cannot be
         read or written. *pause*, when given, runs before each page is read, so
         the caller can hold the build while other reads need the time.
@@ -472,7 +472,7 @@ class ChatSearchCache:
         ready, gen = self._matching(key, probe)
         if ready is not None:
             return ready
-        if self.refuses(key):
+        if self.too_large(key):
             raise CacheTooLarge(key)
         stem = _safe_key(key)
         rules = loaded_rules_marker()
