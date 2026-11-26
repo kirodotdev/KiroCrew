@@ -94,7 +94,7 @@ CodeChannelProbe = Callable[[Any, str, str, str], str]
 #: as distinct from the extraction upload whose filename sanitizer maps any
 #: non-raster mime to ``.bin``. A channel joins this list only once it has that
 #: verb; every other channel is a skip.
-DOCUMENT_CHANNELS = ("telegram", "discord", "wecom")
+DOCUMENT_CHANNELS = ("telegram", "discord", "wecom", "feishu")
 
 _DASHBOARD_PREFIX = "dashboard:"
 
