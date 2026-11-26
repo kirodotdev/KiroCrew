@@ -191,7 +191,8 @@ export default function WorkflowsPage() {
         />
       </div>
 
-      {view === 'runs' && <WorkflowsRuns />}
+      {/* The edited script stays in local state behind Runs: withhold the hand-off while it differs from the starter. */}
+      {view === 'runs' && <WorkflowsRuns askAgent={source === STARTER} />}
 
       {view === 'author' && appOff && (
         <div className="px-4 md:px-6 pb-4">

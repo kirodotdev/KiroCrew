@@ -1162,12 +1162,17 @@ async def api_workflow_run_update_definition(request: web.Request) -> web.Respon
         return _error("expected_revision is required", "workflow_revision_required", 400)
     if not isinstance(expected_sha, str) or not expected_sha:
         return _error("expected_source_sha256 is required", "workflow_source_sha256_required", 400)
+    # The previewed workflow's id: a ref that now reaches another one is a 409.
+    expected_id = body.get("expected_id")
+    if expected_id is not None and (not isinstance(expected_id, str) or not expected_id):
+        return _error("expected_id must be a workflow id", "workflow_expected_id_invalid", 400)
     try:
         out = await svc.update_run_definition(
             request.match_info.get("run_id", ""),
             workflow_ref.strip(),
             expected_revision=expected_revision,
             expected_source_sha256=expected_sha,
+            expected_id=expected_id,
         )
     except Exception:
         logger.exception("workflow run update failed")

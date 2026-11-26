@@ -134,8 +134,9 @@ function useCodeOverflow() {
 }
 
 /** A workflow update's script diff, one row per line: the +/− mark sits in its
- *  own gutter, and each row keeps its line whole, scrolling sideways. */
-function ScriptDiff({ diff }: { diff: string }) {
+ *  own gutter, and each row keeps its line whole, scrolling sideways. The
+ *  update-from-run dialog draws the same server diff with it. */
+export function ScriptDiff({ diff }: { diff: string }) {
   const overflow = useCodeOverflow()
   return (
     <>

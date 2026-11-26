@@ -1519,6 +1519,7 @@ class WorkflowService:
         *,
         expected_revision: int,
         expected_source_sha256: str,
+        expected_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Append a finished run's source to a saved workflow (``update_from_run``)."""
         return await update_from_run.update(
@@ -1527,6 +1528,7 @@ class WorkflowService:
             workflow_ref,
             expected_revision=expected_revision,
             expected_source_sha256=expected_source_sha256,
+            expected_id=expected_id,
         )
 
     async def preview_run_definition_update(

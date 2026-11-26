@@ -15,7 +15,7 @@ import type { ReactNode } from 'react'
 import { i18nT } from '../../i18n/t'
 
 vi.mock('../../components/workflows/WorkflowsRuns', () => ({
-  default: () => <div data-testid="zzq-runs-stub" />,
+  default: ({ askAgent }: { askAgent?: boolean }) => <div data-testid="zzq-runs-stub" data-ask-agent={String(askAgent)} />,
 }))
 vi.mock('../../components/workflows/WorkflowRunTree', () => ({
   default: ({ events, status, error }: { events: unknown[]; status: string; error?: string | null }) => (
@@ -225,5 +225,14 @@ describe('WorkflowsPage', () => {
     fireEvent.click(screen.getByText('Runs'))
     expect(screen.getByTestId('zzq-runs-stub')).toBeInTheDocument()
     expect(screen.queryByLabelText(i18nT('apps.workflows.workflowsPage.workflow_source'))).not.toBeInTheDocument()
+    expect(screen.getByTestId('zzq-runs-stub')).toHaveAttribute('data-ask-agent', 'true')
+  })
+
+  it('withholds the Runs hand-off while the script holds edits', () => {
+    wrap(<WorkflowsPage />)
+    fireEvent.change(editor(), { target: { value: 'ZZQ_EDITED' } })
+    if (!screen.queryByText('Runs')) fireEvent.click(screen.getByText('Author'))
+    fireEvent.click(screen.getByText('Runs'))
+    expect(screen.getByTestId('zzq-runs-stub')).toHaveAttribute('data-ask-agent', 'false')
   })
 })

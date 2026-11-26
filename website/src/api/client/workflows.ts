@@ -49,6 +49,18 @@ export interface WorkflowDefinitionWrite {
   derived_from?: WorkflowLineage | null
 }
 
+/** What appending a finished run's source to a saved workflow would do. */
+export interface WorkflowRunUpdatePreview {
+  /** The workflow asked for, or the one suggested from the run; null when none matched. */
+  target: Pick<WorkflowDefinition, 'id' | 'slug' | 'name' | 'revision' | 'format'> | null
+  /** Header-free unified diff from the target's current revision to the run's source. */
+  diff: string
+  unchanged: boolean
+  format_mismatch: boolean
+  /** Sent back with the update, so an Apply writes only the source previewed. */
+  run_source_sha256: string
+}
+
 export function createWorkflowsEndpoints({ get, post, patch, del, j }: ClientTransport) {
   const engine = {
     /** Compact list of dynamic-workflow runs, newest first — the AUTHORITY for a
@@ -79,6 +91,24 @@ export function createWorkflowsEndpoints({ get, post, patch, del, j }: ClientTra
       body: Omit<WorkflowDefinitionWrite, 'source' | 'derived_from'>,
     ) =>
       post(`/api/workflows/runs/${encodeURIComponent(runId)}/promote`, body).then(j) as Promise<{
+        ok: boolean
+        definition: WorkflowDefinition
+      }>,
+    /** Owner-only. Without `workflowRef` the server suggests the target from the run. */
+    previewWorkflowRunUpdate: (runId: string, workflowRef = '') =>
+      get(
+        `/api/workflows/runs/${encodeURIComponent(runId)}/update-definition${
+          workflowRef ? `?workflow=${encodeURIComponent(workflowRef)}` : ''
+        }`,
+      ).then(j) as Promise<WorkflowRunUpdatePreview>,
+    /** Owner-only. Appends the run's source as the target's next revision; a stale
+     *  revision, a source changed since the preview, or a ref that no longer
+     *  reaches `expected_id` answers 409. */
+    updateWorkflowRunDefinition: (
+      runId: string,
+      body: { workflow: string; expected_revision: number; expected_source_sha256: string; expected_id: string },
+    ) =>
+      post(`/api/workflows/runs/${encodeURIComponent(runId)}/update-definition`, body).then(j) as Promise<{
         ok: boolean
         definition: WorkflowDefinition
       }>,
