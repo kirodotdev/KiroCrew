@@ -721,12 +721,29 @@ def test_a_disconnected_crew_is_refused_typed(env):
     assert (status, body["code"]) == (503, "proxy_peer_not_connected")
 
 
-@pytest.mark.parametrize("version", ["0.0.1", "0"])
+@pytest.mark.parametrize("version", ["99.0.0", "0"])
 def test_a_version_skewed_crew_still_dispatches(env, version):
     env.peer.version = version
     target = _create(env)
     assert env.peer.calls[0]["path"] == "api/chat/slots"
     assert _call(env, "send", crew="lab", target=target, message="go")[0] == 200
+
+
+@pytest.mark.parametrize(
+    "version, refused", [("0.11.9", True), ("0.12.0", False), ("0", False), ("build-x", False)]
+)
+def test_a_send_to_a_crew_known_to_drop_turn_origin_is_refused(env, version, refused):
+    target = _create(env)
+    env.peer.version = version
+    env.peer.calls.clear()
+    status, body = _call(env, "send", crew="lab", target=target, message="go")
+    if refused:
+        assert (status, body["code"]) == (502, "crew_peer_incompatible")
+        assert "runs 0.11.9" in body["error"]
+        assert env.peer.calls == []  # nothing reached the crew
+    else:
+        assert status == 200, body
+        assert env.peer.calls[0]["body"]["turn_origin"] == "agent"
 
 
 def test_a_version_skew_warns_once_per_crew_and_version(env, caplog):

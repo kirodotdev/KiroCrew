@@ -50,7 +50,7 @@ from aiohttp import web
 
 import kiro_crew
 from kiro_crew import session_ledger
-from kiro_crew.apps.version import known_version, versions_compatible
+from kiro_crew.apps.version import known_version, parse_version, versions_compatible
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.handlers_instances_gate import _registry
 from kiro_crew.dashboard.handlers_instances_peer import (
@@ -460,6 +460,26 @@ def skewed_reply(status: int, payload: Any) -> bool:
     return status == 404 and payload is None
 
 
+#: The first release whose ``POST api/chat`` honours ``turn_origin: agent``.
+TURN_ORIGIN_SINCE = (0, 12, 0)
+
+
+def _ignores_turn_origin(peer: str) -> bool:
+    """Whether a crew at *peer* is KNOWN to drop the agent-origin mark on a send.
+
+    The one parameter an older crew silently ignores that crosses a safety line:
+    an agent turn read as person-sent gets the person's approval rights. This is
+    not a version gate: an unknown or unparseable version is not refused (it
+    only warns, in :func:`check_version`).
+    """
+    if not peer:
+        return False
+    try:
+        return parse_version(peer) < TURN_ORIGIN_SINCE
+    except ValueError:
+        return False
+
+
 def incompatible_error(instance_id: str, what: str) -> CrewCallError:
     """The refusal for a call the crew does not know, naming both versions."""
     peer = _PEER_VERSIONS.get(instance_id, "") or "an unknown version"
@@ -822,6 +842,10 @@ async def _send(mgr: Any, instance_id: str, slot: str, body: dict[str, Any]) -> 
     }
     if steer:
         peer_body["steer"] = True
+    if _ignores_turn_origin(_PEER_VERSIONS.get(instance_id, "")):
+        # The one deliberate version floor: a crew that silently drops the
+        # agent-origin mark would run this turn with a person's rights.
+        raise incompatible_error(instance_id, "could not send to the crew session")
     status, payload = await peer_call(
         mgr, instance_id, "POST", "api/chat", params={"ws": "1"}, body=peer_body
     )
