@@ -116,7 +116,8 @@ OUTCOME_DEADLINE = "deadline"
 OUTCOME_UNPERSISTED = "unpersisted"
 #: The wait writes were refused and NO row exists for the task (a run whose memory
 #: mode keeps none): nothing durable holds the wait and nothing else owns the
-#: work, so the caller handles the error as it would with no coordinator.
+#: work, so the caller handles the error as it would with no coordinator. A live
+#: caller that passes ``hold_rowless`` is answered ``wait`` instead.
 OUTCOME_NO_ROW = "no_row"
 
 #: Where a retryable waiter is parked. A LIVE run (row ``running``) enters
@@ -396,7 +397,8 @@ class ScopeInstant:
 class Verdict:
     """What :meth:`DependencyCoordinator.report` did with a signal."""
 
-    #: ``wait`` (parked on the scope schedule, ``state`` says WHERE),
+    #: ``wait`` (parked on the scope schedule, ``state`` says WHERE; a wait
+    #: held for a live run with no row keeps the state it was reported from),
     #: ``terminal`` (task failed or moved to ``waiting_input``), ``deadline``
     #: (scope budget spent, failed), ``unpersisted`` (no row records the wait --
     #: the caller must not park on it), ``no_row`` (no row exists for the task --
@@ -430,6 +432,11 @@ class DependencyCoordinator:
     ``(task_id, reason)`` for every waiter a scope deadline or attempts cap
     fails from :meth:`tick` or :meth:`report`, so a run blocked on its wake can
     end instead of waiting for a grant that will never come.
+
+    **A waiter with no row.** A live run the store keeps no row for (incognito,
+    temporary) reports with ``hold_rowless=True`` and is held in memory only: woken
+    through ``wake_through``, failed through ``on_fail``, never written to the store,
+    so a restart forgets it exactly as it forgets the run.
 
     **Two threads, one schedule.** :meth:`report` and :meth:`tick` are called on
     the task store's writer thread (``store.run``), while the gateway loop edits
@@ -481,6 +488,9 @@ class DependencyCoordinator:
         self._fail_listeners: list[Callable[[str, str], None]] = []
         self._lock = threading.RLock()
         self._scopes: dict[str, ScopeSchedule] = {}
+        #: Waiters held with ``hold_rowless``: no row exists for them, so their
+        #: wake and give-up never touch the store.
+        self._rowless: set[str] = set()
         #: The loop the hooks' ``asyncio.Event``s live on; see
         #: :meth:`_on_hook_loop`. Recorded here for a coordinator built ON the
         #: loop, and in :meth:`subscribe` for the gateway's own, which is built
@@ -612,6 +622,7 @@ class DependencyCoordinator:
         would have the next tick wake a row this coordinator does not own.
         """
         with self._lock:
+            self._rowless.discard(task_id)
             sched = self._scopes.get(scope)
             if sched is None:
                 return
@@ -712,6 +723,7 @@ class DependencyCoordinator:
         *,
         generation: int | None = None,
         from_state: str | None = None,
+        hold_rowless: bool = False,
     ) -> Verdict:
         """A task hit a dependency error: park it on its scope's schedule.
 
@@ -731,6 +743,9 @@ class DependencyCoordinator:
         Answers ``unpersisted`` when no row records the wait (the store could not
         take it): the schedule has a retry instant but nothing durable holds the
         waiter, so the caller must NOT park on it -- see :meth:`_persist_wait`.
+        ``no_row`` is answered with a wait instead when *hold_rowless* is set and a
+        ``wake_through`` seam exists: the caller is a live run that takes its wake
+        through that seam, so the schedule holds it and writes nothing for it.
         The schedule is decided under ``_lock``; every store write and every hook
         runs after it is released.
         """
@@ -739,6 +754,7 @@ class DependencyCoordinator:
         if signal.terminal:
             return self._terminal(task_id, signal, generation, now)
         with self._lock:
+            held_before = hold_rowless and task_id in self._rowless
             sched = self._scopes.get(scope)
             if sched is None:
                 sched = ScopeSchedule(
@@ -778,7 +794,7 @@ class DependencyCoordinator:
             over_attempts = self._attempts_exhausted(sched)
             give_up = over_attempts or self._deadline_passed(sched, now)
             reason = ""
-            failed: list[tuple[str, int | None]] = []
+            failed: list[tuple[str, int | None, bool]] = []
             if give_up:
                 reason = (
                     f"dependency {scope} unavailable after {sched.attempts} attempts"
@@ -788,6 +804,11 @@ class DependencyCoordinator:
                 failed = self._take_scope_failure(sched)
             instant = sched.snapshot()
         if give_up:
+            if hold_rowless:
+                reporter_is_rowless = (
+                    self._store is not None and self._row_after_refusal(task_id) is None
+                )
+                failed = [(t, g, r or (t == task_id and reporter_is_rowless)) for t, g, r in failed]
             self._write_scope_failure(failed, instant, reason)
             return Verdict(
                 outcome=OUTCOME_DEADLINE,
@@ -796,7 +817,24 @@ class DependencyCoordinator:
                 attempts=instant.attempts,
                 reason=reason,
             )
-        persisted = self._persist_wait(task_id, signal, instant, generation, from_state)
+        held = held_before  # already known to have no row: the store is not asked
+        persisted = (
+            None if held else self._persist_wait(task_id, signal, instant, generation, from_state)
+        )
+        if persisted == _NO_ROW and hold_rowless and self._wake_through is not None:
+            with self._lock:
+                held_sched = self._scopes.get(scope)
+                held = held_sched is not None and task_id in held_sched.waiters
+                if held:
+                    self._rowless.add(task_id)
+        if held:
+            return Verdict(
+                outcome=OUTCOME_WAIT,
+                state=str(from_state or ""),
+                scope=scope,
+                retry_at=instant.retry_at,
+                attempts=instant.attempts,
+            )
         if persisted is None or persisted == _NO_ROW:
             # The caller owns the failure, so the schedule must stop holding a
             # waiter that is not waiting: the next tick would wake a row whose
@@ -868,7 +906,9 @@ class DependencyCoordinator:
     ) -> Verdict:
         reason = f"{signal.kind}: {signal.detail or signal.dependency_scope}"
         state = AUTH_STATE if signal.kind == KIND_AUTH_FAILED else FAILED
-        if self._store is not None and self._ledger is not None:
+        with self._lock:
+            rowless = task_id in self._rowless
+        if self._store is not None and self._ledger is not None and not rowless:
             if state != FAILED:
                 record = WaitRecord.input(
                     f"auth:{signal.dependency_scope}",
@@ -882,6 +922,7 @@ class DependencyCoordinator:
                 self._store_finish(task_id, generation, reason)
             self._append_event(task_id, EVENT_FAILED, {**signal.to_dict(), "reason": reason})
         with self._lock:
+            self._rowless.discard(task_id)
             for sched in self._scopes.values():
                 sched.waiters.pop(task_id, None)
                 sched.in_flight.discard(task_id)
@@ -1003,6 +1044,7 @@ class DependencyCoordinator:
     def forget(self, task_id: str) -> None:
         """A waiter completed or was cancelled elsewhere: drop it from every scope."""
         with self._lock:
+            self._rowless.discard(task_id)
             for scope in list(self._scopes):
                 sched = self._scopes[scope]
                 sched.waiters.pop(task_id, None)
@@ -1040,8 +1082,8 @@ class DependencyCoordinator:
 
         now = self.now()
         woken: list[str] = []
-        plan: list[tuple[str, int | None, ScopeInstant]] = []
-        failures: list[tuple[list[tuple[str, int | None]], ScopeInstant, str]] = []
+        plan: list[tuple[str, int | None, ScopeInstant, bool]] = []
+        failures: list[tuple[list[tuple[str, int | None, bool]], ScopeInstant, str]] = []
         with self._lock:
             for scope in sorted(self._scopes):
                 sched = self._scopes[scope]
@@ -1070,13 +1112,14 @@ class DependencyCoordinator:
                 for task_id in list(sched.waiters)[:batch]:
                     generation = sched.waiters.pop(task_id)
                     sched.in_flight.add(task_id)
-                    plan.append((task_id, generation, instant))
+                    plan.append((task_id, generation, instant, task_id in self._rowless))
                 if sched.waiters:
                     sched.retry_at = now + self._wake_spacing
         for failed, instant, reason in failures:
             self._write_scope_failure(failed, instant, reason, callbacks=callbacks)
-        for task_id, generation, instant in plan:
-            if self._wake_one(
+        for task_id, generation, instant, rowless in plan:
+            wake = self._wake_rowless if rowless else self._wake_one
+            if wake(
                 task_id, generation, instant, now, callbacks=callbacks, live_waiters=live_waiters
             ):
                 woken.append(task_id)
@@ -1201,7 +1244,40 @@ class DependencyCoordinator:
         )
         return True
 
-    def _take_scope_failure(self, sched: ScopeSchedule) -> list[tuple[str, int | None]]:
+    def _wake_rowless(
+        self,
+        task_id: str,
+        generation: int | None,
+        sched: ScopeInstant,
+        now: float,
+        *,
+        callbacks: list[Callable[[], Any]] | None = None,
+        live_waiters: frozenset[tuple[str, int | None]] = frozenset(),
+    ) -> bool:
+        """:meth:`_wake_one` for a waiter no row holds: its live run takes the wake,
+        or nobody does (an ended run drops it). Nothing is written either way."""
+        if self._wake_through is not None:
+            if callbacks is not None:
+                if (task_id, generation) in live_waiters:
+                    from functools import partial
+
+                    callbacks.append(
+                        partial(self._wake_through_or_requeue, task_id, generation, sched.scope)
+                    )
+                    return True
+            else:
+                try:
+                    if bool(self._wake_through(task_id, generation)):
+                        return True
+                except Exception:  # noqa: BLE001 - a broken seam cannot wake this waiter
+                    logger.debug(
+                        "dependency wake_through seam failed for %s", task_id, exc_info=True
+                    )
+        logger.info("dependency coordinator: %s has no row or live run; dropped", task_id)
+        self._drop_waiter(task_id, sched.scope)
+        return False
+
+    def _take_scope_failure(self, sched: ScopeSchedule) -> list[tuple[str, int | None, bool]]:
         """Give up on *sched*: clear the schedule and hand back who was on it.
 
         The in-memory half, under ``_lock``; :meth:`_write_scope_failure` does the
@@ -1209,7 +1285,10 @@ class DependencyCoordinator:
         each waiter costs one ``finish`` plus one event -- two busy waits per waiter
         the gateway loop would otherwise queue behind.
         """
-        failed = list(sched.waiters.items())
+        failed = [
+            (task_id, gen, task_id in self._rowless) for task_id, gen in sched.waiters.items()
+        ]
+        self._rowless.difference_update(task_id for task_id, _gen, _rowless in failed)
         sched.waiters.clear()
         if not sched.in_flight:
             self._scopes.pop(sched.scope, None)
@@ -1217,7 +1296,7 @@ class DependencyCoordinator:
 
     def _write_scope_failure(
         self,
-        failed: list[tuple[str, int | None]],
+        failed: list[tuple[str, int | None, bool]],
         sched: ScopeInstant,
         reason: str,
         *,
@@ -1227,12 +1306,13 @@ class DependencyCoordinator:
 
         The give-up hook is each waiter's LAST releaser -- the schedule that would
         have woken it is gone -- so it is emitted for every one of them, whether
-        the row's own ``failed`` write committed or not.
+        the row's own ``failed`` write committed or not. A waiter held with no row
+        has nothing to write: its hook is all it gets.
         """
         from functools import partial
 
-        for task_id, generation in failed:
-            if self._store is not None:
+        for task_id, generation, rowless in failed:
+            if self._store is not None and not rowless:
                 self._store_finish(task_id, generation, reason)
                 self._append_event(
                     task_id,
@@ -1245,7 +1325,7 @@ class DependencyCoordinator:
                     },
                 )
         logger.warning("dependency scope %s gave up: %s", sched.scope, reason)
-        for task_id, _generation in failed:
+        for task_id, _generation, _rowless in failed:
             if callbacks is None:
                 self._emit_fail(task_id, reason)
             else:
@@ -1406,8 +1486,9 @@ def current_coordinator() -> DependencyCoordinator | None:
 
 def shared_retry_at(scope: str) -> float | None:
     """The registered coordinator's ``retry_at`` for *scope*, or None when no
-    schedule exists for it. Read-only: a caller without a task row must not
-    join the schedule (that would persist events for a row that does not exist)."""
+    schedule exists for it. Read-only, for a caller that takes no wake from the
+    schedule (the main chat): joining needs a row, or a live run reporting with
+    ``hold_rowless``."""
     coordinator = current_coordinator()
     if coordinator is None:
         return None
