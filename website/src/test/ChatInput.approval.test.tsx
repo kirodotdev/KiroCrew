@@ -832,6 +832,11 @@ describe('ChatInput orphaned approval (404)', () => {
       expect(screen.getByTestId('approval-decision-error')).toBeInTheDocument()
     })
     expect(screen.getByTestId('approval-decision-error')).toHaveAttribute('role', 'alert')
+    // On its own thick danger pane, so the transcript under the dock does not
+    // show through; nested, so the notice draws no second box on it.
+    const pane = screen.getByTestId('approval-decision-error').parentElement!
+    expect(pane.className).toMatch(/\bglass-thick\b.*\bglass-danger\b/)
+    expect(screen.getByTestId('approval-decision-error').className).not.toContain('rounded-lg')
     // A transient server error is not evidence the approval is gone — the
     // buttons must remain live rather than dismissing a still-valid request.
     expect(screen.getByText('Allow once')).toBeInTheDocument()
@@ -1166,6 +1171,7 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
       )
     })
     expect(screen.getByTestId('spawn-liveness-error')).toHaveAttribute('role', 'alert')
+    expect(screen.getByTestId('spawn-liveness-error').parentElement!.className).toMatch(/\bglass-thick\b.*\bglass-danger\b/)
     // Beside the refusal, not over it: the failed read lands a microtask after
     // the refusal is shown, and one shared notice would leave no surface
     // reporting the refusal this banner sent.

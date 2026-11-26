@@ -6,6 +6,7 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { openCrewSession, reopenCrewWorker } from '../../pages/chat/command-center/CrewWorkerList'
 import { clearCrewSteerNotice, useCrewSteerNotice } from '../../lib/crewSteerNotice'
 import ErrorNotice from '../ErrorNotice'
+import { DockPane } from '../chat-input/DockPane'
 import { useCrewRoot } from './useCrewRoot'
 
 /** The line for a steer the ledger did not record (edge review R3 G7): one whole
@@ -60,10 +61,16 @@ export function CrewWorkerComposerGate({ root, worker, workerTitle, waitingForAp
       {/* A failed read with nothing to lose: the composer is off while its
           conductor is closed, and drafts are saved per chat (utils/chatDrafts),
           so the hand-off may navigate. Open roots show this in the breadcrumb. */}
-      {rootClosed && failed && <ErrorNotice variant="inline" message={i18nT('commandCenter.workers_error')} askAgent />}
+      {/* Every line here sits on a DockPane: the composer dock floats over the
+          transcript, so bare text let the transcript show through. */}
+      {rootClosed && failed && (
+        <DockPane className="mb-1.5 px-3 py-2">
+          <ErrorNotice variant="inline" message={i18nT('commandCenter.workers_error')} askAgent />
+        </DockPane>
+      )}
       {rootClosed ? (
-        <div role="status" data-testid="crew-worker-root-closed"
-          className="mb-1.5 px-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted">
+        <DockPane role="status" data-testid="crew-worker-root-closed"
+          className="mb-1.5 px-3 py-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted">
           {/* What is closed and what the click does (UX review): the main chat, and
               opening it again, named by the crew member the person came to message. */}
           <span className="min-w-0 break-words">{i18nT('components.crewMode.worker_root_closed_composer', { name: workerTitle })}</span>
@@ -71,22 +78,26 @@ export function CrewWorkerComposerGate({ root, worker, workerTitle, waitingForAp
             className="inline-flex items-center justify-center min-h-11 md:min-h-8 px-2.5 rounded-lg border border-border bg-bg-elevated text-[12px] text-text hover:bg-bg-hover cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
             {i18nT('components.crewMode.worker_reopen')}
           </button>
-        </div>
+        </DockPane>
       ) : waitingForApproval ? (
-        <div role="status" data-testid="crew-worker-approval-waiting"
-          className="mb-1.5 px-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] text-muted">
+        <DockPane role="status" data-testid="crew-worker-approval-waiting"
+          className="mb-1.5 px-3 py-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] text-muted">
           <ShieldCheck size={13} aria-hidden="true" className="shrink-0 text-warn" />
           <span className="min-w-0 break-words">{i18nT('components.crewMode.worker_approval_waiting', { name: rootTitle })}</span>
           <button type="button" onClick={() => openCrewSession(dispatch, root, !isMobile)} data-testid="crew-worker-open-root"
             className="inline-flex items-center min-h-11 md:min-h-0 text-[12px] text-aim underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0">
             {i18nT('components.crewMode.worker_open_conductor', { name: rootTitle })}
           </button>
-        </div>
+        </DockPane>
       ) : null}
       {/* A failed reopen with nothing to lose: this composer is off while its
           conductor is closed, and drafts are saved per chat (utils/chatDrafts),
           so the hand-off may navigate. */}
-      {reopenFailed && <ErrorNotice variant="inline" message={i18nT('commandCenter.worker_reopen_failed')} askAgent />}
+      {reopenFailed && (
+        <DockPane className="mb-1.5 px-3 py-2">
+          <ErrorNotice variant="inline" message={i18nT('commandCenter.worker_reopen_failed')} askAgent />
+        </DockPane>
+      )}
       <CrewSteerUnrecordedNotice worker={worker} workerTitle={workerTitle} />
     </>
   )
@@ -108,18 +119,20 @@ export function CrewSteerUnrecordedNotice({ worker, workerTitle }: { worker: str
           server reported as failed, so it goes through ErrorNotice with the
           hand-off on: the draft is saved per chat (utils/chatDrafts). */}
       {unrecorded && unrecorded === 'item_closed' && (
-        <p className="mt-1 px-1 text-[11px] text-muted" data-testid="crew-steer-not-recorded">
-          {steerUnrecordedLine(unrecorded, workerTitle)}
-          {' '}
-          <button type="button" onClick={() => clearCrewSteerNotice(worker)}
-            aria-label={i18nT('components.errorNotice.dismiss')}
-            className="underline underline-offset-2 bg-transparent border-0 p-0 cursor-pointer text-muted [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11">×</button>
-        </p>
+        <DockPane className="mt-1 px-3 py-1.5">
+          <p className="text-[11px] text-muted" data-testid="crew-steer-not-recorded">
+            {steerUnrecordedLine(unrecorded, workerTitle)}
+            {' '}
+            <button type="button" onClick={() => clearCrewSteerNotice(worker)}
+              aria-label={i18nT('components.errorNotice.dismiss')}
+              className="underline underline-offset-2 bg-transparent border-0 p-0 cursor-pointer text-muted [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11">×</button>
+          </p>
+        </DockPane>
       )}
       {unrecorded && unrecorded !== 'item_closed' && (
-        <div className="mt-1 px-1" data-testid="crew-steer-not-recorded">
+        <DockPane className="mt-1 px-3 py-2" data-testid="crew-steer-not-recorded">
           <ErrorNotice variant="inline" message={steerUnrecordedLine(unrecorded, workerTitle)} askAgent onDismiss={() => clearCrewSteerNotice(worker)} />
-        </div>
+        </DockPane>
       )}
     </>
   )
