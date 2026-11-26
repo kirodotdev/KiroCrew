@@ -21,8 +21,9 @@ and otherwise from the page the chat's browser is on, as the gateway's live
 hub last saw it. That page can move between the approval and the op (a
 redirect, a script), so an approval resting on a host grant (the trusted-pattern
 rung's, or the card click that made the grant) is noted here against the call
-it approved (:func:`note_host_approval`). The op route takes the note of every
-call it binds (:func:`take_host_approval`) and checks the tab's real address
+it approved (:func:`note_host_approval`), unless "Trust all tools" or a live
+YOLO covers that call too, and so runs it on any host. The op route takes the
+note of every call it binds (:func:`take_host_approval`) and checks the tab's real address
 before a noted call runs (:func:`recheck`): off that host, the op is refused
 with ``trust_scope_changed`` and the agent's retry meets a card.
 

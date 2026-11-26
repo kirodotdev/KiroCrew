@@ -6569,7 +6569,10 @@ rung, or on its card by the click that made the grant: no live grant covered
 the call when the card was drawn and one does once it is answered) is noted
 against a SHA-256 digest of that call's op and arguments
 (`note_host_approval`; at most 16 notes per session, 4096 sessions). A plain
-"Allow once" is never noted, so it runs as before. Once `_bound_op` has bound
+"Allow once" is never noted, so it runs as before, and neither is a call the
+trusted-pattern rung approves on a chat that "Trust all tools" or a live YOLO
+covers (the trust rung's own `_slot_is_trusted`, `is_yolo_active` with
+`yolo_reaches`): that trust runs it on any host. Once `_bound_op` has bound
 the tab, the route takes the note of the call in front of it, once and before
 any refusal, so a call refused there (a tab move) leaves nothing for a later
 identical call; a call the person's hold parks keeps its note for the same call
