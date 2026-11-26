@@ -188,7 +188,9 @@ async def _resolve_dashboard_caller(
     """Vet the caller and resolve it to ``(slug, crew_name, slot)``.
 
     Through the SAME gate the publish route uses, so the dashboard surface inherits
-    every refusal that one earns: the internal-secret requirement, the app-caller
+    every refusal that one earns: the internal-secret requirement, the attested
+    session key (a declared ``X-Session-Key`` needs the Unix-socket peer check or a
+    verifying ``X-Session-Token``), the app-caller
     denial, the restricted-session block, the operator switch, and the rule that
     the crew comes from the session's own binding and never from the body.
 
