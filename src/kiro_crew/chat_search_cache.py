@@ -42,9 +42,11 @@ owner-only from creation like the session search index, in WAL mode with
 recently searched go first (a search touches its file's mtime at most once every
 ``TOUCH_EVERY_SECS``). A chat whose file alone passes the cap after a committed
 page is removed and not built again in the process (:class:`CacheTooLarge`): its
-search stays the paged scan. A chat's file is removed when the chat is closed, deleted
-or moved to trash (:func:`drop`), together with every cache whose chain of
-transcripts reads it. No build starts while the chat's delete is in flight.
+search stays the paged scan. A chat's file is removed when the chat is deleted or
+moved to trash (:func:`drop`), together with every cache whose chain of
+transcripts reads it. Closing a chat keeps its file, since a closed chat can be
+reopened and searched; the disk cap bounds the folder. No build starts while the
+chat's delete is in flight.
 
 Connections. One connection per chat file, shared by the threads that use it and
 held only under that file's lock, so a drop can close it before the file is
@@ -659,7 +661,8 @@ class ChatSearchCache:
     def _holders(self, stems: set[str]) -> set[str] | None:
         """The other cache files whose stored chain names a transcript in *stems*;
         None when the cache directory cannot be listed. A file whose chain cannot
-        be read counts: removing a cache loses nothing."""
+        be read counts, and so does one with no chain yet (a first build writes
+        its chain only after it opened the file): removing a cache loses nothing."""
         try:
             names = os.listdir(self.dir)
         except FileNotFoundError:
@@ -680,7 +683,8 @@ class ChatSearchCache:
     def _stored_chain(self, stem: str) -> list[str] | None:
         """The chain of transcript keys *stem*'s cache was read from, through its
         one connection (a second one to the same file would drop this process's
-        SQLite locks on it when closed)."""
+        SQLite locks on it when closed). None when it cannot be read or holds no
+        chain yet."""
         with self._lock:
             handle = self._open.get(stem)
             if handle is None:
@@ -695,7 +699,7 @@ class ChatSearchCache:
                         handle.close()
         except (OSError, sqlite3.Error):
             return None
-        return state.chain if state is not None else []
+        return state.chain if state is not None else None
 
     def _disk_size(self, stem: str) -> int:
         """Bytes one chat's file and its sidecars hold on disk now."""

@@ -310,17 +310,6 @@ def test_a_deleted_chat_takes_its_search_cache_with_it(log):
     assert list(path.parent.glob(path.name + "*")) == []
 
 
-@pytest.mark.asyncio
-async def test_a_closed_chat_takes_its_search_cache_with_it(log):
-    log.append(KEY, "user", "plum")
-    _update(log)
-    path = _store(log).path(KEY)
-
-    await chc.drop_closed_chat(log, SimpleNamespace(key=KEY))
-
-    assert list(path.parent.glob(path.name + "*")) == []
-
-
 def test_a_dropped_cache_is_not_written_back_by_its_build(log):
     log.append(KEY, "user", "plum")
     snap = _update(log)
@@ -513,6 +502,24 @@ def test_deleting_a_tab_predecessor_drops_the_caches_that_read_it(log):
     cache_dir = _store(log).dir
     leftover = [p.name for p in cache_dir.iterdir() if b"quincefruit" in p.read_bytes()]
     assert leftover == []
+    assert _counts(log, _update(log, later), "quincefruit")[""] == 0
+
+
+def test_a_delete_during_a_first_build_drops_the_cache_with_no_chain_yet(log):
+    first, later = "dashboard:chat-1-100", "dashboard:chat-2-200"
+    log.append(first, "user", "the quincefruit note", tab_id="tabchain0001")
+    log.append(later, "user", "a plum note", tab_id="tabchain0001")
+    store = _store(log)
+    # A first build of ``later`` has opened its file (schema, no chain yet).
+    with store._use(later, 0):
+        pass
+    assert store.path(later).exists()
+
+    assert log.delete_session(first)
+
+    assert list(store.path(later).parent.glob(store.path(later).name + "*")) == []
+    with pytest.raises(csc.CacheDropped):
+        store._update_once(log, later, 0, chc.cache_entry, None)
     assert _counts(log, _update(log, later), "quincefruit")[""] == 0
 
 

@@ -508,26 +508,10 @@ def _forget(marker: str, task: asyncio.Future) -> None:
         logger.warning("history search: building a search cache failed", exc_info=failed)
 
 
-async def drop_closed_chat(log: Any, slot: Any) -> None:
-    """Remove the search cache of *slot*, a chat that was just closed: it is not
-    searched again until it is resumed. Never raises; a file left behind goes
-    with the cache's disk cap."""
-    from kiro_crew.dashboard.chat_utils import slot_history_key
-
-    sessions_dir = _sessions_dir(log)
-    if sessions_dir is None:
-        return
-    try:
-        await asyncio.to_thread(csc.drop, sessions_dir, [slot_history_key(slot)])
-    except Exception:
-        logger.debug("search cache of closed chat %s not removed", slot.key, exc_info=True)
-
-
 __all__ = [
     "BUILD_WAIT_SECS",
     "cache_entry",
     "cached_search",
-    "drop_closed_chat",
     "search_cached",
     "start_build",
 ]
