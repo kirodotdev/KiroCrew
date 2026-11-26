@@ -34,6 +34,7 @@ from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -97,9 +98,11 @@ def test_every_capability_is_an_explicit_decision(membership: frozenset, expecte
     assert (ACP_BACKEND_DEEPSEEK in membership) is expected
 
 
-def test_the_resume_set_is_the_only_member_and_says_why() -> None:
-    """Sole membership is the claim: no other harness Crew carries lacks the verb."""
-    assert ACP_BACKENDS_RESUME_WITHOUT_LOAD == frozenset({ACP_BACKEND_DEEPSEEK})
+def test_the_resume_set_names_each_member() -> None:
+    """Membership is the claim: this harness lacks ``session/load``, and codex serves
+    it but, of its two restore requests, holds only a ``session/resume`` reply for its MCP
+    startup."""
+    assert ACP_BACKENDS_RESUME_WITHOUT_LOAD == frozenset({ACP_BACKEND_DEEPSEEK, ACP_BACKEND_CODEX})
 
 
 def test_the_effort_option_id_is_this_harness_own_spelling() -> None:

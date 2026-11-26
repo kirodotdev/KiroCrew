@@ -1505,12 +1505,15 @@ returning the request and agent unchanged, except that ordinary KAS adds
 start agent it registers beside one that declares MCP servers
 ([agent-host-contract](agent-host-contract.md) §1, selection row) and the cloud
 harness does not inherit that, and codex adds `_meta.mcpStartupAwaitTimeoutMs` to
-a `session/new` that carries MCP servers, so codex-acp answers only once each is
-ready or failed (capped below the `session/new` floor): without it codex gives MCP
-startup about one second at the first turn, and a gateway stub still starting
-then is offered on none of that turn's tools; `load_session` asks it only
-inside its KAS branch. The ordinary session request shaping is unchanged, and so is the
-runtime's `load_session`. Replayed approvals are held by a resume hold only the
+a `session/new` or `session/resume` that carries MCP servers, so codex-acp answers
+only once each is ready or failed (capped below the `session/new` floor): without
+it codex gives MCP startup about one second at the first turn, and a gateway stub
+still starting then is offered on none of that turn's tools. codex-acp ignores
+the key on `session/load`, which is why codex restores with `session/resume`
+(`ACP_BACKENDS_RESUME_WITHOUT_LOAD`); `load_session` asks the seam inside its KAS
+branch and, for every other host, once the request is built. The cloud harness
+leaves the ordinary session request shaping and the runtime's `load_session` as
+they are. Replayed approvals are held by a resume hold only the
 provider's cloud start takes around its reopen (`hold_cloud_resume`), and by two
 reader seams every served host answers as a no-op (`holds_replayed_permission`,
 `False`; `unroutable_permission`, the runtime's audited reject): the runtime asks the

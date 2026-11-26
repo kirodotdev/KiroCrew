@@ -17,7 +17,7 @@ codex is served by ``AcpRuntime``; it is in ``ACP_BACKENDS_SESSION_EVICTION`` be
 its teardown is a ``session/close`` request that disposes the session (measured),
 which is what admits it to the high-churn background path and warm pooled reuse; and
 it is IN ``ACP_BACKENDS_SESSION_SHARING``, because the thread ``codex`` persists
-outlives that close and a ``session/load`` restores it. Two of those three read the
+outlives that close and a restore (``session/resume``) brings it back. Two of those three read the
 same teardown verb and reach different conclusions from it, which is exactly why each
 is its own table -- the eviction claim is about the live session leaving the process,
 the sharing claim is about the record staying behind.
@@ -72,6 +72,7 @@ from kiro_crew.acp.types import (
     METHOD_CANCEL,
     METHOD_SESSION_CLOSE,
     METHOD_SESSION_NEW,
+    METHOD_SESSION_RESUME,
     METHOD_SESSION_UPDATE,
     METHOD_SET_CONFIG_OPTION,
     METHOD_SET_MODE,
@@ -163,6 +164,7 @@ class FakeCodexPeer:
             "protocolVersion": 1,
             "agentCapabilities": {
                 "loadSession": True,
+                "sessionCapabilities": {"resume": {}},
                 "mcpCapabilities": dict(self.MCP_CAPABILITIES),
             },
         }
@@ -415,6 +417,44 @@ class TestMcpStartupWait:
             load,
             "a",
         )
+        resumed, _ = adapter.session_request("session/resume", load, "a", agent_capabilities={})
+        assert resumed.get("_meta") == {"mcpStartupAwaitTimeoutMs": adapter.MCP_STARTUP_AWAIT_MS}
+
+    @pytest.mark.asyncio
+    async def test_a_reopened_chat_is_restored_with_the_verb_that_waits(self):
+        """Of the two restore requests, codex-acp reads the meta only on ``session/resume``:
+        a ``session/load`` answers before a slow server is up, so a re-opened chat's first
+        turn had none of its tools. Measured on codex-acp 2.3.0 and 2.12.0."""
+        servers = [{"name": "slow", "command": "py", "args": [], "env": []}]
+        rt = _codex_runtime()
+        rt._can_load_session = True
+        plane = _ControlPlane(_codex_session_new_response("sid-old"))
+        sent: list[tuple[str, dict[str, Any]]] = []
+
+        async def _send_and_await(method, params, timeout=None):
+            sent.append((method, params))
+            return _codex_session_new_response("sid-old")
+
+        async def _mirrored(agent, **_kw):
+            return _MirroredSessionMcp(
+                servers=list(servers),
+                denied_tools=frozenset(),
+                stub_token="tok",
+                derived_spec_snapshot=None,
+            )
+
+        with ExitStack() as stack:
+            plane.install(rt, stack)
+            stack.enter_context(patch.object(rt, "_send_and_await", _send_and_await))
+            stack.enter_context(patch.object(rt, "_mirrored_session_mcp", _mirrored))
+            handle = await rt.load_session("", "sid-old", cwd="/w", agent="kirocrew")
+
+        assert handle.session_id == "sid-old"
+        method, params = sent[0]
+        assert method == METHOD_SESSION_RESUME
+        assert params["sessionId"] == "sid-old"
+        assert [s["name"] for s in params["mcpServers"]][:1] == ["slow"]
+        assert params["_meta"]["mcpStartupAwaitTimeoutMs"] == CodexHarness.MCP_STARTUP_AWAIT_MS
 
 
 class TestSessionExtras:
@@ -998,7 +1038,7 @@ class TestOneFactReadThreeWays:
         """In, and pinned so the REASON cannot be misread as a resident session.
 
         A shared subagent session is still evicted; the persisted codex thread survives,
-        so ``spawn_continue`` uses ``session/load``. Hence the
+        so ``spawn_continue`` restores it with ``session/resume``. Hence the
         ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS`` check: sharing does not mean keeping.
         """
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_SHARING

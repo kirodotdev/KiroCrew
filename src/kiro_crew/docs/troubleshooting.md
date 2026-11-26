@@ -313,8 +313,9 @@ Neither message waits for the servers you added, so one that is slow to start
 may still be connecting while the agent works on that message. (The few servers
 Kiro Crew attaches to the session itself, a Connection's bridge for example, get
 a wait of at most 5 seconds.) On the Codex harness a new chat's first message
-waits for all of the chat's servers, yours included, for up to 30 seconds:
-Codex offers a message only the tools of the servers that are ready when it starts.
+waits for all of the chat's servers, yours included, for up to 30 seconds, and so
+does the first message after you re-open a saved chat: Codex offers a message
+only the tools of the servers that are ready when it starts.
 
 The agent is told which of the chat's servers it cannot use and why: still
 starting, failed to start, waiting for a sign-in, switched off, or left out by

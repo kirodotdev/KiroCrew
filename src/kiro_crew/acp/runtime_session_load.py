@@ -461,7 +461,8 @@ async def load_session(
     # the kiro resume path reaches a comparison and STOPS: no awaited step,
     # nothing to unwind, no shared coroutine that could grow a failure mode
     # later. create_session() enters the same seam unconditionally, which is
-    # the shape this one deliberately does not copy. Reading the backend and
+    # the shape this one deliberately does not copy (the synchronous
+    # ``session_request`` below is asked on every host, as on create). Reading the backend and
     # stopping is the smallest non-zero delta the kiro path can take for KAS
     # behaviour to exist here at all, and the harness exposes no property
     # meaning "this host needs its agent re-sent on resume" that could answer
@@ -559,8 +560,8 @@ async def load_session(
                 load_params, kas_memory.memory_settings(kas_memory_mode)
             )
         attach_kas_custom_agents(load_params, kas_agents, memory_mode=kas_memory_mode)
-        # The same last word session/new gets, asked inside this branch so the
-        # kiro resume path still stops at the comparison above.
+        # The same last word session/new gets, asked before the steps below that
+        # read what it returned.
         load_params, agent = self._harness.session_request(
             restore_method,
             load_params,
@@ -581,6 +582,15 @@ async def load_session(
         # parked copy must be gone before the load below.
         if person_waits(start_priority, focus_resume=focus_resume) and self.can_release():
             parking = parking_load(load_params)
+    else:
+        # The same last word every other host's session/new gets: codex asks its
+        # adapter to hold the ``session/resume`` reply for the array's MCP startup.
+        load_params, agent = self._harness.session_request(
+            restore_method,
+            load_params,
+            agent,
+            agent_capabilities=self._agent_capabilities,
+        )
     if harness_state is not None:
         # What this session enforces, from the spec its array was projected from.
         await self._harness.adopt_session_spec(

@@ -45,7 +45,8 @@ from kiro_crew.agent_sdk.backends import (
 # 2751 MB for one session. So a member's teardown disposes the in-memory session, and
 # ``spawn_continue`` re-reaches the conversation by loading the record the host kept.
 # Membership therefore asks one question: after this backend's teardown verb, can a
-# ``session/load`` still restore the thread?
+# restore (``session/load``, or ``session/resume`` for a member of
+# ``ACP_BACKENDS_RESUME_WITHOUT_LOAD``) still bring the thread back?
 #
 # kiro-cli answers yes with a transcript Crew holds under ``<kiro home>/sessions/cli``
 # that ``_kiro.dev/session/terminate`` leaves on disk.
@@ -71,10 +72,11 @@ from kiro_crew.agent_sdk.backends import (
 # What is measured where, because the halves have different reach.
 # ``test_real_codex_acp_session_close_evicts`` carries the ``real_adapter`` marker, so
 # the contract lane runs it on a pinned adapter and an adapter bump that stops
-# ``session/close`` evicting goes red there. The RESTORE half is in the lane too, on
-# 2.2.2: ``test_real_codex_acp_closed_session_loads_again`` runs real turns against a
-# loopback model, closes, and loads in the same and in a restarted adapter, and the
-# next turn's model request carries the first turn. ``session/delete`` and the recall
+# ``session/close`` evicting goes red there. The RESTORE half is in the lane too:
+# ``test_real_codex_acp_closed_session_loads_again`` runs real turns against a
+# loopback model, closes, and restores with ``session/resume`` (the verb Crew sends
+# codex) in the same and in a restarted adapter, and the next turn's model request
+# carries the first turn. ``session/delete`` and the recall
 # ANSWER stay with the opt-in ``test_real_codex_acp_load_after_close_restores``.
 #
 # KAS answers NO, and that is the whole of its exclusion: its teardown maps to
@@ -458,7 +460,20 @@ ACP_BACKENDS_LOAD_WITHOUT_MODES = frozenset(
 # on the day, with no record of what Crew verified and no place to write down why. The
 # set is the record, and adding a harness to it is a deliberate edit with a capture
 # behind it (harness-parity H6, the same reason every capability here is opt-in).
-ACP_BACKENDS_RESUME_WITHOUT_LOAD = frozenset({ACP_BACKEND_DEEPSEEK})
+#
+# codex is a member although it serves ``session/load`` too: of the two restore
+# requests, codex-acp holds only a ``session/resume`` reply for
+# ``_meta.mcpStartupAwaitTimeoutMs`` (``CodexHarness.session_request``), as it holds a
+# ``session/new`` reply, so a chat re-opened with ``session/load`` starts
+# its first turn before a slow server is up and that turn has none of its tools.
+# Measured on 2.3.0 and 2.12.0: ``session/resume`` with the key waited for a 4 s
+# server, offered its tool on the first prompt, and kept the conversation; the same
+# request as ``session/load`` answered in 0.1 s. Membership means a codex-acp that
+# advertised ``loadSession`` without ``sessionCapabilities.resume`` would not restore
+# (a re-open would start fresh with the transcript replayed); the six releases
+# checked, 1.0.0 to 2.12.0, advertise both, as the capture does
+# (``test/fixtures/acp_frames/codex/session-live.jsonl``).
+ACP_BACKENDS_RESUME_WITHOUT_LOAD = frozenset({ACP_BACKEND_DEEPSEEK, ACP_BACKEND_CODEX})
 
 
 def can_restore_session(backend: str, agent_capabilities: Mapping[str, Any]) -> bool:

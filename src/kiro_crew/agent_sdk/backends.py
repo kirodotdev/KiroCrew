@@ -376,7 +376,7 @@ with no row here.
      - driver-internal (whether a timed-out session start names the unanswered
        starts and mode switches it was sent behind on the same process)
    * - ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS``
-     - driver-internal (whether ``session/load`` is gated on a Crew-side transcript)
+     - driver-internal (whether a restore is gated on a Crew-side transcript)
    * - ``ACP_BACKENDS_LOAD_WITHOUT_MODES``
      - driver-internal (whether a successful session-restore result carries no
        ``modes`` block)
