@@ -79,6 +79,12 @@ async def _validate_telegram_token(token: str) -> str | None:
 
 async def api_telegram_config_get(request: web.Request) -> web.Response:
     """GET /api/telegram/config — read Telegram config + masked secret status."""
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "telegram.config.read")
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_TELEGRAM_BOT_TOKEN,
         KiroCrewConfig,

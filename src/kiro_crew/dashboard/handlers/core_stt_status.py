@@ -303,6 +303,11 @@ async def api_stt_prepare(request: web.Request) -> web.Response:
     denied = _deny_app_token(request, "stt.prepare")
     if denied is not None:
         return denied
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "stt.prepare")
+    if owner_denied is not None:
+        return owner_denied
     cfg = KiroCrewConfig.load()
     try:
         body = await request.json()
@@ -361,6 +366,11 @@ async def api_stt_ffmpeg_download(request: web.Request) -> web.Response:
     denied = _deny_app_token(request, "stt.ffmpeg_download")
     if denied is not None:
         return denied
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "stt.ffmpeg_download")
+    if owner_denied is not None:
+        return owner_denied
     auto_fetch = _ffmpeg_auto_fetch()
     if auto_fetch != AUTO_FETCH_AVAILABLE:
         return web.json_response(
@@ -395,6 +405,11 @@ async def api_stt_prewarm(request: web.Request) -> web.Response:
     denied = _deny_app_token(request, "stt.prewarm")
     if denied is not None:
         return denied
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "stt.prewarm")
+    if owner_denied is not None:
+        return owner_denied
     cfg = KiroCrewConfig.load()
     if cfg.stt.provider != PROVIDER_LOCAL:
         # Prewarming is specific to the resident whisper.cpp model. Running it under

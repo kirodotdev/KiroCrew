@@ -493,6 +493,12 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     generated from, and that command, so a manifest copied to update an existing
     app keeps its slash command. Serves only the public template — no secrets.
     """
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "slack.manifest.read")
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew import slack_manifest
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.dashboard.handlers._update_announce import https_url

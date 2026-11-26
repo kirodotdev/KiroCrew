@@ -28,6 +28,7 @@ vi.mock('../api/client', () => {
       restartGateway: vi.fn(),
       armUpdate: vi.fn(),
       armStatus: vi.fn(),
+      status: vi.fn(),
     },
   }
 })
@@ -77,6 +78,10 @@ beforeEach(() => {
   mockedApi.restartGateway.mockReset()
   mockedApi.armUpdate.mockReset()
   mockedApi.armStatus.mockReset()
+  mockedApi.status.mockReset()
+  // The status read after an arm: pending by default, so a test that does not
+  // set it sees only the status frames it dispatches itself.
+  mockedApi.status.mockReturnValue(new Promise(() => {}) as never)
   mockedApi.patchConfig.mockResolvedValue({} as never)
   mockedApi.checkUpdate.mockResolvedValue({ changes: '' } as never)
   mockedApi.armUpdate.mockResolvedValue({
@@ -537,6 +542,82 @@ describe('UpdateFoundModal — gateway source', () => {
     expect(screen.queryByText(i18nT('components.updateFoundModal.updating_and_restarting'))).toBeNull()
   })
 
+  it('shows the armed state once the arm is answered, before any status push', async () => {
+    const status = { update_available: true, update_latest_version: '8.8.8', update_can_apply: true }
+    mockedApi.applyUpdate.mockResolvedValue({ ok: true, armed: true, version: '8.8.8' } as never)
+    const store = gatewayStore(status)
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_when_i_restart'))
+    // No status frame is dispatched here: the arm's own answer flips the popup.
+    await waitFor(() => expect(byName('components.updateFoundModal.restart_to_update')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.update_when_i_restart') })).toBeNull()
+    expect(screen.getByText(i18nT('components.updateFoundModal.update_armed_note'))).toBeInTheDocument()
+    // Recorded in the status store, the one source the popup reads.
+    expect(store.getState().dashboard.status?.update_armed_version).toBe('8.8.8')
+    expect(mockedApi.status).not.toHaveBeenCalled()
+    expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1)
+    expect(mockedApi.restartGateway).not.toHaveBeenCalled()
+  })
+
+  it('a click right after the arm turns the button into Restart does not restart; one after the guard does', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    // Runs even when the test times out inside a waitFor, unlike a finally.
+    onTestFinished(() => { vi.useRealTimers() })
+    const status = { update_available: true, update_latest_version: '8.8.8', update_can_apply: true }
+    mockedApi.applyUpdate.mockResolvedValue({ ok: true, armed: true, version: '8.8.8' } as never)
+    mockedApi.restartGateway.mockReturnValue(new Promise(() => {}) as never)
+    await mount(undefined, gatewayStore(status))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_when_i_restart'))
+    await waitFor(() => expect(byName('components.updateFoundModal.restart_to_update')).toBeInTheDocument())
+    // The second click of a double click.
+    fireEvent.click(byName('components.updateFoundModal.restart_to_update'))
+    expect(mockedApi.restartGateway).not.toHaveBeenCalled()
+    await act(async () => { vi.advanceTimersByTime(1_001) })
+    await waitFor(() => expect(byName('components.updateFoundModal.restart_to_update')).not.toBeDisabled())
+    fireEvent.click(byName('components.updateFoundModal.restart_to_update'))
+    await waitFor(() => expect(mockedApi.restartGateway).toHaveBeenCalledTimes(1))
+    expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it('an arm answer that does not say armed leaves the status store alone', async () => {
+    const status = { update_available: true, update_latest_version: '8.8.8', update_can_apply: true }
+    mockedApi.applyUpdate.mockResolvedValue({ ok: true } as never)
+    const store = gatewayStore(status)
+    const before = store.getState().dashboard.status
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_when_i_restart'))
+    await waitFor(() => expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(byName('components.updateFoundModal.update_when_i_restart')).not.toBeDisabled())
+    expect(store.getState().dashboard.status).toBe(before)
+    // The next status push still brings the arm.
+    act(() => { store.dispatch(sseStatus({ ...status, update_armed_version: '8.8.8' } as StatusData)) })
+    await waitFor(() => expect(byName('components.updateFoundModal.restart_to_update')).toBeInTheDocument())
+  })
+
+  it('a late arm answer does not show the arm again after a newer frame showed it cancelled', async () => {
+    let resolveArm: (v: unknown) => void = () => {}
+    mockedApi.applyUpdate.mockReturnValue(new Promise(r => { resolveArm = r }) as never)
+    mockedApi.disarmUpdate.mockResolvedValue({ armed: false } as never)
+    const status = { update_available: true, update_latest_version: '8.8.8', update_can_apply: true }
+    const store = gatewayStore(status)
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_when_i_restart'))
+    await waitFor(() => expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1))
+    act(() => { store.dispatch(sseStatus({ ...status, update_armed_version: '8.8.8' } as StatusData)) })
+    fireEvent.click(await screen.findByTestId('update-cancel-armed'))
+    await waitFor(() => expect(mockedApi.disarmUpdate).toHaveBeenCalledTimes(1))
+    act(() => { store.dispatch(sseStatus({ ...status } as StatusData)) })
+    await act(async () => { resolveArm({ ok: true, armed: true, version: '8.8.8' }) })
+    await waitFor(() => expect(byName('components.updateFoundModal.update_when_i_restart')).toBeInTheDocument())
+    expect(store.getState().dashboard.status?.update_armed_version).toBeFalsy()
+    expect(screen.queryByTestId('update-cancel-armed')).toBeNull()
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.restart_to_update') })).toBeNull()
+  })
+
   it('an arm response that lands after the status frame reports it armed leaves the modal usable', async () => {
     let resolveArm: (v: unknown) => void = () => {}
     mockedApi.applyUpdate.mockReturnValue(new Promise(r => { resolveArm = r }) as never)
@@ -547,10 +628,20 @@ describe('UpdateFoundModal — gateway source', () => {
     fireEvent.click(byName('components.updateFoundModal.update_when_i_restart'))
     await waitFor(() => expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1))
     act(() => { store.dispatch(sseStatus({ ...status, update_armed_version: '8.8.8' } as StatusData)) })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    onTestFinished(() => { vi.useRealTimers() })
     await act(async () => { resolveArm({ armed: true, version: '8.8.8' }) })
     expect(mockedApi.restartGateway).not.toHaveBeenCalled()
     expect(screen.queryByText(i18nT('components.updateFoundModal.updating_and_restarting'))).toBeNull()
-    expect(byName('components.updateFoundModal.restart_to_update')).not.toBeDisabled()
+    // The answer landed after the push flipped the button, so the second click
+    // of a double click could still reach it: the restart guard holds it first.
+    const restart = byName('components.updateFoundModal.restart_to_update')
+    expect(restart).toBeDisabled()
+    fireEvent.click(restart)
+    expect(mockedApi.restartGateway).not.toHaveBeenCalled()
+    // Once the guard ends the modal is usable: Restart is enabled again.
+    await act(async () => { vi.advanceTimersByTime(1_001) })
+    await waitFor(() => expect(byName('components.updateFoundModal.restart_to_update')).not.toBeDisabled())
   })
 
   it('an armed update offers the restart and the way back, not another install', async () => {

@@ -173,7 +173,9 @@ therefore updates the one mount instead of mounting the server again as
 two entries match apart from `disabledTools`
 (`mcp_aliases.raw_tools_project_onto_alias()`); any other pair keeps the normal
 collision handling. The merged entry is the one read, so a Kiro global guard on the
-raw key survives a store entry that omits the field.
+raw key survives a store entry that omits the field. `list_servers()` folds the raw
+and alias rows into one and applies the same predicate (`_alias_renders_raw`), so
+the row's `disabled_tools` is the list this reconcile mounts.
 
 **A raw store key adopts its own rendering.** Switching such a row off writes
 `disabled: true` onto the raw store entry, which then differs from the previous
