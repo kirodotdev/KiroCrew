@@ -37,6 +37,7 @@ from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
     REFUSAL_FOREIGN_SERVER,
+    REFUSAL_REUSED_CALL_ID,
     REFUSAL_UNCLASSIFIED_CALL,
     _loggable_request_id,
     asks_allow_always,
@@ -47,6 +48,7 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp._dispatch import identified_mcp_call as _identified_mcp_call
 from kiro_crew.acp._dispatch import is_mcp_tool_approval as _is_mcp_tool_approval
 from kiro_crew.acp._dispatch import (
+    log_reused_call_id,
     offered_allow_id,
     unclassified_call_refused,
 )
@@ -579,6 +581,8 @@ async def _handle_permission(self: AcpClient, msg: JsonRpcMessage) -> None:
         if msg.id is not None:
             await self._send_error(msg.id, -32600, "invalid request id")
         return
+    if await self._refuse_reused_call_id(event):
+        return
     if not self._judges_permission_requests:
         options = getattr(self, "_permission_options", {})
         recorded = options.pop(event.request_id, None)
@@ -718,6 +722,22 @@ async def _refuse_identity_drift(self: AcpClient, event: AcpEvent) -> bool:
         await self.reject_tool(event.request_id)
         return True
     return False
+
+
+async def _refuse_reused_call_id(self: AcpClient, event: AcpEvent) -> bool:
+    """Refuse, audit and say True for a request ``AcpEvent.tool_call_id_reused`` marks;
+    run first on every site that answers one, whatever the session judges."""
+    if not event.tool_call_id_reused:
+        return False
+    log_reused_call_id(logger, event, self._session_id)
+    self._audit_spec_restriction(
+        tool_name="tool__reused_call_id",
+        outcome="denied",
+        reason=REFUSAL_REUSED_CALL_ID,
+        tool_kind=event.tool_kind or "",
+    )
+    await self.reject_tool(event.request_id)
+    return True
 
 
 def _foreign_mcp_identity(self: AcpClient, event: AcpEvent) -> bool:

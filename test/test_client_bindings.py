@@ -232,6 +232,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_recover_copilot_mcp_identity": ("function", False, "14fbb2bb120a", "client_tool_events"),
     "_redact_native_child_events": ("function", False, "4ae22451457c", "client_turn"),
     "_refuse_identity_drift": ("function", True, "2dfacffa6279", "client_permissions"),
+    "_refuse_reused_call_id": ("function", True, "2dfacffa6279", "client_permissions"),
     "_refuse_session_config_drift": ("function", True, "b60c5fea256e", "client_permissions"),
     "_refuse_unverified_antigravity_version": (
         "function",
