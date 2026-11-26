@@ -6688,6 +6688,14 @@ confirms; see [security.md](security.md) § Dashboard File Download.
 Every stored name receives a UUID prefix, and the handler attributes accepted and
 rejected requests through SEL. Binary formats with reliable signatures are
 validated by content before publication under their destination path.
+The stored name is capped (`_fit_stored_name`), but whether the whole joined path
+fits is a property of the host, as for the prompt and skill creates: a write the
+filesystem refuses for its length (the shared `_is_path_too_long_error`, or on
+Windows a `winerror`-less `FileNotFoundError` from the CRT open while the uploads
+folder still exists) answers 400 `name_too_long` with an error naming the refused
+path's length, is audited as `rejected` with `reason:name_too_long:<length>`, and
+removes the request's earlier files, on the buffered and the streamed media path
+alike. Every other write failure keeps its existing handling.
 An Apple iWork name (`.key`, `.pages`, `.numbers`) stays refused, since nothing
 here reads that closed format, but the 400 `unsupported_file_type` error from
 both `POST /api/upload/file` and `POST /api/directory-upload` names the

@@ -59,8 +59,10 @@ from kiro_crew.dashboard.origin import (
 )
 from kiro_crew.dashboard.relay_headers import relay_header_strip_middleware
 from kiro_crew.dashboard.routes import crew_api
+from kiro_crew.dashboard.state import DashboardState, _load_notifications
 from kiro_crew.dashboard.tailnet import TailnetTrust
 from kiro_crew.dashboard.token_auth import token_auth_middleware
+from kiro_crew.notifications.bus import NotificationPayload
 from kiro_crew.slack.gateway import GatewayOrchestrator
 from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
@@ -993,12 +995,12 @@ def _entry_guards(monkeypatch, runner, sites, *, windows=True, ref=None):
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
     stop = asyncio.Event()
     monkeypatch.setattr(server, "shutdown_event", stop)
-    notes: list[tuple] = []
+    notes: list[NotificationPayload] = []
     state = SimpleNamespace(
         _entry_listener_guards=[],
         stop=stop,
         notes=notes,
-        notify=lambda *args, **kwargs: notes.append(args),
+        notification_bus=SimpleNamespace(push=notes.append),
         ref=ref if ref is not None else entry_gate.GateRef(),
     )
     server._arm_entry_listener_guards(state, runner, sites, state.ref)
@@ -1139,7 +1141,7 @@ async def test_an_entry_listener_that_cannot_be_rebound_closes_the_entry_port_on
         # One notification and one warning line that starts with the same text.
         body = entry_gate.CLOSED_BODY.format(port=port)
         assert str(port) in body
-        assert state.notes == [("system", entry_gate.CLOSED_TITLE, body)]
+        assert state.notes == [_closed_note(port)]
         warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert [message for message in warned if message.startswith(body)] != []
         # A second guard giving up changes nothing and tells nobody again.
@@ -1161,7 +1163,7 @@ async def test_a_failed_notification_does_not_stop_the_close(
         def _broken(*args, **kwargs):
             raise RuntimeError("no notification bus")
 
-        state.notify = _broken
+        state.notification_bus = SimpleNamespace(push=_broken)
         server._close_entry_port(state, ref, "test")
         assert ref.closed == "test"
         assert [addr for addr in runner.addresses if addr[1] == port] == []
@@ -1345,6 +1347,8 @@ def test_the_boot_asks_for_closed_listeners_right_after_arming_the_guards() -> N
     assert ast.unparse(stops.test) == "_closed"
     assert isinstance(stops.body[-1], ast.Raise)
     assert not stops.orelse
+    # Past the entry port, whether it opened or is off: an earlier run's note goes.
+    assert source[armed + 4] == "await entry_gate.clear_closed_note(state)"
 
 
 @pytest.mark.asyncio
@@ -1365,11 +1369,112 @@ async def test_the_status_route_says_why_the_entry_port_is_closed(monkeypatch, t
     ref = app[entry_gate.ENTRY_GATE_APP_KEY] = entry_gate.GateRef()
     ref.gate = entry_gate.EntryGate(port=8443)
     assert await _field() == ""
-    assert ref.close([], "rebinding failed") == (
-        entry_gate.CLOSED_TITLE,
-        entry_gate.CLOSED_BODY.format(port=8443),
-    )
+    assert ref.close([], "rebinding failed") == _closed_note(8443)
     assert await _field() == "rebinding failed"
+
+
+def _closed_note(port: int) -> NotificationPayload:
+    """The note a close publishes: the port and how to recover, and nothing else."""
+    return NotificationPayload(
+        source="system",
+        channel="system.agent",
+        priority="critical",
+        title="Entry port closed",
+        body=(
+            f"The entry port ({port}) is closed: one of its listeners stopped and could "
+            "not be reopened. Callers on other machines cannot reach this Kiro Crew "
+            "through it. Restart the gateway to open it again."
+        ),
+        key="entry-port-closed",
+    )
+
+
+def _bell_state(monkeypatch, tmp_path) -> DashboardState:
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
+    return DashboardState(
+        sessions=MagicMock(count=0), crons=MagicMock(), lessons=MagicMock(), start_time=0.0
+    )
+
+
+async def _ring(state: DashboardState, payload: NotificationPayload) -> dict:
+    note = state.notification_bus.push(payload)
+    persist = state.last_notification_persist
+    assert persist is not None and await persist
+    return note
+
+
+def _held(state: DashboardState) -> list[tuple[str, str | None, str]]:
+    return [(n["source"], n.get("key"), n["title"]) for n in state._notification_log]
+
+
+@pytest.mark.asyncio
+async def test_the_bell_holds_one_critical_closed_note_and_only_it_is_cleared(
+    monkeypatch, tmp_path
+) -> None:
+    state = _bell_state(monkeypatch, tmp_path)
+    state.notification_bus.register_channel("mochi.alerts")
+    ref = entry_gate.GateRef(gate=entry_gate.EntryGate(port=8443))
+    note = await _ring(state, ref.close([], "rebinding failed"))
+    assert (note["priority"], note["key"], note["channel"]) == (
+        "critical",
+        entry_gate.CLOSED_KEY,
+        "system.agent",
+    )
+    # Another run closes the port again: the bell still holds one such note.
+    await _ring(state, entry_gate.GateRef(gate=entry_gate.EntryGate(port=8443)).close([], "x"))
+    mine = ("system", entry_gate.CLOSED_KEY, entry_gate.CLOSED_TITLE)
+    assert _held(state) == [mine]
+
+    plain = NotificationPayload(source="system", channel="system.agent", title="plain", body="")
+    other_key = NotificationPayload(
+        source="system", channel="system.agent", title="other key", body="", key="other"
+    )
+    same_key_of_an_app = NotificationPayload(
+        source="app:mochi",
+        channel="mochi.alerts",
+        title="an app's note",
+        body="",
+        key=entry_gate.CLOSED_KEY,
+    )
+    for payload in (plain, other_key, same_key_of_an_app):
+        await _ring(state, payload)
+    kept = [
+        ("system", None, "plain"),
+        ("system", "other", "other key"),
+        ("app:mochi", entry_gate.CLOSED_KEY, "an app's note"),
+    ]
+    assert _held(state) == [mine, *kept]
+
+    assert await entry_gate.clear_closed_note(state) is True
+    assert _held(state) == kept
+    stored = [(n["source"], n.get("key"), n["title"]) for n in _load_notifications()]
+    assert stored == kept
+    # Nothing left to remove: no rewrite is asked for.
+    assert await entry_gate.clear_closed_note(state) is False
+    assert _held(state) == kept
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["raises", "not stored"])
+async def test_a_closed_note_that_cannot_be_removed_does_not_stop_the_start(
+    outcome, caplog
+) -> None:
+    async def _dismiss(*, source: str, key: str) -> tuple[bool, bool]:
+        assert (source, key) == ("system", entry_gate.CLOSED_KEY)
+        if outcome == "raises":
+            raise OSError("read-only data home")
+        return True, False
+
+    state = SimpleNamespace(
+        _notification_log=[{"source": "system", "key": entry_gate.CLOSED_KEY}],
+        dismiss_notification=_dismiss,
+    )
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.entry_gate"):
+        assert await entry_gate.clear_closed_note(state) is False
+    assert [r.getMessage() for r in caplog.records] == [
+        "The entry-port-closed note of an earlier run was not removed"
+    ]
 
 
 def test_the_exit_status_of_the_gateway_does_not_read_the_entry_guards() -> None:

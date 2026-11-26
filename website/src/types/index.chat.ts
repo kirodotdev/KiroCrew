@@ -726,6 +726,10 @@ export interface SubagentActivity {
   childSession?: string
   status: 'pending' | 'running' | 'tool' | 'done' | 'error' | 'stopped'
   streaming: string; lastTool: string
+  /** The agent's reasoning, from `subagent_thinking` frames, drawn above the
+   *  card's Output. Client-only and bounded, as the chat's own thinking is: no
+   *  snapshot or done frame carries it. */
+  thinking?: string
   startedAt: number; elapsed: number; credits?: number; error?: string
   /** The finished run's dollar cost, from a harness that bills in dollars. */
   costUsd?: number

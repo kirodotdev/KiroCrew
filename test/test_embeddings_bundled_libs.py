@@ -2,8 +2,8 @@
 
 The platform's libs directory name, the in-process seam that hands the vendored
 loader its directory without touching the environment, and the two gates that
-refuse the bundled libraries before the native import: the Linux x86-64
-CPU-feature gate, which keeps a missing instruction from killing the process, and
+refuse the bundled libraries before the native import: the Linux and Windows x86-64
+CPU-feature gates, which keep a missing instruction from killing the process, and
 the Windows MSVC runtime gate, which names the missing redistributable instead of a
 bare ``WinError 126``. No real library is loaded.
 """
@@ -11,10 +11,11 @@ bare ``WinError 126``. No real library is loaded.
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import embeddings_helpers
 import pytest
@@ -449,6 +450,7 @@ def _published_libs_dir(monkeypatch, vendor: Path, plat: str, dotprod_probe) -> 
     )
     monkeypatch.setattr(embeddings_mod, "_macos_x86_64_missing_cpu_flags", lambda: [])
     monkeypatch.setattr(embeddings_mod, "_missing_windows_msvc_runtime", lambda: [])
+    monkeypatch.setattr(embeddings_mod, "_windows_x86_64_missing_cpu_flags", lambda: [])
     monkeypatch.setattr(embeddings_mod, "_publish_lib_path_for_import", published.append)
     fake_llama_cpp = ModuleType("llama_cpp")
     setattr(fake_llama_cpp, "Llama", object())
@@ -644,6 +646,7 @@ class TestBundledWindowsMsvcRuntimeGate:
         monkeypatch.setattr(embeddings_mod, "_VENDOR_DIR", tmp_path)
         monkeypatch.setattr(embeddings_mod, "_platform_libs_dirname", lambda: "win_amd64")
         monkeypatch.setattr(embeddings_mod, "_missing_windows_msvc_runtime", lambda: [])
+        monkeypatch.setattr(embeddings_mod, "_windows_x86_64_missing_cpu_flags", lambda: [])
         monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
         _install_recording_llama_cpp(monkeypatch, tmp_path)
         embeddings_mod._load_llama_class.cache_clear()
@@ -657,3 +660,100 @@ class TestBundledWindowsMsvcRuntimeGate:
             assert embeddings_mod._LIB_PATH_ENV not in os.environ
         finally:
             embeddings_mod._load_llama_class.cache_clear()
+
+
+def _load_bundled_windows_llama(monkeypatch, vendor: Path, cpu_probe):
+    monkeypatch.setattr(embeddings_mod, "_VENDOR_DIR", vendor)
+    monkeypatch.setattr(embeddings_mod, "_platform_libs_dirname", lambda: "win_amd64")
+    monkeypatch.setattr(embeddings_mod, "_missing_windows_msvc_runtime", lambda: [])
+    # ``raising=False``: with the fix reverted (prove.py) there is no reader to replace,
+    # and the loader's unguarded import is what the caller's assertion must catch.
+    monkeypatch.setattr(
+        embeddings_mod, "_windows_x86_64_missing_cpu_flags", cpu_probe, raising=False
+    )
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    embeddings_mod._load_llama_class.cache_clear()
+    try:
+        return embeddings_mod._load_llama_class()
+    finally:
+        embeddings_mod._load_llama_class.cache_clear()
+
+
+class TestBundledWindowsX86CpuGate:
+    """The ``win_amd64`` DLLs are built for the same AVX2 baseline as the Linux x86-64 libs.
+
+    On a CPU without it the first such instruction ends the gateway with
+    ``STATUS_ILLEGAL_INSTRUCTION``, which no ``except`` catches, so the loader asks
+    ``IsProcessorFeaturePresent`` first. The real ``kernel32`` call runs only on Windows.
+    """
+
+    def test_the_reader_names_each_feature_kernel32_reports_absent(self, monkeypatch) -> None:
+        asked: list[int] = []
+
+        def is_present(feature: int) -> int:
+            asked.append(feature)
+            return int(feature != 40)  # PF_AVX2_INSTRUCTIONS_AVAILABLE
+
+        kernel32 = SimpleNamespace(IsProcessorFeaturePresent=is_present)
+        monkeypatch.setattr("kiro_crew.embeddings.sys.platform", "win32")
+        monkeypatch.setattr(embeddings_mod.ctypes, "WinDLL", lambda name: kernel32, raising=False)
+        assert embeddings_mod._windows_x86_64_missing_cpu_flags() == ["avx2"]
+        assert sorted(asked) == [13, 36, 39, 40]
+
+    def test_the_reader_is_unknown_when_kernel32_cannot_be_asked(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.embeddings.sys.platform", "linux")
+        assert embeddings_mod._windows_x86_64_missing_cpu_flags() is None
+
+        def _fail(name):
+            raise OSError("[WinError 126] The specified module could not be found")
+
+        monkeypatch.setattr("kiro_crew.embeddings.sys.platform", "win32")
+        monkeypatch.setattr(embeddings_mod.ctypes, "WinDLL", _fail, raising=False)
+        assert embeddings_mod._windows_x86_64_missing_cpu_flags() is None
+
+    @pytest.mark.skipif(
+        _platform_libs_dirname() != "win_amd64",
+        reason="the real kernel32 call runs only on Windows x64",
+    )
+    def test_the_real_reader_answers_on_windows(self) -> None:
+        """The one unstubbed call: a wrong DLL, function or id would refuse every Windows host."""
+        missing = embeddings_mod._windows_x86_64_missing_cpu_flags()
+        assert isinstance(missing, list)
+        assert "sse3" not in missing
+
+    @pytest.mark.parametrize(
+        ("missing", "logged"),
+        [(["avx2"], "this host is missing avx2."), (None, "Cannot verify CPU compatibility")],
+    )
+    def test_a_cpu_it_cannot_vouch_for_is_refused_before_the_import(
+        self, tmp_path: Path, monkeypatch, caplog, missing, logged
+    ) -> None:
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        _stub_libs(tmp_path, "win_amd64")
+        _install_recording_llama_cpp(monkeypatch, tmp_path)
+
+        with caplog.at_level("WARNING", logger=embeddings_mod.__name__):
+            assert _load_bundled_windows_llama(monkeypatch, tmp_path, lambda: missing) is None
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        assert logged in warnings[0]
+        assert "keyword search" in warnings[0]
+        assert "llama_cpp" not in sys.modules
+
+    def test_operator_override_bypasses_the_bundled_cpu_gate(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _stub_libs(tmp_path, "win_amd64")
+        override = tmp_path / "operator-libs"
+        override.mkdir()
+        monkeypatch.setenv(embeddings_mod._LIB_PATH_ENV, str(override))
+        fake_llama_cpp = ModuleType("llama_cpp")
+        expected = object()
+        setattr(fake_llama_cpp, "Llama", expected)
+        monkeypatch.setitem(sys.modules, "llama_cpp", fake_llama_cpp)
+
+        def unexpected_cpu_probe():
+            raise AssertionError("operator runtime must not use the bundled CPU gate")
+
+        assert _load_bundled_windows_llama(monkeypatch, tmp_path, unexpected_cpu_probe) is expected

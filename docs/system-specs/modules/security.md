@@ -243,7 +243,93 @@ the owner-only `POST /api/mcp/project-file` (`dashboard.handlers.mcp_project_fil
 which accepts nothing but a confirmed card's step, so no caller chooses the folder;
 it refuses a link anywhere below the folder, and on POSIX it opens each folder on
 the way by descriptor with `O_NOFOLLOW`, so a link planted after the name check is
-refused too.
+refused too. After a write it records that server's launch as approved in the
+folder (the check below), so the next chat does not ask again for the launch the
+person just confirmed; a file rewritten in between stays held.
+
+Every session start also checks its folder's two files against a record of the
+servers the person approved there (`project_mcp_approvals`, kept at
+`~/.kiro/crew/mcp-launch-approvals/project-servers.json` inside the sealed launch-approvals
+directory, so only gateway code writes it). A server is approved per folder, per
+file and per launch: a digest of `command`, `args`, `env`, `url`, `type`,
+`headers` and `cwd`, so a tool switch is no new launch and any launch change asks
+again. The record keeps the command line, the URL and a digest of each env and header value,
+never the value. A server the host would start and the record does not approve is
+held (`agent_sdk.project_mcp_holds.held_project_servers`, one answer for all three
+readers): kiro-cli and KAS, for a spec that reads the file (`includeMcpJson`, or a
+KAS agent file on the earlier behaviour), get a server with no tools under that
+name in the session-level array (the `--refuse` stub), which outranks the file's
+entry; a name the spec defines itself is the spec's and is not held. KAS also
+counts every registered helper agent that reads the file. Claude Code
+gets the name in `disabledMcpjsonServers` only in the session's inline settings,
+which it reads as rejected even when Crew leaves the folder's settings file
+untouched. The shared settings seed carries no project-server holds. The chat then
+raises one `mcp.project_server` card per held server
+(`dashboard.project_mcp_cards`, a gateway-resolved kind no agent can propose). It
+shows the file, the launch and, for a changed server, the change; Apply posts
+`/api/mcp/project-servers/approve` (owner only, a change-card hooked route), which
+records the launch only while the file still holds the one the card showed (409
+otherwise), then restarts every open chat (`reset_sessions`). Decline
+cancels the card and writes no approval, so the next session in that folder raises it
+again. Once the chat holds `MAX_LIVE_CARDS_PER_SLOT` open
+cards, the offer stops and shows one notice per file with the count of servers still
+held, so a file with many servers costs at most that many card checks per new chat. The record keeps at most 4096 folders,
+256 servers per file, and 256 env keys, 256 header keys and 256 other fields per server. Folder paths
+are at most 4096 characters; server names and env/header keys are at most 256
+characters. The card and approve route use the same folder and server-name bounds.
+The fingerprint covers the whole entry except the fields that never change what a
+server launches or reaches (`mcp_cleanup.NOT_LAUNCH_KEYS`: `autoApprove`,
+`disabled`, `disabledTools`, `poolable`, `timeout`, `timeoutMs`), so adding or
+changing any other field, one Crew does not know included, asks again. The card
+shows each such field outside the command, URL, env, headers, `type` and `cwd` rows
+in a row of its own, named by the field. The record keeps a digest of each of
+those fields' values, never the value. The record also keeps a digest of the full
+command, arguments and URL, for the card's command comparison. The card shows the
+URL in its own row whenever the entry names one, and the command line whenever it
+names a command that is not blank (or names no URL), so an entry with both shows
+both; for a changed server each row shows its own before and after. A launch too
+long to show, or whose command or URL redaction would hide, cannot be approved
+from the card. The server stays held and the chat names the file: shorten oversized
+settings, or move secrets into env or headers, then start a new chat. Only the
+launch Allow would approve is checked; an earlier launch shows as "before" only.
+Gateway boot creates the record once,
+from only the folders in `recent_projects.json` when the gateway starts
+(`begin_boot_migration`): it checks the record's presence and reads that list off
+the event loop, then scans those folders on
+a tracked background task, so readiness does not wait for the scan. A session
+check waits up to 5 s (`MIGRATION_WAIT_SECS`) for that scan; if it has not
+finished or it failed, nothing counts as approved. This trusts, once and without
+a card, every server those known folders already name at the upgrade, so
+existing setups keep starting as before; a server added or changed after that
+asks. Session checks only read the
+record; an absent or unreadable record approves nothing. Approval also removes
+recorded names absent from the file's enabled servers. kiro-cli skips an entry
+that `disabled` mutes; Claude Code has no such field, so every `.mcp.json` entry
+counts as enabled. Every enabled server is checked regardless of the file's server
+count or name lengths. Each server with a usable name is held independently and the
+session starts. The one exception is a server name in the host's project MCP file
+that Kiro Crew cannot send unchanged: that folder's session is refused before the
+request is sent, and the chat names the file and asks the person to rename the
+server there, then start a new chat. KAS checks this regardless of the agent's
+`includeMcpJson` setting. Claude Code sessions whose existing `strictMcpConfig`
+excludes the project file still start; otherwise they receive the same refusal.
+No approval card is offered for an unusable name.
+A launch that cannot be fingerprinted stays held. A project MCP
+file that the credential-gated settings reader refuses is still read for its server
+names (`read_server_entries`). A failed folder check or agent-spec check uses the
+same names reader. Each read requires a fresh file-safety screen, a regular file
+inside the folder, and the bounded, no-follow open with descriptor validation.
+Every enabled name recovered after a failed check stays pending and gets the same
+hold and approval card as any other unapproved server. No unreadable-file notice
+is shown for a file whose names were recovered. When no names can be read, the
+file is held whole (`check_folder`, `project_hold`): a Claude Code session runs
+with `strictMcpConfig`, and a kiro-cli or KAS chat shows one notice naming the file
+and asking the person to fix or delete it, then start a new chat. A failed names
+read never prevents a session from starting. The hold covers every session the
+gateway opens in a folder, including model-entitlement probes and session restores.
+A probe uses its request's folder and carries the same refusal stubs or Claude Code
+inline project-server restrictions as a chat. The same unreadable-file limitations
+apply to probes.
 
 Every installed app's manifest, `<data home>/apps/<name>/app.json`, is sealed under
 the same decision (`app_manifest_files`): the gateway reads it to decide the MCP
@@ -1670,8 +1756,9 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   goes out with it); `text_redaction._outside_batch_spans` holds such a span too,
   reading the buffer after the text already sent, and
   `StreamRedactor.release_at_boundary()` skips it: the dashboard turn
-  calls it at a tool call or prompt and Slack at a tool card, a `wait` and the
-  turn's end. `display_battery.RULE_SOURCES` lists every `redaction_structured/`
+  calls it at a tool call or prompt, Slack at a tool card, a `wait` and the
+  turn's end, and a managed sub-agent run's thinking stream at any frame between
+  two thoughts. `display_battery.RULE_SOURCES` lists every `redaction_structured/`
   file and `pass_compose.py`, so a table change gives stored verdicts a new version.
 - `display_safety.py` — what the product may show as it is: the OAuth endpoint sanitizer
   and its copy-ready display form, and `BINARY_MIME_ALLOWLIST`.
@@ -3125,8 +3212,8 @@ exactly `outbound` so a second spelling cannot accrete.
 - **Cross-chunk streaming redaction** (`StreamRedactor`): per-chunk redaction misses a credential split across a token/streaming/Slack chunk boundary (a GitHub token cut after `ghp_` and finished in the next chunk escapes `redact_credentials()` in both halves, so raw fragments reach WebSocket/SSE/Slack consumers). It holds back what the rule table (`compat.stream_read`) needs, so a stream yields the batch result. `StreamRedactor` is a rolling-buffer redactor: it withholds the trailing run of credential-class characters (`_CRED_CLASS` — letters/digits + URL/base64/connection-string punctuation, the possible start of a not-yet-complete credential) until a non-credential-class terminator arrives or the stream ends, then rejoins and redacts before emitting on the wire. Holdback is bounded by `_STREAM_HOLDBACK_MAX = 512` (larger than the longest fixed-format credential) so a split token is always rejoined; `flush()` redacts the buffered remainder at segment/stream end. Adds at most one chunk of latency. **Streaming JWT/JWE ceiling**: JWTs (esp. RS256/ES256 with embedded claims) routinely exceed 512 chars, so a terminal token longer than the DoS floor would otherwise be bisected — the first `len-512` chars emitted raw before `flush()` redacts only the held tail. When the withheld tail matches `_PARTIAL_JWT_TAIL_RE` (`eyJ…` optionally followed by up to FOUR `.`-separated base64url segments — `{0,4}`, so a 5-segment compact JWE escalates too, matching the batch JWE ceiling — anchored to buffer end) the cap is raised to `_STREAM_HOLDBACK_JWT_MAX = 4096` so the whole token is rejoined before emission; the 512-char floor still applies to every non-credential run. A trailing in-progress `?token=`/`&token=` parameter value (`_TOKEN_PARAM_PARTIAL_RE`, mirroring the batch token-parameter anchor incl. its case-folded name and value class) escalates the same way — without it a >=512-char opaque token value would be bisected at the floor, committing the `token=` anchor into the redacted prefix while the anchor-less tail reached `flush()` and streamed raw. **Split-Bearer holdback**: an `Authorization: Bearer <token>` header spans whitespace (not in `_CRED_CLASS`), so the cred-class run alone would commit the `Authorization: Bearer ` prefix and leak the token on the next chunk. `_BEARER_ANCHOR_PARTIAL_RE` (case-insensitive, JSON-aware, `\Z`-anchored, matching any prefix of an in-progress `Authorization: Bearer <token>`) makes `feed` pull the commit index back to the anchor start (`i = min(i, anchor.start())`), holding header + token together, and escalates the cap so an opaque OAuth/refresh/SSO Bearer token >512 chars (no `eyJ`) is not bisected either. **Fail-closed ceiling**: when a credential-anchored tail (JWT/JWE/Bearer) exceeds the 4096 ceiling, `feed` FAILS CLOSED — it redacts+emits the confirmed-safe prefix, appends `_REDACTED_CREDENTIAL_TAG` (`[REDACTED: credential]`, shared with the batch redactor), and DROPS the oversized tail rather than bisecting it; a plain cred-class run with NO credential anchor is still committed verbatim (bisected — no data loss, DoS bound intact)
 - **Streamed canonical-tag fixed point:** a chunk boundary after the interior space in a member of `CREDENTIAL_REDACTION_TAGS` would let a later read re-redact the `[REDACTED:` head and duplicate the remaining label, so `StreamRedactor.feed()` pulls its safety cut back when the buffer tail is a STRICT prefix of a module-owned canonical tag. The lookback is bounded by the longest registered tag; a complete tag commits normally; and the cut is applied after STRONG classification, so it never raises the DoS cap or authorizes a fail-closed drop. An incomplete prefix at `flush()` remains ordinary text.
 - **A tool call or an approval prompt does not end the dashboard's redaction window.** The dashboard runner cuts the reply into rows at each tool call and approval prompt, but the model's text on either side is one run of characters, so a credential can start before the cut and finish after it; flushing `_wsred` there would stream and save both halves unmatched. So the cut (`turn_reply_seams._cut_segment`) leaves the run the wire redactor still withholds in the redactor and off the row it was cut from, when the whole segment's save shows that run as written (a run the save already redacts ends a value the segment holds whole, and the window ends there as at the reply's end). The redactor's next output settles it (`_settle_held`), judged on raw text, never on the redacted output (a pass that keeps a label and replaces only its value, like `?token=`, leaves the label on the output as written): when the raw run redacted together with the raw text after it (the slot's raw segment copy) equals the run unchanged followed by that text redacted alone (`_stands_alone`), no value starts in one and ends in the other, and the run is a word of its own and goes back on its row (`_give_back_run`: the row's content is patched in place, with the save's glued-footer repair run over the rebuilt text, and open tabs get a `chat_message_update` in the row's display form); otherwise the run opens the segment it continued into (`_open_segment_with`: prepended to the raw copy and the streamed text), so that row's whole-text save and the linked-channel final reply redact the credential as one text, and its placeholder sits in the segment where the credential completed. Narration before the cut stays on its row and out of the final reply. One piece per cut crossed before any output, so a run held over several cuts goes back piece by piece; a segment wholly held at its cut keeps an empty row until its piece returns (an empty row draws nothing: `isHiddenInvisibleAssistantRow`, and the Mochi panel's `ChatPanel` skips it the same way). A run given back reaches open tabs as that row patch, not as a `chat_chunk`; the Mochi panel takes the same patch (`panelBridge` hands it on as a `_patch` frame keyed by the row's `mid`). It is also queued on the slot's delivery queue as the `chunk` row it was held back from (`push_wire_frame`: not in the window, which already holds it, and not on the WebSocket), so the /api/chat SSE stream and the OpenAI-compatible replies, which join the chunks they drain, carry every word in order. A held run is also settled at the reply's end, at a steer cut and before a compaction, `/clear` or agent-switch reset drops the segment (`_drop_wire_tail`), and on an abnormal end (`_persist_partial_reply`, which at a shutdown also saves a row the run went back on, since the graceful save ran before it). The Slack stream carries its held run across a `wait` the same way (`move_back`, `_give_back`). The crew log's `message/sent` for the row is written at the cut, ahead of the tool call, without the held run; a run given back is written as its own `message/sent` under the same turn and model call (`_log_given_back`), so a model call's text is its entries joined in order. A run that is one short plain word ending a sentence (`text_redaction.ends_plain_sentence`, the one rule the dashboard cut and the Slack stream share: a letter, up to 18 lowercase letters, an optional short `'` contraction, then `.`, and unchanged by `redact`) is not held when no earlier cut holds a run: no credential starts in such a word or continues through it (every anchored prefix is mixed-case, digit or symbol, the bare base64-class run ends at `.`, and the 20-character cap keeps the Discord shape out), so the cut flushes the redactor and the row keeps its last word while the tool runs. The Slack stream releases the same word before a tool card, a `wait` or an approval prompt (`release_sentence_end`), except while a run carried across an earlier `wait` is still waiting for `_give_back`. Accepted residuals: while a tool runs or an approval waits, the row before it lacks any other held last run, and so does that row's `assistant` frame on the delivery queue, which is sent at the cut (a reader that joins those frames instead of the chunks misses the run). Pinned by `test_chat_runner_redact_across_tool_boundary.py` and, for the tabs that apply the patch, `chatSlice.heldRunPatch.test.ts` (dashboard) and `mochiHeldRunPatch.test.tsx` (Mochi panel).
-- **When the dashboard lets a held tail go.** The dashboard releases a held tail only when more text ends the run, at a display boundary, or when the engine has reported the end of the turn (its `session/prompt` answer). A credential split across chunks is never shown in parts. A held tail that is one plain word ending a sentence (a letter, at most 18 lowercase letters, an optional apostrophe part, one period) and that the redactor leaves unchanged is released at once. Everything else is held as today. `_on_text_chunk` calls `StreamRedactor.release_sentence_end()` after each `feed`: a withheld run that `ends_plain_sentence` accepts (the rule the tool-call cut and the Slack stream already share, described above) is committed with its own chunk, so the reply's last word shows when the engine writes it instead of at the prompt's answer. No later text can make such a word part of a credential: the released word itself is never the start of one. The stream is not always the same byte for byte, because text glued to the word is read without it, as text after a space is read. The saved reply is redacted whole, so it masks what the uncut text masks. A value being dropped is never released this way, and neither is a run the rule table still reads a unit in (`hvs.` opens a token and is not a sentence end). The release is the dashboard's alone: the Slack stream keeps its own release before a tool card, and the messaging driver and every other consumer of `StreamRedactor` never call the method and hold the run as before. The engine's own end-of-turn frame (KAS's `turn_end`) is deliberately not a release point: the same prompt can still write text after it (a steering continuation, a turn of its own), so a run shown there could be the first half of a value the later text completes. Pinned by `test_stream_tail_release.py`.
-- **A chat segment is saved as its raw copy redacted once.** Chat text is redacted one streamed delta at a time, and a delta boundary can cut a value, so per-delta redaction can leave pieces of it (the rest of a token after the tag its first piece became). The segment flush (`segment_flush._redact_segment`) therefore saves the slot's raw copy of the same deltas, with the same glued-footer reflow the streamed text gets, through the redaction once: the same text and records the same reply gets when it streams in one delta. A pass is not monotone in its context (a credential at a delta start, a piece of base64), so each value a per-delta pass replaced (`segment_flush._redact_delta`: the values of `redact_credentials_with_records(defer_token_param=True)`) is checked on its own against the whole-text result. Default refuse: main's own save (the streamed text redacted again) is the only proof that text is safe to keep. Every run of word characters the saved text shows must appear in it (`_saved_text_shows_more`); nothing else vouches for a run, so no glued, quoted or forged shape can launder a value a delta's redaction hid, and the segment is withheld instead. The raw copy is never edited to drop a value (a mask changes what the next pass matches). It fails closed and saves `_SEGMENT_UNCHECKED_TEXT` with no records, never the raw text, when: there is no raw copy (past `_SEGMENT_RAW_MAX_CHARS`), the raw copy's hash of per-delta redactions is not the streamed text's, a redaction pass raises, the whole-text result holds such a value more often than the streamed text's own redaction does, or a saved record holds a value a per-delta pass removed as a credential (a credential record's `view_command`, `profile_command` or source `command`, `path` or `section`). Accepted cost: a reply whose base64 blob a delta cut so a piece of it was removed is withheld. With no streamed deltas the text itself is redacted. The live `StreamRedactor` sites (`chat_turn/stream_chunks.py` `_wsred` and `_thinkred`, `chat_threads.py`, `handlers/side.py`, `messaging/driver.py`, `slack/handler_runtime/stream.py`) hold what the rule table needs, so a value cut between chunks is redacted whole there too. The subagent output SSE tail (`handlers/core.py` `api_session_agent_stream`) does not: each poll is redacted and sent up to the start of its last line with text in it, and the rest waits for the next poll; while the part before that line and the rest redact differently apart than together (a value on a line after its label), or a credential match spans that line's start (a Bearer label is kept, so a token cut from it can redact the same apart), all of it waits. The last poll sends what is held, and a hold past `_AGENT_STREAM_HOLD_MAX` characters is redacted and sent as one piece, after which the stream sends nothing but `event: done`, since the next read could carry the rest of a value it cuts. So a credential with its label, or inside a URL, split between two reads is redacted whole; a read that ends after a label's separator or opening quote, before any of a value on a later line, still sends the label's line on its own.
+- **When the dashboard lets a held tail go.** The dashboard releases a held tail only when more text ends the run, at a display boundary, or when the engine has reported the end of the turn (its `session/prompt` answer). A credential split across chunks is never shown in parts. A held tail that is one plain word ending a sentence (a letter, at most 18 lowercase letters, an optional apostrophe part, one period) and that the redactor leaves unchanged is released at once. Everything else is held as today. `_on_text_chunk` calls `StreamRedactor.release_sentence_end()` after each `feed`: a withheld run that `ends_plain_sentence` accepts (the rule the tool-call cut and the Slack stream already share, described above) is committed with its own chunk, so the reply's last word shows when the engine writes it instead of at the prompt's answer. No later text can make such a word part of a credential: the released word itself is never the start of one. The stream is not always the same byte for byte, because text glued to the word is read without it, as text after a space is read. The saved reply is redacted whole, so it masks what the uncut text masks. A value being dropped is never released this way, and neither is a run the rule table still reads a unit in (`hvs.` opens a token and is not a sentence end). The release is the dashboard's and a managed sub-agent run's thinking stream's (`subagent_manager/run_turn.py` asks for it after each thinking `feed`, so a thought's last word lands before the run's reply, not after it): the Slack stream keeps its own release before a tool card, and the messaging driver and every other consumer of `StreamRedactor` never call the method and hold the run as before. The engine's own end-of-turn frame (KAS's `turn_end`) is deliberately not a release point: the same prompt can still write text after it (a steering continuation, a turn of its own), so a run shown there could be the first half of a value the later text completes. Pinned by `test_stream_tail_release.py`.
+- **A chat segment is saved as its raw copy redacted once.** Chat text is redacted one streamed delta at a time, and a delta boundary can cut a value, so per-delta redaction can leave pieces of it (the rest of a token after the tag its first piece became). The segment flush (`segment_flush._redact_segment`) therefore saves the slot's raw copy of the same deltas, with the same glued-footer reflow the streamed text gets, through the redaction once: the same text and records the same reply gets when it streams in one delta. A pass is not monotone in its context (a credential at a delta start, a piece of base64), so each value a per-delta pass replaced (`segment_flush._redact_delta`: the values of `redact_credentials_with_records(defer_token_param=True)`) is checked on its own against the whole-text result. Default refuse: main's own save (the streamed text redacted again) is the only proof that text is safe to keep. Every run of word characters the saved text shows must appear in it (`_saved_text_shows_more`); nothing else vouches for a run, so no glued, quoted or forged shape can launder a value a delta's redaction hid, and the segment is withheld instead. The raw copy is never edited to drop a value (a mask changes what the next pass matches). It fails closed and saves `_SEGMENT_UNCHECKED_TEXT` with no records, never the raw text, when: there is no raw copy (past `_SEGMENT_RAW_MAX_CHARS`), the raw copy's hash of per-delta redactions is not the streamed text's, a redaction pass raises, the whole-text result holds such a value more often than the streamed text's own redaction does, or a saved record holds a value a per-delta pass removed as a credential (a credential record's `view_command`, `profile_command` or source `command`, `path` or `section`). Accepted cost: a reply whose base64 blob a delta cut so a piece of it was removed is withheld. With no streamed deltas the text itself is redacted. The live `StreamRedactor` sites (`chat_turn/stream_chunks.py` `_wsred` and `_thinkred`, `chat_threads.py`, `handlers/side.py`, `messaging/driver.py`, `slack/handler_runtime/stream.py`, `subagent_manager/run_turn.py` `_thinking`) hold what the rule table needs, so a value cut between chunks is redacted whole there too. The subagent output SSE tail (`handlers/core.py` `api_session_agent_stream`) does not: each poll is redacted and sent up to the start of its last line with text in it, and the rest waits for the next poll; while the part before that line and the rest redact differently apart than together (a value on a line after its label), or a credential match spans that line's start (a Bearer label is kept, so a token cut from it can redact the same apart), all of it waits. The last poll sends what is held, and a hold past `_AGENT_STREAM_HOLD_MAX` characters is redacted and sent as one piece, after which the stream sends nothing but `event: done`, since the next read could carry the rest of a value it cuts. So a credential with its label, or inside a URL, split between two reads is redacted whole; a read that ends after a label's separator or opening quote, before any of a value on a later line, still sends the label's line on its own.
 - Defense against write-then-execute attacks: even if the LLM tricks kiro-cli into running a credential-extracting script, the output is scrubbed before the LLM can use it in follow-up messages
 
 ### Supply-chain and CI-process controls
@@ -5317,14 +5404,26 @@ variable, `--compress-program` runs one), nor is any `gh` call that can send a
 file. A backslash passes only where bash reads it as a plain character inside
 quotes, and never on a line that also holds `$(`, where the quoting starts over.
 
+The shared predicate (`exfil_bash._file_body_line_is_inert`) reads past one
+`Running: ` display prefix before the inertness check, the same way
+`_exception_applies` does, so an inert search is allowed on the kiro-cli
+permission-title path too; the caller still matches the original target for the
+deny and the audit. `rg` (ripgrep) and `ag` (the silver searcher) are NOT carve-out
+verbs, because each can run another program (ripgrep's `--pre`/`--hostname-bin`,
+the silver searcher's `--pager`), so a line naming the flag text could make them
+launch curl.
+
 A refusal by this gate gets its own guidance (`deny_guidance.DENY_CLASS_FILE_BODY_TEXT`):
 it keeps the upload answer and names the forms that pass. The gate's first line names
 no rule, so the guidance is chosen by the rule id on its own last diagnostic line
-(`diagnostics.refusal_rule_id`). The regex tier's row for the same id
-(`.*curl.*--?data…@.*`) has no inert-line carve-out, so a search line naming `curl`
-with a `--data @` form is still refused there; its refusal keeps the exfil-shape
-guidance, and the file-body guidance says to search for that pair with the
-file-search tool.
+(`diagnostics.refusal_rule_id`). The regex tier enforces the same id
+(`.*curl.*--?data…@.*`) in `is_denied`, and it applies the SAME inert-line carve-out:
+`deny_gate._file_body_narrows` runs the shared predicate and narrows the row (SEL
+exception mechanism `_FILE_BODY_SCOPE`) when the line is an inert search, for the
+shipped pattern only — an operator's own copy of the pattern keeps reading the full
+text — and never on Windows, where a script hook runs under cmd.exe and the bash
+reading does not apply. So on POSIX an inert `grep`/`date` search naming `curl` with
+a `--data @` form passes both tiers; on Windows the regex tier stays fail-closed.
 
 A file search is not a command line at all. A call whose host-trusted identity names
 the `grep` or `glob` built-in (`mcp_identity_trusted`, no server, the name in

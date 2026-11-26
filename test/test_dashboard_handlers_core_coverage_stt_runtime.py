@@ -10,6 +10,8 @@ import asyncio
 import json
 import os
 import platform
+import re
+import tempfile
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -910,6 +912,57 @@ class TestSttTranscribe:
         await core_mod.api_stt_transcribe(_multipart_req(field))
 
         assert len(seen) == 1
+        assert not os.path.exists(seen[0])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("filename", "suffix"),
+        [
+            ("rec.webm:x", ".webmx"),
+            ("rec.webm::$DATA", ".webmDATA"),
+            ("rec.ogg:x.part", ".part"),
+            ("..\\..\\evil.exe", ".exe"),
+            ("../../evil.webm", ".webm"),
+            ("rec.WEBM", ".WEBM"),
+            ("rec.mp4", ".mp4"),
+            ("rec.ogg", ".ogg"),
+            ("rec.wav", ".wav"),
+            ("rec.wave", ".wave"),
+            ("rec.caf", ".caf"),
+            ("rec.mkv", ".mkv"),
+            ("rec.3gp", ".3gp"),
+            ("rec.m4b", ".m4b"),
+            ("rec.abcdefghi", ".abcdefghi"),
+            ("rec.wébm", ".wbm"),
+            ("rec", ".webm"),
+            ("rec.", ".webm"),
+            (".webm", ".webm"),
+            ("rec.web m", ".webm"),
+        ],
+    )
+    async def test_temp_name_takes_only_a_plain_suffix(self, monkeypatch, filename, suffix) -> None:
+        """The client's filename must not shape the temp path: on Windows a colon
+        in the suffix names an NTFS stream, the publish rename fails with a 500,
+        and a zero-byte base file is left in the temp folder."""
+        seen: list[str] = []
+
+        async def transcribe(path, _cfg):
+            seen.append(path)
+            return "hello"
+
+        monkeypatch.setattr("kiro_crew.transcribe.transcribe_audio", transcribe)
+        field = SimpleNamespace(
+            name="audio",
+            filename=filename,
+            read_chunk=AsyncMock(side_effect=[b"audio-bytes", b""]),
+        )
+
+        resp = await core_mod.api_stt_transcribe(_multipart_req(field))
+
+        assert resp.status == 200
+        name = os.path.basename(seen[0])
+        assert os.path.dirname(seen[0]) == tempfile.gettempdir()
+        assert re.fullmatch(r"kc_stt_[0-9a-f]{32}" + re.escape(suffix), name)
         assert not os.path.exists(seen[0])
 
     @pytest.mark.asyncio

@@ -66,6 +66,25 @@ async def test_import_still_accepts_a_plain_json_body(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("compress", [False, True], ids=["plain", "gzip"])
+async def test_import_accepts_a_body_saved_with_a_utf8_byte_order_mark(monkeypatch, compress):
+    """A ``.json`` unpacked from an export by hand and saved again as "UTF-8 with
+    BOM" (Notepad, Windows PowerShell 5.1 ``Set-Content -Encoding UTF8``) starts
+    with ``EF BB BF``. It imports like the same document without the mark, sent
+    plain or compressed again, because both bodies reach the same parse."""
+    import gzip as _gzip
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    marked = b"\xef\xbb\xbf" + json.dumps(_valid()).encode("utf-8")
+    body = _gzip.compress(marked) if compress else marked
+    resp = await _run_import(st, monkeypatch, None, gz=body)
+
+    assert resp.status == 200, resp.body
+    assert json.loads(resp.body)["messages"] == 1
+
+
+@pytest.mark.asyncio
 async def test_import_sniffs_the_magic_and_not_the_content_type(monkeypatch):
     """A browser uploading a ``.gz`` off disk sends whatever its platform guesses
     for the type — often ``application/octet-stream``, sometimes nothing. The

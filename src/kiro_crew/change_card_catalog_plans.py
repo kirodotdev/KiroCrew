@@ -48,6 +48,7 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_MCP_INSTALL,
     KIND_MCP_SERVER,
     KIND_MCP_TOGGLE,
+    KIND_PROJECT_MCP_SERVER,
     KIND_SCHEDULE_CREATE,
     KIND_SCHEDULE_UPDATE,
     KIND_SECRET_SAVE,
@@ -922,6 +923,10 @@ def build_preview(
         from kiro_crew.change_card_mcp_server import build_preview as _mcp_server_preview
 
         _mcp_server_preview(p, snapshot, out)
+    elif kind == KIND_PROJECT_MCP_SERVER:
+        from kiro_crew.change_card_project_mcp import build_preview as _project_mcp_preview
+
+        _project_mcp_preview(p, snapshot, out)
     elif kind == KIND_MCP_TOGGLE:
         if not snapshot.get("exists"):
             raise _fail("not_found", "that MCP server is not configured")
@@ -1280,6 +1285,7 @@ def offers_no_undo(kind: str, params: dict[str, Any]) -> bool:
         KIND_MCP_INSTALL,
         KIND_MCP_ADD_CUSTOM,
         KIND_MCP_SERVER,
+        KIND_PROJECT_MCP_SERVER,
         KIND_CONNECTION_CONNECT,
         KIND_TRUST_APP,
         KIND_SCHEDULE_UPDATE,

@@ -1391,6 +1391,10 @@ async def start_dashboard(
         raise entry_gate.EntryPortError(
             "an entry port listener closed before the gateway finished starting"
         )
+    # The start is past the entry port: a note an earlier run left, saying the
+    # port is closed, is untrue. After the check above, so nothing is
+    # awaited between a listener's start and the question about it.
+    await entry_gate.clear_closed_note(state)
     start_shared_crew_maintenance()
     # One-time prune of the crewmates an enrol-on-mount agent sync generated
     # from the user's own specs (see crewmate_prune_migration). Kicked here,

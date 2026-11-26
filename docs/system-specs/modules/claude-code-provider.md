@@ -253,8 +253,9 @@ call rather than every call Claude asks about.
 
 A session that cannot run without the session options is refused below the floor:
 one that leaves the project tier out, a Side Chat, a zero-tool session such as the
-background session, or a worker with narrowed built-ins
-(`_claude_session_needs_options`). When the installed package's version is a known
+background session, a worker with narrowed built-ins, or a session that holds a
+project MCP server or runs with `strictMcpConfig` because its project MCP file could
+not be read (`_claude_session_needs_options`). When the installed package's version is a known
 version below the floor, `ClaudeLaunch.resolve_spawn` refuses it before any process
 starts (`_refuse_claude_session_below_floor_before_spawn`). A version that cannot be
 read, such as a wrapper or an override, leaves the decision to the handshake check in
@@ -494,7 +495,12 @@ own servers. Pinned by `test/test_claude_mcp_identity.py`.
 the primary spawn (not only on the model-substitution retry) with
 `permissions.defaultMode` when requested, `permissions.deny` rules derived from
 the spec's `disabledTools`, and the `permissions.ask` rules a `toolsSettings` shell
-or write allowlist needs (above). Once the provider-advertised model cache is warm it
+or write allowlist needs (above). Project-server holds belong only to the inline
+settings on `session/new`, `session/load` and `session/fork`, not this shared seed:
+`disabledMcpjsonServers` names each server of the folder's `.mcp.json` the person
+has not approved there (see the project MCP check in [security](security.md)).
+Claude Code reads those names as rejected regardless of the session's setting
+sources. Once the provider-advertised model cache is warm it
 writes `availableModels`, and only when another settings
 source (user `settings.json`, project `.claude/settings.json`, or the managed
 `managed-settings.json` and its `managed-settings.d/*.json` drop-ins) already defines

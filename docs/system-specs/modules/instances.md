@@ -2703,7 +2703,9 @@ that same file off disk sends whatever its platform guesses, and the tunnel send
 asking any caller to relabel what it already sends. The tunnel's plain-JSON body
 is unchanged on purpose: the sender is an independently-updated install, so a
 receiver that started demanding compression would refuse every peer that has not
-shipped this yet.
+shipped this yet. Either way the document is read as UTF-8. One leading
+byte-order mark (`EF BB BF`), which a Windows editor writes when it saves "UTF-8
+with BOM", is dropped before the parse, as `json.loads` drops it from bytes.
 
 **The body streams to disk; it is never held in memory.** The raw body is
 written to a temp file under the crew home a chunk at a time
