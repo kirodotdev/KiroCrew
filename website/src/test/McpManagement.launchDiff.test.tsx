@@ -16,7 +16,7 @@ import { i18nT } from '../i18n/t'
 import { fmtList } from '../i18n/format'
 import { RefusalLaunch } from '../pages/settings/McpManagementLaunchReview'
 import { distinctCommands, envValueChanges, launchChanges, mergedEnvRule } from '../pages/settings/mcpLaunchDiff'
-import type { LaunchRefusal } from '../pages/settings/mcpManagementModel'
+import { withCurrentLaunch, type LaunchRefusal } from '../pages/settings/mcpManagementModel'
 
 const M = (key: string, vars?: Record<string, unknown>) => i18nT(`pages.mcpManagement.${key}`, vars)
 const list = (items: string[]) => fmtList(items, { style: 'narrow' })
@@ -467,6 +467,47 @@ describe('a launch that changed its command and gained a key', () => {
     )
     expect(columnLaunches(container, M('details_approved'))).toEqual([['/opt/search --v1', 'LD_PRELOAD']])
     expect(columnLaunches(container, M('details_new'))).toEqual([['/opt/search --v2', 'LD_PRELOAD']])
+  })
+
+  it('names a key the gateway found changed when both sides display the same redacted value', () => {
+    const shown = 'NODE_OPTIONS=--token=[REDACTED: credential]'
+    const line = M('diff_env_value_changed', { name: 'NODE_OPTIONS' })
+    const same = { ...pathOnly, approved_commands: [CMD], approved_envs: [[shown]], commands: [CMD], envs: [[shown]] }
+    // Equal displays alone name nothing; the gateway's flag names the key.
+    expect(render(<RefusalLaunch refusal={same} />).container.textContent).not.toContain(line)
+    cleanup()
+    const flagged = render(<RefusalLaunch refusal={{ ...same, changed_env_keys: ['NODE_OPTIONS'] }} />)
+    expect(flagged.container.textContent).toContain(line)
+    cleanup()
+    // Beside a visible PATH change too, where each launch gets its own summary.
+    const beside = render(
+      <RefusalLaunch
+        refusal={{ ...same, approved_envs: [[OLD_PATH, shown]], envs: [[NEW_PATH, shown]], changed_env_keys: ['NODE_OPTIONS'] }}
+      />,
+    )
+    expect(beside.container.textContent?.split(line).length).toBe(2)
+  })
+
+  it('drops the changed keys of a refusal the page replaces with a newer launch', () => {
+    const shown = 'NODE_OPTIONS=--token=[REDACTED: credential]'
+    const line = M('diff_env_value_changed', { name: 'NODE_OPTIONS' })
+    const refusal: LaunchRefusal = {
+      ...pathOnly,
+      approved_commands: [CMD],
+      approved_envs: [[shown, 'MODE=<hidden sha256:aaaaaaaa>']],
+      commands: [CMD],
+      envs: [[shown, 'MODE=<hidden sha256:aaaaaaaa>']],
+      changed_env_keys: ['NODE_OPTIONS'],
+    }
+    const launch = { name: 'docs', commands: [CMD], envs: [[shown, 'MODE=<hidden sha256:bbbbbbbb>']], complete: true, expected_launch: 'newer' }
+    const replaced = withCurrentLaunch(refusal, { docs: { refused: 'shown', launch } }, 'docs')
+    expect(replaced.expected_launch).toBe('newer')
+    expect(render(<RefusalLaunch refusal={replaced} />).container.textContent).not.toContain(line)
+    expect(replaced.changed_env_keys).toBeUndefined()
+    cleanup()
+    const kept = withCurrentLaunch(refusal, {}, 'docs')
+    expect(kept.changed_env_keys).toEqual(['NODE_OPTIONS'])
+    expect(render(<RefusalLaunch refusal={kept} />).container.textContent).toContain(line)
   })
 
   it('lists no key for a plain version bump that kept every value', () => {
