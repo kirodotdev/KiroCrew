@@ -87,6 +87,11 @@ def _purge_search_index(stems: list[str]) -> bool:
     """
     if not stems:
         return True
+    from kiro_crew import chat_search_cache
+
+    # The chat history search cache keeps the same text, redacted, by stem.
+    if not chat_search_cache.drop(_crew_sessions_dir(), stems):
+        return False
     db_path = _crew_sessions_dir() / ".index" / INDEX_FILENAME
     if not db_path.exists():
         return True

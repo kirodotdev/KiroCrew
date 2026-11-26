@@ -1,0 +1,580 @@
+"""A chat's history search cache (``kiro_crew.chat_search_cache``, SQLite FTS5) and
+the search window that answers from it (``dashboard/chat_history_cached.py``)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import threading
+from types import SimpleNamespace
+
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+from kiro_crew import chat_search_cache as csc
+from kiro_crew._sqlite_compat import fts5_available
+from kiro_crew.dashboard import chat_history_cached as chc
+from kiro_crew.dashboard import chat_history_search as shs
+from kiro_crew.dashboard.handlers.sessions import message_query
+from kiro_crew.history import ConversationLog
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
+
+pytestmark = pytest.mark.skipif(not fts5_available(), reason="SQLite has no FTS5")
+
+KEY = "dashboard:chat-1"
+SEARCH = "/api/chat/slots/{slot}/history/search"
+COUNTS = "/api/chat/slots/{slot}/history/counts"
+
+
+@pytest.fixture
+def log(tmp_path, monkeypatch):
+    monkeypatch.setattr(shs, "slot_history_key", lambda slot: slot.key)
+    return ConversationLog(base_dir=tmp_path)
+
+
+def _decoded(log, monkeypatch) -> list[int]:
+    """Count the transcript rows every page read hands back."""
+    seen = [0]
+    real = log.read_messages_chained_page
+
+    def counted(*args, **kwargs):
+        page = real(*args, **kwargs)
+        seen[0] += len(page.messages)
+        return page
+
+    monkeypatch.setattr(log, "read_messages_chained_page", counted)
+    return seen
+
+
+def _store(log) -> csc.ChatSearchCache:
+    return csc.store_for(log._dir)
+
+
+def _update(log, key: str = KEY) -> csc.Snapshot:
+    return _store(log).update(log, key, chc.cache_entry)
+
+
+def _cached(log, snap, q: str | None = None, **kw) -> dict:
+    kw.setdefault("kind", "")
+    kw.setdefault("since", None)
+    kw.setdefault("until", None)
+    kw.setdefault("before", None)
+    kw.setdefault("limit", 30)
+    return chc.search_cached(_store(log), snap, query=message_query(q) if q else None, **kw)
+
+
+def _counts(log, snap, q: str | None, kind: str = "") -> dict:
+    return _cached(log, snap, q, kind=kind)["counts"]
+
+
+def _rewrite(log, rows: list[dict], key: str = KEY) -> None:
+    """Replace the transcript file the way the dashboard save does: a new file."""
+    path = log._path(key)
+    head = path.read_text(encoding="utf-8").splitlines()[0]
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("\n".join([head, *(json.dumps(r) for r in rows)]) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    log._invalidate_cache(key)
+
+
+def _rows(log) -> list[dict]:
+    return list(log.read_messages(KEY))
+
+
+def _plums(log, n: int) -> None:
+    for i in range(n):
+        log.append(KEY, "user", f"plum note {i}")
+
+
+def test_new_rows_are_appended_without_reading_the_old_ones_again(log, monkeypatch):
+    _plums(log, csc.VERIFY_ROWS + 50)
+    first = _update(log)
+    assert _counts(log, first, "plum")[""] == csc.VERIFY_ROWS + 50
+
+    decoded = _decoded(log, monkeypatch)
+    log.append(KEY, "assistant", "a fresh pear reply")
+    later = _update(log)
+
+    # The window it checks, row 0 and the one new row, never the whole chat again.
+    assert decoded[0] <= csc.VERIFY_ROWS + 2
+    assert _counts(log, later, "pear")[""] == 1
+    assert _counts(log, later, "plum")[""] == csc.VERIFY_ROWS + 50
+
+
+def test_a_save_that_rewrites_the_same_rows_does_not_rebuild(log, monkeypatch):
+    _plums(log, csc.VERIFY_ROWS + 50)
+    _update(log)
+    _rewrite(log, _rows(log))
+
+    decoded = _decoded(log, monkeypatch)
+    snap = _update(log)
+
+    assert decoded[0] <= csc.VERIFY_ROWS + 1
+    assert _counts(log, snap, "plum")[""] == csc.VERIFY_ROWS + 50
+
+
+@pytest.mark.parametrize(
+    "change", ["first row edited", "rows taken back and refilled", "fewer rows"]
+)
+def test_a_rewrite_that_changed_old_rows_rebuilds_the_cache(log, monkeypatch, change):
+    _plums(log, csc.VERIFY_ROWS + 50)
+    _update(log)
+    rows = _rows(log)
+    if change == "first row edited":
+        rows[0] = {**rows[0], "content": "a cherry instead"}
+    elif change == "rows taken back and refilled":
+        rows = rows[:10] + [{**r, "content": "a cherry instead"} for r in rows[10:]] + rows[:5]
+    else:
+        rows = rows[:-5]
+    _rewrite(log, rows)
+
+    decoded = _decoded(log, monkeypatch)
+    snap = _update(log)
+
+    assert decoded[0] >= len(rows)
+    expected = sum("cherry" in r["content"] for r in rows)
+    assert _counts(log, snap, "cherry")[""] == expected
+    assert _counts(log, snap, "plum")[""] == sum("plum" in r["content"] for r in rows)
+
+
+def test_an_edited_recent_row_is_read_again(log):
+    _plums(log, 20)
+    _update(log)
+    rows = _rows(log)
+    rows[-3] = {**rows[-3], "content": "now about a cherry"}
+    _rewrite(log, rows)
+
+    snap = _update(log)
+
+    assert _counts(log, snap, "cherry")[""] == 1
+    assert _counts(log, snap, "plum")[""] == 19
+
+
+def test_the_text_is_redacted_before_it_is_matched_or_kept(log):
+    log.append(KEY, "user", "the plum bot")
+    rows = _rows(log)
+    # Written past the append path, which would redact it on the way in: a
+    # transcript can hold one (an older row, another writer).
+    rows[0] = {**rows[0], "content": f"my token is {SAMPLE_SLACK_BOT_TOKEN} for the plum bot"}
+    _rewrite(log, rows)
+    snap = _update(log)
+    part = SAMPLE_SLACK_BOT_TOKEN[8:24]
+
+    assert _counts(log, snap, part)[""] == 0
+    assert _counts(log, snap, "plum")[""] == 1
+    path = _store(log).path(KEY)
+    stored = b"".join(
+        p.read_bytes() for p in (path, path.with_name(path.name + "-wal")) if p.exists()
+    )
+    assert part.encode() not in stored
+
+
+def test_a_short_query_reads_the_stored_text_and_still_matches(log):
+    log.append(KEY, "user", "see ab here")
+    log.append(KEY, "assistant", "中文搜索 works")
+    log.append(KEY, "user", "nothing")
+    snap = _update(log)
+
+    assert [h["index"] for h in _cached(log, snap, "ab")["hits"]] == [0]
+    assert [h["index"] for h in _cached(log, snap, "中文")["hits"]] == [1]
+    assert [h["index"] for h in _cached(log, snap, "中文 works")["hits"]] == [1]
+
+
+def _mixed(log) -> None:
+    """A chat with every shape the gate and the per-request filters read."""
+    log.append(KEY, "user", "plum one", mid="u0")
+    log.append(KEY, "assistant", "plum pie https://example.com/a", mid="a1")
+    log.append(KEY, "user", "a plum picture", mid="u2", extra_meta={"files": ["/tmp/p.png"]})
+    log.append(KEY, "user", "plum -pear and pear", mid="u3")
+    log.append(KEY, "assistant", "ticket pr 4411 merged", mid="a4")
+    log.append(KEY, "assistant", "pull/44110 is another", mid="a5")
+    log.append(
+        KEY,
+        "user",
+        "steer plum",
+        mid="u6",
+        extra_meta={"steer": True, "steerState": "superseded", "supersededBy": "u7"},
+    )
+    log.append(KEY, "user", "steer plum", mid="u7")
+    log.append(KEY, "assistant", "中文 plum 搜索", mid="a8")
+
+
+@pytest.mark.parametrize(
+    "q, kind",
+    [
+        ("plum", ""),
+        ("plum", "images"),
+        ("plum", "links"),
+        ("plum", "pinned"),
+        ("plum -pear", ""),
+        ('"plum pie"', ""),
+        ("picture", ""),
+        ("pr 4411", ""),
+        ("中文", ""),
+        ("搜索 plum", ""),
+        (None, "images"),
+        (None, "pinned"),
+    ],
+)
+def test_the_cache_answers_what_the_paged_scan_answers(log, q, kind):
+    _mixed(log)
+    pinned = shs.Pinned([{"mid": "u2"}, {"mid": "a1"}])
+    snap = _update(log)
+    query = message_query(q) if q else None
+
+    cached = _cached(log, snap, q, kind=kind, pinned=pinned, limit=50)
+    scanned = shs.search_history(
+        log,
+        KEY,
+        query=query,
+        kind=kind,
+        since=None,
+        until=None,
+        before=None,
+        limit=50,
+        pinned=pinned,
+    )
+
+    assert cached["hits"] == scanned["hits"]
+    assert cached["counts"] == scanned["counts"]
+    assert cached["complete"] is True
+
+
+def test_hits_page_below_the_last_one(log):
+    _plums(log, 40)
+    snap = _update(log)
+
+    first = _cached(log, snap, "plum", limit=30)
+    rest = _cached(log, snap, "plum", limit=30, before=first["next_before"])
+
+    assert first["next_before"] == first["hits"][-1]["index"] == 10
+    assert [h["index"] for h in rest["hits"]] == list(range(9, -1, -1))
+    assert rest["next_before"] is None
+    assert first["counts"] == rest["counts"]
+
+
+def test_the_least_recently_searched_caches_go_first_past_the_disk_cap(log):
+    store = _store(log)
+    keys = ["dashboard:a", "dashboard:b", "dashboard:c"]
+    for key in keys:
+        log.append(key, "user", "plum " * 200)
+        _update(log, key)
+    # Closed first: the close checkpoints the WAL, which moves the mtime.
+    store.close_all()
+    for n, key in enumerate(keys):
+        os.utime(store.path(key), (1_000_000 + n, 1_000_000 + n))
+
+    def size(key):
+        base = store.path(key)
+        return sum(p.stat().st_size for p in base.parent.glob(base.name + "*"))
+
+    sizes = {key: size(key) for key in keys}
+    # "a" was searched again last.
+    os.utime(store.path("dashboard:a"), (2_000_000, 2_000_000))
+
+    left = store.evict(cap=sizes["dashboard:a"] + sizes["dashboard:c"])
+
+    assert not store.path("dashboard:b").exists()
+    assert store.path("dashboard:a").exists() and store.path("dashboard:c").exists()
+    assert left == sizes["dashboard:a"] + sizes["dashboard:c"]
+
+
+def test_a_chat_whose_cache_alone_passes_the_cap_is_not_kept(log, monkeypatch):
+    _plums(log, 20)
+    # Smaller than any cache file: the first committed page passes it.
+    monkeypatch.setattr(csc, "DISK_CAP_BYTES", 1024)
+    store = _store(log)
+
+    with pytest.raises(csc.CacheTooLarge):
+        _update(log)
+    assert list(store.dir.glob(store.path(KEY).name + "*")) == []
+    # Not built again: the next update refuses before reading any row.
+    decoded = _decoded(log, monkeypatch)
+    with pytest.raises(csc.CacheTooLarge):
+        _update(log)
+    assert decoded == [0]
+    assert not store.path(KEY).exists()
+
+
+def test_a_deleted_chat_takes_its_search_cache_with_it(log):
+    log.append(KEY, "user", "plum")
+    _update(log)
+    path = _store(log).path(KEY)
+    assert path.exists()
+
+    assert log.delete_session(KEY)
+
+    assert list(path.parent.glob(path.name + "*")) == []
+
+
+@pytest.mark.asyncio
+async def test_a_closed_chat_takes_its_search_cache_with_it(log):
+    log.append(KEY, "user", "plum")
+    _update(log)
+    path = _store(log).path(KEY)
+
+    await chc.drop_closed_chat(log, SimpleNamespace(key=KEY))
+
+    assert list(path.parent.glob(path.name + "*")) == []
+
+
+def test_a_dropped_cache_is_not_written_back_by_its_build(log):
+    log.append(KEY, "user", "plum")
+    snap = _update(log)
+
+    assert csc.drop(log._dir, [KEY])
+
+    with pytest.raises(csc.CacheDropped):
+        _cached(log, snap, "plum")
+    assert not _store(log).path(KEY).exists()
+
+
+def _app(log) -> web.Application:
+    slot = SimpleNamespace(
+        key=KEY, _app="", linked_session_key=KEY, workspace=None, _history_key=KEY
+    )
+    app = web.Application()
+    app["state"] = SimpleNamespace(conversation_log=log, _slots={KEY: slot}, _chat_pins=[])
+    app.router.add_get(SEARCH, shs.api_chat_slot_history_search)
+    app.router.add_get(COUNTS, shs.api_chat_slot_history_counts)
+    return app
+
+
+async def _get(client, route: str, query: str) -> dict:
+    resp = await client.get(route.format(slot=KEY) + "?" + query)
+    assert resp.status == 200
+    return await resp.json()
+
+
+@pytest.mark.asyncio
+async def test_every_tab_shows_the_same_counts_for_the_whole_chat(log):
+    for i in range(120):
+        if i % 3 == 0:
+            log.append(KEY, "user", f"plum picture {i}", extra_meta={"files": [f"/p/{i}.png"]})
+        else:
+            log.append(KEY, "assistant", f"plum link {i} https://example.com/{i}")
+    _update(log)
+    async with TestClient(TestServer(_app(log))) as client:
+        replies = [
+            await _get(client, SEARCH, f"q=plum&kind={kind}")
+            for kind in ("", "images", "links", "files")
+        ]
+
+    assert all(r["complete"] for r in replies)
+    assert all(r["counts"] == replies[0]["counts"] for r in replies)
+    assert (replies[0]["counts"][""], replies[0]["counts"]["links"]) == (120, 80)
+    assert len(replies[0]["hits"]) == 30
+    assert replies[0]["next_before"] == replies[0]["hits"][-1]["index"]
+
+
+@pytest.mark.asyncio
+async def test_a_cursor_past_the_chat_is_its_end_in_the_cache(log, monkeypatch):
+    _plums(log, 3)
+    _update(log)
+
+    def no_scan(*args, **kwargs):
+        raise AssertionError("the cache must answer")
+
+    monkeypatch.setattr(shs, "search_history", no_scan)
+    async with TestClient(TestServer(_app(log))) as client:
+        # Wider than SQLite's 64-bit integer.
+        body = await _get(client, SEARCH, f"q=plum&before={2**63}")
+
+    assert [h["index"] for h in body["hits"]] == [2, 1, 0]
+
+
+@pytest.mark.asyncio
+async def test_counts_come_from_the_cache_without_the_row_walk(log, monkeypatch):
+    _plums(log, 50)
+    # A walk this short would stop before the chat's first row.
+    monkeypatch.setattr(shs, "COUNT_BUDGET_ROWS", 10)
+    _update(log)
+    async with TestClient(TestServer(_app(log))) as client:
+        body = await _get(client, COUNTS, "q=plum")
+
+    assert body["complete"] is True
+    assert body["counts"][""] == 50
+    assert body["total"] == 50
+
+
+@pytest.mark.asyncio
+async def test_a_first_search_never_waits_for_the_build_and_starts_exactly_one(log, monkeypatch):
+    _plums(log, 40)
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    builds = []
+    real = csc.ChatSearchCache.update
+
+    def blocked(self, *args, **kwargs):
+        builds.append(args[1])
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(FALLBACK_TIMEOUT_SECS)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(csc.ChatSearchCache, "update", blocked)
+    # No bound on the wait: a route that waited for this build would never answer.
+    monkeypatch.setattr(chc, "BUILD_WAIT_SECS", None)
+    try:
+        async with TestClient(TestServer(_app(log))) as client:
+            first = await asyncio.wait_for(
+                _get(client, SEARCH, "q=plum&limit=5"), FALLBACK_TIMEOUT_SECS
+            )
+            counts = await asyncio.wait_for(_get(client, COUNTS, "q=plum"), FALLBACK_TIMEOUT_SECS)
+            build = chc._updates[f"{_store(log).dir}\0{KEY}"]
+            # The build thread may not have reached the patched update yet.
+            await asyncio.wait_for(entered.wait(), FALLBACK_TIMEOUT_SECS)
+            started = list(builds)
+            release.set()
+            await asyncio.wait_for(asyncio.shield(build), FALLBACK_TIMEOUT_SECS)
+            after = await _get(client, SEARCH, "q=plum&limit=5")
+    finally:
+        release.set()
+
+    assert started == [KEY]
+    assert first["indexing"] is True and "complete" not in first
+    assert [h["index"] for h in first["hits"]] == [39, 38, 37, 36, 35]
+    assert first["counts"][""] == 5
+    assert counts["indexing"] is True and counts["counts"][""] == 40
+    assert after["complete"] is True and "indexing" not in after
+    assert after["counts"][""] == 40
+
+
+async def _built(client, log, query: str = "q=plum") -> dict:
+    """The first search (from the scan), then the build it started, finished."""
+    first = await _get(client, SEARCH, query)
+    build = chc._updates.get(f"{_store(log).dir}\0{KEY}")
+    if build is not None:
+        await asyncio.wait_for(asyncio.shield(build), FALLBACK_TIMEOUT_SECS)
+        assert build.exception() is None
+    return first
+
+
+@pytest.mark.asyncio
+async def test_a_lone_surrogate_in_a_row_still_builds_and_is_found(log, monkeypatch):
+    log.append(KEY, "user", "placeholder")
+    _rewrite(
+        log,
+        [
+            {"role": "user", "content": "a plum \ud83d pie", "ts": "2026-11-01T10:00:00+00:00"},
+            {
+                "role": "assistant",
+                "content": "plum reply \udc00 here",
+                "ts": "2026-11-01T10:00:01+00:00",
+                "meta": {"mid": "m\ud83d"},
+            },
+        ],
+    )
+    monkeypatch.setattr(chc, "BUILD_WAIT_SECS", FALLBACK_TIMEOUT_SECS)
+    async with TestClient(TestServer(_app(log))) as client:
+        first = await _built(client, log)
+        after = await _get(client, SEARCH, "q=plum")
+        counts = await _get(client, COUNTS, "q=plum")
+
+    assert [h["index"] for h in first["hits"]] == [1, 0]
+    assert after["complete"] is True
+    assert [h["index"] for h in after["hits"]] == [1, 0]
+    assert counts["complete"] is True and counts["counts"][""] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_cache_that_cannot_answer_falls_back_to_the_scan(log, monkeypatch):
+    _plums(log, 3)
+    _update(log)
+
+    def broken(*args, **kwargs):
+        raise UnicodeEncodeError("utf-8", "x", 0, 1, "surrogates not allowed")
+
+    monkeypatch.setattr(chc, "search_cached", broken)
+    async with TestClient(TestServer(_app(log))) as client:
+        body = await _get(client, SEARCH, "q=plum")
+        counts = await _get(client, COUNTS, "q=plum")
+
+    assert [h["index"] for h in body["hits"]] == [2, 1, 0]
+    assert counts["counts"][""] == 3
+
+
+def test_deleting_a_tab_predecessor_drops_the_caches_that_read_it(log):
+    first, later = "dashboard:chat-1-100", "dashboard:chat-2-200"
+    log.append(first, "user", "the quincefruit note", tab_id="tabchain0001")
+    log.append(later, "user", "a plum note", tab_id="tabchain0001")
+    snap = _update(log, later)
+    assert _counts(log, snap, "quincefruit")[""] == 1
+
+    assert log.delete_session(first)
+
+    cache_dir = _store(log).dir
+    leftover = [p.name for p in cache_dir.iterdir() if b"quincefruit" in p.read_bytes()]
+    assert leftover == []
+    assert _counts(log, _update(log, later), "quincefruit")[""] == 0
+
+
+def test_a_variant_switched_far_back_is_seen_on_the_next_search(log):
+    log.append(KEY, "user", "placeholder")
+    rows = [
+        {"role": "user", "content": "ask", "ts": "2026-11-01T10:00:00+00:00"},
+        {
+            "role": "assistant",
+            "content": "the old pear answer",
+            "ts": "2026-11-01T10:00:01+00:00",
+            "variants": [{"content": "the old pear answer"}, {"content": "the new fig answer"}],
+            "variant_idx": 0,
+        },
+        *(
+            {"role": "user", "content": f"plum {i}", "ts": "2026-11-01T10:00:02+00:00"}
+            for i in range(csc.VERIFY_ROWS + 50)
+        ),
+    ]
+    _rewrite(log, rows)
+    snap = _update(log)
+    assert _counts(log, snap, "pear")[""] == 1
+
+    rows[1] = {**rows[1], "content": "the new fig answer", "variant_idx": 1}
+    _rewrite(log, rows)
+    snap = _update(log)
+
+    assert _counts(log, snap, "fig")[""] == 1
+    assert _counts(log, snap, "pear")[""] == 0
+
+
+def test_no_cache_is_built_while_the_chat_is_being_deleted(log):
+    log.append(KEY, "user", "plum")
+
+    with log.delete_in_flight_window(KEY), pytest.raises(csc.CacheDropped):
+        _update(log)
+
+    assert not _store(log).path(KEY).exists()
+
+
+@pytest.mark.asyncio
+async def test_builds_run_on_their_own_thread(log, monkeypatch):
+    _plums(log, 3)
+    threads = []
+    real = csc.ChatSearchCache.update
+
+    def recorded(self, *args, **kwargs):
+        threads.append(threading.current_thread().name)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(csc.ChatSearchCache, "update", recorded)
+    async with TestClient(TestServer(_app(log))) as client:
+        await _built(client, log)
+
+    assert len(threads) == 1 and threads[0].startswith("chat-search-cache")
+
+
+def test_a_build_waits_between_pages_while_a_paged_scan_runs(monkeypatch):
+    monkeypatch.setattr(chc, "SCAN_YIELD_SECS", FALLBACK_TIMEOUT_SECS)
+    seen: list[int] = []
+    build = threading.Thread(target=lambda: (chc._yield(), seen.append(chc._scans)))
+    with chc.scanning():
+        build.start()
+        # The build parks on the scans it waits for, and reads nothing yet.
+        wait_until(lambda: len(chc._scans_done._waiters) == 1)
+        assert seen == []
+    build.join(FALLBACK_TIMEOUT_SECS)
+
+    assert seen == [0]

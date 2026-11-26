@@ -482,6 +482,10 @@ async def close_slot(
         finally:
             if state.get_slot(name) is slot:
                 slot.cancel_close()
+    if state.get_slot(name) is not slot:
+        from kiro_crew.dashboard.chat_history_cached import drop_closed_chat
+
+        await drop_closed_chat(state.conversation_log, slot)
     if hand_back and state.get_slot(name) is not slot:
         from kiro_crew.dashboard.session_control import hand_back_on_close
 
