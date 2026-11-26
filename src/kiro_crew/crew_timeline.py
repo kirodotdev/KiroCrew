@@ -9,7 +9,9 @@ in :data:`GAPS` instead of being drawn.
 
 Pure functions over row dicts (``role``, ``content``, ``ts``, ``meta``), so the
 derivation is tested without a gateway; the route in
-``dashboard/handlers/crew_workers.py`` feeds it the live slots' windows.
+``dashboard/handlers/crew_workers.py`` feeds it the live slots' windows. The one
+reader of files is :func:`add_billed_credits`, which takes a lane's credits from the
+per-turn usage store, since the rows miss a turn that left no reply.
 """
 
 from __future__ import annotations
@@ -471,6 +473,31 @@ def redact_labels(lane: dict[str, Any], redact: Any) -> dict[str, Any]:
             limit = FAILED_LABEL_MAX if item.get("kind") == MARK_FAILED else LABEL_MAX
             item["label"] = str(redact(label))[:limit]
     return lane
+
+
+def add_billed_credits(lanes: list[dict[str, Any]], *, now: datetime) -> None:
+    """Raise each lane's ``credits`` to what the usage store billed its slot. IN PLACE.
+
+    A transcript's ``meta.turn_stats`` sits on the turn's reply row only, so a turn
+    that ends on tool calls with no reply (a conductor turn that stops after
+    ``autonudge_stop``) adds nothing from the rows. The per-turn usage rows
+    (``<data home>/usage/tokens``) record every billed turn when it ends, reply or
+    not; they are summed from the lane's first loaded row on, the same window the
+    rows cover, and the window ends at *now* so it spans exactly that interval.
+    The larger figure wins, so a lane whose store holds nothing keeps what its
+    rows recorded. Reads files: call it off the event loop.
+    """
+    from kiro_crew.dashboard.handlers.usage import slot_turn_usage
+
+    until = now.timestamp()
+    for lane in lanes:
+        since = parse_ts(lane.get("first_ts"))
+        if since is None:
+            continue
+        days = max((now - since).total_seconds(), 0.0) / 86400
+        usage = slot_turn_usage(str(lane["key"]), days, until=until)
+        billed = sum(float(row.get("credits") or 0.0) for row in usage)
+        lane["credits"] = round(max(float(lane.get("credits") or 0.0), billed), 4)
 
 
 def summarize(lanes: list[dict[str, Any]], *, now: datetime, live: bool) -> dict[str, Any]:
