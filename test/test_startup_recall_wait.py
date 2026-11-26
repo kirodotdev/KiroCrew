@@ -82,7 +82,8 @@ def test_a_build_waits_short_only_for_an_embedding_already_running(
     _write_memory_config(**memory)
     asked: list[str] = []
 
-    def in_flight(text: str) -> bool:
+    def in_flight(text: str, *, query: bool = False) -> bool:
+        assert query, "the build looks for the recall-query form of its message"
         asked.append(text)
         return running
 
@@ -97,7 +98,7 @@ def test_a_build_waits_short_only_for_an_embedding_already_running(
 
 
 def test_a_build_with_no_query_keeps_the_long_wait(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(embeddings, "embedding_in_flight", lambda text: pytest.fail(text))
+    monkeypatch.setattr(embeddings, "embedding_in_flight", lambda text, **_: pytest.fail(text))
     clock = ManualClock()
     clock.install(monkeypatch, budget_mod)
     with ctx._prompt_build_embedding_deadline(True):

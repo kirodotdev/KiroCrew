@@ -1422,7 +1422,7 @@ def startup_lesson_query(store: VectorMemoryStore, query_text: str) -> _RecallQu
         with store._db_lock:
             generation = store._space_generation
             signature = store.recorded_embedding_space()
-        vector = store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        vector = store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
     except (OSError, ValueError, RuntimeError, vector_memory.sqlite3.Error):
         logger.debug("startup lesson query embed skipped", exc_info=True)
         return _RecallQuery(None, None, None)
@@ -1477,7 +1477,7 @@ def rank_lessons(
     if recall_query is not None:
         query_emb = recall_query.vector
     elif store.embed_fn:
-        query_emb = store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        query_emb = store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
     else:
         query_emb = None
     # Same row-side derivation, and the same width rule, as the semantic scan:

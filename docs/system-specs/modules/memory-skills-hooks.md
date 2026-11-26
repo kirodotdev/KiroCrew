@@ -1711,7 +1711,7 @@ SQLite table `episodic_memories` — conversation fragments with optional embedd
 - **Injection screening (XPIA defense-in-depth)**: episodic text is derived from conversation transcripts, so a poisoned turn could persist steering instructions that get re-injected into future contexts. `write_episodic()` runs `_contains_injection()` (before the embed call) and, on match, drops the entry and emits an auditable `injection_blocked` event with `memory_type='episodic'`. The stored audit snippet is scrubbed with `redact_exfiltration_urls()` + `redact_credentials()` first as defense in depth; `/api/memory/events` also redacts all returned events. This mirrors the semantic-KV screen at `validate_semantic()`. **Residual (accepted risk)**: this is a best-effort regex screen: a determined owner can still steer their own long-term memory with phrasing that evades the patterns; long-term memory poisoning is an accepted residual. The screen raises the bar against accidental/opportunistic XPIA persistence, not against a motivated self-owner.
 - **Search**: FAISS vector similarity with decay scoring: `cosine_sim × (0.7 + 0.3×importance) × exp(-rate×days_old)`, then MMR diversity reranking (Jaccard-based, `_MMR_LAMBDA` = 0.6). The decay rate is `_DEFAULT_DECAY_RATE` = 0.03/day, configurable per tag via `memory.decay_rates` (`_decay_rate_for`): keys are tags (case-insensitive, matching `_matches_tags`), the reserved `default` key replaces the built-in fallback, a multi-tag row uses the SLOWEST matching rate (smallest = maximum retention, so a broad tag can never age out a long-retention one), values are clamped to [0, 10] and non-numeric entries are dropped with a warning by `_sanitize_decay_rates`, which runs on every config apply as well as at construction, so a hand-edited rate is clamped and a garbage entry dropped identically either way. Both vector rungs (FAISS and the stdlib fallback) resolve the rate through the same helper; the keyword rung does no decay scoring at all.
 - **MMR reranking**: Maximal Marginal Relevance balances relevance with diversity. Greedy iterative selection penalizes candidates similar to already-selected results. Prevents redundant episodic fragments from consuming the context budget. Configurable via `mmr=False` parameter to disable. The candidate pool is deliberately NOT truncated toward `limit` (that tail pick is the point of MMR); the only bound is the recall-safe `_MMR_MAX_POOL` = 1000 ceiling for pathological inputs.
-- **Relevance threshold**: `_EPISODIC_RELEVANCE_THRESHOLD` = 0.55 cosine required for context injection, relaxed to `_EPISODIC_LONG_TEXT_THRESHOLD` = 0.42 for entries longer than `_EPISODIC_LONG_TEXT_CHARS` = 300 chars, on the reasoning that long texts dilute cosine scores. **Neither value is tuned, and the two classes it separates overlap** — measured, both are looser than the best achievable cut and the long-text relaxation is about twice the dilution it compensates for. Do not read 0.55 as a discovered boundary: [The admission gate is a loose cut, not a tuned one](#the-admission-gate-is-a-loose-cut-not-a-tuned-one) carries the measurement and the harness that produced it. The threshold reads the RAW `cosine_sim`, not the decay-adjusted score, so age and importance affect ordering but never admission. Admission runs BEFORE the decay ranking, MMR, and the `limit` cut: `get_episodic_context()` calls `search_episodic(relevance_filter=True)`, which drops sub-threshold candidates first, so a highly relevant but old memory cannot be ordered past `limit` by a cluster of recent-but-irrelevant rows that the gate would then remove — a case that otherwise returned empty context while an exact match sat in the store. `search_episodic()` defaults to `relevance_filter=False` and returns the full ranked set for dashboard/API/CLI use. The keyword fallback is unaffected because those rows carry no `cosine_sim` key at all.
+- **Relevance threshold**: `_EPISODIC_RELEVANCE_THRESHOLD` = 0.55 cosine required for context injection, relaxed to `_EPISODIC_LONG_TEXT_THRESHOLD` = 0.42 for entries longer than `_EPISODIC_LONG_TEXT_CHARS` = 300 chars, on the reasoning that long texts dilute cosine scores. **Neither value is tuned, and the two classes it separates overlap** — measured, both are looser than the best achievable cut and the long-text relaxation is about twice the dilution it compensates for. Do not read 0.55 as a discovered boundary: [The admission gate is a loose cut, not a tuned one](#the-admission-gate-is-a-loose-cut-not-a-tuned-one) carries the measurement and the harness that produced it. The threshold reads the RAW `cosine_sim`, not the decay-adjusted score, so age and importance affect ordering but never admission. Admission runs BEFORE the decay ranking, MMR, and the `limit` cut: `get_episodic_context()` calls `search_episodic(relevance_filter=True)`, which drops sub-threshold candidates first, so a highly relevant but old memory cannot be ordered past `limit` by a cluster of recent-but-irrelevant rows that the gate would then remove — a case that otherwise returned empty context while an exact match sat in the store. `search_episodic()` defaults to `relevance_filter=False` and returns the full ranked set for dashboard/API/CLI use. The keyword fallback is unaffected because those rows carry no `cosine_sim` key at all. A query embedded with the model's query instruction is gated at 0.515 short and 0.375 long instead ([Recall queries take the model's query instruction](#recall-queries-take-the-models-query-instruction)).
 - **Fallback ladder**: FAISS (needs faiss + numpy) → `_sqlite_vector_search`, cosine over the stored blobs → FTS5/LIKE keyword search (OR logic on text + tags) when there is no query embedding at all. The middle rung matters: faiss is an optional accelerator, not a declared dependency, so a stock install still gets vector recall from the stored vectors. Inside that rung the per-row dot product itself has two rungs, guarded by `_HAS_NUMPY` exactly as `_stored_similarity_scorer` is: the query vector is converted once outside the row loop, then numpy does the products where it is installed and `struct.unpack` + `sum` does them where it is not. The numpy resident and per-call rungs dot in float32, matching the stored dtype. The FAISS path takes the index's inner product over normalized vectors as `cosine_sim` and resolves the candidate rows by id through `_get_episodic_batch`, with no re-read of the stored vectors; index staleness is handled by the `data_version` drop and the load-time digest check rather than per candidate. These paths share the admission policy but do not promise bit-identical floating-point results.
 - **Tag filter in SQL**: the keyword fallback and `get_episodic_list` filter tags through one helper, `episodic_search.tag_filter_sql`. It matches each tag against the stored `json.dumps` form (so `café` matches its `\u00e9` spelling on disk), quotes included so only a whole tag matches, with `%` and `_` escaped through `ESCAPE '\'`. The in-Python `matches_tags` and the scoring-set mask decode the JSON instead, and all of them answer the same.
 - **Resident scoring set (the middle rung, with numpy)**: scoring reads only the embedding, `tags`, `importance`, `created_at` and the text LENGTH, and none of that changes between two searches with no write in between — so `_EpisodicScoringSet` holds those columns as numpy arrays and the search resolves row BODIES (`text`, `conversation_id`, `last_accessed_at`) for the ranked pool only, through the same `_get_episodic_batch` the FAISS path uses. Decay is a vectorized expression over the cached arrays, not a per-row Python dict build. Filtering still runs across the FULL population before `limit` — `tag_filter` and the relevance gate are masks over the cached arrays, never a top-k window, because a tag matching few rows would otherwise miss the pool entirely and return nothing where it returns hits today. The pool handed to MMR stays `_MMR_MAX_POOL`-bounded rather than `limit`, since the rerank reads each candidate's text. Eligibility is looked up by record id for only the rows that survive the tag and relevance masks, never by a scan of `memory_record_meta`, which grows with every revision and forget.
@@ -1806,6 +1806,55 @@ confusion per mode. The corpus itself is pinned in the default suite:
 patterns, the 80-character text-hash dedup). Nothing substitutes the toy embedder
 for the real model, which would turn a semantic threshold measurement into a
 term-overlap one while still printing a plausible F1.
+
+#### Recall queries take the model's query instruction
+
+Qwen3-Embedding is trained with an instruction on the query side only. Its model
+card's `query` prompt is `Instruct: Given a web search query, retrieve relevant
+passages that answer the query\nQuery:<text>`, and stored documents stay plain.
+`_try_embed(text, query=True)` adds that prompt on the shared embedder when
+`embeddings.query_instruction_applies(model_id)` holds, and flags the returned
+vector `instructed`. Every recall query passes `query=True`: V1 episodic and
+semantic context, lesson ranking and its startup embed, V2 `recall` (the
+`memory_recall` tool and the Memory page's Test recall), the Memory page's
+episodic search and `kirocrew memory search`. Writes, backfill, dedup,
+contradiction and supersession lookups compare memory with memory and stay plain,
+so stored vectors never change and nothing is re-embedded.
+
+| Model (`model_id`) | Query instruction | Why |
+|---|---|---|
+| bundled `qwen3-embedding:0.6b` | yes | query-side only, per the model card |
+| `ollama:qwen3-embedding*` | yes | the same model family |
+| `ollama:` anything else, e.g. `nomic-embed-text`, `embeddinggemma` | no | these also want a document prefix, and stored memories are never re-embedded |
+| `custom:sha256:<digest>` (a custom GGUF) | no | the id names no model family |
+| a caller's own `embed_fn` | no | there is no model id to check |
+
+The instructed query lands on a lower cosine scale, so each gate reads its own
+floors for it: `memory_v2.INSTRUCTED_*_COSINE_FLOOR` and
+`_EPISODIC_INSTRUCTED_*_THRESHOLD`, picked by the vector's flag. A plain query
+keeps the old floors. Each instructed floor is the highest value, on a 0.005 grid,
+whose recall on the memory recall dev set (878 labelled turn and memory pairs, 349
+relevant; 354 with a memory of up to 300 characters, 524 longer) is at least the
+plain floor's. The cosines come from the production path, the bundled Q8_0 GGUF
+through the vendored llama.cpp:
+
+| Gate | Plain floor: P / R | Instructed floor: P / R |
+|---|---|---|
+| V2 short (≤300 ch) | 0.62: 0.471 / 0.303 | **0.55**: 0.508 / 0.303 |
+| V2 long (>300 ch) | 0.57: 0.589 / 0.263 | **0.57**: 0.739 / 0.271 |
+| V1 short (≤300 ch) | 0.55: 0.397 / 0.440 | **0.515**: 0.500 / 0.440 |
+| V1 long (>300 ch) | 0.42: 0.533 / 0.800 | **0.375**: 0.513 / 0.800 |
+
+Over all pairs, the instructed query at floor 0.50 has P 0.589 / R 0.481; the
+plain query reaches that recall only between floors 0.50 (P 0.484 / R 0.596) and
+0.55 (P 0.500 / R 0.387). The V1 long gate is the one that does not gain: at its very loose point the two scales give the same trade-off. An
+instruction written for this task ("Given a message to an AI agent, retrieve the
+agent's memories that help it respond") was measured too and did worse than the
+model's own prompt at every floor. The dev set is exploratory and lesson-heavy,
+so these are operating points, not calibration, like the floors above.
+Lesson and V1 fact ranking have no cosine floor; their 0.6/0.4 hybrid weight sees
+the cosine shift as a slightly smaller vector term. V2 `operating_point` reports
+the floors the gate applied. The `Instruct: <task>\nQuery:` text has one formatter, `embeddings.query_instruction_text`, which the app embedding SDK's `instruction` argument also uses.
 
 ### Member memory experience and lifecycle
 
@@ -2521,7 +2570,9 @@ available in both versions.
 V2 uses `memory_v2.py` for admission, task-term evidence and ranking, which
 is age-neutral unless an operator opts in to the recency term below. Its cosine cuts are **0.62 for short fragments and 0.57 above 300
 characters**, the precision-first points in the committed real-model experiment
-above. That experiment measured P 1.000 / R 0.920 at each cut; it does not prove
+above. A query embedded with the model's query instruction uses **0.55 short and
+0.57 long** instead ([Recall queries take the model's query
+instruction](#recall-queries-take-the-models-query-instruction)). That experiment measured P 1.000 / R 0.920 at each cut; it does not prove
 those figures for other models or real conversations. These are provisional,
 model-dependent operating points, not universal calibrated boundaries.
 

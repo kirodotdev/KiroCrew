@@ -1224,13 +1224,15 @@ class VectorMemoryStore:
     # ── Episodic CRUD ──
 
     @timed("vector", "search")
-    def _episodic_relevance_threshold(self, text: str) -> float:
+    def _episodic_relevance_threshold(self, text: str, *, instructed: bool = False) -> float:
         """Minimum RAW cosine for a memory to be admitted as relevant context."""
-        return _episodic_search.episodic_relevance_threshold(self, text)
+        return _episodic_search.episodic_relevance_threshold(self, text, instructed=instructed)
 
-    def _filter_by_relevance(self, candidates: list[dict]) -> list[dict]:
+    def _filter_by_relevance(
+        self, candidates: list[dict], *, instructed: bool = False
+    ) -> list[dict]:
         """Drop candidates below the length-aware raw-cosine relevance gate."""
-        return _episodic_search.filter_by_relevance(self, candidates)
+        return _episodic_search.filter_by_relevance(self, candidates, instructed=instructed)
 
     def search_episodic(
         self,
@@ -1322,10 +1324,12 @@ class VectorMemoryStore:
         tag_filter: list[str] | None,
         relevance_filter: bool,
         now: datetime,
+        *,
+        instructed: bool = False,
     ) -> list[dict]:
         """Score, filter and rank from the resident set; resolve winner bodies."""
         return _episodic_search.rank_from_scoring_set(
-            self, scoring, q, limit, mmr, tag_filter, relevance_filter, now
+            self, scoring, q, limit, mmr, tag_filter, relevance_filter, now, instructed=instructed
         )
 
     def _episodic_candidate(self, r: sqlite3.Row, cosine_sim: float, now: datetime) -> dict:
@@ -1350,6 +1354,8 @@ class VectorMemoryStore:
             "episodic",
             {
                 "query_embedding": None if query_embedding is None else list(query_embedding),
+                # The flag ``query_is_instructed`` reads; the list below drops it.
+                "query_instructed": getattr(query_embedding, "instructed", False) is True,
                 "query_text": query_text,
                 "cap": cap,
             },
@@ -1630,9 +1636,11 @@ class VectorMemoryStore:
                 rollback_owned()
                 raise
 
-    def _try_embed(self, text: str, priority: int = PRIORITY_NORMAL) -> list[float] | None:
-        """Embed text using embed_fn if available."""
-        return _embedding.try_embed(self, text, priority)
+    def _try_embed(
+        self, text: str, priority: int = PRIORITY_NORMAL, *, query: bool = False
+    ) -> list[float] | None:
+        """Embed text using embed_fn if available; *query* marks a recall query."""
+        return _embedding.try_embed(self, text, priority, query=query)
 
     def recorded_rebuild_generation(self) -> str:
         """Explicit rebuild request whose old vectors were durably invalidated."""

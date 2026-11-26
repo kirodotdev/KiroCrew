@@ -29,6 +29,7 @@ from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_INTERACTIVE
 from kiro_crew.lesson_validation import LESSON_APPLIES_VALUES, order_by_request_relevance
 from kiro_crew.user_json import strict_json_equal
 from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES
+from kiro_crew.vector_memory_runtime import embedding as _embedding
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 from kiro_crew.vector_memory_runtime import term_index as _term_index
 from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
@@ -936,7 +937,7 @@ def semantic_candidates_v1(
     if recall_query is not None:
         query_embedding = recall_query.vector
     elif store.embed_fn:
-        query_embedding = store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        query_embedding = store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
     else:
         query_embedding = None
 
@@ -972,6 +973,7 @@ def semantic_candidates_v1(
     # the vector term of the same weighted scale (see _hybrid_score).
     similarity = store._stored_similarity_scorer(query_embedding)
     query_has_vector = query_embedding is not None
+    instructed = _embedding.query_is_instructed(query_embedding)
 
     identities = store._fact_identities()
     scored_rows: list[tuple[float, dict]] = []
@@ -1030,6 +1032,7 @@ def semantic_candidates_v1(
                 "score": score,
                 "matched_terms": sorted(query_words & (key_words | val_words)),
                 "cosine": vec_score if query_has_vector else None,
+                "query_instructed": instructed,
             }
             scored_rows.append((score, r))
 
@@ -1345,6 +1348,7 @@ def get_semantic_context(
                     terms,
                     _relevance_rule.fact_text(store._fact_label(row), row["value_json"]),
                     (row.get("retrieval") or {}).get("cosine"),
+                    instructed=bool((row.get("retrieval") or {}).get("query_instructed")),
                 )
             ][:max_rows]
             if mode == _relevance_rule.MODE_ENFORCE:
@@ -1411,11 +1415,12 @@ def semantic_candidates_v2(
     if recall_query is not None:
         query_embedding = recall_query.vector
     elif query_text and store.embed_fn:
-        query_embedding = store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        query_embedding = store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
     else:
         query_embedding = None
     query_terms = memory_v2.terms(query_text)
     similarity = store._stored_similarity_scorer(query_embedding)
+    instructed = _embedding.query_is_instructed(query_embedding)
     with store._db_lock:
         store._check_recall_query(recall_query)
         rows = store._fetch_all_locked(
@@ -1434,7 +1439,7 @@ def semantic_candidates_v2(
         if row["key"] in identities:
             row["identity"] = identities[row["key"]]
         text = f"{store._fact_label(row).replace('.', ' ').replace('_', ' ')} {visible_value}"
-        evidence = memory_v2.relevance_evidence(query_terms, text, cosine)
+        evidence = memory_v2.relevance_evidence(query_terms, text, cosine, instructed=instructed)
         # Preferences are stable instructions supplied by this member's own
         # owner/context, not episodic guesses that must match every task.
         preference = row["key"].startswith("pref.")

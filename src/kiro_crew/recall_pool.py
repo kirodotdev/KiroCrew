@@ -726,6 +726,15 @@ def _run_job(state: _ChildState, job: dict[str, Any]) -> dict[str, Any]:
     return reply
 
 
+def _query_vector(values: Any, instructed: Any) -> Any:
+    """A query vector off the wire, with the instruction flag the gate reads put back."""
+    from kiro_crew.vector_memory_runtime.embedding import _EmbeddingVector
+
+    if values is None or instructed is not True:
+        return values
+    return _EmbeddingVector(values, (None, ""), instructed=True)
+
+
 def _read(state: _ChildState, job: dict[str, Any]) -> dict[str, Any]:
     from kiro_crew.vector_memory_runtime.embedding import _RecallQuery
 
@@ -742,7 +751,9 @@ def _read(state: _ChildState, job: dict[str, Any]) -> dict[str, Any]:
             )
         elif kind == "episodic":
             text = store.get_episodic_context(
-                args.get("query_embedding"), args.get("query_text", ""), args.get("cap", 3000)
+                _query_vector(args.get("query_embedding"), args.get("query_instructed")),
+                args.get("query_text", ""),
+                args.get("cap", 3000),
             )
         elif kind == "lessons":
             raw = args.get("recall_query")
