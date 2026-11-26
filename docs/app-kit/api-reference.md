@@ -2570,9 +2570,10 @@ dashboard's `appWebOriginStatus(name)`, and level 12 adds
 `permissions.kiroOperations` with its route and `ctx.kiro_call` ([Kiro calls](#kiro-calls)) and the dashboard's
 [`SessionChanges` and `DiffView`](#session-changes-and-diff-view), and level 13 adds
 [`useBrowserSites`](#browser-sites) and `/api/apps/<name>/browser-sites`, and level 14
-adds the [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk)'s `canonical_file_path`
-and its outbound URL check (`vet_public_url`, `UrlRejectedError` and
-`address_is_not_public`); each level includes every level below it. Several seams
+adds the [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk)'s `canonical_file_path`,
+its outbound URL check (`vet_public_url`, `UrlRejectedError` and
+`address_is_not_public`) and its raster sniff (`sniff_raster_mime` and
+`RASTER_SNIFF_BYTES`); each level includes every level below it. Several seams
 share level 7, three share level 8, level 10 is shared by the seams of the batch it
 opens, and level 14 by the backend SDK names of its batch, so an app that needs one
 feature-detects it, never the level alone. Read it
@@ -2585,10 +2586,10 @@ The dashboard exports the same number as `APP_SDK_LEVEL`.
 The host controls your backend's own Python may call when no `ctx` seam fits: a
 sensitive-path check, the file path gate, a no-follow read, an atomic write, outbound
 redaction, an audit row, a sandboxed child process, the cross-platform process and
-lock helpers and the public-address check for a URL your backend fetches. Each name
-calls the control the Gateway itself enforces, so a check tightened in a later release
-reaches your app with the upgrade. Use these instead of a private `kiro_crew` name: a
-private name moves between releases, and these do not.
+lock helpers, the public-address check for a URL your backend fetches and a media-type
+sniff. Each name calls the control the Gateway itself enforces, so a check tightened in
+a later release reaches your app with the upgrade. Use these instead of a private
+`kiro_crew` name: a private name moves between releases, and these do not.
 
 It works the same in a hooks backend (in the Gateway process) and in an `entryPoint`
 backend the Gateway spawns on its own interpreter. A backend on its own venv
@@ -2633,6 +2634,7 @@ def read_attachment(path: str, root: str) -> bytes | None:
 | `vet_public_url(url)` | Level 14. The Gateway's check for a URL your backend is about to fetch: `http` or `https`, no user name or password, port 80 or 443, a host that is not a `.onion` or `.local` name, and every address the name resolves to public (an alternate or tunnel spelling of an address is unwrapped first). Returns the vetted URL, whose attributes are `url` (normalized, fragment stripped), `scheme`, `host` (for TLS and the `Host` header), `wire_host` (the name your HTTP client hands its resolver), `port`, `ip` (the first address), `addresses` (every approved address, in resolver order, without repeats) and `domain` (`host` without a leading `www.`); its class is not an SDK name, so read the attributes and never import it. Raises `UrlRejectedError` otherwise, and when the name does not resolve. It performs one DNS lookup and opens no connection, so call it from a worker thread, never on the event loop. It pins nothing: connect only to `.addresses`, through a resolver keyed on `.wire_host` that answers with them, because resolving the name again at connect time would dial an address the check never saw. A host below level 14 has the package without this name, so look it up with `getattr(sdk, "vet_public_url", None)` and refuse the URL when it is `None`. |
 | `UrlRejectedError` | Level 14. Raised by `vet_public_url`. `.code` is `"invalid_url"` (not an absolute `http(s)` URL, or one carrying credentials) or `"blocked_url"` (a well-formed URL the address, port or host rule refused, or one that did not resolve). |
 | `address_is_not_public(address)` | Level 14. `True` when an address you resolved yourself (a redirect hop, say) must be refused: anything that is not a globally reachable unicast address, an IPv4-mapped or 6to4 spelling included. A value that is not an IP literal also answers `True`. |
+| `sniff_raster_mime(head)`, `RASTER_SNIFF_BYTES` | Level 14. The raster type a file's leading bytes start with (`"image/png"`, `"image/jpeg"`, `"image/gif"`, `"image/webp"` or `"image/bmp"` today), or `None`. It decides from the bytes, never from a filename or a declared type: SVG is never an answer, and a RIFF file that is not WebP (a WAVE, say) is `None`. Pass at least `RASTER_SNIFF_BYTES` leading bytes; a longer buffer answers the same. The answer says what the bytes are, not what to accept: check it against your own allowlist, so a type the Gateway learns to sniff later does not widen what your app takes. On a gateway without it, refuse the file rather than trust its name. |
 
 The sandbox has no option to show a hidden directory or open a sealed one for
 writing, and the URL check has no option to allow another port or a private address:
