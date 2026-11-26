@@ -8606,6 +8606,7 @@
     "markdownPanel": {
       "open_in_remote_editor": "Abrir en {{editor}}",
       "partial_copy_cannot_save": "Solo se cargó una parte de este archivo ({{reason}}), así que no se puede guardar sobre el archivo en disco.",
+      "partial_copy_preview": "Solo se cargó una parte de este archivo ({{reason}}), así que la vista previa muestra solo esa parte. Descarga el archivo desde el menú ⋯ para verlo completo.",
       "add_to_artifact_library": "Añadir a la biblioteca de artefactos",
       "add_to_artifacts": "Añadir a Artefactos",
       "add_to_knowledge": "Añadir a Conocimiento",

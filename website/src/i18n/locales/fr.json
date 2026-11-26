@@ -8606,6 +8606,7 @@
     "markdownPanel": {
       "open_in_remote_editor": "Ouvrir dans {{editor}}",
       "partial_copy_cannot_save": "Seule une partie de ce fichier a été chargée ({{reason}}) : il ne peut donc pas remplacer le fichier sur le disque.",
+      "partial_copy_preview": "Seule une partie de ce fichier a été chargée ({{reason}}) : l'aperçu n'en montre donc que cette partie. Télécharge le fichier depuis le menu ⋯ pour l'obtenir en entier.",
       "add_to_artifact_library": "Ajouter à la bibliothèque d'artefacts",
       "add_to_artifacts": "Ajouter aux artefacts",
       "add_to_knowledge": "Ajouter aux connaissances",

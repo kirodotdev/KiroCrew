@@ -8184,6 +8184,7 @@
     "markdownPanel": {
       "open_in_remote_editor": "{{editor}}에서 열기",
       "partial_copy_cannot_save": "이 파일은 일부만 불러왔습니다({{reason}}). 따라서 디스크의 파일에 덮어써 저장할 수 없습니다.",
+      "partial_copy_preview": "이 파일은 일부만 불러왔습니다({{reason}}). 따라서 미리보기에는 그 부분만 표시됩니다. 전체 파일은 ⋯ 메뉴에서 다운로드하세요.",
       "add_to_artifact_library": "아티팩트 라이브러리에 추가",
       "add_to_artifacts": "아티팩트에 추가",
       "add_to_knowledge": "지식에 추가",

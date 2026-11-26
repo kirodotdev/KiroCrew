@@ -3209,6 +3209,7 @@
     "markdownPanel": {
       "open_in_remote_editor": "Open in {{editor}}",
       "partial_copy_cannot_save": "Only part of this file was loaded ({{reason}}), so it can't be saved over the file on disk.",
+      "partial_copy_preview": "Only part of this file was loaded ({{reason}}), so the preview shows only that part. Download the file from the ⋯ menu for all of it.",
       "add_to_artifact_library": "Add to artifact library",
       "adding": "Adding…",
       "adding_2": "Adding...",
