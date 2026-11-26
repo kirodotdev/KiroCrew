@@ -194,7 +194,7 @@ describe('Alt+Shift+N', () => {
     const store = makeStore(ORIGIN)
     renderHook(() => useShellKeyboard({
       toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout: false,
-      isEmbed: false, terminalPoppedOut: false, activeSlotProject: undefined,
+      isEmbed: false, terminalPoppedOut: false,
     }), { wrapper: wrapper(store) })
     return store
   }
@@ -257,7 +257,7 @@ describe('agent-switch notice expiry', () => {
     const store = makeStore(ORIGIN)
     renderHook(() => useShellKeyboard({
       toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout,
-      isEmbed: false, terminalPoppedOut: false, activeSlotProject: undefined,
+      isEmbed: false, terminalPoppedOut: false,
     }), { wrapper: wrapper(store) })
     return store
   }
@@ -451,7 +451,7 @@ describe('a page that starts holding a draft during the create', () => {
       useRegisterNavigationLeaveGuard(guard)
       useShellKeyboard({
         toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout: false,
-        isEmbed: false, terminalPoppedOut: false, activeSlotProject: undefined,
+        isEmbed: false, terminalPoppedOut: false,
       })
     }, { wrapper: guarded(store) })
     fireEvent.keyDown(document, { code: 'KeyN', altKey: true, shiftKey: true })
@@ -472,7 +472,7 @@ describe('a page that starts holding a draft during the create', () => {
       useRegisterNavigationLeaveGuard(guard)
       useShellKeyboard({
         toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout: false,
-        isEmbed: false, terminalPoppedOut: false, activeSlotProject: undefined,
+        isEmbed: false, terminalPoppedOut: false,
       })
     }, { wrapper: guarded(store) })
     fireEvent.keyDown(document, { code: 'KeyN', altKey: true, shiftKey: true })

@@ -36,7 +36,7 @@ import { AccountAvatar, ACCOUNT_AVATAR_RAIL_PX, ACCOUNT_AVATAR_TOUCH_PX } from '
 export function ShellNavRail({ shell }: { shell: AppShell }) {
   const {
     settingsDotLabel, terminalEnabled, terminalPoppedOut, bottomTerminalOpen, mobileConnectOpen,
-    setMobileConnectOpen, hasRenderableMobileConnect, activeSlotProject, navigate, branding, botName, avatar,
+    setMobileConnectOpen, hasRenderableMobileConnect, getActiveSlotProject, navigate, branding, botName, avatar,
     isMobile, focusActive, focusChromeInert, railPeek, railPeekSurface, mobileNavMounted, mobileNavOpen, mobileNavX, mobileNavPanelRef,
     mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup,
     activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
@@ -352,7 +352,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                   /* While popped out: focus only (a refused programmatic
                      focus is a harmless no-op). Explicit re-dock lives in the
                      TerminalDetachedBar below -- never a timing heuristic. */
-                  onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
+                  onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(getActiveSlotProject()) }}
                   {...uiLocation('shell.terminal', preloadTerminalOnIntent)}
                 />
               )}

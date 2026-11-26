@@ -35,7 +35,7 @@ function harness() {
   )
   renderHook(() => useShellKeyboard({
     toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout: false,
-    isEmbed: false, terminalPoppedOut: false, activeSlotProject: undefined,
+    isEmbed: false, terminalPoppedOut: false,
   }), { wrapper })
   return renderHook(() => useGlobalChatSearchOpen())
 }
