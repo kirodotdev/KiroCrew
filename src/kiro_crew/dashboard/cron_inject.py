@@ -1032,7 +1032,8 @@ async def post_result_to_target_session(
     own tab, its ``cron:{id}`` session and its identity, and the chat gets only
     the result row, never the prompt row, so it reads as the job's answer and
     not as a turn the person typed. The row is appended to the live slot,
-    whose save persists it with the rest of that chat.
+    whose save persists it with the rest of that chat. Delivery rechecks that
+    the chat still belongs to the job's captured member.
 
     A chat that is not loaded is loaded from its transcript first. One the
     person closed stays closed (``adopt_closed`` is left off): a delivery does
@@ -1057,6 +1058,15 @@ async def post_result_to_target_session(
         from kiro_crew.dashboard.state import load_window_off_loop
 
         await load_window_off_loop(slot)
+    # Body-scope: keeps session-record I/O off this module's import path.
+    from kiro_crew.execution_context import read_session_execution
+
+    execution = await asyncio.to_thread(read_session_execution, key)
+    if state.get_slot(slot_name) is not slot:
+        return False
+    session_member = (execution.member_id if execution is not None else None) or ""
+    if session_member != (job.member_id or ""):
+        return False
     linked = getattr(slot, "linked_session_key", "") or ""
     if (linked and linked != key) or _app_owned(slot):
         return False

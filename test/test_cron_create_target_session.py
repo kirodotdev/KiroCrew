@@ -187,10 +187,11 @@ async def test_hidden_job_cannot_name_a_chat(tmp_path, session_member):
     assert jobs == []
 
 
-def _job(target: str, *, job_id: str = "abcd1234") -> SimpleNamespace:
+def _job(target: str, *, job_id: str = "abcd1234", member_id: str = "") -> SimpleNamespace:
     return SimpleNamespace(
         id=job_id,
         name="later",
+        member_id=member_id,
         target_session_key=target,
         last_result_stamp=" · Nov 26, 2026, 12:00:00 AM UTC",
         last_result_ts=1795651200.123456,
@@ -198,7 +199,7 @@ def _job(target: str, *, job_id: str = "abcd1234") -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_result_is_posted_into_the_target_chat_once(monkeypatch):
+async def test_result_is_posted_into_the_target_chat_once(monkeypatch, session_member):
     posted: list[tuple] = []
     monkeypatch.setattr(
         cron_inject,
@@ -222,7 +223,42 @@ async def test_result_is_posted_into_the_target_chat_once(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_existing_pending_target_loads_window_before_reading_messages(monkeypatch):
+async def test_target_chat_member_change_posts_nothing(monkeypatch, session_member):
+    monkeypatch.setattr(cron_inject, "append_and_surface", lambda *a, **k: pytest.fail("posted"))
+    session_member["dashboard:chat-1"] = "other-bot"
+    chat = _chat()
+    state = MagicMock()
+    state.get_slot = lambda name: {"chat-1": chat}.get(name)
+
+    assert (
+        await cron_inject.post_result_to_target_session(state, _job("dashboard:chat-1"), "hello")
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_result_posts_when_target_chat_member_matches(monkeypatch, session_member):
+    posted = []
+    monkeypatch.setattr(
+        cron_inject,
+        "append_and_surface",
+        lambda _state, slot, _role, content, _cls: posted.append((slot, content)),
+    )
+    session_member["dashboard:chat-1"] = "atlas"
+    chat = _chat()
+    state = MagicMock()
+    state.get_slot = lambda name: {"chat-1": chat}.get(name)
+
+    assert await cron_inject.post_result_to_target_session(
+        state, _job("dashboard:chat-1", member_id="atlas"), "hello"
+    )
+    assert [slot for slot, _content in posted] == [chat]
+
+
+@pytest.mark.asyncio
+async def test_existing_pending_target_loads_window_before_reading_messages(
+    monkeypatch, session_member
+):
     class PendingChat:
         linked_session_key = ""
         window_pending = True
@@ -252,7 +288,7 @@ async def test_existing_pending_target_loads_window_before_reading_messages(monk
 
 
 @pytest.mark.asyncio
-async def test_same_named_jobs_post_identical_results_to_one_chat(monkeypatch):
+async def test_same_named_jobs_post_identical_results_to_one_chat(monkeypatch, session_member):
     posted = []
 
     def _append(_state, slot, _role, content, _cls):
@@ -282,7 +318,7 @@ async def test_same_named_jobs_post_identical_results_to_one_chat(monkeypatch):
         ("dashboard:chat-1", {"chat-1": _chat("slack:C1:1.2")}),
     ],
 )
-async def test_no_target_or_relinked_chat_posts_nothing(monkeypatch, target, slots):
+async def test_no_target_or_relinked_chat_posts_nothing(monkeypatch, session_member, target, slots):
     monkeypatch.setattr(cron_inject, "append_and_surface", lambda *a, **k: pytest.fail("posted"))
     state = MagicMock()
     state.get_slot = lambda name: slots.get(name)
