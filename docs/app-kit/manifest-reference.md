@@ -2110,7 +2110,7 @@ packages at all.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `permissions.api` | string[] | Allowed API path prefixes. An entry that starts with `=` names that one path and no child (`=/api/apps` admits `GET /api/apps` and refuses `/api/apps/install`; seam level 7, and an older host matches it to nothing). `/api/member-records/*` is the one that lets the app put a value on a Dashboard page of ANY Bot it names by slug; there is no per-crewmate form of the grant ([api-reference](api-reference.md#member-records)) |
+| `permissions.api` | string[] | Allowed API path prefixes. An entry that starts with `=` names that one path and no child (`=/api/apps` admits `GET /api/apps` and refuses `/api/apps/install`; seam level 7, and an older host matches it to nothing). `/api/member-records/*` is the one that lets the app put a value on a Dashboard page of ANY Bot it names by slug; there is no per-crewmate form of the grant ([api-reference](api-reference.md#member-records)). `/api/project-scaffold` also turns on the two folder-scaffold host routes while your app is enabled and the entry is approved; a broad entry such as `/api` does not ([api-reference](api-reference.md#permission-refusals)) |
 | `permissions.events` | string[] | Allowed WebSocket event types |
 | `permissions.mcpTools` | string[] | Allowed MCP tool names. A host tool may be written bare (`memory_recall`) or as `@kirocrew-core/memory_recall` |
 | `permissions.storage` | boolean | Can use app-scoped storage |

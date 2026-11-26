@@ -102,8 +102,9 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/folders", chat.api_chat_folder_create)
     # Deliberately OUTSIDE /api/chat: app API grants are prefix-matched, so a
     # pre-existing app permission for /api/chat/folders (folder CRUD) must not
-    # silently inherit host-filesystem enumeration. The scaffolder app is
-    # granted /api/project-scaffold and nothing else.
+    # silently inherit host-filesystem enumeration. An app that calls these
+    # declares /api/project-scaffold, and an approved entry inside that
+    # namespace is also what turns them on (chat_folder_scaffold).
     app.router.add_post("/api/project-scaffold/scan", chat.api_chat_folders_scan)
     app.router.add_post("/api/project-scaffold/create", chat.api_chat_folders_scaffold)
     app.router.add_patch("/api/chat/folders/{id}", chat.api_chat_folder_update)
