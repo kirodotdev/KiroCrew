@@ -435,6 +435,12 @@ class TelegramDispatcher:
         # same store the text channels keep, and the picker's press switches it
         # through ``switch_channel_agent`` like theirs.
         self._agent_picks: ChannelAgentPicks[tuple[str, str]] = ChannelAgentPicks()
+        # route -> the Bot it runs as, set only by a ``/bots`` pick. A Bot is a
+        # ``config.agents`` key, and installing a template gives it a record of
+        # the same name, so the NAME cannot say which command picked it: only a
+        # route listed here runs as a Bot (``turn_engine``), and an ``/agent``
+        # pick of the same name stays a template.
+        self._bot_picks: ChannelAgentPicks[tuple[str, str]] = ChannelAgentPicks()
         # route -> whether this conversation speaks its answers (/voice on|off).
         # Keyed by ROUTE for the same reason as the two above: "read replies aloud
         # to me" is a preference about the peer, not about one session, so it must
@@ -750,7 +756,9 @@ class TelegramDispatcher:
             await self._handle_agent(route, chat_id, parse_command_argument(text))
             return
         if cmd == "bot":
-            await self._handle_bot(route, chat_id, parse_command_argument(text))
+            await self._handle_bot(
+                route, chat_id, parse_command_argument(text), user_id=int(msg.user_id)
+            )
             return
         # A privacy modifier is DEFERRED, not applied here. The session key this
         # early in the ladder is the pre-rotation one, and the idle/daily rotation
@@ -1194,6 +1202,7 @@ class TelegramDispatcher:
     _agent_choices = _pickers._agent_choices
     _handle_agent = _pickers._handle_agent
     _handle_bot = _pickers._handle_bot
+    _apply_pick = _pickers._apply_pick
     _apply_agent = _pickers._apply_agent
 
     # ── /title and the service-backed commands ─────────────────────────────

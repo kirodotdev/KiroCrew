@@ -85,6 +85,8 @@ class _Picker:
     # Native Telegram model choices persist across /new; resumed-session choices
     # switch only the selected dashboard session.
     store_route_preference: bool = False
+    # A ``/bots`` keyboard: a press picks a Bot, not a template.
+    bots: bool = False
 
 
 def _model_choices(self: TelegramDispatcher, session_key: str) -> tuple[tuple[str, str], ...]:
@@ -411,8 +413,10 @@ def _bot_rows() -> dict[str, str]:
 
     rows: dict[str, str] = {}
     for key, display in crew_bots().items():
-        if not key or key == _DEFAULT_BOT:
+        if not key:
             continue
+        # The built-in ``default`` Bot is a row of its own: the Default row resets
+        # to the default TEMPLATE, which has none of the Bot's workspace or memory.
         label = f"🤖 {(display or '').strip() or key}"
         if len(label) > _AGENT_LABEL_MAX:
             label = label[: _AGENT_LABEL_MAX - 1] + "…"
@@ -466,6 +470,38 @@ def _agent_choices(
     return tuple(rows)
 
 
+BOT_OWNER_ONLY = (
+    "🔒 Running a chat as a Bot is owner-only: it opens that Bot's memory and "
+    "workspace, so it needs `telegram.allowed_user_ids` to hold exactly one "
+    "person, you. It currently holds several (or none)."
+)
+
+
+def is_bot_owner(allowed: set[int], user_id: int) -> bool:
+    """Whether *user_id* may run a conversation as a Bot.
+
+    A Bot pick binds the conversation to that Bot's memory and workspace, so in
+    a shared forum Topic every allow-listed member would read and write it. The
+    rule is ``/sessions``' (``dispatch/commands.py``): ``allowed_user_ids`` is a
+    list of people allowed to talk to the agent, not a claim that one of them is
+    the owner, so only a single-entry list names one, and only that entry passes.
+    """
+    return len(allowed) == 1 and int(user_id) in allowed
+
+
+def _audit_bot_refusal(user_id: int, operation: str, bot: str) -> None:
+    from kiro_crew.telegram import transport_dispatch as facade
+
+    facade.sel().log_api_access(
+        caller=str(user_id) or "unknown",
+        operation=operation,
+        outcome="denied",
+        source="telegram",
+        resources=f"bot={bot}",
+        error="no_unambiguous_owner",
+    )
+
+
 async def _handle_agent(
     self: TelegramDispatcher, route: tuple[str, str], chat_id: int, arg: str
 ) -> None:
@@ -474,14 +510,19 @@ async def _handle_agent(
 
 
 async def _handle_bot(
-    self: TelegramDispatcher, route: tuple[str, str], chat_id: int, arg: str
+    self: TelegramDispatcher, route: tuple[str, str], chat_id: int, arg: str, *, user_id: int
 ) -> None:
     """``/bots``: the Bot picker.
 
     The same keyboard, pick and switch as ``/agent``, listing the owner's Bots
     instead of the templates: a Bot is a ``config.agents`` key, which the turn
     runs AS the Bot (``turn_engine``), so each forum Topic can have its own.
+    Owner-only (:func:`is_bot_owner`); the press and the turn check again.
     """
+    if not is_bot_owner(self._allowed, user_id):
+        _audit_bot_refusal(user_id, "telegram.bots_command", "")
+        await self._reply(chat_id, BOT_OWNER_ONLY, thread=self._route_thread(route))
+        return
     await _post_agent_picker(self, route, chat_id, arg, bots=True)
 
 
@@ -525,6 +566,10 @@ async def _post_agent_picker(
         await self._reply(chat_id, empty, thread=thread)
         return
     current = self._agent_picks.get(route)
+    # A row is the current pick only when its kind matches: a Bot row after a
+    # ``/bots`` pick, a template row after an ``/agent`` pick of the same name.
+    if current and bool(self._bot_picks.get(route)) != bots:
+        current = ""
     # With no pick the conversation runs the default it pinned, and the Default
     # row names the live default; while the two differ no row is marked.
     running = self._configured_agent(route)
@@ -555,14 +600,26 @@ async def _post_agent_picker(
     now = time.time()
     self._prune_pickers(self._agent_pickers, now)
     self._agent_pickers[f"{chat_id}:{message_id}"] = _Picker(
-        route=route, created_at=now, choices=choices
+        route=route, created_at=now, choices=choices, bots=bots
     )
 
 
 async def _apply_agent(
     self: TelegramDispatcher, route: tuple[str, str], agent_id: str, label: str = ""
 ) -> str:
-    """Switch *route* to *agent_id* and report what it changed.
+    """Switch *route* to the template *agent_id*: :func:`_apply_pick` for ``/agent``."""
+    return await self._apply_pick(route, agent_id, label, bot=False)
+
+
+async def _apply_pick(
+    self: TelegramDispatcher,
+    route: tuple[str, str],
+    agent_id: str,
+    label: str = "",
+    *,
+    bot: bool,
+) -> str:
+    """Switch *route* to *agent_id*, a Bot when *bot*, and report what it changed.
 
     The switch is the shared :func:`switch_channel_agent`: it refuses while a
     reply streams (the running turn's renderer, receipt and ``/stop`` are keyed on
@@ -580,6 +637,21 @@ async def _apply_agent(
     # *label* is the pressed button's text, so the reply names what the user
     # chose rather than a ``crew-<hex>`` spec id.
     label = label or agent_id or f"Default ({configured})"
+    command = "/bots" if bot else "/agent"
+    bot = bot and bool(agent_id)
+    # The same name picked as the other kind (a template and a Bot can share
+    # one): the session key carries only the name, so a fresh generation keeps
+    # the Bot's memory binding off the template's conversation and back.
+    if agent_id and agent_id == self._agent_picks.get(route):
+        if bool(self._bot_picks.get(route)) != bot:
+            if self.sessions.is_busy(self._session_key(route)):
+                return (
+                    f"⏳ Still working on your last message — send {command} again once "
+                    f"it finishes to switch to {label}."
+                )
+            self._bot_picks.set(route, agent_id if bot else "")
+            self._conv.bump_gen(route)
+            return f"✅ {'Bot' if bot else 'Agent'} set to {label}."
     # Compared as the agent each side RUNS, like the text channels: pressing the
     # row already marked "•" (or the Default row with no pick) is not a switch,
     # and must not reseed — the in-memory generation can be ahead of disk after
@@ -590,6 +662,7 @@ async def _apply_agent(
         # default never stays pinned.
         if not agent_id:
             self._agent_picks.set(route, "")
+            self._bot_picks.set(route, "")
             self._conv.repin(route, configured)
         elif agent_id != configured:
             # Picked explicitly while only the pinned default runs it: kept past the
@@ -606,12 +679,14 @@ async def _apply_agent(
     )
     if outcome == "busy":
         return (
-            f"⏳ Still working on your last message — send /agent again once "
+            f"⏳ Still working on your last message — send {command} again once "
             f"it finishes to switch to {label}."
         )
+    self._bot_picks.set(route, agent_id if bot else "")
+    noun = "Bot" if bot else "Agent"
     if outcome == "fresh":
-        return f"✅ Agent set to {label}."
+        return f"✅ {noun} set to {label}."
     return (
-        f"✅ Agent set to {label} — this leaves the current conversation. "
+        f"✅ {noun} set to {label} — this leaves the current conversation. "
         f"Switch back to return to it."
     )

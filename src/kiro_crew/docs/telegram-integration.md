@@ -95,15 +95,20 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
   servers and skills that process loaded at spawn — so a pick opens a fresh
   conversation. The previous one is not destroyed: switching back returns to it.
 - `/bots` (or `/bot`) — pick one of your **Bots** from an inline-button list,
-  each marked 🤖 with its display name (the built-in `default` Bot is the
-  Default row, which also goes back to the default agent). A Bot picked here runs
+  each marked 🤖 with its display name, the built-in `default` Bot included (the
+  Default row goes back to the default agent template). A Bot picked here runs
   that conversation as the Bot: its own agent, workspace folder and memory, the
   same as Slack's `!bot`. Like an `/agent` pick, it opens a fresh conversation.
+  Only a `/bots` pick runs as a Bot: a template picked with `/agent` stays a
+  template even when a Bot has the same name.
   With forum Topics on, each Topic keeps its own pick, so one forum can give
   every Bot a Topic of its own. As on Slack, a Bot run outside its thread on the
   **Bots** page has no worker, so abilities added to the Bot do not reach it. A
   pick is kept in memory: after a gateway restart a Topic is back on the default
-  agent until you pick again.
+  agent until you pick again. Bots are owner-only, because a Bot pick opens
+  that Bot's memory to everyone in the Topic: `/bots`, a press on a Bot row and
+  a Bot's turn are all refused unless `telegram.allowed_user_ids` holds exactly
+  one person and that person sent it, the same rule `/sessions` follows.
 - `/status` — uptime, message counts, tool decisions, sessions
 - `/ping` — answers `pong`. Answered by the gateway itself, never by the model,
   so it still works when the thing that is wedged is the model.
