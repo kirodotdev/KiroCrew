@@ -53,7 +53,7 @@ from typing import Any
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from kiro_crew.apps import backend_sdk  # noqa: E402
+from kiro_crew.apps import audit_sdk, backend_sdk  # noqa: E402
 from kiro_crew.apps import builtin_adoption_fetch as fetch  # noqa: E402
 from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL  # noqa: E402
 from kiro_crew.apps.builtin_adoption_baseline import (  # noqa: E402
@@ -105,15 +105,26 @@ _BACKEND_SDK_ROOT = _BACKEND_SDK_MODULE.split(".", 1)[0]
 _BACKEND_SDK_LEAF = re.compile(r"\b%s\b" % re.escape(_BACKEND_SDK_MODULE.rsplit(".", 1)[1]))
 
 #: The backend SDK names published above the package's own level, with each one's
-#: level (``backend_sdk._EXPORT_LEVELS``). A tree imports the package in one file and
-#: calls its names in others, so a name counts in any scanned file once some scanned
-#: file names the package.
-_BACKEND_SDK_LATER_NAMES = dict(backend_sdk._EXPORT_LEVELS)
+#: level (``backend_sdk._EXPORT_LEVELS``), and the keywords added to a name after it
+#: (``backend_sdk._KEYWORD_LEVELS``). A tree imports the package in one file and calls
+#: its names in others, so a name counts in any scanned file once some scanned file
+#: names the package.
+_BACKEND_SDK_LATER_NAMES = {**backend_sdk._EXPORT_LEVELS, **backend_sdk._KEYWORD_LEVELS}
 #: Those names as whole words; ``None`` while there are none, since an empty
 #: alternation would match at every word boundary.
 _BACKEND_SDK_LATER_NAME = (
     re.compile(r"\b(%s)\b" % "|".join(re.escape(name) for name in sorted(_BACKEND_SDK_LATER_NAMES)))
     if _BACKEND_SDK_LATER_NAMES
+    else None
+)
+
+#: The audit writer's methods published after ``record`` (``audit_sdk.METHOD_LEVELS``).
+#: An in-process app reaches the writer as ``ctx.audit`` without naming any package,
+#: so a method counts wherever a scanned file holds it as a word.
+_AUDIT_METHOD_LEVELS = dict(audit_sdk.METHOD_LEVELS)
+_AUDIT_METHOD = (
+    re.compile(r"\b(%s)\b" % "|".join(re.escape(name) for name in sorted(_AUDIT_METHOD_LEVELS)))
+    if _AUDIT_METHOD_LEVELS
     else None
 )
 
@@ -171,10 +182,11 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     ``permissions.chatLaunch`` and any ``credentialMasks`` again, where the agent tool
     gate fences an installed app's masks as it fences the built-ins'), the context
     seams any non-test ``.py`` file reaches, the backend SDK package (level 7) any of
-    them names, and, once one of them names the package, each backend SDK name
-    published above level 7 that any of them mentions, at that name's level. A miss
-    lets a pin adopt on a host without the seam, so the scan errs wide: a false hit
-    only asks for a higher ``--min-sdk-level``.
+    them names, and, once one of them names the package, each backend SDK name or
+    keyword published above level 7 that any of them mentions, at that name's level,
+    and each audit writer method published after ``record`` that any of them
+    mentions, at its level. A miss lets a pin adopt on a host without the seam, so the
+    scan errs wide: a false hit only asks for a higher ``--min-sdk-level``.
     """
     raw = json.loads((tree / "app.json").read_text(encoding="utf-8"))
     permissions = raw.get("permissions")
@@ -235,6 +247,9 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
                 uses.setdefault(_BACKEND_SDK_MODULE, backend_sdk.BACKEND_SDK_LEVEL)
             if _BACKEND_SDK_LATER_NAME is not None:
                 later_sdk_names.update(m.group(1) for m in _BACKEND_SDK_LATER_NAME.finditer(source))
+            if _AUDIT_METHOD is not None:
+                for match in _AUDIT_METHOD.finditer(source):
+                    uses[f"ctx.audit.{match.group(1)}"] = _AUDIT_METHOD_LEVELS[match.group(1)]
     if _BACKEND_SDK_MODULE in uses:
         for name in sorted(later_sdk_names):
             uses[f"{_BACKEND_SDK_MODULE}.{name}"] = _BACKEND_SDK_LATER_NAMES[name]

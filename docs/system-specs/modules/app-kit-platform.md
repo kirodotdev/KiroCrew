@@ -8143,9 +8143,13 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 SDK names, one batch: `canonical_file_path`, `vet_public_url`, `UrlRejectedError`,
 `address_is_not_public`, `sniff_raster_mime` and `RASTER_SNIFF_BYTES`, and the
 descriptor-pinned path walk and copy (§40); level 15 adds
-`permissions.browserRecipes` and `useBrowserMedia().runRecipe` (§45). Several seams
+`permissions.browserRecipes` and `useBrowserMedia().runRecipe` (§45); level 17 adds a
+second batch of backend SDK names: the credential scan and placeholder, the
+exfiltration-URL check, `DENIED_ROOT_PARTS`, `minimal_env`, the git hook overrides,
+`max_output_bytes` on `run_sandboxed_async` and the audit writer's `record_or_raise`
+(§40). Several seams
 share level 7, three share level 8, the open batch that level 10 starts shares level 10, and the backend SDK
-batch shares level 14, so an app that needs one
+batches share levels 14 and 17, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -8778,8 +8782,13 @@ backend_sdk`, an attribute of an imported parent and a string lookup alike. Once
 such file names the package, each name of `backend_sdk._EXPORT_LEVELS` that any such
 file holds as a word counts at its own level (`canonical_file_path`, `vet_public_url`,
 `UrlRejectedError`, `address_is_not_public`, the pinned path names such as `pin_parent`
-and `copy_file_pinned`, level 14), so a
-shim's lookup in one file and its caller in another still count. A level below the highest one found
+and `copy_file_pinned`, level 14; `iter_credential_matches`, `minimal_env` and the other
+level-17 names), and so does each keyword of `backend_sdk._KEYWORD_LEVELS`
+(`max_output_bytes`, level 17), so a
+shim's lookup in one file and its caller in another still count. A method of
+`audit_sdk.METHOD_LEVELS` (`record_or_raise`, level 17) counts wherever such a file
+holds it as a word, whether or not the tree names the package, because an in-process
+app reaches it as `ctx.audit.record_or_raise`. A level below the highest one found
 is refused, naming what was found, by `compute` and `verify` alike, so a tree that
 feature-detects a seam and degrades still pins at that seam's level, and a host
 without it keeps the wheel copy. The scan errs wide: a false hit only asks for a
@@ -10395,13 +10404,17 @@ that wants one helper does not pay for the security stack.
 | Group | Public name | Delegates to |
 |---|---|---|
 | Sensitive paths | `is_sensitive_path(path)`, `contains_sensitive_path(directory)` | `security.is_sensitive_path`, `security.path_contains_sensitive` |
+| Sensitive paths (level 17) | `DENIED_ROOT_PARTS` | `security.DENIED_ROOT_PARTS`, bound when `backend_sdk.paths` is imported |
 | Files | `read_bytes_nofollow(path, *, within_root, max_bytes, within_root_is_canonical)`, `FileTooLargeError` | `hooks.safe_read_file_bytes_nolink`, `hooks.FileTooLargeError` |
 | Files (level 14) | `canonical_file_path(path)` | `hooks.validate_file_path`, called with the path alone |
 | Files | `atomic_write(path, content, *, fsync, mode, newline, restrict_to_owner)`, `ensure_owner_only_dir(path)` | `atomic_write.atomic_write`, `owner_only_files.ensure_directory` |
 | Pinned paths (level 14) | `supports_pinned_walk()`, `is_reparse_point(path)`, `pin_parent(resolved_parent, *, what)`, `copy_file_pinned(src, dst, *, dir_fd, name, force_mode, max_bytes, expected_src_ident, on_skip, on_created)`, `fd_real_path(fd)`, `PinnedPathRefusal` | the `pinned_fs` names of the same spelling |
 | Redaction | `scrub_outbound(text)`, `ScrubResult` | `apps.scrub_sdk.ScrubSDK.outbound` (the `ctx.scrub` pass) |
-| Audit | `audit_log(app_name=None)` | `apps.audit_sdk.AuditSDK` (the `ctx.audit` writer) |
+| Content checks (level 17) | `iter_credential_matches(text)`, `CREDENTIAL_PLACEHOLDER`, `contains_exfiltration_url(text)` | `security.iter_credential_matches`; `security.REDACTED_CREDENTIAL_TAG`, bound when `backend_sdk.content` is imported; `security.scan_exfiltration_urls`, answered as a bool |
+| Audit | `audit_log(app_name=None)`; its `record_or_raise` (level 17), which is `ctx.audit`'s too | `apps.audit_sdk.AuditSDK` (the `ctx.audit` writer); `record_or_raise` is `sel.log_api_access` with `critical=True` |
 | Sandboxed children | `run_sandboxed`, `run_sandboxed_async`, `sandboxed_argv`, `sandboxed_argv_async`, `SandboxUnavailableError` | `sandbox.sandboxed_spawn_argv` then `sandbox.run_limited`; `sandbox.sandboxed_spawn_argv_async` then `sandbox.create_subprocess_limited`; the two preparations alone; `sandbox.SandboxUnavailableError` |
+| Sandboxed children (level 17) | `run_sandboxed_async(..., max_output_bytes=None)`, `OutputLimitExceeded`, `minimal_env(**extra)` | the same spawn with each pipe drained under the cap; `minimal_env` of the `apps.registry` facade, read from its owner `apps.registry_pipeline.subprocess_env` |
+| Git hooks (level 17) | `git_hook_disable_args(cwd, *, mode, env)`, `git_hook_disable_args_async(cwd, *, mode, env)`, `GitHookScanError` | `git_config_hooks.config_hook_disable_args_sandboxed` and its `_async` form, with `sandbox.sandboxed_spawn_argv` as the spawner; `git_config_hooks.ConfigHookScanError` |
 | Process and locks | `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_POSIX`, `kill_and_reap`, `is_link_or_junction`, `first_linked_ancestor`, `rmtree_force`, `file_lock` | the `platform_compat` names of the same spelling |
 | Outbound URLs (level 14) | `vet_public_url(url)`, `UrlRejectedError`, `address_is_not_public(address)` | `link_unfurl.vet_unfurl_url`, `link_unfurl.UnfurlRejected`, `link_unfurl.address_is_not_public` |
 | Media type (level 14) | `sniff_raster_mime(head)`, `RASTER_SNIFF_BYTES` | `messaging.raster.sniff_raster_mime`, `messaging.raster.SNIFF_BYTES` |
@@ -10431,6 +10444,24 @@ not widen what the app takes (the `messaging/raster.py` contract in
 with it carries no hand-copied window. An app that names the package and still defines
 its own shim function spelled `sniff_raster_mime` is counted at level 14 as well
 (§33), which only asks for a higher `--min-sdk-level`.
+The content checks answer about text the caller already holds and rewrite nothing.
+`iter_credential_matches` yields the gateway's credential pattern scan as matches on
+that text, so an app refuses a file or an upload that carries one. It matches more
+than the redactor masks: an AWS access key ID is a match, and the redactor leaves it
+standing as an identifier. `contains_exfiltration_url` is the exfiltration-URL scan answered as a
+bool: the private scan returns warning strings that quote the flagged URL's domain and
+up to 60 characters of its path and query, which is where a token that escaped the
+credential patterns sits, so the warnings are not offered, for the same reason
+`ScrubResult` carries counts (security.md, the `ctx.scrub` seam). It reads the
+edition's exempt hosts and raises when they cannot be read, and the app refuses on a
+raise. `CREDENTIAL_PLACEHOLDER` and `DENIED_ROOT_PARTS` are bound from the gateway's own
+values when their submodule is imported, so an app carries no hand-copied
+`[REDACTED: credential]` or directory list. Neither check is a redaction pass:
+`scrub_outbound` stays the one way text leaves, and `security.redact_credentials` and
+`security.redact_exfiltration_urls` stay unoffered alone, as on `ctx.scrub`.
+`minimal_env` keeps only the location hints of this process's own environment (the
+`registry_pipeline.subprocess_env` allowlist) and adds the caller's `extra`, so it
+removes variables and reads nothing the process did not already have.
 
 **No widening knob.** A public signature carries only the parameters the apps use, and
 never one that adds reach. `sandboxed_argv` accepts the `standard` and `strict` tiers
@@ -10478,7 +10509,32 @@ descendant that `setsid()`-ed away is outside the group. `run_sandboxed` kills t
 child on a timeout, its whole tree on Windows, but not a POSIX descendant that
 outlives it; its docstring and the api-reference row point such a child at the
 async form. The private limited spawners, which run whatever argv they are
-handed, are not offered. Nothing here is gated by a
+handed, are not offered. `max_output_bytes` only lowers what the async run returns:
+`None` keeps the uncapped read, and anything but a positive int raises `ValueError`
+before anything is prepared. With a cap, both pipes are drained at once in 64 KiB steps
+(no deadlock on a full pipe) and at most the cap is kept of each; once either passes
+it, the child is stopped and `OutputLimitExceeded`, a `subprocess.SubprocessError`,
+carries the kept bytes and the cap but no argv in its message. No exit of a capped run
+reads a pipe without a bound. Past the cap, on a timeout and on a cancel its cleanup
+(`spawn._stop_capped`) sends the uncapped run's signals (the group read while the child
+lived, the tree, the child), then drains both pipes in 64 KiB reads it discards and
+reaps the child (`platform_compat._discard_output_until_exit`), under
+`REAP_TIMEOUT_SECS`, in the same shielded task as `kill_and_reap`. `kill_and_reap`
+itself reaps through `communicate()`, which would keep everything a descendant that
+`setsid()`-ed out of the group still writes to the pipes it inherited; past the reap
+deadline nothing reads such a writer's pipes, so the pipe's flow control, not this
+process's memory, holds it back. The uncapped run (`max_output_bytes=None`) keeps
+`communicate()` and `kill_and_reap` unchanged. The git hook names are listed by a
+git that runs inside the sandbox at the caller's tier, through `sandboxed_spawn_argv`
+read at call time: `git_config_hooks`' unsandboxed default runner and its `runner`,
+`spawn_argv` and `git` parameters each pick what runs outside that chokepoint, so none
+is offered, and the listing reaches nothing a `run_sandboxed` git could not. A relative
+`cwd` is joined to the process's working directory once, in
+`config_hook_disable_args_sandboxed`, and that one path is both the listing git's
+working directory and its `-C` target, so the scan reads the repository the caller's git
+call runs in rather than `<cwd>/<cwd>`. Its answer
+is argv entries (`-c hook.<name>.enabled=false` per name, then the submodule-recursion
+pins), and a refusal is the gateway's own `ConfigHookScanError`. Nothing here is gated by a
 permission because nothing adds reach: the controls only refuse, redact, record or
 confine (the URL check's one `getaddrinfo` is a lookup any backend can make, and a
 pinned copy writes nothing a plain copy by the same process could not), and an
@@ -10491,6 +10547,20 @@ so rows are never attributed to nobody, and `record` itself still never raises. 
 attribution is cooperative, as it is for `ctx.audit`. The SEL log is written
 cross-process under its chain lock (`sel_chain_lock`), so a spawned backend's row and
 the gateway's own interleave safely.
+`record_or_raise` (level 17) is the fail-closed form, for an action that must not run
+unrecorded: the row `record` writes (`app:<name>`, `<name>.<operation>`, source `app`,
+`api_access`), written synchronously with `critical=True`, so the write's own error
+propagates and the app refuses the action. It takes no `caller`, `source`, `agent`,
+`session_key` or tool field, so it cannot write a row that reads as the gateway's or as
+a tool invocation, and it writes only under the name the gateway gave the app:
+`ctx.audit` is built with the manifest name (`AuditSDK(..., named_by_gateway=True)` in
+`apps/context.py`), and `audit_log()` counts as gateway-named only when its name is the
+`KIROCREW_APP_NAME` the gateway set. A writer for a name the app chose refuses it with
+`LookupError` before writing, so no public spelling writes a fail-closed row as another
+app (constructing `AuditSDK` directly, or reaching `sel()`, stays outside what an
+in-process API prevents). A spawned backend whose process cannot open the log gets that
+error, which is the fail-closed answer; `POST /api/apps/<name>/_sel` with `critical:
+true` (`apps/sel_routes.py`) is the gateway-written form of the same row.
 
 **Pinned paths.** For a file a person named by path, which anything running as the
 same user can swap for a link between a check and the open. The caller refuses the
@@ -10514,7 +10584,13 @@ change, all sharing the level: `canonical_file_path`, `vet_public_url`,
 `UrlRejectedError`, `address_is_not_public`, `sniff_raster_mime` and
 `RASTER_SNIFF_BYTES`, and the descriptor-pinned path names `supports_pinned_walk`,
 `is_reparse_point`, `pin_parent`, `copy_file_pinned`, `fd_real_path` and
-`PinnedPathRefusal`. A host from level 7 to 13 has the
+`PinnedPathRefusal`. Level 17 is a second batch: `iter_credential_matches`,
+`CREDENTIAL_PLACEHOLDER`, `contains_exfiltration_url`, `DENIED_ROOT_PARTS`,
+`minimal_env`, `git_hook_disable_args`, `git_hook_disable_args_async`,
+`GitHookScanError` and `OutputLimitExceeded`, plus a keyword and a method that are not
+package attributes: `max_output_bytes` on `run_sandboxed_async`
+(`_KEYWORD_LEVELS`) and `record_or_raise` on the audit writer
+(`audit_sdk.METHOD_LEVELS`). A host from level 7 to 13 has the
 package without the name, so an app feature-detects the name with `getattr` and keeps its
 own refusal, and the pin tool counts a tree that names the package and the name as a use
 of the name's level (§33), so a host below it keeps the wheel copy.
@@ -10524,22 +10600,35 @@ private and keep their `_host.py` gap: chat slot and auto-nudge internals (they 
 to the app-owned chat slot seam of ruling item 4),
 `link_unfurl.pinned_connector` and `PinnedResolver`, `asset_downloader.download_to`,
 `executors.subprocess_executor`,
-`apps.registry.minimal_env`, `config.loader.config_dir` and `KiroCrewConfig`,
-`security.redact_local_paths`, `security.iter_credential_matches`,
+`config.loader.config_dir` and `KiroCrewConfig`, `platform.boot_platform`,
+`security.redact_local_paths`,
 `atomic_write.read_bytes_with_retry`, `owner_only_files.mkdirs_owner_only` and
 `owner_only_opener_for`, `sandbox.effective_sandbox_mode`, and the domain modules
 (`crew_log`, `knowledge`, `deploy`, `transcribe`, `vector_memory`, `cron`,
-`notifications.bus`).
+`notifications.bus`). `platform.boot_platform` was vetted for level 17 and left out: it
+is no predicate, constant or argv builder but the edition's composition root, which
+reads the operator's config, runs companion discovery and the companion's code,
+registers ACP backends and speech providers and installs the whole platform context,
+its identity and credential providers included, as the calling process's global. What
+the spawned backends that call it need is for the SDK's own spawn and scrub names to
+resolve a context on a non-standalone edition, which is a gap to close inside the SDK,
+not a name to offer.
 
 Writers: `apps/backend_sdk/__init__.py`, `apps/backend_sdk/paths.py`,
 `apps/backend_sdk/files.py`, `apps/backend_sdk/redaction.py`,
 `apps/backend_sdk/audit.py`, `apps/backend_sdk/spawn.py`,
 `apps/backend_sdk/process.py`, `apps/backend_sdk/urls.py`, `apps/backend_sdk/media.py`,
-`apps/backend_sdk/pinned.py`, `apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
-`scripts/adoption_pin.py` (`_seam_level_uses`, `_BACKEND_SDK_LATER_NAMES`).
+`apps/backend_sdk/pinned.py`, `apps/backend_sdk/content.py`,
+`apps/backend_sdk/git_hooks.py`, `apps/audit_sdk.py` (`record_or_raise`,
+`METHOD_LEVELS`), `apps/context.py` (the gateway-named `ctx.audit`),
+`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
+`scripts/adoption_pin.py` (`_seam_level_uses`, `_BACKEND_SDK_LATER_NAMES`,
+`_AUDIT_METHOD_LEVELS`).
 Pinned by `test/test_app_backend_sdk.py`, `test/test_app_backend_sdk_file_gate.py`,
 `test/test_app_backend_sdk_urls.py`, `test/test_app_backend_sdk_media.py`,
-`test/test_app_backend_sdk_pinned.py` and
+`test/test_app_backend_sdk_pinned.py`, `test/test_app_backend_sdk_content.py`,
+`test/test_app_backend_sdk_git_hooks.py`, `test/test_app_backend_sdk_output_cap.py`,
+`test/test_audit_sdk.py` and
 `test/test_builtin_adoption_pins.py`.
 App authors: `docs/app-kit/api-reference.md` § Backend SDK.
 

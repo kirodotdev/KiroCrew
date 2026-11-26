@@ -1950,6 +1950,14 @@ ctx.audit.record("publish", "denied", resources=doc_id, error="no edit access")
 `record(operation, outcome, *, resources="", error="")` **never raises** — an audit
 sink that is unwritable must not fail the user's publish.
 
+`record_or_raise(operation, outcome, *, resources="", error="")` (level 17) is the
+fail-closed form, for an action that must not run unrecorded (an unattended agent
+launch, a tool call no person sees): it writes the same row synchronously and raises
+when it did not land, so write it first and refuse the action when it raises. It
+blocks on the write, so call it with `asyncio.to_thread` from a handler. It is a level
+17 method, so look it up with `getattr(ctx.audit, "record_or_raise", None)` and refuse
+the action when it is `None`.
+
 `outcome` is a short verb you choose (`success`, `denied`, `error`, `completed`, …).
 It is not checked against a vocabulary — a spelling of your own is kept, because
 rewriting it would record something other than what happened. It is redacted and
@@ -2628,7 +2636,7 @@ its outbound URL check (`vet_public_url`, `UrlRejectedError` and
 `copy_file_pinned` and their helpers), and level 15 adds `permissions.browserRecipes`
 with [`runRecipe`](#browser-recipes); each level includes every level below it. Several seams
 share level 7, three share level 8, level 10 is shared by the seams of the batch it
-opens, and level 14 by the backend SDK names of its batch, so an app that needs one
+opens, and levels 14 and 17 by the backend SDK names of their batches, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
@@ -2638,9 +2646,10 @@ The dashboard exports the same number as `APP_SDK_LEVEL`.
 
 The host controls your backend's own Python may call when no `ctx` seam fits: a
 sensitive-path check, the file path gate, a no-follow read, an atomic write, outbound
-redaction, an audit row, a sandboxed child process, the cross-platform process and
-lock helpers, the public-address check for a URL your backend fetches, a media-type
-sniff and a descriptor-pinned path walk and copy. Each name calls the control the
+redaction, a credential or exfiltration-URL check on text you hold, an audit row, a
+sandboxed child process with its environment, output cap and git hook overrides, the
+cross-platform process and lock helpers, the public-address check for a URL your
+backend fetches, a media-type sniff and a descriptor-pinned path walk and copy. Each name calls the control the
 Gateway itself enforces, so a check tightened in a later release reaches your app with
 the upgrade. Use these instead of a private `kiro_crew` name: a private name moves
 between releases, and these do not.
@@ -2669,7 +2678,10 @@ def read_attachment(path: str, root: str) -> bytes | None:
 
 A name added after level 7 is feature-detected by name as well, since the level alone
 does not say which batch member a host has: `getattr(sdk, "copy_file_pinned", None)`
-is `None` on a Gateway older than level 14. Keep your own refusal when it is.
+is `None` on a Gateway older than level 14. Keep your own refusal when it is. A keyword
+added later, such as `max_output_bytes` (level 17), is detected by the level: pass it
+only when `sdk.SDK_LEVEL >= 17`, since an older `run_sandboxed_async` raises
+`TypeError` for it.
 
 To copy a file a person named by path, refuse when `supports_pinned_walk()` is
 `False`, resolve the path once (`os.path.realpath`), check it with
@@ -2712,6 +2724,7 @@ def snapshot(sdk, path: str, into_dir: str, max_bytes: int) -> str | None:
 |---|---|
 | `is_sensitive_path(path)` | `True` when `path` is inside a location the Gateway never reads or writes (credential homes, its own policy files). Refuse on `True`. |
 | `contains_sensitive_path(directory)` | `True` when such a location lies under `directory`. Check it before a bulk operation rooted there (`git add -A`, an archive, a recursive copy). |
+| `DENIED_ROOT_PARTS` | Level 17. The credential directory names (`.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker` today) the Gateway refuses as a component at any depth of a folder a person picks, as a `frozenset`. Check it on top of `is_sensitive_path`, which anchors these under the home directory, never instead of it. |
 | `read_bytes_nofollow(path, *, within_root=None, max_bytes=None, within_root_is_canonical=False)` | The file's bytes, or `None` when refused: a link at the last component, a hardlinked or non-regular file, a sensitive path, or a file whose opened descriptor resolves outside `within_root`. Raises `FileTooLargeError` past `max_bytes`. |
 | `canonical_file_path(path)` | Level 14. The canonical path of `path`, every link followed, or `None` when the Gateway's file path gate refuses it: an empty path, a Windows UNC path outside the trusted roots, a Windows link the Gateway refuses, or a path whose real target is sensitive. It judges the name, not the file, so read the bytes with `read_bytes_nofollow` or through a descriptor you opened and checked, never a plain `open()` of the answer. It blocks: call it off the event loop. A host below level 14 has the package without this name, so look it up with `getattr(sdk, "canonical_file_path", None)` and refuse the path when it is `None`. |
 | `atomic_write(path, content, *, fsync=False, mode=None, newline=None, restrict_to_owner=False)` | Writes through a temp file and one rename, so a reader never sees a torn file. `restrict_to_owner=True` makes the file owner-only on every platform. |
@@ -2723,9 +2736,16 @@ def snapshot(sdk, path: str, into_dir: str, max_bytes: int) -> str | None:
 | `fd_real_path(fd)` | Level 14. Where an open descriptor really is, from the kernel, or `None` when that cannot be read. Treat `None` as a refusal. |
 | `PinnedPathRefusal` | Level 14. Raised by `pin_parent`. It subclasses `Exception`, not `OSError`. |
 | `scrub_outbound(text)` | The same pass as [`ctx.scrub.outbound`](#content-scrubbing-ctxscrub), with the same rules: send only `.text`, and do not send when it raises. |
-| `audit_log(app_name=None)` | The same writer as [`ctx.audit`](#audit-events-ctxaudit). Without a name it uses `KIROCREW_APP_NAME`, which a spawned backend always has; with neither it raises `LookupError`. `record(...)` never raises. |
+| `iter_credential_matches(text)` | Level 17. Each credential-shaped run in `text`, as `re.Match` objects on `text`, from the Gateway's own credential scan; `any(iter_credential_matches(text))` is the yes-or-no answer. It matches more than redaction masks (an AWS access key ID, say), so use it to refuse serving or uploading content, and `scrub_outbound` for text you send. |
+| `CREDENTIAL_PLACEHOLDER` | Level 17. The text the Gateway writes where it removed a credential (`"[REDACTED: credential]"` today). Write it where your app removes a credential itself, so the two read the same. |
+| `contains_exfiltration_url(text)` | Level 17. `True` when a URL in `text` looks like it carries data out by the Gateway's rules (a long, encoded or random-looking query, or a credential in the URL), whatever its host. Only the answer is given, never which URL. It raises when the Gateway's policy cannot be read: refuse the text then. |
+| `audit_log(app_name=None)` | The same writer as [`ctx.audit`](#audit-events-ctxaudit). Without a name it uses `KIROCREW_APP_NAME`, which a spawned backend always has; with neither it raises `LookupError`. `record(...)` never raises. Its `record_or_raise(...)` (level 17) writes only when the name is the one the Gateway set (no `app_name`, or the same as `KIROCREW_APP_NAME`) and raises `LookupError` otherwise. |
 | `run_sandboxed(argv, *, mode="standard", env=None, strip_python_env=False, **run_kwargs)` | Runs `argv` to completion in the Gateway's OS sandbox, with its resource limits and a scrubbed environment, and returns a `subprocess.CompletedProcess`. `run_kwargs` are the `subprocess.run` keywords that shape stdio, the working directory and the result (`input`, `capture_output`, `timeout`, `check`, `cwd`, `stdin`, `stdout`, `stderr`, `text`, `encoding`, `errors`, `universal_newlines`, `bufsize`); any other keyword raises `TypeError` and starts nothing. Past `timeout` the child is killed (its whole tree on Windows), but a POSIX descendant that outlives it is not: use `run_sandboxed_async` for a child that leaves work running in the background. `mode` is `"standard"` or `"strict"`; anything else raises `ValueError`. Raises `SandboxUnavailableError` when the host cannot sandbox the child, and then no child starts. |
-| `run_sandboxed_async(argv, *, mode="standard", env=None, strip_python_env=False, input=None, timeout=None, cwd=None)` | The same for an event loop, with stdout and stderr captured as bytes. The child starts in its own process group, so past `timeout`, or on a cancel, the child and its descendants are killed, a descendant that outlived the child included (one that called `setsid()` is outside the group), and `subprocess.TimeoutExpired` (or the cancel) is raised. |
+| `run_sandboxed_async(argv, *, mode="standard", env=None, strip_python_env=False, input=None, timeout=None, cwd=None, max_output_bytes=None)` | The same for an event loop, with stdout and stderr captured as bytes. The child starts in its own process group, so past `timeout`, or on a cancel, the child and its descendants are killed, a descendant that outlived the child included (one that called `setsid()` is outside the group), and `subprocess.TimeoutExpired` (or the cancel) is raised. `max_output_bytes` (level 17) keeps at most that many bytes of each of stdout and stderr: once either passes it, the child is stopped the same way and `OutputLimitExceeded` is raised. While a capped run stops, on any of those exits, what is still written to its pipes (by a descendant that left the group, say) is read in bounded chunks and dropped, so the run keeps no more than the cap. It must be a positive `int` (anything else raises `ValueError` and starts nothing); `None` keeps everything. |
+| `OutputLimitExceeded` | Level 17. Raised by `run_sandboxed_async` past `max_output_bytes`, after the child was stopped. A `subprocess.SubprocessError` with `limit`, and `stdout` and `stderr` holding what was kept. |
+| `minimal_env(**extra)` | Level 17. Your process's environment cut to location hints (`PATH`, `HOME`, the locale, temp and per-user directories, the SSH agent socket and a few tool homes), plus `extra`: the base environment the Gateway gives its own install and build children, without API keys, tokens or cloud credentials. Pass it as `env` to `run_sandboxed`. |
+| `git_hook_disable_args(cwd, *, mode="standard", env=None)`, `git_hook_disable_args_async(...)` | Level 17. The `-c hook.<name>.enabled=false` entries for every hook a repository defines in its config (git 2.54 and later run these, and `core.hooksPath` does not stop them), its initialized submodules' included, then the pins that stop submodule recursion. Put them before the subcommand of a git you run with `run_sandboxed` at the same `mode` and `env`. The names are listed by a git that runs in the sandbox at that `mode`. Raises `GitHookScanError` when they cannot be listed safely and `SandboxUnavailableError` when the host cannot sandbox the listing: refuse the git call on either. The sync form blocks, so call it off the event loop. |
+| `GitHookScanError` | Level 17. Raised by the two above. `git_stderr` is the listing git's own stderr when it ran and refused, else `None`. |
 | `sandboxed_argv(...)`, `sandboxed_argv_async(...)` | Only the preparation, `(argv, env, cleanup)`, for a child whose output you stream yourself. Run that argv with that env, and delete `cleanup`, when it is not `None`, after the child exits. |
 | `kill_and_reap(proc, *, timeout=None)` | A coroutine. Kills a child and its descendants and waits for it, for a `communicate()` you abandoned on a timeout or a cancel. On POSIX the descendants are reached through the child's own process group, so start it with `start_new_session=True`; a descendant that outlives an already-reaped child is not reached. `run_sandboxed_async` covers that case itself. |
 | `is_link_or_junction(path)`, `first_linked_ancestor(path)` | A symlink (or Windows junction) at `path`, or the first linked ancestor above it. |

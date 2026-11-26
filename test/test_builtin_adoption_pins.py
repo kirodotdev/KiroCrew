@@ -936,6 +936,34 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
         ({}, {"backend/routes.py": "def canonical_file_path(p):\n    return p\n"}, {}),
         (
             {},
+            {
+                "backend/_host.py": "from kiro_crew.apps import backend_sdk as sdk\n",
+                "backend/run.py": "out = await sdk.run_sandboxed_async(argv, max_output_bytes=9)\n",
+            },
+            {
+                "kiro_crew.apps.backend_sdk": 7,
+                "kiro_crew.apps.backend_sdk.max_output_bytes": 17,
+            },
+        ),
+        ({}, {"backend/runtime.py": "def run(cmd, max_output_bytes=None):\n    pass\n"}, {}),
+        (
+            {},
+            {
+                "backend/_host.py": (
+                    "def audit_or_refuse(ctx):\n"
+                    "    return getattr(ctx.audit, 'record_or_raise', None)\n"
+                )
+            },
+            {"ctx.audit.record_or_raise": 17},
+        ),
+        (
+            {},
+            {"backend/hooks.py": "def f(ctx):\n    ctx.audit.record_or_raise('git', 'invoked')\n"},
+            {"ctx.audit.record_or_raise": 17},
+        ),
+        ({}, {"tests/fakehost.py": "ctx.audit.record_or_raise('git', 'invoked')\n"}, {}),
+        (
+            {},
             {"tests/fakehost.py": "from kiro_crew.apps.backend_sdk import canonical_file_path\n"},
             {},
         ),
@@ -982,6 +1010,41 @@ def test_the_pin_tool_holds_a_later_backend_sdk_name_at_its_own_level(monkeypatc
         refusal = tool._sdk_level_refusal(NAME, level - 1, uses)
         assert refusal is not None
         assert f"--min-sdk-level {level}" in refusal and seam in refusal
+        assert tool._sdk_level_refusal(NAME, level, uses) is None
+
+
+def test_the_pin_tool_holds_a_later_keyword_and_audit_method_at_their_level(monkeypatch, tmp_path):
+    from builtin_adoption_helpers import repository_manifest, write_tree
+
+    from kiro_crew.apps import audit_sdk, backend_sdk
+
+    tool = _pin_tool(monkeypatch)
+    cases = [
+        (
+            f"kw-{keyword}",
+            "from kiro_crew.apps import backend_sdk\n"
+            f"backend_sdk.run_sandboxed_async(['x'], {keyword}=1)\n",
+            f"{backend_sdk.__name__}.{keyword}",
+            level,
+        )
+        for keyword, level in sorted(backend_sdk._KEYWORD_LEVELS.items())
+    ] + [
+        (
+            f"method-{method}",
+            f"def f(ctx):\n    ctx.audit.{method}('op', 'ok')\n",
+            f"ctx.audit.{method}",
+            level,
+        )
+        for method, level in sorted(audit_sdk.METHOD_LEVELS.items())
+    ]
+    assert cases
+    for label, source, seam, level in cases:
+        tree = write_tree(tmp_path / label, repository_manifest(), {"backend/_host.py": source})
+        uses = tool._seam_level_uses(tree)
+        assert uses[seam] == level > backend_sdk.BACKEND_SDK_LEVEL, label
+        assert level <= backend_sdk.SDK_LEVEL, label
+        refusal = tool._sdk_level_refusal(NAME, level - 1, uses)
+        assert refusal is not None and f"--min-sdk-level {level}" in refusal and seam in refusal
         assert tool._sdk_level_refusal(NAME, level, uses) is None
 
 
