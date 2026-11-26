@@ -297,15 +297,19 @@ def test_the_live_hint_readers_are_inside_cores_budget(
 
 #: command -> the most ``kiro_crew`` modules its HANDLER module may load. The listing
 #: bounds above stop at the list; these hold what loads right after it, in every chat,
-#: whether or not a tool of that server is ever called. The three small servers reach the
+#: whether or not a tool of that server is ever called. These small servers reach the
 #: gateway through ``mcp_core_parts`` and never load the core server: importing
-#: ``kiro_crew.mcp_core`` for its HTTP helpers took each of them to about 970 modules.
+#: ``kiro_crew.mcp_core`` for its HTTP helpers took each of them to 750-970 modules.
 #: Same rules as the listing ceiling: room for a platform's extras, lowered when a change
 #: brings a count down.
 HANDLER_MODULE_CEILING = {
     "mcp-cron": 500,
+    "mcp-crew-log": 320,
+    "mcp-debug": 320,
     "mcp-guide": 380,
     "mcp-mate": 380,
+    "mcp-panel": 400,
+    "mcp-work": 320,
 }
 
 _HANDLER_PROBE = f"""
