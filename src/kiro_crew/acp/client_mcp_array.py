@@ -1647,17 +1647,21 @@ def mcp_session_report(self: AcpClient) -> McpSessionReport:
     return self._mcp_report
 
 
-async def wait_for_declared_mcp(self: AcpClient, timeout: float) -> tuple[str, ...]:
+async def wait_for_declared_mcp(
+    self: AcpClient, timeout: float, skip: tuple[str, ...] = ()
+) -> tuple[str, ...]:
     """Hold until every server the agent spec declares has reported; never raises.
 
     The dedicated-transport twin of ``AcpSessionHandle.wait_for_declared_mcp``,
     for an unattended run before its first prompt: the init drain stops a second
-    after it starts, so a slow server can miss it. Returns the declared servers
-    that are not ready, in spec order; empty when all are.
+    after it starts, so a slow server can miss it. A server in *skip* is not
+    waited for. Returns the declared servers that are not ready, in spec order;
+    empty when all are.
     """
-    if self._mcp_report.declared_unreported() and timeout > 0:
+    waited = tuple(name for name in self._mcp_report.declared if name not in skip)
+    if self._mcp_report.unreported(waited) and timeout > 0:
         try:
-            await self._drain_notifications(duration=timeout, until_declared=True)
+            await self._drain_notifications(duration=timeout, until_declared=waited)
         except Exception:
             logger.debug("declared MCP wait failed", exc_info=True)
     return self._mcp_report.declared_not_ready()

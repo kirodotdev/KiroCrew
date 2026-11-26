@@ -220,7 +220,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "ultracode_enabled": ("function", False, "16180c63d5e6", "acp_model_effort"),
     "uses_kiro_identity_store": ("property", False, "a6632a57e602", "acp"),
     "wait_for_compaction": ("function", True, "1d8ef804d52e", "acp_turns"),
-    "wait_for_declared_mcp": ("function", True, "921c3727b83c", "acp"),
+    "wait_for_declared_mcp": ("function", True, "e0719edb9cf3", "acp"),
     "wait_turn_done": ("function", True, "48da118c69ff", "acp"),
     "watch_agent_turns": ("function", False, "42d751137554", "acp_turns"),
     "withheld_credentials_notice": ("property", False, "bb418bb7ece8", "acp"),
