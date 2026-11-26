@@ -114,13 +114,16 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/gateway_runtime/subagent_wiring.py": (1, "owner DM with a subagent notice"),
     "slack/handler_runtime/commands.py": (
-        91,
+        97,
         "slash and text command replies: fixed status and help text, the"
         " channel-agent link refusal, the !channel and !voice global"
         " config-save refusals, the !voice global usage reply, the !bot"
         " list and its refusals, the !ta memory-binding refusals, the"
         " !conductor refusal and the"
-        " Conductor-thread lock on !bot, and the fixed !trust reply",
+        " Conductor-thread lock on !bot, the fixed !trust reply, and the"
+        " !bot join, leave and refusal notices for a Bot's own chat, its"
+        " failed-leave notice, the refusal of another Bot in it and its fixed"
+        " owner-only refusal",
     ),
     "slack/handler_runtime/delivery.py": (
         5,
