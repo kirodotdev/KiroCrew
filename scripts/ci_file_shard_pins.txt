@@ -286,10 +286,6 @@
 2 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_store_and_gate_write_gate.py
 5 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_webhook.py
 3 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_webhook_governance.py
-2 src/kiro_crew/apps/builtins/personal_shopper/tests/test_platform_windows.py
-5 src/kiro_crew/apps/builtins/personal_shopper/tests/test_routes.py
-2 src/kiro_crew/apps/builtins/personal_shopper/tests/test_store.py
-3 src/kiro_crew/apps/builtins/personal_shopper/tests/test_update_preserves_tags.py
 2 src/kiro_crew/apps/builtins/pptx_maker/tests/test_agent_welcome_hints.py
 8 src/kiro_crew/apps/builtins/pptx_maker/tests/test_core_parity.py
 3 src/kiro_crew/apps/builtins/pptx_maker/tests/test_preview_tool_discovery.py
@@ -3277,7 +3273,6 @@
 6 test/test_embed_bounded_decode.py
 6 test/test_embed_kv_clear.py
 6 test/test_embed_load_keeps_stdio.py
-3 test/test_embed_offload_guards.py
 3 test/test_embed_scores_buffer.py
 5 test/test_embed_sdk.py
 1 test/test_embedder_decode_429.py
@@ -5331,9 +5326,6 @@
 3 test/test_persistent_vm_cleanup.py
 8 test/test_persistent_vm_guest_isolation.py
 7 test/test_persistent_vm_retention.py
-7 test/test_personal_shopper_no_purchase_capability.py
-8 test/test_personal_shopper_owner_gate.py
-5 test/test_personal_shopper_store_embedding.py
 1 test/test_pgroup_exists_darwin_eperm.py
 6 test/test_pi_advertised_models.py
 1 test/test_pi_claude_wait_identity.py

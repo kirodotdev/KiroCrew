@@ -3,16 +3,16 @@
   "raw_record_count": 387,
   "counts": {
     "smoke": 42,
-    "nightly": 166,
+    "nightly": 165,
     "native-only": 13,
     "needs-secret": 27,
     "excluded": 24,
-    "total": 272
+    "total": 271
   },
   "priorities": {
     "P0": 10,
     "P1": 35,
-    "P2": 161,
+    "P2": 160,
     "P3": 64
   },
   "per_feature": {
@@ -123,7 +123,7 @@
     },
     "apps": {
       "smoke": 3,
-      "nightly": 12,
+      "nightly": 11,
       "native-only": 2,
       "needs-secret": 7,
       "excluded": 2
@@ -3523,33 +3523,6 @@
         "apps-notes-enable-and-attach-local-vault"
       ],
       "component": "website/src/apps/md-notebook/MdNotebookPage.tsx"
-    },
-    {
-      "id": "app-personal-shopper-start-advice",
-      "feature": "apps",
-      "title": "Personal Shopper: save preferences and start an advisor conversation",
-      "user_story": "As a shopper, I want to save my preferences and start a conversation with the advisor agent, so that I get store research without it ever buying anything.",
-      "start_url": "/personal-shopper",
-      "entry_path": "Enable Personal Shopper > Rail > Personal Shopper > Preferences tab > add preference > Start conversation",
-      "preconditions": {
-        "seed": "rich",
-        "members": [],
-        "feature_flags": [],
-        "notes": "Start conversation creates a chat slot pinned to the personal-shopper-advisor agent and navigates to chat. Store research needs outbound web access by the agent and is not asserted; the page itself does not."
-      },
-      "runnable": "nightly",
-      "estimated_steps": 4,
-      "rationale": "Kept nightly rather than needs-secret: the asserted flow ends at preferences CRUD and slot creation, which are fixture-backed and run against the fake ACP backend; real product research would need network and is explicitly outside the flow.",
-      "source": [
-        "src/kiro_crew/apps/builtins/personal_shopper/app.json",
-        "website/src/apps/personal-shopper/PersonalShopperPage.tsx",
-        "website/src/apps/personal-shopper/PreferencesTab.tsx"
-      ],
-      "priority": "P2",
-      "merged_from": [
-        "app-personal-shopper-start-advice"
-      ],
-      "component": "website/src/apps/personal-shopper/PersonalShopperPage.tsx"
     },
     {
       "id": "app-project-scaffolder-create-folders",

@@ -8680,7 +8680,11 @@ restart after a staged fetch swaps it in place, keeping `data/`, `.app_secret`, 
 approved grants and `enabled`; E9 compares against the record's own `app.json` copy.
 D12 compares no version. Dropping the row as well makes a still-pending record an
 orphan. Pinned by `test/test_builtin_adoption_no_wheel_copy.py`, which deletes the
-fixture app's wheel package and keeps its row.
+fixture app's wheel package and keeps its row. Personal Shopper is the first app
+shipped this way. The accepted cost is availability on a host that never adopted:
+the app is missing from the first boot of that release until STAGE fetches the
+pinned commit and the next restart applies it, and a host that cannot fetch keeps
+the record and its data but stays without the app until it can.
 
 Every other core path that reads the wheel copy to decide a limit or a grant finds
 none. The table names each, what it does then, and which way it fails. Rows 1 to 9
@@ -8988,8 +8992,9 @@ failed (no 404 came back) is not cached as an answer: it takes the shared retry
 ladder, keeps the compiled page, shows its error in an `ErrorNotice` (agent
 hand-off) above the page once the retries are spent, and is asked again on the
 next mount. A
-legacy route this dashboard compiles no page for (the release that drops the app's
-pin row drops its page too) is the one path the route waits on: it reads the list
+legacy route this dashboard compiles no page for (the release that deletes the
+app's wheel copy deletes its page too, and keeps the pin row) is the one path the
+route waits on: it reads the list
 through `useInstalledAppsWhen(true)`, which asks for it when nothing cached it,
 shows the skeleton until an answer is in, renders the adopted copy when the list
 names one for the route, shows an `ErrorNotice` (agent hand-off) with a Retry when
