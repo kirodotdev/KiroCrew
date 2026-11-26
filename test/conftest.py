@@ -312,7 +312,6 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _forget_pending_trace_links,
     _forget_pinned_gateway_spec_path,
     _forget_registry_ssh_sign_in_refusals,
-    _forget_remote_crew_versions,
     _forget_sandbox_launch_mark,
     _forget_tracing_switch,
     _fresh_aws_bin_dir_trust,
@@ -410,6 +409,9 @@ from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and imp
 )
 from conftest_resets_relay_client import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_unsaved_relay_instance_ids,
+)
+from conftest_resets_remote_dispatch import (  # noqa: E402,F401 -- bound for pytest and importers
+    _forget_remote_crew_versions,
 )
 from conftest_resets_search import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_search_shown_text_memo,
