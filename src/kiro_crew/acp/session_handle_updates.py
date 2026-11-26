@@ -334,7 +334,8 @@ def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[Ac
         # result never reaches the main route's release. Nothing below
         # reads the settled row: the events out are coarse activity.
         self._release_settled_tool_call(update, frame_sid)
-        out: list[AcpEvent] = []
+        # A claude child's call that first reaches its own session as an update.
+        out: list[AcpEvent] = self._child_session_call_marks(update, frame_sid)
         for ev in child_events:
             if ev.kind == EVENT_TOOL_CALL and ev.tool_call_id:
                 # A child's tool call is this session's side effect for

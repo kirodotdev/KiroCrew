@@ -1004,7 +1004,16 @@ stamped with an Agent call that has no link, still yields an activity event that
 it as a child's, with no title and nothing stored. A session directive is refused
 from any call an activity event names, with or without a card (`_native_child_tc` on
 the dashboard, as the messaging driver's own set), so no child can act on the
-parent's chat. The ids outlive
+parent's chat. A call can be named a child's first on a `tool_call_update`: the
+adapter emits a call eagerly, naming no parent, when Claude Code asks permission for
+it before the spawning Agent call has streamed, and the streamed `tool_use` then
+stamps the parent on an update or routes the update to the child's session. Both
+transports mark the call on that update, ahead of the frame's own events, so a
+result on the same frame finds the mark (`client_native_children._late_child_mark`,
+`session_handle_claude_children._child_session_call_marks`). A call may be marked
+again on each later update, which is harmless: every reader of the mark is
+idempotent. A permission request the adapter sends before the parent is known
+still reads as the parent's: nothing on that request names the child. The ids outlive
 the turn, because a background child keeps running after the turn that started it;
 a later turn that reads one of its frames lists it again. The parent is the boundary,
 as for a kiro-cli child: a `spawn_continue` or `POST /api/spawn` resume naming a child
