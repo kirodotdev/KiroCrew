@@ -43,7 +43,7 @@ export default function CrewmateImportDialog({ open, onOpenChange }: {
   onOpenChange: (open: boolean) => void
 }) {
   const { t } = useTranslation()
-  const { cards, error: readError, isFetched, store, refresh, remove } = useChangeCards(open ? CREWMATE_IMPORT_SLOT : null)
+  const { cards, error: readError, isSuccess: cardsRead, store, refresh, remove } = useChangeCards(open ? CREWMATE_IMPORT_SLOT : null)
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
   const [justRaised, setJustRaised] = useState<Card | null>(null)
@@ -62,15 +62,16 @@ export default function CrewmateImportDialog({ open, onOpenChange }: {
   }
   const asked = useRef(false)
 
-  // Opened with nothing waiting: go straight to the file picker, once. Never
-  // while the cards could not be read: one may be waiting unseen.
+  // Opened with nothing waiting: go straight to the file picker, once. Only
+  // after the cards were read: until then one may be waiting unseen, whether
+  // the read failed or is being re-read.
   useEffect(() => {
     if (!open) { asked.current = false; setProblem(null); setJustRaised(null); return }
-    if (isFetched && !readError && !asked.current && !waiting) {
+    if (cardsRead && !asked.current && !waiting) {
       asked.current = true
       inputRef.current?.click()
     }
-  }, [open, isFetched, readError, waiting])
+  }, [open, cardsRead, waiting])
 
   const pick = async (file: File | undefined) => {
     if (!file) return
