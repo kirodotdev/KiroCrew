@@ -25,6 +25,7 @@ import { store } from '../store'
 import { setUpdateProgress, sseConnected, sseDisconnected, sseStatus } from '../store/dashboardSlice'
 import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
+import { i18nT } from '../i18n/t'
 
 /** A minimal-but-valid status payload; `sseStatus` dereferences it, so never null. */
 const BLANK_STATUS = {
@@ -561,6 +562,75 @@ describe('AboutPanel gateway restart', () => {
 
     await screen.findByTestId('gateway-restart')
     expect(screen.queryByTestId('gateway-restart-row')).toBeNull()
+  })
+
+  // Every other update card draws no Restart of its own, and an armed update
+  // is applied by exactly a restart, so the standing row stays on screen.
+  it.each([
+    {
+      name: 'the in-app arm flow of a managed-venv install, command included',
+      status: {
+        update_can_arm: true,
+        update_managed_by: 'kirocrew',
+        update_command: 'curl -fsSL https://example.test/cli.sh | sh',
+      },
+      card: 'in-app-update',
+    },
+    {
+      name: 'an installer card with no command to show',
+      status: { update_can_arm: false },
+      card: 'manual-update-instructions',
+    },
+    {
+      name: 'a policy-managed update with no in-app apply',
+      status: { update_can_arm: false, update_managed_by: 'command' },
+      card: 'policy-managed-update-note',
+    },
+  ])('keeps the standing Restart beside $name', async ({ status, card }) => {
+    const posts = stubFetch()
+    seedStatus({
+      update_available: true,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
+      update_latest_version: '9.9.9',
+      update_channel: 'stable',
+      ...status,
+    })
+    mountWeb()
+
+    await screen.findByTestId(card)
+    expect(screen.getByTestId('gateway-restart-row')).toBeTruthy()
+    // Still one Restart on screen, never two.
+    expect(screen.queryByTestId('gateway-restart')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('gateway-restart-standing'))
+    fireEvent.click(screen.getByTestId('gateway-restart-standing'))
+    await waitFor(() => expect(posts.some(p => p.url.includes('/api/restart'))).toBe(true))
+  })
+
+  // An armed update is installed by exactly this restart, so the row must not
+  // say it restarts "without updating".
+  it.each([
+    { armed: '', key: 'restart_row_note' },
+    { armed: '9.9.9', key: 'restart_row_note_armed' },
+  ])('labels the standing Restart for armed=$armed', async ({ armed, key }) => {
+    stubFetch()
+    seedStatus({
+      update_available: true,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
+      update_latest_version: '9.9.9',
+      update_channel: 'stable',
+      update_can_arm: true,
+      update_managed_by: 'kirocrew',
+      update_armed_version: armed,
+    })
+    mountWeb()
+
+    const note = await screen.findByTestId('gateway-restart-row-note')
+    expect(note.textContent).toBe(i18nT(`pages.settings.aboutPanel.${key}`))
+    // A real sentence, not the key echoed back by a missing catalog entry.
+    expect(note.textContent).not.toContain(key)
   })
 
   it('treats the connection drop after a restart as success, not failure', async () => {

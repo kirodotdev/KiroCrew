@@ -413,6 +413,10 @@ export function AboutPanelGatewayUpdates({
   // boot-time apply left, from the status frame.
   const armedVersion = useAppSelector(s => s.dashboard.status?.update_armed_version) || ''
   const pendingApplyError = useAppSelector(s => s.dashboard.status?.pending_apply_error) || ''
+  // True only where the update card below draws its own Restart: the
+  // installer-command branch with a command on screen. Kept in step with that
+  // branch's conditions, so the standing row is hidden exactly then.
+  const cardHasRestart = showManualUpdate && !effectiveGwCanArm && !gwManagedByCommand && !!effectiveCommand
   return (
     <div className="flex flex-col gap-2.5">
       {armedVersion && (
@@ -646,11 +650,13 @@ export function AboutPanelGatewayUpdates({
           when needed and one that only appears when an update happens to
           be offered.
 
-          Hidden while the manual-update card is on screen: that card
-          already renders a Restart button wired to the same mutation, and
-          two identical buttons a few rows apart read as two different
-          actions. */}
-      {restartControls && !showManualUpdate && (
+          Hidden only while the update card draws its own Restart (the
+          installer-command branch): two identical buttons a few rows apart
+          read as two different actions. The in-app arm flow, the
+          policy-managed note and a command-less installer card draw none,
+          and an armed update is applied by exactly this restart, so the row
+          stays there. */}
+      {restartControls && !cardHasRestart && (
         <div className="flex items-center justify-between gap-3 pt-2.5 border-t border-border"
           data-testid="gateway-restart-row">
           {/* One label, not a title + note pair: the button already names the
@@ -658,7 +664,13 @@ export function AboutPanelGatewayUpdates({
               button says the same thing twice. This mirrors the auto-update
               row above — a single explanatory label plus its control — and
               spends the space on the consequence instead. */}
-          <span className="text-sm text-muted">{i18nT('pages.settings.aboutPanel.restart_row_note')}</span>
+          {/* Once an update is armed this restart is what installs it, so the
+              note must not say "without updating". */}
+          <span className="text-sm text-muted" data-testid="gateway-restart-row-note">
+            {armedVersion
+              ? i18nT('pages.settings.aboutPanel.restart_row_note_armed')
+              : i18nT('pages.settings.aboutPanel.restart_row_note')}
+          </span>
           <div className="shrink-0">
             <RestartGatewayButton
               pending={gwRestart.isPending}
@@ -677,7 +689,7 @@ export function AboutPanelGatewayUpdates({
           user no feedback whatsoever. */}
       {/* askAgent on: a refused restart of a standing action; nothing on
           this card is a draft. */}
-      {restartControls && !showManualUpdate && (
+      {restartControls && !cardHasRestart && (
         <ErrorNotice message={applyError} report={gwUpdate.applyErrorReport} askAgent testId="gateway-restart-error" />
       )}
     </div>
