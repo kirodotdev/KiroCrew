@@ -6373,7 +6373,7 @@
       "trust_off_title": "Allow access by this computer's network name",
       "trust_off_body": "The dashboard refuses requests from addresses it does not recognise. Allow its own private-network name so a phone can reach it. This opens no port to the internet and does not change how you sign in.",
       "restart_gateway_title": "Restart {{productName}} to finish",
-      "restart_gateway_body": "A network name is available now, but this server resolved none when it started, so the name is not trusted yet. Restart {{productName}} once and the last step will be ready.",
+      "restart_gateway_body": "This server must restart to use its current tailnet address. Restart {{productName}} once and the last step will be ready.",
       "occupied_title": "Something else is already served here",
       "occupied_body": "Tailscale is already serving something else at this address. Publishing would replace it, so nothing was changed.",
       "occupied_replace": "If it is safe to replace, run <cmd/>",

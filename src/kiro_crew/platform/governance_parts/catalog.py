@@ -343,7 +343,8 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # Auto-deriving the dashboard's OWN tailnet origin (``dashboard/tailnet.py``,
     # RFC §4). When ``dashboard.tailscale.enabled`` is on, the gateway shells out
     # to the local ``tailscale`` daemon at startup and, on success, puts the
-    # resulting MagicDNS name into the CSRF origin allowlist and the
+    # resulting MagicDNS name into the CSRF origin allowlist (with
+    # ``dashboard.tailscale.https_port`` in the origin when it is not 443) and the
     # DNS-rebinding ``Host`` barrier. A managed fleet frequently may not do
     # either half: some hosts must not invoke the tailnet CLI at all, and — the
     # sharper case — an origin set that only a fleet-controlled ``dashboard.url``

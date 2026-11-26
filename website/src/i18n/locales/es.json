@@ -10788,7 +10788,7 @@
       "trust_off_title": "Permitir el acceso por el nombre de red de este equipo",
       "trust_off_body": "El panel rechaza las solicitudes de direcciones que no reconoce. Permite su propio nombre de red privada para que un teléfono pueda alcanzarlo. Esto no abre ningún puerto a internet ni cambia la forma en que inicias sesión.",
       "restart_gateway_title": "Reinicia {{productName}} para terminar",
-      "restart_gateway_body": "Ahora hay un nombre de red disponible, pero este servidor no resolvió ninguno al iniciarse, así que el nombre aún no es de confianza. Reinicia {{productName}} una vez y el último paso quedará listo.",
+      "restart_gateway_body": "Este servidor debe reiniciarse para usar su dirección de tailnet actual. Reinicia {{productName}} una vez y el último paso quedará listo.",
       "occupied_title": "Ya se está sirviendo otra cosa aquí",
       "occupied_body": "Tailscale ya está sirviendo otra cosa en esta dirección. Publicar la reemplazaría, así que no se cambió nada.",
       "occupied_replace": "Si es seguro reemplazarla, ejecuta <cmd/>",

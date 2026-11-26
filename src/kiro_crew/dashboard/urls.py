@@ -587,12 +587,21 @@ def format_dashboard_urls(
 # ---------------------------------------------------------------------------
 
 
+def tailnet_https_origin(host: str, https_port: int = 443) -> str:
+    """The origin a browser sends for *host* served by ``tailscale serve`` on *https_port*.
+
+    A browser omits ``:443`` from ``Origin``, so the default port gives the bare name.
+    """
+    return f"https://{host}" if https_port == 443 else f"https://{host}:{https_port}"
+
+
 def build_allowed_origins(
     port: int,
     local_only: bool,
     configured_host: str = "",
     dashboard_url: str = "",
     tailnet_host: str = "",
+    tailnet_https_port: int = 443,
 ) -> set[str]:
     """Compute the set of allowed origins for the dashboard.
 
@@ -601,8 +610,9 @@ def build_allowed_origins(
     a custom domain) pass the CSRF check without code changes.
 
     *tailnet_host* is this machine's MagicDNS name when tailnet access is
-    enabled, and adds ``https://<name>`` — no port, because ``tailscale serve``
-    fronts the dashboard on 443. Kept as a **parameter rather than a lookup** so
+    enabled, and adds :func:`tailnet_https_origin` for it on *tailnet_https_port*
+    (the port ``tailscale serve`` fronts the dashboard on): ``https://<name>`` at
+    443, ``https://<name>:<port>`` otherwise. Kept as a **parameter rather than a lookup** so
     this function stays pure and testable: the caller owns the daemon call and
     the validation (``dashboard/tailnet.py``), and passes "" when Tailscale is
     disabled, absent, or produced nothing trustworthy. Nothing here re-validates
@@ -630,7 +640,7 @@ def build_allowed_origins(
     # docstring: this function must not be the place that decides whether a
     # subprocess-derived hostname is trustworthy.
     if tailnet_host:
-        origins.add(f"https://{tailnet_host}")
+        origins.add(tailnet_https_origin(tailnet_host, tailnet_https_port))
     if not local_only:
         mh = machine_hostname()
         if mh:
@@ -655,7 +665,7 @@ def build_allowed_origins(
             origins.add(f"http://localhost:{_p}")
             origins.add(f"http://[::1]:{_p}")
             origins.add(f"http://kirocrew.localhost:{_p}")
-    return _governed_origins(origins, port, tailnet_host)
+    return _governed_origins(origins, port, tailnet_host, tailnet_https_port)
 
 
 def origin_policy_item(origin: str) -> str:
@@ -696,7 +706,9 @@ def origin_permitted(origin: str, *, audit_tool: str = "") -> bool:
     return policy_permits("dashboard_origins", item, audit_tool=audit_tool)
 
 
-def _governed_origins(origins: set[str], port: int, tailnet_host: str) -> set[str]:
+def _governed_origins(
+    origins: set[str], port: int, tailnet_host: str, tailnet_https_port: int
+) -> set[str]:
     """*origins* without the extras the ``dashboard_origins`` policy refuses.
 
     This machine's loopback origins on the bound *port* are the floor and are never
@@ -706,7 +718,7 @@ def _governed_origins(origins: set[str], port: int, tailnet_host: str) -> set[st
     LTS build none passes unless a policy names it (RFC D3); an ``oss`` build
     with no policy naming the key keeps every origin, as before.
     """
-    extras = sorted(origins - origin_floor(port, tailnet_host))
+    extras = sorted(origins - origin_floor(port, tailnet_host, tailnet_https_port))
     if not extras:
         return origins
     refused = {o for o in extras if not origin_permitted(o, audit_tool="dashboard_origin")}
@@ -719,7 +731,7 @@ def _governed_origins(origins: set[str], port: int, tailnet_host: str) -> set[st
     return (origins - set(extras)) | {stored_origin(o) for o in approved}
 
 
-def origin_floor(port: int, tailnet_host: str) -> set[str]:
+def origin_floor(port: int, tailnet_host: str, tailnet_https_port: int = 443) -> set[str]:
     """The origins ``dashboard_origins`` is never asked about (:func:`_governed_origins`)."""
     floor = {
         f"http://127.0.0.1:{port}",
@@ -729,7 +741,7 @@ def origin_floor(port: int, tailnet_host: str) -> set[str]:
     }
     floor |= {dashboard_origin(o) for o in floor}
     if tailnet_host:
-        floor.add(f"https://{tailnet_host}")
+        floor.add(tailnet_https_origin(tailnet_host, tailnet_https_port))
     return floor
 
 

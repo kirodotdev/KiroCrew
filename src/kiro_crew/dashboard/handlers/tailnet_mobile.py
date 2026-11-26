@@ -47,6 +47,7 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -130,6 +131,8 @@ def _derive_step(
     startup_host: str,
     published: bool | None,
     port_free: bool | None,
+    https_port: int = 443,
+    startup_https_port: int = 443,
 ) -> Step:
     """The one next action, derived HERE and nowhere else.
 
@@ -160,7 +163,8 @@ def _derive_step(
        answers 403. Config first.
     5. ``restart_gateway`` — configured and resolvable NOW, but the running
        server does not trust this exact name (it may have booted before tailscaled
-       or the node name may have changed). The fixed request boundary is rebuilt
+       or the node name may have changed), or its origin carries a different
+       ``https_port`` than the one configured now. The fixed request boundary is rebuilt
        only by the formal gateway restart path.
     6. ``occupied`` — serve holds this port/mount for something that is not this
        dashboard, or its state could not be determined. Publishing would REPLACE
@@ -206,7 +210,7 @@ def _derive_step(
         return "enable_https"
     if not trusted:
         return "trust_off"
-    if startup_host != probe.name:
+    if startup_host != probe.name or startup_https_port != https_port:
         return "restart_gateway"
     if published is True:
         return "ready"
@@ -317,7 +321,9 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
             # mint one last boot-bound QR before exiting.
             "boot_id": current_boot_id(),
             "step": live.step,
-            "origin": f"https://{probe.name}" if probe.name else "",
+            "origin": (
+                tailnet.tailnet_https_origin(probe.name, live.https_port) if probe.name else ""
+            ),
             # The OTHER devices on this tailnet. Carried because publishing and
             # the QR both succeed on a tailnet of one, and the scan then fails in
             # the phone's browser with nothing on this machine to blame.
@@ -343,7 +349,7 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
             # ``occupied`` before and could not resolve it: it runs the very
             # publish path that just refused.
             "serve_command": (
-                tailnet_serve.manual_publish_command(port)
+                tailnet_serve.manual_publish_command(port, https_port=live.https_port)
                 if port and (probe.refused_cli or live.step == "occupied")
                 else ""
             ),
@@ -365,6 +371,8 @@ class _LiveState(NamedTuple):
     #: The name the RUNNING server resolved at startup. Empty means the origin is
     #: not trusted by this process yet, however resolvable the name is right now.
     startup_host: str
+    #: The configured ``dashboard.tailscale.https_port``, which every serve read uses.
+    https_port: int
 
 
 async def _live_state(request: web.Request, port: int) -> _LiveState:
@@ -391,6 +399,7 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
         logger.debug("tailnet mobile: config unreadable", exc_info=True)
         trusted = False
         keep_awake = True
+    https_port = await asyncio.to_thread(tailnet_serve.configured_https_port)
 
     try:
         # A pure read, like the pin probe below (no SEL row per refresh).
@@ -420,13 +429,15 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
         # Both are subprocess round trips; neither may run on the event loop.
         probe = await asyncio.to_thread(tailnet.probe_daemon)
         if probe.name and port:
-            state = await asyncio.to_thread(tailnet_serve.serve_state, port)
+            state = await asyncio.to_thread(tailnet_serve.serve_state, port, https_port=https_port)
             published = state.published
             port_free = state.port_free
             serve_detail = state.detail
 
     startup_host = tailnet.running_tailnet_origin(request.app)[0]
     step = _derive_step(
+        https_port=https_port,
+        startup_https_port=tailnet.running_tailnet_https_port(request.app),
         policy_off=policy_off,
         pinned=pinned,
         probe=probe,
@@ -444,6 +455,7 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
         keep_awake=keep_awake,
         pinned=pinned,
         startup_host=startup_host,
+        https_port=https_port,
     )
 
 
@@ -941,8 +953,9 @@ async def api_tailnet_mobile_publish(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    https_port = await asyncio.to_thread(tailnet_serve.configured_https_port)
     result = await asyncio.to_thread(
-        tailnet_serve.publish, port, audit_tool="tailnet_mobile_publish"
+        tailnet_serve.publish, port, https_port=https_port, audit_tool="tailnet_mobile_publish"
     )
     await _audit_async(
         request,
@@ -979,7 +992,8 @@ async def api_tailnet_mobile_unpublish(request: web.Request) -> web.Response:
         await _audit_async(request, "tailnet.mobile.unpublish", "denied", "restricted-session")
         return refusal
     port = _dashboard_port(request)
-    result = await asyncio.to_thread(tailnet_serve.unpublish, port)
+    https_port = await asyncio.to_thread(tailnet_serve.configured_https_port)
+    result = await asyncio.to_thread(tailnet_serve.unpublish, port, https_port=https_port)
     await _audit_async(
         request,
         "tailnet.mobile.unpublish",
@@ -1085,7 +1099,8 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
             {"error": f"{sentence} {detail}".strip() if detail else sentence, "code": code},
             status=409,
         )
-    host = live.probe.name
+    # The QR URL's authority: the tailnet name, with the HTTPS port when it is not 443.
+    host = urlsplit(tailnet.tailnet_https_origin(live.probe.name, live.https_port)).netloc
 
     # The QR session lifetime is fixed at the endpoint default. A caller-supplied
     # ``ttl`` was accepted here once, but no caller ever sent one — both the card

@@ -10788,7 +10788,7 @@
       "trust_off_title": "Consenti l'accesso tramite il nome di rete di questo computer",
       "trust_off_body": "La dashboard rifiuta le richieste da indirizzi che non riconosce. Consenti il suo nome di rete privata affinché un telefono possa raggiungerla. Questo non apre alcuna porta su Internet e non cambia il modo in cui accedi.",
       "restart_gateway_title": "Riavvia {{productName}} per completare",
-      "restart_gateway_body": "Ora è disponibile un nome di rete, ma questo server non ne ha risolto nessuno all'avvio, quindi il nome non è ancora attendibile. Riavvia {{productName}} una volta e l'ultimo passaggio sarà pronto.",
+      "restart_gateway_body": "Questo server deve riavviarsi per usare il suo indirizzo tailnet attuale. Riavvia {{productName}} una volta e l'ultimo passaggio sarà pronto.",
       "occupied_title": "Qui viene già servito qualcos'altro",
       "occupied_body": "Tailscale sta già servendo qualcos'altro a questo indirizzo. La pubblicazione lo sostituirebbe, quindi non è stato modificato nulla.",
       "occupied_replace": "Se sostituirlo è sicuro, esegui <cmd/>",
