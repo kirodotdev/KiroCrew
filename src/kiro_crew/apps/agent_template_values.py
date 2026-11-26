@@ -64,18 +64,14 @@ def _host_path() -> str:
     return os.pathsep.join(entries)
 
 
-def host_placeholder_values(app_name: str, app_root: Path) -> dict[str, str]:
-    """``{"{NAME}": value}`` for every host placeholder this host can compute.
+def host_values() -> dict[str, str]:
+    """``{"{NAME}": value}`` for the host placeholders that name no app.
 
-    *app_root* is the root the app's agents register from. ``{APP_DATA}`` is derived
-    without creating the directory: rendering a template is not a reason to create a
-    data dir, and an installed app already has one.
+    ``{PATH_SEP}``, then ``{UV_BIN}`` and ``{HOST_PATH}`` when this host can compute
+    them. The renderer's values and the backend SDK's ``agent_template_host_values``
+    both come from here, so an app that states the contract reads what is rendered.
     """
-    values = {
-        APP_ROOT: str(app_root),
-        APP_DATA: str(app_dir(app_name) / "data"),
-        PATH_SEP: os.pathsep,
-    }
+    values = {PATH_SEP: os.pathsep}
     uv_bin = resolve_uv()
     if uv_bin:
         values[UV_BIN] = uv_bin
@@ -83,3 +79,17 @@ def host_placeholder_values(app_name: str, app_root: Path) -> dict[str, str]:
     if host_path:
         values[HOST_PATH] = host_path
     return values
+
+
+def host_placeholder_values(app_name: str, app_root: Path) -> dict[str, str]:
+    """``{"{NAME}": value}`` for every host placeholder this host can compute.
+
+    *app_root* is the root the app's agents register from. ``{APP_DATA}`` is derived
+    without creating the directory: rendering a template is not a reason to create a
+    data dir, and an installed app already has one.
+    """
+    return {
+        APP_ROOT: str(app_root),
+        APP_DATA: str(app_dir(app_name) / "data"),
+        **host_values(),
+    }

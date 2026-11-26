@@ -5,7 +5,9 @@ choices that keep or tighten the sandbox: the ``standard`` tier (credential home
 hidden, git-over-SSH and the AWS CLI usable) or the ``strict`` one (those hidden
 too). The private chokepoint's other parameters lift a mask, open a write window
 inside a sealed parent or reclassify the child, which is the gateway's decision
-for its own spawns and never an app's, so they are not offered.
+for its own spawns and never an app's, so they are not offered. The one mask option
+offered, ``extra_hidden_dirs`` (seam level 18), only adds: it hides more of the disk
+from the child and lifts nothing the tier hides.
 
 :func:`run_sandboxed` and :func:`run_sandboxed_async` prepare, run and clean up in
 one call, with the gateway's resource limits applied after ``exec``; prefer them.
@@ -24,6 +26,8 @@ import asyncio
 import contextlib
 import os
 import subprocess
+from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat, sandbox
@@ -122,6 +126,110 @@ def _checked_output_cap(cap: int | None) -> int | None:
     return cap
 
 
+def _ceiling_targets() -> tuple[str, ...]:
+    """The data home's read-only leaves, as absolute paths, in each spelling the sandbox seals.
+
+    ``sandbox._CREW_READONLY_TARGETS`` under the home directory (both data-home
+    spellings) and ``sandbox._relocated_crew_targets`` for a data home moved out from
+    under it: the governance ceilings (``security_policy.json``, ``profiles``,
+    ``admission_policy.json``, ``computer_use.json``) and the gateway-managed records
+    in-sandbox code reads.
+    """
+    home = str(Path.home())
+    return (
+        *(os.path.join(home, rel) for rel in sandbox._CREW_READONLY_TARGETS),
+        *sandbox._relocated_crew_targets(tuple(sandbox._CREW_READONLY_LEAVES)),
+    )
+
+
+def _spellings(path: str) -> set[str]:
+    return {os.path.normcase(os.path.normpath(path)), os.path.normcase(os.path.realpath(path))}
+
+
+def _within(child: str, parent: str) -> bool:
+    return child == parent or child.startswith(parent.rstrip(os.sep) + os.sep)
+
+
+def _ceiling_overlap(path: str) -> str | None:
+    """The read-only leaf *path* is, holds or sits in, or ``None`` when it touches none."""
+    mine = _spellings(path)
+    for target in _ceiling_targets():
+        for theirs in _spellings(target):
+            if any(_within(m, theirs) or _within(theirs, m) for m in mine):
+                return target
+    return None
+
+
+def _normalized_hidden_dirs(dirs: Iterable[str | os.PathLike[str]] | None) -> tuple[str, ...]:
+    """*dirs* as absolute paths, each made absolute once here, or a ``TypeError``/``ValueError``.
+
+    A relative entry is resolved against this process's working directory, the one
+    place it is resolved, so the overlap check and the chokepoint read the same path.
+    """
+    if dirs is None:
+        return ()
+    if isinstance(dirs, (str, bytes, os.PathLike)):
+        raise TypeError("extra_hidden_dirs takes a list of paths, not one path")
+    hidden: list[str] = []
+    for entry in dirs:
+        if not isinstance(entry, (str, os.PathLike)):
+            raise TypeError(
+                f"an extra_hidden_dirs entry must be a str or os.PathLike, not {type(entry).__name__}"
+            )
+        path = os.fspath(entry)
+        if not isinstance(path, str) or not path or "\x00" in path:
+            raise ValueError("an extra_hidden_dirs entry must be a non-empty str path")
+        hidden.append(os.path.abspath(path))
+    return tuple(dict.fromkeys(hidden))
+
+
+def _refuse_unsafe_hidden_dirs(hidden: tuple[str, ...], mode: str) -> None:
+    """Refuse *hidden* when it would remove a ceiling, or when this spawn would drop it.
+
+    An entry that is, holds or sits in one of the data home's read-only leaves raises
+    ``ValueError``: hiding a ceiling from the process that enforces it reads as the
+    permissive default, so that mask would remove the ceiling rather than protect it.
+    ``sandbox.credential_mask_applies`` names the outcomes that hand back a child the
+    masks never reach (no backend, a spawn already inside a Kiro Crew sandbox); those
+    raise :data:`SandboxUnavailableError`, so the child is not started with the paths
+    readable. It resolves paths and can probe the backend, so it blocks.
+    """
+    for path in hidden:
+        ceiling = _ceiling_overlap(path)
+        if ceiling is not None:
+            raise ValueError(
+                f"extra_hidden_dirs may not hide {path}: it overlaps {ceiling}, "
+                "which the sandbox keeps readable and never writable"
+            )
+    if hidden and not sandbox.credential_mask_applies(mode):
+        raise SandboxUnavailableError(
+            "extra_hidden_dirs cannot be applied to a child on this host, so no child was "
+            "started",
+            kind="no_backend",
+            detail="the sandbox would not carry extra_hidden_dirs for this spawn",
+        )
+
+
+def _hidden_dirs_for(dirs: Iterable[str | os.PathLike[str]] | None, mode: str) -> tuple[str, ...]:
+    hidden = _normalized_hidden_dirs(dirs)
+    if hidden:
+        _refuse_unsafe_hidden_dirs(hidden, mode)
+    return hidden
+
+
+async def _hidden_dirs_off_loop(
+    dirs: Iterable[str | os.PathLike[str]] | None, mode: str
+) -> tuple[str, ...]:
+    hidden = _normalized_hidden_dirs(dirs)
+    if hidden:
+        await asyncio.to_thread(_refuse_unsafe_hidden_dirs, hidden, mode)
+    return hidden
+
+
+def _hidden_option(hidden: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+    return {"extra_hidden_dirs": hidden} if hidden else {}
+
+
 def minimal_env(**extra: str) -> dict[str, str]:
     """This process's environment cut to location hints, plus *extra* (seam level 17).
 
@@ -144,6 +252,7 @@ def sandboxed_argv(
     mode: str = "standard",
     env: dict[str, str] | None = None,
     strip_python_env: bool = False,
+    extra_hidden_dirs: Iterable[str | os.PathLike[str]] = (),
 ) -> SpawnPlan:
     """``(wrapped argv, scrubbed environment, cleanup path)`` for running *argv*.
 
@@ -152,9 +261,18 @@ def sandboxed_argv(
     child does not inherit the gateway's interpreter paths. Raises
     :data:`SandboxUnavailableError` when the host refuses the spawn and
     ``ValueError`` for a *mode* outside :data:`SANDBOX_MODES`.
+
+    *extra_hidden_dirs* (seam level 18) are more paths to hide from the child, on top
+    of everything the tier hides; nothing the tier hides can be lifted by them. Each
+    is made absolute once, against this process's working directory. An entry that
+    overlaps one of the data home's read-only leaves (the governance ceilings among
+    them) raises ``ValueError``, and a spawn that would not carry the paths raises
+    :data:`SandboxUnavailableError`; nothing is prepared on either.
     """
+    checked = _checked_mode(mode)
+    hidden = _hidden_dirs_for(extra_hidden_dirs, checked)
     return sandbox.sandboxed_spawn_argv(
-        argv, _checked_mode(mode), env=env, strip_python_env=strip_python_env
+        argv, checked, env=env, strip_python_env=strip_python_env, **_hidden_option(hidden)
     )
 
 
@@ -164,15 +282,19 @@ async def sandboxed_argv_async(
     mode: str = "standard",
     env: dict[str, str] | None = None,
     strip_python_env: bool = False,
+    extra_hidden_dirs: Iterable[str | os.PathLike[str]] = (),
 ) -> SpawnPlan:
     """:func:`sandboxed_argv` prepared off the event loop.
 
     ``kiro_crew.sandbox.sandboxed_spawn_argv_async``: the preparation does
     filesystem work, so it runs on a worker thread and is shielded from
     cancellation, which would otherwise leave its cleanup path behind.
+    *extra_hidden_dirs* is checked as :func:`sandboxed_argv` checks it, off the loop.
     """
+    checked = _checked_mode(mode)
+    hidden = await _hidden_dirs_off_loop(extra_hidden_dirs, checked)
     return await sandbox.sandboxed_spawn_argv_async(
-        argv, _checked_mode(mode), env=env, strip_python_env=strip_python_env
+        argv, checked, env=env, strip_python_env=strip_python_env, **_hidden_option(hidden)
     )
 
 
@@ -233,6 +355,7 @@ def run_sandboxed(
     mode: str = "standard",
     env: dict[str, str] | None = None,
     strip_python_env: bool = False,
+    extra_hidden_dirs: Iterable[str | os.PathLike[str]] = (),
     **run_kwargs: Any,
 ) -> "subprocess.CompletedProcess[Any]":
     """Run *argv* to completion inside the sandbox, under the gateway's resource limits.
@@ -244,11 +367,14 @@ def run_sandboxed(
     environment. Any other keyword raises ``TypeError`` before anything is prepared.
     Past ``timeout`` the child is killed (its whole tree on Windows); a POSIX
     descendant that outlives it is not, so use :func:`run_sandboxed_async` for a
-    child that leaves work running in the background.
+    child that leaves work running in the background. *extra_hidden_dirs* (seam level
+    18) is checked as :func:`sandboxed_argv` checks it, before anything is prepared.
     """
     forwarded = _checked_run_kwargs(run_kwargs)
+    checked = _checked_mode(mode)
+    hidden = _hidden_dirs_for(extra_hidden_dirs, checked)
     wrapped, scrubbed, cleanup = sandbox.sandboxed_spawn_argv(
-        argv, _checked_mode(mode), env=env, strip_python_env=strip_python_env
+        argv, checked, env=env, strip_python_env=strip_python_env, **_hidden_option(hidden)
     )
     try:
         return sandbox.run_limited(wrapped, env=scrubbed, **forwarded)
@@ -316,6 +442,7 @@ async def run_sandboxed_async(
     timeout: float | None = None,
     cwd: str | None = None,
     max_output_bytes: int | None = None,
+    extra_hidden_dirs: Iterable[str | os.PathLike[str]] = (),
 ) -> "subprocess.CompletedProcess[bytes]":
     """:func:`run_sandboxed` for an event loop, with output captured.
 
@@ -337,10 +464,15 @@ async def run_sandboxed_async(
     cancel, the cleanup kills as the uncapped one does but drains what is left in
     bounded reads and discards it. The cap only lowers what is returned: anything but
     a positive int raises ``ValueError`` before anything is prepared.
+
+    *extra_hidden_dirs* (seam level 18) is checked as :func:`sandboxed_argv` checks
+    it, off the loop and before anything is prepared.
     """
     cap = _checked_output_cap(max_output_bytes)
+    checked = _checked_mode(mode)
+    hidden = await _hidden_dirs_off_loop(extra_hidden_dirs, checked)
     wrapped, scrubbed, cleanup = await sandbox.sandboxed_spawn_argv_async(
-        argv, _checked_mode(mode), env=env, strip_python_env=strip_python_env
+        argv, checked, env=env, strip_python_env=strip_python_env, **_hidden_option(hidden)
     )
     try:
         proc = await sandbox.create_subprocess_limited(
