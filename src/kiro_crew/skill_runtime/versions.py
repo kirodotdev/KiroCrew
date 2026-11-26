@@ -104,7 +104,10 @@ def read_auto_skill_body(loader: SkillsLoader, name: str) -> str | None:
         # ``skill_file`` again would validate one path and read another.
         # safe_read_file re-checks is_sensitive_path and opens with
         # O_NOFOLLOW, closing a swap of the final component after our check.
-        return sk.safe_read_file(real)
+        # Normalised like every other SKILL.md read: a leading BOM would hide
+        # the fence from the update path's frontmatter readers. Read off the
+        # owner module at call time, so a patch of it there is honoured.
+        return sk._body_reads._normalize_skill_text(sk.safe_read_file(real))
     except OSError:
         return None
 
