@@ -48,7 +48,10 @@ pin must equal), and the PR's own wheel-copy changes are what the
 table's row differs from the merge base table's row of the same name: the
 first PINS_FILE is the merge base, the last is the head. The base tip comes
 from the BASE_TIP environment variable, and the comparison reads git trees
-only (``git diff-tree``), so the named commit must be in the checkout.
+only (``git diff-tree``), so the named commit must be in the checkout. A
+changed row whose app has no non-test wheel-copy file at the base tip (the
+copy was deleted and the row kept) needs no line: there is no wheel copy left
+for the pinned commit to fall behind.
 
 Exit 0 = pass; 1 = fail.
 """
@@ -216,14 +219,50 @@ def git_wheel_copy_drift(revision: str) -> Callable[[str, str], list[str]]:
     return compare
 
 
+def git_wheel_copy_ships(revision: str) -> Callable[[str], bool]:
+    """A probe: whether ``revision`` holds a non-test file of the app's wheel copy.
+
+    With no revision it answers True, so the row still needs its base line and the
+    comparer then fails closed as before.
+    """
+
+    def ships(name: str) -> bool:
+        if not revision:
+            return True
+        proc = subprocess.run(
+            ["git", "ls-tree", "-r", "-z", "--name-only", f"{revision}^{{commit}}", "--"]
+            + list(wheel_copy_dirs(name)),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise CannotCompare(
+                f"{name}: cannot read the wheel copy at {revision} ({proc.stderr.strip()})"
+            )
+        return any(p and not _is_test_path(p) for p in proc.stdout.split("\0"))
+
+    return ships
+
+
 def check_bases(
-    pin_texts: list[str], body: str, compare: Callable[[str, str], list[str]]
+    pin_texts: list[str],
+    body: str,
+    compare: Callable[[str, str], list[str]],
+    ships: Callable[[str], bool] = lambda _name: True,
 ) -> list[str]:
-    """One error line per changed pin row whose wheel copy moved after its named base."""
+    """One error line per changed pin row whose wheel copy moved after its named base.
+
+    A row whose app ships no wheel copy at the base tip (*ships* answers False) is
+    held to nothing.
+    """
     pins = load_pins(pin_texts)
     bases = named_bases(body)
     errors = []
     for name in changed_rows(pin_texts):
+        if not ships(name):
+            continue
         shas = bases.get(name, set())
         if not shas:
             errors.append(
@@ -259,8 +298,9 @@ def main(argv: list[str]) -> int:
     body = os.environ.get("PR_BODY", "")
     try:
         errors = check(name_status, pin_texts, body)
+        tip = os.environ.get("BASE_TIP", "")
         base_errors = check_bases(
-            pin_texts, body, git_wheel_copy_drift(os.environ.get("BASE_TIP", ""))
+            pin_texts, body, git_wheel_copy_drift(tip), git_wheel_copy_ships(tip)
         )
     except ValueError as exc:
         print(
