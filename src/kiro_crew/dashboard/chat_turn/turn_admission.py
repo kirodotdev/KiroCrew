@@ -837,6 +837,10 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             execution_context = tightened_execution
             turn.execution_context = execution_context
             bindings.execution_context = tightened_execution
+        # The member id is settled: the Bot list reads this turn as that Bot's.
+        from kiro_crew.dashboard import running_bot_turns
+
+        running_bot_turns.begin(turn, execution_context)
         # A crewmate's conductor chat and each of its workers take the
         # crewmate's Profile Permissions before the provider is claimed, so a
         # session restored after a restart (slot trust is in memory only) does
