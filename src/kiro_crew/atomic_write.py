@@ -487,12 +487,12 @@ def replace_with_retry(src: Path | str, dst: Path | str, *, budget_s: float | No
     This arm exists because a transcript rewrite loses the rename to a READER
     that holds the file for as long as it parses, not to a scanner's momentary
     touch, so an elapsed-time bound covers it where an attempt count cannot. On
-    exhaustion the budget arm logs one WARNING with the path, the attempts made
-    and the elapsed time (the count arm stays silent, as before, since its
-    callers' comments already own that trade-off). The POSIX and on-loop
-    re-raises are unchanged: both arms re-raise at once there, so neither waits
-    for a budget on a path where a ``PermissionError`` is genuine or the single
-    loop must not sleep.
+    exhaustion the budget arm logs one WARNING with the path, the destination's
+    size, the attempts made and the elapsed time (the count arm stays silent,
+    as before, since its callers' comments already own that trade-off). The
+    POSIX and on-loop re-raises are unchanged: both arms re-raise at once
+    there, so neither waits for a budget on a path where a ``PermissionError``
+    is genuine or the single loop must not sleep.
     """
     if budget_s is not None:
         _replace_with_budget(src, dst, budget_s)
@@ -606,9 +606,16 @@ def _replace_with_budget(src: Path | str, dst: Path | str, budget_s: float) -> N
     try:
         os.replace(str(src), str(dst))
     except PermissionError:
+        # The size records how big the file was when a reader outlasted the
+        # budget, so later sightings show whether long holds follow its size.
+        try:
+            size = f"{os.stat(dst).st_size} bytes"
+        except OSError:
+            size = "size unknown"
         logger.warning(
-            "atomic rename at %s still contended after %.2fs and %d attempts; giving up",
+            "atomic rename at %s (%s) still contended after %.2fs and %d attempts; giving up",
             dst,
+            size,
             time.monotonic() - started,
             attempts + 1,
         )

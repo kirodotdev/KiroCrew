@@ -263,9 +263,12 @@ async def _add_script_crons(
     """
     from kiro_crew.change_card_catalog import DEFAULT_CREWMATE_TEMPLATE
     from kiro_crew.cron_script import resolve_script_path
+    from kiro_crew.dashboard.chat_utils_awaits import drained_to_thread
 
     for job in jobs:
-        resolve_script_path(job["script"])  # refuses a path outside crons/
+        # Refuses a path outside crons/. Off the loop, where the path gate answers
+        # inline, so a resolver stall cooldown does not read as a refusal.
+        await drained_to_thread(resolve_script_path, job["script"])
         made = await state.crons.add_job_async(
             job["name"],
             job.get("message", ""),

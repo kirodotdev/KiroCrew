@@ -66,6 +66,43 @@ def raw_tools_project_onto_alias(
     return bool(_norm_mcp_spec(raw_rest) == _norm_mcp_spec(alias_rest))
 
 
+def rendered_alias_projects_raw_tools(
+    alias: str, raw_spec: Any, rendered_spec: Any, declared: Iterable[Mapping[str, Any]]
+) -> bool:
+    """:func:`raw_tools_project_onto_alias` for an alias entry read back from the agent config.
+
+    The rebuild compares two emitted entries, and the alias entry read back is one of
+    them: its command is resolved (``/usr/bin/npx`` for a source's ``npx``) and its
+    ``args`` and ``env`` have their home and login references expanded. A source spec
+    that already equals the rendered entry is the same server. Any other source spec
+    that holds a command is emitted as the rebuild emits it (``emit_mcp_entry``, with
+    gatewayd's resolver, which applies the rebuild's rule), and the whole emitted entry
+    is compared with the rendered one, so a differing command, ``args`` or ``env``
+    makes them two servers. An alias pinned to one file is a different server once PATH
+    resolves the source's command to another, as it is to the rebuild, even while the
+    pinned file exists.
+    """
+    if not isinstance(raw_spec, dict) or not isinstance(rendered_spec, dict):
+        return False
+    if raw_tools_project_onto_alias(alias, raw_spec, rendered_spec, declared):
+        return True
+    raw_cmd = raw_spec.get("command")
+    if not isinstance(raw_cmd, str) or not raw_cmd:
+        return False
+    # Function-local: mcp_sources imports this module, and importing
+    # kiro_crew.agent does not load the gateway rewriter, which only a fold
+    # with a command to resolve needs.
+    from kiro_crew.agent_materialization import mcp_sources
+    from kiro_crew.mcp_gateway.rewriter import _resolve_target_command
+
+    emitted, _ = mcp_sources.emit_mcp_entry(
+        raw_spec, lambda cmd, env: (_resolve_target_command(cmd, env or {}, None), "")
+    )
+    return emitted is not None and raw_tools_project_onto_alias(
+        alias, emitted, rendered_spec, declared
+    )
+
+
 def _alias_family_base(key: str) -> str:
     """Strip a collision suffix, yielding the alias its family is named for.
 

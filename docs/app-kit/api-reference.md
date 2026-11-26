@@ -2569,10 +2569,12 @@ adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browse
 dashboard's `appWebOriginStatus(name)`, and level 12 adds
 `permissions.kiroOperations` with its route and `ctx.kiro_call` ([Kiro calls](#kiro-calls)) and the dashboard's
 [`SessionChanges` and `DiffView`](#session-changes-and-diff-view), and level 13 adds
-[`useBrowserSites`](#browser-sites) and `/api/apps/<name>/browser-sites`; each level
-includes every level below it. Several seams share level 7, three share level 8, and
-level 10 is shared by the seams of the batch it opens, so an app that needs one
-feature-detects it, never the level alone. Read it
+[`useBrowserSites`](#browser-sites) and `/api/apps/<name>/browser-sites`, and level 14
+adds the [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk)'s `canonical_file_path`;
+each level includes every level below it. Several seams share level 7, three share
+level 8, level 10 is shared by the seams of the batch it opens, and level 14 by the
+backend SDK names of its batch, so an app that needs one feature-detects it, never the
+level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
 The dashboard exports the same number as `APP_SDK_LEVEL`.
@@ -2580,11 +2582,11 @@ The dashboard exports the same number as `APP_SDK_LEVEL`.
 ### Backend SDK (`kiro_crew.apps.backend_sdk`)
 
 The host controls your backend's own Python may call when no `ctx` seam fits: a
-sensitive-path check, a no-follow read, an atomic write, outbound redaction, an audit
-row, a sandboxed child process and the cross-platform process and lock helpers. Each
-name calls the control the Gateway itself enforces, so a check tightened in a later
-release reaches your app with the upgrade. Use these instead of a private `kiro_crew`
-name: a private name moves between releases, and these do not.
+sensitive-path check, the file path gate, a no-follow read, an atomic write, outbound
+redaction, an audit row, a sandboxed child process and the cross-platform process and
+lock helpers. Each name calls the control the Gateway itself enforces, so a check
+tightened in a later release reaches your app with the upgrade. Use these instead of a
+private `kiro_crew` name: a private name moves between releases, and these do not.
 
 It works the same in a hooks backend (in the Gateway process) and in an `entryPoint`
 backend the Gateway spawns on its own interpreter. A backend on its own venv
@@ -2613,6 +2615,7 @@ def read_attachment(path: str, root: str) -> bytes | None:
 | `is_sensitive_path(path)` | `True` when `path` is inside a location the Gateway never reads or writes (credential homes, its own policy files). Refuse on `True`. |
 | `contains_sensitive_path(directory)` | `True` when such a location lies under `directory`. Check it before a bulk operation rooted there (`git add -A`, an archive, a recursive copy). |
 | `read_bytes_nofollow(path, *, within_root=None, max_bytes=None, within_root_is_canonical=False)` | The file's bytes, or `None` when refused: a link at the last component, a hardlinked or non-regular file, a sensitive path, or a file whose opened descriptor resolves outside `within_root`. Raises `FileTooLargeError` past `max_bytes`. |
+| `canonical_file_path(path)` | Level 14. The canonical path of `path`, every link followed, or `None` when the Gateway's file path gate refuses it: an empty path, a Windows UNC path outside the trusted roots, a Windows link the Gateway refuses, or a path whose real target is sensitive. It judges the name, not the file, so read the bytes with `read_bytes_nofollow` or through a descriptor you opened and checked, never a plain `open()` of the answer. It blocks: call it off the event loop. A host below level 14 has the package without this name, so look it up with `getattr(sdk, "canonical_file_path", None)` and refuse the path when it is `None`. |
 | `atomic_write(path, content, *, fsync=False, mode=None, newline=None, restrict_to_owner=False)` | Writes through a temp file and one rename, so a reader never sees a torn file. `restrict_to_owner=True` makes the file owner-only on every platform. |
 | `ensure_owner_only_dir(path)` | `mkdir -p`, owner-only (`0700`) inside the data home and a plain `mkdir -p` elsewhere. |
 | `scrub_outbound(text)` | The same pass as [`ctx.scrub.outbound`](#content-scrubbing-ctxscrub), with the same rules: send only `.text`, and do not send when it raises. |

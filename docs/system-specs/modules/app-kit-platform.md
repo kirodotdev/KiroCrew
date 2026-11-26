@@ -7965,8 +7965,10 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `useBrowserView` and `useBrowserCoords` (RFC app-sdk-browser, step 1c) and the SDK's
 `appWebOriginStatus` (§18k); level 12 adds `permissions.kiroOperations`, its route and
 `ctx.kiro_call` (§47), and the SDK's `SessionChanges` and `DiffView` (§18l); level 13 adds
-`/api/apps/<name>/browser-sites` and the SDK's `useBrowserSites` (§45). Several seams share level 7,
-three share level 8, and the open batch that level 10 starts shares level 10, so an app that needs one
+`/api/apps/<name>/browser-sites` and the SDK's `useBrowserSites` (§45); level 14 adds backend
+SDK names, one batch: `canonical_file_path` (§40). Several seams share level 7,
+three share level 8, the open batch that level 10 starts shares level 10, and the backend SDK
+batch shares level 14, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -8568,7 +8570,10 @@ shortcut's `platformAccelerators` and `contributes.memoryProviders` (level 8),
 `getattr`/`hasattr` of that name on any receiver, and the backend SDK package in
 any form in such a file (level 7): the file names both `kiro_crew` and the word
 `backend_sdk`, which catches a dotted import, `from kiro_crew.apps import
-backend_sdk`, an attribute of an imported parent and a string lookup alike. A level below the highest one found
+backend_sdk`, an attribute of an imported parent and a string lookup alike. Once any
+such file names the package, each name of `backend_sdk._EXPORT_LEVELS` that any such
+file holds as a word counts at its own level (`canonical_file_path`, level 14), so a
+shim's lookup in one file and its caller in another still count. A level below the highest one found
 is refused, naming what was found, by `compute` and `verify` alike, so a tree that
 feature-detects a seam and degrades still pins at that seam's level, and a host
 without it keeps the wheel copy. The scan errs wide: a false hit only asks for a
@@ -10091,6 +10096,7 @@ that wants one helper does not pay for the security stack.
 |---|---|---|
 | Sensitive paths | `is_sensitive_path(path)`, `contains_sensitive_path(directory)` | `security.is_sensitive_path`, `security.path_contains_sensitive` |
 | Files | `read_bytes_nofollow(path, *, within_root, max_bytes, within_root_is_canonical)`, `FileTooLargeError` | `hooks.safe_read_file_bytes_nolink`, `hooks.FileTooLargeError` |
+| Files (level 14) | `canonical_file_path(path)` | `hooks.validate_file_path`, called with the path alone |
 | Files | `atomic_write(path, content, *, fsync, mode, newline, restrict_to_owner)`, `ensure_owner_only_dir(path)` | `atomic_write.atomic_write`, `owner_only_files.ensure_directory` |
 | Redaction | `scrub_outbound(text)`, `ScrubResult` | `apps.scrub_sdk.ScrubSDK.outbound` (the `ctx.scrub` pass) |
 | Audit | `audit_log(app_name=None)` | `apps.audit_sdk.AuditSDK` (the `ctx.audit` writer) |
@@ -10098,7 +10104,9 @@ that wants one helper does not pay for the security stack.
 | Process and locks | `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_POSIX`, `kill_and_reap`, `is_link_or_junction`, `first_linked_ancestor`, `rmtree_force`, `file_lock` | the `platform_compat` names of the same spelling |
 
 **Same safety semantics.** A read refuses exactly what the private read refuses and
-raises the gateway's own `FileTooLargeError`; a spawn the host cannot sandbox raises
+raises the gateway's own `FileTooLargeError`; the path gate answers exactly what
+`hooks.validate_file_path` answers (the empty, unrepresentable, Windows UNC and Windows
+link refusals before any resolution, then the sensitive-path list on the `realpath`); a spawn the host cannot sandbox raises
 the gateway's own `SandboxUnavailableError`. The exception classes are the private
 ones, not look-alikes, so an `except` written against either catches both.
 
@@ -10108,7 +10116,13 @@ and refuses any other value (`off` included) with `ValueError` before anything i
 prepared; the private chokepoint's `extra_*_dirs`, `first_party_fixed_argv` and
 `is_kiro_cli` lift a mask, open a write window in a sealed parent or reclassify the
 child, which is the gateway's decision for its own spawns, so they are not offered.
-The read has no `admit_hardlinked` or `canonical_gate`. The SDK spawns nothing that
+The read has no `admit_hardlinked` or `canonical_gate`. The path gate takes the path
+alone, so neither `canonical_gate` nor `classify_sensitive` is offered: how the check is
+bounded is the gateway's choice. Its answer judges a NAME, so the bytes come from
+`read_bytes_nofollow` or a descriptor-pinned open, never a plain `open` of the result,
+and its docstring and the api-reference row say so. The hardlink-admitting
+`hooks.safe_read_file_bytes` is not offered under any name: `read_bytes_nofollow` is the
+one public read. The SDK spawns nothing that
 is not sandboxed: `run_sandboxed` and `run_sandboxed_async` prepare through the
 chokepoint and run under the resource limits in the same function, with the
 scrubbed environment and the cleanup path removed on every outcome, so
@@ -10143,6 +10157,12 @@ the gateway's own interleave safely.
 **Level.** `SDK_LEVEL` is `APP_SDK_LEVEL`; `BACKEND_SDK_LEVEL` is 7, the level that
 publishes the package. The adoption pin tool counts any non-test source naming the
 package as a level-7 use (§33), so a tree that adopts it is held on a host without it.
+A name published later is a row of `_EXPORT_LEVELS` with its own level, and
+`BACKEND_SDK_LEVEL` stays 7. Level 14 is one batch of such names, each added by its own
+change, all sharing the level: `canonical_file_path`. A host from level 7 to 13 has the
+package without the name, so an app feature-detects the name with `getattr` and keeps its
+own refusal, and the pin tool counts a tree that names the package and the name as a use
+of the name's level (§33), so a host below it keeps the wheel copy.
 
 **Not in it yet.** The names the apps reach that this package does not cover stay
 private and keep their `_host.py` gap: chat slot and auto-nudge internals (they belong
@@ -10160,8 +10180,10 @@ Writers: `apps/backend_sdk/__init__.py`, `apps/backend_sdk/paths.py`,
 `apps/backend_sdk/files.py`, `apps/backend_sdk/redaction.py`,
 `apps/backend_sdk/audit.py`, `apps/backend_sdk/spawn.py`,
 `apps/backend_sdk/process.py`, `apps/app_sdk_level.py`,
-`website/src/app-sdk/sdkLevel.ts`, `scripts/adoption_pin.py` (`_seam_level_uses`).
-Pinned by `test/test_app_backend_sdk.py` and `test/test_builtin_adoption_pins.py`.
+`website/src/app-sdk/sdkLevel.ts`, `scripts/adoption_pin.py` (`_seam_level_uses`,
+`_BACKEND_SDK_LATER_NAMES`).
+Pinned by `test/test_app_backend_sdk.py`, `test/test_app_backend_sdk_file_gate.py` and
+`test/test_builtin_adoption_pins.py`.
 App authors: `docs/app-kit/api-reference.md` § Backend SDK.
 
 ## 41. App-owned chat slots (seam level 7)

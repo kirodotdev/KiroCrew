@@ -867,6 +867,7 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.mcp_discovery_config import (  # noqa: F401
         _MALFORMED_TRANSPORT_MAX,
+        _alias_renders_raw,
         _display_transport,
         _encoding_reason,
         _mcp_names_from_file,
