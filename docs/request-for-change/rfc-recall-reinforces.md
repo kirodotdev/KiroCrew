@@ -30,7 +30,7 @@ the strength view is not on main yet.
 
 | # | Change | Kind |
 |---|---|---|
-| 1 | A recall that puts an experience into a session's context makes it fade more slowly from then on, and starts its fade again from that day. | changed ranking |
+| 1 | A recall that relevance earned makes an experience's strength fade more slowly and starts its fade again from that day. Recall uses that strength only to settle near-ties: at most `MARGIN` (0.02) above today's score. | changed ranking |
 | 2 | An edit to an experience starts its fade again from the edit day. | changed ranking |
 | 3 | Recall counts live in the planned `memory_usage` table, which the gateway writes in the background, never on the recall path. | uses a planned derived table |
 | 4 | Existing memories score exactly as today until they are next recalled or edited. | migration |
@@ -62,34 +62,53 @@ For one V1 experience:
   0 means `S₀ = ∞`: the row never fades, as today.
 - `n` = counted recalls (section 3): `memory_usage.uses`; 0 when the row has
   no usage entry.
-- `S = min(S₀ × (1 + G)ⁿ, S_MAX)`, with `G = 0.5` and `S_MAX = 365` days.
+- `S = min(S₀ × (1 + G)ⁿ, S_MAX)`, with `G = 0.5` and `S_MAX = 4 × S₀`.
 - `t₀` = the latest of: written, last counted recall, last edit
   (`memory_record_meta.updated_at` at revision > 1).
 - `strength(t) = b × exp(-(whole days from t₀ to t) / S)`.
-- Recall score = `cosine × strength(now)`, so `recall_score` keeps its shape
-  with `S` and `t₀` in place of `rate` and `created_at`.
+- `today(t)` = today's score, `cosine × b × exp(-(whole days from written to t) / S₀)`.
+- Recall score = `min(cosine × strength(now), today(now) + MARGIN)`, with
+  `MARGIN = 0.02`. Relevance decides the order; reinforcement can only reorder
+  candidates whose scores are within 0.02 of each other today, and never lifts a
+  row over one that is more relevant by more than that (section 7).
+- The shown strength is that score at a cosine of 1, cap included:
+  `recall_weight = min(strength(now), today(now) at cosine 1 + MARGIN)`. The page
+  and the graph read it, so what they show is what recall uses.
 
-With `n = 0` and no edit, `S = S₀` and `t₀ = written`, so the score is exactly
-today's. Worked example at the default rate (`S₀` = 33.3 days), importance 0.5:
+So `strength(t)` is the memory's reinforced fade, and recall uses at most
+`MARGIN` of it above today's score: reinforcement settles near-ties, it does
+not keep an old memory on top. With `n = 0` and no edit, `S = S₀` and
+`t₀ = written`, so the score is exactly today's.
 
-| Recalls | S (days) | Day it falls under 0.385 after its last recall |
+Worked example of `strength(t)` (before the cap) at the default rate (`S₀` = 33.3
+days, so `S_MAX` = 133.3 days), importance 0.5. It says how long a memory keeps
+its tie-breaking edge; the recall score's lift is never more than `MARGIN`:
+
+| Recalls | S (days) | Day `strength` falls under 0.385 after its last recall |
 |---|---|---|
 | 0 | 33.3 | 27 |
 | 1 | 50.0 | 40 |
 | 2 | 75.0 | 60 |
-| 4 | 168.8 | 134 |
-| 6 or more | 365 (cap) | 290 |
+| 3 | 112.5 | 90 |
+| 4 or more | 133.3 (cap) | 106 |
 
-`G` and `S_MAX` are module constants, measured and tuned in the build PR with
-the recall-ranking harness, never config keys.
+`G`, `S_MAX` and `MARGIN` are module constants, measured and tuned in the build
+PR with the recall-ranking harness and the section 7 experiment, never config
+keys.
 
 ## 3. What counts as a recall
 
-A recall counts when `get_episodic_context` puts the row into a session's
-context: it passed the relevance gate and made the `limit` cut. At most one
-count per row per UTC day. These do not count: Memory page searches, Test
-recall, the graph, `search_episodic` called from the API or CLI, and a row that
-ranked but was cut. That keeps the dashboard from training recall, and the
+A recall counts only when it was earned by relevance, not by strength:
+
+- `get_episodic_context` put the row into a session's context (it passed the
+  relevance gate and made the `limit` cut), **and**
+- it passed the injection judge, where one runs, or its raw cosine cleared the
+  admission floor (`episodic_relevance_threshold`) by at least 0.05. A row that
+  made the cut only because strength ranked it first does not count.
+
+At most one count per row per UTC day. These never count: Memory page searches,
+Test recall, the graph, `search_episodic` called from the API or CLI, and a row
+that ranked but was cut. That keeps the dashboard from training recall, and the
 once-a-day rule keeps one long session from stacking counts.
 
 ## 4. The side table
@@ -115,14 +134,16 @@ table, its counter and its flush are that PR's.
 ## 5. What changes for existing memories
 
 - **At ship:** nothing. No row has a usage entry, so every score is today's.
-- **After ship:** a row that is recalled starts fading from its recall day and
-  more slowly each time. A row that is never recalled fades exactly as today.
+- **After ship:** a row whose recalls relevance earned wins near-ties against
+  rows that were never recalled, by at most `MARGIN`. A row that is never
+  recalled scores exactly as today.
 - **Edits:** an edit restarts the fade from the edit day without changing `S`.
   Edits before ship already set `updated_at`, so an experience edited before
   ship gets its fresh start on the first recompute. That is the one change that
   lands at ship, and only for edited rows (`revision > 1`). Open question 1 asks
   whether to count only edits after ship.
-- **Memory page:** the curve becomes a line that jumps back up at each recall;
+- **Memory page:** the curve shows `recall_weight`, cap included, so it rises by
+  at most `MARGIN` at each recall;
   the detail panel names the recall count and the last recall day. The line
   "Recalls and edits don't slow fading" goes away, and Save as lesson stays for
   a memory that should never fade.
@@ -133,18 +154,42 @@ table, its counter and its flush are that PR's.
 | Step | Cost |
 |---|---|
 | Recall path | add at most 8 ids to an in-process set: a few microseconds, no I/O |
-| Scoring | two more float arrays in the scoring set (`S`, `t₀`): 16 bytes per row, 1.6 MB at 100k rows; one more subtract and divide per row in the vectorised score |
+| Scoring | two more float arrays in the scoring set (`S`, `t₀`): 16 bytes per row, 1.6 MB at 100k rows; per row in the vectorised score, one more subtract and divide, plus one exp and one min for the `MARGIN` cap |
 | FAISS and stdlib paths | read `S` and `t₀` for each hit from the same in-memory map |
 | Flush | one write transaction per maintenance tick, one upsert per row recalled since the last tick |
 | Crash before a flush | the counts since the last tick are lost; recall is unaffected |
 
-## 7. Risks
+## 7. Feedback loop
 
-- **Rich get richer.** A row that is recalled ranks higher, so it is recalled
-  more. The gate, the once-a-day rule and `S_MAX` bound it; the build PR
-  measures it on the recall-ranking harness before shipping.
-- **Ranking changes users notice.** Only for rows recalled after ship, and in
-  the direction users expect.
+xg-gh-25 flagged this risk in
+[SwarmAI Discussion #79](https://github.com/xg-gh-25/SwarmAI/discussions/79)
+("Recall Architecture — the READ path"): a hit log that drives decay can loop.
+A memory injected because it is strong gets stronger because it was injected,
+and over weeks a few memories hold every slot. Four guards, each already part
+of the rules above:
+
+1. **Count only earned recalls** (section 3): the judge passed it, or its
+   cosine cleared the floor by 0.05. A row shown only because strength ranked it
+   first does not count.
+2. **Relevance first** (section 2): strength only breaks near-ties. The score is
+   capped at today's score + `MARGIN` (0.02), so reinforcement never lifts a row
+   over a candidate that is more relevant by more than that.
+3. **Cap stability** at `S_MAX = 4 × S₀`, and count at most one recall per row
+   per UTC day.
+4. **Dashboard reads never count** (section 3).
+
+**Acceptance check (rank concentration).** Before reinforcement ships, replay a
+simulated month: the recall benchmark's situations, resampled to 30 days of
+traffic at a measured host rate, through `get_episodic_context`, in three
+settings: reinforcement off, reinforcement with no guard, and reinforcement with
+guards 1-3. Measure every simulated day: the Gini coefficient and the top-10
+share of counted recalls, the share of slots held by the top 1% of memories, and
+gold recall on the test split at days 1, 15 and 30. **Pass:** with guards 1-3,
+gold recall stays within 2 points of "reinforcement off", and the top-10 share
+stays below 2× its day-1 value.
+
+Ranking changes users notice: only for rows recalled after ship, and in the
+direction users expect.
 
 ## 8. Not a goal
 
@@ -163,5 +208,5 @@ table, its counter and its flush are that PR's.
 | Phase | Change | Exit criteria |
 |---|---|---|
 | P1 | The counting rule on `memory_usage` (needs the index series' usage PR) | A test recalls a row twice on one day and once the next: its `uses` is 2. Dashboard search and Test recall add none. |
-| P2 | `S` and `t₀` in all three scoring sites and `recall_weight` | With an empty table, every recall-ranking test passes unchanged. A test asserts the shown strength equals recall's score after a recall, on both scoring paths. |
+| P2 | `S`, `t₀` and the `MARGIN` cap in all three scoring sites and `recall_weight` | With an empty table, every recall-ranking test passes unchanged. After a recall, a test asserts recall's score at an exact match equals the shown `recall_weight` (`min(strength, today + MARGIN)`), on both scoring paths, and that it is never more than `MARGIN` above today's score. The section 7 rank-concentration check passes. |
 | P3 | Memory page and graph | The detail panel shows the recall count and the jump in the curve; the old line is gone. |
