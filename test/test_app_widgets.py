@@ -353,3 +353,6 @@ def test_the_example_app_declares_a_valid_widget() -> None:
     module = (root / "ui" / entry).read_text(encoding="utf-8")
     # The example sets payload text, never markup.
     assert "export function activate" in module and "innerHTML =" not in module
+    # Behind an authenticating proxy the frame runs the module inline, where only a
+    # registered entry is read, so the example registers the one it exports.
+    assert "globalThis.kirocrew?.register(activate)" in module

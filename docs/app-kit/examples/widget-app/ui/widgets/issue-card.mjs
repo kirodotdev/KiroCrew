@@ -60,3 +60,7 @@ export function activate(ctx) {
     },
   }
 }
+
+// Behind an authenticating reverse proxy the frame runs this module inline, where no
+// export can be read, so it also hands over its entry.
+globalThis.kirocrew?.register(activate)
