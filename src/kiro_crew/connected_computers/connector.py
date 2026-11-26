@@ -75,7 +75,7 @@ class ConnectorRefused(RuntimeError):
 class AuthenticatedRefusal(ConnectorRefused):
     """The gateway refused this computer in a frame that passed its session MAC.
 
-    ``code`` is the gateway's refusal code (``credentials.CredentialRejected.code``).
+    ``code`` is the gateway's refusal code, from the ``connector_token.CredentialRejected`` codes.
     The session key is bound to the grant's peer key and both handshake nonces,
     so only the gateway the user approved can send it, on this connection.
     """
