@@ -1861,7 +1861,7 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   text and one resolved `color`, so any JSON Canvas reader (Obsidian) opens the
   board. What JSON Canvas has no field for rides along as added fields: `shape`,
   `swatch` (the named colour), `hex`, `fill`, `weight`, `border`, `borderColor`,
-  `borderHex`, `ink`, `inkHex`, `fontSize`, `bold`, `strike`, `align`, `locked`
+  `borderHex`, `ink`, `inkHex`, `fontSize`, `bold`, `italic`, `underline`, `strike`, `align`, `locked`
   on nodes, and `swatch`, `line`, `dashed`, `route` on edges. Array order is
   stacking order, back to front.
 - A document written elsewhere reads too: `color` wins over a stale `swatch`,

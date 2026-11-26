@@ -3,6 +3,8 @@
  * its swatch, fill mode, border and weight. One place, so every kind of shape agrees.
  */
 
+import type { CSSProperties } from 'react'
+
 import { SWATCH_STYLE, type Shape, type StrokeWeight, type Swatch } from './canvasModel'
 import { STICKER_EDGE, seeThrough } from './canvasPaint'
 import { darker, inkOn } from './colorMath'
@@ -54,6 +56,16 @@ const picked = (c: Swatch) => (c === 'black' ? 'var(--text)' : SWATCH_STYLE[c].p
 export function textInk(s: Pick<Shape, 'ink' | 'inkHex'>): string {
   if (s.inkHex) return s.inkHex
   return s.ink ? picked(s.ink) : 'var(--text)'
+}
+
+/** The CSS for a shape's bold, italic, underline and strikethrough: only the ones switched on. */
+export function emphasisStyle(s: Pick<Shape, 'bold' | 'italic' | 'underline' | 'strike'>): CSSProperties {
+  const lines = [s.underline ? 'underline' : '', s.strike ? 'line-through' : ''].filter(Boolean).join(' ')
+  return {
+    ...(s.bold ? { fontWeight: 700 } : {}),
+    ...(s.italic ? { fontStyle: 'italic' } : {}),
+    ...(lines ? { textDecoration: lines } : {}),
+  }
 }
 
 export function shapeLook(s: Pick<Shape, 'color' | 'fill' | 'weight' | 'border' | 'borderColor' | 'hex' | 'borderHex'>): ShapeLook {

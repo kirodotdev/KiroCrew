@@ -25,6 +25,7 @@ import { InstantTip, useInstantTip } from '../InstantTip'
 import {
   CONN_INK, DEFAULT_SIZE, alignOf, defaultAlign, defaultFontSize, fontSizeOf, DEFAULT_TEXT_SIZE, MAX_TEXT_SIZE, MIN_TEXT_SIZE, SECTION_TITLE_H, SWATCH_STYLE, boundsOf, labelScale, newId, pointBounds, sectionMembers, shapeAt, wheelPanStep, wheelZoomFactor, zOrdered,
   type Canvas, type Connector, type Pt, type Shape, type ShapeKind, type Swatch, type TextAlign,
+  type EmphasisStyle, emphasisChord,
 } from './canvasModel'
 import CanvasContextMenu, { type MenuAction } from './CanvasContextMenu'
 import {
@@ -33,7 +34,7 @@ import {
 import { copyShapes, pasteClip, restack, setLocked, unlockAll, type CanvasClip } from './canvasEditing'
 import ConnectorToolbar from './ConnectorToolbar'
 import DashedOutline from './DashedOutline'
-import { shapeLook, swatchStyle, textInk } from './shapeLook'
+import { emphasisStyle, shapeLook, swatchStyle, textInk } from './shapeLook'
 import TextToolbar from './TextToolbar'
 import ShapeToolbar from './ShapeToolbar'
 import {
@@ -440,9 +441,34 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
   const recolor = (color: Swatch) => restyle({ color, hex: undefined })
 
   /** A change to every selected shape's look, as one undo step. */
-  const restyle = (patch: Partial<Pick<Shape, 'color' | 'fill' | 'weight' | 'border' | 'borderColor' | 'hex' | 'borderHex' | 'ink' | 'inkHex' | 'bold' | 'strike' | 'align'>>) => {
+  const restyle = (patch: Partial<Pick<Shape, 'color' | 'fill' | 'weight' | 'border' | 'borderColor' | 'hex' | 'borderHex' | 'ink' | 'inkHex' | 'bold' | 'italic' | 'underline' | 'strike' | 'align'>>) => {
     const b = canvasRef.current
     commit({ ...b, shapes: b.shapes.map(s => (selected.has(s.id) ? { ...s, ...patch } : s)) })
+  }
+
+  /** Switches one text style on or off for every selected shape; off is stored as unset. */
+  const restyleEmphasis = (style: EmphasisStyle, on: boolean) => restyle({ [style]: on || undefined })
+
+  /**
+   * A style chord on *ids*, sections aside: on for all of them unless every one
+   * already has it, then off. One undo step.
+   */
+  const toggleEmphasis = (ids: Set<string>, style: EmphasisStyle) => {
+    const b = canvasRef.current
+    const hit = b.shapes.filter(s => ids.has(s.id) && s.kind !== 'section')
+    if (hit.length === 0) return
+    const on = !hit.every(s => s[style])
+    const next = { ...b, shapes: b.shapes.map(s => (hit.includes(s) ? { ...s, [style]: on || undefined } : s)) }
+    // An empty text box being typed in goes when the edit ends, taking its
+    // creation step with it, so styling it records no step of its own.
+    const typing = editing ? b.shapes.find(s => s.id === editing) : undefined
+    if (typing && typing.kind === 'text' && !typing.text.trim()) { onChange(next); return }
+    // Mid-edit, the text typed so far is its own undo step, and the edit restarts
+    // from the styled canvas so ending it does not record a step from the old text.
+    const start = editing ? editStart.current : null
+    if (start && JSON.stringify(start) !== JSON.stringify(b)) commit(b, start)
+    commit(next, b)
+    if (editing) editStart.current = next
   }
 
   /** Live colours replace one history entry, retaining the gesture's first state. */
@@ -772,6 +798,8 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
     if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicateSelection(); return }
     if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); setSelected(new Set(canvas.shapes.filter(s => !s.locked).map(s => s.id))); return }
     if (mod && !e.shiftKey && e.code === 'KeyC') { e.preventDefault(); runAction('copy', [...selected]); return }
+    const chord = emphasisChord(e)
+    if (chord) { e.preventDefault(); toggleEmphasis(selected, chord); return }
     if (mod && !e.shiftKey && e.code === 'KeyX') { e.preventDefault(); runAction('copy', [...selected]); runAction('delete', [...selected]); return }
     if (mod && !e.shiftKey && e.code === 'KeyV') { e.preventDefault(); runAction('paste', []); return }
     if (mod && e.shiftKey && e.code === 'KeyL') { e.preventDefault(); runAction(e.altKey ? 'unlockAll' : 'lock', [...selected]); return }
@@ -878,7 +906,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
           both moved and scaled by the view. */}
       <div style={{ position: 'absolute', left: 0, top: 0, transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`, transformOrigin: '0 0' }}>
         {zOrdered(canvas.shapes).map(s => (
-          <ShapeView key={s.id} shape={s} editing={editing === s.id} zoom={view.zoom} onText={text => setText(s.id, text)} onEndEdit={endEdit} />
+          <ShapeView key={s.id} shape={s} editing={editing === s.id} zoom={view.zoom} onText={text => setText(s.id, text)} onEndEdit={endEdit} onEmphasis={style => toggleEmphasis(new Set([s.id]), style)} />
         ))}
         <svg style={{ position: 'absolute', left: 0, top: 0, width: 1, height: 1, overflow: 'visible' }} aria-hidden>
           <defs>
@@ -1022,13 +1050,13 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
               <TextToolbar shapes={selShapes}
                 onInk={ink => restyle({ ink, inkHex: undefined })} onInkHex={(inkHex, final, fresh) => restyleLive({ inkHex }, final, fresh)}
                 onSize={resizeText}
-                onBold={bold => restyle({ bold: bold || undefined })} onStrike={strike => restyle({ strike: strike || undefined })}
+                onEmphasis={restyleEmphasis}
                 onAlign={setAlign} onDelete={deleteSelection} />
             ) : <ShapeToolbar shapes={selShapes} onColor={recolor} onFill={fill => restyle({ fill: fill === 'solid' ? undefined : fill })}
               onKind={changeKind} onWeight={weight => restyle({ weight: weight === 'medium' ? undefined : weight })}
               onBorder={border => restyle({ border: border === 'solid' ? undefined : border })} onBorderColor={borderColor => restyle({ borderColor, borderHex: undefined })}
               onHex={(hex, final, fresh) => restyleLive({ hex }, final, fresh)} onBorderHex={(borderHex, final, fresh) => restyleLive({ borderHex }, final, fresh)}
-              onAlign={setAlign} onSize={resizeText} onDelete={deleteSelection} />}
+              onAlign={setAlign} onSize={resizeText} onEmphasis={restyleEmphasis} onDelete={deleteSelection} />}
           </ToolbarPlace>
         )
       })()}
@@ -1221,7 +1249,7 @@ function SectionView({ shape: s, editing, zoom, onText, onEndEdit }: { shape: Sh
 }
 
 /** One shape in world space, with its text editor while it is being edited. */
-function ShapeView({ shape: s, editing, zoom, onText, onEndEdit }: { shape: Shape; editing: boolean; zoom: number; onText: (text: string) => void; onEndEdit: () => void }) {
+function ShapeView({ shape: s, editing, zoom, onText, onEndEdit, onEmphasis }: { shape: Shape; editing: boolean; zoom: number; onText: (text: string) => void; onEndEdit: () => void; onEmphasis: (style: EmphasisStyle) => void }) {
   const { t } = useTranslation()
   // A shape's text is centred both ways while it is typed, as in FigJam: the field
   // is as tall as its lines and the box centres it, rather than filling the box
@@ -1233,7 +1261,7 @@ function ShapeView({ shape: s, editing, zoom, onText, onEndEdit }: { shape: Shap
     if (!el || !centred || !editing) return
     el.style.height = '0px'
     el.style.height = `${el.scrollHeight}px`
-  }, [centred, editing, s.text, s.w, s.h, s.fontSize])
+  }, [centred, editing, s.text, s.w, s.h, s.fontSize, s.bold, s.italic])
   if (s.kind === 'section') return <SectionView shape={s} editing={editing} zoom={zoom} onText={onText} onEndEdit={onEndEdit} />
   const sw = swatchStyle(s.color, s.hex)
   const look = shapeLook(s)
@@ -1244,9 +1272,10 @@ function ShapeView({ shape: s, editing, zoom, onText, onEndEdit }: { shape: Shap
     : s.kind === 'text'
       ? {
         fontSize: s.fontSize ?? defaultFontSize(s.kind), lineHeight: 1.3, color: textInk(s), textAlign: s.align ?? defaultAlign(s.kind), padding: '4px 2px',
-        fontWeight: s.bold ? 700 : 500, textDecoration: s.strike ? 'line-through' : undefined,
+        fontWeight: s.bold ? 700 : 500,
       }
       : { fontSize: s.fontSize ?? defaultFontSize(s.kind), lineHeight: 1.35, color: look.ink, textAlign: s.align ?? defaultAlign(s.kind), padding: s.kind === 'diamond' ? '18% 22%' : 14 }
+  Object.assign(text, emphasisStyle(s))
   // Each shape is its own stacking context, so its text (raised over its own
   // paint) never shows through a shape stacked above it.
   const box: CSSProperties = { position: 'absolute', left: s.x, top: s.y, width: s.w, height: s.h, display: 'flex', isolation: 'isolate' }
@@ -1306,9 +1335,15 @@ function ShapeView({ shape: s, editing, zoom, onText, onEndEdit }: { shape: Shap
           onChange={e => onText(e.target.value)}
           onBlur={onEndEdit}
           onFocus={e => e.currentTarget.select()}
-          onKeyDown={e => { e.stopPropagation(); if (e.key === 'Escape') e.currentTarget.blur() }}
+          onKeyDown={e => {
+            e.stopPropagation()
+            if (e.key === 'Escape') { e.currentTarget.blur(); return }
+            // A style chord restyles the whole box while typing.
+            const chord = emphasisChord(e)
+            if (chord) { e.preventDefault(); onEmphasis(chord) }
+          }}
           onPointerDown={e => e.stopPropagation()}
-          style={{ ...text, position: 'relative', zIndex: 1, width: '100%', height: centred ? undefined : '100%', maxHeight: '100%', resize: 'none', border: 'none', outline: 'none', background: 'transparent', font: 'inherit', fontSize: text.fontSize, fontWeight: text.fontWeight, textDecoration: text.textDecoration, overflow: 'hidden' }}
+          style={{ ...text, position: 'relative', zIndex: 1, width: '100%', height: centred ? undefined : '100%', maxHeight: '100%', resize: 'none', border: 'none', outline: 'none', background: 'transparent', fontFamily: 'inherit', fontSize: text.fontSize, fontWeight: text.fontWeight, fontStyle: text.fontStyle, textDecoration: text.textDecoration, overflow: 'hidden' }}
         />
       ) : (
         // A text box's text spans the box, so its alignment has room to act; in the

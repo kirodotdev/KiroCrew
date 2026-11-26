@@ -103,7 +103,7 @@ records the decisions and why.
   text and one resolved `color`, so any JSON Canvas reader can draw the board.
 - What JSON Canvas has no field for goes in added fields: `shape`, `swatch`,
   `hex`, `fill`, `weight`, `border`, `borderColor`, `borderHex`, `ink`,
-  `inkHex`, `fontSize`, `bold`, `strike`, `align` and `locked` on nodes, and
+  `inkHex`, `fontSize`, `bold`, `italic`, `underline`, `strike`, `align` and `locked` on nodes, and
   `swatch`, `line`, `dashed` and `route` on edges. Array order is stacking
   order, back to front.
 - `"kirocanvas": 1` marks a file Kiro created and versions Kiro's added

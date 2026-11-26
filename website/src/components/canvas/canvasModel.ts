@@ -73,7 +73,10 @@ export interface Shape {
   inkHex?: string
   /** The text's size in canvas units; unset is the kind's default (see `defaultFontSize`). */
   fontSize?: number
+  /** Whole-box text styles, applied to every word in the box; unset is off. */
   bold?: boolean
+  italic?: boolean
+  underline?: boolean
   strike?: boolean
   /** How the text lines up; unset is the kind's own default (see `defaultAlign`). */
   align?: TextAlign
@@ -87,14 +90,36 @@ export function alignOf(kind: ShapeKind, v: unknown): { align?: TextAlign } {
   return (v === 'left' || v === 'center' || v === 'right') && v !== defaultAlign(kind) && kind !== 'section' ? { align: v } : {}
 }
 
-/** A text box's style fields to spread onto a shape: only those valid and not the default. */
-export function textStyleOf(o: Record<string, unknown>): Partial<Pick<Shape, 'ink' | 'inkHex' | 'bold' | 'strike' | 'align'>> {
+/** A text box's colour fields to spread onto a shape: only those valid and not the default. */
+export function textStyleOf(o: Record<string, unknown>): Partial<Pick<Shape, 'ink' | 'inkHex'>> {
   const ink = toSwatch(o.ink)
   const inkHex = toHex(o.inkHex)
   return {
     ...(ink ? { ink } : {}),
     ...(inkHex ? { inkHex } : {}),
+  }
+}
+
+/** The four whole-box text styles, named by their `Shape` field. */
+export type EmphasisStyle = 'bold' | 'italic' | 'underline' | 'strike'
+
+/**
+ * The text style a key chord toggles: Cmd/Ctrl+B, +I, +U, and Cmd/Ctrl+Shift+X
+ * (Cmd+Shift+L is already Lock). Matched on the physical key so a keyboard
+ * layout does not move it.
+ */
+export function emphasisChord(e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; code: string }): EmphasisStyle | null {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey) return null
+  if (e.shiftKey) return e.code === 'KeyX' ? 'strike' : null
+  return e.code === 'KeyB' ? 'bold' : e.code === 'KeyI' ? 'italic' : e.code === 'KeyU' ? 'underline' : null
+}
+
+/** The stored bold, italic, underline and strikethrough of a shape's text: only those switched on. */
+export function emphasisOf(o: Record<string, unknown>): Partial<Pick<Shape, 'bold' | 'italic' | 'underline' | 'strike'>> {
+  return {
     ...(o.bold === true ? { bold: true } : {}),
+    ...(o.italic === true ? { italic: true } : {}),
+    ...(o.underline === true ? { underline: true } : {}),
     ...(o.strike === true ? { strike: true } : {}),
   }
 }

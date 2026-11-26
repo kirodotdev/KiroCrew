@@ -4,13 +4,13 @@
  * delete. The same sticker chrome as the shape toolbar.
  */
 
-import { AlignCenter, AlignLeft, AlignRight, Bold, Strikethrough, Trash2 } from 'lucide-react'
+import { AlignCenter, AlignLeft, AlignRight, Trash2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { defaultFontSize, type Shape, type Swatch, type TextAlign } from './canvasModel'
+import { defaultFontSize, type EmphasisStyle, type Shape, type Swatch, type TextAlign } from './canvasModel'
 import { FLOAT_SHADOW } from './canvasPaint'
-import { Item, Menu, picked, rule } from './ShapeToolbar'
+import { EmphasisToggles, Menu, Item, rule } from './ShapeToolbar'
 import SwatchPicker from './SwatchPicker'
 import TextSizeMenu from './TextSizeMenu'
 
@@ -20,27 +20,15 @@ interface Props {
   /** A free text colour; *final* is false while it is still being dragged or typed. */
   onInkHex: (hex: string, final: boolean, fresh: boolean) => void
   onSize: (px: number) => void
-  onBold: (on: boolean) => void
-  onStrike: (on: boolean) => void
+  onEmphasis: (style: EmphasisStyle, on: boolean) => void
   onAlign: (a: TextAlign) => void
   onDelete: () => void
 }
 
-function Toggle({ on, label, onClick, children }: { on: boolean; label: string; onClick: () => void; children: ReactNode }) {
-  return (
-    <button type="button" aria-label={label} title={label} aria-pressed={on} onClick={onClick}
-      className={`rounded-lg p-1.5 ${picked(on)}`}>
-      {children}
-    </button>
-  )
-}
-
-export default function TextToolbar({ shapes, onInk, onInkHex, onSize, onBold, onStrike, onAlign, onDelete }: Props) {
+export default function TextToolbar({ shapes, onInk, onInkHex, onSize, onEmphasis, onAlign, onDelete }: Props) {
   const { t } = useTranslation()
   const same = <T,>(pick: (s: Shape) => T): T | undefined => (shapes.every(s => pick(s) === pick(shapes[0])) ? pick(shapes[0]) : undefined)
   const align = same(s => s.align ?? 'left')
-  const bold = shapes.every(s => s.bold)
-  const strike = shapes.every(s => s.strike)
   const inkHex = same(s => s.inkHex)
   // As in ShapeToolbar: a shared palette colour needs every shape free of a custom one.
   const anyInkHex = shapes.some(s => s.inkHex)
@@ -57,8 +45,7 @@ export default function TextToolbar({ shapes, onInk, onInkHex, onSize, onBold, o
       {rule}
       <TextSizeMenu size={same(s => s.fontSize ?? defaultFontSize(s.kind))} onSize={onSize} />
       {rule}
-      <Toggle on={bold} label={t('components.canvas.bold')} onClick={() => onBold(!bold)}><Bold size={16} /></Toggle>
-      <Toggle on={strike} label={t('components.canvas.strikethrough')} onClick={() => onStrike(!strike)}><Strikethrough size={16} /></Toggle>
+      <EmphasisToggles shapes={shapes} onEmphasis={onEmphasis} />
       {rule}
       <Menu label={t('components.canvas.align')} icon={aligns.find(a => a.align === align)?.icon ?? <AlignLeft size={16} />}>
         {close => aligns.map(a => (
