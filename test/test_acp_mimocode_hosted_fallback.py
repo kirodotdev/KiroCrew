@@ -97,16 +97,36 @@ class TestTheCredentialIsReadByPresence:
     """What the read-back records, from the same child env the spawn uses."""
 
     def _env(self, tmp_path, **extra):
-        return {"HOME": str(tmp_path / "home"), **extra}
+        return {"HOME": str(tmp_path / "home"), "USERPROFILE": str(tmp_path / "profile"), **extra}
+
+    @staticmethod
+    def _sign_in_under(home):
+        leaf = home / ".local" / "share" / "mimocode" / "auth.json"
+        leaf.parent.mkdir(parents=True)
+        leaf.write_text("not json: the check never opens it")
 
     def test_nothing_signed_in(self, tmp_path):
         assert mimocode_mod._mimocode_hosted_credential_present(self._env(tmp_path)) is False
 
-    def test_the_sign_in_file_exists(self, tmp_path):
-        leaf = tmp_path / "home" / ".local" / "share" / "mimocode" / "auth.json"
-        leaf.parent.mkdir(parents=True)
-        leaf.write_text("not json: the check never opens it")
+    def test_the_sign_in_file_exists(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mimocode_mod.sys, "platform", "linux")
+        self._sign_in_under(tmp_path / "home")
         assert mimocode_mod._mimocode_hosted_credential_present(self._env(tmp_path)) is True
+
+    def test_on_windows_a_file_under_home_is_not_the_childs(self, tmp_path, monkeypatch):
+        """Bun's ``os.homedir()`` ignores ``HOME`` on Windows, so MiMo Code never reads it."""
+        monkeypatch.setattr(mimocode_mod.sys, "platform", "win32")
+        self._sign_in_under(tmp_path / "home")
+        assert mimocode_mod._mimocode_hosted_credential_present(self._env(tmp_path)) is False
+
+    @pytest.mark.parametrize("home_set", [True, False], ids=["home-elsewhere", "home-unset"])
+    def test_on_windows_the_file_under_the_user_profile(self, tmp_path, monkeypatch, home_set):
+        monkeypatch.setattr(mimocode_mod.sys, "platform", "win32")
+        self._sign_in_under(tmp_path / "profile")
+        env = self._env(tmp_path)
+        if not home_set:
+            del env["HOME"]
+        assert mimocode_mod._mimocode_hosted_credential_present(env) is True
 
     def test_the_sign_in_file_under_xdg_data_home(self, tmp_path):
         leaf = tmp_path / "data" / "mimocode" / "auth.json"
@@ -128,6 +148,7 @@ class TestTheCredentialIsReadByPresence:
         for name in ("XIAOMI_API_KEY", "XDG_DATA_HOME"):
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
         monkeypatch.setattr(mimocode_mod.subprocess_mod, "run", lambda *_a, **_kw: completed)
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
         client._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
