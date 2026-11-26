@@ -76,8 +76,11 @@ import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
  *    are the page's own (a late `?sid=` recovery, a forwarded nav intent), and
  *    those must never count as the user having looked.
  *  - `leaveSplit`: this open must replace Split View with the requested
- *    session, because the grid may not contain it. */
-export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean; automatic?: boolean; requestSeq?: number; gesture?: boolean; leaveSplit?: boolean }
+ *    session, because the grid may not contain it.
+ *  - `quietOnMissing`: with `announceOnMissing`, a 404 raises no notice and
+ *    evicts nothing, because the caller checks the closed-session history
+ *    itself (an in-app session link). Other failures are still announced. */
+export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean; automatic?: boolean; requestSeq?: number; gesture?: boolean; leaveSplit?: boolean; quietOnMissing?: boolean }
 
 /** The slot key of a `switchSlot` argument, in either spelling. Non-object
  *  values pass through untouched: a hand-rolled test dispatch can omit
@@ -317,6 +320,9 @@ export const switchSlot = createAsyncThunk<
         // round-trip, and the next authoritative slots write reconciles either
         // way.
         const announce = typeof arg === 'object' && arg !== null && arg.announceOnMissing === true
+        if (typeof arg === 'object' && arg !== null && arg.quietOnMissing === true && isMissingSlotError(payload)) {
+          return rejectWithValue(payload)
+        }
         if (announce && isMissingSlotError(payload)) {
           // Read BEFORE the eviction below removes the row. Optional-chained
           // like the other dashboard reads in this thunk: a partial preloaded

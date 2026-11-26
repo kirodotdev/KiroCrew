@@ -122,7 +122,40 @@ def _request(body: Any) -> tuple[str, str]:
         raise WorkerKitError("template_required", 400)
     if not isinstance(revision, str):
         raise WorkerKitError("invalid_request", 400)
+    if not isinstance(body.get(WITHOUT_WRITE_FALLBACK, False), bool):
+        raise WorkerKitError("invalid_request", 400)
     return template.strip(), revision
+
+
+#: The request flag that adds an agent without a write ``fallbackAction`` its
+#: bot cannot keep. Leaving the key out only narrows: a write no
+#: ``allowedPaths`` entry covers is then answered by the bot's approval mode
+#: instead of running unasked.
+WITHOUT_WRITE_FALLBACK = "without_write_fallback"
+
+
+def _without_uncarried_write_fallback(source: dict[str, Any], lost: list[str]) -> dict[str, Any]:
+    """*source* without each write tool ``fallbackAction`` that *lost* names.
+
+    Only a value the worker refuses is dropped, so a ``"deny"`` it carries stays.
+    """
+    from kiro_crew.agent_sdk.kas_tool_view import tools_settings_family
+
+    settings = source.get("toolsSettings")
+    if not isinstance(settings, dict):
+        return source
+    kept: dict[str, Any] = {}
+    for tool, entry in settings.items():
+        if (
+            tools_settings_family(tool) == "write"
+            and isinstance(entry, dict)
+            and f"toolsSettings.{tool}.fallbackAction" in lost
+        ):
+            entry = {k: v for k, v in entry.items() if k != "fallbackAction"}
+            if not entry:
+                continue
+        kept[tool] = entry
+    return {**source, "toolsSettings": kept}
 
 
 def _present_servers(spec: dict[str, Any], base: dict[str, Any] | None) -> set[str]:
@@ -463,6 +496,12 @@ def _plan(member: str, body: Any) -> tuple[Path, dict[str, Any], dict[str, Any],
         source = {**source, "permissions": {"rules": source["permissions"]["rules"]}}
     source, tkit["held_grants"] = _without_held_grants(source, spec, path.stem)
     lost = uncarried_restrictions(source)
+    if lost and body.get(WITHOUT_WRITE_FALLBACK) is True:
+        # The owner chose to add the agent without the value its bot can't keep.
+        source = _without_uncarried_write_fallback(source, lost)
+        after = uncarried_restrictions(source)
+        tkit["left_out"] = [field for field in lost if field not in after]
+        lost = after
     if lost:
         # A restriction the worker would not keep exactly.
         raise WorkerKitError("template_restrictions_uncarried", detail=", ".join(lost))
@@ -834,6 +873,9 @@ def preview(member: str, body: Any) -> dict[str, Any]:
         # The blocked commands nobody can check once the add lands, as written.
         "unenforced_denies": unjudged_denies(new_spec),
         "conditional_denies": conditional_denies(new_spec),
+        # The agent's settings the add leaves out at the owner's request
+        # (``without_write_fallback``), as the agent's file names them.
+        "left_out": tkit.get("left_out", []),
         # The behaviour directions the add writes ("" when the agent has none),
         # so the preview can show the text it fills the slot with.
         "directions": tkit.get("prompt") or "",

@@ -35,12 +35,12 @@ lift a core fence. The retained record, ``apps/.<name>-agent-readonly-dirs.json`
 the fence on data a default uninstall leaves behind and on the data an update holds
 aside in ``apps/.<name>-data-tmp/``.
 
-The agent's file tools cannot rewrite the declaration away: the write gate also refuses an
-installed app's ``app.json`` and retained records of either declaration while they hold a
-fence (one that declares an entry or does not read cleanly). A manifest that declares
-nothing stays writable, so adding a fence is never blocked. The residual is the credential
-masks' one: the installed tree is sandbox-writable, so an agent's shell that rewrites an
-installed app's ``app.json`` drops its declaration from the next spawn.
+The agent cannot rewrite the declaration away: every installed app's ``app.json`` is
+refused to its file tools and sealed read-only in its sandbox
+(:mod:`kiro_crew.app_manifest_files`), and the write gate also refuses the retained
+records of either declaration while they hold a fence (one that declares an entry or does
+not read cleanly). The residual is the credential masks' one: the rest of the installed
+tree, those records included, is sandbox-writable.
 
 Process state only (the shared engine's parsed-manifest cache); no per-caller data.
 """
