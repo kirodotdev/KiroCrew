@@ -182,8 +182,10 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
   // label and aria-label, so the hint never contradicts the words under the
   // cursor or promises the corpus search the launcher deliberately omits. The
   // owned branch drops "(K)" because the chord is already printed in the
-  // visible label.
-  const searchHint = quickSearchLauncher ? i18nT('app.open_command_bar') : i18nT('app.search_everywhere_k')
+  // visible label. The chord is the platform's: ⌘K on a Mac, Ctrl+K elsewhere.
+  const searchHint = quickSearchLauncher
+    ? i18nT('app.open_command_bar')
+    : i18nT(IS_MAC ? 'app.search_everywhere_k' : 'app.search_everywhere_k_ctrl')
   return (
     <>
       {/* The one Milestones panel; the top-bar indicator, the phone menu row
@@ -406,7 +408,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             <span className="text-[13px] truncate min-w-0">
               {quickSearchLauncher
                 ? i18nT('app.k_run_a_command')
-                : i18nT('app.k_search_for_anything')}
+                : i18nT(IS_MAC ? 'app.k_search_for_anything' : 'app.k_search_for_anything_ctrl')}
             </span>
           </Glass>
           </HoverTip>
