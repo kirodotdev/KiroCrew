@@ -1020,21 +1020,19 @@ def merge_user_hook_files(provider: object, base_hooks: list[ScriptHook]) -> lis
     :func:`user_hook_files` into the hooks it fires, so a user's
     ``~/.kiro/hooks/*.json`` hook runs on each of them and the projection's
     auto-approve withhold (which also lists these files) always has a hook to fire.
-    Returns *base_hooks* unchanged off KAS: goose and opencode are in
-    ``crew_fires_spec_hooks`` too but do not read a user's standalone files.
+    Returns *base_hooks* unchanged where the harness lacks
+    ``SessionCapabilities.crew_merges_user_hook_files`` (KAS has it): goose and
+    opencode are in ``crew_fires_spec_hooks`` too but do not read a user's
+    standalone files.
 
     A user-file hook whose ``(event, command, matcher)`` already appears in
     *base_hooks* is dropped -- the spec / Hooks-page hook wins -- so a JSON file
     whose command is a ``*.sh`` script the autoimport already folded into the spec
     is not fired twice.
     """
-    # Deferred: ``backends`` imports modules that reach this one, so resolve the
-    # backend id at call time like :func:`spec_project_dir` does.
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
-
-    # Positive identity test (harness gate H5): name the one backend this folds in,
-    # so a harness added later does not inherit it by an inequality.
-    if capabilities_of(provider).backend == ACP_BACKEND_KAS:
+    # A capability, false by default, so a harness added later does not inherit
+    # the fold by an inequality (harness gate H5).
+    if capabilities_of(provider).crew_merges_user_hook_files:
         seen = {(h.event, h.command, h.matcher) for h in base_hooks}
         merged = list(base_hooks)
         for hook in user_hook_files():
