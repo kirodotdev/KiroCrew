@@ -326,7 +326,7 @@ INFO as it starts, with the time since the first one, so a restart that stalls
 names its step.
 
 **A planned restart resumes the chats it cuts** (`dashboard/restart_resume.py`).
-Each planned restart (`_restart_gateway` and the Slack `/kirocrew restart`) calls
+Each planned in-app restart (`_restart_gateway` and the Slack `/kirocrew restart`) calls
 `record_running_slots` right before `close_all()`: it writes the names of the
 slots carrying a turn-in-flight marker to `<data home>/resume-after-restart.json`
 (off-loop, 5 s bound, a failure logged). It leaves out the session of one
@@ -342,6 +342,62 @@ restart that never ran and resumes nothing. Otherwise the boot resumes only thos
 (pending approval, queued message, running sub-agents) as the Resume-all button,
 and one `resume_all_done` frame. A crash writes no file, so its chats keep the
 interruption row and the manual Resume. Errors are logged, never raised.
+
+**A stop records the chats it cuts and never resumes them on its own.** The
+gateway's graceful shutdown (`_shutdown`: `kirocrew stop`, a service stop or
+restart, Ctrl-C, a desktop quit) calls `record_running_slots(stop=True)` as its
+first awaited step, before the memory stop can fail a turn in flight. It writes
+the same names to `<data home>/resume-after-stop.json`, or removes that file when
+no chat runs, so the file always describes the last stop. No boot reads it; the
+in-app restarts end in an exec or a hard exit, so `_shutdown` never runs for them.
+`kirocrew resume` (`cli_resume.py`) acts on it through the running gateway,
+signed in as the owner the way `kirocrew chat --headless` is
+(`cli_chat_headless.GatewayClient`):
+
+- `kirocrew resume` resumes exactly the chats the last stop cut through `POST
+  /api/chat/slots/resume-all` (`slots` plus `crew_mode`). With no record it
+  says so and exits 0. It never removes the record: the route resumes only a chat that is still interrupted and idle
+  (`require_interrupted`, `collect_interrupted_idle`), so a second run starts
+  nothing the first one started and cannot re-run a chat that finished since.
+  The next stop rewrites the record, and a stop with no running chat removes
+  it, so it names only the last stop's chats unless that stop's write failed.
+- `kirocrew resume SESSION...` presses each session's own tab Resume, `POST
+  /api/chat/slots/{slot}/continue` with no body, once per session and never
+  Resume-all, so the bulk window that leaves an old interruption to its own
+  button does not apply. Like the button, the route also hands a chat that
+  finished cleanly back to the agent to carry on. It prints one line per
+  session: resuming, or left alone with the route's HTTP status, `code` and
+  `error`.
+- `kirocrew resume --all` resumes every interrupted session through Resume-all
+  (`crew_mode`, no `slots`), as the sidebar's "Resume N sessions" button.
+
+The Resume-all forms print how many chats started and how many of those asked for
+were left alone; each chat's own refusal shows in its tab. Every form presses
+only once `GET /api/ready` answers 200: the route serves from `site.start()`, before
+`_restore_dashboard_sessions` has rebuilt the tabs, so an earlier press finds
+nothing to resume. `kirocrew resume` waits up to 15 s for a gateway that answers
+but is not ready, and fails at once when nothing listens. It exits 1 when no
+gateway answers, it never becomes ready (it does not press then), or Resume-all
+refuses; with `SESSION...` a per-session refusal exits 0 and a request the
+gateway never answered exits 1. `kirocrew restart`
+(`cli_server_restart._restart`, which restarts the service or stops and
+respawns the gateway) resumes nothing: once it succeeds it
+reads the record and, when its mtime is at or after the moment the restart began
+(`time.time()` before the stop) and it names any chat, prints "N chat(s) were
+cut by the stop. To resume them, run: kirocrew resume", with `--port N` appended
+when `--port N` was passed. An older record is another stop's (a crash runs no
+`_shutdown`, and a restart with no gateway running stops nothing), so it prints
+no hint; a coarse-mtime filesystem can drop a real hint; on a local filesystem it cannot print a wrong one.
+With no record it prints no hint, and its exit code and other output are
+unchanged; it never presses Resume-all.
+
+Only the in-app restarts resume on their own (the boot resume above, which this
+record never feeds). A turn whose own command runs `kirocrew stop` or `kirocrew
+restart` is therefore cut once and then waits for the owner: its tab keeps the
+interruption row and the manual Resume, and the record names it until the next
+stop. Nothing here can loop, because no stop and no CLI restart presses
+Resume-all, and a person who runs `kirocrew resume` twice starts each recorded
+chat at most once.
 
 **A planned restart stops the cron service first** (`cron.stop_cron_before_restart`).
 The planned restarts end in an exec or a hard exit, so the gateway's

@@ -41,6 +41,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("status", "Show runtime stats"),
             ("usage", "Report recent credit spend per day, model, agent, channel or session"),
             ("restart", "Restart a running gateway (service-aware)"),
+            ("resume", "Resume the chats the last stop cut, named sessions, or --all"),
             ("stop", "Stop a running gateway"),
             ("gateway-pid", "Print the PID holding this home's gateway lock (JSON)"),
             ("mcp", "Reload one MCP server's running processes without a restart"),
