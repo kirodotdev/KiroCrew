@@ -62,6 +62,16 @@ def pool():
         executor.shutdown(wait=False)
 
 
+@pytest.fixture(scope="module")
+def single_worker_pool():
+    # Module-scoped: one interpreter child serves every case that requests it, not one per test.
+    executor = SubprocessPoolExecutor(workers=1, ceiling_secs=600.0)
+    try:
+        yield executor
+    finally:
+        executor.shutdown(wait=False)
+
+
 def _request_frame(request_id: int, op: int, payload: bytes) -> bytes:
     body = struct.pack(">IB", request_id, op) + payload
     return struct.pack(">I", len(body)) + body
@@ -501,6 +511,9 @@ class TestCallerBudget:
             def __init__(self, future) -> None:
                 self._future = future
 
+            def done(self) -> bool:
+                return self._future.done()
+
             def result(self, timeout: float | None = None):
                 _check("reader", timeout)
                 try:
@@ -798,6 +811,9 @@ class TestCallerBudget:
                 def __init__(self, future) -> None:
                     self._future = future
 
+                def done(self) -> bool:
+                    return self._future.done()
+
                 def result(self, timeout: float | None = None):
                     reader_waits.append(timeout)
                     assert timeout is not None, "the caller waited on the reader unbounded"
@@ -833,6 +849,58 @@ class TestCallerBudget:
         finally:
             release.set()
             executor.shutdown(wait=False)
+
+    @pytest.mark.xdist_group(name="subprocess_pool_single_worker")
+    def test_an_answer_the_reader_holds_when_the_expired_wait_is_handled_is_returned(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: pathlib.Path,
+        single_worker_pool: SubprocessPoolExecutor,
+    ) -> None:
+        # Windows arm: the caller can handle its expired wait on the reader late (it
+        # gets the GIL back after its deadline) while the reader already holds the
+        # child's answer.  That answer is the child's completed realpath, so it is
+        # returned, and the healthy child and its slot are kept.
+        monkeypatch.setattr(executor_mod, "_CAN_SELECT_PIPES", False)
+        executor = single_worker_pool
+        before = self._spawned(executor)
+        (slot,) = executor._children
+        real_readers = executor._bounded_readers
+        expired: list[float] = []
+
+        class _HandledLate:
+            # What the handler sees when the answer lands after the wait's own last
+            # check: the timed wait reports expiry and the reader holds the answer.
+            def __init__(self, future) -> None:
+                self._future = future
+
+            def done(self) -> bool:
+                return self._future.done()
+
+            def result(self, timeout: float | None = None):
+                if timeout is None:
+                    return self._future.result()
+                self._future.exception(timeout=FALLBACK_TIMEOUT_SECS)
+                expired.append(timeout)
+                raise TimeoutError
+
+        def _submit(fn, *a, **k):
+            return _HandledLate(real_readers.submit(fn, *a, **k))
+
+        monkeypatch.setattr(
+            executor,
+            "_bounded_readers",
+            types.SimpleNamespace(submit=_submit, shutdown=real_readers.shutdown),
+        )
+        try:
+            answer = executor.realpath_spellings(str(tmp_path), timeout=FALLBACK_TIMEOUT_SECS)
+        except SubprocessPoolTimeout:
+            pytest.fail("the answer the reader held was dropped and reported as a timeout")
+        assert len(expired) == 1, "the double never expired the caller's wait"
+        assert str(tmp_path.resolve()) in answer
+        assert executor._children == [slot], "the slot was retired"
+        assert {child.proc.pid for child in executor._children if child.proc} == set(before)
+        assert all(proc.poll() is None for proc in before.values()), "a child was killed"
 
     def test_an_emptied_slot_is_respawned_in_the_background(self, tmp_path: pathlib.Path) -> None:
         # The fork/exec of a replacement interpreter is paid on the reaper thread, not

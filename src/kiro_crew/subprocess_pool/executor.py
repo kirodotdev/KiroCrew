@@ -1079,10 +1079,16 @@ class SubprocessPoolExecutor(Executor):
         docstring measures (two extra GIL handoffs per answer), accepted here
         because the alternative is a caller blocked until the reaper fires and a
         wedge that is never classified as a timeout -- on the resolver that meant
-        the stall cooldown never opened on Windows.  A wedge at the deadline is
-        sampled (``None`` off Linux), the child is killed so the blocked read sees
-        EOF, and the caller returns AT the deadline: it never waits for the reader's
-        own cleanup, which runs on the reader thread when the EOF arrives.  The slot
+        the stall cooldown never opened on Windows.  The reader can deliver the
+        child's answer after the timed wait's own last check and before this handler
+        runs, which under GIL load in this process can be seconds; that answer is
+        returned, or the child's fault raised, as before the deadline -- the analogue
+        of ``_read_exactly`` reading a frame already in the pipe.  An answer still in
+        the pipe that the reader has not delivered is not seen.  Only a reader with
+        no answer is a wedge: it is sampled (``None`` off Linux), the child is killed
+        so the blocked read sees EOF, and the caller returns AT the deadline: it
+        never waits for the reader's own cleanup, which runs on the reader thread
+        when the EOF arrives.  The slot
         is reported as :class:`_ReaderLost` so ``call_op`` retires it and leases a
         fresh one, rather than handing the next caller a slot whose lock the reader
         may still hold.
@@ -1091,10 +1097,12 @@ class SubprocessPoolExecutor(Executor):
         try:
             return future.result(timeout=max(0.0, deadline - time.monotonic()))
         except FuturesTimeoutError:
-            proc = child.proc
-            sampled = proc_syscall(proc.pid) if proc is not None else None
-            child.kill_async()
-            raise _ReaderLost(proc, sampled) from None
+            if not future.done():
+                proc = child.proc
+                sampled = proc_syscall(proc.pid) if proc is not None else None
+                child.kill_async()
+                raise _ReaderLost(proc, sampled) from None
+        return future.result()
 
     def submit_op(self, op: int, payload: bytes) -> Future[bytes]:
         """Run *op* on a child; the future raises :class:`SubprocessPoolUnavailable` on fault.
