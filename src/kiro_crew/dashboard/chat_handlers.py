@@ -447,6 +447,7 @@ from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _compaction_in_flight,
     _decline_compacting_interrupt,
     _dispatch_run_now_idle,
+    _end_runner_past_its_provider_turn,
     _interrupt_claimed_turn,
     _log_interrupt,
     _make_stop_resolver,

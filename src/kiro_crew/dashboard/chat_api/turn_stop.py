@@ -940,14 +940,20 @@ async def stop_slot_turn(
     ):
         # The turn had no provider turn yet: this press stopped it.
         _idle_running = False
+    elif _idle_running and await _end_runner_past_its_provider_turn(
+        slot, preparing, stop_generation
+    ):
+        # The runner outlived its provider turn by the whole budget: this press ended it.
+        _idle_running = False
     # A newer press owns the card and the posture now: settling either here
     # would idle its stop, and its next press would start over instead of
-    # escalating to the hard kill.
-    _owns_posture = slot._stop_generation == stop_generation
+    # escalating to the hard kill. So does a press that escalated this card
+    # while the wait above ran: its hard kill settles it.
+    _owns_posture = (
+        slot._stop_generation == stop_generation and slot._stop_escalated_card_id != stop_id
+    )
     if outcome == "idle" and slot._stop_event_id and _owns_posture:
-        _resolve_stop_event(slot, "soft")
-        slot._stop_state = "idle"
-        state.push_slots_update()
+        await _on_soft()
     elif outcome == "compacting" and _owns_posture:
         # The race the pre-check above cannot close: the compaction committed
         # between that read and the cancel. Same answer, and the soft-stop side
@@ -1009,6 +1015,52 @@ def _cancel_preparing_runner(slot: "_ChatSlot", preparing: Any) -> bool:
     ):
         return False
     logger.info("Stop: ending slot %s's turn before it reached the provider", slot.key)
+    slot._preparing_turn = None
+    runner.cancel()
+    return True
+
+
+async def _end_runner_past_its_provider_turn(
+    slot: "_ChatSlot", preparing: Any, stop_generation: int
+) -> bool:
+    """End a runner whose provider turn is over but which still holds the slot.
+
+    ``stop_turn`` answers ``"idle"`` once the provider holds no turn. A runner that
+    opened its stream normally ends a moment later by itself, and a press must not
+    cut a reply that is still finishing. A runner that never ends is the
+    stuck-Stop shape: each press settles a "[Stopped]" card and resets the
+    posture, so no press escalates, the slot stays running and the composer never
+    takes another prompt. The press waits the soft-stop budget for the runner to
+    end, then cancels it as :func:`_cancel_preparing_runner` does; the exit guard
+    runs the tail, which hands the queue off. Only while *preparing* is current,
+    reached the provider, is not handed off and runs no local command, and while
+    this press (*stop_generation*) still names the same stop initiation. A press
+    that escalated meanwhile owns the card, but does not prevent ending this
+    runner. Whether it cancelled.
+    """
+    from kiro_crew.dashboard.turn_dispatch import native_cancel_ack_timeout_secs
+
+    def _current() -> bool:
+        return (
+            getattr(slot, "_preparing_turn", None) is preparing
+            and not preparing.handed_off
+            and slot._stop_generation == stop_generation
+        )
+
+    runner = getattr(preparing, "runner", None)
+    if (
+        preparing is None
+        or runner is None
+        or runner.done()
+        or not preparing.reached_provider
+        or preparing.local_command
+        or not _current()
+    ):
+        return False
+    await asyncio.wait({runner}, timeout=native_cancel_ack_timeout_secs())
+    if runner.done() or not _current():
+        return False
+    logger.info("Stop: ending slot %s's turn, still running after its provider turn", slot.key)
     slot._preparing_turn = None
     runner.cancel()
     return True
@@ -1606,15 +1658,16 @@ async def _interrupt_claimed_turn(
     )
     if outcome == "idle" and not _cancel_preparing_runner(slot, preparing):
         # Either tail drains the promoted card, as at the end of any stopped turn.
-        await _cancel_admission_wait(slot)
-    # Same ownership rule as ``stop_slot_turn``: a later press that claimed a
-    # new generation during the await owns the card and the posture.
-    _owns_posture = slot._stop_generation == claim_generation
+        if not await _cancel_admission_wait(slot):
+            await _end_runner_past_its_provider_turn(slot, preparing, claim_generation)
+    # Same ownership rules as ``stop_slot_turn``: a later press that claimed a
+    # new generation during the await, or escalated this card, owns it.
+    _owns_posture = (
+        slot._stop_generation == claim_generation and slot._stop_escalated_card_id != stop_id
+    )
     # Resolve orphaned card when provider reports no active turn
     if outcome == "idle" and slot._stop_event_id and _owns_posture:
-        _resolve_stop_event(slot, "soft")
-        slot._stop_state = "idle"
-        state.push_slots_update()
+        await _on_soft()
     if after_stop is not None:
         await after_stop(outcome)
     if outcome == "compacting":
