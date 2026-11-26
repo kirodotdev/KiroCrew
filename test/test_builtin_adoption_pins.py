@@ -652,6 +652,31 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
         ),
         ({}, {"backend/_host.py": "import kiro_crew\nfrom . import my_backend_sdk\n"}, {}),
         ({}, {"tests/fakehost.py": "import kiro_crew.apps.backend_sdk\n"}, {}),
+        (
+            {},
+            {"backend/_host.py": "from kiro_crew.apps.backend_sdk import canonical_file_path\n"},
+            {
+                "kiro_crew.apps.backend_sdk": 7,
+                "kiro_crew.apps.backend_sdk.canonical_file_path": 14,
+            },
+        ),
+        (
+            {},
+            {
+                "backend/_host.py": "sdk = _host_module('kiro_crew.apps.backend_sdk')\n",
+                "backend/routes.py": "gate = getattr(sdk, 'canonical_file_path', None)\n",
+            },
+            {
+                "kiro_crew.apps.backend_sdk": 7,
+                "kiro_crew.apps.backend_sdk.canonical_file_path": 14,
+            },
+        ),
+        ({}, {"backend/routes.py": "def canonical_file_path(p):\n    return p\n"}, {}),
+        (
+            {},
+            {"tests/fakehost.py": "from kiro_crew.apps.backend_sdk import canonical_file_path\n"},
+            {},
+        ),
         ({}, {"backend/manifest.py": "def f(manifest):\n    return manifest.lifecycle\n"}, {}),
         ({}, {"tests/fakehost.py": "ctx.turns = None\n"}, {}),
         ({}, {"backend/test_seams.py": "ctx.turns = None\n"}, {}),
@@ -678,6 +703,24 @@ def test_the_pin_tool_never_lets_a_level_fall_below_what_the_tree_uses(monkeypat
         assert "app.json credentialMasks" in refusal
     assert "ctx.turns" in tool._sdk_level_refusal(NAME, 1, uses)
     assert "ctx.turns" not in tool._sdk_level_refusal(NAME, 2, uses)
+
+
+def test_the_pin_tool_holds_a_later_backend_sdk_name_at_its_own_level(monkeypatch, tmp_path):
+    from builtin_adoption_helpers import repository_manifest, write_tree
+
+    from kiro_crew.apps import backend_sdk
+
+    tool = _pin_tool(monkeypatch)
+    for name, level in sorted(backend_sdk._EXPORT_LEVELS.items()):
+        source = f"from kiro_crew.apps.backend_sdk import {name}\n"
+        tree = write_tree(tmp_path / name, repository_manifest(), {"backend/_host.py": source})
+        uses = tool._seam_level_uses(tree)
+        seam = f"{backend_sdk.__name__}.{name}"
+        assert uses[seam] == level > backend_sdk.BACKEND_SDK_LEVEL
+        refusal = tool._sdk_level_refusal(NAME, level - 1, uses)
+        assert refusal is not None
+        assert f"--min-sdk-level {level}" in refusal and seam in refusal
+        assert tool._sdk_level_refusal(NAME, level, uses) is None
 
 
 def _measure_tree(monkeypatch, tmp_path, tool, files, level):

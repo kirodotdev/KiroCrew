@@ -38,7 +38,7 @@ class _NeverIngress:
         self.calls.append("ws")
         raise AssertionError("a stream cancelled before it started opened a WebSocket")
 
-    def bind_host(self, *, crew_kind: str, owner_user_id: str) -> None:
+    def bind_host(self, *, crew_kind: str, owner_user_id: str, access_scope: Any = None) -> None:
         return None
 
     def unbind_host(self) -> None:

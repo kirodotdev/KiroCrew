@@ -366,8 +366,26 @@ def _emit_session_urls(port: int, token: str) -> None:
             )
 
 
-def _logout(port: int) -> None:
-    """Revoke all dashboard sessions by calling the gateway's /api/logout endpoint."""
+def _logout(port: int, link: str | None = None) -> None:
+    """Revoke dashboard sessions by calling the gateway's /api/logout endpoint.
+
+    With *link* (a dashboard link or its bare token) only that link's credential
+    family ends: the link, every session it opened, and their refresh chains.
+    ``None`` is the distinct "no ``--link`` was given" ask, which ends every
+    session; a given-but-blank value is refused here rather than silently
+    becoming that one.
+    """
+    # A blank ``--link`` names no link, and the one thing it must NOT do is widen
+    # into the revoke-all: the operator asked to end one sign-in. Refuse before
+    # anything is read or sent.
+    if link is not None and not link.strip():
+        print(
+            "❌ --link needs a dashboard link or its token. To revoke every "
+            "session, run `kirocrew logout` with no --link.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # /api/logout acts on owner authority, so the secret must reach only this
     # install's own gateway. The authoritative proof is bound to the live
     # connection in _owner_verified_secret_urlopen (_connected_peer_verdict on
@@ -380,12 +398,14 @@ def _logout(port: int) -> None:
         print("❌ Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
         sys.exit(1)
 
-    url = f"http://{_CLI_LOOPBACK}:{port}/api/logout"
+    # One link has its own route: a gateway that predates it refuses the path and
+    # changes nothing, where /api/logout would revoke every session.
+    url = f"http://{_CLI_LOOPBACK}:{port}/api/logout" + ("/link" if link is not None else "")
     req = urllib.request.Request(
         url,
         method="POST",
         headers={"X-Local-Secret": secret, "Content-Type": "application/json"},
-        data=b"{}",
+        data=json.dumps({"link": link}).encode() if link is not None else b"{}",
     )
     try:
         with _owner_verified_secret_urlopen(
@@ -393,7 +413,11 @@ def _logout(port: int) -> None:
         ) as resp:
             data = json.loads(resp.read())
             if data.get("ok"):
-                print("✅ All dashboard sessions revoked.")
+                print(
+                    "✅ That link and every session it opened are revoked."
+                    if link is not None
+                    else "✅ All dashboard sessions revoked."
+                )
             else:
                 print(
                     f"❌ Failed to revoke sessions: {data.get('error', 'unknown error')}",
@@ -413,6 +437,16 @@ def _logout(port: int) -> None:
         from kiro_crew.loopback_http import http_error_reason
 
         reason = http_error_reason(e)
+        # A gateway older than ``--link`` has no such route: its router answers 404,
+        # or its token gate refuses the unknown path first. Either way nothing changed.
+        if link is not None and (e.code == 404 or (e.code == 403 and reason == "Token required")):
+            print(
+                "❌ The running gateway predates `kirocrew logout --link`, so nothing was "
+                "revoked. Restart the gateway (`kirocrew restart`) to revoke one link, or "
+                "run `kirocrew logout` to revoke every dashboard session.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print(
             f"❌ Failed to revoke sessions: HTTP {e.code}" + (f": {reason}" if reason else ""),
             file=sys.stderr,

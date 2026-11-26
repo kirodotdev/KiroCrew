@@ -29,9 +29,11 @@ from kiro_crew.dashboard.refresh_tokens import (
     foreign_port_cookies,
     generate_refresh_token,
     refresh_cookie_name,
+    refresh_token_ancestors,
     refresh_token_boot,
     refresh_token_embed_forward_port,
     refresh_token_embed_parent_port,
+    refresh_token_family,
     refresh_token_owner_minted,
     refresh_token_peer_key,
     refresh_token_requires_peer,
@@ -45,10 +47,12 @@ from kiro_crew.dashboard.tailnet import (
     resolve_forwarded_peer,
 )
 from kiro_crew.dashboard.token_auth import (
+    FAMILY_STATE_UNAVAILABLE,
     MAX_SESSION_TTL_SECS,
     _cookie_port_from_host,
     bind_token_ip,
     bind_token_peer,
+    credential_family_refusal,
     extract_numeric_claim,
     generate_token,
     revoke_access_cookie,
@@ -703,6 +707,25 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     carried_owner_mint = refresh_token_owner_minted(refresh_token)
     if carried_owner_mint:
         _carried_claims["owner_mint"] = "1"
+    # The link this chain descends from, and the families that link descends from, onto
+    # both halves, so the owner's revocation of any of them still reaches every session
+    # this rotation mints.
+    carried_family = refresh_token_family(refresh_token)
+    carried_ancestors = refresh_token_ancestors(refresh_token)
+    if carried_family or carried_ancestors:
+        # Checked again here, after the peer-resolution await above: the owner may have
+        # ended the family since validation, and nothing between this check and the mint
+        # below awaits, so no pair this rotation mints can outlive the family record.
+        family_refusal = credential_family_refusal(carried_family, carried_ancestors)
+        if family_refusal:
+            _audit(user_id, "refresh_token_use", "invalid", family_refusal)
+            return web.json_response(
+                {"error": "invalid_refresh", "code": "invalid_refresh"}, status=401
+            )
+    if carried_family:
+        _carried_claims["family"] = carried_family
+    if carried_ancestors:
+        _carried_claims["ancestors"] = carried_ancestors
     # The embedding parent's port, for the CSP frame-ancestors of a framed remote
     # pane. Dropped here, the pane went blank on its first load after a refresh.
     carried_embed_parent_port = refresh_token_embed_parent_port(refresh_token)
@@ -742,6 +765,8 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         require_peer=require_peer,
         peer_key=bound_peer_key,
         owner_mint=carried_owner_mint,
+        family=carried_family,
+        ancestors=carried_ancestors,
         embed_parent_port=carried_embed_parent_port,
         embed_forward_port=carried_embed_forward_port,
     )
@@ -949,7 +974,12 @@ async def api_auth_logout(request: web.Request) -> web.Response:
             # is authentic and revoking it cannot be driven by a forged token.
             # Decided from the validation's own answer, not a second read of the store: an
             # unreadable file can read again in between, and that must not skip the revoke.
-            degraded = _reason.startswith("refresh state unavailable")
+            # An unreadable family denylist is the same case one store over: the family check
+            # runs last, after every other claim passed, so the chain is authentic and must
+            # still be revoked, or it renews once the denylist reads again.
+            degraded = _reason.startswith("refresh state unavailable") or (
+                _reason == FAMILY_STATE_UNAVAILABLE
+            )
             if degraded and chain_id:
                 revocation_persisted = await asyncio.to_thread(
                     _get_state().revoke_chain,
