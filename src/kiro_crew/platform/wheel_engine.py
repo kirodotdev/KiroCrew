@@ -59,6 +59,7 @@ from kiro_crew import asset_downloader  # noqa: F401 - re-export
 from kiro_crew import extras as _extras
 from kiro_crew.config.paths import data_home  # noqa: F401 - re-export
 from kiro_crew.extras import dist_name as _dist_name
+from kiro_crew.platform import wheel_engine_extras as _wheel_engine_extras
 from kiro_crew.platform.tree_liveness import LIVENESS_LOCK, TREE_MARKER
 from kiro_crew.platform_compat import (  # noqa: F401 - re-export
     IS_POSIX,
@@ -798,6 +799,7 @@ def build_shadow_venv(
             + _carried_extra_hint(missing, extras)
             + f" (pip said: {exc})"
         ) from exc
+    _wheel_engine_extras.add_memory_index_extra(shadow_pip, policy, wheel_path, extras, ctx)
 
 
 def _carried_extras() -> tuple[str, ...]:

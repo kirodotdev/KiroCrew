@@ -39,7 +39,7 @@ from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from sqlite3 import Error as StdlibSQLiteError
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 from uuid import uuid4  # noqa: F401 -- patch seam: owners read uuid4 through this module
 
 from kiro_crew import memory_record_metadata as record_meta
@@ -79,6 +79,7 @@ from kiro_crew.lesson_validation import (  # noqa: F401
     render_withheld_tier,
     tighter_lesson_budget,
 )
+from kiro_crew.memory_index.store_index import settings_from as _index_settings_from
 from kiro_crew.memory_recall_filters import RecallFilters
 from kiro_crew.memory_stores import MEMORY_DB_FILE
 from kiro_crew.metrics.db_metrics import timed
@@ -618,6 +619,7 @@ class VectorMemoryStore:
         # Resolved ONCE there rather than branched at each use, so the runtime
         # write path carries no per-statement conditional.
         self._lineage: str = memory_schema.LINEAGE_V1
+        self._memory_index: Any = None  # memory_index.store_index.index_for sets it
         self._bind_lineage(memory_schema.LINEAGE_V1)
         # Serializes the db + FAISS critical sections. Writes are offloaded to
         # worker threads (history consolidation, dashboard handlers) while reads
@@ -847,6 +849,8 @@ class VectorMemoryStore:
         # Opt-in session affinity and recency boost for V2 episodic ranking.
         self._session_affinity = float(getattr(memory_cfg, "session_affinity", 0.0))
         self._recency_boost = float(getattr(memory_cfg, "recency_boost", 0.0))
+        # memory.index: whether recall reads its candidates from memory_index/.
+        self._index_settings = _index_settings_from(memory_cfg)
 
     def _bind_lineage(self, lineage: str) -> None:
         """Set the lineage and every statement fragment derived from it.

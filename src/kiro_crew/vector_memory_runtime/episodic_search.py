@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_v2
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE
+from kiro_crew.memory_index import recall_rows as _index_rows
 from kiro_crew.vector_memory_runtime import embedding as _embedding
 from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery
@@ -383,13 +384,18 @@ def search_episodic_v2(
 
     if limit <= 0 or (not query_text.strip() and query_embedding is None):
         return []
-    rows = store._fetch_all_locked(
-        f"SELECT * FROM {store._epi_rel} WHERE is_deleted = 0{store._epi_guard}",
-        scan="episodic",
+    instructed = _embedding.query_is_instructed(query_embedding)
+    found = _index_rows.episode_candidates(
+        store,
+        query_text,
+        query_embedding,
+        relevance_filter=relevance_filter,
+        skip=False,
+        instructed=instructed,
     )
+    rows = _index_rows.episode_rows(store, found)
     query_terms = memory_v2.terms(query_text)
     similarity = store._stored_similarity_scorer(query_embedding)
-    instructed = _embedding.query_is_instructed(query_embedding)
     now = vm.datetime.now(tz=timezone.utc)
     candidates = []
     for raw in store._eligible_rows(rows, "episode"):
@@ -427,6 +433,7 @@ def search_episodic_v2(
             row["cosine_sim"] = cosine
         candidates.append(row)
     candidates.sort(key=lambda row: (-row["score"], row["id"]))
+    _index_rows.shadow_compare(found, "episodic", candidates, "id")
     result = _text_scoring._mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
     store._touch_last_accessed([row["id"] for row in result])
     return result

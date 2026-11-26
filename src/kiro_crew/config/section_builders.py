@@ -68,6 +68,7 @@ from kiro_crew.config.memory_sections import (
     STARTUP_RECALL_TIMEOUT_MAX_SECS,
     KnowledgeConfig,
     MemoryConfig,
+    MemoryIndexConfig,
     MemoryProviderConfig,
     SessionSummaryConfig,
     SkillsConfig,
@@ -431,6 +432,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         ),
         migrated=section.get("migrated"),
         provider=MemoryProviderConfig.from_raw(memory_data.get("provider")),
+        index=MemoryIndexConfig.from_raw(memory_data.get("index")),
     )
 
 

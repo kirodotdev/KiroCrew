@@ -182,6 +182,15 @@ try {
         exit 1
     }
     Write-Ok "KiroCrew client installed"
+    # The memory index (memory.index.mode) needs the memory-index extra. Add it
+    # from wheels only; with none for this host the install goes on and recall
+    # keeps reading every memory.
+    & $PyExe -m pip install --quiet --only-binary usearch,numkong -e ".[memory-index]" *> $null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "Memory index installed (memory-index extra)"
+    } else {
+        Write-Warn "No memory-index wheel for this host; recall keeps reading every memory"
+    }
 } finally {
     Pop-Location
 }

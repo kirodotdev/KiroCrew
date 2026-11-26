@@ -3200,6 +3200,11 @@
           "timeout_secs": 3.0,
           "switched_at": 0.0,
           "stop_learning_ack": false
+        },
+        "index": {
+          "mode": "off",
+          "backend": "local",
+          "exact_rows": 20000
         }
       }
     },
@@ -4122,6 +4127,70 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "memory.index",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Memory Index",
+      "help": "Whether recall reads candidates from an index instead of every memory. See memory.index.mode.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "mode": "off",
+        "backend": "local",
+        "exact_rows": 20000
+      }
+    },
+    {
+      "path": "memory.index.mode",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Memory Index Mode",
+      "help": "'off' reads every memory on each recall, as before. 'shadow' builds an index beside each store and checks its answers against that full read without changing them. 'on' answers recall from the index once it is built, and falls back to the full read while it builds.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "on"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.index.backend",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Memory Index Backend",
+      "help": "Which index backend serves the stores. 'local' keeps the index in files beside each store; 'exact' is the reference scan.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "local"
+    },
+    {
+      "path": "memory.index.exact_rows",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Memory Index Exact Rows",
+      "help": "Below this many stored vectors a store's vector search compares every vector instead of an approximate graph.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 20000
     },
     {
       "path": "knowledge",

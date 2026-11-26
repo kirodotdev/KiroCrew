@@ -201,6 +201,30 @@ def _doctor_vector_memory(issues: list[str]) -> None:
     print("  embeddings:  ✅ always-on")
 
 
+def _doctor_memory_index(cfg: KiroCrewConfig) -> None:
+    """One note under Vector Memory when the memory index is switched on but its
+    ``local`` backend cannot load usearch, so recall still reads every memory.
+
+    A note, never an issue: the full read is the correct answer, only slower. It
+    prints nothing while ``memory.index.mode`` is ``off`` or another backend is
+    chosen, since neither needs the extra.
+    """
+    index = cfg.memory.index
+    if index.mode == "off" or index.backend != "local":
+        return
+    try:
+        import usearch.index  # noqa: F401
+    except ImportError:
+        print(
+            f"  index:       ⏹ memory.index.mode is '{index.mode}' but the memory-index "
+            "extra is missing — recall reads every memory"
+        )
+        if cli_doctor.pip_install_channel_available():
+            print(f"               Install: {cli_doctor.pip_install_command('memory-index')}")
+        return
+    print(f"  index:       ✅ memory index '{index.mode}' (local backend)")
+
+
 def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
     """Render the ``Speech-to-Text`` section: the recogniser, its model, the audio
     decoder, and the cloud or on-device provider's own prerequisites."""

@@ -36,6 +36,7 @@ from kiro_crew import memory_record_metadata
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.config.loader import config_dir
 from kiro_crew.memory import INDEX_DB_FILE
+from kiro_crew.memory_index import changelog as memory_index_changelog
 from kiro_crew.memory_stores import MEMORY_DB_FILE, named_store_product_file
 
 # Suffixes read as text. Everything else is either a database (handled through SQL) or
@@ -890,6 +891,9 @@ def _redact_database(path: Path, report: RedactionReport, rel: str, *, product: 
                 # The staged copy only: the startup reconcile's triggers would note every
                 # key this pass rewrites, and a restore of the copy rebuilds them anyway.
                 memory_record_metadata.strip_reconcile_state(conn)
+                # Same for the memory index's change log: a key rewrite would copy
+                # the original key into it, and the restored copy rebuilds its index.
+                memory_index_changelog.strip(conn)
                 conn.commit()
             _refuse_credential_in_schema(conn, rel)
             fts_tables, skip_tables = _fts_layout(conn)

@@ -27,6 +27,7 @@ from kiro_crew import memory_schema, memory_v2
 from kiro_crew.config.memory_sections import relevance_rule_mode_from
 from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_INTERACTIVE
 from kiro_crew.lesson_validation import LESSON_APPLIES_VALUES, order_by_request_relevance
+from kiro_crew.memory_index import recall_rows as _index_rows
 from kiro_crew.user_json import strict_json_equal
 from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES
 from kiro_crew.vector_memory_runtime import embedding as _embedding
@@ -1421,13 +1422,10 @@ def semantic_candidates_v2(
     query_terms = memory_v2.terms(query_text)
     similarity = store._stored_similarity_scorer(query_embedding)
     instructed = _embedding.query_is_instructed(query_embedding)
+    found = _index_rows.fact_candidates(store, query_text, query_embedding, instructed=instructed)
     with store._db_lock:
         store._check_recall_query(recall_query)
-        rows = store._fetch_all_locked(
-            f"SELECT * FROM {store._sem_rel} WHERE key NOT LIKE 'lesson.%' "
-            f"AND is_deleted = 0{store._sem_guard}",
-            scan="semantic",
-        )
+        rows = _index_rows.fact_rows(store, found)
     identities = store._fact_identities()
     selected = []
     for raw in store._eligible_rows(rows, "fact"):
@@ -1452,6 +1450,7 @@ def semantic_candidates_v2(
         row["score"] = max(0.0, cosine or 0.0) + evidence["query_coverage"]
         selected.append(row)
     selected.sort(key=lambda row: (-row["score"], row["key"]))
+    _index_rows.shadow_compare(found, "semantic", selected, "key")
     return selected
 
 

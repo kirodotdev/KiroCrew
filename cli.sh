@@ -1152,6 +1152,19 @@ echo "Verified SHA-256."
 # from); the closing restart hint is printed only then, and only a run without
 # it ends with exit 3 on a host that cannot run the KAS engine.
 _KC_REPLACED_INSTALL=0
+# The memory index (memory.index.mode) needs the memory-index extra, whose
+# usearch wheels need glibc 2.28+ on Linux, so it is never a core dependency.
+# Each branch calls this once its install is committed, with the pip command
+# that reaches the new tree: it adds the extra from wheels only, and with none
+# for this host the install goes on and recall keeps reading every memory.
+_add_memory_index_extra() {
+  # shellcheck disable=SC2086
+  if "$@" install --quiet --progress-bar off $PIP_BINARY_ONLY "$WHL[memory-index]" >/dev/null 2>&1; then
+    echo "Installed the memory index (memory-index extra)."
+  else
+    echo "Note: no memory-index wheel for this host; recall keeps reading every memory." >&2
+  fi
+}
 if command -v pipx >/dev/null 2>&1; then
   echo "Installing with pipx ..."
   # `pipx install --force` over an EXISTING kirocrew venv is not transactional
@@ -1238,6 +1251,8 @@ if command -v pipx >/dev/null 2>&1; then
   if [ -n "$_PIPX_VENV_BACKUP" ] && [ -d "$_PIPX_VENV_BACKUP" ]; then
     rm -rf "$_PIPX_VENV_BACKUP" 2>/dev/null || true
   fi
+  # `pipx install --force` rebuilt the venv, so the extra is added every run.
+  _add_memory_index_extra pipx runpip "$_PIPX_PKG"
   # The transaction is complete; let a waiting installer run proceed. (On
   # every failure path above, `err` exits and the kernel drops the lock.)
   if [ -n "$_PIPX_VENV" ]; then exec 9>&-; fi
@@ -1466,6 +1481,11 @@ print(",".join(named))
   _VENV_MOVED=0
   trap 'rm -rf "$TMP"' EXIT INT TERM
   trap - HUP
+  # A carried memory-index extra already rode on the wheel argument above.
+  case ",$_CARRIED_EXTRAS," in
+    *,memory-index,*) ;;
+    *) _add_memory_index_extra "$VENV/bin/pip" ;;
+  esac
   # Name, once, what the previous tree had that the rebuild did not carry (a
   # package that is not a declared extra), with the command that adds it
   # back. A note only: it installs nothing and never fails the install.
