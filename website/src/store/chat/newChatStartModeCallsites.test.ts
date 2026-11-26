@@ -37,7 +37,7 @@ const PINNED: Record<string, Counts> = {
   'src/hooks/useSceneInteraction.tsx': { startMode: 1, other: 0 },
   'src/lib/createdChatView.ts': { startMode: 0, other: 1, reason: 'forwards its caller’s arguments' },
   'src/pages/SessionsPage.tsx': { startMode: 1, other: 0 },
-  'src/pages/chat-sidebar/create.ts': { startMode: 1, other: 1, reason: 'createLocalChat forwards its caller’s arguments' },
+  'src/pages/chat-sidebar/create.ts': { startMode: 1, other: 2, reason: 'createLocalChat forwards its caller’s arguments; an app-contributed New menu row' },
   'src/pages/chat/memoryModeSwitch.ts': { startMode: 0, other: 1, reason: 'recreate of an existing chat' },
   'src/pages/chat/page/ChatEmptyState.tsx': { startMode: 1, other: 0 },
   'src/pages/chat/page/composerSend.ts': { startMode: 1, other: 0 },

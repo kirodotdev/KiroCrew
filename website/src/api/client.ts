@@ -1949,6 +1949,7 @@ export const api = {
   ...apps.sessionStatus,
   ...autoResearch.campaigns,
   ...apps.fileMenu,
+  ...apps.sessionCreate,
   ...artifacts.publishing,
   ...featureDiscovery.tips,
   ...browserLive.browserLive,

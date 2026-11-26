@@ -108,8 +108,8 @@ BROWSER_ONLY_KEYS = frozenset(
     }
 )
 
-#: ``contributes`` points whose entries are browser UI. ``fileMenuItems`` is not here:
-#: it names an app route the host calls.
+#: ``contributes`` points whose entries are browser UI. ``fileMenuItems`` and
+#: ``sessionCreateItems`` are not here: each names an app route the host calls.
 BROWSER_ONLY_CONTRIBUTIONS = frozenset(
     {
         "commands",

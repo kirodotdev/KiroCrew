@@ -378,7 +378,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     },
     /** Create a chat slot on this machine. A session on a connected crew is
      *  created on that crew and opened through its window, never here. */
-    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, project_from_slot?: string, start_mode_default?: boolean) => {
+    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, project_from_slot?: string, start_mode_default?: boolean, project?: string) => {
       const resolvedMemoryMode = memory_mode ?? await resolveDefaultMemoryMode(
         () => fetch('/api/dashboard/config').then(j),
       )
@@ -410,6 +410,9 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         // approval mode (`dashboard.default_approval_mode`). Never sent for an
         // app page's or a hand-off's create, which keep how they start.
         ...(start_mode_default ? { start_mode_default: true } : {}),
+        // The new chat's project, judged and applied by the server before the chat
+        // is first published; a refused directory makes no chat at all.
+        ...(project ? { project } : {}),
       }).then(j).then(takeSessionFolderNotice) as Promise<ChatSlot>
     },
     /** Create, or reopen, the person's chat a built-in app's page launches inside
