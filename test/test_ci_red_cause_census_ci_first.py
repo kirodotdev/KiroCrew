@@ -182,3 +182,88 @@ def test_a_stop_while_the_runs_are_listed_does_not_call_ci_read_in_full(tmp_path
         tmp_path / "summary.md"
     ).read_text(encoding="utf-8")
     assert read_csv(tmp_path) == []
+
+
+# -- with several workers: `CI` is read alone, ahead of the pool ---------------
+
+OTHERS = ("PR Readiness", "PR Policy", "CodeQL")
+
+
+def several_workflows(count: int = 10) -> FakeGh:
+    """`CI` listed second of four workflows, each with ``count`` red runs of one red job."""
+    names = (OTHERS[0], CI, *OTHERS[1:])
+    runs = {
+        f"W_{name}": [
+            run_node(
+                1000 * (place + 1) + at,
+                f"{DAY}T10:{at % 60:02d}:00Z",
+                red=1,
+                sha=f"{1000 * (place + 1) + at:040x}",
+            )
+            for at in range(count)
+        ]
+        for place, name in enumerate(names)
+    }
+    suites = {
+        node["checkSuite"]["id"]: (
+            connection([check_run(node["databaseId"], notes=[failing()])]),
+            connection([]),
+        )
+        for nodes in runs.values()
+        for node in nodes
+    }
+    return FakeGh(
+        workflows=workflows_page(*names),
+        runs=lambda fields: {"node": {"runs": connection(runs[fields["workflow"]])}},
+        suites=suites_of(suites),
+    )
+
+
+def test_the_workers_are_never_handed_ci_beside_another_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handed: list[list[Any]] = []
+    each = CENSUS._each
+
+    def recording(workers: int, read: Any, items: list[Any]) -> list[Any]:
+        handed.append(list(items))
+        return each(workers, read, items)
+
+    monkeypatch.setattr(CENSUS, "_each", recording)
+    gh = several_workflows()
+
+    census = CENSUS.take_census(
+        api_for(gh), "kirodotdev/KiroCrew", f"{DAY}T00:00:00Z", "2026-11-21T00:00:00Z", "never", 4
+    )
+
+    listing, ci_batches, other_batches = handed
+    assert [name for _id, name in listing] == list(OTHERS)
+    ci_suites = {f"CS_{2000 + at}" for at in range(10)}
+    assert [set(ids) for _tier, ids in ci_batches] == [ci_suites]
+    assert all(ci_suites.isdisjoint(ids) for _tier, ids in other_batches)
+    assert len(other_batches) == 3
+    # What the stand-in was asked, in order: all of `CI` before anything else of its kind.
+    listed = [fields["workflow"] for kind, fields in gh.calls if kind == "runs"]
+    assert listed[0] == f"W_{CI}" and sorted(listed[1:]) == sorted(f"W_{name}" for name in OTHERS)
+    asked = [set(fields["ids"]) for kind, fields in gh.calls if kind == "suites"]
+    assert asked[0] == ci_suites
+    assert len(census.rows) == 40 and not census.workflows_part_read
+
+
+def test_four_workers_cut_short_after_the_ci_suites_have_every_ci_row(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Two points a call: the bucket, the issues, four listings and the ONE batch of `CI` suites.
+    gh = several_workflows()
+    args = census_args(tmp_path, "--max-points", "14", "--workers", "4")
+
+    status = CENSUS.main(args, api=api_for(gh), clock=ticks(0.0, 1.0))
+
+    assert status == CENSUS.PARTIAL_EXIT
+    rows = read_csv(tmp_path)
+    assert sorted(int(row["run_id"]) for row in rows) == [2000 + at for at in range(10)]
+    assert "GraphQL calls: 7 (14 points)\n" in capsys.readouterr().out
+    summary = summary_of(tmp_path)
+    assert (summary["ci_read_in_full"], summary["workflows_read_in_full"]) == (True, 1)
+    assert summary["suites_unread"] == 30
+    assert workflows_csv(tmp_path) == {CI: "yes", **{name: "no" for name in OTHERS}}

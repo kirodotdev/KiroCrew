@@ -88,9 +88,11 @@ workflows) cost 1,828 calls and 2,786 points. So:
 
 `CI` is read first: its runs are listed before any other workflow's, and the
 check suites of its runs are asked for before the rest, in the same calls a
-census in any other order would make. So when the budget ends a census early,
-what it did read is `CI`, the workflow two of the three goal numbers are
-counted from. The summary of a partial census says whether `CI` was read in
+census in any other order would make. Each of those two reads finishes before
+the workers start on the other workflows, so with any ``--workers`` no other
+workflow's call spends the budget while `CI` is still being read. So when the
+budget ends a census early, what it did read is `CI`, the workflow two of the
+three goal numbers are counted from. The summary of a partial census says whether `CI` was read in
 full and how many workflows were; `workflows.csv` names them.
 
 A census stopped either way spends nothing more. A check suite is counted whole
@@ -1008,6 +1010,9 @@ def read_jobs(
     The suites of `CI` runs are asked for first, tier by tier, and the other
     workflows' after them. The batches are the same size and number in any
     order, so the order costs nothing; it decides what a stop leaves unread.
+    The batches that hold a `CI` suite are all answered before the workers
+    are handed the rest: side by side, a batch of another workflow could
+    spend the points a `CI` batch was about to.
     Every workflow with a suite left unread is added to ``part_read``.
     """
     wanted = [run for run in runs if (run.red_jobs or run.cancelled) and run.suite_id]
@@ -1024,16 +1029,19 @@ def read_jobs(
         ]
         batches += [(tier, ids[at : at + size]) for at in range(0, len(ids), size)]
         below = tier
-    batches.sort(key=lambda batch: not any(_is_ci(by_suite[suite]) for suite in batch[1]))
+    ci_first: tuple[list[tuple[int, list[str]]], list[tuple[int, list[str]]]] = ([], [])
+    for batch in batches:
+        ci_first[not any(_is_ci(by_suite[suite]) for suite in batch[1])].append(batch)
     jobs: list[Job] = []
     passed: Passed = {}
     unread: set[str] = set()
-    for found, passes, missed in _each(
-        workers, lambda batch: _read_suites(api, by_suite, batch[1], batch[0]), batches
-    ):
-        jobs += found
-        _merge(passed, passes)
-        unread.update(missed)
+    for part in ci_first:
+        for found, passes, missed in _each(
+            workers, lambda batch: _read_suites(api, by_suite, batch[1], batch[0]), part
+        ):
+            jobs += found
+            _merge(passed, passes)
+            unread.update(missed)
     open_pushes = {
         (by_suite[suite].workflow, by_suite[suite].head_sha)
         for suite in unread
@@ -1105,13 +1113,17 @@ def take_census(api: Api, repo: str, start: str, end: str, logs: str, workers: i
     except BudgetStop as stop:
         census.partial = str(stop)
         return census
-    # `CI` first; `sorted` is stable, so the others keep the order GitHub lists them in.
-    workflows = sorted(list_workflows(api, repo), key=lambda row: row[1] != CI_WORKFLOW)
+    workflows = list_workflows(api, repo)
     census.workflows = len(workflows)
     census.workflow_names = [name for _, name in workflows]
     part_read = census.workflows_part_read
+    # `CI` is listed to its end before the workers list the others side by side.
+    for workflow_id, name in workflows:
+        if name == CI_WORKFLOW:
+            census.runs += read_runs(api, workflow_id, name, start, end, part_read)
+    others = [row for row in workflows if row[1] != CI_WORKFLOW]
     for runs in _each(
-        workers, lambda row: read_runs(api, row[0], row[1], start, end, part_read), workflows
+        workers, lambda row: read_runs(api, row[0], row[1], start, end, part_read), others
     ):
         census.runs += runs
     _progress(f"{len(census.runs)} run(s) of {len(workflows)} workflow(s) read")

@@ -668,11 +668,13 @@ both with `read` permissions only; it opens no issue and posts no comment.
   yesterday (UTC) one cause, writes the day's summary and the script's call
   counts to the job summary, and uploads `red-jobs.csv`, `ci-pushes.csv`,
   `workflows.csv`, `summary.md`, `summary.json` and the printed output as the
-  artifact `ci-red-census-day`, kept 90 days. It reads `CI` before every other
-  workflow, in the same calls, so a night the budget cuts short still has every
-  `CI` row: the first and third numbers are counted from those alone. A partial
-  summary says whether `CI` was read in full and how many workflows were;
-  `workflows.csv` names each one with `yes` or `no`.
+  artifact `ci-red-census-day`, kept 90 days. It reads `CI` to its end before
+  the workers start on any other workflow, in the same calls, so a night the
+  budget cuts short after that still has every `CI` row: the first and third
+  numbers are counted from those alone. A stop while the other workflows' runs
+  are still being listed leaves every check suite unread, `CI`'s included. A
+  partial summary says whether `CI` was read in full and how many workflows
+  were; `workflows.csv` names each one with `yes` or `no`.
 - **`week`, on Sunday after that night's read**: runs
   `scripts/ci_red_census_week.py`, which takes the day its own run has just
   read with `actions/download-artifact` and the six days before it from the
