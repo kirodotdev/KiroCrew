@@ -736,6 +736,172 @@ def test_the_tail_hands_the_plan_mask_and_the_scratch_window_to_the_sandbox(
     assert launched.scope_unit == ""
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no mask-capable backend")
+def test_the_tail_applies_the_editions_masks_for_the_session_it_spawns_for(
+    monkeypatch, tmp_path
+) -> None:
+    """Two spawns on one install, one per session: each wrap hides the state root and
+    re-opens only that session's own folder, read-only, beside the harness's own mask.
+    """
+    from kiro_crew.platform import context as context_mod
+    from kiro_crew.platform.interfaces import SessionMasks, SpawnIdentity
+
+    state = str(tmp_path.resolve() / "edition-sessions")
+    for session in ("alpha", "beta"):
+        (Path(state) / session).mkdir(parents=True)
+    harness_mask = str(tmp_path.resolve() / "creds/.aws")
+    Path(harness_mask).mkdir(parents=True)
+
+    class _Policy:
+        def session_masks(self, identity):
+            return SessionMasks(
+                hidden_dirs=(state,), readonly_dirs=(f"{state}/{identity.session_key}",)
+            )
+
+    monkeypatch.setattr(context_mod, "current_context", lambda: SimpleNamespace(sandbox=_Policy()))
+    monkeypatch.setattr("kiro_crew.sandbox.credential_mask_applies", lambda mode: True)
+    _launch_env(monkeypatch)
+
+    seen = {}
+    for session in ("alpha", "beta"):
+        host = _FakeHost(tmp_path)
+        rec = _Recording()
+        _run_launch(
+            host,
+            _request(
+                extra_hidden_dirs=(harness_mask,),
+                identity=SpawnIdentity(session_key=session),
+            ),
+            _launch_tools(rec, scratch=_Scratch(tmp_path / f"scratch-{session}")),
+        )
+        seen[session] = (rec, host)
+
+    for session, other in (("alpha", "beta"), ("beta", "alpha")):
+        rec, host = seen[session]
+        assert rec.wrap_kwargs["extra_hidden_dirs"] == (harness_mask, state)
+        assert rec.wrap_kwargs["extra_readonly_windows"] == (f"{state}/{session}",)
+        assert f"{state}/{other}" not in rec.wrap_kwargs["extra_readonly_windows"]
+        # One mask list for every reader: the SSH forward verdict and the recorded set a
+        # sandbox-refusal diagnosis re-runs.
+        assert rec.forward_args == ("auto", (harness_mask, state))
+        assert host._sandbox_hidden_dirs == (harness_mask, state)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no mask-capable backend")
+@pytest.mark.parametrize("internal_sandbox_enabled", [True, False], ids=["enabled", "disabled"])
+def test_a_masked_macos_launch_refuses_nested_kiro_sandboxes(
+    internal_sandbox_enabled, monkeypatch, tmp_path
+) -> None:
+    from kiro_crew.acp import launch as launch_mod
+    from kiro_crew.platform import context as context_mod
+    from kiro_crew.platform.interfaces import SessionMasks, SpawnIdentity
+
+    state = tmp_path.resolve() / "edition-sessions"
+    state.mkdir()
+    policy = SimpleNamespace(session_masks=lambda identity: SessionMasks(hidden_dirs=(str(state),)))
+    monkeypatch.setattr(context_mod, "current_context", lambda: SimpleNamespace(sandbox=policy))
+    monkeypatch.setattr("kiro_crew.sandbox.credential_mask_applies", lambda mode: True)
+    monkeypatch.setattr(
+        launch_mod, "sys", SimpleNamespace(platform="darwin", executable=sys.executable)
+    )
+    monkeypatch.setattr(
+        launch_mod, "kiro_internal_sandbox_enabled", lambda: internal_sandbox_enabled
+    )
+    _launch_env(monkeypatch)
+    host = _FakeHost(tmp_path)
+    scratch = _Scratch(tmp_path / "scratch")
+    rec = _Recording()
+    tools = _launch_tools(rec, scratch=scratch, delegate=True)
+    request = _request(identity=SpawnIdentity("alpha"))
+
+    if internal_sandbox_enabled:
+        with pytest.raises(launch_mod.SessionMaskRefused, match="two cannot nest"):
+            _run_launch(host, request, tools)
+        assert scratch.allocated_labels == []
+        assert rec.wrap_kwargs == {}
+        assert rec.calls == ["apply_pod_bundle_spawn"]
+    else:
+        _run_launch(host, request, tools)
+        assert rec.wrap_kwargs["extra_hidden_dirs"] == (str(state),)
+        assert rec.wrap_kwargs["is_kiro_cli"] is True
+        assert "create_subprocess_limited" in rec.calls
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no mask-capable backend")
+def test_a_session_window_inside_the_harness_mask_is_dropped(monkeypatch, tmp_path) -> None:
+    """Merged, the two masks are one caller list, so the tail drops a session window
+    that would re-open the harness's credential mask before it merges them."""
+    from kiro_crew.platform import context as context_mod
+    from kiro_crew.platform.interfaces import SessionMasks, SpawnIdentity
+
+    harness_mask = str(tmp_path.resolve() / "creds/.aws")
+    own = str(Path(harness_mask) / "sso")
+    Path(own).mkdir(parents=True)
+
+    class _Policy:
+        def session_masks(self, identity):
+            return SessionMasks(hidden_dirs=(harness_mask,), readonly_dirs=(own,))
+
+    monkeypatch.setattr(context_mod, "current_context", lambda: SimpleNamespace(sandbox=_Policy()))
+    monkeypatch.setattr("kiro_crew.sandbox.credential_mask_applies", lambda mode: True)
+    _launch_env(monkeypatch)
+    rec = _Recording()
+    _run_launch(
+        _FakeHost(tmp_path),
+        _request(extra_hidden_dirs=(harness_mask,), identity=SpawnIdentity("alpha")),
+        _launch_tools(rec, scratch=_Scratch(tmp_path / "scratch")),
+    )
+    assert rec.wrap_kwargs["extra_hidden_dirs"] == (harness_mask,)
+    assert rec.wrap_kwargs["extra_readonly_windows"] == ()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no mask-capable backend")
+def test_a_session_mask_refuses_an_unwrapped_launch_and_reclaims_the_launcher(
+    monkeypatch, tmp_path
+) -> None:
+    from kiro_crew.acp.client_lifecycle import _discard_sandbox_cleanup
+    from kiro_crew.acp.launch import SessionMaskRefused
+    from kiro_crew.platform import context as context_mod
+    from kiro_crew.platform.interfaces import SessionMasks, SpawnIdentity
+
+    state = tmp_path.resolve() / "edition-sessions"
+    state.mkdir()
+    policy = SimpleNamespace(session_masks=lambda identity: SessionMasks(hidden_dirs=(str(state),)))
+    monkeypatch.setattr(context_mod, "current_context", lambda: SimpleNamespace(sandbox=policy))
+    monkeypatch.setattr("kiro_crew.sandbox.credential_mask_applies", lambda mode: True)
+    _launch_env(monkeypatch)
+    host = _FakeHost(tmp_path)
+    rec = _Recording()
+    cleanup = tmp_path / "launcher.sh"
+
+    async def _unwrapped(argv, **kwargs):
+        rec.calls.append("wrap_argv_async")
+        rec.wrap_kwargs = kwargs
+        cleanup.write_text("launcher", encoding="utf-8")
+        return list(argv), str(cleanup)
+
+    def _discard():
+        host.cleanup_discards += 1
+        _discard_sandbox_cleanup(host)
+
+    monkeypatch.setattr(host, "_discard_sandbox_cleanup", _discard)
+    tools = dataclasses.replace(
+        _launch_tools(rec, scratch=_Scratch(tmp_path / "scratch")),
+        wrap_argv_async=_unwrapped,
+        wrapped_by_crew_sandbox=lambda argv: False,
+    )
+    with pytest.raises(SessionMaskRefused):
+        _run_launch(host, _request(identity=SpawnIdentity("alpha")), tools)
+
+    assert rec.wrap_kwargs["extra_hidden_dirs"] == (str(state),)
+    assert "create_windows_cleanup_owned_process" not in rec.calls
+    assert "create_subprocess_limited" not in rec.calls
+    assert host._sandbox_wrapped_by_crew is False
+    assert host.cleanup_discards == 1
+    assert host._sandbox_cleanup is None
+    assert not cleanup.exists()
+
+
 def test_a_forward_the_wrap_dropped_is_the_one_the_tail_records_and_scrubs_with(
     monkeypatch, tmp_path
 ) -> None:

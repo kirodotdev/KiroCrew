@@ -129,6 +129,7 @@ from kiro_crew.constants import KIROCREW_SPAWN_HOME_ENV, KIROCREW_SPAWN_INSTANCE
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.owner_only_files import ensure_directory
+from kiro_crew.platform.interfaces import SpawnIdentity
 from kiro_crew.sandbox import (
     _CLIENT_SCOPE_UNIT_PREFIX,
     assert_voice_runtime_outside_agent_workspace,
@@ -521,6 +522,7 @@ async def _spawn(self: AcpClient) -> None:
             extra_expose_files=plan.extra_expose_files,
             internal_sandbox=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
             pod_home_remap=self.backend in ACP_BACKENDS_POD_HOME_REMAP,
+            identity=SpawnIdentity(session_key=self._session_key or ""),
         ),
         _launch_tools(),
     )

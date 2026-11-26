@@ -45,6 +45,8 @@ from kiro_crew.platform.interfaces import (
     MobileConnectMethod,
     OtlpDestination,
     RemoteProvisioner,
+    SessionMasks,
+    SpawnIdentity,
 )
 
 # ``agent``, ``sandbox``, ``embeddings``, ``apps.registry`` and ``slack.enterprise``
@@ -189,6 +191,10 @@ class DefaultSandboxPolicy:
         from kiro_crew import sandbox  # circular import: sandbox imports platform
 
         return list(sandbox._CC_DIRS)
+
+    def session_masks(self, identity: SpawnIdentity) -> SessionMasks:
+        # Nothing per session: every spawn keeps exactly the harness's own mask.
+        return SessionMasks()
 
 
 class DefaultCredentialPolicy:

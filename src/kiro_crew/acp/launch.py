@@ -34,6 +34,7 @@ adapter module under :mod:`kiro_crew.acp.harness`; nothing here names one host.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import json
 import logging
@@ -58,6 +59,7 @@ from kiro_crew.env import (
     describe_search_path,
     mise_data_dir,
 )
+from kiro_crew.platform.interfaces import SpawnIdentity
 
 # Re-exported: the launcher was these helpers' first home, and their callers and
 # tests still import them from here (``acp.kas_app_identity`` reads the port gate).
@@ -67,6 +69,7 @@ from kiro_crew.port_resolution import _well_formed_port, drop_foreign_inherited_
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST,
+    kiro_internal_sandbox_enabled,
     ssh_auth_sock_consent_notice,
 )
 
@@ -987,6 +990,97 @@ class LaunchRequest:
     #: read it here. A driver whose harness verifies its config before the spawn
     #: passes the snapshot that verification used, so both see the same values.
     agent_env: Mapping[str, str] | None = None
+    #: Who this process is spawned for, as the edition's ``SandboxPolicy.session_masks``
+    #: is asked (:func:`resolve_session_masks`). The default names no session.
+    identity: SpawnIdentity = field(default_factory=SpawnIdentity)
+
+
+class SessionMaskRefused(RuntimeError):
+    """The edition asked for session masks this spawn cannot honour, so nothing starts."""
+
+
+def resolve_session_masks(
+    identity: SpawnIdentity, mode: str, harness_hidden: tuple[str, ...] = ()
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The edition's ``(hidden_dirs, readonly_dirs)`` for the process spawned for *identity*.
+
+    Blocking: the edition may read the filesystem, and whether the tier applies a mask
+    is a backend probe. Fails closed. An edition that raises, or names a hidden path
+    that is not absolute or does not exist, refuses the spawn rather than starting it
+    with less hidden than it asked for. The edition creates its folders before spawning:
+    a Linux bind mask cannot hide a name created later. A non-empty answer on a tier
+    that would drop every mask (``off``, or no sandbox backend) is also refused. All
+    paths and containment checks use canonical spellings, so symlinked layouts work
+    on Seatbelt too. A read-only directory outside the session's hidden ones, or
+    overlapping a harness mask, is dropped because it would widen the sandbox, not narrow
+    a mask.
+    A companion that predates the method has asked for nothing.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError, current_context
+    from kiro_crew.sandbox import credential_mask_applies
+
+    ask = getattr(current_context().sandbox, "session_masks", None)
+    if ask is None:
+        return (), ()
+    try:
+        masks = ask(identity)
+        hidden_in, readonly_in = tuple(masks.hidden_dirs), tuple(masks.readonly_dirs)
+    except PlatformCompositionError:
+        raise
+    except Exception as exc:
+        raise SessionMaskRefused(
+            "the sandbox policy could not say what to hide from this session, so it "
+            "was not started"
+        ) from exc
+    if not all(isinstance(p, str) and os.path.isabs(p) for p in hidden_in):
+        raise SessionMaskRefused(
+            "the sandbox policy named a hidden path for this session that is not "
+            "absolute, so it was not started"
+        )
+    if not all(os.path.lexists(p) for p in hidden_in):
+        raise SessionMaskRefused(
+            "the sandbox policy named a hidden path for this session that does not "
+            "exist, so it was not started; create its folders before spawning"
+        )
+    hidden = tuple(dict.fromkeys(os.path.realpath(p) for p in hidden_in))
+    if not all(os.path.lexists(p) for p in hidden):
+        raise SessionMaskRefused(
+            "the sandbox policy named a hidden path for this session whose target does "
+            "not exist, so it was not started; create its folders before spawning"
+        )
+    harness_masks = tuple(os.path.realpath(p) for p in harness_hidden)
+    readonly = []
+    for raw in readonly_in:
+        path = (
+            os.path.realpath(raw)
+            if isinstance(raw, str) and os.path.isabs(raw) and os.path.lexists(raw)
+            else ""
+        )
+        if (
+            path
+            and os.path.lexists(path)
+            and any(path.startswith(h.rstrip(os.sep) + os.sep) for h in hidden)
+            and not any(
+                path == h
+                or path.startswith(h.rstrip(os.sep) + os.sep)
+                or h.startswith(path.rstrip(os.sep) + os.sep)
+                for h in harness_masks
+            )
+        ):
+            readonly.append(path)
+        else:
+            logger.warning(
+                "not re-exposing %r for this session: it is not an existing directory "
+                "inside the session's mask without overlapping a harness mask",
+                raw,
+            )
+    if hidden and not credential_mask_applies(mode):
+        raise SessionMaskRefused(
+            "this session must run with some folders hidden, but its sandbox cannot hide "
+            "them (agent.sandbox is 'off', this host has no sandbox backend, or the "
+            "gateway already runs inside a Kiro Crew sandbox), so it was not started"
+        )
+    return hidden, tuple(dict.fromkeys(readonly))
 
 
 @dataclass(frozen=True)
@@ -1109,6 +1203,34 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         )
     )
     spawned_binary = argv[0] if argv else None
+    # The edition's masks for the session this process is spawned for join the
+    # harness's own, so every reader below -- the SSH forward verdict, the wrap, the
+    # recorded mask set a sandbox-refusal diagnosis re-runs -- sees one mask list.
+    # Resolved before anything is allocated: a refusal here leaves nothing to reclaim.
+    session_hidden, session_readonly = await asyncio.to_thread(
+        resolve_session_masks,
+        request.identity,
+        request.sandbox_mode,
+        tuple(request.extra_hidden_dirs),
+    )
+    if (
+        session_hidden
+        and sys.platform == "darwin"
+        and delegate_internal_sandbox
+        and await asyncio.to_thread(kiro_internal_sandbox_enabled)
+    ):
+        # kiro-cli's sandbox cannot initialize inside Crew's Seatbelt.
+        raise SessionMaskRefused(
+            "this session must run with some folders hidden, which needs Kiro Crew's "
+            "sandbox, but kiro-cli's own sandbox is on and the two cannot nest; turn "
+            "kiro-cli's sandbox off so Kiro Crew's sandbox owns isolation, then start "
+            "the session again"
+        )
+    if session_hidden:
+        request = dataclasses.replace(
+            request,
+            extra_hidden_dirs=tuple(dict.fromkeys((*request.extra_hidden_dirs, *session_hidden))),
+        )
     # Per-process scratch containment. Allocated BEFORE the sandbox is built:
     # the scratch ROOT is masked for every sandboxed process
     # (``sandbox._CREW_HIDDEN_LEAVES``), so this child's own directory is
@@ -1181,6 +1303,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         # not enforce, so their spawn arguments are unchanged.
         extra_hidden_dirs=request.extra_hidden_dirs,
         extra_private_dirs=scratch_window,
+        extra_readonly_windows=session_readonly,
         extra_expose_files=request.extra_expose_files,
         **exec_cwd_options(host),
         # The session's own folder: its project MCP files are sealed read-only, so
@@ -1196,6 +1319,14 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # refusal has to name the layer to turn off; the cgroup scope below prepends
     # its own tokens, so the read happens before it.
     host._sandbox_wrapped_by_crew = tools.wrapped_by_crew_sandbox(argv)
+    if session_hidden and not host._sandbox_wrapped_by_crew:
+        # The governance floor can move between resolution and the wrap; only the
+        # returned argv proves that this spawn kept the masks it requires.
+        host._discard_sandbox_cleanup()
+        raise SessionMaskRefused(
+            "this session must run with some folders hidden, but its sandbox wrap did "
+            "not apply Kiro Crew's sandbox, so it was not started"
+        )
     sandbox_wrapped_argv = tuple(argv)
     host._sandbox_hidden_dirs = tuple(request.extra_hidden_dirs)
     # The verdict this child's environment is built with -- the wrap's own, so a

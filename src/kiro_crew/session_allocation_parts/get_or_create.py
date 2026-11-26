@@ -75,6 +75,7 @@ from kiro_crew.session_allocation_parts.cold_start_reads import (
     _crew_oauth_bridges_chat,
     _held_to_parent_denies,
     _is_crewmate_worker_key,
+    _session_masks_need_cold_start,
     _worker_tool_limited_servers,
 )
 from kiro_crew.session_allocation_parts.errors import (
@@ -1149,6 +1150,9 @@ async def _get_or_create_impl(
         # A pooled child's batch was built with no session key, so it holds none of
         # the denies of the agents above this run. Cold-starting projects them.
         pool_decision = "bypass_parent_denies"
+    elif await asyncio.to_thread(_session_masks_need_cold_start, key):
+        # A pooled process cannot acquire this session's masks after its spawn.
+        pool_decision = "bypass_session_masks"
     else:
         pool_decision = ""
 

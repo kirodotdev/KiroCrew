@@ -102,6 +102,12 @@ class SandboxRequest:
     extra_visible_dirs: tuple[str, ...] = ()
     extra_private_dirs: tuple[str, ...] = ()
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = ()
+    #: Directories inside one of THIS request's ``extra_hidden_dirs`` re-opened
+    #: read-only and live: the real tree, never a copy, so a file written after the
+    #: spawn is read too. A window like ``extra_private_dirs`` except that nothing
+    #: inside it can be written, renamed or hard-linked. One under no caller mask opens
+    #: nothing.
+    extra_readonly_windows: tuple[str, ...] = ()
     extra_writable_dirs: tuple[str, ...] = ()
     extra_expose_files: tuple[str, ...] = ()
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = ()
@@ -155,6 +161,9 @@ class PlanHost:
     cwd: str = "/"
     #: The tier's directory list, ``$HOME``-relative, as the platform policy supplies it.
     tier_dirs: tuple[str, ...] = ()
+    #: Resolved spellings of existing tier mask sources that differ from their names.
+    #: Read-only windows must not shadow a mask reached through a symlink.
+    mask_target_spellings: tuple[str, ...] = ()
     #: ``$HOME``-relative single files the cc and strict tiers mask.
     cc_files: tuple[str, ...] = ()
     #: ``$HOME``-relative files the cc tier re-exposes read-only inside a masked tree.
@@ -429,6 +438,10 @@ class ConfinementPlan:
     #: :attr:`PlanHost.mask_parent_pins`, which the namespace launcher binds over
     #: themselves after every mask. Always empty on the Seatbelt plan.
     mask_parent_pins: tuple[str, ...] = ()
+    #: The :attr:`windows` that are read-only (:attr:`SandboxRequest.extra_readonly_windows`):
+    #: the namespace launcher remounts each one ``MS_RDONLY`` after binding it, and
+    #: Seatbelt carves each one out of its mask's read deny only.
+    readonly_windows: tuple[str, ...] = ()
 
     @property
     def sensitive_dirs(self) -> tuple[str, ...]:
@@ -673,6 +686,53 @@ def private_windows(
                 windows.append(path)
                 break
     return list(dict.fromkeys(windows)), refusals
+
+
+READONLY_WINDOW_REFUSAL = (
+    "SECURITY: not opening a read-only window inside or holding a tier mask, or over or under a "
+    "private window -- that path stays masked for this spawn. Every other window and "
+    "the spawn itself are unaffected."
+)
+
+
+def readonly_windows(
+    requested: tuple[str, ...],
+    caller_masks: list[str],
+    tier_masks: list[str],
+    private: list[str],
+    *,
+    remasks_contained_targets: bool,
+    cwd: str | None = None,
+) -> tuple[list[str], list[Refusal]]:
+    """The ``extra_readonly_windows`` entries that may open: inside a caller's own mask only.
+
+    On top of :func:`private_windows`' rules, a read-only window is refused when it sits
+    in or holds a TIER mask, even one a caller also named: a caller narrows what it hid
+    itself and never re-opens a credential home the tier hides. The tier's resolved
+    spellings count too. It is also refused when it
+    holds or sits in a private window, because the writable window's allow would cover
+    it (Seatbelt) or the two binds would shadow each other (Linux). Refusing keeps the
+    path masked, the fail-closed direction.
+    """
+    windows, refusals = private_windows(
+        requested, caller_masks, remasks_contained_targets=remasks_contained_targets, cwd=cwd
+    )
+    kept: list[str] = []
+    for window in windows:
+        if any(
+            path_within(window, mask) or path_within(mask, window) for mask in tier_masks
+        ) or any(path_within(window, other) or path_within(other, window) for other in private):
+            refusals.append(Refusal("private-window", READONLY_WINDOW_REFUSAL))
+            continue
+        kept.append(window)
+    # Outermost read-only binds already expose their descendants read-only; nested
+    # placeholders can collide when the launcher creates them in the stand-in.
+    kept = [
+        window
+        for window in kept
+        if not any(window != other and path_within(window, other) for other in kept)
+    ]
+    return kept, refusals
 
 
 def window_ancestors(target: str, windows: list[str]) -> list[str]:
@@ -1192,6 +1252,20 @@ def _namespace_plan(
     windows, window_refusals = private_windows(
         private, kept, remasks_contained_targets=True, cwd=host.cwd
     )
+    # A read-only window opens only inside a CALLER's own mask, never in a tier mask
+    # and never over or under a private window (:func:`readonly_windows`).
+    caller_kept = [p for p, o in zip(hidden, origins) if o == "caller" and p not in unhidden]
+    ro_windows, readonly_refusals = readonly_windows(
+        tuple(fold(path) for path in request.extra_readonly_windows),
+        caller_kept,
+        [p for p, o in zip(hidden, origins) if o == "tier"]
+        + [fold(path) for path in host.mask_target_spellings],
+        windows,
+        remasks_contained_targets=False,
+        cwd=host.cwd,
+    )
+    windows = list(dict.fromkeys([*windows, *ro_windows]))
+    window_refusals += readonly_refusals
     runtime_parents = list(host.voice_runtime_parents)
     # ``kept + unhidden`` reconstitutes the full mask set before the visibility lift:
     # dropping ``unhidden`` would let a tree a caller re-exposed read-only grow a
@@ -1298,6 +1372,7 @@ def _namespace_plan(
         files=tuple(fold(os.path.join(home, f)) for f in files),
         expose=tuple(expose),
         windows=tuple(windows),
+        readonly_windows=tuple(ro_windows),
         writable=tuple(writable),
         hide_ssh=hide_ssh,
         ssh_dir=os.path.join(home, ".ssh"),
@@ -1412,6 +1487,17 @@ def _seatbelt_plan(
         remasks_contained_targets=False,
         cwd=host.cwd,
     )
+    # Read-only windows open only inside a caller's own mask, as on the namespace plan.
+    ro_windows, readonly_refusals = readonly_windows(
+        request.extra_readonly_windows,
+        caller_targets,
+        [*masked_targets, *host.mask_target_spellings],
+        [*windows_for, *caller_windows],
+        remasks_contained_targets=False,
+        cwd=host.cwd,
+    )
+    caller_windows = list(dict.fromkeys([*caller_windows, *ro_windows]))
+    caller_window_refusals += readonly_refusals
     for target in caller_targets:
         windows = [w for w in caller_windows if w.startswith(target.rstrip("/") + "/")]
         carved = tuple(sorted(f for f in extra_expose_abs if f.startswith(target + sep)))
@@ -1496,6 +1582,7 @@ def _seatbelt_plan(
         files=tuple(home_files),
         expose=tuple((path, os.path.basename(path)) for path in sorted(expose_abs)),
         windows=tuple(dict.fromkeys([*windows_for, *caller_windows])),
+        readonly_windows=tuple(ro_windows),
         writable=tuple(writable),
         hide_ssh=hide_ssh,
         ssh_dir=ssh_dir,
@@ -1615,6 +1702,9 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
             else ["/dev/shm", user_runtime_root(plan.uid)]
         ),
     }
+    # Only when a spawn asked for one, so every other spawn renders the same launcher.
+    if plan.readonly_windows:
+        payload["readonly_windows"] = list(plan.readonly_windows)
     # Only when the operator configured the layer, so an unset key renders the launcher
     # it rendered before the layer existed, byte for byte.
     if plan.operator_readonly:
