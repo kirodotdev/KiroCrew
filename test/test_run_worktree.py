@@ -10,10 +10,17 @@ root; ``remove_run_worktree`` removes it only while it is clean, and
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 
 import pytest
-from test_crewmate_worktree import _commit_in, _git, _init, git_here  # noqa: F401
+from test_crewmate_worktree import (  # noqa: F401
+    _commit_in,
+    _git,
+    _init,
+    _not_a_worktree_reason,
+    git_here,
+)
 
 from kiro_crew import crewmate_worktree as cw
 
@@ -282,8 +289,25 @@ def test_the_unwind_with_no_branch_touches_no_ref(projects, monkeypatch):
 
     monkeypatch.setattr(wt, "_run_git", spy)
     wt._cleanup_partial(repo, _dest(repo, RUN_A), "", claimed=False, created=False)
-    assert calls == [["worktree", "prune"]]
+    assert calls == [["worktree", "remove", _dest(repo, RUN_A)]]
     assert _git(repo, "for-each-ref") == refs
+
+
+def test_a_stale_registration_goes_without_pruning_a_sibling_git_cannot_see(projects, tmp_path):
+    """Another session's scratch worktree of the same repository is hidden from this
+    gateway's sandboxed git and reads as prunable; rebuilding this run's worktree
+    after its folder was deleted must drop only this run's registration."""
+    root, repo = projects
+    other_session = tmp_path / "scratch-of-another-session"
+    sibling = other_session / "wt"
+    _git(repo, "worktree", "add", "--detach", str(sibling), "HEAD")
+    made = cw.make_run_worktree(repo, RUN_A, [root])
+    shutil.rmtree(made.path)
+    other_session.rename(tmp_path / "masked")
+    again = cw.make_run_worktree(repo, RUN_A, [root])
+    (tmp_path / "masked").rename(other_session)
+    assert again.path == made.path
+    assert _not_a_worktree_reason(str(sibling)) == ""
 
 
 def test_a_symlinked_allowed_root_works(projects, tmp_path):
