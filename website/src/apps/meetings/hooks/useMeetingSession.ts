@@ -794,7 +794,9 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // (pause, end) calls `stop()`, which clears the halt, and coming back retries
   // once. A retryable frame (the stream cap, a failed session) does not halt:
   // the close clears `active`/`connecting` and this effect reopens the socket,
-  // which `start()` delays while sockets keep failing before `ready`.
+  // which `start()` delays while sockets keep failing before `ready`. A hook
+  // left idle by such a failure is stopped too (`isFailing()`), so a pause or
+  // an end starts the failure run over.
   const transcriptionRef = useRef(transcription)
   transcriptionRef.current = transcription
   const transcriptionActive = transcription.active
@@ -806,7 +808,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     if (mayOpen && !t.active && !t.connecting && !t.halted) {
       void t.start()
     }
-    if (!mayOpen && (t.active || t.connecting || t.halted || t.isStarting())) {
+    if (!mayOpen && (t.active || t.connecting || t.halted || t.isStarting() || t.isFailing())) {
       t.stop()
     }
   }, [status, ingressReady, transcriptFull, transcriptionActive, transcriptionConnecting, transcriptionHalted])

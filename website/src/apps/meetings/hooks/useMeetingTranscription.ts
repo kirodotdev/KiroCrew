@@ -1307,6 +1307,9 @@ export function useMeetingTranscription({
   // prompt has published neither `active` nor `connecting` yet, and a caller
   // leaving the open state must still be able to see it and stop it.
   const isStarting = useCallback(() => startingRef.current, [])
+  // True while a failure run is open: a hook a failed open left idle publishes
+  // no flag, and only `stop()` ends the run.
+  const isFailing = useCallback(() => failedOpensRef.current > 0 || lastFailureRef.current !== null, [])
 
-  return { active, connecting, halted, isStarting, start, stop, flush, supported: transcriptionSupported }
+  return { active, connecting, halted, isStarting, isFailing, start, stop, flush, supported: transcriptionSupported }
 }

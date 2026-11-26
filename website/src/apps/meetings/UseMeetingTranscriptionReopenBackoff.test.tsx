@@ -186,7 +186,10 @@ describe('useMeetingTranscription — reopening after a socket fails before read
     'stt_apple_unsupported',
     'stt_apple_needs_toolchain',
     'stt_codex_missing',
+    'stt_codex_extra_missing',
     'stt_codex_login_required',
+    'stt_codex_sandbox_unavailable',
+    'stt_codex_cli_unresolved',
   ])('halts on %s, which no retry can fix, and reports it once', async code => {
     const h = await mount()
     await h.start()
@@ -241,6 +244,27 @@ describe('useMeetingTranscription — reopening after a socket fails before read
     expect(sockets).toHaveLength(2)
     await flush(2)
     expect(sockets).toHaveLength(3)
+  })
+
+  it('a stop after a socket that failed to open ends the run: the resume opens at once and reports again', async () => {
+    const h = await mount()
+    MockSocket.failNextOpen = true
+    await h.start()
+    await flush()
+    expect(h.errors()).toEqual(['connection', 'disconnected'])
+    // The failed open left the hook idle; only the open run says there is something to stop.
+    expect(h.hook.result.current.active || h.hook.result.current.connecting || h.hook.result.current.halted).toBe(false)
+    expect(h.hook.result.current.isStarting()).toBe(false)
+    expect(h.hook.result.current.isFailing()).toBe(true)
+
+    await act(async () => { h.hook.result.current.stop() })
+    expect(h.hook.result.current.isFailing()).toBe(false)
+
+    MockSocket.failNextOpen = true
+    await h.start()
+    await flush()
+    expect(sockets).toHaveLength(2)
+    expect(h.errors()).toEqual(['connection', 'disconnected', 'connection', 'disconnected'])
   })
 
   it('reopens a retryable refusal after a growing wait and reports it once', async () => {
