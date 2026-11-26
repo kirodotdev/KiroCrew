@@ -1494,9 +1494,11 @@ function ChatInput({
             `data-composer-typo` gives it every rule the textarea's hook gets, so
             the probe wraps exactly where the textarea does; otherwise the
             textarea could wrap first and the pill grow tall before the box
-            changed shape. */}
+            changed shape. `h-0` keeps a long draft from growing the box's
+            scroll area (a caret reveal would scroll it); `scrollHeight` still
+            reads the wrapped height. */}
         {inlineToolbarWhileFits && (
-          <div ref={oneRowProbeRef} aria-hidden="true" data-composer-typo="" data-testid="composer-one-row-probe" className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre-wrap break-words px-4 mc-message-font-text font-body leading-normal [scrollbar-gutter:stable] overflow-y-auto" />
+          <div ref={oneRowProbeRef} aria-hidden="true" data-composer-typo="" data-testid="composer-one-row-probe" className="absolute left-0 top-0 h-0 invisible pointer-events-none whitespace-pre-wrap break-words px-4 mc-message-font-text font-body leading-normal [scrollbar-gutter:stable] overflow-y-auto" />
         )}
         {/* The staged quote sits inside the text area, above the caret: the
             quoted message is the first thing the reply says, so it is drawn
