@@ -1556,10 +1556,24 @@ writes one `would refuse:` WARNING naming the key's kind (a closed prefix set,
 else `other`), the `X-Internal-Caller` (from `KNOWN_INTERNAL_CALLERS`, else
 `other`), the route template and whether a token was sent, at most once per
 (kind, caller, route) every 600 s, and counts every such request in
-`token_auth_callers._WOULD_REFUSE_COUNTS`. The request is answered exactly as
-without the check, and a check that raises is swallowed
-(`_note_unattested_tcp_session_key`; `test_token_auth_would_refuse_log.py`).
-The line never carries the key, the token, the secret or the query string.
+`token_auth_callers._WOULD_REFUSE_COUNTS`. The line never carries the key, the
+token, the secret or the query string.
+
+`dashboard.unattested_session_keys` decides what happens next, and
+`_note_unattested_tcp_session_key` returns whether the key was unattested so token
+auth can act on it. `"log"` (the default, today's behaviour) answers the request
+exactly as without the check. `"enforce"` (opt-in) refuses the unattested request
+with 403 `session_required` and a `dashboard.token_auth` `denied` row; the
+would-refuse WARNING still fires, so the log and the refusal name the same set. A
+blank key and `dashboard:ui` stay exempt, and a check that raises returns `False`,
+so an internal error never starts refusing. Flipping the default to `"enforce"` is
+a later change, once the log shows which callers it would refuse
+(`_note_unattested_tcp_session_key`, `unattested_session_key_mode`;
+`test_token_auth_would_refuse_log.py`). This mode and
+`dashboard.sessionless_internal_calls` are read by `live_dashboard_mode` through
+`config.live.current`, so before the config watcher is primed at boot the on-disk
+value applies, not the default; only a config that cannot be read at all yields
+`"log"`.
 
 Client side, `loopback_http.loopback_urlopen` accepts a `unix_socket_path`
 and `mcp_core` prefers the socket for every `_API` request when the file

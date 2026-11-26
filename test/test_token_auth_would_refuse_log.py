@@ -249,3 +249,107 @@ class TestTheLineCarriesNoSecretAndIsThrottled:
         await _get(_headers(ATTESTED_KEY))
         lines = _would_refuse_lines(caplog)
         assert len(lines) == 2 and "4 such requests" in lines[1]
+
+
+def _enforce(monkeypatch) -> None:
+    monkeypatch.setattr(token_auth, "unattested_session_key_mode", lambda: "enforce")
+
+
+class TestEnforceMode:
+    """``dashboard.unattested_session_keys = enforce`` refuses what log mode records."""
+
+    @pytest.mark.asyncio
+    async def test_log_mode_still_admits_the_unattested_key(self, monkeypatch, caplog) -> None:
+        # Default mode: the request is answered exactly as before, plus the log line.
+        monkeypatch.setattr(token_auth, "unattested_session_key_mode", lambda: "log")
+        caplog.set_level(logging.WARNING, logger=LOGGER)
+        status, body = await _get(_headers(ATTESTED_KEY))
+        assert status == 200 and body["internal_auth"] is True
+        assert len(_would_refuse_lines(caplog)) == 1
+
+    @pytest.mark.asyncio
+    async def test_enforce_refuses_an_unattested_tcp_key(self, monkeypatch, caplog) -> None:
+        _enforce(monkeypatch)
+        caplog.set_level(logging.WARNING, logger=LOGGER)
+        status, _body = await _get(_headers(ATTESTED_KEY))
+        assert status == 403
+        # The would-refuse line still fires, so the log and the refusal name one set.
+        assert len(_would_refuse_lines(caplog)) == 1
+
+    @pytest.mark.asyncio
+    async def test_enforce_writes_a_sel_denied_row(self, monkeypatch) -> None:
+        # The grant row is written before the key check, so only a denied row
+        # keeps the audit log from reading the refused request as granted.
+        _enforce(monkeypatch)
+        rows: list[dict] = []
+        sel = SimpleNamespace(log_api_access=lambda **kw: rows.append(kw))
+        monkeypatch.setattr(token_auth, "_sel_fn", lambda: sel)
+        status, _body = await _get(_headers(ATTESTED_KEY))
+        assert status == 403
+        denied = [
+            r
+            for r in rows
+            if r.get("operation") == "internal_auth" and r.get("outcome") == "denied"
+        ]
+        assert len(denied) == 1
+        assert denied[0]["error"] == "unattested session key"
+        assert denied[0]["source"] == "token_auth"
+        assert denied[0]["resources"] == "/api/probe/item-42"
+
+    @pytest.mark.asyncio
+    async def test_enforce_admits_an_attested_key(self, monkeypatch) -> None:
+        _enforce(monkeypatch)
+        status, body = await _get(_headers(ATTESTED_KEY, token=GOOD_TOKEN))
+        assert status == 200 and body["app"] == "file-explorer"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", [None, "dashboard:ui"])
+    async def test_enforce_never_touches_an_exempt_key(self, monkeypatch, key) -> None:
+        _enforce(monkeypatch)
+        status, _body = await _get(_headers(key))
+        assert status == 200
+
+    def test_the_config_default_is_log(self) -> None:
+        from kiro_crew.config.sections_dashboard import DashboardConfig
+
+        assert DashboardConfig().unattested_session_keys == "log"
+
+    def test_the_mode_reads_the_live_value(self, monkeypatch) -> None:
+        from kiro_crew.config import live
+
+        cfg = SimpleNamespace(dashboard=SimpleNamespace(unattested_session_keys="enforce"))
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
+        assert token_auth_callers.unattested_session_key_mode() == "enforce"
+        monkeypatch.setattr(
+            live,
+            "snapshot",
+            lambda: SimpleNamespace(dashboard=SimpleNamespace(unattested_session_keys="bogus")),
+        )
+        assert token_auth_callers.unattested_session_key_mode() == "log"
+
+    def test_enforce_on_disk_holds_before_the_watcher_is_primed(self, monkeypatch) -> None:
+        # The boot window: no snapshot yet. The operator's on-disk "enforce" must
+        # still apply, not the "log" default.
+        from dataclasses import replace
+
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        base = KiroCrewConfig()
+        on_disk = replace(
+            base, dashboard=replace(base.dashboard, unattested_session_keys="enforce")
+        )
+        monkeypatch.setattr(live, "snapshot", lambda: None)
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda: on_disk))
+        assert token_auth_callers.unattested_session_key_mode() == "enforce"
+
+    def test_an_unreadable_config_reads_as_log(self, monkeypatch) -> None:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        def _unreadable() -> KiroCrewConfig:
+            raise OSError("config.json unreadable")
+
+        monkeypatch.setattr(live, "snapshot", lambda: None)
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(_unreadable))
+        assert token_auth_callers.unattested_session_key_mode() == "log"

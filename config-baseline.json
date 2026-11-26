@@ -10997,6 +10997,7 @@
         "dynamic_dashboard_cards": false,
         "audit_secret_reads": false,
         "sessionless_internal_calls": "log",
+        "unattested_session_keys": "log",
         "turn_cache_estimate": false,
         "crewmate_threads": false,
         "crewmates_in_agent_picker": false,
@@ -11478,6 +11479,23 @@
       "tags": [],
       "label": "Session-less internal calls",
       "help": "What the gateway does with an internal call that names no session and comes from a process it cannot place outside the agent sandbox. 'log' admits it and writes a security log row (one per caller and path every 10 minutes); 'enforce' refuses it. Stays 'log' until the log shows no Kiro Crew tool of this shape. Takes effect on the next call; no restart.",
+      "hasChildren": false,
+      "enumValues": [
+        "log",
+        "enforce"
+      ],
+      "defaultValue": "log"
+    },
+    {
+      "path": "dashboard.unattested_session_keys",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Unattested session-key internal calls",
+      "help": "What the gateway does with an internal call over loopback TCP that declares a session key no transport can prove is the caller's own (no kernel peer attestation and no valid session token). 'log' (today's behavior) records the request and answers it as before; 'enforce' refuses it with 403. A blank key and 'dashboard:ui' are exempt. Stays 'log' until the log shows which callers would be refused. Takes effect on the next call; no restart.",
       "hasChildren": false,
       "enumValues": [
         "log",

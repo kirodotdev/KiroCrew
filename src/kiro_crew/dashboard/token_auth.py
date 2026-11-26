@@ -79,6 +79,7 @@ from kiro_crew.dashboard.token_auth_callers import (
     _note_unattested_tcp_session_key,
     _unix_request_socket,
     _verify_unix_peer,
+    unattested_session_key_mode,
 )
 from kiro_crew.dashboard.token_auth_paths import (
     _APPS_UI_BYPASS_RE,
@@ -751,9 +752,23 @@ def token_auth_middleware(
                         _log_auth(request, "internal", "denied", "delegated record missing")
                         return _deny(request, "Forbidden", "caller_record_missing")
                     if _unix_sock is None and not _ipc_granted:
-                        # Log only: records a TCP caller whose declared key nothing
-                        # attests, and the request goes on exactly as before.
-                        await _note_unattested_tcp_session_key(request)
+                        # Records a TCP caller whose declared key nothing attests.
+                        # In the default "log" mode the request goes on exactly as
+                        # before; in "enforce" (opt-in) the unattested key is refused.
+                        _unattested = await _note_unattested_tcp_session_key(request)
+                        if _unattested and unattested_session_key_mode() == "enforce":
+                            _sel = _sel_fn()
+                            _sel.log_api_access(
+                                caller=_caller,
+                                forwarded=is_proxied_request(request),
+                                operation="internal_auth",
+                                outcome="denied",
+                                source="token_auth",
+                                resources=path,
+                                error="unattested session key",
+                            )
+                            _log_auth(request, "internal", "denied", "unattested session key")
+                            return _deny(request, "Forbidden", "session_required")
                     # A call that names NO session reads as the person, which a
                     # sandboxed process is not: logged, or refused when enforced. The
                     # note above covers a DECLARED key; this covers the absent one.
@@ -1667,6 +1682,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         derive_caller_app,
         effective_request_app,
         folder_principal,
+        live_dashboard_mode,
         refuse_unattributable_caller,
         request_origin,
     )
@@ -1776,21 +1792,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         check_peer_is_self,
         get_peer_pid,
     )
-    from kiro_crew.member_memory_auth import (  # noqa: F401
-        session_key_is_attested,
-    )
-    from kiro_crew.messaging.link import (  # noqa: F401
-        is_channel_session_key,
-    )
-    from kiro_crew.peer_resolve import (  # noqa: F401
-        resolve_peer_tenancy,
-    )
-    from kiro_crew.runtime_ownership import (  # noqa: F401
-        session_keys_bound_to_pid,
-    )
-    from kiro_crew.session_token_sig import (  # noqa: F401
-        verify_session_token,
-    )
+    from kiro_crew.member_memory_auth import session_key_is_attested  # noqa: F401
+    from kiro_crew.messaging.link import is_channel_session_key  # noqa: F401
+    from kiro_crew.peer_resolve import resolve_peer_tenancy  # noqa: F401
+    from kiro_crew.runtime_ownership import session_keys_bound_to_pid  # noqa: F401
+    from kiro_crew.session_token_sig import verify_session_token  # noqa: F401
 
 # This module is the facade of dashboard token authentication: every name is reached through
 # it as ``kiro_crew.dashboard.token_auth.<name>``. A read is served by the owner that binds

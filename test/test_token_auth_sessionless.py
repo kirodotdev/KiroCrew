@@ -346,8 +346,39 @@ async def test_log_counts_and_timestamps_evict_the_same_oldest_pair(
 class TestTheMode:
     def test_unset_reads_as_log(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
 
         monkeypatch.setattr(live, "snapshot", lambda: None)
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(KiroCrewConfig))
+        assert token_auth.sessionless_internal_call_mode() == "log"
+
+    def test_enforce_on_disk_holds_before_the_watcher_is_primed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The boot window: no snapshot yet. The operator's on-disk "enforce" must
+        # still apply, not the "log" default.
+        from dataclasses import replace
+
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        base = KiroCrewConfig()
+        on_disk = replace(
+            base, dashboard=replace(base.dashboard, sessionless_internal_calls="enforce")
+        )
+        monkeypatch.setattr(live, "snapshot", lambda: None)
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda: on_disk))
+        assert token_auth.sessionless_internal_call_mode() == "enforce"
+
+    def test_an_unreadable_config_reads_as_log(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        def _unreadable() -> KiroCrewConfig:
+            raise OSError("config.json unreadable")
+
+        monkeypatch.setattr(live, "snapshot", lambda: None)
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(_unreadable))
         assert token_auth.sessionless_internal_call_mode() == "log"
 
     @pytest.mark.parametrize("value,expected", [("enforce", "enforce"), ("bogus", "log")])
