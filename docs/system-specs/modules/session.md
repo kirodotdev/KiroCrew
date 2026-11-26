@@ -4173,7 +4173,12 @@ Three properties the route holds, each of which fails silently if broken:
   turn ended, and another alias slot of the same session whose first turn is
   still starting (its provider is not registered yet, and this slot's
   `running` is False). `_switch_target_busy` is the predicate the slot-switch
-  handlers refuse that window with; it runs LAST, after the children probe,
+  handlers refuse that window with. It also reads a replay gap on the key
+  (`has_open_replay_gap`) as a turn in flight: a cron or channel turn that
+  re-projects its KAS batch pops its session and starts a successor while it
+  holds the key, so no provider is registered and no slot runs it. A switch let
+  through there would commit a value the successor never receives and reset a
+  session that is not there. It runs LAST, after the children probe,
   because that probe is an await a turn can begin in. The reload route reads
   the same predicate as its last check before the reset.
   The five probes above are best-effort fast paths; the authoritative guard is
