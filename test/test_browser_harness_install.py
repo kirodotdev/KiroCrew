@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
@@ -551,6 +552,75 @@ def test_a_rebuild_whose_pip_fails_reads_as_not_installed(tmp_path: Path, monkey
     with pytest.raises(install.InstallError):
         install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
     assert install.install_state(tmp_path).installed is False
+
+
+@pytest.mark.parametrize(
+    ("arm", "expected"),
+    [
+        ("rebuild", [("before_clear", True), "--clear"]),
+        ("runtime_copy", [("before_clear", True), "--clear"]),
+        pytest.param("repair", ["--upgrade"], marks=requires_symlinks),
+        ("current", []),
+    ],
+)
+def test_only_an_install_that_clears_the_venv_calls_before_clear_and_first(
+    tmp_path: Path, monkeypatch, runtime_site: list[Path], arm: str, expected: list[object]
+) -> None:
+    """A daemon or worker started from the venv's interpreter must stop before the
+    clear: the hook runs while the marker is still there, before ``venv --clear``. A
+    repair keeps site-packages and a current venv is kept: neither calls it."""
+    _gateway_ships(monkeypatch, "ensurepip")
+    prefix = install.harness_prefix(tmp_path)
+    marker = prefix / install.MARKER_FILE
+    if arm == "repair":
+        _pruned_install(prefix, minor=sys.version_info[1])
+    else:
+        _current_install(prefix, venv_pip=True)
+    if arm == "rebuild":
+        marker.write_text(json.dumps({"version": "0.0.1"}), encoding="utf-8")
+    elif arm == "runtime_copy":
+        runtime_site.append(_runtime_ships(tmp_path / "runtime"))
+    events: list[object] = []
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        if argv[1:4] == ["-I", "-m", "venv"]:
+            events.append(argv[4])
+        return _ok(argv, timeout)
+
+    install.install_sync(
+        tmp_path,
+        runner=runner,
+        components=(install.COMPONENT_HARNESS,),
+        before_clear=lambda: events.append(("before_clear", marker.is_file())),
+    )
+    assert events == expected
+
+
+@pytest.mark.parametrize("arm", ["rebuild", "runtime_copy"])
+def test_a_stop_while_before_clear_runs_keeps_the_marker_and_the_venv(
+    tmp_path: Path, monkeypatch, runtime_site: list[Path], arm: str
+) -> None:
+    """The gateway can stop the install while the hook waits for the harness to stop:
+    nothing was cleared then, so the install must not read as cleared either."""
+    _gateway_ships(monkeypatch, "ensurepip")
+    prefix = install.harness_prefix(tmp_path)
+    _current_install(prefix, venv_pip=True)
+    marker = prefix / install.MARKER_FILE
+    if arm == "rebuild":
+        marker.write_text(json.dumps({"version": "0.0.1"}), encoding="utf-8")
+    else:
+        runtime_site.append(_runtime_ships(tmp_path / "runtime"))
+    calls: list[list[str]] = []
+    stop = threading.Event()
+    with pytest.raises(install.InstallError):
+        install.install_sync(
+            tmp_path,
+            runner=_recording_runner(calls),
+            components=(install.COMPONENT_HARNESS,),
+            stop=stop,
+            before_clear=stop.set,
+        )
+    assert marker.is_file() and calls == []
 
 
 def test_neither_pip_nor_ensurepip_fails_before_any_spawn(tmp_path: Path, monkeypatch) -> None:
