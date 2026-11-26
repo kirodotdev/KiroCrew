@@ -1644,7 +1644,22 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   Only an unpaired `$` opens a body: `$$(` is the PID followed by quoted text, and
   `\$(` is text. Inside a body, the text that a bare `cat` prints from a quoted-tag
   heredoc is cut out (found by `shell_commands.read_commands`), because bash expands
-  nothing there and `cat` only prints it. A heredoc that a shell reads
+  nothing there and `cat` only prints it. `cat -`, `cat --` and `cat -n` count as
+  that `cat` only when the body holds that one command and the line, with each
+  substitution read as one word, is one message-flag command with no other `$`,
+  backtick, `#` or `<<` (`shell_commands._is_message_line`: one simple
+  `gh pr|issue create|edit|comment` or `git commit|tag`), whose program stores the
+  printed text, and only in a body with no backslash, since bash may un-escape a
+  body before it reads it, and only when each tag of that `cat` is one `'...'` or
+  `"..."` pair around a word with no quote, `$` or backtick, so its text ends on the
+  line where bash ends it, and in the ssh floor's `_HEREDOC_RESET` reading only on
+  an own line that reading left as written, since a body and closing line it removed
+  leave a heredoc bash never reads. The multi-line nested-payload pass of
+  `_reaches_self_over_ssh` reads a message line's double-quoted body only to its own
+  `)` (`_double_quoted_substitution_spans`, found on the words as written), and only
+  when that `cat -`, `cat --` or `cat -n` rule would cut text from it; it then cuts
+  the body as a bare `cat`'s.
+  A heredoc that a shell reads
   (`bash <<'EOF'`, `cat <<'EOF' | sh`, a `cat` that writes a file), or one with an
   unquoted tag, keeps its text, so it is read as at the top level.
   The mask copies each such body whose `)` it proves as quoted data in one step, so a

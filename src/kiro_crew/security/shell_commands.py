@@ -573,7 +573,7 @@ def _proven_body_spans(text: str) -> "dict[int, int]":
     }
 
 
-def _double_quoted_substitution_bodies(text: str) -> "list[str]":
+def _double_quoted_substitution_bodies(text: str, messages: bool = False) -> "list[str]":
     """The body of each ``$(...)`` that sits directly inside double quotes in *text*.
 
     :func:`_mask_quoted_separators` keeps double-quoted text as data, but bash runs
@@ -581,26 +581,78 @@ def _double_quoted_substitution_bodies(text: str) -> "list[str]":
     unpaired ``$`` opens one (``$$`` is the PID, ``\\$`` is text); the body ends at
     its own matching ``)``, or runs to the end of *text* when none is found. A ``)``
     in a heredoc body that :func:`read_commands` finds there does not end it. The
-    text that a bare ``cat`` prints from a quoted-tag heredoc is cut out of each
-    body (:func:`_without_quoted_heredoc_text`).
+    text that a ``cat`` only prints from a quoted-tag heredoc is cut out of each
+    body (:func:`_without_quoted_heredoc_text`); only with *messages* True, the ssh
+    floor's opt-in, as on a message-flag line where the line is one.
     """
     spans = _double_quoted_substitution_spans(text)
-    return [_without_quoted_heredoc_text(text[a + 2 : e - (1 if p else 0)]) for a, e, p in spans]
+    message = messages and _is_message_line(text, [(a, e) for a, e, _p in spans])
+    return [
+        _without_quoted_heredoc_text(text[a + 2 : e - (1 if p else 0)], message)
+        for a, e, p in spans
+    ]
 
 
-def _without_quoted_heredoc_text(body: str) -> str:
-    """*body* with the text of each quoted-tag heredoc that a bare ``cat`` prints cut out.
+def _is_message_line(text: str, spans: "list[tuple[int, int]]") -> bool:
+    """True when *text*, with each ``(start, end)`` substitution span in *spans* read
+    as one word, is one message-flag command
+    (``shell_normalizer_walk._message_flag_command_shape``) and holds no other ``$``,
+    backtick, ``#`` or ``<<``, the text that helper reads by bash's quoting alone."""
+    parts, at = [], 0
+    for start, end in sorted(spans):
+        if start >= at:  # a span inside one already read is part of that word
+            parts += [text[at:start], "_"]
+            at = end
+    flat = "".join(parts) + text[at:]
+    return (
+        not any(c in flat for c in "$`#")
+        and "<<" not in flat
+        and (_walk._message_flag_command_shape(flat) is not None)
+    )
+
+
+def _without_quoted_heredoc_text(body: str, message: bool = False) -> str:
+    """*body* with the text of each quoted-tag heredoc that a ``cat`` only prints cut out.
 
     Bash expands nothing in such a text, and a ``cat`` that writes to no file and
     pipes to nothing only prints it. Every other heredoc keeps its text, so a shell
     fed one (``bash <<'EOF'``, ``cat <<'EOF' | sh``) is read as before.
+    That ``cat`` is a bare one, or ``cat -``, ``cat --`` or ``cat -n`` when it is the
+    only command in *body*, *body* holds no backslash (bash may un-escape it first),
+    each of its tags is one ``'…'`` or ``"…"`` pair around a word with no quote, ``$``
+    or backtick (so its text ends where bash ends it), each heredoc of that ``cat``
+    closes inside *body* and no line of its text starts with its tag, and *message*
+    says the line holding *body* is one message-flag command
+    (:func:`_is_message_line`): the program stores the printed text as a message.
     """
     if "<<" not in body:
         return body
+    cmds = read_commands(body, heredocs=True)
+    heads = [cmd for cmd in cmds if cmd.argv]
+    run = [[word.raw for word in cmd.argv] for cmd in heads]
+    printers = [["cat"]]
+    if (
+        message
+        and "\\" not in body
+        and len(run) == 1
+        and run[0] in (["cat", "-"], ["cat", "--"], ["cat", "-n"])
+        and all(cmd.separator in ("", "\n") for cmd in cmds)
+        and all(doc.tail > doc.end for doc in heads[0].heredocs)
+        and not any(
+            line.lstrip("\t").startswith(body[doc.end : doc.tail].lstrip("\t"))
+            for doc in heads[0].heredocs
+            for line in doc.body.split("\n")
+        )
+        and all(
+            len(tag) > 1 and tag[0] == tag[-1] in "'\"" and not set(tag[1:-1]) & set("'\"$`")
+            for tag in (t.raw if t else w.raw[2:].removeprefix("-") for w, t in heads[0].redirects)
+        )
+    ):
+        printers.append(run[0])
     docs = [
         doc
-        for cmd in read_commands(body, heredocs=True)
-        if [word.raw for word in cmd.argv] == ["cat"]
+        for cmd in cmds
+        if [word.raw for word in cmd.argv] in printers
         and all(word.raw.startswith("<<") for word, _target in cmd.redirects)
         and not cmd.separator.startswith("|")
         for doc in cmd.heredocs
