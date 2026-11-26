@@ -16,6 +16,7 @@ import { i18nT } from '../../i18n/t'
 import { stripMd } from '../notifications/notifMeta'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
 import { useFrameSrc } from '../../hooks/useFrameSrc'
+import { useFrameAliveRecovery } from '../../hooks/useFrameAliveRecovery'
 import { useSilentLoadWatch } from '../../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../../hooks/useNearViewport'
 import type { Artifact } from '../../types'
@@ -61,6 +62,7 @@ export function WidgetThumb({ content, slug, goalReport }: {
         html: content, themeVars, mode: theme, includeHeightReporter: true,
         offlineScripts: frame.offlineScripts, rewriteBareLinks: false,
         pageScripts: frame.pageScripts,
+        aliveReply: true,
       })
       : null),
     [content, themeVars, theme, frame.offlineScripts, frame.pageScripts],
@@ -104,9 +106,12 @@ export function WidgetThumb({ content, slug, goalReport }: {
   // gateway has to hold in flight simultaneously — with image-bearing artifacts
   // that is megabytes, and the stash then has to refuse mints it could otherwise
   // have served. Deferring keeps the pressure proportional to what is on screen.
-  const { url: blobUrl, failed } = useSandboxDoc(near ? srcdoc : null)
+  const { url: blobUrl, failed, retry } = useSandboxDoc(near ? srcdoc : null)
   // Later documents replace the first in place (hooks/useFrameSrc.ts).
   const frameSrc = useFrameSrc(iframeRef, blobUrl)
+  // The browser can reload this frame by itself onto its spent url: re-mint when
+  // the document stops answering (both artifactFrame grants allow scripts).
+  useFrameAliveRecovery(iframeRef, blobUrl, true, retry)
   // No link bridge: every render site wraps the thumbnail in `pointer-events-none`
   // (the card's own click opens the artifact) and the frame is `tabIndex={-1}`,
   // so no click ever reaches it. `rewriteBareLinks: false` because the frame
