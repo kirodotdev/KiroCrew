@@ -716,6 +716,58 @@ async def test_fetch_gitlab_marks_failed_secondary_endpoints_partial(
     assert data["failedSections"] == [expected_section]
 
 
+@pytest.mark.asyncio
+async def test_fetch_gitlab_reads_a_symlink_from_the_change_mode(monkeypatch) -> None:
+    # GitLab's change rows carry the file's mode as the change leaves it; a
+    # link's diff is its target, so the mode is what tells the row apart from a
+    # one-line file.
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if command.endswith("merge_requests/42"):
+            return {"iid": 42, "changes_count": "2"}
+        if command.endswith("/changes"):
+            return {
+                "changes": [
+                    {
+                        "new_path": "al13ml/cmd.yaml",
+                        "new_file": True,
+                        "a_mode": "0",
+                        "b_mode": "120000",
+                        "diff": "@@ -0,0 +1 @@\n+../al12/cmd.yaml\n",
+                    },
+                    {
+                        "new_path": "al12/cmd.yaml",
+                        "new_file": True,
+                        "a_mode": "0",
+                        "b_mode": "100644",
+                        "diff": "@@ -0,0 +1 @@\n+fields: []\n",
+                    },
+                    {
+                        "old_path": "old/link.yaml",
+                        "new_path": "old/link.yaml",
+                        "deleted_file": True,
+                        "a_mode": "120000",
+                        "b_mode": "0",
+                        "diff": "@@ -1 +0,0 @@\n-../al11/cmd.yaml\n",
+                    },
+                ]
+            }
+        return []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    data = await source._fetch_gitlab(
+        source.parse_source_url("https://gitlab.com/acme/repo/-/merge_requests/42")
+    )
+
+    # A deletion leaves no ``b_mode``; the removed link is still a link.
+    assert [(row["path"], row.get("symlink")) for row in data["files"]] == [
+        ("al13ml/cmd.yaml", True),
+        ("al12/cmd.yaml", False),
+        ("old/link.yaml", True),
+    ]
+
+
 MERGE_STATE_REREAD_FIELDS = "mergeable,mergeStateStatus"
 
 

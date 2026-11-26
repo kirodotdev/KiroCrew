@@ -296,6 +296,11 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
                     if line.startswith("-") and not line.startswith("---")
                 ),
                 "patch": patch,
+                # The mode of the file as the change leaves it is ``b_mode``; a
+                # deletion leaves nothing (``b_mode`` is ``"0"``), so the
+                # removed file's own mode, ``a_mode``, says what it was.
+                "symlink": str(item.get("a_mode" if status == "deleted" else "b_mode") or "")
+                == "120000",
             }
         )
 

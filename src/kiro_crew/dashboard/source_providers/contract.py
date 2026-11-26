@@ -13,7 +13,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, fields
-from typing import Any, Protocol, TypedDict
+from typing import Any, NotRequired, Protocol, TypedDict
 
 # Every owner module logs under the handlers' historical name, not its own
 # ``__name__`` — the facade-surface test pins this so logging configuration keyed
@@ -371,6 +371,12 @@ class SourceChangeFile(TypedDict):
     #: Unified-diff hunks for this file, ``""`` when the provider cannot serve
     #: per-file patches (the panel then renders the row without a diff body).
     patch: str
+    #: True when the provider reports the file as a symbolic link (git mode
+    #: ``120000``), whose ``patch`` is then the link target, not file content.
+    #: False otherwise, including when the provider's wire shape carries no
+    #: file mode (GitHub, Bitbucket Server). A plugin provider's rows that
+    #: predate the field omit it; the panel reads an absent value as false.
+    symlink: NotRequired[bool]
 
 
 class SourceChangeComment(TypedDict):

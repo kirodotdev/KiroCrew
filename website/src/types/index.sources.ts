@@ -46,6 +46,9 @@ export interface PullRequestComment {
 
 export interface PullRequestFile {
   path: string; status: string; additions: number; deletions: number; patch: string
+  /** A symbolic link (git mode 120000): `patch` is then the link target, not file content.
+   *  Absent from a plugin provider's rows that predate the field; absent reads as false. */
+  symlink?: boolean
 }
 
 /* ── Issue sources (GitHub issues / GitLab issues) ─────────────────────────

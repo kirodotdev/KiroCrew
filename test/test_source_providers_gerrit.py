@@ -621,6 +621,8 @@ async def test_the_panel_reads_a_listed_instance_with_its_own_credential(
     )
     # The last hunk does not swallow the format-patch signature.
     assert files["src/old.py"]["patch"] == "@@ -1,3 +0,0 @@\n-a\n-b\n-c"
+    # Regular files are reported as such, so the panel never guesses a mode.
+    assert [row.get("symlink") for row in files.values()] == [False] * len(files)
     assert (payload["additions"], payload["deletions"], payload["changedFiles"]) == (3, 4, 3)
     comments = payload["comments"]
     assert [
@@ -808,6 +810,138 @@ def test_patches_read_a_path_holding_b_slash_from_its_plus_plus_plus_line() -> N
         "plan b/notes.txt": "@@ -1 +1 @@\n-a\n+b",
         "old b/gone.txt": "@@ -1 +0,0 @@\n-c",
     }
+
+
+def test_a_symlink_is_read_from_the_mode_in_its_patch_section() -> None:
+    # Gerrit's files response carries no mode, so the format-patch is the only
+    # place a link shows. Git puts a new link's mode on ``new file mode``, a
+    # retargeted link's on its ``index`` line, a file turned into a link on
+    # ``new mode``, and a removed link's on ``deleted file mode``; a link turned
+    # into a regular file keeps 120000 only on ``old mode`` and is not one.
+    text = (
+        "diff --git a/al13ml/cmd.yaml b/al13ml/cmd.yaml\n"
+        "new file mode 120000\n"
+        "index 0000000..1111111\n"
+        "--- /dev/null\n"
+        "+++ b/al13ml/cmd.yaml\n"
+        "@@ -0,0 +1 @@\n"
+        "+../al12/cmd.yaml\n"
+        "\\ No newline at end of file\n"
+        "diff --git a/latest b/latest\n"
+        "index 2222222..3333333 120000\n"
+        "--- a/latest\n"
+        "+++ b/latest\n"
+        "@@ -1 +1 @@\n"
+        "-v1\n"
+        "\\ No newline at end of file\n"
+        "+v2\n"
+        "\\ No newline at end of file\n"
+        "diff --git a/became_link b/became_link\n"
+        "old mode 100644\n"
+        "new mode 120000\n"
+        "index 4444444..5555555\n"
+        "--- a/became_link\n"
+        "+++ b/became_link\n"
+        "@@ -1,2 +1 @@\n"
+        "-a\n"
+        "-b\n"
+        "+target\n"
+        "diff --git a/gone_link b/gone_link\n"
+        "deleted file mode 120000\n"
+        "index 6666666..0000000\n"
+        "--- a/gone_link\n"
+        "+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n"
+        "-old_target\n"
+        "diff --git a/became_file b/became_file\n"
+        "old mode 120000\n"
+        "new mode 100644\n"
+        "index 7777777..8888888\n"
+        "--- a/became_file\n"
+        "+++ b/became_file\n"
+        "@@ -1 +1 @@\n"
+        "-target\n"
+        "+content\n"
+        "diff --git a/plain.txt b/plain.txt\n"
+        "index 9999999..aaaaaaa 100644\n"
+        "--- a/plain.txt\n"
+        "+++ b/plain.txt\n"
+        "@@ -1 +1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    assert gerrit._symlink_paths(text) == {"al13ml/cmd.yaml", "latest", "became_link", "gone_link"}
+    files = {
+        "al13ml/cmd.yaml": {"status": "A", "lines_inserted": 1},
+        "became_file": {"lines_inserted": 1, "lines_deleted": 1},
+    }
+    rows = {row["path"]: row for row in gerrit._file_rows(files, text)}
+    assert rows["al13ml/cmd.yaml"].get("symlink") is True
+    assert rows["al13ml/cmd.yaml"]["patch"] == (
+        "@@ -0,0 +1 @@\n+../al12/cmd.yaml\n\\ No newline at end of file"
+    )
+    assert rows["became_file"].get("symlink") is False
+
+
+def test_a_type_change_is_judged_by_its_last_section() -> None:
+    # Git writes a file that became a link (or a link that became a file) as a
+    # deletion of the old type followed by an addition of the new, both for one
+    # path; the addition is the file as the change leaves it.
+    text = (
+        "diff --git a/files/debs/q-agt b/files/debs/q-agt\n"
+        "deleted file mode 100644\n"
+        "index 1111111..0000000\n"
+        "--- a/files/debs/q-agt\n"
+        "+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n"
+        "-neutron-agent\n"
+        "diff --git a/files/debs/q-agt b/files/debs/q-agt\n"
+        "new file mode 120000\n"
+        "index 0000000..2222222\n"
+        "--- /dev/null\n"
+        "+++ b/files/debs/q-agt\n"
+        "@@ -0,0 +1 @@\n"
+        "+neutron-agent\n"
+        "\\ No newline at end of file\n"
+        "diff --git a/tools/run b/tools/run\n"
+        "deleted file mode 120000\n"
+        "index 3333333..0000000\n"
+        "--- a/tools/run\n"
+        "+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n"
+        "-run.sh\n"
+        "\\ No newline at end of file\n"
+        "diff --git a/tools/run b/tools/run\n"
+        "new file mode 100755\n"
+        "index 0000000..4444444\n"
+        "--- /dev/null\n"
+        "+++ b/tools/run\n"
+        "@@ -0,0 +1 @@\n"
+        "+#!/bin/sh\n"
+    )
+    assert gerrit._symlink_paths(text) == {"files/debs/q-agt"}
+    assert gerrit._patches(text) == {
+        "files/debs/q-agt": "@@ -0,0 +1 @@\n+neutron-agent\n\\ No newline at end of file",
+        "tools/run": "@@ -0,0 +1 @@\n+#!/bin/sh",
+    }
+
+
+def test_a_mode_only_symlink_section_marks_the_row_but_serves_no_patch() -> None:
+    # A link whose target did not change has no hunks, like a binary file; the
+    # row still renders, as a link, with no diff body.
+    text = (
+        "diff --git a/link b/link\n"
+        "old mode 100644\n"
+        "new mode 120000\n"
+        "diff --git a/plain.txt b/plain.txt\n"
+        "--- a/plain.txt\n"
+        "+++ b/plain.txt\n"
+        "@@ -1 +1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    assert gerrit._patches(text) == {"plain.txt": "@@ -1 +1 @@\n-x\n+y"}
+    assert gerrit._symlink_paths(text) == {"link"}
 
 
 @pytest.mark.asyncio

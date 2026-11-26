@@ -361,6 +361,8 @@ def _file_rows(changes: Any, diff: Any, partial: list[str]) -> list[dict[str, An
                 "additions": additions,
                 "deletions": deletions,
                 "patch": patch,
+                # The changes page carries no file mode.
+                "symlink": False,
             }
         )
     return rows
