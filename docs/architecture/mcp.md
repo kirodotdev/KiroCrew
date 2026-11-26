@@ -1675,7 +1675,10 @@ it. Security detail:
 [security.md](../system-specs/modules/security.md#mcp-launch-authorization-leaves).
 An absent or empty store approves nothing. A stub
 without a matching fingerprint stays on the session's unpooled, sandboxed launch
-path. A queued cold spawn reloads the store after admission and resolves the same
+path. gatewayd's refusal says why (`no target mapping for server '<name>': its
+launch is not an approved one; review it in MCP Servers > Sharing`), and the stub
+records that reason in `stub_fallback.jsonl`; a server with no target mapping at all
+keeps the text that names `KIROCREW_MCP_TARGET_<SERVER>`. A queued cold spawn reloads the store after admission and resolves the same
 command and environment identity again immediately before the fork, so revoking
 an approval while it waits prevents the process from starting. A stub with no
 recorded approval needs one in **MCP Servers** before it pools. Cached recommendation
