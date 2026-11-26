@@ -19,6 +19,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
 import TelemetryPanel from '../pages/TelemetryPanel'
+import { i18next } from '../i18n/all'
+import { i18nT } from '../i18n/t'
 
 const convo = (over: Record<string, unknown> = {}) => ({
   slot: 'chat-1-1700000000',
@@ -185,15 +187,58 @@ describe('TelemetryPanel — conversations by spend', () => {
     it('lists what each kind of turn cost when Purpose is chosen', async () => {
       await mount([convo()], { by_purpose: [row('turn', 70), row('helper', 20), row('automation', 10)] })
       await openPurpose()
+      expect(await screen.findByText('chat')).toBeInTheDocument()
       expect(await screen.findByText('helper')).toBeInTheDocument()
       expect(screen.getByText('automation')).toBeInTheDocument()
     })
 
-    it('renders no rows when an older gateway sends no by_purpose', async () => {
-      await mount([convo()])
+    it('translates the row names, not only the header, in another language', async () => {
+      await i18next.changeLanguage('de')
+      try {
+        await mount([convo()], {
+          by_purpose: [row('turn', 40), row('helper', 30), row('automation', 20), row('unknown', 10)],
+        })
+        const fullTable = i18nT('pages.telemetryPanel.full_table')
+        fireEvent.click(await screen.findByRole('button', { name: name => name.startsWith(fullTable) }))
+        fireEvent.click(await screen.findByRole('radio', { name: i18nT('pages.telemetryPanel.purpose_col') }))
+        expect(await screen.findByText('Hilfsaufruf')).toBeInTheDocument()
+        expect(screen.getByText('Automatisierung')).toBeInTheDocument()
+        expect(screen.getByText('Unbekannt')).toBeInTheDocument()
+        expect(screen.queryByText('helper')).toBeNull()
+        expect(screen.queryByText('automation')).toBeNull()
+      } finally {
+        await i18next.changeLanguage('en')
+      }
+    })
+
+    it('shows a purpose name this build does not know as it arrived', async () => {
+      await mount([convo()], { by_purpose: [row('turn', 70), row('compaction', 30)] })
       await openPurpose()
-      expect(screen.queryByText('helper')).toBeNull()
-      expect(screen.queryByText('automation')).toBeNull()
+      expect(await screen.findByText('compaction')).toBeInTheDocument()
+    })
+
+    it('offers no Purpose segment when an older gateway sends no by_purpose', async () => {
+      await mount([convo()])
+      fireEvent.click(await screen.findByRole('button', { name: /full table/i }))
+      await screen.findByRole('radio', { name: 'Model' })
+      expect(screen.queryByRole('radio', { name: 'Purpose' })).toBeNull()
+    })
+
+    it('lets the four groupings wrap on a narrow card instead of clipping them', async () => {
+      await mount([convo()], { by_purpose: [row('turn', 70)] })
+      await openPurpose()
+      // happy-dom computes no layout, so the contract is pinned on the classes that
+      // produce it, as SegmentedControl.wrapHug.test.tsx does.
+      const group = screen.getByRole('radio', { name: 'Purpose' }).closest('[role="radiogroup"]')
+      expect(group?.classList.contains('flex-wrap')).toBe(true)
+      expect(group?.classList.contains('max-w-full')).toBe(true)
+    })
+
+    it('shows the session grouping when Purpose was remembered but the data has none', async () => {
+      window.localStorage.setItem('telemetry:spend-group', 'purpose')
+      await mount([convo()])
+      fireEvent.click(await screen.findByRole('button', { name: /full table/i }))
+      expect(await screen.findByRole('radio', { name: 'Session' })).toBeChecked()
     })
   })
 })

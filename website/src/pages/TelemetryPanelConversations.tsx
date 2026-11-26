@@ -413,7 +413,32 @@ function categoryLabel(name: string): string {
   return name === 'bg' ? i18nT('pages.telemetryPanel.category_bg') : name
 }
 
-function shareCols(first: string, total: number, unit: SpendUnit, firstTip?: string): Col<CostRow>[] {
+/**
+ * The Purpose rows are the backend's four fixed names, so each gets a translated
+ * label; a name this build does not know renders as itself.
+ */
+function purposeLabel(name: string): string {
+  switch (name) {
+    case 'turn':
+      return i18nT('pages.telemetryPanel.purpose_turn')
+    case 'helper':
+      return i18nT('pages.telemetryPanel.purpose_helper')
+    case 'automation':
+      return i18nT('pages.telemetryPanel.purpose_automation')
+    case 'unknown':
+      return i18nT('pages.telemetryPanel.purpose_unknown')
+    default:
+      return name
+  }
+}
+
+function shareCols(
+  first: string,
+  total: number,
+  unit: SpendUnit,
+  firstTip?: string,
+  label: (name: string) => string = categoryLabel,
+): Col<CostRow>[] {
   return [
     {
       key: 'name',
@@ -424,7 +449,7 @@ function shareCols(first: string, total: number, unit: SpendUnit, firstTip?: str
       tip: firstTip,
       left: true,
       sort: r => r.name,
-      render: r => categoryLabel(r.name),
+      render: r => label(r.name),
     },
     {
       key: 'credits',
@@ -602,11 +627,15 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
   // the two cards can be grouped, sorted and opened independently. A window
   // billed in one unit keeps the keys it always had, whatever that unit is.
   const keySuffix = nested ? ':usd' : ''
-  const [group, setGroup] = usePersistedChoice<SpendGroup>(
+  const [chosenGroup, setGroup] = usePersistedChoice<SpendGroup>(
     `telemetry:spend-group${keySuffix}`,
     SPEND_GROUPS,
     'session',
   )
+  // An older gateway sends no by_purpose, so the Purpose choice is not offered and
+  // a remembered one falls back to the session grouping.
+  const hasPurpose = c.by_purpose !== undefined
+  const group: SpendGroup = chosenGroup === 'purpose' && !hasPurpose ? 'session' : chosenGroup
   // Closed on first paint. The table answers "which row exactly", which is a
   // second question: the blocks above it already say where the credits went, and
   // opening on 45 rows puts the answer below the fold.
@@ -761,13 +790,19 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
               </span>
               <SegmentedControl<SpendGroup>
                 collapse={false}
+                // Content-sized segments: one row at desktop widths. Four groupings
+                // in the longer locales outgrow a phone-width card, whose overflow
+                // is hidden, so wrap there rather than clip.
+                wrap="hug"
                 value={group}
                 onChange={setGroup}
                 segments={[
                   { key: 'session', label: i18nT('pages.telemetryPanel.session_col') },
                   { key: 'category', label: i18nT('pages.telemetryPanel.category_col') },
                   { key: 'model', label: i18nT('pages.telemetryPanel.model_col') },
-                  { key: 'purpose', label: i18nT('pages.telemetryPanel.purpose_col') },
+                  ...(hasPurpose
+                    ? [{ key: 'purpose' as const, label: i18nT('pages.telemetryPanel.purpose_col') }]
+                    : []),
                 ]}
               />
             </div>
@@ -810,6 +845,7 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
                     : group === 'purpose'
                       ? i18nT('pages.telemetryPanel.purpose_col_tip')
                       : i18nT('pages.telemetryPanel.category_col_tip'),
+                  group === 'purpose' ? purposeLabel : categoryLabel,
                 )}
                 rowKey={r => r.name}
                 defaultSort="credits"

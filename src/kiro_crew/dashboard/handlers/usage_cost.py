@@ -14,6 +14,9 @@ import time
 from typing import Any, Iterator
 
 from kiro_crew import model_registry
+from kiro_crew.dashboard.handlers.usage_sessions import (
+    _BACKGROUND_CALL_SURFACE_PREFIX,
+)
 from kiro_crew.dashboard.handlers.usage_spend import _finite_number
 from kiro_crew.dashboard.handlers.usage_store import (
     NAVIGABLE_CATEGORY,
@@ -69,12 +72,6 @@ def _purpose_of(obj: dict[str, Any], slot: str) -> str:
     the ``bg:`` prefix, which only the background-call writers produce, is read
     from it.
     """
-    # Imported here, not at module level: a name an owner imports from outside
-    # the usage family is served by the facade, and this prefix is not part of it.
-    from kiro_crew.dashboard.handlers.usage_sessions import (
-        _BACKGROUND_CALL_SURFACE_PREFIX,
-    )
-
     if str(obj.get("surface") or "").startswith(_BACKGROUND_CALL_SURFACE_PREFIX):
         return "helper"
     if not slot:
