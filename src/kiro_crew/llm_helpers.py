@@ -250,6 +250,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         STOP_REASON_TIMEOUT,
         STOP_RECOVERY_MAX_RETRIES,
         AcpTimeoutError,
+        RefusalHopText,
         engine_served_model,
         same_model,
         timed_out_continuation,

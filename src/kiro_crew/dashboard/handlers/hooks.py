@@ -880,6 +880,7 @@ async def _run_hook_inner(
     from dataclasses import replace
 
     from kiro_crew import name_grant
+    from kiro_crew.agent_sdk.drivers.acp_vocab import RefusalHopText
     from kiro_crew.context import _neutralize_structural_markers, session_store_for_turn
     from kiro_crew.execution_context import bind_session_execution, read_session_execution
     from kiro_crew.hooks import (  # noqa: F811  # circular import
@@ -974,6 +975,7 @@ async def _run_hook_inner(
         # ``_run_hook_agent`` prepends is not bounded by _HOOK_MESSAGE_MAX_LEN.
         full_message = await asyncio.to_thread(_neutralize_structural_markers, full_message)
     result_text = ""
+    refusal = RefusalHopText()
     _complete_event: object | None = None
     # Wall clock for the webhook agent turn: acp leaves TurnUsage.duration_ms
     # at 0, so without this the row records a literal 0. Started after the
@@ -982,6 +984,7 @@ async def _run_hook_inner(
     # A caller that reuses a ``sessionKey`` resumes its conversation, so a turn
     # can open with the alternation placeholder (``drop_echo``).
     async for event in drop_echo(client.stream(full_message)):
+        result_text = refusal.fold(event, result_text)
         if event.kind == EVENT_TEXT_CHUNK:
             result_text += event.text
         elif event.kind == _EVENT_PERMISSION_REQUEST_KIND:

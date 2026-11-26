@@ -29,6 +29,7 @@ from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpSandboxInitFailed,
 from kiro_crew.acp.engine_fallback import (
     EngineFallbackWalk,
     ModelFallbackNotice,
+    RefusalHopText,
     engine_served_model,
     follow_engine_promotion,
     is_unpinned_pick,
@@ -134,10 +135,12 @@ __all__ = [
     "StructuredStatus",
     "classify_stop_reason",
     # The engine's own in-prompt model fallback (``acp/engine_fallback.py``): the
-    # per-turn walk a surface ends with one line, the verdict it reads, and the
-    # readers a surface that shows the model uses to follow the engine.
+    # per-turn walk a surface ends with one line, the verdict it reads, the
+    # readers a surface that shows the model uses to follow the engine, and the
+    # cut a refusal hop makes in the text a turn loop collects.
     "EngineFallbackWalk",
     "ModelFallbackNotice",
+    "RefusalHopText",
     "engine_served_model",
     "follow_engine_promotion",
     "is_unpinned_pick",

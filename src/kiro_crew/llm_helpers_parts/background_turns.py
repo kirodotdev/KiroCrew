@@ -25,6 +25,7 @@ from kiro_crew.agent_sdk.drivers.acp_turn_vocab import (
     EVENT_TOOL_CALL,
     AcpError,
 )
+from kiro_crew.agent_sdk.drivers.acp_vocab import RefusalHopText
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.llm_helpers_parts.backend_errors import is_context_overflow_error
@@ -204,6 +205,7 @@ async def run_bg_oneliner(
 
     async def _drive(model_to_use: str | None) -> str:
         text = ""
+        refusal = RefusalHopText()
         output_bytes = 0
         set_model = getattr(session, "set_model", None)
         # set_model resolves the preference (often "auto") against the advertised
@@ -244,6 +246,7 @@ async def run_bg_oneliner(
         # that a text-only background model rejects, so the turn goes out
         # text-only; the scrub only swaps a readable reference for the marker.
         async for event in session.prompt(strip_image_refs(prompt), allow_image=False):
+            text = refusal.fold(event, text)
             if event.kind == EVENT_TEXT_CHUNK:
                 if max_output_bytes is not None:
                     output_bytes += len(event.text.encode("utf-8"))
