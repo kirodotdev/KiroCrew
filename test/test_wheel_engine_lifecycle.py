@@ -32,6 +32,7 @@ from opener_helpers import answer_with
 from kiro_crew.platform import tree_liveness, wheel_engine
 from kiro_crew.platform.wheel_engine import ManagedVenvLayout, WheelUpdateError
 from kiro_crew.platform_compat import IS_POSIX, trusted_system_bin, try_acquire_lock
+from kiro_crew.testing.module_table import patched_sys_modules
 
 pytestmark = pytest.mark.skipif(not IS_POSIX, reason="the shadow-venv engine is POSIX-only")
 
@@ -960,7 +961,7 @@ class TestPersistedLaunchPaths:
         the not-yet-restarted gateway and its stores, for as long as the restart
         stays deferred.
         """
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
 
         import kiro_crew.agent as agent_mod
 
@@ -980,7 +981,7 @@ class TestPersistedLaunchPaths:
             lambda path: str(path).startswith(str(tmp_path)) and real_works(path),
         )
         monkeypatch.setattr(agent_mod, "_KIROCREW_BIN", None)
-        with patch.dict(sys.modules, {"kiro_crew": fake_package}):
+        with patched_sys_modules({"kiro_crew": fake_package}):
             command, args = agent_mod._kirocrew_mcp_invocation("mcp-core")
         assert (command, args) == (str(first / "bin" / "kirocrew"), ["mcp-core"])
 

@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_model,
     read_turn_model,
 )
+from kiro_crew.testing.module_table import patched_sys_modules
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 # ── _parse_sessions ─────────────────────────────────────────────────────
@@ -504,7 +505,7 @@ class TestGetUsageCache:
             assert get_usage_cache() == {}
 
     def test_import_error(self):
-        with patch.dict("sys.modules", {"kiro_crew.dashboard.handlers.sessions": None}):
+        with patched_sys_modules({"kiro_crew.dashboard.handlers.sessions": None}):
             assert get_usage_cache() == {}
 
 
