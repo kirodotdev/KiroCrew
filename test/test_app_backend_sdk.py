@@ -226,6 +226,30 @@ def test_audit_log_takes_an_explicit_name(monkeypatch, sink) -> None:
     assert sink.calls[0]["caller"] == "app:other"
 
 
+def test_audit_log_writes_a_fail_closed_row_under_the_spawned_name(monkeypatch, sink) -> None:
+    monkeypatch.setenv("KIROCREW_APP_NAME", "doc-store")
+    sdk.audit_log().record_or_raise("launch", "auto_approved")
+    sdk.audit_log("doc-store").record_or_raise("launch", "auto_approved")
+    assert [c["caller"] for c in sink.calls] == ["app:doc-store", "app:doc-store"]
+    assert all(c["critical"] is True and c["source"] == "app" for c in sink.calls)
+
+
+@pytest.mark.parametrize("spawned_as", [None, "doc-store"])
+def test_audit_log_refuses_a_fail_closed_row_under_a_chosen_name(
+    monkeypatch, sink, spawned_as
+) -> None:
+    if spawned_as is None:
+        monkeypatch.delenv("KIROCREW_APP_NAME", raising=False)
+    else:
+        monkeypatch.setenv("KIROCREW_APP_NAME", spawned_as)
+    writer = sdk.audit_log("other-app")
+    with pytest.raises(LookupError):
+        writer.record_or_raise("launch", "auto_approved")
+    assert sink.calls == []
+    writer.record("pull", "denied")
+    assert sink.calls[0]["caller"] == "app:other-app"
+
+
 @pytest.mark.parametrize("value", [None, "", "   "])
 def test_audit_log_refuses_a_writer_with_no_app_name(monkeypatch, value) -> None:
     if value is None:
@@ -548,6 +572,36 @@ def test_run_sandboxed_async_kills_the_child_past_its_timeout(monkeypatch, tmp_p
         asyncio.run(asyncio.wait_for(expiring, timeout=FALLBACK_TIMEOUT_SECS))
     assert len(killed) == 1
     assert not cleanup.exists()
+
+
+def test_minimal_env_is_listed_at_seam_level_seventeen() -> None:
+    assert sdk._LAZY_EXPORTS["minimal_env"] == "spawn"
+    assert sdk._EXPORT_LEVELS["minimal_env"] == 17
+
+
+def test_minimal_env_keeps_location_hints_and_drops_secrets(monkeypatch) -> None:
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("KIROCREW_PROBE_TOKEN", _FAKE_KEY)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "probe")
+    env = sdk.minimal_env(PORT="1234")
+    assert env["PATH"] == "/usr/bin"
+    assert env["PORT"] == "1234"
+    assert "KIROCREW_PROBE_TOKEN" not in env
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert set(env) <= set(os.environ) | {"PORT"}
+
+
+def test_minimal_env_delegates_at_call_time(monkeypatch) -> None:
+    seen: list[dict] = []
+
+    def recorder(**extra: str) -> dict[str, str]:
+        seen.append(extra)
+        return {"FROM": "owner"}
+
+    # A write through the registry facade reaches the owner the SDK reads.
+    monkeypatch.setattr("kiro_crew.apps.registry.minimal_env", recorder)
+    assert sdk.minimal_env(A="b") == {"FROM": "owner"}
+    assert seen == [{"A": "b"}]
 
 
 # ── process helpers ─────────────────────────────────────────────────────────

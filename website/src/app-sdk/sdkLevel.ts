@@ -28,5 +28,10 @@
  * clicks on selectors the gateway runs on the app's own agent's tab, no model asked.
  * Level 16 adds `useKeepAlive`: a routed page stays mounted, hidden, while the app
  * says it is busy, and the dashboard names it on every page with Open and Stop.
+ *
+ * Level 17 adds a batch of backend SDK names (the credential scan and placeholder, the
+ * exfiltration-URL check, the credential directory names, the minimal environment,
+ * the git hook overrides, the output cap on `run_sandboxed_async` and the fail-closed
+ * audit row); the dashboard gains nothing at that level.
  */
-export const APP_SDK_LEVEL = 16
+export const APP_SDK_LEVEL = 17

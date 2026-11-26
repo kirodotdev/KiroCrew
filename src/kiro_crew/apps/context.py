@@ -397,7 +397,7 @@ def build_app_context(
         auto_approve=auto_approve,
         # Both unconditional: see the fields' comments on AppContext.
         scrub=ScrubSDK(),
-        audit=AuditSDK(app_name),
+        audit=AuditSDK(app_name, named_by_gateway=True),
         lifecycle=AppLifecycleSDK(app_name),
         http_app=http_app,
         turns=turns,

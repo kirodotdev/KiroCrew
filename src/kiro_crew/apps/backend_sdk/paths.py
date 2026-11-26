@@ -10,6 +10,14 @@ from __future__ import annotations
 
 from kiro_crew import security
 
+#: Credential directory names (``.ssh``, ``.aws`` and the like) refused as a path
+#: COMPONENT at any depth of a folder the person picks (seam level 17). Wider than
+#: :func:`is_sensitive_path`, which anchors these under the home directory; use it
+#: on top of that check, never instead of it. Bound from the gateway's own
+#: ``security.DENIED_ROOT_PARTS``, a ``frozenset``, so a name the gateway adds
+#: later reaches the app with the wheel.
+DENIED_ROOT_PARTS: frozenset[str] = security.DENIED_ROOT_PARTS
+
 
 def is_sensitive_path(path: str) -> bool:
     """Whether *path* lies inside a location the gateway refuses to read or write.
