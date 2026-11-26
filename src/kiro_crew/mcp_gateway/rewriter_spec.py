@@ -1126,7 +1126,7 @@ def _admit_launch(
         return True
     target_args = _spec_args(entry)
     fingerprint = launch_fingerprint(resolved_cmd, target_args, entry_env)
-    derived_env_hash = env_fingerprint(_expand_env_map(entry_env))
+    derived_env_hash = env_fingerprint(_expand_env_map(entry_env, server=name))
     if not approvals.admit(
         name,
         fingerprint,
