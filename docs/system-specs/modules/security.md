@@ -24,7 +24,12 @@ Other sibling files and files inside work-tree subdirectories remain accessible.
 ### MCP launch authorization leaves
 
 The `approvals.json` file in the crew-home `mcp-launch-approvals/` directory
-records operator-approved fingerprints for stubbed MCP launches. A fingerprint
+records operator-approved fingerprints for stubbed MCP launches. Beside each
+approved launch's display it keeps one HMAC-SHA256 digest per env value that
+display names, under a key derived from `token_signing.key` with its own purpose label: the
+sandbox reads the store but not that key, so a stored digest cannot be checked
+against a guess. No value is stored, and a refusal names only the keys whose
+digests differ. A fingerprint
 covers the declared environment text, so a changed `${VAR}` value keeps an
 approved launch approved only when the environment sidecar publishes; a failed
 sidecar pass persists no rebind. A changed declared text does not keep approval.

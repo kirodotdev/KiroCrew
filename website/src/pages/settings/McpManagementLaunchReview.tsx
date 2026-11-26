@@ -318,8 +318,20 @@ export function RefusalLaunch({ refusal }: { refusal: LaunchRefusal }) {
     // it keeps the two full columns and their "too long to show" line.
     const perLaunch = refusal.complete !== false && commandSetUnchanged(refusal) ? launchChanges(refusal) : []
     if (perLaunch.length > 0) {
+      // A key the gateway found changed (`changed_env_keys`) belongs to the
+      // server, not to one launch: one that no launch's lines name is said once above them.
+      const unnamed = (refusal.changed_env_keys ?? [])
+        .filter(name => !perLaunch.some(c => [...c.envAdded, ...c.envRemoved, ...c.values.map(v => v.name)].includes(name)))
+        .map(name => ({ name, added: [], removed: [] }))
       return (
         <div className="min-w-0 space-y-2">
+          {unnamed.length > 0 && (
+            <ul className={SUMMARY_CLASS}>
+              {envLines([], [], unnamed).map(l => (
+                <li key={l}>{l}</li>
+              ))}
+            </ul>
+          )}
           {distinctChanges(perLaunch).map((change, i) => (
             <div key={i} className="min-w-0 space-y-0.5">
               {/* An added or removed launch names its command in its first line. */}

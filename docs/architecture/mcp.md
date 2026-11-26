@@ -1762,7 +1762,12 @@ off revokes the approval first, and restores it when the config write does not
 commit. The approval also stores the redacted, bounded display of the approved
 launch, so a `changed_needs_reapproval` refusal carries `approved_commands` and
 `approved_envs` beside the new `commands` and `envs`; an approval recorded
-without a display omits both fields. The refusal record carries each command argv
+without a display omits both fields. Beside each display it keeps a keyed digest
+of each env value that display names (HMAC-SHA256 under a key derived from
+`token_signing.key`, which the sandbox cannot read; each value hashed as the env
+fingerprint reads it), so the refusal also carries `changed_env_keys`: the keys
+both sides set whose digests differ, names only. An approval recorded without
+digests, or under another signing key, omits it. The refusal record carries each command argv
 with its redacted declared environment, scrubbed and bounded before they enter it,
 and the row's **Details** and the Review dialog display them. A refusal whose
 display was cut is stored `complete: false` with no `expected_launch`, so its
@@ -1869,7 +1874,10 @@ paired, so list order cannot change it. When a launch of a command both sides ru
 **Show full command**. An env key set on both sides with a new value is said
 there too: for a value the gateway shows in clear (PATH, `LD_*`, a `${VAR}`
 reference) the list entries added and removed, and otherwise only its key
-(`envValueChanges`). When both sides run the same commands, the summary is per
+(`envValueChanges`). A key in the refusal's `changed_env_keys` is named the same
+way, so a value the gateway hid, redacted or cut cannot hide a change; in the
+per-launch summary below, such a key that no launch's lines name is said once
+above the launches. When both sides run the same commands, the summary is per
 launch (`mcpLaunchDiff.launchChanges`): each new launch is paired with the
 approved launch it most likely replaced (same command, then fewest changed
 keys) and diffed against that launch only, so two launches swapping values

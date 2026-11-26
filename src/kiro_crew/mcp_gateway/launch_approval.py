@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -52,10 +53,15 @@ import shlex
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Collection, Iterable, Mapping
+from typing import Any, Collection, Iterable, Mapping, TypeGuard
 
 from kiro_crew.config.paths import config_dir
-from kiro_crew.mcp_gateway.hashing import gateway_path, hash_command, hash_launch_env
+from kiro_crew.mcp_gateway.hashing import (
+    gateway_path,
+    hash_command,
+    hash_launch_env,
+    launch_env_value_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +114,11 @@ _DISPLAY_ENV_VALUE_KEYS = frozenset(
     }
 )
 _DECLARED_ENV_REFERENCE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
+
+#: Purpose label of the key the per-key env digests are taken under
+#: (:func:`_env_digests`), derived from the dashboard token-signing secret.
+_ENV_DIGEST_KEY_DOMAIN = b"kiro-crew:mcp-launch-env:key:v1"
+_HEX_DIGITS = frozenset("0123456789abcdef")
 
 #: Serializes read-modify-write of the store. Every writer (the dashboard
 #: handlers, the gateway's post-rewrite save) runs in the gateway process.
@@ -219,6 +230,13 @@ class LaunchApprovals:
     approved_displays: dict[str, dict[str, tuple[list[str], list[str]]]] = field(
         default_factory=dict
     )
+    #: stem -> approved pair -> ``(key check, env key -> digest)`` of the approved
+    #: launch's declared env (:func:`_env_digests`), stored with its display so a
+    #: refusal can name a key whose value changed where the displays read the same.
+    #: Never consulted to admit a launch.
+    approved_env_digests: dict[str, dict[str, tuple[str, dict[str, str]]]] = field(
+        default_factory=dict
+    )
     #: A resolution pass (:func:`kiro_crew.mcp_gateway.launch_resolve.resolve_launches`):
     #: every launch is admitted and recorded so the caller can read what each
     #: name resolves to. Never persisted.
@@ -247,6 +265,11 @@ class LaunchApprovals:
     #: Every approval identity and its redacted command/env displays seen this pass.
     #: ``None`` keeps an identity whose launch content cannot safely be displayed.
     launch_identities: dict[str, dict[str, tuple[list[str] | None, list[str] | None]]] = field(
+        default_factory=dict
+    )
+    #: The same digests for each identity in :attr:`launch_identities`, for the
+    #: per-key comparison of a changed refusal. Never persisted.
+    launch_env_digests: dict[str, dict[str, tuple[str, dict[str, str]]]] = field(
         default_factory=dict
     )
     #: Approved pairs this pass admitted once :attr:`launch_identities` held the
@@ -387,6 +410,10 @@ class LaunchApprovals:
         command_display, env_display, display_complete = _launch_displays(launch, env)
         if not display_complete:
             self.incomplete_identities.setdefault(stem, set()).add(identity)
+        # Only an approved server's launch can be refused as changed.
+        digests = _env_digests(stem, env, env_display) if self.approved.get(stem) else None
+        if digests is not None:
+            self.launch_env_digests.setdefault(stem, {})[identity] = digests
         identities = self.launch_identities.setdefault(stem, {})
         prior_command, prior_env = identities.get(identity, (None, None))
         identities[identity] = (
@@ -534,6 +561,9 @@ class LaunchApprovals:
                     command_display,
                     env_display,
                 )
+                digests = _env_digests(stem, env, env_display)
+                if digests is not None:
+                    self.approved_env_digests.setdefault(stem, {})[identity] = digests
             logger.info(
                 "mcp launch approvals: %s keeps its approval; only %s changed",
                 _bounded_name(name),
@@ -678,6 +708,46 @@ def _display_env_pair(key: str, value: str) -> str:
         return f"{key}={value}"
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
     return f"{key}=<hidden sha256:{digest}>"
+
+
+def _env_digests(
+    stem: str, env: Mapping[str, Any] | None, env_display: list[str] | None
+) -> tuple[str, dict[str, str]] | None:
+    """A keyed digest of each displayed env value, with a check of the key, or ``None``.
+
+    Only a key the bounded *env_display* names gets one, so the digests stay
+    within the display's bounds however large the declared env is. The key is
+    derived from the dashboard token-signing secret, which the agent sandbox
+    cannot read: the store is readable there, and an unkeyed hash of a
+    hidden value would let a guess be checked against it. A value hashes as the
+    approval's env fingerprint reads it (:func:`hash_launch_env`), so the
+    gateway's own ``PATH`` part moving changes no digest. ``None`` without the
+    persisted secret: a temporary one signs nothing a later process can compare.
+    """
+    if env is None or env_display is None:
+        return None
+    # Deferred: this leaf stays standard library at import time.
+    from kiro_crew.dashboard.token_secret import get_persisted_secret
+
+    try:
+        root = get_persisted_secret()
+    except (OSError, RuntimeError):
+        return None
+    key = hmac.new(root, _ENV_DIGEST_KEY_DOMAIN, hashlib.sha256).digest()
+    prefix = stem.encode("utf-8", "surrogatepass") + b"\0"
+    shown = _displayed_keys([env_display])
+    return (
+        hmac.new(key, b"check", hashlib.sha256).hexdigest(),
+        {
+            name: hmac.new(
+                key,
+                prefix + name.encode("utf-8") + b"\0" + launch_env_value_bytes(name, value),
+                hashlib.sha256,
+            ).hexdigest()
+            for name, value in _coerced_env(env).items()
+            if name in shown
+        },
+    )
 
 
 def _bounded_display_env_with_completeness(
@@ -835,6 +905,37 @@ def _parse_approved_displays(value: Any, pairs: set[str]) -> dict[str, tuple[lis
     return displays
 
 
+def _displayed_keys(envs: Iterable[Iterable[str]]) -> set[str]:
+    """The env key names a list of env displays shows."""
+    return {line.split("=", 1)[0] for env in envs for line in env if "=" in line}
+
+
+def _is_digest(value: Any) -> TypeGuard[str]:
+    return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX_DIGITS
+
+
+def _parse_env_digests(
+    value: Any, displays: Mapping[str, tuple[list[str], list[str]]]
+) -> dict[str, tuple[str, dict[str, str]]]:
+    """Stored env digests of each parsed display, for the keys that display names."""
+    if not isinstance(value, dict):
+        return {}
+    digests: dict[str, tuple[str, dict[str, str]]] = {}
+    for pair, (_command, env) in displays.items():
+        entry = value.get(pair)
+        stored = entry.get("env_digests") if isinstance(entry, dict) else None
+        if not isinstance(stored, dict):
+            continue
+        check, values = stored.get("key"), stored.get("values")
+        if not _is_digest(check) or not isinstance(values, dict):
+            continue
+        digests[pair] = (
+            check,
+            {name: values[name] for name in _displayed_keys([env]) if _is_digest(values.get(name))},
+        )
+    return digests
+
+
 def _parse(raw: Any) -> LaunchApprovals:
     if not isinstance(raw, dict) or raw.get("version") != _VERSION:
         return LaunchApprovals()
@@ -856,6 +957,9 @@ def _parse(raw: Any) -> LaunchApprovals:
             displays = _parse_approved_displays(record.get("displays"), set(pairs))
             if displays:
                 approvals.approved_displays[stem] = displays
+            env_digests = _parse_env_digests(record.get("displays"), displays)
+            if env_digests:
+                approvals.approved_env_digests[stem] = env_digests
             name = record.get("name")
             approvals.names[stem] = _bounded_name(name if isinstance(name, str) else stem)
     refused = raw.get("refused")
@@ -891,6 +995,16 @@ def _parse(raw: Any) -> LaunchApprovals:
             )
             if approved_invalid:
                 approved_commands, approved_envs = [], []
+            stored_keys = rec.get("changed_env_keys")
+            changed_env_keys = (
+                sorted(
+                    {key for key in stored_keys if isinstance(key, str)}
+                    & _displayed_keys(envs)
+                    & _displayed_keys(approved_envs)
+                )
+                if approved_commands and isinstance(stored_keys, list)
+                else []
+            )
             reason = rec.get("reason")
             approvals.stored_refused[stem] = {
                 "name": _bounded_name(rec.get("name", stem)),
@@ -901,6 +1015,7 @@ def _parse(raw: Any) -> LaunchApprovals:
                 **({"expected_launch": expected_launch} if expected_launch else {}),
                 **({"approved_commands": approved_commands} if approved_commands else {}),
                 **({"approved_envs": approved_envs} if approved_envs else {}),
+                **({"changed_env_keys": changed_env_keys} if changed_env_keys else {}),
             }
     return approvals
 
@@ -1011,8 +1126,17 @@ def _document(approvals: LaunchApprovals, refused: Mapping[str, Mapping[str, Any
             "fingerprints": sorted(fps),
             "pairs": sorted(pairs),
         }
+        env_digests = approvals.approved_env_digests.get(stem, {})
         displays = {
-            pair: {"command": list(command), "env": list(env)}
+            pair: {
+                "command": list(command),
+                "env": list(env),
+                **(
+                    {"env_digests": {"key": env_digests[pair][0], "values": env_digests[pair][1]}}
+                    if pair in env_digests
+                    else {}
+                ),
+            }
             for pair, (command, env) in sorted(approvals.approved_displays.get(stem, {}).items())
             if pair in pairs
         }
@@ -1042,6 +1166,8 @@ def _document(approvals: LaunchApprovals, refused: Mapping[str, Mapping[str, Any
         if approved_commands and len(approved_commands) == len(approved_envs):
             record["approved_commands"] = approved_commands
             record["approved_envs"] = approved_envs
+            if raw_record.get("changed_env_keys"):
+                record["changed_env_keys"] = list(raw_record["changed_env_keys"])
         expected_launch = _stored_expected_launch(raw_record.get("expected_launch"))
         if (
             expected_launch
@@ -1090,6 +1216,48 @@ def _approved_displays(
     )
 
 
+def _digests_by_key(
+    entries: list[tuple[str, dict[str, str]] | None],
+) -> tuple[set[str], dict[str, set[str]]] | None:
+    """The key checks *entries* carry and each env key's digests; ``None`` if one is missing."""
+    if not entries:
+        return None
+    checks: set[str] = set()
+    by_key: dict[str, set[str]] = {}
+    for entry in entries:
+        if entry is None:
+            return None
+        checks.add(entry[0])
+        for key, digest in entry[1].items():
+            by_key.setdefault(key, set()).add(digest)
+    return checks, by_key
+
+
+def _changed_env_keys(
+    approvals: LaunchApprovals, stem: str, envs: list[list[str]], approved_envs: list[list[str]]
+) -> list[str]:
+    """Env keys set on both sides whose values differ by keyed digest. Names only.
+
+    Each key's digests are compared as sets over each side's launches, since
+    the gateway pairs no launch with another. Empty unless every launch on both
+    sides has digests under the same key -- an approval recorded before digests
+    were kept, or a signing secret that changed since, leaves the page comparing
+    the displays as before. Only a key both displays name is listed.
+    """
+    stored = approvals.approved_env_digests.get(stem, {})
+    live = approvals.launch_env_digests.get(stem, {})
+    before = _digests_by_key([stored.get(pair) for pair in approvals.approved_pairs.get(stem, ())])
+    after = _digests_by_key(
+        [live.get(identity) for identity in approvals.launch_identities.get(stem, {})]
+    )
+    if before is None or after is None or len(before[0] | after[0]) != 1:
+        return []
+    shown = _displayed_keys(envs) & _displayed_keys(approved_envs)
+    return sorted(
+        key for key in before[1].keys() & after[1].keys() & shown if before[1][key] != after[1][key]
+    )
+
+
 def _refusal_record(approvals: LaunchApprovals, stem: str, reason: str) -> dict[str, Any]:
     """Stored refusal paired with the identity of its displayed launch content."""
     all_commands, all_envs = approvals.refusal_displays(stem)
@@ -1112,6 +1280,9 @@ def _refusal_record(approvals: LaunchApprovals, stem: str, reason: str) -> dict[
         if approved_commands:
             record["approved_commands"] = approved_commands
             record["approved_envs"] = approved_envs
+            changed = _changed_env_keys(approvals, stem, all_envs, approved_envs)
+            if changed:
+                record["changed_env_keys"] = changed
     return record
 
 
@@ -1235,6 +1406,12 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
             }
             if new_displays:
                 current.approved_displays.setdefault(stem, {}).update(new_displays)
+            pass_digests = approvals.approved_env_digests.get(stem, {})
+            new_digests = {
+                pair: pass_digests[pair] for pair in new_displays if pair in pass_digests
+            }
+            if new_digests:
+                current.approved_env_digests.setdefault(stem, {}).update(new_digests)
             changed = (
                 changed or final_fps != before or final_pairs != before_pairs or bool(new_displays)
             )
@@ -1323,6 +1500,7 @@ def approve(launches: Mapping[str, Iterable[ResolvedLaunch]], path: Path | None 
             fps: set[str] = set()
             pairs: set[str] = set()
             displays: dict[str, tuple[list[str], list[str]]] = {}
+            digests: dict[str, tuple[str, dict[str, str]]] = {}
             for launch in items:
                 fps.add(launch.fingerprint)
                 command_hash, _declared_env_hash = _split(launch.fingerprint)
@@ -1335,6 +1513,11 @@ def approve(launches: Mapping[str, Iterable[ResolvedLaunch]], path: Path | None 
                     _bounded_display_env(dict(launch.declared_env)),
                 )
                 displays.update({pair: display for pair in launch_pairs})
+                launch_digests = _env_digests(
+                    target_stem(name), dict(launch.declared_env), display[1]
+                )
+                if launch_digests is not None:
+                    digests.update({pair: launch_digests for pair in launch_pairs})
                 if len(fps) > _MAX_SERVER_LAUNCHES or len(pairs) > _MAX_SERVER_LAUNCHES:
                     break
             if not fps:
@@ -1350,6 +1533,7 @@ def approve(launches: Mapping[str, Iterable[ResolvedLaunch]], path: Path | None 
             current.approved[stem] = set(fps)
             current.approved_pairs[stem] = set(pairs)
             current.approved_displays[stem] = displays
+            current.approved_env_digests[stem] = digests
             current.names[stem] = _bounded_name(name)
             decided[stem] = (name, fps, pairs)
         refused = {s: r for s, r in current.stored_refused.items() if s not in decided}
@@ -1375,6 +1559,7 @@ class ApprovalSnapshot:
     names: dict[str, str]
     refused: dict[str, dict[str, Any]]
     displays: dict[str, dict[str, tuple[list[str], list[str]]]] = field(default_factory=dict)
+    env_digests: dict[str, dict[str, tuple[str, dict[str, str]]]] = field(default_factory=dict)
 
 
 def revoke(names: Iterable[str], path: Path | None = None) -> ApprovalSnapshot:
@@ -1400,6 +1585,11 @@ def revoke(names: Iterable[str], path: Path | None = None) -> ApprovalSnapshot:
             for stem in stems
             if stem in current.approved_displays
         }
+        snapshot.env_digests = {
+            stem: copy.deepcopy(current.approved_env_digests[stem])
+            for stem in stems
+            if stem in current.approved_env_digests
+        }
         snapshot.refused = {
             stem: copy.deepcopy(current.stored_refused[stem])
             for stem in stems
@@ -1409,6 +1599,7 @@ def revoke(names: Iterable[str], path: Path | None = None) -> ApprovalSnapshot:
             current.approved.pop(stem, None)
             current.approved_pairs.pop(stem, None)
             current.approved_displays.pop(stem, None)
+            current.approved_env_digests.pop(stem, None)
             current.names.pop(stem, None)
         refused = {s: r for s, r in current.stored_refused.items() if s not in stems}
         _write(target, _document(current, refused))
@@ -1448,6 +1639,13 @@ def restore(snapshot: ApprovalSnapshot, path: Path | None = None) -> None:
                 if stem in snapshot.displays
             }
         )
+        current.approved_env_digests.update(
+            {
+                stem: copy.deepcopy(snapshot.env_digests[stem])
+                for stem in restore_stems
+                if stem in snapshot.env_digests
+            }
+        )
         current.stored_refused.update(
             {
                 stem: copy.deepcopy(snapshot.refused[stem])
@@ -1483,6 +1681,9 @@ def refused_servers(path: Path | None = None) -> dict[str, dict[str, Any]]:
                 else {}
             ),
             **({"approved_envs": rec["approved_envs"]} if rec.get("approved_envs") else {}),
+            **(
+                {"changed_env_keys": rec["changed_env_keys"]} if rec.get("changed_env_keys") else {}
+            ),
             **(
                 {"expected_launch": rec["expected_launch"]}
                 if not over_cap
