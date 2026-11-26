@@ -281,6 +281,9 @@ async def init_socket_mode(
         # grant_declared_yolo walks the profiles dir — blocking, so off-loop.
         await asyncio.to_thread(set_yolo_mode, True)
     set_orch_cfg(orch._cfg)
+    from kiro_crew.slack.shared_channel_agent import retire_stale_marks_on_reload
+
+    await retire_stale_marks_on_reload()
     if orch.dashboard_state:
         set_dashboard_state(orch.dashboard_state)
     # Slack Code channels: registers the channel-status turn hooks and loads the

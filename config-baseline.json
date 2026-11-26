@@ -13944,6 +13944,20 @@
       "defaultValue": true
     },
     {
+      "path": "slack_channels.*.shared_agent",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Agent Set By A Shared User",
+      "help": "Written by Crew, not by hand: the Crew Bot a shared user put this channel on with !channel agent. While it equals agent, a shared user may replace or clear that agent; otherwise only the owner may. Empty when the owner chose the agent. To make a shared user's agent yours, send !channel agent <name> or empty this key.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "slack_dm_activation",
       "kind": "core",
       "type": "string",

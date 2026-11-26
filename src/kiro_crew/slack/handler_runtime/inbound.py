@@ -632,6 +632,9 @@ def _persist_channel_config(
             ch["activation"] = activation
         if agent is not None:
             ch["agent"] = agent
+            # This writer is the owner's: the agent stops being one a shared user
+            # set (``slack/shared_channel_agent.py``).
+            ch.pop("shared_agent", None)
         return data
 
     try:

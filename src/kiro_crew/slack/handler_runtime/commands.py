@@ -1951,6 +1951,19 @@ async def _route_bang_command(
                 )
                 await slack.post_message(channel, "⛔ Not authorized.", reply_ts)
                 return True
+        # A confirmed shared user's `!channel agent <Bot>|off` has its own handler.
+        # Every other !channel word stays the owner's and is refused below. No
+        # deprecation notice: the slash command that names is the owner's.
+        elif (
+            _cmd_word == "!channel"
+            and [word.lower() for word in cmd_text.split()[1:2]] == ["agent"]
+            and is_shared_user(user_id)
+        ):
+            from kiro_crew.slack import shared_channel_agent
+
+            reply = await shared_channel_agent.handle(cmd_text, channel, user_id)
+            await slack.post_message(channel, reply, reply_ts)
+            return True
         # All other ! commands are owner-only
         elif not is_owner(user_id):
             sel().log_api_access(

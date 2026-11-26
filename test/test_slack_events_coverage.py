@@ -724,6 +724,35 @@ class TestInitSocketMode:
         assert len(orch._socket_client.socket_mode_request_listeners) == 1
 
     @pytest.mark.asyncio
+    async def test_boot_retires_stale_shared_agent_marks_once(self, monkeypatch):
+        from kiro_crew.config.loader import KiroCrewConfig, config_path
+        from kiro_crew.slack import handler, shared_channel_agent
+
+        path = config_path()
+        path.write_text(
+            '{"slack":{"channels":{"C1":{"agent":"A","shared_agent":"A"}}}}', encoding="utf-8"
+        )
+        KiroCrewConfig.load()
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["slack"]["channels"]["C1"]["agent"] = "B"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        real_write = handler.run_config_write
+        calls = []
+
+        async def write(fn, *args, **kwargs):
+            calls.append(fn)
+            return await real_write(fn, *args, **kwargs)
+
+        monkeypatch.setattr(handler, "run_config_write", write)
+        with _SocketPatches():
+            await ev.init_socket_mode(_socket_orch(), ev.SeenCache())
+
+        assert json.loads(path.read_text(encoding="utf-8"))["slack"]["channels"]["C1"] == {
+            "agent": "B"
+        }
+        assert calls == [shared_channel_agent.retire_stale_marks]
+
+    @pytest.mark.asyncio
     async def test_code_channel_store_load_re_pushes_the_slot_list(self):
         """Rows serialized before the start-up load were marked pending; the
         push after the load is what gives them their badge."""

@@ -753,6 +753,7 @@ class SessionManager:
     set_slack_paused = _links.set_slack_paused
     is_slack_paused = _links.is_slack_paused
     get_session_for_thread = _links.get_session_for_thread
+    slack_thread_owners = _links.slack_thread_owners
     channel_key_for_stem = _links.channel_key_for_stem
     set_mirror_link = _links.set_mirror_link
     get_mirror_link = _links.get_mirror_link

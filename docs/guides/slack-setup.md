@@ -781,7 +781,7 @@ to use instead.
 | `!project <path>` / `!project off` | Scope which project-local `.kiro` agents `!ta` can find (does not change the working directory) |
 | `!title <text>` | Set the thread title |
 | `!voice …` | TTS voice settings; `!voice global on` / `!voice global off` voice replies in every thread (saved), bare `!voice global` toggles; while it is off, `!voice on` / `!voice off` this thread |
-| `!channel` | Configure the current channel |
+| `!channel` | Configure the current channel. A shared user may send only `!channel agent <Bot>` and `!channel agent off`, and only where the channel has no agent or a shared user set it (not in a DM with the bot or a code channel) |
 | `!stop` | Interrupt the running turn |
 | `!compact` | Compact the current thread's session context in place |
 | `!restart` | Restart the gateway |
