@@ -12,6 +12,22 @@
       "legacyNav": {
         "route": "/personal-shopper",
         "icon": "ShoppingBag"
+      },
+      "deletedCopy": {
+        "permissions": {
+          "api": [
+            "/api/apps/personal-shopper",
+            "/api/apps/personal-shopper/*"
+          ],
+          "storage": true,
+          "network": true
+        },
+        "grants": {
+          "api": [
+            "/api/apps/personal-shopper",
+            "/api/apps/personal-shopper/*"
+          ]
+        }
       }
     },
     {

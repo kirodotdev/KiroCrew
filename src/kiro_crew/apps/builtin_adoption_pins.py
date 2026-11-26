@@ -3,8 +3,10 @@
 ``adoption-pins.json`` ships beside this module and is immutable once installed:
 it is the integrity anchor for adoption (``commit``, ``archiveSha256`` and
 ``treeSha256``). Core names no app here: each row is data, written from the output
-of ``scripts/adoption_pin.py compute``. Every validation failure fails toward "no
-adoption", which is the behaviour a host without this table already has.
+of ``scripts/adoption_pin.py compute``, and the row of an app whose wheel copy a
+release deletes also carries what ``adoption_pin.py freeze`` printed from that copy
+(:data:`DELETED_COPY_KEY`). Every validation failure fails toward "no adoption",
+which is the behaviour a host without this table already has.
 
 Owning spec: ``docs/system-specs/modules/app-kit-platform.md`` § Former built-in
 adoption.
@@ -51,6 +53,10 @@ _ROW_KEYS = frozenset(
     }
 )
 _NAV_KEYS = frozenset({"route", "icon"})
+#: The one optional key of a shipped row: the E9 input of the app's deleted wheel copy,
+#: which a row carries once that copy is gone (``builtin_adoption_baseline``).
+DELETED_COPY_KEY = "deletedCopy"
+_DELETED_COPY_KEYS = frozenset({"permissions", "grants"})
 #: The one extra key a harness table's row may carry: an absolute path to a
 #: codeload-shaped archive of the pinned commit, read instead of the codeload GET
 #: (and in place of the git fetch), still checked against ``archiveSha256``.
@@ -79,6 +85,9 @@ class AdoptionPin:
     legacy_icon: str
     #: Set only on a row of a :data:`HARNESS_PINS_ENV` table.
     harness_archive: str = ""
+    #: The row's :data:`DELETED_COPY_KEY` object as canonical JSON text, so the cached
+    #: pin stays immutable; ``""`` when the row has none.
+    deleted_copy: str = ""
 
     @property
     def owner_repo(self) -> tuple[str, str]:
@@ -112,6 +121,11 @@ def _row_error(row: Any, *, harness: bool = False) -> str:
         if not isinstance(archive, str) or not Path(archive).is_absolute():
             return f"{_HARNESS_ARCHIVE_KEY} is not an absolute path"
         keys.discard(_HARNESS_ARCHIVE_KEY)
+    if DELETED_COPY_KEY in keys:
+        error = deleted_copy_error(row[DELETED_COPY_KEY])
+        if error:
+            return error
+        keys.discard(DELETED_COPY_KEY)
     if keys != _ROW_KEYS:
         return f"keys {sorted(keys ^ _ROW_KEYS)} are unknown or missing"
     name = row["name"]
@@ -154,6 +168,29 @@ def legacy_nav_error(nav: Any) -> str:
     return ""
 
 
+def deleted_copy_error(value: Any) -> str:
+    """Why *value* is not a :data:`DELETED_COPY_KEY` object, or ``""``.
+
+    ``permissions`` is the deleted copy's own ``permissions`` object and ``grants`` maps
+    a grant family to the entries the copy declared in it. Only the shape is checked
+    here; what the object must equal is ``adoption_pin.py verify``'s.
+    """
+    if not isinstance(value, dict) or set(value) != _DELETED_COPY_KEYS:
+        return f"{DELETED_COPY_KEY} must hold exactly permissions and grants"
+    if not isinstance(value["permissions"], dict):
+        return f"{DELETED_COPY_KEY}.permissions is not an object"
+    grants = value["grants"]
+    if not isinstance(grants, dict) or not all(
+        isinstance(family, str)
+        and family
+        and isinstance(entries, list)
+        and all(isinstance(entry, str) and entry for entry in entries)
+        for family, entries in grants.items()
+    ):
+        return f"{DELETED_COPY_KEY}.grants is not a map of grant families to entry lists"
+    return ""
+
+
 def parse_adoption_pins(document: Any, *, harness: bool = False) -> dict[str, AdoptionPin]:
     """Validate a parsed pins document. Never raises; a bad row is dropped and logged.
 
@@ -192,6 +229,9 @@ def parse_adoption_pins(document: Any, *, harness: bool = False) -> dict[str, Ad
             legacy_route=row["legacyNav"]["route"],
             legacy_icon=row["legacyNav"]["icon"],
             harness_archive=row.get(_HARNESS_ARCHIVE_KEY, ""),
+            deleted_copy=(
+                json.dumps(row[DELETED_COPY_KEY], sort_keys=True) if DELETED_COPY_KEY in row else ""
+            ),
         )
     for name in sorted(duplicated):
         logger.error("adoption pins: %r is pinned more than once; every row dropped", name)
