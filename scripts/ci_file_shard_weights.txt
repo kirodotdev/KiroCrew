@@ -286,10 +286,6 @@
 0.525 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_store_and_gate_write_gate.py
 5.641 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_webhook.py
 0.329 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_webhook_governance.py
-0.154 src/kiro_crew/apps/builtins/personal_shopper/tests/test_platform_windows.py
-2.294 src/kiro_crew/apps/builtins/personal_shopper/tests/test_routes.py
-1.017 src/kiro_crew/apps/builtins/personal_shopper/tests/test_store.py
-0.213 src/kiro_crew/apps/builtins/personal_shopper/tests/test_update_preserves_tags.py
 0.020 src/kiro_crew/apps/builtins/pptx_maker/tests/test_agent_welcome_hints.py
 0.019 src/kiro_crew/apps/builtins/pptx_maker/tests/test_core_parity.py
 0.144 src/kiro_crew/apps/builtins/pptx_maker/tests/test_preview_tool_discovery.py
@@ -3352,7 +3348,6 @@
 1.941 test/test_embed_bounded_decode.py
 0.148 test/test_embed_kv_clear.py
 3.339 test/test_embed_load_keeps_stdio.py
-0.080 test/test_embed_offload_guards.py
 0.449 test/test_embed_scores_buffer.py
 0.727 test/test_embed_sdk.py
 0.181 test/test_embedder_decode_429.py
@@ -5466,9 +5461,6 @@
 0.801 test/test_persistent_vm_cleanup.py
 0.159 test/test_persistent_vm_guest_isolation.py
 0.777 test/test_persistent_vm_retention.py
-0.073 test/test_personal_shopper_no_purchase_capability.py
-3.061 test/test_personal_shopper_owner_gate.py
-0.116 test/test_personal_shopper_store_embedding.py
 0.143 test/test_pgroup_exists_darwin_eperm.py
 0.901 test/test_pi_advertised_models.py
 3.278 test/test_pi_claude_wait_identity.py

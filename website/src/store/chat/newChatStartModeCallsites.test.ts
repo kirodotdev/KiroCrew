@@ -22,7 +22,6 @@ type Counts = { startMode: number; other: number; reason?: string }
 
 const PINNED: Record<string, Counts> = {
   'src/apps/papyrus/PapyrusPage.tsx': { startMode: 0, other: 1, reason: 'app' },
-  'src/apps/personal-shopper/PersonalShopperPage.tsx': { startMode: 0, other: 1, reason: 'app' },
   'src/apps/pptx-maker/PptxMakerPage.tsx': { startMode: 0, other: 1, reason: 'app' },
   'src/app-sdk/hostSessions.ts': { startMode: 0, other: 1, reason: 'app SDK' },
   'src/components/AgentSwitchNoticeBanner.tsx': { startMode: 0, other: 1, reason: 'a chat on the agent a notice names' },

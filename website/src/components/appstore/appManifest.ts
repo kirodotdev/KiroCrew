@@ -310,20 +310,6 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
     useCases: ['apps.papyrus.manifest.use_case_1'],
     configuration: ['apps.papyrus.manifest.configuration_1'],
   },
-  'personal-shopper': {
-    displayName: 'apps.personalShopper.manifest.display_name',
-    description: 'apps.personalShopper.manifest.description',
-    pageLabel: 'apps.personalShopper.manifest.page_label',
-    highlights: [
-      'apps.personalShopper.manifest.highlight_1',
-      'apps.personalShopper.manifest.highlight_2',
-      'apps.personalShopper.manifest.highlight_3',
-      'apps.personalShopper.manifest.highlight_4',
-      'apps.personalShopper.manifest.highlight_5',
-    ],
-    useCases: ['apps.personalShopper.manifest.use_case_1'],
-    configuration: ['apps.personalShopper.manifest.configuration_1'],
-  },
   'pptx-maker': {
     displayName: 'apps.pptxMaker.manifest.display_name',
     description: 'apps.pptxMaker.manifest.description',
