@@ -51,7 +51,7 @@ the loader therefore reaches `config set`, an undo restores it, and a patch of
 | `config/fields.py` | `_meta` field metadata, the `_safe_*` value coercers every section shares, and `field_default`, the one reader of a DTO field's declared default (`SectionReader` reads through it). An integer coercer keeps a legacy numeric string or integral float already in a config file (`"5"` -> 5, `5.0` -> 5) and rejects booleans and non-integral, malformed or non-finite values in favour of the default. A leaf: it imports nothing from `kiro_crew`. |
 | `config/sections.py` | The facade other specs and tests name for the section DTOs below and for the three domain owners after them: it re-exports every name they define as the same object, and defines nothing of its own. |
 | `config/sections_defaults.py` | `SectionReader`, which resolves a builder's omitted key and coercer fallback to the DTO field's declared default, and the named defaults a DTO field and a load fallback share (`DEFAULT_MODEL`, `DEFAULT_POOL_SIZE`, ...). |
-| `config/sections_agent_env.py` | The environment an agent process receives: the `agent.env` name policy and its refusals, `agent.child_env_defaults` and `agent.deepseek_env`. |
+| `config/sections_agent_env.py` | The environment an agent process receives: the `agent.env` name policy and its refusals, `agent.child_env_defaults` and `agent.deepseek_env`, and the keyed dashboard writes of `agent.strands_env` and `agent.deepseek_env` (`DASHBOARD_KEYED_ENV_MAPS`: one validator per map over a shared body, one merge). |
 | `config/sections_agent_fields.py` | Field coercion for `agent` and the crew records: model pins, role maps, effort, the context-token map, approval modes, the avatar record and bot-name filter, the jail, ACP-backend, YOLO-duration and completion-keep readers, and the KAS bundle url. |
 | `config/sections_agent.py` | `AgentConfig`, and the readers that resolve against its declared defaults. |
 | `config/sections_session.py` | `session`, the crew record `KiroCrewAgentConfig`, `workspaces`, `session_environments` (its DTOs; validation lives in `config/session_environments.py`) and a session's `ResolvedBindings`. |
@@ -631,11 +631,17 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
   gateway reads these files unsandboxed on the folder's behalf, and an app that
   could point its own folder at an arbitrary readable Markdown tree would have
   that read laundered into its own model session with no tool grant and no
-  signal. Clearing to `[]` stays allowed for every principal (it only removes
-  reads). The person may still declare steering on a folder an app or member
+  signal. Clearing to `[]` stays allowed for an app or member principal (it
+  only removes reads). The person may still declare steering on a folder an app or member
   owns; delivery then routes it to that principal's chats as described below.
   A call on the internal credential every MCP tool call carries
   (`request["internal_auth"]`) is refused the same way, at both write sites.
+- **Owner gate** (`require_owner_for_dashboard_caller`) runs next: "the
+  person" is the owner or an admitted teammate. A dashboard session that is
+  neither (a channel allowlist link) carries the person's empty principal, so
+  the principal gate admits it; the owner gate refuses it `403` `owner_only`
+  on a create with a non-empty list and on any update that sends
+  `steering_dirs`, clearing included, since the folder is the owner's.
 - **Agent surface** is a `folder.steering` change card
   (`change_card_catalog.py`): `propose_change(kind="folder.steering",
   params={folder, steering_dirs})` resolves each directory the way the route
@@ -1678,6 +1684,11 @@ Contract:
   and enable full auto-approval — and the reason is that this file sits in the
   agent-writable data home, so a restorable ack is an ack an agent can forge for
   the user's next fresh origin. Convenience does not outrank a human gate.
+  The machine owner's ack is also kept on the gateway in the owner-only
+  `yolo_ack.json` keystone (written only by `PUT /api/chat/yolo-ack`), which the
+  picker reads beside the browser copy; `PUT /api/chat/yolo-ack
+  {"acknowledged": false}` re-arms the confirmation in any browser that does not
+  hold its own `mc-yolo-ack` copy.
 
 ## Settings import (dashboard Merge)
 

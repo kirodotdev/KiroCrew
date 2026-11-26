@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+import wheel_copy_limit_sources as limits
 from builtin_adoption_helpers import NAME, REPOSITORY, install_pins, pin_row, requires_git
 
 import kiro_crew
@@ -351,16 +352,95 @@ def test_the_shipped_pin_file_validates_and_pins_exactly_the_shipped_table():
 
 
 def test_every_shipped_pin_matches_its_wheel_built_in_version():
-    """D12: a first-adoption pin carries the wheel built-in's version (downgrade-safe)."""
+    """D12: a first-adoption pin carries the wheel built-in's version (downgrade-safe).
+
+    A pin row can outlive its wheel copy (the copy is deleted, the row kept); such a
+    row has no wheel version to match, as the gateway's own check has none to ask.
+    Which copies may go is held by
+    ``test_no_wheel_copy_a_security_limit_reads_is_deleted``.
+    """
     from kiro_crew.apps.execution import _shipped_builtin_apps
 
     shipped = {}
     for root, name in _shipped_builtin_apps():
         shipped[name] = json.loads((root / "app.json").read_text(encoding="utf-8"))["version"]
     document = json.loads((_SRC / "apps" / "adoption-pins.json").read_text(encoding="utf-8"))
-    for pin in parse_adoption_pins(document).values():
-        assert pin.name in shipped
-        assert pin.version == shipped[pin.name]
+    mismatched = {
+        pin.name: (pin.version, shipped[pin.name])
+        for pin in parse_adoption_pins(document).values()
+        if pin.name in shipped and pin.version != shipped[pin.name]
+    }
+    assert mismatched == {}
+
+
+#: The pinned apps whose wheel copy is the only input of each core security limit
+#: (app-kit-platform.md § 33, the table under "A pin row with no wheel copy"), one app
+#: per line. Remove an app's line only in the PR that gives that limit a non-wheel source
+#: for the app whose copy it deletes; add one when a copy starts supplying a limit.
+_WHEEL_ONLY_LIMIT_APPS = {
+    limits.MCP_SERVERS: {
+        "auto-improvement",
+        "mochi",
+    },
+    limits.AGENT_TOOLS: {
+        "design-tweak",
+        "dev-fleet",
+        "issue-radar",
+        "ops-mission-control",
+    },
+    limits.SEAMS: {
+        "aws-control",
+        "design-critique",
+    },
+    limits.HOST_GRANTS: {
+        "dev-fleet",
+    },
+    limits.DECLARED_DIRS: {
+        "md-notebook",
+        "meetings",
+        "spec-builder",
+    },
+}
+
+
+def test_no_wheel_copy_a_security_limit_reads_is_deleted():
+    """A pinned app may lose its wheel copy only if no security limit reads its input there.
+
+    The tests above skip a pinned app with no wheel copy, so this is what stops a
+    deletion that drops a limit: the relay credential refusal (§ 33 row 6) fails open.
+    The apps are pinned by name, so deleting one copy while another starts supplying
+    the same limit still fails.
+    """
+    sources = limits.wheel_only_limit_sources()
+    assert set(sources) == set(_WHEEL_ONLY_LIMIT_APPS)
+    changed = [
+        f"{limit}: dropped {sorted(pinned - sources[limit])},"
+        f" added {sorted(sources[limit] - pinned)}"
+        for limit, pinned in _WHEEL_ONLY_LIMIT_APPS.items()
+        if sources[limit] != pinned
+    ]
+    assert changed == [], (
+        "the pinned apps whose wheel copy is the only input of a core security limit"
+        " changed. A dropped app lost that limit with its copy: give the limit a non-wheel"
+        " source for it first, then remove its line. An added app supplies the limit from"
+        " its copy alone: add its line. See app-kit-platform.md § 33, 'A pin row with no"
+        " wheel copy'"
+    )
+
+
+def test_the_seam_scan_holds_every_seam_but_the_tombstone(tmp_path):
+    tombstone = tmp_path / "tombstone.py"
+    tombstone.write_text(
+        "seams.register(seams.SEAM_STOPPED_LOOP_TOMBSTONE, APP, _P())\n", encoding="utf-8"
+    )
+    assert not limits._registers_a_limit(tombstone)
+    for body in (
+        "seams.register(seams.SEAM_AWS_ACCOUNT_POLICY, APP, _P())\n",
+        "seams.register_worker_slot_mode(APP)\n",
+        "seams.register(SEAM, APP, _P())\n",
+    ):
+        tombstone.write_text(body, encoding="utf-8")
+        assert limits._registers_a_limit(tombstone), body
 
 
 def test_the_package_ships_the_pin_file():
@@ -394,12 +474,19 @@ _STATED_NAME_EXCEPTIONS: dict[str, frozenset[str]] = {
 
 
 def _builtin_identifiers() -> set[str]:
+    """Every built-in name and package dir, and every pinned name with its package spelling.
+
+    The pinned names keep the census whole once a wheel copy is deleted and its pin row kept.
+    """
     from kiro_crew.apps.builtins import BUILTIN_NAMES
     from kiro_crew.apps.execution import _shipped_builtin_apps
 
     names = set(BUILTIN_NAMES)
     for root, name in _shipped_builtin_apps():
         names |= {name, root.name}
+    document = json.loads((_SRC / "apps" / "adoption-pins.json").read_text(encoding="utf-8"))
+    for name in parse_adoption_pins(document):
+        names |= {name, name.replace("-", "_")}
     return names
 
 
@@ -652,6 +739,31 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
         ),
         ({}, {"backend/_host.py": "import kiro_crew\nfrom . import my_backend_sdk\n"}, {}),
         ({}, {"tests/fakehost.py": "import kiro_crew.apps.backend_sdk\n"}, {}),
+        (
+            {},
+            {"backend/_host.py": "from kiro_crew.apps.backend_sdk import canonical_file_path\n"},
+            {
+                "kiro_crew.apps.backend_sdk": 7,
+                "kiro_crew.apps.backend_sdk.canonical_file_path": 14,
+            },
+        ),
+        (
+            {},
+            {
+                "backend/_host.py": "sdk = _host_module('kiro_crew.apps.backend_sdk')\n",
+                "backend/routes.py": "gate = getattr(sdk, 'canonical_file_path', None)\n",
+            },
+            {
+                "kiro_crew.apps.backend_sdk": 7,
+                "kiro_crew.apps.backend_sdk.canonical_file_path": 14,
+            },
+        ),
+        ({}, {"backend/routes.py": "def canonical_file_path(p):\n    return p\n"}, {}),
+        (
+            {},
+            {"tests/fakehost.py": "from kiro_crew.apps.backend_sdk import canonical_file_path\n"},
+            {},
+        ),
         ({}, {"backend/manifest.py": "def f(manifest):\n    return manifest.lifecycle\n"}, {}),
         ({}, {"tests/fakehost.py": "ctx.turns = None\n"}, {}),
         ({}, {"backend/test_seams.py": "ctx.turns = None\n"}, {}),
@@ -680,8 +792,26 @@ def test_the_pin_tool_never_lets_a_level_fall_below_what_the_tree_uses(monkeypat
     assert "ctx.turns" not in tool._sdk_level_refusal(NAME, 2, uses)
 
 
-def _measure_tree(monkeypatch, tmp_path, tool, files, level):
-    """``_measure`` end to end on a local tree, with the network and the E-checks stubbed."""
+def test_the_pin_tool_holds_a_later_backend_sdk_name_at_its_own_level(monkeypatch, tmp_path):
+    from builtin_adoption_helpers import repository_manifest, write_tree
+
+    from kiro_crew.apps import backend_sdk
+
+    tool = _pin_tool(monkeypatch)
+    for name, level in sorted(backend_sdk._EXPORT_LEVELS.items()):
+        source = f"from kiro_crew.apps.backend_sdk import {name}\n"
+        tree = write_tree(tmp_path / name, repository_manifest(), {"backend/_host.py": source})
+        uses = tool._seam_level_uses(tree)
+        seam = f"{backend_sdk.__name__}.{name}"
+        assert uses[seam] == level > backend_sdk.BACKEND_SDK_LEVEL
+        refusal = tool._sdk_level_refusal(NAME, level - 1, uses)
+        assert refusal is not None
+        assert f"--min-sdk-level {level}" in refusal and seam in refusal
+        assert tool._sdk_level_refusal(NAME, level, uses) is None
+
+
+def _serve_tree(monkeypatch, tmp_path, tool, files=None):
+    """Stub the pin tool's network with a local tree; ``(tree, archive)``."""
     import hashlib
     import shutil
 
@@ -696,12 +826,66 @@ def _measure_tree(monkeypatch, tmp_path, tool, files, level):
 
     monkeypatch.setattr(tool, "_clone", lambda _r, _c, dest: shutil.copytree(tree, dest))
     monkeypatch.setattr(tool, "_download", fake_download)
-    monkeypatch.setattr(tool, "_shipped", lambda _name: (tree, repository_manifest()))
-    monkeypatch.setattr(tool, "pinned_tree_refusal", lambda *_args, **_kwargs: None)
+    return tree, archive
+
+
+def _work(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
+    return work
+
+
+def _measure_tree(monkeypatch, tmp_path, tool, files, level):
+    """``_measure`` end to end on a local tree, with the network and the E-checks stubbed."""
+    from builtin_adoption_helpers import repository_manifest
+
+    tree, _archive = _serve_tree(monkeypatch, tmp_path, tool, files)
+    monkeypatch.setattr(tool, "_shipped", lambda _name: (tree, repository_manifest()))
+    monkeypatch.setattr(tool, "pinned_tree_refusal", lambda *_args, **_kwargs: None)
     pin = _parse([_row(minAppSdkLevel=level)])[NAME]
-    return tool._measure(pin, work)
+    return tool._measure(pin, _work(tmp_path))
+
+
+def test_the_pin_tool_verifies_a_pin_whose_wheel_copy_is_gone(monkeypatch, tmp_path, capsys):
+    """The row is the one record left: the checks run with no wheel copy, as STAGE runs them."""
+    import hashlib
+
+    from kiro_crew.apps.builtin_adoption_fetch import adoption_tree_digest
+
+    tool = _pin_tool(monkeypatch)
+    tree, archive = _serve_tree(monkeypatch, tmp_path, tool)
+    monkeypatch.setattr(tool, "_shipped", lambda _name: None)
+    asked = []
+    real_refusal = tool.pinned_tree_refusal
+
+    def refusal(*args, **kwargs):
+        asked.append(kwargs["shipped_manifest"])
+        return real_refusal(*args, **kwargs)
+
+    monkeypatch.setattr(tool, "pinned_tree_refusal", refusal)
+    row = _row(
+        treeSha256=adoption_tree_digest(tree), archiveSha256=hashlib.sha256(archive).hexdigest()
+    )
+    table = tmp_path / "adoption-pins.json"
+    table.write_text(json.dumps({"schemaVersion": 1, "pins": [row]}), encoding="utf-8")
+    monkeypatch.setattr(tool, "_PINS_PATH", table)
+
+    assert tool._verify() == 0, capsys.readouterr().err
+    assert asked == [None]
+    # ``compute`` measures a draft whose nav is a placeholder; the row's nav is carried.
+    draft = _parse([_row(legacyNav={"route": "/x", "icon": "X"})])[NAME]
+    assert tool._measure(draft, _work(tmp_path))["legacyNav"] == row["legacyNav"]
+
+
+def test_the_pin_tool_refuses_a_name_neither_shipped_nor_pinned(monkeypatch, tmp_path):
+    tool = _pin_tool(monkeypatch)
+    _serve_tree(monkeypatch, tmp_path, tool)
+    monkeypatch.setattr(tool, "_shipped", lambda _name: None)
+    table = tmp_path / "adoption-pins.json"
+    table.write_text(json.dumps({"schemaVersion": 1, "pins": []}), encoding="utf-8")
+    monkeypatch.setattr(tool, "_PINS_PATH", table)
+    with pytest.raises(SystemExit, match="no shipped built-in and no pin row"):
+        tool._measure(_parse([_row()])[NAME], _work(tmp_path))
 
 
 def test_the_pin_tool_refuses_level_one_for_a_tree_that_uses_level_two(monkeypatch, tmp_path):

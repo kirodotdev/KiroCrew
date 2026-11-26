@@ -1,0 +1,5 @@
++31
+`inline_payload._name_bound_before` reads an alias binding (`r = `) back from each
+indirect head over blanks, one `=` and one name, replacing a search of the whole prefix
+per head that made a script of N `getattr(..., "exec")` heads cost N^2 (#37482). Its
+docstring states which regex answer it reproduces, since the gate's decisions must not move.

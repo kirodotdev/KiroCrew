@@ -21,6 +21,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.engine_fallback import hook_session_model
 from kiro_crew.dashboard.slack_reconnect_wait import wait_for_slack_reconnect
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.slack.stream_window import message_landed_since, messages_noted
 from kiro_crew.tool_call_title import derive_tool_call_title
 from kiro_crew.tool_row_prefix import tool_row, tool_row_kind
 from kiro_crew.wakatime.heartbeats import is_coding_event
@@ -643,6 +644,9 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 # Top-level (``None``) for a code channel's own session. The
                 # owner is the recipient: the only person the gateway answers
                 # on Slack, and an org-wide install refuses a stream naming nobody.
+                # The count is read before the request: a message that lands
+                # while Slack opens the stream is below it.
+                _noted = messages_noted()
                 _mirror_stream_ts = (
                     await state.slack_client.start_stream(
                         _mirror_chan,
@@ -653,11 +657,28 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 )
                 turn._mirror_stream_ts = _mirror_stream_ts
                 if _mirror_stream_ts:
+                    turn._mirror_stream_messages_noted = _noted
                     turn._mirror_thinking_ts = await _retire_mirror_thinking(
                         state.slack_client, _mirror_chan, turn._mirror_thinking_ts
                     )
         except Exception:
             logger.debug("Mirror task stream start failed", exc_info=True)
+        if _mirror_stream_ts and message_landed_since(
+            _mirror_chan, turn._mirror_post_ts, turn._mirror_stream_messages_noted
+        ):
+            # A person wrote in the thread below the step list, so this step and
+            # the ones after it are drawn under their message.
+            _mirror_stream_ts, turn._mirror_stream_messages_noted = await _move_mirror_stream(
+                state.slack_client,
+                _mirror_chan,
+                turn._mirror_post_ts or "",
+                state.owner_id or None,
+                _mirror_stream_ts,
+                (_mirror_active_task, _mirror_active_task_title),
+            )
+            turn._mirror_stream_ts = _mirror_stream_ts
+            _mirror_active_task = ""
+            turn._mirror_active_task = _mirror_active_task
         if _mirror_stream_ts:
             try:
                 if _mirror_active_task:
@@ -690,6 +711,38 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 )
             except Exception:
                 logger.debug("Mirror tool task failed", exc_info=True)
+
+
+async def _move_mirror_stream(
+    slack_client: Any,
+    channel: str,
+    thread_ts: str,
+    owner_id: str | None,
+    stream_ts: str,
+    running: tuple[str, str],
+) -> tuple[str, int | None]:
+    """Close the mirror's step list *stream_ts* and open a fresh one at the thread's end.
+
+    *running* is the id and title of the step still open on it, closed where it
+    was drawn so the old message ends complete. Returns the new stream's ts and
+    the ``messages_noted()`` count it opened at, or ``("", None)`` when Slack
+    gave none: the turn then mirrors no more steps, as when its first stream is
+    refused. Best-effort and never raises: the step list is decoration.
+    """
+    task_id, title = running
+    try:
+        if task_id:
+            await slack_client.append_task(channel, stream_ts, task_id, title, "complete")
+        await slack_client.stop_stream(channel, stream_ts)
+    except Exception:
+        logger.debug("Mirror task stream close failed before a move", exc_info=True)
+    noted = messages_noted()  # before the request, as for the turn's first stream
+    try:
+        new_ts = await slack_client.start_stream(channel, thread_ts, user_id=owner_id) or ""
+    except Exception:
+        logger.debug("Mirror task stream start failed after a move", exc_info=True)
+        new_ts = ""
+    return new_ts, (noted if new_ts else None)
 
 
 async def _on_tool_call_update(turn: _ChatTurn, event) -> None:

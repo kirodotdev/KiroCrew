@@ -6,6 +6,10 @@ still going. Both streaming paths (the transport renderer and the native
 handler's ``_AnswerStream``) move to a fresh stream at the first append after
 ``STREAM_RENEW_AFTER_S``: the running step is closed on the old message with a
 "continues below" title and opened again on the new one.
+
+A stream also moves when a person's message lands in the thread below it: the
+next running step is drawn in a fresh stream under that message, on both paths
+and on the dashboard mirror (``test_slack_mirror_echo.py``).
 """
 
 from __future__ import annotations
@@ -23,12 +27,17 @@ from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack import handler as _slack_handler  # wires stream globals
 from kiro_crew.slack import renderer as _renderer_mod
 from kiro_crew.slack import renderer_stream_renewal as _renewal_mod
+from kiro_crew.slack import stream_window as _window_mod
 from kiro_crew.slack.handler import handle_message
 from kiro_crew.slack.handler_runtime.stream import _AnswerStream
 from kiro_crew.slack.renderer import SlackRenderer
 from kiro_crew.slack.stream_window import (
+    MAX_NOTED_THREADS,
     SLACK_STREAM_LIFETIME_S,
     STREAM_RENEW_AFTER_S,
+    message_landed_since,
+    messages_noted,
+    note_thread_message,
     stream_due_for_renewal,
 )
 from kiro_crew.testing.wait import await_until
@@ -800,3 +809,521 @@ def test_cancelled_native_turn_cancels_its_tool_timer(clock, monkeypatch, tmp_pa
         assert timers and all(timer.cancelled() for timer in timers)
 
     asyncio.run(scenario())
+
+
+# ── A person's message below the stream moves the next running step under it ──
+
+
+def _message_lands(channel: str = "C1", thread_ts: str = "t1") -> None:
+    """The route takes in a message a person wrote in the thread."""
+    note_thread_message(channel, thread_ts)
+
+
+class _MessageWhileOpening(_RecSlack):
+    """A person writes in the thread while Slack is opening the first stream."""
+
+    async def start_stream(self, channel, thread_ts, **kw):
+        if not _named(self, "start_stream"):
+            _message_lands()
+        return await super().start_stream(channel, thread_ts, **kw)
+
+
+class TestThreadMessageRecord:
+    def test_only_a_message_after_the_stream_opened_counts(self):
+        _message_lands()
+        opened = messages_noted()
+        # Recorded before the stream opened: the message the turn answers.
+        assert not message_landed_since("C1", "t1", opened)
+        _message_lands()
+        assert message_landed_since("C1", "t1", opened)
+        assert not message_landed_since("C1", "t1", messages_noted())
+
+    def test_another_thread_no_thread_and_no_stream_never_count(self):
+        opened = messages_noted()
+        _message_lands()
+        assert not message_landed_since("C1", "t2", opened)
+        assert not message_landed_since("C2", "t1", opened)
+        assert not message_landed_since("C1", None, opened)
+        assert not message_landed_since(None, "t1", opened)
+        assert not message_landed_since("C1", "t1", None)
+
+    def test_the_record_is_bounded_and_forgets_the_oldest_thread(self):
+        opened = messages_noted()
+        for n in range(MAX_NOTED_THREADS + 1):
+            note_thread_message("C1", f"t{n}")
+        assert len(_window_mod._thread_message_no) == MAX_NOTED_THREADS
+        assert not message_landed_since("C1", "t0", opened)
+        assert message_landed_since("C1", "t1", opened)
+        # A thread written to again is the newest, so it outlives the ones after it.
+        note_thread_message("C1", "t1")
+        note_thread_message("C1", "t-new")
+        assert message_landed_since("C1", "t1", opened)
+        assert not message_landed_since("C1", "t2", opened)
+
+
+class TestRendererMovesBelowAMessage:
+    def _renderer(self):
+        rec = _RecSlack()
+        return rec, SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+
+    def test_a_running_step_moves_below_the_message(self, clock):
+        rec, renderer = self._renderer()
+
+        async def scenario():
+            await renderer._ensure_stream()
+            renderer._active_task_id = "tool_1"
+            await renderer._append_task("tool_1", "Bash", "in_progress")
+            _message_lands()
+            await renderer._append_task("tool_1", "Bash  ⏱ 30s", "in_progress")
+
+        asyncio.run(scenario())
+        assert [s["ts"] for s in _named(rec, "start_stream")] == ["ts-1", "ts-2"], rec.calls
+        assert _named(rec, "stop_stream") == [{"ts": "ts-1"}], rec.calls
+        cards = _named(rec, "append_task")
+        assert cards[1] == {
+            "ts": "ts-1",
+            "id": "tool_1",
+            "title": "Bash · continues below",
+            "status": "complete",
+        }, cards
+        assert cards[2] == {"ts": "ts-2", "id": "tool_1", "title": "Bash", "status": "in_progress"}
+        assert cards[-1]["ts"] == "ts-2" and cards[-1]["title"] == "Bash  ⏱ 30s", cards
+
+    def test_the_next_tool_is_drawn_only_below_the_message(self, clock):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, show_thinking=False)
+
+        async def scenario():
+            try:
+                await renderer.on_tool_call("a", "Running: ls")
+                await renderer.on_tool_result("a", "completed")
+                _message_lands()
+                await renderer.on_tool_call("b", "Running: pwd")
+            finally:
+                await renderer.close()
+
+        asyncio.run(scenario())
+        assert [s["ts"] for s in _named(rec, "start_stream")] == ["ts-1", "ts-2"], rec.calls
+        assert _named(rec, "stop_stream")[0] == {"ts": "ts-1"}, rec.calls
+        cards = _named(rec, "append_task")
+        # The finished step is not carried, and the new one never shows on the old message.
+        assert {c["id"] for c in cards if c["ts"] == "ts-1"} == {"tool_1"}, cards
+        assert not [c for c in cards if "continues below" in c["title"]], cards
+        assert {c["id"] for c in cards if c["ts"] == "ts-2"} == {"tool_2"}, cards
+
+    def test_a_message_that_lands_while_the_stream_opens_is_below_it(self, clock):
+        rec = _MessageWhileOpening()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+
+        async def scenario():
+            await renderer._ensure_stream()
+            renderer._active_task_id = "tool_1"
+            await renderer._append_task("tool_1", "Bash", "in_progress")
+
+        asyncio.run(scenario())
+        assert [s["ts"] for s in _named(rec, "start_stream")] == ["ts-1", "ts-2"], rec.calls
+        assert [c["ts"] for c in _named(rec, "append_task")] == ["ts-2"], rec.calls
+
+    def test_it_moves_once_for_one_message(self, clock):
+        rec, renderer = self._renderer()
+
+        async def scenario():
+            await renderer._ensure_stream()
+            renderer._active_task_id = "tool_1"
+            await renderer._append_task("tool_1", "Bash", "in_progress")
+            _message_lands()
+            await renderer._append_task("tool_1", "Bash  ⏱ 30s", "in_progress")
+            await renderer._append_task("tool_1", "Bash  ⏱ 1m 0s", "in_progress")
+
+        asyncio.run(scenario())
+        assert [s["ts"] for s in _named(rec, "start_stream")] == ["ts-1", "ts-2"], rec.calls
+
+    def test_a_closing_card_and_answer_text_stay_where_they_are(self, clock):
+        rec, renderer = self._renderer()
+
+        async def scenario():
+            await renderer._ensure_stream()
+            renderer._active_task_id = "tool_1"
+            await renderer._append_task("tool_1", "Bash", "in_progress")
+            _message_lands()
+            await renderer._append_task("tool_1", "Bash", "complete")
+            await renderer._append_stream("the answer")
+
+        asyncio.run(scenario())
+        assert [s["ts"] for s in _named(rec, "start_stream")] == ["ts-1"], rec.calls
+        assert not _named(rec, "stop_stream"), rec.calls
+        assert _named(rec, "append_stream") == [{"ts": "ts-1", "text": "the answer"}], rec.calls
+
+    def test_a_message_before_the_stream_or_in_another_thread_moves_nothing(self, clock):
+        rec, renderer = self._renderer()
+
+        async def scenario():
+            _message_lands()
+            await renderer._ensure_stream()
+            _message_lands(thread_ts="t2")
+            renderer._active_task_id = "tool_1"
+            await renderer._append_task("tool_1", "Bash", "in_progress")
+
+        asyncio.run(scenario())
+        assert [s["ts"] for s in _named(rec, "start_stream")] == ["ts-1"], rec.calls
+
+    def test_rescue_refresh_keeps_streamed_answer_together(self, clock, monkeypatch):
+        rec = _RecSlack()
+        renderer = SlackRenderer(
+            rec, "C1", "t1", reactions_enabled=False, show_thinking=False, now=clock
+        )
+        answer = "```python\n" + "print('hello')\n" * 1000 + "```"
+        append_stream = rec.append_stream
+
+        async def append_and_refresh(channel, ts, text):
+            ok = await append_stream(channel, ts, text)
+            if len(_named(rec, "append_stream")) == 1:
+                assert renderer._tool_timer_task is not None
+                assert not renderer._tool_timer_task.done()
+                _message_lands()
+                clock.now += 30
+                await renderer._append_task("tool_1", "Bash  ⏱ 30s", "in_progress")
+            return ok
+
+        monkeypatch.setattr(rec, "append_stream", append_and_refresh)
+
+        async def scenario():
+            try:
+                await renderer.on_tool_call("a", "Running: Bash")
+                await renderer.on_text_chunk(answer)
+                assert not _named(rec, "append_stream"), rec.calls
+                await renderer.release_held_text()
+            finally:
+                await renderer.close()
+
+        asyncio.run(scenario())
+        assert len(_named(rec, "start_stream")) == 1, rec.calls
+        chunks = _named(rec, "append_stream")
+        assert len(chunks) > 1
+        assert {chunk["ts"] for chunk in chunks} == {"ts-1"}, rec.calls
+        assert "".join(chunk["text"] for chunk in chunks) == answer, rec.calls
+        assert renderer.delivered_text == answer
+        assert any(c["title"] == "Bash  ⏱ 30s" for c in _named(rec, "append_task"))
+
+    def test_next_tool_after_streamed_answer_moves_below_message(self, clock):
+        rec = _RecSlack()
+        renderer = SlackRenderer(
+            rec, "C1", "t1", reactions_enabled=False, show_thinking=False, now=clock
+        )
+
+        async def scenario():
+            try:
+                await renderer.on_tool_call("a", "Running: Bash")
+                await renderer._append_stream("The first answer.")
+                _message_lands()
+                await renderer._append_task("tool_1", "Bash  ⏱ 30s", "in_progress")
+                assert len(_named(rec, "start_stream")) == 1, rec.calls
+                await renderer.on_tool_call("b", "Running: pwd")
+                assert renderer._stream_ts == "ts-2", rec.calls
+                assert _named(rec, "append_task")[-1]["id"] == "tool_2", rec.calls
+            finally:
+                await renderer.close()
+
+        asyncio.run(scenario())
+        assert _named(rec, "append_stream") == [
+            {"ts": "ts-1", "text": "The first answer."}
+        ], rec.calls
+
+    @pytest.mark.parametrize("refresh", [False, True], ids=["text", "refresh"])
+    def test_age_renewal_still_moves_after_streamed_answer(self, clock, refresh):
+        rec, renderer = self._renderer()
+
+        async def scenario():
+            await renderer._ensure_stream()
+            await renderer._append_task("tool_1", "Bash", "in_progress")
+            await renderer._append_stream("The answer begins. ")
+            _message_lands()
+            clock.now += STREAM_RENEW_AFTER_S
+            if refresh:
+                await renderer._append_task("tool_1", "Bash  ⏱ 9m 0s", "in_progress")
+            else:
+                await renderer._append_stream("The answer continues.")
+
+        asyncio.run(scenario())
+        assert renderer._stream_ts == "ts-2", rec.calls
+        assert _named(rec, "stop_stream") == [{"ts": "ts-1"}], rec.calls
+
+
+class TestNativeMovesBelowAMessage:
+    def _stream(self, rec, clock, activation=None):
+        stream = _AnswerStream(
+            rec,
+            "C1",
+            "t1",
+            team_id="",
+            user_id="",
+            channel_activation=activation,
+            show_thinking=False,
+        )
+        stream.stream_ts = "ts-0"
+        stream.use_slack_stream = True
+        stream.stream_started_at = clock.now
+        stream.stream_messages_noted = messages_noted()
+        return stream
+
+    def test_a_running_step_moves_below_the_message(self, clock):
+        rec = _RecSlack()
+        stream = self._stream(rec, clock)
+        stream.active_task_id = "tool_1"
+        stream.active_task_title = "Bash"
+
+        async def scenario():
+            _message_lands()
+            await stream.append_task("tool_1", "Bash  ⏱ 30s", "in_progress")
+
+        asyncio.run(scenario())
+        assert _named(rec, "stop_stream") == [{"ts": "ts-0"}], rec.calls
+        assert [s["ts"] for s in _named(rec, "start_stream")] == ["ts-1"], rec.calls
+        cards = _named(rec, "append_task")
+        assert cards[0] == {
+            "ts": "ts-0",
+            "id": "tool_1",
+            "title": "Bash · continues below",
+            "status": "complete",
+        }, cards
+        assert cards[1] == {"ts": "ts-1", "id": "tool_1", "title": "Bash", "status": "in_progress"}
+        assert cards[-1]["ts"] == "ts-1" and cards[-1]["title"] == "Bash  ⏱ 30s", cards
+        assert stream.rotated_ts == ["ts-0"]
+
+    def test_refresh_keeps_streamed_answer_together(self, clock):
+        rec = _RecSlack()
+        stream = self._stream(rec, clock)
+        stream.active_task_id = "tool_1"
+        stream.active_task_title = "Bash"
+        parts = ["```python\nprint(", "'hello')\n```"]
+
+        async def scenario():
+            await stream.append_task("tool_1", "Bash", "in_progress")
+            await stream._deliver(parts[0])
+            _message_lands()
+            clock.now += 30
+            await stream.append_task("tool_1", "Bash  ⏱ 30s", "in_progress")
+            await stream._deliver(parts[1])
+
+        asyncio.run(scenario())
+        assert not _named(rec, "start_stream"), rec.calls
+        assert not _named(rec, "stop_stream"), rec.calls
+        assert _named(rec, "append_stream") == [
+            {"ts": "ts-0", "text": part} for part in parts
+        ], rec.calls
+        assert _named(rec, "append_task")[-1]["title"] == "Bash  ⏱ 30s", rec.calls
+
+    def test_next_tool_after_streamed_answer_moves_below_message(
+        self, clock, manual_clock, monkeypatch
+    ):
+        manual_clock.install(monkeypatch, _slack_handler)
+        rec = _RecSlack()
+        stream = self._stream(rec, clock)
+        stream.active_task_id = "tool_1"
+        stream.active_task_title = "Bash"
+
+        async def scenario():
+            try:
+                await stream.append_task("tool_1", "Bash", "in_progress")
+                await stream._deliver("The first answer.")
+                _message_lands()
+                await stream.append_task("tool_1", "Bash  ⏱ 30s", "in_progress")
+                assert not _named(rec, "start_stream"), rec.calls
+                stream.task_counter = 1
+                await stream.on_tool_call(_tool(2))
+                assert stream.stream_ts == "ts-1", rec.calls
+                assert _named(rec, "append_task")[-1] == {
+                    "ts": "ts-1",
+                    "id": "tool_2",
+                    "title": "Bash 2",
+                    "status": "in_progress",
+                }, rec.calls
+                # Refreshes of the new step can follow a later message again.
+                _message_lands()
+                await stream.append_task(stream.active_task_id, "Bash 2  ⏱ 30s", "in_progress")
+                assert stream.stream_ts == "ts-2", rec.calls
+            finally:
+                stream.cancel_tool_timer()
+
+        asyncio.run(scenario())
+        assert _named(rec, "append_stream") == [
+            {"ts": "ts-0", "text": "The first answer."}
+        ], rec.calls
+
+    @pytest.mark.parametrize("refresh", [False, True], ids=["text", "refresh"])
+    def test_age_renewal_still_moves_after_streamed_answer(self, clock, refresh):
+        rec = _RecSlack()
+        stream = self._stream(rec, clock)
+
+        async def scenario():
+            await stream.append_task("tool_1", "Bash", "in_progress")
+            await stream._deliver("The answer begins. ")
+            _message_lands()
+            clock.now += STREAM_RENEW_AFTER_S
+            if refresh:
+                await stream.append_task("tool_1", "Bash  ⏱ 9m 0s", "in_progress")
+            else:
+                await stream._deliver("The answer continues.")
+
+        asyncio.run(scenario())
+        assert stream.stream_ts == "ts-1", rec.calls
+        assert _named(rec, "stop_stream") == [{"ts": "ts-0"}], rec.calls
+
+    def test_a_closing_card_stays_and_the_next_step_opens_below(self, clock):
+        rec = _RecSlack()
+        stream = self._stream(rec, clock)
+        stream.active_task_id = "tool_1"
+        stream.active_task_title = "Bash"
+
+        async def scenario():
+            _message_lands()
+            await stream.append_task("tool_1", "Bash", "complete")
+            assert not _named(rec, "start_stream"), rec.calls
+            stream.active_task_id = ""
+            await stream.renew_if_due(step=True)
+
+        asyncio.run(scenario())
+        # Nothing was running, so nothing is carried: the old message ends complete.
+        assert _named(rec, "append_task") == [
+            {"ts": "ts-0", "id": "tool_1", "title": "Bash", "status": "complete"}
+        ], rec.calls
+        assert _named(rec, "stop_stream") == [{"ts": "ts-0"}], rec.calls
+        assert stream.stream_ts == "ts-1"
+
+    def test_a_message_that_lands_while_the_stream_opens_is_below_it(self, clock):
+        rec = _MessageWhileOpening()
+        stream = self._stream(rec, clock)
+
+        async def scenario():
+            await stream.rotate()
+            await stream.append_task("tool_1", "Bash", "in_progress")
+
+        asyncio.run(scenario())
+        assert [s["ts"] for s in _named(rec, "start_stream")] == ["ts-1", "ts-2"], rec.calls
+        assert [c["ts"] for c in _named(rec, "append_task")] == ["ts-2"], rec.calls
+
+    def test_answer_text_does_not_move(self, clock):
+        rec = _RecSlack()
+        stream = self._stream(rec, clock)
+
+        async def scenario():
+            _message_lands()
+            await stream.renew_if_due()
+
+        asyncio.run(scenario())
+        assert not _named(rec, "start_stream"), rec.calls
+        assert not _named(rec, "stop_stream"), rec.calls
+
+    def test_a_message_in_another_thread_moves_nothing(self, clock):
+        rec = _RecSlack()
+        stream = self._stream(rec, clock)
+
+        async def scenario():
+            _message_lands(thread_ts="t2")
+            await stream.append_task("tool_1", "Bash", "in_progress")
+
+        asyncio.run(scenario())
+        assert not _named(rec, "start_stream"), rec.calls
+
+
+class _MessageLands:
+    """A script item: a person writes in the thread at this point of the turn."""
+
+
+class _StepRefresh:
+    """A scripted elapsed-time refresh of the native turn's current tool."""
+
+    stream: _AnswerStream | None = None
+
+
+class _ThreadProvider(_ClockedProvider):
+    """A ``_ClockedProvider`` whose script may also have a person write in the thread."""
+
+    async def stream(self, message, timeout=120.0):
+        async for event in super().stream(message, timeout):
+            if isinstance(event, _MessageLands):
+                _message_lands(thread_ts="msg1")
+                continue
+            if isinstance(event, _StepRefresh):
+                stream = event.stream
+                assert stream is not None
+                # Prove the timer is refreshing a step while reply bytes are already visible.
+                assert stream.delivered
+                await stream.append_task(
+                    stream.active_task_id, f"{stream.active_task_title}  ⏱ 30s", "in_progress"
+                )
+                continue
+            yield event
+
+
+def _tool(n: int) -> LLMEvent:
+    return LLMEvent(kind=EVENT_TOOL_CALL, title=f"Bash {n}", tool_call_id=f"tool_{n}")
+
+
+def _cards(slack: MockSlackClient) -> list[tuple[str, str, str]]:
+    """``(stream ts, title, status)`` of every task card, in order."""
+    return [(p["ts"], p["title"], p["status"]) for n, p in slack.actions if n == "append_task"]
+
+
+def test_native_turn_draws_its_next_step_below_a_message(clock, monkeypatch, tmp_path):
+    hide_slack_timing_footer(monkeypatch, tmp_path)
+    monkeypatch.setattr(_slack_handler, "_EDIT_INTERVAL", 0.0)
+    script = [_tool(1), _MessageLands(), _tool(2), _say("All done.")]
+    slack = _TimedSlack(clock)
+    sessions = FakeSessionManager(_ThreadProvider(script, clock))
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    first, second = slack.started()
+    cards = _cards(slack)
+    # The step that ran before the message ends complete where it was drawn, and
+    # the one after it is drawn only in the message below.
+    assert [c for c in cards if c[0] == first] == [
+        (first, "Bash 1", "in_progress"),
+        (first, "Bash 1", "complete"),
+    ], cards
+    assert [c[1] for c in cards if c[0] == second] == ["Bash 2", "Bash 2"], cards
+    stops = [p["ts"] for n, p in slack.actions if n == "stop_stream"]
+    assert stops[0] == first, slack.actions
+    assert slack.streamed().count("All done.") == 1, slack.actions
+
+
+def test_native_turn_with_no_message_keeps_one_stream(clock, monkeypatch, tmp_path):
+    hide_slack_timing_footer(monkeypatch, tmp_path)
+    monkeypatch.setattr(_slack_handler, "_EDIT_INTERVAL", 0.0)
+    slack = _TimedSlack(clock)
+    sessions = FakeSessionManager(_ThreadProvider([_tool(1), _tool(2), _say("All done.")], clock))
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert len(slack.started()) == 1, slack.actions
+
+
+def test_native_turn_refresh_keeps_streamed_answer_together(
+    clock, manual_clock, monkeypatch, tmp_path
+):
+    manual_clock.install(monkeypatch, _slack_handler)
+    hide_slack_timing_footer(monkeypatch, tmp_path)
+    monkeypatch.setattr(_slack_handler, "_EDIT_INTERVAL", 0.0)
+    refresh = _StepRefresh()
+
+    def make_stream(*args, **kwargs):
+        refresh.stream = _AnswerStream(*args, **kwargs)
+        return refresh.stream
+
+    monkeypatch.setattr(_slack_handler, "_AnswerStream", make_stream)
+    parts = ["```python\n" + "print('hello')\n" * 100, "print('done')\n```"]
+    script = [_tool(1), _say(parts[0]), _MessageLands(), 30.0, refresh, _say(parts[1])]
+    slack = _TimedSlack(clock)
+    sessions = cast(
+        _slack_handler.SessionManager, FakeSessionManager(_ThreadProvider(script, clock))
+    )
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert len(slack.started()) == 1, slack.actions
+    only_stream = slack.started()[0]
+    assert {p["ts"] for n, p in slack.actions if n == "append_stream"} == {only_stream}
+    assert slack.streamed() == "".join(parts), slack.actions
+    assert not any("print(" in text for text in slack.rewrites()), slack.actions
+    assert any(title == "Bash 1  ⏱ 30s" for _, title, _ in _cards(slack)), slack.actions

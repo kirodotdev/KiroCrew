@@ -1,8 +1,10 @@
 """The pause, drain and fence a restart takes before it may cut the process.
 
 A user-clicked restart (``updates_apply._restart_gateway``, behind the dashboard
-and desktop Restart buttons) is the only in-app path that cuts the process; the
-scheduler has none (decision entry "updates never restart a running gateway").
+and desktop Restart buttons) is the only in-app path that cuts the process (the
+bind refresh, ``dashboard/bind_refresh.py``, calls it too, only once the gateway
+is idle); the scheduler has none (decision entry "updates never restart a
+running gateway").
 ``admit_restart`` is the sequence it takes before it saves slots and calls
 ``close_all()``:
 

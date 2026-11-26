@@ -237,7 +237,12 @@ async def _begin_local_turn_marker(
     except asyncio.CancelledError:
         raise
     except Exception:
-        logger.warning("Could not persist the turn marker for slot %s", slot.key, exc_info=True)
+        logger.warning(
+            "Could not persist the turn marker for slot %s; "
+            "it and any prompt copy wait for the next save",
+            slot.key,
+            exc_info=True,
+        )
         slot._dirty = True
         return
     if not merged and state._slots.get(slot_name) is slot:

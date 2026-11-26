@@ -250,8 +250,10 @@ unauthenticated surface beyond the three token-free liveness probes
 (`/api/health`, `/api/live`, `/api/ready`).
 
 A governance policy can narrow both: the `bind_address` list refuses a
-`KIROCREW_BIND` address it does not name (the gateway then binds `127.0.0.1`),
-and the `dashboard_origins` list drops an extra origin it does not name. An
+`KIROCREW_BIND` address it does not name (the gateway then binds `127.0.0.1`;
+when a policy refresh stops permitting the address a running gateway listens
+on, the gateway restarts once nothing is running, so the narrowed address
+applies), and the `dashboard_origins` list drops an extra origin it does not name. An
 LTS build allows neither until a policy names it. Tailnet access there
 follows the policy's `capabilities.tailnet_origin` alone: until a policy turns it
 on, `kirocrew tailnet up` and the dashboard card say "Tailnet is off by policy".
@@ -724,6 +726,10 @@ dead and you need a fresh one.
 - **`kirocrew logout`** — ends **all** sessions globally, refresh chains
   included: it bumps a persisted revocation generation that every access and
   refresh token embeds, so tokens minted before the logout are rejected.
+  **`kirocrew logout --link <url or token>`** ends only that one dashboard
+  link, every session it opened and their refresh chains; other sessions stay
+  signed in. A link minted before per-link revocation is refused with
+  `legacy_link`; use plain `kirocrew logout` for it.
 - **Reuse detection** — a consumed refresh token replayed outside a 60-second
   same-IP grace window (`REFRESH_GRACE_SECS`) auto-revokes the entire chain
   (RFC 6819 §5.2.2.3). The frontend reports `refresh_chain_revoked` and stops

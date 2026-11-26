@@ -1,4 +1,4 @@
-"""Resume the chats a planned in-app restart cut off.
+"""Resume the chats a planned restart cut off; remember the ones a stop cut.
 
 The dashboard's ``_restart_gateway`` behind ``POST /api/restart`` and Slack's
 ``/kirocrew restart`` call :func:`record_running_slots` to record chats with a
@@ -9,6 +9,10 @@ Resume-all run (``chat_resume_all.start_resume_all``), so its bound on
 concurrent turns and every refusal it makes still apply. A crash writes no
 record: with a dashboard its chats keep the Resume button and wait for the
 owner. Without a valid record, this startup recovery path resumes no chats.
+
+The gateway's graceful shutdown records the chats it cuts to a separate
+last-stop record (``stop=True``) that no boot reads. Only ``kirocrew resume``
+acts on it (``kiro_crew.cli_resume``), so a stop never re-runs a turn on its own.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 INTENT_NAME = "resume-after-restart.json"
+LAST_STOP_NAME = "resume-after-stop.json"
 _INTENT_MAX_BYTES = 256 * 1024
 #: A record older than this is not this boot's: a planned restart that never
 #: happened left it, and a later crash boot must not resume those chats.
@@ -58,21 +63,36 @@ def intent_path() -> Path:
     return config_dir() / INTENT_NAME
 
 
+def last_stop_path() -> Path:
+    return config_dir() / LAST_STOP_NAME
+
+
+def _write(path: Path, names: list[str]) -> None:
+    if names:
+        atomic_write(path, json.dumps(names), restrict_to_owner=True)
+    else:
+        path.unlink(missing_ok=True)
+
+
 def write_intent(names: list[str]) -> None:
     """Write *names*, or remove an earlier record when no chat is running."""
-    if names:
-        atomic_write(intent_path(), json.dumps(names), restrict_to_owner=True)
-    else:
-        intent_path().unlink(missing_ok=True)
+    _write(intent_path(), names)
 
 
-async def record_running_slots(state: DashboardState | None) -> None:
-    """Record the chats a planned restart is about to cut. Call right before ``close_all()``.
+def write_last_stop(names: list[str]) -> None:
+    """Write *names*, or remove an earlier record when no chat is running."""
+    _write(last_stop_path(), names)
+
+
+async def record_running_slots(state: DashboardState | None, *, stop: bool = False) -> None:
+    """Record the chats a restart or stop is about to cut. Call right before ``close_all()``.
 
     A slot counts when it carries the turn-in-flight marker, which is what the
     next boot's reconcile turns into the interruption row this record resumes.
     Names are read on the loop, the file is written off it with a 5 s bound,
-    and a failure is logged: the restart goes on without the record.
+    and a failure is logged: the restart goes on without the record. *stop*
+    writes the last-stop record instead of the one the next boot resumes, and
+    skips the approval-write wait: the stop runs its own after the closes.
     """
     try:
         slots = list(getattr(state, "_slots", {}).items())
@@ -81,9 +101,12 @@ async def record_running_slots(state: DashboardState | None) -> None:
             for n, s in slots
             if getattr(s, "_turn_in_flight_generation", 0) > 0 and not _one_request_api_turn(n, s)
         )
-        await asyncio.wait_for(asyncio.to_thread(write_intent, names), 5.0)
+        write = write_last_stop if stop else write_intent
+        await asyncio.wait_for(asyncio.to_thread(write, names), 5.0)
     except Exception:
-        logger.warning("Resume-after-restart record failed", exc_info=True)
+        logger.warning("Resume record (%s) failed", "stop" if stop else "restart", exc_info=True)
+    if stop:
+        return
     # The other record a planned restart must not cut short: an approval answered
     # just now is still being written. Imported here: that module imports handlers.
     from kiro_crew.dashboard.crew_api_approvals import finish_writes_before_restart
@@ -91,25 +114,49 @@ async def record_running_slots(state: DashboardState | None) -> None:
     await finish_writes_before_restart(state)
 
 
+def _read(path: Path) -> tuple[float, bytes] | None:
+    """``(mtime, raw)`` of a record, ``None`` when there is none."""
+    try:
+        with open(path, "rb") as fh:
+            mtime = os.fstat(fh.fileno()).st_mtime
+            return mtime, bounded_read(fh, _INTENT_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return None
+
+
+def _names(raw: bytes) -> list[str]:
+    try:
+        names = json.loads(raw) if len(raw) <= _INTENT_MAX_BYTES else None
+    except (ValueError, RecursionError):
+        names = None
+    if not isinstance(names, list):
+        return []
+    return [name for name in names if isinstance(name, str)]
+
+
 def take_intent() -> frozenset[str]:
     """Read and delete the record. The delete comes first, so a boot tries once."""
     path = intent_path()
-    try:
-        with open(path, "rb") as fh:
-            age = time.time() - os.fstat(fh.fileno()).st_mtime
-            raw = bounded_read(fh, _INTENT_MAX_BYTES + 1)
-    except FileNotFoundError:
+    record = _read(path)
+    if record is None:
         return frozenset()
     path.unlink(missing_ok=True)
-    if age > _INTENT_MAX_AGE_SECS:
+    mtime, raw = record
+    if time.time() - mtime > _INTENT_MAX_AGE_SECS:
         return frozenset()
-    try:
-        names = json.loads(raw) if len(raw) <= _INTENT_MAX_BYTES else None
-    except ValueError:
-        names = None
-    if not isinstance(names, list):
-        return frozenset()
-    return frozenset(name for name in names if isinstance(name, str))
+    return frozenset(_names(raw))
+
+
+def last_stop_record() -> tuple[float, list[str]] | None:
+    """``(mtime, names)`` of the last stop's record, ``None`` when there is none."""
+    record = _read(last_stop_path())
+    return None if record is None else (record[0], _names(record[1]))
+
+
+def read_last_stop() -> list[str]:
+    """The chats the last stop cut."""
+    record = last_stop_record()
+    return [] if record is None else record[1]
 
 
 async def resume_after_restart(state: DashboardState) -> None:

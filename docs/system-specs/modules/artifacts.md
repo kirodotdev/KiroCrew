@@ -2205,20 +2205,28 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
     fixed-height frame scrolls itself and ignores the message. A
     `position: sticky` element inside the artifact still scrolls away here: it
     sticks to the frame's viewport, which is the whole document.
-- **A frame showing something that is not ours offers a retry.** The document URL
-  is single-use, so a navigation the ENGINE starts on its own (memory pressure, a
-  back/forward cache eviction) re-requests a spent URL and lands the frame on a
-  404 page — which fires `load` like any other navigation and leaves a silent
-  empty box, while the failure notice stays hidden because the mint itself
-  succeeded. Every document this surface builds carries the height reporter, so
-  silence past a grace window is the signal to surface the existing retry (which
-  re-mints; re-pointing at the spent URL recovers nothing). Deliberately not an
-  automatic re-mint: a second `load` also happens when a link inside an artifact
-  navigates the frame, and silently pulling the reader back would fight them.
-  The crewmate Dashboard tab differs and re-mints by itself
-  (`useFrameAliveRecovery`): its links go through the host's link bridge, so its
-  frame has no navigation of its own to fight, and a document that does not
-  answer the host's ping after a `load` is re-minted, at most three times in a row.
+- **A frame showing something that is not ours re-mints itself, and offers a
+  retry.** The document URL is single-use, so a navigation the ENGINE starts on
+  its own (memory pressure, a back/forward cache eviction, a gateway restart)
+  re-requests a spent URL and lands the frame on a 404 page — which fires `load`
+  like any other navigation and leaves a silent empty box, while the failure
+  notice stays hidden because the mint itself succeeded. Every visible frame
+  that runs script (this surface, the library thumbnail, a teammate's shared
+  artifact, a chat widget and the crewmate Dashboard tab) is built with
+  `buildSrcdoc({ aliveReply: true })`, and `useFrameAliveRecovery` re-mints a
+  document that does not answer the host's ping after a `load`, at most three
+  times in a row. Their web links go through the host's link bridge, a report's
+  links are inert and no click reaches a thumbnail, so little else moves them:
+  a `_self` or relative link, the page's own script, or a link in a
+  welcome-brief widget (it has no bridge) to a site the dashboard's `frame-src`
+  admits. Such a page cannot answer the
+  ping either, so it is re-minted back to the document, as on the crewmate
+  Dashboard tab. This surface also carries the height reporter, so silence past
+  a grace window longer than the ping's deadline surfaces the existing retry
+  (which re-mints; re-pointing at the spent URL recovers nothing), the reader's
+  way back once the automatic tries stop; while the re-mint is still in flight
+  it reads "Rendering…". The command-center session card frame grants no
+  script, so it cannot answer the ping and is not recovered.
   `/sandbox-doc/` is on the service worker's skip list for the same single-use
   reason, and because an iframe navigation has `mode === 'navigate'`, so the
   worker's offline fallback would otherwise serve the SPA shell INTO the widget
@@ -2926,6 +2934,13 @@ Mutating routes fall into two categories:
   even after an expiry has emptied the list.
 
 All mutating routes require an unrestricted (non-restricted) session.
+
+Every mutating route also answers a dashboard session that is neither the owner nor
+a Shared Crew teammate (a messaging allowlist link session) with 403 `owner_only`
+(`require_owner_for_dashboard_caller`, applied by `_owner_gated` where the route is
+registered, before the cloud-deployment gate). Withdrawal (recall, destroy,
+teardown) is owner-gated but not cloud-gated. An internal-secret caller keeps its
+`@_internal_denied` and allowlist judgement. The `GET` routes are unchanged.
 
 #### Deploy handler owners
 

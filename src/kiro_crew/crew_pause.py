@@ -36,11 +36,14 @@ memory and take no lock: each write publishes a new map, never
 editing the published ones, so a reader on the event loop never waits on a
 writer's file write. The file is read once per data home (it is small and
 capped; the dashboard reads it off-loop at startup with :func:`load`), and every
-write goes through :func:`atomic_write`.
+write goes through :func:`atomic_write`. A file that is there but cannot be read
+is not read as empty: until a later call reads it, no crew counts as paused and
+every write raises ``OSError``, since each write stores the whole map.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import threading
@@ -49,7 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.paths import data_home
 
 logger = logging.getLogger(__name__)
@@ -129,7 +132,11 @@ def _fold_resuming(
 
 
 def _ensure_loaded() -> None:
-    """Load the file once per data home. Caller holds ``_lock``."""
+    """Load the file once per data home. Caller holds ``_lock``.
+
+    Raises ``OSError`` when the file is there but cannot be read, and leaves it
+    unread: a writer must not store a map built from nothing over it.
+    """
     global _loaded_from
     path = _path()
     if _loaded_from == path:
@@ -137,11 +144,16 @@ def _ensure_loaded() -> None:
     records: dict[str, dict[str, Any]] = {}
     try:
         if path.is_file() and path.stat().st_size <= MAX_FILE_BYTES:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(read_bytes_with_retry(path).decode("utf-8"))
             if isinstance(raw, dict):
                 records = _fold_resuming(
                     _clean_paused(raw.get("paused")), _clean_resuming(raw.get("resuming"))
                 )
+    except OSError as exc:
+        logger.warning(
+            "crew pause: could not read %s (%s); reading it again on next use", path, exc
+        )
+        raise
     except Exception:  # a damaged file pauses nothing, and is not re-read every turn
         records = {}
         logger.warning("crew pause: could not read %s; no crew is paused", path, exc_info=True)
@@ -152,8 +164,11 @@ def _ensure_loaded() -> None:
 
 
 def load() -> None:
-    """Read the pause file now. BLOCKING: the gateway calls it off-loop at startup."""
-    with _lock:
+    """Read the pause file now. BLOCKING: the gateway calls it off-loop at startup.
+
+    A file that cannot be read is logged and stays unread, so the next call reads it.
+    """
+    with _lock, contextlib.suppress(OSError):
         _ensure_loaded()
 
 

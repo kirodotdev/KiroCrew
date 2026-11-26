@@ -770,7 +770,9 @@ their principal, so every audit row and attribution names them, never the owner.
 where the difference is a fact about who is at the machine, not a right:
 `/api/auth/me`'s `owner_ok` (so the host's first-run chapters open only in the
 owner's tab) and the decide-by-id form of a tool approval, which only the owner's
-browser sends (a teammate's card always names its request). A messaging allowlist
+browser sends (a teammate's card always names its request), and the YOLO
+confirmation acknowledgement kept on the gateway (`GET`/`PUT /api/chat/yolo-ack`),
+which is the machine owner's; a teammate keeps the per-browser copy. A messaging allowlist
 link, an app token, an internal caller, a widened-bind tailnet peer (attribution
 only) and an Unknown actor are not teammates. The SSM and Tailscale paths exist only
 while the Shared Crew preview is on; a relay teammate is the team Crew's own access

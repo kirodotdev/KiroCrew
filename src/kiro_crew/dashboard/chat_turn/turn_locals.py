@@ -208,6 +208,8 @@ class _ChatTurn:
     _mirror_chan: "str | None"
     _mirror_post_ts: "str | None"
     _mirror_stream_ts: "str"
+    # ``messages_noted()`` count when the mirror's task stream was opened; None with none open.
+    _mirror_stream_messages_noted: "int | None"
     _mirror_task_counter: "int"
     _mirror_thread: "str | None"
     _mirror_stream_tried: "bool"

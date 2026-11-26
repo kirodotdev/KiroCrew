@@ -446,8 +446,8 @@ class FeedbackTrackerProvider(Protocol):
         Default) leaves today's behaviour byte-for-byte.
 
         *bundle* carries the facts a report wants: ``filename``,
-        ``total_redactions``, ``path_collapses`` (host-name replacements
-        included) and ``provenance`` (release, channel). Never put
+        ``total_redactions``, ``path_collapses`` (host-name and login
+        replacements included) and ``provenance`` (release, channel). Never put
         ``bundle.zip_path`` in the URL: it sits under the data home and leaks
         the OS login. *note* is the user's free text, untrusted; percent-encode
         it or leave it out.

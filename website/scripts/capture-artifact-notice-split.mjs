@@ -11,7 +11,7 @@
  * height — which is EITHER an engine renavigation 404ing the single-use doc URL
  * or the reader deliberately following a link inside the sandbox; the two are
  * indistinguishable from outside an opaque origin, so a failure claim is wrong
- * half the time and "Retry" destroys a page the reader chose to open). The fix
+ * half the time). The fix
  * gives docSilent cause-neutral copy ("This artifact is no longer showing" +
  * "Show artifact"); `failed` keeps its copy.
  *
@@ -110,8 +110,8 @@ async function main() {
   // ── Frame 2: docSilent — document loaded, then silence past the grace window ──
   mintSucceeds = true
   await page.goto(base + `/artifacts/${ARTIFACT.slug}`, { waitUntil: 'domcontentloaded' })
-  // DOC_REPORT_GRACE_MS is 3000ms after the frame's load event; wait past it.
-  await page.waitForTimeout(5500)
+  // DOC_REPORT_GRACE_MS is 5000ms after the frame's load event; wait past it.
+  await page.waitForTimeout(7000)
   await page.screenshot({
     path: `${OUT}/${PREFIX}-02-docsilent.png`,
     clip: { x: 0, y: 0, width: 1500, height: 760 },

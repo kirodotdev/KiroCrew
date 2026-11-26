@@ -1042,7 +1042,7 @@ function ChatInput({
         </Glass>
       )}
       {terminal.active && (
-        <div className="flex flex-col gap-1.5" role="group" aria-label={i18nT('components.chatInput.terminal_review')}>
+        <Glass variant="chip" thickness="thick" radius={8} className="mb-1 flex flex-col gap-1.5 px-3 py-2" role="group" aria-label={i18nT('components.chatInput.terminal_review')}>
           <div className="text-sm text-muted flex items-center gap-1.5" role="status">
             <Terminal className="lucide-inline shrink-0" />
             {/* The folder name, as on the project chip; the review dialog shows the full path. */}
@@ -1066,7 +1066,7 @@ function ChatInput({
               <span className="min-w-0 whitespace-normal text-left [overflow-wrap:anywhere]">{i18nT('components.chatInput.terminal_run_review')}</span>
             </Btn>
           )}
-        </div>
+        </Glass>
       )}
 
       {/* Ghost follow-up bubbles floating above input */}
@@ -1243,8 +1243,12 @@ function ChatInput({
         )}
       </AnimatePresence>
 
+      {/* Each notice row is a thick pane of its own: the composer's pane they
+          sit in is the thin step, so a bare or tinted row let the transcript
+          show through. The 6px margin keeps each pane's 8px corner inside the
+          composer's rounded one, in both its shapes (16px and 23px). */}
       {optimizeError && (
-        <div className="px-4 mb-1">
+        <Glass variant="chip" thickness="thick" radius={8} className="m-1.5 flex px-3 py-1.5">
           {/* No hand-off: the composer draft below (the prompt that was restored) is unsaved. */}
           <ErrorNotice
             variant="inline"
@@ -1252,55 +1256,57 @@ function ChatInput({
             message={optimizeError}
             onDismiss={() => setOptimizeError('')}
           />
-        </div>
+        </Glass>
       )}
       {optimizeBusy && (
-        <div role="status" data-testid="optimize-busy" className="px-4 mb-1 text-muted text-[13px]">{optimizeBusy}</div>
+        <Glass variant="chip" thickness="thick" radius={8} role="status" data-testid="optimize-busy" className="m-1.5 px-4 py-2 text-muted text-[13px]">{optimizeBusy}</Glass>
       )}
       {typeof approvalNotice === 'string' && approvalNotice && approvalNoticeKind === 'error' && (
-        <div className="px-4 mb-1">
+        <Glass variant="chip" thickness="thick" radius={8} className="glass-danger m-1.5 px-3 pb-2.5">
           {/* No hand-off: the composer draft below is unsaved. */}
           <ErrorNotice
+            nested
             testId="approval-decision-error"
             message={approvalNotice}
             onDismiss={() => setApprovalNotice(null)}
           />
-        </div>
+        </Glass>
       )}
       {approvalNotice && (approvalNoticeKind === 'status' || approvalNoticeKind === 'settled') && (
-        <div
+        <Glass variant="chip" thickness="thick" radius={8}
           role="status"
-          className="flex items-center gap-2 px-4 py-2 mb-1 bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] rounded-lg"
+          className="glass-warn flex items-center gap-2 px-4 py-2 m-1.5"
         >
           {approvalNoticeKind === 'settled' ? <CheckCircle size={12} className="text-ok shrink-0" /> : <Lock size={12} className="text-warn shrink-0" />}
           <span className="text-muted text-[13px]">{approvalNotice}</span>
-        </div>
+        </Glass>
       )}
       {spawnApprovals.spawnLivenessError && (
-        <div className="px-4 mb-1">
+        <Glass variant="chip" thickness="thick" radius={8} className="glass-danger m-1.5 px-3 pb-2.5">
           {/* No hand-off: the composer draft below is unsaved. Under the
               refusal, never over it: a failed liveness read after a gone
               verdict is a second fact, not a replacement for the first. */}
           <ErrorNotice
+            nested
             testId="spawn-liveness-error"
             message={spawnApprovals.spawnLivenessError}
             onDismiss={spawnApprovals.dismissSpawnLivenessError}
           />
-        </div>
+        </Glass>
       )}
       {approvalNotice && approvalNoticeKind === 'granted' && (
-        // A grant that landed, not a block: its own clock icon and ok tint,
-        // so the confirmation never wears the warning lock above.
-        <div role="status" className="flex items-center gap-2 px-4 py-2 mb-1 bg-ok-subtle rounded-lg">
+        // A grant that landed, not a block: its own clock icon, so the
+        // confirmation never wears the warning lock or tint above.
+        <Glass variant="chip" thickness="thick" radius={8} role="status" className="flex items-center gap-2 px-4 py-2 m-1.5">
           <Clock size={12} className="text-ok shrink-0" />
           <span className="text-muted text-[13px]">{approvalNotice}</span>
-        </div>
+        </Glass>
       )}
 
       {!showGhost && prefillHint && (
-        <div className="flex items-center gap-2 px-4 py-2 mb-1 bg-accent/10 rounded-lg">
+        <Glass variant="chip" thickness="thick" radius={8} className="glass-accent flex items-center gap-2 px-4 py-2 m-1.5">
           <span className="text-accent text-[13px]"><ClipboardList className="lucide-inline" /> {i18nT('components.chatInput.plan_pre_filled_add_context_then_send')}</span>
-        </div>
+        </Glass>
       )}
 
       <ComposerAttach id={fileInputId} ref={fileInputRef} aria-label={i18nT('components.chatInput.attach_files')} multiple accept={FILE_ACCEPT} className="sr-only" onFiles={onUploadFiles} />
@@ -1488,9 +1494,11 @@ function ChatInput({
             `data-composer-typo` gives it every rule the textarea's hook gets, so
             the probe wraps exactly where the textarea does; otherwise the
             textarea could wrap first and the pill grow tall before the box
-            changed shape. */}
+            changed shape. `h-0` keeps a long draft from growing the box's
+            scroll area (a caret reveal would scroll it); `scrollHeight` still
+            reads the wrapped height. */}
         {inlineToolbarWhileFits && (
-          <div ref={oneRowProbeRef} aria-hidden="true" data-composer-typo="" data-testid="composer-one-row-probe" className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre-wrap break-words px-4 mc-message-font-text font-body leading-normal [scrollbar-gutter:stable] overflow-y-auto" />
+          <div ref={oneRowProbeRef} aria-hidden="true" data-composer-typo="" data-testid="composer-one-row-probe" className="absolute left-0 top-0 h-0 invisible pointer-events-none whitespace-pre-wrap break-words px-4 mc-message-font-text font-body leading-normal [scrollbar-gutter:stable] overflow-y-auto" />
         )}
         {/* The staged quote sits inside the text area, above the caret: the
             quoted message is the first thing the reply says, so it is drawn
@@ -1652,7 +1660,7 @@ function ChatInput({
 
         <PromptLengthNotice value={value} blocks={pasteBlocks} contextWindowTokens={contextWindowTokens} confirmPending={overLimitPending} />
 
-        {promptStashEnabled && <PromptStashStatusRegion stash={promptStash} chordLabel={promptStashChord} touch={isTouchDevice()} menuGlyph={stashMenuGlyph} />}
+        {promptStashEnabled && <PromptStashStatusRegion stash={promptStash} chordLabel={promptStashChord} touch={isTouchDevice()} menuGlyph={stashMenuGlyph} onFocusInput={() => composerControl()?.focus()} />}
 
         {/* Bottom icon row. Inline (`inlineToolbar`), the row itself is
             `contents`: its two clusters become flex items of the box, ordered

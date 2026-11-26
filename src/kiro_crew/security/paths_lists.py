@@ -646,6 +646,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # Steering files each chat switched off: a writable record would let an agent
     # drop its own rules. Only ``PUT /api/chat/slots/{slot}/steering`` writes it.
     "chat_steering_off.json",
+    # The owner's acknowledgement of the YOLO confirmation: it lets the owner's later
+    # YOLO pick skip the confirmation, so a writable record would let an agent
+    # pre-satisfy a human gate. Only the owner's ``PUT /api/chat/yolo-ack`` writes it.
+    "yolo_ack.json",
     # Recorded consent to send memory to a provider app that keeps it off this
     # machine (``egress: "remote"``). Same class as ``decisions_consent.json``:
     # the record AUTHORIZES preferences, lessons and transcripts to leave, so an

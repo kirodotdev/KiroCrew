@@ -1063,16 +1063,17 @@ class ModelStore:
             return path
 
     async def _accept_existing_or_refuse(self, model: WhisperModel) -> tuple[Path | None, bool]:
-        """:meth:`_accept_existing`, with an aliased file reported instead of raised.
+        """:meth:`_accept_existing`, with a load-time refusal reported instead of raised.
 
         Returns ``(path, refused)``. A file reachable under a second hard link, or through
-        a symlink or junction at any step from ``models``, is refused at load (see
+        a symlink or junction at any step from ``models``, is refused at load, and so is
+        a mismatched file that cannot be removed (see
         :meth:`_accept_existing` and :meth:`_verified_on_disk`). ``ensure`` promises ``None`` rather than
         an exception into a websocket handler, so the refusal becomes a
         ``failed`` status (flagged ``refused``) carrying the message that names the file
         and the remedy, which the settings page shows as it shows any failure, and ``ensure``
-        stops there without downloading: the bytes are the pinned ones, and only the
-        operator can remove the second name.
+        stops there without downloading: a download cannot clear either condition, and
+        only the operator can.
         """
         # Imported here, not at module scope: this keeps the sandbox module out of the
         # stt import graph, mirroring the lazy direction sandbox itself uses for stt.
@@ -1154,7 +1155,8 @@ class ModelStore:
         Raises ``SandboxCeilingUnsealable`` when a name from ``models`` down to the file
         is a symlink or junction (``sandbox.require_real_model_path``), asked before
         anything reads or writes through the path, so the link refuses this model's load
-        and the download that would otherwise land through it, and nothing else.
+        and the download that would otherwise land through it, and nothing else. Also
+        raised through :meth:`_verified_on_disk` for a file it refuses.
         """
         # Imported here, not at module scope: this keeps the sandbox module out of the
         # stt import graph, mirroring the lazy direction sandbox itself uses for stt.
@@ -1212,7 +1214,11 @@ class ModelStore:
         the operator's own file is not this gate's call to make.
 
         A file that fails the DIGEST is deleted, so the caller's download path replaces
-        it rather than reporting voice as broken.
+        it rather than reporting voice as broken. A delete that fails (on Windows, a
+        program holding the file open; elsewhere, a folder this process cannot write)
+        refuses the load the same way an alias does,
+        because the download could not replace that file either: ``False`` would start
+        one transfer per load that cannot land.
 
         Deliberately diverging from `embeddings`, which documents the same size-only
         trade for its own GGUF. That reasoning ("a sha256 over ~600MB on every boot
@@ -1240,10 +1246,20 @@ class ModelStore:
             model.sha256[:16],
         )
         try:
-            path.unlink()
-        except OSError:
-            logger.warning("Could not remove the unverified model at %s", path, exc_info=True)
-            return False
+            # missing_ok: a concurrent check of the same file may have removed it first,
+            # and a file that is gone can be downloaded over.
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            # Imported here, not at module scope: this keeps the sandbox module out of the
+            # stt import graph, mirroring the lazy direction sandbox itself uses for stt.
+            from kiro_crew import sandbox
+
+            raise sandbox.SandboxCeilingUnsealable(
+                f"the whisper model file {sandbox.safe_terminal_line(str(path))} does not "
+                f"match its pinned SHA-256 and could not be removed ({exc.strerror}). Close "
+                "any program holding it open, or delete it by hand (check the folder's "
+                "permissions if that fails too); the next load then downloads a fresh copy."
+            ) from exc
         return False
 
     def _set(
@@ -1308,7 +1324,7 @@ class ModelStore:
             "error": error,
         }
         if refused:
-            # Present only on a load-time alias refusal, so every other status keeps its
+            # Present only on a load-time refusal, so every other status keeps its
             # shape. The engine reads it to report the refusal rather than "not downloaded".
             status["refused"] = True
         self._by_model[model] = status

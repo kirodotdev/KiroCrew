@@ -178,6 +178,13 @@ class _SlackSessions:
     def has_session(self, key: str) -> bool:
         return key == _THREAD
 
+    def has_queued(self, key: str) -> bool:
+        return key == _THREAD and bool(self.queue)
+
+    def get_provider(self, key: str) -> None:
+        # No steer channel: a mid-turn message takes the queue this suite is about.
+        return None
+
     def get_session_for_thread(self, key: str) -> str | None:
         return None
 

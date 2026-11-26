@@ -11,7 +11,7 @@ from kiro_crew import change_card_catalog as catalog
 from kiro_crew import crewmate_prompts
 from kiro_crew.dashboard import goal_setup
 from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
 
 SNAP = {
     "exists": True,
@@ -369,6 +369,101 @@ def test_the_nudge_waits_for_a_busy_thread_then_sends_once(monkeypatch) -> None:
     assert args[1] is slot and "[Goal set]" in args[2]
     assert "set goal 2" in args[2]
     assert kwargs == {"human_seen": True}
+
+
+def test_after_a_persons_stop_the_nudge_waits_for_the_hold_to_end(monkeypatch) -> None:
+    from kiro_crew import member_goals
+    from kiro_crew import members as members_mod
+    from kiro_crew.dashboard import goal_reminder, mate_thread_wakes, mate_welcome
+
+    slot = _Slot()
+    slot.running = False
+    state = _State(slot)
+    sent: list[tuple] = []
+    idle_checks: list[str] = []
+    monkeypatch.setattr(goal_setup, "POLL_SECS", 0)
+    # The deadline set as the wait starts is already spent.
+    monkeypatch.setattr(goal_setup, "WAIT_SECS", 0.0)
+    real_idle_thread = goal_reminder._idle_thread
+
+    def idle_thread(*args):
+        idle_checks.append("checked")
+        # The bound is back only for a deadline a held pass re-arms.
+        monkeypatch.setattr(goal_setup, "WAIT_SECS", FALLBACK_TIMEOUT_SECS)
+        return real_idle_thread(*args)
+
+    monkeypatch.setattr(goal_reminder, "_idle_thread", idle_thread)
+    monkeypatch.setattr(
+        members_mod, "read_dm_binding", lambda _slug: {"member": "scout", "slot_key": slot.key}
+    )
+    monkeypatch.setattr(
+        member_goals,
+        "read_goals",
+        lambda _s, _m: {"goals": [GOAL_A], "key_results": [], "schedules": {}},
+    )
+    monkeypatch.setattr(mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k)))
+
+    async def go() -> None:
+        mate_thread_wakes.hold_after_stop(state, slot)
+        goal_setup.schedule_nudge(state, "scout", "scout", GOAL_A["id"])
+        task = state._goal_setup_tasks["scout"]
+        # The thread is idle, yet two passes of the wait start nothing.
+        await async_wait_until(lambda: len(idle_checks) >= 2)
+        assert sent == []
+        mate_thread_wakes.release_stop_hold(state, slot.key)
+        await asyncio.wait_for(task, timeout=30)
+
+    asyncio.run(go())
+    assert len(sent) == 1 and "[Goal set]" in sent[0][0][2]
+
+
+def test_a_stop_during_the_goal_read_holds_the_nudge_until_the_hold_ends(monkeypatch) -> None:
+    from kiro_crew import member_goals
+    from kiro_crew import members as members_mod
+    from kiro_crew.dashboard import goal_reminder, mate_thread_wakes, mate_welcome
+
+    slot = _Slot()
+    slot.running = False
+    state = _State(slot)
+    sent: list[tuple] = []
+    idle_checks: list[str] = []
+    reads: list[str] = []
+    monkeypatch.setattr(goal_setup, "POLL_SECS", 0)
+    # The deadline set as the wait starts is already spent.
+    monkeypatch.setattr(goal_setup, "WAIT_SECS", 0.0)
+    real_idle_thread = goal_reminder._idle_thread
+
+    def idle_thread(*args):
+        idle_checks.append("checked")
+        # The bound is back only for a deadline a held pass re-arms.
+        monkeypatch.setattr(goal_setup, "WAIT_SECS", FALLBACK_TIMEOUT_SECS)
+        return real_idle_thread(*args)
+
+    def read_goals(_s, _m):
+        if not reads:
+            # The person presses Stop while the goal record is read off the loop.
+            mate_thread_wakes.hold_after_stop(state, slot)
+        reads.append("read")
+        return {"goals": [GOAL_A], "key_results": [], "schedules": {}}
+
+    monkeypatch.setattr(goal_reminder, "_idle_thread", idle_thread)
+    monkeypatch.setattr(
+        members_mod, "read_dm_binding", lambda _slug: {"member": "scout", "slot_key": slot.key}
+    )
+    monkeypatch.setattr(member_goals, "read_goals", read_goals)
+    monkeypatch.setattr(mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k)))
+
+    async def go() -> None:
+        goal_setup.schedule_nudge(state, "scout", "scout", GOAL_A["id"])
+        task = state._goal_setup_tasks["scout"]
+        # A pass after the read's own starts nothing while the hold lasts.
+        await async_wait_until(lambda: len(idle_checks) >= 3 or task.done())
+        assert sent == [] and not task.done()
+        mate_thread_wakes.release_stop_hold(state, slot.key)
+        await asyncio.wait_for(task, timeout=30)
+
+    asyncio.run(go())
+    assert len(sent) == 1 and "[Goal set]" in sent[0][0][2]
 
 
 def test_an_applied_capabilities_card_wakes_its_crewmate_to_use_it(monkeypatch) -> None:

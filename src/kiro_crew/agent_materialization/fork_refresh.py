@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal
 
 from kiro_crew import agent as agent_mod
-from kiro_crew import agent_state, user_json
+from kiro_crew import agent_state, platform_compat, user_json
 from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
 from kiro_crew.agent_materialization import auto_approve
 from kiro_crew.agent_spec_format import is_markdown_spec
@@ -525,18 +525,24 @@ class AgentSpecLaunchUnresolved(SharedTemplateOverCeiling):
     """
 
 
-def _project_spec_runs(agent: str, work_dir: str | Path | None) -> bool:
+def _project_spec_runs(
+    agent: str, work_dir: str | Path | None, *, markdown_specs: bool = False
+) -> bool:
     """Whether kiro-cli would run the checkout's own spec for *agent* instead.
 
     kiro-cli resolves the name against ``<work_dir>/.kiro/agents/`` first, so a
     dispatchable project spec (JSON and parsed, the form that surely dispatches)
-    shadows every user-level claimant. Asked only when the user-level files would
-    refuse the start, so an uncontested start never scans the checkout.
+    shadows every user-level claimant. A skill view is built from the roster's file,
+    where a project markdown spec shadows too (*markdown_specs*). Asked only when the
+    user-level files would refuse the start, so an uncontested start never scans the
+    checkout.
     """
     if work_dir is None:
         return False
     return (
-        agent_mod._project_shadow_of(agent, work_dir, markdown_specs=False, dispatchable_only=True)
+        agent_mod._project_shadow_of(
+            agent, work_dir, markdown_specs=markdown_specs, dispatchable_only=True
+        )
         is not None
     )
 
@@ -550,25 +556,55 @@ def require_launch_resolves_one_file(
     user-level specs declare it must be handed a Kiro Crew skill view built from the
     file the declared-name resolver chose (``agent.spec_pins`` applied, see
     ``acp.skill_projection``). Any other launch name is a single Crew-owned file and
-    passes. Raises :class:`AgentSpecLaunchUnresolved` when the launch name is the
-    authored one (or unknown) and the claimants differ with no pin, the pin is
-    broken, or a pin chose a file no view could be built from (projection off, the
-    alias lock busy). Identical claimants with no pin pass: whichever file kiro-cli
-    picks, the agent is the same.
-    """
-    if launch_name and launch_name != agent:
-        return
-    from kiro_crew.agent_discovery import AmbiguousAgentSpecError, declared_spec_claim
+    passes, a skill view on Windows aside (below). Raises
+    :class:`AgentSpecLaunchUnresolved` when the launch name is the authored one (or
+    unknown) and the claimants differ with no pin, the pin is broken, or a pin chose a
+    file no view could be built from (projection off, the alias lock busy). Identical
+    claimants with no pin pass: whichever file kiro-cli picks, the agent is the same.
 
+    On Windows a start is also refused while a spec file stays held open past the
+    read retry, a readable file declares *agent* and no pin names one
+    (``agent_discovery.held_spec_refusal``): the held file may be a second claimant,
+    so the start would run a file nobody chose. There a skill view's start also gets
+    the resolver's refusals (a contest, a broken pin): the projection chose the view's
+    file from a cached scan of the directory, which keeps a held file out until a spec
+    there changes, so a contest the resolver now sees refuses the view too. Only
+    Windows holds a file against a reader, so elsewhere a view's start reads nothing
+    here.
+    """
+    authored = not launch_name or launch_name == agent
+    if not (authored or (platform_compat.IS_WINDOWS and _is_skill_view_name(launch_name))):
+        return
+    from kiro_crew import agent_spec_pins
+    from kiro_crew.agent_discovery import (
+        AmbiguousAgentSpecError,
+        declared_spec_claim,
+        held_spec_refusal,
+    )
+
+    pins = agent_spec_pins.spec_pins()
+    held: list[Path] = []
     try:
         claim = declared_spec_claim(
-            agent_mod.kiro_agents_dir_path(), agent, operation="kiro_cli_launch_pin", source="acp"
+            agent_mod.kiro_agents_dir_path(),
+            agent,
+            operation="kiro_cli_launch_pin",
+            source="acp",
+            pins=pins,
+            held=held,
         )
     except AmbiguousAgentSpecError as exc:
-        if _project_spec_runs(agent, work_dir):
+        if _project_spec_runs(agent, work_dir, markdown_specs=not authored):
             return
         raise AgentSpecLaunchUnresolved(f"{exc}\nThe session was not started.") from exc
     except OSError:
+        return
+    refusal = held_spec_refusal(agent, claim, held, pins)
+    if refusal is not None:
+        if _project_spec_runs(agent, work_dir, markdown_specs=not authored):
+            return
+        raise AgentSpecLaunchUnresolved(str(refusal)) from refusal
+    if not authored:
         return
     if claim is None or len(claim.claimants) < 2 or not (claim.pinned or claim.divergent):
         return

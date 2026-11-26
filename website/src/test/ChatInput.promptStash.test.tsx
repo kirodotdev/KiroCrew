@@ -197,7 +197,9 @@ describe('ChatInput prompt stash', () => {
     renderWithProviders(<Host />)
     const input = screen.getByRole('textbox')
     expect(await screen.findByTestId('prompt-stash-count')).toHaveTextContent('2 drafts stashed')
+    // Two or more drafts open the list; Enter takes its highlighted entry, the latest.
     pressStash(input)
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Enter' })
     expect(input).toHaveValue('newer')
     expect(screen.getByTestId('prompt-stash-count')).toHaveTextContent('1 draft stashed')
     expect(loadPromptStash('chat-1').map(e => e.text)).toEqual(['older', 'newer'])
@@ -213,7 +215,9 @@ describe('ChatInput prompt stash', () => {
     expect(await screen.findByTestId('prompt-stash-count')).toHaveTextContent('2 drafts stashed')
     await act(async () => { await withPromptStashLock(() => undefined) })
     expect(loadPromptStash('chat-1').map(e => e.text)).toEqual(['older', 'newer'])
+    // Two or more drafts open the list; Enter takes its highlighted entry, the latest.
     pressStash(input)
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Enter' })
     expect(input).toHaveValue('newer')
     expect(screen.getByTestId('prompt-stash-count')).toHaveTextContent('1 draft stashed')
   })
@@ -696,7 +700,9 @@ describe('ChatInput prompt stash', () => {
     seedStash('chat-1', [makeStashEntry('older', [], 1), makeStashEntry('changed my mind', [], 2)])
     renderWithProviders(<Host withPlusMenu />)
     const input = screen.getByRole('textbox')
+    // Two or more drafts open the list; Enter takes its highlighted entry, the latest.
     pressStash(input)
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Enter' })
     await waitFor(() => expect(input).toHaveValue('changed my mind'))
     await openPlusMenu()
     fireEvent.click(screen.getByTestId('prompt-stash-menu-discard'))
@@ -709,7 +715,9 @@ describe('ChatInput prompt stash', () => {
     await waitFor(() => expect(loadPromptStash('chat-1').map(e => e.text)).toEqual(['older', 'changed my mind']))
     expect(screen.getByTestId('prompt-stash-notice')).toHaveTextContent('The discarded draft is back in the stash.')
     expect(screen.queryByTestId('prompt-stash-undo-discard')).toBeNull()
+    // Two or more drafts open the list; Enter takes its highlighted entry, the latest.
     pressStash(input)
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Enter' })
     await waitFor(() => expect(input).toHaveValue('changed my mind'))
   })
 
@@ -748,7 +756,9 @@ describe('ChatInput prompt stash', () => {
     seedStash('chat-1', [makeStashEntry('older', [], 1), makeStashEntry('restored', [], 2)])
     renderWithProviders(<Host withPlusMenu />)
     const input = screen.getByRole('textbox')
+    // Two or more drafts open the list; Enter takes its highlighted entry, the latest.
     pressStash(input)
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Enter' })
     await waitFor(() => expect(input).toHaveValue('restored'))
     fireEvent.change(input, { target: { value: 'restored, then edited' } })
     await openPlusMenu()

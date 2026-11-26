@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         Any,
         GatewayOrchestrator,
         _stop_session_environments,
+        bind_refused_exit_code,
         drain_sign_in_refresher,
         flush_audit_queue,
         flush_audit_queue_before_hard_exit,
@@ -91,6 +92,13 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
         from kiro_crew.dashboard.chat_runner import stop_eager_spawns
 
         eager_spawns = stop_eager_spawns(self.dashboard_state)
+    # The chats this stop cuts go to the last-stop record, which no boot reads:
+    # only `kirocrew resume` resumes them, so a stop never re-runs a turn on its
+    # own. Recorded before the memory stop below can fail a turn in flight, and
+    # rewritten by every stop (removed when no chat runs).
+    from kiro_crew.dashboard import restart_resume
+
+    await restart_resume.record_running_slots(self.dashboard_state, stop=True)
     self._memory_repair_stop.set()
     if self._memory_repair_task is not None:
         self._memory_repair_task.cancel()
@@ -712,6 +720,10 @@ async def _shutdown_and_exit(
     # boot (a seccomp filter inherited from a torn-down sandbox turning
     # file opens into ENOSYS). That cannot be cured in-process, so it must
     # exit non-zero too for the supervisor to relaunch a fresh process.
+    #
+    # A refused bind address is a fourth: the policy refuses the address
+    # the gateway listens on and the in-app restart could not run, so a relaunch is
+    # what binds the address the policy permits.
     exit_code = (
         shutdown_exit_code(watchdog)
         or persistence_lost_exit_code(getattr(self, "_persistence_watchdog_task", None))
@@ -719,6 +731,7 @@ async def _shutdown_and_exit(
         or listener_guard_exit_code(
             getattr(self.dashboard_state, "_secondary_listener_guard", None)
         )
+        or bind_refused_exit_code(self.dashboard_state)
     )
 
     # Drop this gateway's run-marker BEFORE _shutdown() releases the

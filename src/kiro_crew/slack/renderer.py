@@ -109,7 +109,7 @@ from kiro_crew.slack.reply_pieces import (  # noqa: F401 -- re-exported
     _reply_construct_open,
 )
 from kiro_crew.slack.step_labels import slack_step_label
-from kiro_crew.slack.stream_window import stream_clock
+from kiro_crew.slack.stream_window import messages_noted, stream_clock
 from kiro_crew.slack.transport import SLACK_CAPABILITIES
 from kiro_crew.tool_call_title import format_raw_command
 
@@ -576,6 +576,8 @@ class SlackRenderer(
         # ``stream_clock()`` reading when the live stream was opened; 0 when none is
         # open. Slack ends a stream 10 minutes after it starts (``stream_window``).
         self._stream_started_at = 0.0
+        # ``messages_noted()`` count when the live stream was opened; None with none open.
+        self._stream_messages_noted: int | None = None
         self._renewal: asyncio.Task | None = None  # the ``_renew_stream_if_due`` in flight
         self._use_slack_stream = True  # False => chat.update cursor fallback
         # Set at turn end when this turn's footer carried an OPTIONS control, so
@@ -727,10 +729,12 @@ class SlackRenderer(
         if self._stream_ts is None:
             # The answer's message opens here, so the Thinking reply goes first.
             await self._reserve_thinking(opening_answer=True)
+            noted = messages_noted()  # before the request: one landing meanwhile is below it
             ts = await self._start_stream_if_threaded()
             if ts:
                 self._stream_ts = ts
                 self._stream_started_at = stream_clock()
+                self._stream_messages_noted = noted
                 self._use_slack_stream = True
             else:
                 # No streaming surface — fall back to chat.update on a posted
@@ -792,12 +796,15 @@ class SlackRenderer(
                     "Slack stop_stream failed during rotation — abandoning old stream",
                     exc_info=True,
                 )
+        noted = messages_noted()  # before the request, as in ``_ensure_stream``
         new_ts = await self._start_stream_if_threaded(initial_text=_STREAM_CONTINUED)
         if new_ts:
             self._stream_ts = new_ts
             self._stream_started_at = stream_clock()
+            self._stream_messages_noted = noted
         else:
             self._stream_started_at = 0.0
+            self._stream_messages_noted = None
             self._use_slack_stream = False
         return new_ts
 
@@ -809,6 +816,7 @@ class SlackRenderer(
         # appended text on this path is FINAL (chat.stopStream does not replace
         # it), which makes an unscanned append unrecoverable.
         text = _display_safe(text)
+        self._text_since_step = True
         await self._renew_stream_if_due()
         # Best-effort: MUST NOT raise. A raising append is the same event as a
         # refused append — the text is not on the stream — and the refusal
@@ -1037,7 +1045,8 @@ class SlackRenderer(
         """
         # Renewed before this card's state is recorded: the renewal redraws the
         # running step as it last stood, and a renewed step's details start clean.
-        await self._renew_stream_if_due()
+        # Only a running step moves below a newer message; a closing card stays put.
+        await self._renew_stream_if_due(step=status == "in_progress")
         if not self._stream_ts:
             return False
         # Model-authored (a purpose, a narration), so it meets the same display
@@ -1493,6 +1502,7 @@ class SlackRenderer(
         if self._active_task_id:
             self._cancel_tool_timer()
             await self._finalize_active_task()
+        self._text_since_step = False
         self._task_counter += 1
         self._active_task_id = f"tool_{self._task_counter}"
         self._active_tool_call_id = tool_call_id or ""

@@ -173,7 +173,9 @@ therefore updates the one mount instead of mounting the server again as
 two entries match apart from `disabledTools`
 (`mcp_aliases.raw_tools_project_onto_alias()`); any other pair keeps the normal
 collision handling. The merged entry is the one read, so a Kiro global guard on the
-raw key survives a store entry that omits the field.
+raw key survives a store entry that omits the field. `list_servers()` folds the raw
+and alias rows into one and applies the same predicate (`_alias_renders_raw`), so
+the row's `disabled_tools` is the list this reconcile mounts.
 
 **A raw store key adopts its own rendering.** Switching such a row off writes
 `disabled: true` onto the raw store entry, which then differs from the previous
@@ -1395,6 +1397,8 @@ where the record is stored (`mcp_dropped_servers._shown_command`), because both
 `GET /api/mcp` and doctor output, which gets pasted into bug reports, show it as
 stored. It changes no precedence.
 
+The same record reaches the session and `kirocrew doctor`. An `AcpClient` session on the default agent or `kirocrew-worker` (which mirrors its `mcpServers`) reads it with its spec snapshot at spawn (`acp.mcp_prune.spec_dropped_servers`) and records each dropped server as failed on every attempt's MCP report, with a reason that names the command and the fix, exactly as the array prune records the servers it leaves out. A new chat session then shows one warn notice naming every server Crew left out (these, the array prune's, and pi's registration refusals), each with its own reason (`dashboard/chat_turn/mcp_session._notice_crew_left_out_mcp`), and doctor prints one `mcp servers` row per recorded drop and counts it as an issue. Shortcut: sessions on the shared `AcpRuntime` do not read the record yet, so kiro, KAS and codex chats (`ACP_BACKENDS_ACP_RUNTIME`), and a claude chat that shares the runtime, get no failed row and no notice; doctor still names the drop (#38439).
+
 No scope metadata is persisted. Apply does one-shot edits and forgets; state is
 re-read from disk on the next page load, so external edits (`kiro-cli mcp
 remove`, hand-edits) are picked up naturally.
@@ -1703,7 +1707,10 @@ it. Security detail:
 An absent, empty, unreadable or undecodable store approves nothing, and a write
 refuses to replace a store whose bytes do not decode. A stub
 without a matching fingerprint stays on the session's unpooled, sandboxed launch
-path. A queued cold spawn reloads the store after admission and resolves the same
+path. gatewayd's refusal says why (`no target mapping for server '<name>': its
+launch is not an approved one; review it in MCP Servers > Sharing`), and the stub
+records that reason in `stub_fallback.jsonl`; a server with no target mapping at all
+keeps the text that names `KIROCREW_MCP_TARGET_<SERVER>`. A queued cold spawn reloads the store after admission and resolves the same
 command and environment identity again immediately before the fork, so revoking
 an approval while it waits prevents the process from starting. A stub with no
 recorded approval needs one in **MCP Servers** before it pools. Cached recommendation
@@ -4018,6 +4025,19 @@ change card, and the server is written to the template's additions record
   answers `503 spec_not_rewritten`: the card stays as it was (an Undo stays
   available to retry).
 
+### A folder's own MCP servers wait for the person (`mcp.project_server`)
+
+A server in a folder's `.kiro/settings/mcp.json` or `.mcp.json` starts only once the
+person approved that launch in that folder. A session that would start one the
+record does not hold gets a server with no tools under that name instead (kiro-cli,
+KAS) or the name in `disabledMcpjsonServers` (Claude Code), and the chat shows an
+`mcp.project_server` card per held server: the file, the launch, and what changed.
+**Allow <server> in this folder** records it and restarts every open chat;
+**Skip for this chat** leaves it held, and the next chat in that folder asks again.
+The card is raised by the chat, never by an agent (`GATEWAY_RESOLVED_KINDS`). The
+record, what counts as a launch and the one-time first record are in
+[security](../system-specs/modules/security.md) (project MCP files).
+
 ### A `kirocrew-core` tool has two halves
 
 Each tool is declared twice in the same per-domain module under
@@ -4513,7 +4533,10 @@ mapping for a page that no longer redirects.
 
 Labels are the 12 shipped catalogs (no `en-XA`; English is `en.json` under
 `en.manual.json`), referenced keys only, deduplicated per locale; a product name
-such as a channel brand is stored as a `literal:` key. A location stores
+such as a channel brand is stored as a `literal:` key. A placeholder other than
+`{{productName}}` in an alias or caution value (the top-bar search button's
+`{{shortcut}}` alias) is stored without it, so find_ui searches the words around
+it; a location's own label that interpolates is still refused. A location stores
 `label_key`, never copy. Placements are alternatives, each with the full
 `parent_ids` chain, a canonical `route`, `entry_kind` and structured `requires`
 (`viewport`, `shown_by` another location, `preview_flag` with the Settings

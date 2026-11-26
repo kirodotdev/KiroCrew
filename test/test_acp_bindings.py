@@ -55,7 +55,7 @@ SHARED_BINDINGS_CHECKS = (
 #: where the member lives now. A ratchet: a member removed from the class drops its entry,
 #: a member added to the class gets none.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "f9df55c15d04", "acp"),
+    "__init__": ("function", False, "2012aef81e70", "acp"),
     "_abc_impl": ("data", False, "", ""),
     "_advertised_effort_levels": ("function", False, "93b23ca4342b", "acp_model_effort"),
     "_apply_effort_overlay": ("function", False, "66550c0d40fa", "acp_cli_overlay"),
@@ -220,7 +220,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "ultracode_enabled": ("function", False, "16180c63d5e6", "acp_model_effort"),
     "uses_kiro_identity_store": ("property", False, "a6632a57e602", "acp"),
     "wait_for_compaction": ("function", True, "1d8ef804d52e", "acp_turns"),
-    "wait_for_declared_mcp": ("function", True, "921c3727b83c", "acp"),
+    "wait_for_declared_mcp": ("function", True, "e0719edb9cf3", "acp"),
     "wait_turn_done": ("function", True, "48da118c69ff", "acp"),
     "watch_agent_turns": ("function", False, "42d751137554", "acp_turns"),
     "withheld_credentials_notice": ("property", False, "bb418bb7ece8", "acp"),

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import i18next from 'i18next'
 import '../i18n/all'
 import { i18nT } from '../i18n/t'
@@ -171,6 +171,16 @@ describe('BrowserLiveCard faces', () => {
     const buttons = screen.getAllByText(i18next.t('pages.chat.browserLiveCard.take_over'))
     fireEvent.click(buttons[buttons.length - 1])
     expect(writes.claim).toHaveBeenCalledWith(S)
+  })
+
+  it('login_needed: the sign-in banner\'s Take over has a resting fill and a strong edge on its tint', () => {
+    act(() => browserLiveStore.applyEvent(ev({ state: 'login_needed' })))
+    render(card())
+    const banner = screen.getByText(i18next.t('pages.chat.browserLiveCard.take_over_to_sign_in')).closest('[role="status"]') as HTMLElement
+    const takeOver = within(banner).getByRole('button', { name: i18next.t('pages.chat.browserLiveCard.take_over') })
+    expect(takeOver).toHaveClass('bg-bg-elevated', 'border-border-strong')
+    expect(takeOver).not.toHaveClass('bg-transparent')
+    expect(takeOver).not.toHaveClass('border-border')
   })
 
   it('done: one line with the host, the step count, the browser, Replay and Last frame', () => {

@@ -159,6 +159,24 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     sync verifies user-owned trees before replacing them, so it runs as a
     tracked background task in a worker thread and never gates readiness.)
     """
+    from kiro_crew.project_mcp_approvals import begin_boot_migration
+
+    # The folder list is read here, before any project pick can add to it; the
+    # scan of those folders scales with them, so it runs on a tracked task. A
+    # session check waits briefly for it and otherwise holds.
+    migration_scan = await asyncio.to_thread(begin_boot_migration)
+    if migration_scan is not None:
+        # Handed to the executor now, so a check that waits for it is never left
+        # waiting on a scan that did not start.
+        scan_done = asyncio.get_running_loop().run_in_executor(None, migration_scan)
+
+        async def _await_migration() -> None:
+            await scan_done
+
+        migration_task = asyncio.create_task(_await_migration())
+        self._background_tasks.add(migration_task)
+        migration_task.add_done_callback(self._background_tasks.discard)
+
     if not self._slack_enabled:
         logger.info("Slack not configured — starting without the Slack gateway")
 
@@ -851,6 +869,10 @@ async def _init_api_server(self: GatewayOrchestrator) -> None:
             self._dashboard_port = addresses[0][1]
     if self.dashboard_state:
         self.dashboard_state.no_crons = self._no_crons  # API-only mode
+        # The same restart admission and quiescence census the dashboard start wires.
+        from kiro_crew import restart_admission
+
+        restart_admission.wire(self.dashboard_state, self)
 
 
 async def run(self: GatewayOrchestrator) -> None:
@@ -1405,6 +1427,7 @@ async def run(self: GatewayOrchestrator) -> None:
                 prime_ceiling_projection,
                 reproject_for_ceiling_change,
             )
+            from kiro_crew.dashboard.bind_refresh import restart_if_bind_refused
             from kiro_crew.dashboard.origin import withdraw_refused_origins
             from kiro_crew.dashboard.tailnet_serve import (
                 revoke_if_governance_now_pins_off,
@@ -1417,9 +1440,10 @@ async def run(self: GatewayOrchestrator) -> None:
             # Hooks are registered BEFORE the poller starts, so the first installed
             # ceiling already re-derives what was materialised from the previous one.
             # Most governed controls are live evaluations and need nothing here. These
-            # three are the exceptions: a published tailnet origin, whose gate fires when
+            # four are the exceptions: a published tailnet origin, whose gate fires when
             # publish is CALLED and so does not retract what is already serving; the
-            # server's origin set, whose extras are asked only when added; and the agent
+            # server's origin set, whose extras are asked only when added; the address
+            # the server is bound to, asked only when it binds; and the agent
             # config's ``allowedTools``, which kiro-cli reads from the FILE — so a list
             # written under a looser ceiling keeps auto-approving what the fleet has
             # since forbidden.
@@ -1434,6 +1458,9 @@ async def run(self: GatewayOrchestrator) -> None:
                 )
 
                 register_post_install_hook(lambda: end_shells_if_policy_refuses(_app, _loop))
+                _state = self.dashboard_state
+                if _state is not None:
+                    register_post_install_hook(lambda: restart_if_bind_refused(_state, _loop))
                 # A policy that withdraws the redaction opt-in must purge open dashboards.
                 from kiro_crew.dashboard.handlers import credential_redaction as _redaction
 

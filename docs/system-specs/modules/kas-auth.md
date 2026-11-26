@@ -560,6 +560,20 @@ Error split at the store API: an unknown identity kind raises `ValueError` (HTTP
 400 at the API layer); a vault read/write failure raises `TokenStoreError` (coded
 HTTP 500) — a logout that could not remove the credential never reports success.
 
+A vault no key can open again is replaced by the next save (a sign-in, or a
+refresh), never deleted (`TokenStore._set_aside_unopenable_vault`). Unopenable means `secrets.enc` exists
+and `.vault_key` is missing or not 32 bytes, or the store is not a vault envelope.
+`SecretVault` refuses to mint a key over an existing store, so before this every
+later sign-in failed with `token_store_failed` and the sign-in card said only
+"Could not check the sign-in stored in Kiro Crew". When `save` hits that refusal it
+renames `secrets.enc` (and a wrong-length key) to `<name>.corrupt-<UTC time>`
+beside the vault, under the vault's flock, and writes a new vault. A wrong-length
+key moves before its store, so a rename that fails part way leaves a store with no
+key, which the next save recovers. A key file that
+exists but cannot be read (a lock, a privacy prompt) is not lost: the files stay and
+the save fails as before. The card's notice for an unreadable store says to sign in
+again, which is the way forward with no terminal.
+
 Priority when multiple credentials exist (`store._PRIORITY`, mirroring kiro-cli
 `auth/mod.rs`): **External IdP > Builder ID > Identity Center > Social**, then
 `KIRO_API_KEY` env as final fallback.
@@ -874,7 +888,36 @@ engine instead ([aws-control.md](aws-control.md)).
   on (`kas_route.relay_runs_on_kiro_cli_sign_in`), the card says Kiro Agent is using
   the Kiro CLI sign-in; when signing in here would also move new chats to the built-in
   engine (`sign_in_moves_to_engine` on `GET /api/kas-bundle`, the read behind the chat's
-  sign-in card), it says that too. Usable (`kiro_cli.usable`) follows the edition: on oss it
+  sign-in card), it says that too. When the main harness is Kiro CLI (`agent.acp_backend` loads
+  as `kiro`: a Kiro CLI pick the gateway has not moved onto KAS, so sessions start
+  kiro-cli's v2 launch, which never asks Crew for a credential), the answer carries
+  `kiro_cli_harness: true` and `active` follows kiro-cli's own login alone, whatever
+  the vault holds. The checks run in order: a `KIRO_API_KEY` that reaches kiro-cli
+  (`kas_route.kiro_cli_api_key_set`) means `kiro_cli`; a relocated kiro-cli data home
+  (`agent_sdk.kas_bundle.kiro_cli_identity_store_is_relocated`, the same check as
+  `kas_route.kiro_cli_signed_out`) means `unknown`, even if the fixed default store
+  holds a leftover login. No redirected credential path is read. Otherwise a login
+  in the default store means `kiro_cli`, an unreadable store means `unknown`, and
+  `none` is returned only when `kas_route.kiro_cli_signed_out` proves it signed out;
+  anything else is `unknown`. `can_use_kiro_cli` is false there. On this harness,
+  the default stored login is named only when no `KIRO_API_KEY` reaches kiro-cli,
+  its data home is not relocated, and the default store holds a login. An API key,
+  relocated home or unknown login environment publishes no `account_type`,
+  `portal_host` or `email` in `kiro_cli`, starts no `whoami` read, and leaves both
+  `name_pending` and `name_unreadable` false. The notice uses the existing unnamed
+  body, and the header does not take an account name from the `kiro-usage` cache
+  when sources names none. The KAS path keeps its existing name and usage reads.
+  The relay check still runs on every harness and the answer reports it as
+  `relay_runs_on_kiro_cli`: the Kiro Agent row on Agent Harness says "Using your Kiro
+  CLI sign-in" on the Kiro CLI harness only when that is true (a configured bundle,
+  say, makes it false and the row says "Not signed in"). The
+  card then says the agents run as the Kiro CLI account, that only Kiro Agent uses a
+  sign-in made on the card, and links to Agent Harness to switch; with kiro-cli
+  signed out it says the agents cannot start, leads with choosing Kiro Agent (the
+  dashboard way forward, which runs on the card's sign-in) and names `kiro-cli login`
+  second, since the dashboard has no control that signs kiro-cli in. It never
+  compares the two accounts on that harness.
+  Usable (`kiro_cli.usable`) follows the edition: on oss it
   means stored, the presence rule the relay itself decides by
   (`kas_route.kiro_cli_signed_out`), because kiro-cli renews its own access token when
   it runs, so a token past its lifetime (about an hour) still runs sessions; on an

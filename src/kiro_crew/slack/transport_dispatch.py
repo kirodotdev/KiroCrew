@@ -1002,6 +1002,12 @@ async def handle_message_transport(
                 )
             if _logged_user_turn:
                 await _refresh_dashboard_tab(session_key)
+        if _logged_user_turn or not conversation_log or _is_slack_restricted(session_key):
+            # The question is on disk, or this turn keeps no transcript: a message
+            # steered in from here on is written after it (``slack/midturn.py``).
+            from kiro_crew.slack import midturn
+
+            midturn.open_transcript(session_key if _logged_user_turn else "")
 
         # ── Build message with context ──
         if context_builder:

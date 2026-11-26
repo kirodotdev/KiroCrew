@@ -2648,6 +2648,9 @@ Details worth knowing:
     run carries the triggering run's head, so the kick's step runs with
     `continue-on-error` and never reds an unrelated pull request's checks; its
     verdict is in the step log and summary, and the scheduled ticks stay loud.
+    A kicked tick that exits 1 therefore shows a green job, so it says so itself:
+    one `::error::` line and a "Kicked tick failed" section of the step summary
+    name the failed outcomes and state that the green is by design.
     It lists the queued and in-progress runs
     REPO-WIDE — one paginated `GET /repos/{repo}/actions/runs?status=…` per
     status returns runs of every workflow at once — and keeps only those whose
@@ -3763,7 +3766,7 @@ ref; see app-kit-platform.md § Former built-in adoption). The same step holds a
 that adds or changes a pin row to a `Wheel-copy base: <name>@<sha>` line per changed
 row, naming the core commit the pinned app-repo commit was ported from, and fails it
 while that app's non-test wheel copy at the base tip differs from the one at the
-base. The base tip is the one at the PR's last event: nothing re-runs the check when
+base; a row whose app ships no wheel copy at the base tip needs no line. The base tip is the one at the PR's last event: nothing re-runs the check when
 main moves, so whoever approves a pin PR edits its body (or pushes) right before
 approving, which re-runs it against the current tip. Last, a
   `fix`/`revert` PR is checked for a `## Sibling sweep` section listing the other

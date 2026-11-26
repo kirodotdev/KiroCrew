@@ -12,6 +12,7 @@ extensions (DOC + IMAGE), not text. These tests pin both the success path
 
 from __future__ import annotations
 
+import errno
 import gzip
 import io
 import logging
@@ -27,6 +28,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers.files import _write_file_restricted, api_upload_file
 
 
@@ -907,6 +909,82 @@ async def test_upload_with_a_name_past_the_file_system_limit_is_stored_shortened
     assert len(stored_name.encode("utf-8")) <= 255
     assert stored_name.endswith(Path(filename).suffix)
     assert Path(stored).read_bytes() == b"body\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    platform_compat.IS_WINDOWS, reason="sized by POSIX PATH_MAX; the Windows refusal is below"
+)
+@pytest.mark.parametrize(
+    ("ext", "body"),
+    [(".txt", b"body\n"), (".wav", b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 64)],
+    ids=["buffered", "streamed-audio"],
+)
+async def test_an_upload_whose_whole_path_is_too_long_answers_name_too_long(
+    tmp_path: Path,
+    mock_sel,
+    monkeypatch,
+    ext: str,
+    body: bytes,
+) -> None:
+    """The stored name fits its cap, but the folder pushes the joined path past the
+    host's PATH_MAX: a coded 400 naming the refused length, not a bare 500, and the
+    request's earlier file is removed."""
+    path_max = os.pathconf(tmp_path, "PC_PATH_MAX")
+    upload_dir = tmp_path
+    # "/<32-hex uuid>_a.txt" fits in the last 100; the long name, even cut to fit
+    # a 143-byte name limit, does not.
+    while (room := path_max - 100 - len(str(upload_dir)) - 1) > 0:
+        upload_dir /= "d" * min(room, 100)
+    upload_dir.mkdir(parents=True)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", upload_dir)
+    form = aiohttp.FormData()
+    form.add_field("file", b"short\n", filename="a.txt")
+    form.add_field("file", body, filename="a" * 230 + ext)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        payload = await resp.json()
+
+    assert payload["code"] == "name_too_long"
+    audit = mock_sel.log_api_access.call_args.kwargs
+    assert audit["outcome"] == "rejected"
+    reason, refused_length = audit["resources"].rsplit(":", 1)
+    assert reason.endswith("reason:name_too_long")
+    assert int(refused_length) >= path_max
+    assert f"{refused_length} characters long" in payload["error"]
+    assert not any(upload_dir.iterdir())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("folder_present", "status"), [(True, 400), (False, 500)], ids=["folder", "no-folder"]
+)
+async def test_a_windows_open_refusing_a_long_path_without_winerror_answers_name_too_long(
+    upload_dir: Path,
+    mock_sel,
+    monkeypatch,
+    folder_present: bool,
+    status: int,
+) -> None:
+    """Windows' CRT open reports a too-long path as a bare ENOENT with no ``winerror``;
+    while the uploads folder exists that is the path's length, and with the folder gone
+    it keeps meaning a missing folder."""
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+
+    def refuse(path: Path, _data: bytes) -> None:
+        if not folder_present:
+            path.parent.rmdir()
+        raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path))
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.files._write_file_restricted", refuse)
+    form = aiohttp.FormData()
+    form.add_field("file", b"body\n", filename="a" * 230 + ".txt", content_type="text/plain")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == status, await resp.text()
+        if folder_present:
+            assert (await resp.json())["code"] == "name_too_long"
 
 
 def test_a_short_name_is_kept_as_it_is() -> None:

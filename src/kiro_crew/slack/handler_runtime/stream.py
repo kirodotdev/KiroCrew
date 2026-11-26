@@ -50,6 +50,8 @@ if TYPE_CHECKING:
         is_echo,
         is_wait_identity,
         logger,
+        message_landed_since,
+        messages_noted,
         redact,
         redact_credentials,
         redact_exfiltration_urls,
@@ -428,6 +430,10 @@ class _AnswerStream:
         # ``stream_clock()`` reading when the live stream was opened; 0 when none is open. Slack
         # ends a stream 10 minutes after it starts (``stream_window``).
         self.stream_started_at = 0.0
+        # ``messages_noted()`` count when the live stream was opened; None when none
+        # is open. A message recorded after it sits below the stream.
+        self.stream_messages_noted: int | None = None
+        self.text_since_step = False
         self.renewal: asyncio.Task | None = None  # the ``renew_if_due`` in flight, if any
         self.rotated_ts: list[str] = []  # stream messages ``rotate`` replaced, oldest first
         self.thinking_ts: str | None = None  # 💭 reasoning placeholder, posted above the answer
@@ -523,6 +529,9 @@ class _AnswerStream:
                     "Slack stop_stream failed during rotation — abandoning old stream",
                     exc_info=True,
                 )
+        # Read before the request: a message that lands while Slack opens the
+        # stream is below it.
+        noted = messages_noted()
         try:
             new_ts = await self.slack.start_stream(
                 self.channel,
@@ -539,9 +548,11 @@ class _AnswerStream:
                 self.rotated_ts.append(self.stream_ts)
             self.stream_ts = new_ts
             self.stream_started_at = stream_clock()
+            self.stream_messages_noted = noted
             logger.info("Stream rotated: new ts=%s", new_ts)
         else:
             self.stream_started_at = 0.0
+            self.stream_messages_noted = None
             self.use_slack_stream = False
             logger.warning("Stream rotation failed — falling back to chat.update")
         return new_ts
@@ -631,6 +642,7 @@ class _AnswerStream:
 
     async def _deliver(self, safe: str) -> bool:
         """Put already-redacted text on the stream, rotating once on a refusal."""
+        self.text_since_step = True
         await self.renew_if_due()
         assert self.stream_ts is not None
         if self.move_back is not None:
@@ -792,7 +804,9 @@ class _AnswerStream:
         # session failure — on a turn that is still live and will finish. The
         # card is decorative (no answer text is withheld), so swallow the failure
         # here, logging the traceback at WARNING for diagnosis.
-        await self.renew_if_due()
+        # A closing card stays on the message that showed its step; the next
+        # running one is what goes below a newer message.
+        await self.renew_if_due(step=status == "in_progress")
         if not self.stream_ts:
             return False
         try:
@@ -803,7 +817,7 @@ class _AnswerStream:
             logger.warning("Slack append_task failed — skipping progress card", exc_info=True)
             return False
 
-    async def renew_if_due(self) -> None:
+    async def renew_if_due(self, *, step: bool = False) -> None:
         """Move to a fresh stream before Slack's 10-minute limit closes this one.
 
         Slack would close it itself and mark the running step's card as an error
@@ -812,6 +826,11 @@ class _AnswerStream:
         again on the new one, so the reader sees it go on rather than fail. Not
         once the final copy is taken (``finishing``): the seal owns the stream
         from there.
+
+        A caller drawing a running step (``step``) also moves once a person's
+        message has landed in the thread below this stream, so the steps go on
+        under that message. Text never moves for one: an answer already being
+        written stays in one piece above it.
 
         One renewal at a time: a caller that comes while one is under way waits
         for it, ``finish`` included, so its card or text lands on the new
@@ -827,7 +846,17 @@ class _AnswerStream:
                 self.finishing
                 or not self.use_slack_stream
                 or not self.stream_ts
-                or not stream_due_for_renewal(self.stream_started_at, stream_clock())
+                or not (
+                    stream_due_for_renewal(self.stream_started_at, stream_clock())
+                    or (
+                        step
+                        # The elapsed refresh outlives its tool; it must not split a reply.
+                        and not self.text_since_step
+                        and message_landed_since(
+                            self.channel, self.reply_ts, self.stream_messages_noted
+                        )
+                    )
+                )
             ):
                 return
             renewal = self.renewal = asyncio.ensure_future(self._renew())
@@ -845,7 +874,7 @@ class _AnswerStream:
                 )
             except Exception:
                 logger.warning("Slack append_task failed closing a renewed stream", exc_info=True)
-        logger.info("Slack stream near its 10-minute limit — renewing")
+        logger.info("Renewing the Slack stream: its age, or a newer message below it")
         if await self.rotate() and task_id:
             assert self.stream_ts is not None
             try:
@@ -937,6 +966,7 @@ class _AnswerStream:
         # from the first TEXT_CHUNK or TOOL_CALL event. A raise is the same
         # event as a None return — streaming is unavailable — so map it onto
         # the existing demotion path below.
+        noted = messages_noted()  # before the request, as in ``rotate``
         try:
             self.stream_ts = await self.slack.start_stream(
                 self.channel,
@@ -949,6 +979,7 @@ class _AnswerStream:
             self.stream_ts = None
         self.use_slack_stream = self.stream_ts is not None
         self.stream_started_at = stream_clock() if self.use_slack_stream else 0.0
+        self.stream_messages_noted = noted if self.use_slack_stream else None
         if not self.use_slack_stream:
             # ``SlackClient.start_stream`` swallows its own errors and returns
             # None, but the ``chat.update`` fallback below goes through the base
@@ -1154,8 +1185,10 @@ class _AnswerStream:
                 await self.append_task(self.active_task_id, _ct, "complete")
                 self.active_task_id = ""
             # Renewed before the new step is named, so a renewal never carries a
-            # step the old message did not show.
-            await self.renew_if_due()
+            # step the old message did not show. A review channel draws no steps,
+            # so a newer message moves nothing there.
+            self.text_since_step = False
+            await self.renew_if_due(step=self.channel_activation != ACTIVATION_REVIEW)
             self.task_counter += 1
             self.active_task_id = f"tool_{self.task_counter}"
             self.active_task_title = event.tool_purpose or tool_name

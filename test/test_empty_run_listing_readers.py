@@ -1,6 +1,7 @@
 """The PR Size approval handler and the Sensitive Change Review comment
 workflow read an empty `head_sha` run listing through the head's check-runs
-before they conclude that the run they re-run does not exist."""
+before they conclude that the run they re-run does not exist, and the comment
+workflow names the next step when that run is still running."""
 
 from __future__ import annotations
 
@@ -198,6 +199,17 @@ class TestSensitiveChangeReviewComment:
         result, read = self._rerun(tmp_path, runs)
         assert result.returncode != 0, _proc_log(result)
         assert read("rerun.txt") == ""
+
+    def test_a_run_still_running_after_the_wait_names_the_job_re_run(self, tmp_path: Path) -> None:
+        # The run never reads back completed, so every poll is spent.
+        run = _run(400, "sensitive-change-review.yml", "pull_request_target")
+        run["status"] = "in_progress"
+        result, read = self._rerun(tmp_path, {400: run})
+        assert result.returncode == 1, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert (
+            "run 400 is still running; once it completes, re-run this job." in result.stdout
+        ), _proc_log(result)
 
     def test_a_named_run_that_cannot_be_read_is_a_read_failure(self, tmp_path: Path) -> None:
         result, read = self._rerun(tmp_path, {400: None})

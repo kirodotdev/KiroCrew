@@ -338,6 +338,19 @@ describe('script fallback faces', () => {
     }
   })
 
+  it('tries Meiryo before any Yu Gothic face in the Japanese and kana aliases', () => {
+    // Windows draws Yu Gothic Regular thin and faint at body sizes; a Japanese
+    // reader reported the dashboard much easier to read once Meiryo was used.
+    for (const family of ['KC Japanese Fallback', 'KC Kana Fallback']) {
+      for (const block of faceBlocks(family)) {
+        const meiryo = block.indexOf("local('Meiryo")
+        const yu = block.indexOf("local('Yu Gothic")
+        expect(meiryo, `${family} must list Meiryo`).toBeGreaterThan(-1)
+        expect(meiryo, `Meiryo must precede Yu Gothic in ${family}`).toBeLessThan(yu)
+      }
+    }
+  })
+
   it('declares both tokens in :root so every consumer inherits them', () => {
     // If either moved into a [data-theme=…] block or was renamed, every --font-body
     // would become guaranteed-invalid at computed-value time and `font-family:

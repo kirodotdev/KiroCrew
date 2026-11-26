@@ -9,7 +9,9 @@ pass, while any other dashboard session (an empty app claim, a subject that is
 neither) is refused 403 ``owner_only``.
 
 The second half covers the follow-up families: approvals, lessons, cron reads and
-folders, sub-agent runs, and the strict internal paths' cookie arm.
+folders, sub-agent runs, notification writes, theme writes, speech, the owner's
+configuration reads, chat uploads, logs, saved workflows, task reads, and the
+strict internal paths' cookie arm.
 """
 
 from __future__ import annotations
@@ -348,7 +350,53 @@ FOLLOWUP_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-FOLLOWUP = FOLLOWUP_ACTIONS
+#: The owner's data and settings: feed writes, themes, speech, configuration
+#: reads, uploads, logs, saved workflows, tasks and task-runner plans.
+FOLLOWUP_OWNER_DATA: frozenset[tuple[str, str]] = frozenset(
+    {
+        # notification writes
+        ("DELETE", "/api/notifications"),
+        ("POST", "/api/notifications/clear"),
+        ("POST", "/api/notifications/ack"),
+        ("POST", "/api/notifications/unack"),
+        ("POST", "/api/notifications/ack-all"),
+        # theme writes
+        ("POST", "/api/themes"),
+        ("POST", "/api/themes/install"),
+        ("POST", "/api/themes/install-zip"),
+        ("PUT", "/api/themes/{slug}"),
+        ("DELETE", "/api/themes/{slug}"),
+        # speech
+        ("GET", "/api/voice/config"),
+        ("PUT", "/api/voice/config"),
+        ("POST", "/api/voice/synthesize"),
+        ("GET", "/api/config/stt"),
+        ("PUT", "/api/config/stt"),
+        ("POST", "/api/stt/transcribe"),
+        ("POST", "/api/stt/polish"),
+        # the owner's configuration reads
+        ("GET", "/api/hooks"),
+        ("GET", "/api/webhooks"),
+        ("GET", "/api/security/denied-commands"),
+        ("GET", "/api/security/tool-grants"),
+        ("GET", "/api/security/posture"),
+        ("GET", "/api/governance/policy"),
+        ("GET", "/api/config/schema"),
+        # chat uploads
+        ("POST", "/api/upload/file"),
+        # logs, saved workflows, tasks, task-runner plan reads
+        ("GET", "/api/logs"),
+        ("GET", "/api/workflows/definitions"),
+        ("GET", "/api/workflows/definitions/{workflow_ref}"),
+        ("GET", "/api/taskrunner"),
+        ("GET", "/api/tasks"),
+        ("GET", "/api/tasks/{task_id}"),
+        ("GET", "/api/taskrunner/{task_id}/plan-context"),
+        ("GET", "/api/taskrunner/{task_id}/plan.yaml"),
+    }
+)
+
+FOLLOWUP = FOLLOWUP_ACTIONS | FOLLOWUP_OWNER_DATA
 
 
 def _route_table() -> dict[tuple[str, str], Any]:
@@ -404,7 +452,13 @@ def test_every_followup_route_is_registered() -> None:
 async def _past_gate(handler, request) -> bool:
     """Whether *handler* got past the owner gate for *request*."""
     try:
-        resp = await handler(request)
+        if request.path == "/api/logs":
+            # The log stream runs until its client leaves; a client that has left
+            # by the time the stream opens ends it right after the gate.
+            with patch.object(web.StreamResponse, "prepare", side_effect=ConnectionResetError):
+                resp = await handler(request)
+        else:
+            resp = await handler(request)
     except web.HTTPException as exc:
         return not _is_owner_refusal(exc)
     except Exception:  # noqa: BLE001 - the stub state ran out after the gate
@@ -556,3 +610,104 @@ async def test_a_strict_path_cookie_caller_must_be_the_owner(local_only: bool) -
                 if bool(body.get("reached")) is not reaches:
                     failures.append(f"{path} as {label}: {resp.status}")
     assert failures == []
+
+
+# ── Routes a later review named ──────────────────────────────────────────────
+#
+# Rows from the real route table, judged like the follow-up families above. The
+# three speech routes also refuse an app token and an internal caller: they serve a
+# dashboard session only. An admitted speech request starts nothing and no file
+# chooser opens, so the allowed cases leave the host alone.
+
+#: Refused to a session that is neither the owner nor a teammate.
+NAMED_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("PUT", "/api/notifications/channels/settings"),
+        ("POST", "/api/upload"),
+        ("POST", "/api/stt/prepare"),
+        ("POST", "/api/stt/prewarm"),
+        ("POST", "/api/stt/ffmpeg/download"),
+        ("GET", "/api/spawn/{agent_id}/resume"),
+        ("GET", "/api/spawn/lanes"),
+    }
+)
+
+#: The speech routes, which serve a dashboard session only.
+SPEECH_PATHS = frozenset({"/api/stt/prepare", "/api/stt/prewarm", "/api/stt/ffmpeg/download"})
+
+NAMED_TABLE = _route_table()
+
+
+def _named_rows() -> list[tuple[str, str, Any, dict]]:
+    rows = []
+    for method, canonical in sorted(NAMED_ROUTES):
+        match_info = {"agent_id": "agent_id1"} if "{agent_id}" in canonical else {}
+        path = canonical.replace("{agent_id}", "agent_id1")
+        rows.append((method, path, NAMED_TABLE.get((method, canonical)), match_info))
+    return rows
+
+
+NAMED_ROWS = _named_rows()
+
+
+@pytest.fixture
+def _host_untouched(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew import platform_compat
+    from kiro_crew.dashboard.handlers import core
+
+    _floor_monkeypatch.setattr(core, "_spawn_stt_background", lambda work: work.close())
+    _floor_monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda _name: None)
+
+
+def test_every_named_route_is_registered() -> None:
+    missing = [f"{m} {p}" for m, p, handler, _ in NAMED_ROWS if handler is None]
+    assert missing == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_host_untouched")
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), NAMED_ROWS)
+async def test_named_route_refuses_a_session_that_is_neither_owner_nor_teammate(
+    method: str, path: str, handler, match_info: dict
+) -> None:
+    request = _request(_app(), "other", method, path, match_info)
+    assert await _refused(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_host_untouched")
+@pytest.mark.parametrize("who", ("owner", *TEAMMATES))
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), NAMED_ROWS)
+async def test_named_route_admits_the_owner_and_each_teammate(
+    who: str, method: str, path: str, handler, match_info: dict
+) -> None:
+    request = _request(_app(), who, method, path, match_info)
+    assert await _past_gate(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_host_untouched")
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), NAMED_ROWS)
+async def test_named_route_leaves_app_tokens_and_internal_callers_to_their_own_controls(
+    method: str, path: str, handler, match_info: dict
+) -> None:
+    app_request = _request(_app(), "owner", method, path, match_info)
+    app_request["app"] = "notes"
+    app_request["is_dashboard_user"] = False
+    internal = make_mocked_request(method, path, app=_app(), match_info=match_info)
+    internal["internal_auth"] = True
+    for request in (app_request, internal):
+        if path in SPEECH_PATHS:
+            resp = await _answer(handler, request)
+            assert resp.status == 403
+            assert json.loads(resp.body)["code"] == "dashboard_user_required"
+        else:
+            assert await _past_gate(handler, request)
+
+
+@pytest.mark.asyncio
+async def test_the_load_reading_answers_a_session_that_is_neither_owner_nor_teammate() -> None:
+    """``GET /api/spawn/adaptive`` is the load chip every chat page reads; it stays open."""
+    handler = NAMED_TABLE[("GET", "/api/spawn/adaptive")]
+    request = _request(_app(), "other", "GET", "/api/spawn/adaptive")
+    assert (await _answer(handler, request)).status == 200

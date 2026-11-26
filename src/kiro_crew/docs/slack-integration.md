@@ -59,6 +59,8 @@ on/off` works when the `/kirocrew` command is turned off.
 | `!dashboard 2h` | Dashboard link with custom duration (max 20h) |
 | `!title <text>` | Set this thread's title (up to 80 characters) |
 | `!stop` | Force-halt the current agent turn in this thread. Bypasses the per-session semaphore and cancels the active task. See "Emergency Stop" below |
+| `!steer <msg>` | While a reply is running, fold `<msg>` into it now. See "Messages sent while a reply runs" below |
+| `!queue <msg>` | While a reply is running, answer `<msg>` after it finishes |
 
 ## Keyword Commands
 
@@ -161,10 +163,49 @@ escalated to a hard stop, and "Nothing running." when no turn was active.
 Authorization: owner and allowed users. Unauthorized callers get
 "⛔ Not authorized." and an audit log entry under `slack.stop_command`.
 
+## Messages sent while a reply runs
+
+A message you send while the agent is still replying is folded into that reply
+(a steer) by default, and gets a ↪ (`:arrow_right_hook:`) reaction. This holds
+in thread replies, DMs and threads linked to a dashboard chat. Put `!queue` in
+front of the message to have it answered after the reply finishes instead; it
+gets an ⏳ reaction. `!steer <msg>` forces a steer. Set `messaging.queue_mode`
+to `queue` to make queueing the default, as on Discord and Telegram. When the
+session is idle, both prefixes are dropped and the message just starts a turn.
+A steered message is saved in the conversation's history, after the message the
+reply answers and before the reply.
+
+A message that cannot be steered is queued: it carries files
+or a voice memo, it comes from a shared user or a trusted bot, the running reply
+answers a shared user's message (they approve its tool prompts, so it takes
+nobody else's words), the reply runs on the native handler
+(`messaging.use_transport: false`), the backend has no
+steer, a `!stop` is still settling, the channel is in `review` mode, an earlier
+message is already queued, or the reply ended just as the message arrived. In a
+single-session DM, a message in another thread, or at the root while a thread's
+reply runs, is queued so it is answered where you sent it. A
+`!` command, a message with `!temporary` or `!incognito`, a keyword
+command (`status`, `sessions`, `spawn`, `cron`) and a message a hook answers are
+queued too, so they run as commands after the reply instead of reaching the
+agent as text. If a failed steer into the thread's own session may already have
+reached the backend, it is not sent again, and no ↪ reaction claims confirmed
+delivery. A lone `!queue` or `!steer` with no message is answered with a hint and
+runs nothing. In a linked dashboard thread, the hand-off queues a steer that
+does not land, and a message sent while a shared user's reply runs there is
+queued. If the chat's reply ended during the hand-off, the message starts its
+own turn. If the slot can no longer take it during the hand-off or its
+queue is full, a refusal is posted in the thread and the message is not queued.
+
 ## Streaming
 
 Responses stream in real-time via progressive Slack message edits. A cursor
 (▍) shows during streaming. Tool calls appear inline by name.
+
+When you send a message the bot picks up in the thread while a turn is still
+running its steps, the next step continues in a new message below yours, so the
+latest thing in the thread is what the agent is doing now. A step that was
+running is closed above with "continues below". Once the reply itself is being
+written it stays in one message, above yours.
 
 With `slack.reactions_enabled` on, where Slack shows the bot's native thread status
 ("is working on your request") your message gets no reaction; elsewhere it gets 👀

@@ -807,7 +807,10 @@ canary is "some passed and none skipped", not a count, because the count grows
 with every operation.
 
 One gateway serves the whole module, booted by the boot matrix's own `_booted`
-(the packaged fake ACP backend is the engine). A case is a row, not a boot, so
+(the engine is the packaged fake ACP backend behind
+`test/e2e/crew_api_contract_gated_engine.py`, which makes its one tool call ask
+for approval of a command the gateway holds, so the Owner approval routes have
+an approval to read and answer; it runs no command). A case is a row, not a boot, so
 the module costs one boot however many operations it covers. The callers are
 the machine owner (a session minted through `/api/token/local`), an app the
 owner approved through local authorization, a call with no credential and a

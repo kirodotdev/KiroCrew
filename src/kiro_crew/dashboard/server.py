@@ -1039,9 +1039,8 @@ async def start_dashboard(
     # boot-spawned backend gets the true origin, fixed and auto alike.
     from kiro_crew.dashboard.headless import bind_address
 
-    _dashboard_sock = await _reserve_dashboard_port(
-        bind_address(headless, bind_address_for(local_only)), port
-    )
+    state._bind_asked = bind_address(headless, bind_address_for(local_only))
+    _dashboard_sock = await _reserve_dashboard_port(state._bind_asked, port)
     runner: web.AppRunner | None = None
     try:
         _bind_ip = _export_reserved_bind_evidence(_dashboard_sock)
@@ -1392,6 +1391,10 @@ async def start_dashboard(
         raise entry_gate.EntryPortError(
             "an entry port listener closed before the gateway finished starting"
         )
+    # The start is past the entry port: a note an earlier run left, saying the
+    # port is closed, is untrue. After the check above, so nothing is
+    # awaited between a listener's start and the question about it.
+    await entry_gate.clear_closed_note(state)
     start_shared_crew_maintenance()
     # One-time prune of the crewmates an enrol-on-mount agent sync generated
     # from the user's own specs (see crewmate_prune_migration). Kicked here,

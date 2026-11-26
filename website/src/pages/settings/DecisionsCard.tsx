@@ -41,11 +41,11 @@ import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 /**
  * One point's own settings, on a lazy boundary.
  *
- * The CARD is mounted synchronously by `FeaturePreviewsSection`, because settings
- * search highlights a control by probing the DOM and gives up after 100 ms -- a deep
- * link that arrived while the card's chunk was in flight rang nothing. Only this
- * panel rides a boundary, and it can: nothing it draws is in the settings registry,
- * since every control in it takes its label from a map keyed by the SERVER's id.
+ * The CARD is mounted synchronously by `FeaturePreviewsSection`, so a settings
+ * search deep link finds its rows as soon as the tab opens rather than once the
+ * card's chunk arrives. Only this panel rides a boundary, and it can: nothing it
+ * draws is in the settings registry, since every control in it takes its label
+ * from a map keyed by the SERVER's id.
  *
  * The fallback reserves height rather than collapsing to nothing, so opening a row
  * does not make the list jump while the chunk arrives, and it is `aria-hidden`
@@ -184,7 +184,7 @@ export function DecisionsCard() {
   const qc = useQueryClient()
   // Whether settings search is pointing at a control inside the shared block. Read
   // here rather than in an effect: the disclosure has to be open on the FIRST paint,
-  // because the highlight hook probes the DOM and gives up.
+  // because the highlight hook finds the row inside a closed one and rings it unseen.
   const [searchParams] = useSearchParams()
   const highlightTarget = searchParams.get('highlight')
   const disclosureTargeted =

@@ -1,7 +1,7 @@
 import { useContext, useEffect, useId, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
-import { QueryClientContext } from '@tanstack/react-query'
+import { QueryClientContext, useQuery } from '@tanstack/react-query'
 import { ShieldCheck, BookOpen, Handshake, Rocket, Check, Clock, BadgeCheck, Info, ChevronDown } from 'lucide-react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { Popover, PopoverAnchor, PopoverContent } from './ui/popover'
@@ -10,6 +10,8 @@ import { changeApprovalMode } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { safeSetItem } from '../utils/safeStorage'
+import { queryClient as dashboardQueryClient } from '../api/queryClient'
+import { useViewerIsNotOwner } from '../hooks/sharedCrew/useSharedCrew'
 import { settingsPath } from './settingsPath'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 
@@ -107,7 +109,10 @@ function segmentText(key: ApprovalModeKey): { label: string; desc: string } {
  *  reveals a confirm section below a separator in the same panel.
  *  `mc-yolo-ack` is committed ONLY when the user confirms via Enable with
  *  the checkbox ticked — never on checkbox change, so check-then-Cancel
- *  cannot silently disable the confirm. */
+ *  cannot silently disable the confirm. For the machine owner the same Enable
+ *  also records the acknowledgement on the gateway (`/api/chat/yolo-ack`, an
+ *  owner-only record the agent cannot write), so a fresh browser profile skips
+ *  the confirm too; a teammate keeps the per-browser copy only. */
 /** Set once the user has ever OPENED the approval-mode picker (any route:
  *  trigger click, the approval bar's hint link, or the nudge). The approval
  *  bar's discoverability hint keys off this: discoverability is achieved the
@@ -118,6 +123,9 @@ export const APPROVAL_MODE_ADJUSTED_LS_KEY = 'mc-approval-mode-adjusted'
 /** How long the spotlight ring stays on the trigger after an external
  *  open request, so the user's eye lands on where the control lives. */
 const SPOTLIGHT_MS = 2000
+
+/** The owner's YOLO acknowledgement as the gateway holds it. */
+const YOLO_ACK_QUERY_KEY = ['chat-yolo-ack'] as const
 
 /** A session on ANOTHER machine (the crew window): the picker reads and writes
  *  that machine's slot, never this gateway's. Only the per-session modes are
@@ -207,6 +215,39 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
   const approveForMeFailedId = useId()
   const [afmDetailsOpen, setAfmDetailsOpen] = useState(false)
   const afmDetailsId = useId()
+  // The machine owner's acknowledgement kept on the gateway, read once per page
+  // load. Until it answers, and on any failure, it counts as absent, so the
+  // confirmation shows. The write skips only a known teammate and a remote
+  // session: an unanswered owner check leaves it to the gateway's owner gate. The
+  // explicit client is the dashboard's one cache, so the picker also renders
+  // outside the provider.
+  const { owner, notOwner, failed: ownerCheckFailed } = useViewerIsNotOwner(dashboardQueryClient)
+  const ownerRecord = owner && !remote
+  const yoloAckFailureId = useId()
+  const [yoloAckSaveFailed, setYoloAckSaveFailed] = useState(false)
+  const yoloAckRecord = useQuery({
+    queryKey: YOLO_ACK_QUERY_KEY,
+    queryFn: () => api.yoloAck(),
+    enabled: ownerRecord,
+    staleTime: Infinity,
+    retry: false,
+    retryOnMount: false,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+  }, dashboardQueryClient)
+  // Read from the cache at pick time, so a click right after the answer sees it.
+  const yoloAcknowledged = () => !!localStorage.getItem('mc-yolo-ack')
+    || (ownerRecord && dashboardQueryClient.getQueryData<{ acknowledged?: unknown }>(YOLO_ACK_QUERY_KEY)?.acknowledged === true)
+  const rememberYoloAck = () => {
+    safeSetItem('mc-yolo-ack', '1')
+    if (notOwner || remote) return
+    // A background write: the browser copy above still skips the confirmation
+    // here, so the switch neither waits on it nor undoes itself; a failure
+    // re-opens the menu to report it, as a policy refusal does.
+    api.setYoloAck(true)
+      .then(answer => { setYoloAckSaveFailed(false); dashboardQueryClient.setQueryData(YOLO_ACK_QUERY_KEY, answer) })
+      .catch(() => { setYoloAckSaveFailed(true); onOpenChange(true) })
+  }
   const [open, setOpen] = useState(false)
   const [yoloConfirm, setYoloConfirm] = useState(0)
   const [yoloDontAsk, setYoloDontAsk] = useState(false)
@@ -270,6 +311,7 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
   const pick = (m: ApprovalModeKey) => {
     setPolicyRefused('')
     setApproveForMeFailed('')
+    setYoloAckSaveFailed(false)
     if (remote) {
       // YOLO is never offered remotely. Every other pick is written, even one
       // matching the shown mode: an earlier pick may still be on its way.
@@ -319,6 +361,13 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
     closingFromPickRef.current = true
     onOpenChange(false)
   }
+  // A failed read only matters while the confirmation it would have skipped is
+  // showing; a failed owner check is a failed read of the record there. The
+  // notice names what failed in our own words, never the raw error.
+  const yoloAckReadFailed = yoloConfirm > 0 && ((ownerRecord && yoloAckRecord.isError) || ownerCheckFailed)
+  const yoloAckFailure = yoloAckSaveFailed
+    ? i18nT('components.approvalModePicker.yolo_ack_save_failed')
+    : yoloAckReadFailed ? i18nT('components.approvalModePicker.yolo_ack_read_failed') : ''
 
   return (
     // B2 callout: a Radix Popover anchored to the picker, portalled and
@@ -375,7 +424,7 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
               if (blocked) { e.preventDefault(); return }
               if (s.key === 'yolo') {
                 if (mode === 'yolo') { e.preventDefault(); return }
-                if (localStorage.getItem('mc-yolo-ack')) { pick('yolo'); return }
+                if (yoloAcknowledged()) { pick('yolo'); return }
                 e.preventDefault()
                 setYoloConfirm(c => c + 1)
                 return
@@ -457,6 +506,22 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
             />
           </>
         )}
+        {yoloAckFailure && (
+          <>
+            <ErrorNotice
+              id={yoloAckFailureId}
+              variant="inline"
+              impact="partial"
+              className="px-2 py-1.5"
+              message={yoloAckFailure}
+            />
+            <ErrorNoticeMenuItem
+              Item={DropdownMenuItem}
+              message={yoloAckFailure}
+              describedBy={yoloAckFailureId}
+            />
+          </>
+        )}
         {yoloConfirm > 0 && (
           <>
             <DropdownMenuSeparator />
@@ -482,7 +547,7 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
                 <button
                   autoFocus
                   className="px-2.5 py-1 rounded-md bg-card border border-border text-danger font-medium hover:bg-bg-hover cursor-pointer"
-                  onClick={() => { if (yoloDontAsk) safeSetItem('mc-yolo-ack', '1'); pick('yolo') }}
+                  onClick={() => { if (yoloDontAsk) rememberYoloAck(); pick('yolo') }}
                 >
                   {i18nT('components.approvalModePicker.enable')}
                 </button>

@@ -204,6 +204,12 @@ _SMALL_HOST_IDLE_EVICT_SECS = 600.0
 _MAX_BULK_PREEMPTS = 3
 # Longest the evictor sleeps between checks, so a config change is seen promptly.
 _EVICT_POLL_MAX_SECS = 60.0
+# Seconds without an embed before a loaded model rests: its weight pages (about
+# 600 MB) leave the process and the model stays loaded (kiro_crew.embeddings_rest).
+# A person opening, typing in or sending to a chat maps them back before their turn
+# asks for a vector (embeddings_shared.warm_embedder_for_person), and so does the
+# next embed's own start.
+_IDLE_REST_SECS = 120.0
 # How long a caller that can wait (an interactive or normal embed, off the event
 # loop) blocks for a load it triggered, instead of getting None and falling back
 # to keyword search. Bounded again by the caller's own EmbeddingWork deadline.

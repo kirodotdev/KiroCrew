@@ -793,7 +793,9 @@ class _QueueWait:
         return True
 
 
-async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple[str, ...]:
+async def wait_for_declared_mcp(
+    self: AcpSessionHandle, timeout: float, skip: tuple[str, ...] = ()
+) -> tuple[str, ...]:
     """Hold until every server the agent spec declares has reported; never raises.
 
     For an unattended run, before its first prompt. ``drain_init`` stops a
@@ -802,10 +804,11 @@ async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple
     Nobody is there to notice or retry, so this keeps draining init frames
     (exactly as ``drain_init`` handles them) until each declared server has
     reported initialized, failed or awaiting authorization, or *timeout*
-    seconds pass. Returns the declared servers that are not ready, in spec
-    order; empty when all are.
+    seconds pass. A server in *skip* is not waited for. Returns the declared
+    servers that are not ready, in spec order; empty when all are.
     """
-    await _drain_until_reported(self, self._mcp_report.declared, timeout)
+    waited = tuple(name for name in self._mcp_report.declared if name not in skip)
+    await _drain_until_reported(self, waited, timeout)
     return self._mcp_report.declared_not_ready()
 
 

@@ -85,6 +85,7 @@ class Llama:
         n_ctx: int = 512,
         n_batch: int = 512,
         n_ubatch: int = 512,
+        n_seq_max: Optional[int] = None,
         n_threads: Optional[int] = None,
         n_threads_batch: Optional[int] = None,
         rope_scaling_type: Optional[
@@ -171,6 +172,7 @@ class Llama:
             n_ctx: Text context, 0 = from model
             n_batch: Prompt processing maximum batch size
             n_ubatch: Physical batch size
+            n_seq_max: Maximum parallel sequences of an embedding context. None keeps min(n_batch, llama_max_parallel_sequences()).
             n_threads: Number of threads to use for generation
             n_threads_batch: Number of threads to use for batch processing
             rope_scaling_type: RoPE scaling type, from `enum llama_rope_scaling_type`. ref: https://github.com/ggerganov/llama.cpp/pull/2054
@@ -416,9 +418,14 @@ class Llama:
             self.context_params.n_ubatch = min(self.n_batch, n_ubatch)
 
         if embedding:
-            self.context_params.n_seq_max = min(
-                self.n_batch,
-                llama_cpp.llama_max_parallel_sequences(),
+            # kiro_crew DIVERGENCE FROM UPSTREAM llama-cpp-python: a caller-set
+            # sequence cap. llama.cpp reserves n_vocab + n_embd floats per sequence
+            # when the context is created and never shrinks it (149 MiB at 256 for
+            # kiro_crew's embedding model). None keeps upstream's value.
+            self.context_params.n_seq_max = (
+                min(self.n_batch, llama_cpp.llama_max_parallel_sequences())
+                if n_seq_max is None
+                else n_seq_max
             )
             self.context_params.kv_unified = True
         self._ctx = self._stack.enter_context(
@@ -2253,6 +2260,9 @@ class Llama:
             n_ctx=self.context_params.n_ctx,
             n_batch=self.n_batch,
             n_ubatch=self.context_params.n_ubatch,
+            # kiro_crew DIVERGENCE FROM UPSTREAM llama-cpp-python: round-trip the
+            # sequence cap, so a restored Llama keeps it.
+            n_seq_max=self.context_params.n_seq_max,
             n_threads=self.context_params.n_threads,
             n_threads_batch=self.context_params.n_threads_batch,
             rope_scaling_type=self.context_params.rope_scaling_type,

@@ -148,6 +148,12 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     # machine-independent one (the volatile /run/user/$UID leads where it is coherent);
     # test_sandbox_plan covers the no-manager order.
     monkeypatch.setattr(sandbox, "_runtime_dir_is_durable", lambda _root: True)
+    # The checkout running the tests is a git checkout whose layout varies by host.
+    from kiro_crew import sandbox_git_control
+
+    monkeypatch.setattr(
+        sandbox_git_control, "resolved_git_control_layout", sandbox_git_control.GitControlLayout
+    )
     for name, table in _PINNED_TABLES.items():
         monkeypatch.setattr(sandbox, name, table)
     # The shipped built-ins' ``credentialMasks`` are a table too: a declaration added to

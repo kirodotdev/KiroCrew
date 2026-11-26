@@ -1502,7 +1502,9 @@ token mint, `restart_remote`, the diagnostics probes — therefore goes through
 `token_mint.ssh_spawn_argv_env`: the `ssh` head is resolved against the inherited
 `PATH` only, and the child gets `deploy.engine.tool_spawn_env`, the env the
 SSM transport's `aws` child is built from. That helper APPENDS the well-known install dirs
-(`/opt/homebrew/bin`, `/usr/local/bin`; none on Windows) and withholds them for a bare head, so
+(`/opt/homebrew/bin`, `/usr/local/bin`; on Windows the plugin installer's
+`%ProgramFiles%\Amazon\SessionManagerPlugin\bin`, which a gateway started before the
+install never has on its `PATH`) and withholds them for a bare head, so
 the inherited `PATH` keeps first claim on every name and an `ssh` found only in
 those dirs is never exec'd. Before building that env, each spawn re-runs the
 provenance walk for `session-manager-plugin` and `aws`, so a dir holding a
@@ -2655,7 +2657,7 @@ would make the proxy a token-crossing route without touching this file.
 The transfer needs the
 credential but the browser does not, so the
 request is issued **inside `SshTunnelManager.send_session_bundle`** — the token
-never leaves the manager and is never logged. The minted token is a one-time
+never leaves the manager and is never logged. The minted token is a sign-in
 link, which the peer refuses as a cookie, so the manager trades it once at
 `GET /api/status?token=` and sends only the resulting session cookie (so it
 cannot land in the peer's access log). The trade runs as soon as the link is
@@ -2703,7 +2705,9 @@ that same file off disk sends whatever its platform guesses, and the tunnel send
 asking any caller to relabel what it already sends. The tunnel's plain-JSON body
 is unchanged on purpose: the sender is an independently-updated install, so a
 receiver that started demanding compression would refuse every peer that has not
-shipped this yet.
+shipped this yet. Either way the document is read as UTF-8. One leading
+byte-order mark (`EF BB BF`), which a Windows editor writes when it saves "UTF-8
+with BOM", is dropped before the parse, as `json.loads` drops it from bytes.
 
 **The body streams to disk; it is never held in memory.** The raw body is
 written to a temp file under the crew home a chunk at a time

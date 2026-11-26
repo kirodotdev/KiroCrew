@@ -73,6 +73,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/chat/slots/{slot}/approve-for-me"): RouteAccess(
         "chat.approve_for_me.change", UNSTABLE
     ),
+    # Loopback or same-user socket plus X-Local-Secret (handlers/core.py); revokes one
+    # link's credential family for `kirocrew logout --link`.
+    ("POST", "/api/logout/link"): RouteAccess("auth.logout_link.revoke", UNSTABLE),
     # Dashboard user only (chat_folders._toggle_slot_user_flag): 403 for an app token
     # and an internal caller.
     ("PATCH", "/api/chat/slots/{slot}/source-links-off"): RouteAccess(
@@ -85,6 +88,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ),
     ("GET", "/api/chat/slots/{slot}/history/around"): RouteAccess(
         "chat.history_around.read", UNSTABLE
+    ),
+    ("GET", "/api/chat/slots/{slot}/history/counts"): RouteAccess(
+        "chat.history_counts.read", UNSTABLE
     ),
     # Owner gate, then the machine owner alone (crew_api_grant_requests). The Crew API
     # RFC marks the Owner tier experimental. Contract test: test_crew_api_grant_requests.py.
@@ -120,6 +126,10 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/members/{slug}/held-limits/release"): RouteAccess(
         "members.held_limits.release", UNSTABLE
     ),
+    # Machine owner only (dashboard/handlers/yolo_ack.py); 403 for anyone else.
+    ("GET", "/api/chat/yolo-ack"): RouteAccess("chat.yolo_ack.read", UNSTABLE),
+    # Machine owner only; writes the owner's yolo_ack.json record.
+    ("PUT", "/api/chat/yolo-ack"): RouteAccess("chat.yolo_ack.set", UNSTABLE),
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
     ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),
@@ -158,4 +168,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # first-party session is answered 404. Reads only.
     # Contract test: test_crew_api_grant_self.py.
     ("GET", "/v1/crew/grant"): RouteAccess("crew_api.grant.read", PREVIEW),
+    # Owner dashboard only (handlers/project_mcp_approve.py); the mcp.project_server
+    # card's Apply. Records the approval and restarts open chats.
+    ("POST", "/api/mcp/project-servers/approve"): RouteAccess(
+        "mcp.project_servers.approve", UNSTABLE
+    ),
 }

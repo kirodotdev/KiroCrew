@@ -81,10 +81,14 @@ async function settledWindow(page: Page): Promise<MountedWindow> {
 
 /** Land on the mounted heading next to `from` (the first or last mounted one
  *  when `from` is null) the way a screen reader does, by scrolling it into
- *  view. Returns null when no heading lies that way in the DOM. */
+ *  view. Returns null when no heading lies that way in the DOM.
+ *  Only headings a screen reader can reach count: the measure farm renders
+ *  copies of unmeasured rows, headings included, into an `aria-hidden` box
+ *  after the last row while it measures a batch. */
 async function landNext(page: Page, from: Landing | null, dir: 'up' | 'down'): Promise<Landing | null> {
   return page.locator(SCROLLER).evaluate((sc, { from, dir, heading }) => {
-    const all = [...sc.querySelectorAll<HTMLElement>(heading)].map(h => ({
+    const reachable = [...sc.querySelectorAll<HTMLElement>(heading)].filter(h => !h.closest('[aria-hidden="true"]'))
+    const all = reachable.map(h => ({
       h,
       index: Number(h.closest<HTMLElement>('[data-display-index]')?.dataset.displayIndex ?? -1),
       role: h.closest<HTMLElement>('[data-role]')?.dataset.role ?? '',
@@ -109,6 +113,7 @@ async function walk(page: Page, dir: 'up' | 'down'): Promise<Set<string>> {
   for (let step = 0; step <= TURNS * 2; step++) {
     const next = await landNext(page, at, dir)
     if (!next) break
+    expect(next.index, 'every reachable speaker heading sits in a transcript row').toBeGreaterThanOrEqual(0)
     const settled = await settledWindow(page)
     expect(settled.scrollLeft, 'the landing scroll never pans the transcript sideways').toBe(0)
     const heading = page.locator(`${SCROLLER} [data-display-index="${next.index}"] [data-role="${next.role}"] ${HEADING}`)

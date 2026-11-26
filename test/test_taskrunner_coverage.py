@@ -1711,11 +1711,14 @@ class TestLogTask:
         runner._log_task("hist", run, Task(index=1, title="T", description="d"))
         # The worker thread can be scheduled late on a loaded runner, so wait
         # for its second append under the lost-run bound, not a sleep count.
+        # Read off the loop: on it the transcript read retries without a pause,
+        # so on Windows the worker's open handle fails all three tries at once.
         await async_wait_until(
             lambda: len(_transcript(log, "hist")) >= 2,
             describe=lambda: _transcript(log, "hist"),
+            off_loop=True,
         )
-        assert _transcript(log, "hist") == [
+        assert await asyncio.to_thread(_transcript, log, "hist") == [
             ("user", "[Task: spec.md] Task 1: T"),
             ("assistant", "Task completed."),
         ]

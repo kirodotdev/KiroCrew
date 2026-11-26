@@ -656,7 +656,8 @@ def _mimocode_hosted_credential_present(env: dict[str, str]) -> bool:
     True on a Xiaomi key in the environment (``XIAOMI_API_KEY``, or the harness's
     inline ``MIMOCODE_AUTH_CONTENT``) or on the sign-in file the auth declaration
     names existing where this child resolves it (under ``XDG_DATA_HOME`` when set,
-    else under ``HOME``). PRESENCE ONLY: the file is never opened, its contents never
+    else under ``HOME``, or ``USERPROFILE`` on Windows, where Bun's ``os.homedir()``
+    ignores ``HOME``). PRESENCE ONLY: the file is never opened, its contents never
     read. Feeds the start-time refusal of an unsigned hosted fallback
     (``acp/no_model_provider.py``).
     """
@@ -667,7 +668,8 @@ def _mimocode_hosted_credential_present(env: dict[str, str]) -> bool:
     if data_home:
         leaf = Path(data_home, *PurePosixPath(declaration.override_relative_leaves[0]).parts)
     else:
-        home = env.get("HOME") or os.path.expanduser("~")
+        home_var = "USERPROFILE" if sys.platform == "win32" else "HOME"
+        home = env.get(home_var) or os.path.expanduser("~")
         leaf = Path(home, *PurePosixPath(declaration.credential_leaves[0]).parts)
     try:
         return leaf.is_file()

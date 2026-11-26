@@ -156,6 +156,49 @@ def probe_child_scratch(root: Path) -> Path:
     return scratch
 
 
+#: The smallest ``sun_path`` among the supported platforms (macOS; Linux and
+#: Windows allow 108), in bytes.
+_SUN_PATH_BYTES = 104
+
+#: Bytes a server's own socket name typically adds below its ``TMPDIR``: the
+#: MATLAB MCP server's ``/matlab-mcp-server-<n>/watchdog-<n>.sock`` is 54.
+#: shortcut: a guess at typical names, so a server with a longer suffix can
+#: still overflow unwarned; raise it if such a server is reported.
+_SOCKET_SUFFIX_BYTES = 54
+
+#: Managed roots already warned about, so a data home warns once per process.
+_warned_roots: set[str] = set()
+
+
+def socket_room_hint(path: Path) -> str:
+    """The short-temp workaround hint when *path* is too long, else ``""``.
+
+    A server that binds a Unix socket under a ``TMPDIR`` of *path* needs
+    ``_SOCKET_SUFFIX_BYTES`` more; past ``sun_path`` it fails to start, or on
+    Windows binds silently at the truncated path. The folder does not move
+    (that needs the sandbox decision in the module docstring), so this only
+    names the cause and the documented workaround.
+    """
+    length = len(os.fsencode(path))
+    if length + _SOCKET_SUFFIX_BYTES <= _SUN_PATH_BYTES:
+        return ""
+    return (
+        f"the managed temp dir is {length} bytes long, which leaves less than "
+        f"{_SOCKET_SUFFIX_BYTES} bytes of the {_SUN_PATH_BYTES}-byte socket path "
+        "limit; if this server binds a Unix socket, set a short TEMP, TMP and "
+        "TMPDIR in its env"
+    )
+
+
+def warn_low_socket_room(path: Path) -> None:
+    """Log :func:`socket_room_hint` for *path* once per managed root."""
+    hint = socket_room_hint(path)
+    root = str(path.parent)
+    if hint and root not in _warned_roots:
+        _warned_roots.add(root)
+        logger.warning("backend-tmp: %s", hint)
+
+
 def tmp_env(path: Path) -> dict[str, str]:
     """The ``TMPDIR``/``TMP``/``TEMP`` triple pointing a child at *path*.
 

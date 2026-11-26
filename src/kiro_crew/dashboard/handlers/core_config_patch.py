@@ -23,7 +23,7 @@ from aiohttp import web
 from kiro_crew import beacon
 from kiro_crew.config import session_environments as _session_environments
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.config.sections import merge_strands_env_patch
+from kiro_crew.config.sections import DASHBOARD_KEYED_ENV_MAPS, merge_env_patch
 from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.dashboard.body_numbers import body_int
@@ -711,18 +711,18 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # switch and the trust settings give an overlay-owned key. A whole-section
     # (object) value is left alone: the overlay merges INTO it key by key, so the
     # keys it does not name still take effect.
-    # The Strands provider map is a keyed change (see
-    # ``validate_strands_env_patch``), so the overlay question is asked per key it
-    # names: a reference config.local.json supplies would win over the base file
-    # and keep pointing at whatever the change removed or replaced.
-    if path_key == "agent.strands_env" and isinstance(value, dict):
+    # A harness env map is a keyed change (see ``_validate_env_patch``), so the
+    # overlay question is asked per key it names: a reference config.local.json
+    # supplies would win over the base file and keep pointing at whatever the
+    # change removed or replaced.
+    if path_key in DASHBOARD_KEYED_ENV_MAPS and isinstance(value, dict):
         for env_name in value:
-            if await asyncio.to_thread(overlay_pins, "agent", "strands_env", env_name):
+            if await asyncio.to_thread(overlay_pins, *path_key.split("."), env_name):
                 _log_sel("denied", f"{path_key}.{env_name}=overlay_owned")
                 return web.json_response(
                     {
                         "error": (
-                            f"agent.strands_env entry {env_name!r} is set in "
+                            f"{path_key} entry {env_name!r} is set in "
                             "config.local.json, which overrides this setting. Change "
                             "or remove it there."
                         ),
@@ -801,9 +801,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 _check_default_profile_is_saved(
                     {**section, parts[-1]: value}, section.get("default_profile")
                 )
-            if path_key == "agent.strands_env":
+            if path_key in DASHBOARD_KEYED_ENV_MAPS:
                 # A keyed change, merged under the lock with the map saved now.
-                stored = merge_strands_env_patch(section.get(parts[-1]), value)
+                stored = merge_env_patch(section.get(parts[-1]), value)
             if path_key == "dashboard.update_nudge":
                 # This host's clock beside the browser's ``snoozed_until``: the
                 # unattended-apply hold counts from it (update_deferral.py).

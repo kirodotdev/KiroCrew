@@ -547,32 +547,41 @@ def warm_embedder_for_person() -> None:
     minutes instead of an hour. The dashboard calls this when its owner opens,
     focuses, types in or sends to a chat, and channel admission calls it for each
     routed message, so the model is loaded (or kept loaded) before the turn's
-    context build asks for a vector. Elsewhere it does nothing, which keeps a
-    larger machine exactly as it was.
+    context build asks for a vector. On every machine a model resting after a
+    short idle starts its rebuild here (:meth:`EmbeddingBackend.wake`), so the
+    rebuild runs beside the turn's other preparation.
 
     Only an embedder this process already built is warmed: a process whose memory
-    never asked for the model does not get one from a person showing up. It may
-    read the model file's metadata, so call it off the event loop.
+    never asked for the model does not get one from a person showing up. On a
+    small machine it may read the model file's metadata, so call it off the event
+    loop there.
     """
-    if not small_memory_host():
-        return
     with _shared_embedder_lock:
         backend = _shared_embedder
     if backend is None:
         return
     try:
-        backend.keep_warm()
+        if small_memory_host():
+            backend.keep_warm()
+        else:
+            backend.wake()
     except Exception:  # noqa: BLE001 - a hint; a failure costs only the early load
         logger.debug("Keeping the embedding model warm failed", exc_info=True)
 
 
 def warm_embedder_for_person_soon() -> None:
-    """:func:`warm_embedder_for_person` from the event loop, run on the default executor.
+    """:func:`warm_embedder_for_person` from the event loop.
 
-    The small-machine check is a cached answer, so a larger machine pays one call
-    and schedules nothing; off a running loop it does nothing.
+    The small-machine check is a cached answer. A larger machine only queues a
+    wake, which never waits, so it runs here; a small machine runs on the default
+    executor. Off a running loop it does nothing.
     """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
     if not small_memory_host():
+        warm_embedder_for_person()
         return
     try:
         loop = asyncio.get_running_loop()

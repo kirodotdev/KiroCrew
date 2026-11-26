@@ -466,7 +466,9 @@ thread naming the stale fields and asking it to write them with `dashboard_write
 (`dashboard/stale_wake.py`). One wake per field per stale period: a book under the data
 home keeps the write stamp each field was woken for, so only a new write re-arms it;
 fields stale at the same tick share one wake; and no Bot is woken twice within 30
-minutes. A Bot mid-turn, with a turn already queued in its thread, held by a crew pause
+minutes. A book that is there but cannot be read skips the tick rather than read as
+empty, which would wake Bots inside those 30 minutes again and save over the other rows.
+A Bot mid-turn, with a turn already queued in its thread, held by a crew pause
 or driven by a monitor loop is tried again on the next tick. Each wake is a model turn the person pays for, so it is recorded on the
 Bot's log as `dashboard/stale_wake` (actor `gateway`, reason `stale_fields`, the field
 names). A tick that wakes no one writes no row in the cron run history, so the

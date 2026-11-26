@@ -1199,6 +1199,7 @@ def _deny_pattern_passes(
             if not whole_string_exception_match and (
                 _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
                 or _nc_redirect_narrows(pattern, text, shipped)
+                or _file_body_narrows(pattern, text, shipped)
             ):
                 # Same shape as the glob exception above: a whole-string carve-out
                 # only DEFERS to Pass 2, which re-judges each segment on its own,
@@ -1277,6 +1278,7 @@ def _deny_pattern_passes(
                         _rules._exception_applies(view, _rules._DENY_EXCEPTIONS.get(pattern, []))
                         or _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
                         or _nc_redirect_narrows(pattern, text, shipped)
+                        or _file_body_narrows(pattern, text, shipped)
                     ):
                         # ``lower``, not ``view``: the s3 reading judges the WHOLE
                         # command, since a Pass 2 segment is not always a command.
@@ -1492,10 +1494,38 @@ def _deny_exception_mechanism_for(pattern: str) -> str:
         return _S3_DOWNLOAD_MECHANISM
     if pattern == _submodule("exfil_bash")._NC_FILE_REDIRECT_PATTERN:
         return _NC_REDIRECT_SCOPE_MECHANISM
+    if pattern == _submodule("exfil_bash")._FILE_BODY_PATTERN:
+        return _FILE_BODY_SCOPE_MECHANISM
     return "_DENY_EXCEPTIONS"
 
 
 _NC_REDIRECT_SCOPE_MECHANISM = "_NC_REDIRECT_SCOPE"
+
+_FILE_BODY_SCOPE_MECHANISM = "_FILE_BODY_SCOPE"
+
+
+def _file_body_narrows(pattern: str, raw: str, shipped: frozenset[str]) -> bool:
+    """Whether the shipped ``-d @`` / ``--data @`` file-body row is narrowed away
+    on *raw*.
+
+    The catalog regex matches the flag text anywhere, so a ``curl --data-binary @``
+    written inside a search PATTERN is refused by the regex tier even though no
+    curl runs. True only when :func:`~.exfil_bash._file_body_line_is_inert` reads
+    the whole line as a benign search that reaches no HTTP client -- the same
+    carve-out the substring tier already applies. An operator's own copy of the
+    pattern is not shipped-only and keeps reading the full text.
+    """
+    exfil = _submodule("exfil_bash")
+    if pattern != exfil._FILE_BODY_PATTERN or pattern not in shipped:
+        return False
+    # False on Windows, like the nc-redirect narrower: a Windows script hook runs
+    # under cmd.exe, which reads `'` literally and splits on `&`, so the bash
+    # reading this carve-out relies on is the wrong shell. Gating the regex tier
+    # here keeps the row fail-closed on Windows without touching the substring
+    # tier's own behaviour.
+    if exfil.platform_compat.IS_WINDOWS:
+        return False
+    return exfil._file_body_line_is_inert(raw)
 
 
 def _nc_redirect_narrows(pattern: str, raw: str, shipped: frozenset[str]) -> bool:

@@ -41,7 +41,7 @@ from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
 from .argv_floor_self import (
     _SELF_FLOOR_QUOTE_JUNK_RE,
     _heredoc_data_view,
-    _self_token_frames,
+    _self_frames,
     _static_substitution_output,
 )
 from .argv_floor_ssh_gate import (  # noqa: F401  (served under these names from here too)
@@ -1075,6 +1075,119 @@ class _FrameEnvironment:
 _MAX_SSH_READING_DEPTH = 32
 _ssh_reading_depth = contextvars.ContextVar("_ssh_reading_depth", default=0)
 
+#: Words that open or close a compound command; one inside an arm body makes the
+#: ``case`` statement not plain.
+_CASE_BODY_KEYWORDS = frozenset(
+    {"case", "esac", "if", "then", "elif", "else", "fi", "for", "while", "until", "select"}
+    | {"do", "done", "function", "{", "}", "!", "[[", "]]", "in"}
+)
+
+
+def _plain_case_word(word: str) -> bool:
+    """True if *word* is only letters, digits and ``@ / . - _ * ? |``, as written."""
+    return bool(word) and all((c.isascii() and c.isalnum()) or c in "@/.-_*?|" for c in word)
+
+
+def _plain_case_patterns(written: "list[str]") -> "list[str] | None":
+    """The ``)``-ending pattern words of each ``case`` in *written*, or ``None``.
+
+    *written* is the frame's words as the user wrote them, quotes, backslashes
+    and letter case kept. Every word that reads as ``case`` must be the keyword
+    written plainly at the start of a command, followed by a plain word or
+    ``"$NAME"``, then ``in``, then arms of a pattern, simple words and ``;;``,
+    then ``esac`` or ``esac;`` alone. Anything else is ``None``.
+    """
+    found: list[str] = []
+    i, n = 0, len(written)
+    while i < n:
+        word = written[i]
+        if _shell_normalizer._dequote_token(word).lower() != "case":
+            i += 1
+            continue
+        prev = written[i - 1] if i else ";"
+        opens = prev in ("&&", "||", "then", "do", "else", "{") or prev.endswith(";")
+        subject = written[i + 1] if i + 1 < n else ""
+        # ``"$NAME"``: a double-quoted simple variable.
+        var = subject[2:-1] if subject.startswith('"$') and subject.endswith('"') else ""
+        named = var[:1] not in ("", *"0123456789") and all(
+            (c.isascii() and c.isalnum()) or c == "_" for c in var
+        )
+        if not (
+            word == "case"
+            and opens
+            and i + 2 < n
+            and written[i + 2] == "in"
+            and (_plain_case_word(subject) or named)
+        ):
+            return None
+        i += 3
+        while True:
+            # A newline arrives as a ``;`` word; bash allows one between arms.
+            while i < n and written[i] == ";":
+                i += 1
+            if i >= n:
+                return None
+            if written[i] in ("esac", "esac;"):
+                i += 1
+                break
+            # The pattern list: ``a | b)`` or ``a|b)``, one ``)`` at its end only.
+            start = i
+            while i < n and not written[i].endswith(")"):
+                i += 1
+            if i >= n:
+                return None
+            pattern = "".join(written[start : i + 1])[:-1]
+            if pattern.startswith("("):
+                pattern = pattern[1:]
+            if not _plain_case_word(pattern) or written[start] in ("esac", "esac;"):
+                return None
+            found.append(written[i].lower())
+            i += 1
+            # The arm body: simple words up to the ``;;`` that ends the arm, or an
+            # ``esac`` right after the last arm's body.
+            while True:
+                if i >= n:
+                    return None
+                word = written[i]
+                if word in ("esac", "esac;"):
+                    break
+                i += 1
+                if word == ";;":
+                    break
+                if word == ";":
+                    continue  # a newline inside the arm body
+                closes = word.endswith(";;")
+                word = word[:-2] if closes else word
+                if word in _CASE_BODY_KEYWORDS or any(c in word for c in "()`$<>|&;\\'\""):
+                    return None
+                if closes:
+                    break
+    return found
+
+
+def _plain_case_pattern_indices(tokens: "list[str]", written: "str | None") -> "set[int]":
+    """The closing pattern words (``*)``) of each ``case`` in *tokens*, or nothing.
+
+    The set is returned only when *written*, the frame's source as the user wrote
+    it, is a plainly written case (:func:`_plain_case_patterns`) whose pattern
+    words are exactly the ``)``-ending ones that
+    :func:`_argv_rules._case_arm_pattern_indices` finds in *tokens*. Without the
+    written source, or on any other shape, it returns an empty set, so every word
+    keeps its verb reading.
+    """
+    reader = {
+        i for i in _argv_rules._case_arm_pattern_indices(tokens)[0] if tokens[i].endswith(")")
+    }
+    if not reader or written is None:
+        return set()
+    # A newline ends a command, as in the frame's own tokens.
+    spaced = "".join(
+        " ; " if step.active and step.char == "\n" else step.text
+        for step in _shell_normalizer._iter_shell_chars(written)
+    )
+    patterns = _plain_case_patterns(_shell_normalizer._split_shell_words(spaced))
+    return reader if patterns == [tokens[i] for i in sorted(reader)] else set()
+
 
 def _bounded_ssh_reading(read: "Callable[..., bool]") -> "Callable[..., bool]":
     """*read*, refused (True) once ``_MAX_SSH_READING_DEPTH`` readings are open."""
@@ -1244,7 +1357,8 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
     bound_program_verbs: "dict[str, str]" = {}
-    frames = _self_token_frames(text_lower, literal)
+    framed = _self_frames(text_lower, literal)
+    frames = [tokens for _source, tokens in framed]
     # A wrapper's option words are read in the case they were written in
     # (``sudo -H`` takes no value, ``sudo -h`` does), so the caller's own line
     # goes through the same rewrites into frames that keep its case.  A line
@@ -1257,15 +1371,31 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
         cased_text = _mask_quoted_separators(
             _ssh_floor_unmasked_text(cased_text), blank_bodies=True
         )
-        cased_all = _self_token_frames(cased_text, literal)
+        cased_framed = _self_frames(cased_text, literal)
+        cased_all = [tokens for _source, tokens in cased_framed]
         if len(cased_all) == len(frames):
             cased_frames = [
                 cased if [t.lower() for t in cased] == tokens else None
                 for cased, tokens in zip(cased_all, frames)
             ]
-    for tokens, cased_tokens in zip(frames, cased_frames):
+    # Each frame's source as written, for the case reading below: the lowered
+    # source when the line had no upper case, the cased one where its frame lines
+    # up, else none (a line reached by recursion has no submitted text).
+    written_sources: "list[str | None]" = [source if same_case else None for source, _ in framed]
+    if cased_text is not None and len(cased_all) == len(frames):
+        written_sources = [
+            source if cased is not None else None
+            for (source, _), cased in zip(cased_framed, cased_frames)
+        ]
+    for tokens, cased_tokens, written_source in zip(frames, cased_frames, written_sources):
         programs = _argv_programs(tokens)
         executed = _argv_rules._executed_program_indices(tokens, cased_tokens)
+        # A ``case`` arm's closing pattern word (``*)``, ``ssh|scp)``) is matched
+        # against the case word, never run, so it is not an ssh verb; the arm body
+        # after the ``)`` is still walked like any command.  The skip applies only
+        # when every case in the frame is plainly written, judged on the words as
+        # the user wrote them; any other shape reads every word as a possible verb.
+        case_patterns = _plain_case_pattern_indices(tokens, written_source)
         # Only a submitted line that is one simple ``git add`` gets this reading.
         file_operands = (
             _argv_rules._file_operand_indices(tokens, cased_tokens)
@@ -1283,7 +1413,7 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
         # Once per FRAME, not once per verb token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
         for i, token in enumerate(tokens):
-            verb = _ssh_family_verb(token)
+            verb = None if i in case_patterns else _ssh_family_verb(token)
             # A glob that bash does not run and that ends its command (``git add
             # *; curl localhost:3000``) is that command's last operand, not an
             # ssh verb whose operand scan would run on past the ``;``.
@@ -1321,7 +1451,7 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
             filename_glob = (
                 verb is not None and _ssh_verb_basename(token) != verb and i in file_operands
             )
-            if verb is None and bound_program_verbs:
+            if verb is None and bound_program_verbs and i not in case_patterns:
                 stripped_prog = token.strip("\"'")
                 verb = bound_program_verbs.get(stripped_prog) or bound_program_verbs.get(
                     _program_basename(stripped_prog)
