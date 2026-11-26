@@ -4,6 +4,7 @@ history search window, read in bounded pages."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,7 @@ from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 SEARCH = "/api/chat/slots/{slot}/history/search"
 AROUND = "/api/chat/slots/{slot}/history/around"
+COUNTS = "/api/chat/slots/{slot}/history/counts"
 
 
 class _PagedRows:
@@ -528,6 +530,7 @@ def _app(
     app["state"] = SimpleNamespace(conversation_log=log, _slots=slots, _chat_pins=pins or [])
     app.router.add_get(SEARCH, shs.api_chat_slot_history_search)
     app.router.add_get(AROUND, shs.api_chat_slot_history_around)
+    app.router.add_get(COUNTS, shs.api_chat_slot_history_counts)
     return app
 
 
@@ -1043,3 +1046,109 @@ def test_a_user_hit_keeps_its_sender_stamps_and_a_reply_keeps_none():
     by_index = {h["index"]: h for h in hits}
     assert by_index[0]["meta"] == {"author": author, "turnActor": "app", "appLabel": "notes"}
     assert "meta" not in by_index[1]
+
+
+def _mixed_rows(n: int, pic: Path) -> list[dict]:
+    """*n* rows: every third has a link, every fifth attaches *pic*, an absolute
+    path on this platform (a POSIX literal is not one on Windows)."""
+    rows = []
+    for i in range(n):
+        text = f"row {i} see https://example.com/{i}" if i % 3 == 0 else f"row {i}"
+        files = [str(pic)] if i % 5 == 0 else []
+        rows.append(_row(i, text, **({"files": files} if files else {})))
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_counts_cover_the_whole_chat_whatever_tab_a_search_pages(monkeypatch, tmp_path):
+    # Each search reply stops at its own tab's hit limit, so its counts differ
+    # by tab; the counts route walks every row and answers one set.
+    monkeypatch.setattr(shs, "SCAN_PAGE_ROWS", 7)
+    log = _PagedRows(_mixed_rows(300, tmp_path / "pic.png"))
+    monkeypatch.setattr(shs, "slot_history_key", lambda slot: "k")
+    app = _app(log, {"chat-1": _slot("k")})
+
+    _, links = await _get(app, "/api/chat/slots/chat-1/history/search?kind=links")
+    _, images = await _get(app, "/api/chat/slots/chat-1/history/search?kind=images")
+    status, body = await _get(app, "/api/chat/slots/chat-1/history/counts")
+
+    assert links["counts"][""] != images["counts"][""]
+    assert status == 200
+    assert body["complete"] is True
+    assert body["total"] == 300
+    assert (body["counts"][""], body["counts"]["links"], body["counts"]["images"]) == (300, 100, 60)
+    assert body["counts"]["videos"] == 0
+
+
+@pytest.mark.asyncio
+async def test_counts_follow_the_query_and_say_when_the_budget_cut_them(monkeypatch, tmp_path):
+    log = _PagedRows(_mixed_rows(30, tmp_path / "pic.png"))
+    monkeypatch.setattr(shs, "slot_history_key", lambda slot: "k")
+    app = _app(log, {"chat-1": _slot("k")})
+
+    _, body = await _get(app, "/api/chat/slots/chat-1/history/counts?q=row%202")
+    monkeypatch.setattr(shs, "COUNT_BUDGET_ROWS", 10)
+    monkeypatch.setattr(shs, "SCAN_PAGE_ROWS", 5)
+    _, cut = await _get(app, "/api/chat/slots/chat-1/history/counts")
+
+    assert body["counts"][""] == len(_search(log, query=shs.message_query("row 2"))["hits"])
+    assert body["counts"][""] < 30
+    assert cut["complete"] is False
+    assert cut["counts"][""] == 10
+
+
+def test_a_count_walk_lists_no_hit(tmp_path):
+    log = _PagedRows(_mixed_rows(50, tmp_path / "pic.png"))
+
+    body = _search(log, limit=0, budget=shs.COUNT_BUDGET_ROWS, pin_revision=False)
+
+    assert body["hits"] == []
+    assert body["counts"][""] == 50
+    assert body["next_before"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["search", "counts"])
+@pytest.mark.parametrize(
+    ("owner", "caller", "expected"),
+    [("", "other", 404), ("notes", "other", 404), ("notes", "notes", 200), ("notes", "", 200)],
+)
+async def test_counts_admit_exactly_the_callers_search_admits(
+    monkeypatch, tmp_path, route, owner, caller, expected
+):
+    # The counts route reads the same history as search, so it takes the same
+    # slot-ownership check: an app that does not own the chat gets the uniform
+    # 404 and no row is read.
+    log = _PagedRows(_mixed_rows(20, tmp_path / "pic.png"))
+    monkeypatch.setattr(shs, "slot_history_key", lambda slot: "k")
+    slot = _slot("k")
+    slot._app = owner
+    app = _app(log, {"chat-1": slot}, request_app=caller)
+
+    status, body = await _get(app, f"/api/chat/slots/chat-1/history/{route}?q=row")
+
+    assert status == expected
+    if expected == 404:
+        assert log.decoded == 0
+        assert "counts" not in body
+    else:
+        assert body["counts"][""] > 0
+
+
+@pytest.mark.asyncio
+async def test_counts_refuse_an_unknown_chat(real_log):
+    app = _app(real_log, {"dashboard:chat-1": _slot("dashboard:chat-1")})
+
+    status, _ = await _get(app, "/api/chat/slots/dashboard:chat-9/history/counts")
+
+    assert status == 404
+
+
+@pytest.mark.asyncio
+async def test_counts_refuse_a_bad_time(real_log):
+    app = _app(real_log, {"dashboard:chat-1": _slot("dashboard:chat-1")})
+
+    status, body = await _get(app, "/api/chat/slots/dashboard:chat-1/history/counts?since=x")
+
+    assert status == 400
+    assert body["code"] == "invalid_time"

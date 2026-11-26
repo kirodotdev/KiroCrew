@@ -61,6 +61,9 @@ logger = logging.getLogger(__name__)
 SCAN_PAGE_ROWS = 200
 #: Most rows one search reply looks at; ``next_before`` resumes the walk.
 SCAN_BUDGET_ROWS = 4000
+#: Most rows one ``counts`` reply looks at, the whole of almost any chat; past
+#: it the reply says ``complete: false``.
+COUNT_BUDGET_ROWS = 100_000
 #: Hits per reply, by default and at most.
 DEFAULT_HITS = 30
 MAX_HITS = 50
@@ -584,13 +587,18 @@ def search_history(
     floor: str = "",
     artifact_kind: Callable[[str], str | None] | None = None,
     pinned: Pinned | None = None,
+    budget: int | None = None,
+    pin_revision: bool = True,
 ) -> dict[str, Any]:
     """Walk *key*'s rows newest first from *before*; blocking file IO, off the loop.
 
-    Stops at *limit* hits, after ``SCAN_BUDGET_ROWS`` rows, at the transcript's
-    first row, or at a page whose every dated row is older than *since* (rows are
-    written in time order). ``next_before`` is the index the next reply resumes
-    below, or None when nothing older is left to search.
+    Stops at *limit* hits, after *budget* rows (``SCAN_BUDGET_ROWS`` when None),
+    at the transcript's first row, or at a page whose every dated row is older
+    than *since* (rows are written in time order). ``next_before`` is the index
+    the next reply resumes below, or None when nothing older is left to search.
+    A *limit* of 0 lists no hit and only counts. With *pin_revision* off the
+    pages are not pinned to the probe's revision, so a write landing during a
+    long walk does not void it.
 
     The ``file_send`` cards are searched too, by file name. ``counts`` says, for every ``kind``, how many of the
     rows this reply scanned match the query and dates with that kind, the active
@@ -603,6 +611,8 @@ def search_history(
     counts = dict.fromkeys(KINDS, 0)
     probe = log.read_messages_chained_page(key, limit=0)
     total = probe.total
+    revision = probe.revision if pin_revision else None
+    budget = SCAN_BUDGET_ROWS if budget is None else budget
     cursor = total if before is None else min(before, total)
     scanned = 0
     later_users: set[tuple[str, str | None]] = set()
@@ -616,15 +626,15 @@ def search_history(
             key,
             limit=min(SCAN_PAGE_ROWS, total - cursor),
             before=min(total, cursor + SCAN_PAGE_ROWS),
-            expected_revision=probe.revision,
+            expected_revision=revision,
         )
         for msg in above.messages:
             later = _successor_key(msg) if isinstance(msg, dict) else None
             if later is not None:
                 later_users.add(later)
-    while cursor > 0 and scanned < SCAN_BUDGET_ROWS:
+    while cursor > 0 and scanned < budget:
         page = log.read_messages_chained_page(
-            key, limit=min(SCAN_PAGE_ROWS, cursor), before=cursor, expected_revision=probe.revision
+            key, limit=min(SCAN_PAGE_ROWS, cursor), before=cursor, expected_revision=revision
         )
         rows = page.messages
         start = page.next_before
@@ -671,7 +681,7 @@ def search_history(
                 row.kinds.add("pinned")
             for k in row.kinds:
                 counts[k] += 1
-            if kind not in row.kinds:
+            if limit <= 0 or kind not in row.kinds:
                 continue
             hits.append(_hit_of(msg, index, row, query))
             if len(hits) >= limit:
@@ -837,6 +847,40 @@ async def _floor(state: DashboardState, key: str) -> str:
     return await asyncio.to_thread(read_display_floor, log, key)
 
 
+def _filters(
+    request: web.Request,
+) -> tuple[Any, float | None, float | None, bool] | web.Response:
+    """The ``q`` / ``since`` / ``until`` both search routes read: the parsed
+    query (None under ``SEARCH_MIN_CHARS``), the two times, and whether the
+    query parses to no searchable term (nothing can match)."""
+    q = sanitize_string(request.query.get("q", "")).strip()[:256]
+    since = _epoch(request.query.get("since", ""))
+    until = _epoch(request.query.get("until", ""))
+    if since is _BAD or until is _BAD:
+        return _bad("invalid_time", "since and until must be times in seconds")
+    query = message_query(q) if len(q) >= SEARCH_MIN_CHARS else None
+    return (
+        query,
+        since if isinstance(since, float) else None,
+        until if isinstance(until, float) else None,
+        query is not None and not query.needles,
+    )
+
+
+def _caller_scope(
+    request: web.Request, state: DashboardState
+) -> tuple[Callable[[str], str | None], Pinned]:
+    """What the caller may see: of a linked artifact (the caller the auth
+    middleware named: an app sees only the artifacts its token may read) and
+    of the pins (the pins list's own rule, ``slot_pins``: an app sees only its
+    pins)."""
+    app = request.get("app", "") or ""
+    return (
+        artifact_kinds(_default_artifact_store, app),
+        Pinned(slot_pins(state, request.match_info["slot"], app)),
+    )
+
+
 async def api_chat_slot_history_search(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot}/history/search — matching older messages, newest first.
 
@@ -861,26 +905,23 @@ async def api_chat_slot_history_search(request: web.Request) -> web.Response:
     if isinstance(found, web.Response):
         return found
     slot, state = found
-    q = sanitize_string(request.query.get("q", "")).strip()[:256]
+    filters = _filters(request)
+    if isinstance(filters, web.Response):
+        return filters
+    query, since, until, empty = filters
     kind = request.query.get("kind", "").strip()
     if kind not in KINDS:
         return _bad("invalid_kind", "kind must be one of " + ", ".join(k for k in KINDS if k))
-    since = _epoch(request.query.get("since", ""))
-    until = _epoch(request.query.get("until", ""))
-    if since is _BAD or until is _BAD:
-        return _bad("invalid_time", "since and until must be times in seconds")
     before = _int(request.query.get("before"))
     limit = _int(request.query.get("limit"))
     if before is _BAD or limit is _BAD:
         return _bad("invalid_query_params", "before and limit must be whole numbers")
     hits_wanted = max(1, min(limit if isinstance(limit, int) else DEFAULT_HITS, MAX_HITS))
-    query = message_query(q) if len(q) >= SEARCH_MIN_CHARS else None
-    if query is not None and not query.needles:
-        return web.json_response({"hits": [], "next_before": None, "total": 0})
-    if query is None and not kind and since is None and until is None:
+    if empty or (query is None and not kind and since is None and until is None):
         return web.json_response({"hits": [], "next_before": None, "total": 0})
     key = slot_history_key(slot)
     floor = await _floor(state, key)
+    artifact_kind, pinned = _caller_scope(request, state)
     try:
         body = await asyncio.to_thread(
             _read_settled,
@@ -889,18 +930,13 @@ async def api_chat_slot_history_search(request: web.Request) -> web.Response:
             key,
             query=query,
             kind=kind,
-            since=since if isinstance(since, float) else None,
-            until=until if isinstance(until, float) else None,
+            since=since,
+            until=until,
             before=before if isinstance(before, int) else None,
             limit=hits_wanted,
             floor=floor,
-            # The caller the auth middleware named: an app sees only the
-            # artifacts its token may read.
-            artifact_kind=artifact_kinds(_default_artifact_store, request.get("app", "") or ""),
-            # The pins list's own rule (``slot_pins``): an app sees only its pins.
-            pinned=Pinned(
-                slot_pins(state, request.match_info["slot"], request.get("app", "") or "")
-            ),
+            artifact_kind=artifact_kind,
+            pinned=pinned,
         )
     except (OSError, TranscriptRevisionChanged):
         logger.warning("history search failed for %s", key, exc_info=True)
@@ -909,6 +945,68 @@ async def api_chat_slot_history_search(request: web.Request) -> web.Response:
             status=503,
         )
     return web.json_response(body)
+
+
+async def api_chat_slot_history_counts(request: web.Request) -> web.Response:
+    """GET /api/chat/slots/{slot}/history/counts — every tab's count, whole chat.
+
+    Takes ``q``, ``since`` and ``until`` as ``history/search`` reads them, and no
+    ``kind``: one reply counts, for every ``kind`` (``""`` for all), the chat's
+    messages that match the query and dates with that kind, over its whole
+    history (at most ``COUNT_BUDGET_ROWS`` rows, newest first). So the panel's
+    counts do not depend on the tab open or on how far its list has paged.
+
+    Returns ``{counts, total, complete}``; ``complete`` is False when the walk
+    stopped at the row budget before the chat's first row.
+    """
+    found = _slot_or_refusal(request, "chat.slot_history_counts")
+    if isinstance(found, web.Response):
+        return found
+    slot, state = found
+    filters = _filters(request)
+    if isinstance(filters, web.Response):
+        return filters
+    query, since, until, empty = filters
+    if empty:
+        return web.json_response({"counts": dict.fromkeys(KINDS, 0), "total": 0, "complete": True})
+    key = slot_history_key(slot)
+    floor = await _floor(state, key)
+    artifact_kind, pinned = _caller_scope(request, state)
+    try:
+        body = await asyncio.to_thread(
+            _read_settled,
+            search_history,
+            state.conversation_log,
+            key,
+            query=query,
+            kind="",
+            since=since,
+            until=until,
+            before=None,
+            limit=0,
+            floor=floor,
+            budget=COUNT_BUDGET_ROWS,
+            # Rows are appended, so an index read stays the row it was while
+            # the chat writes; a pinned walk this long would rarely finish in
+            # a busy chat. shortcut: a rotation during the walk can skew one
+            # reply's counts; the next read is right again.
+            pin_revision=False,
+            artifact_kind=artifact_kind,
+            pinned=pinned,
+        )
+    except (OSError, TranscriptRevisionChanged):
+        logger.warning("history counts failed for %s", key, exc_info=True)
+        return web.json_response(
+            {"error": "could not read this chat's history", "code": "history_unreadable"},
+            status=503,
+        )
+    return web.json_response(
+        {
+            "counts": body["counts"],
+            "total": body["total"],
+            "complete": body["next_before"] is None,
+        }
+    )
 
 
 async def api_chat_slot_history_around(request: web.Request) -> web.Response:
@@ -974,7 +1072,9 @@ __all__ = [
     "Pinned",
     "MAX_AROUND_ROWS",
     "SCAN_BUDGET_ROWS",
+    "COUNT_BUDGET_ROWS",
     "api_chat_slot_history_around",
+    "api_chat_slot_history_counts",
     "api_chat_slot_history_search",
     "read_around",
     "file_record",

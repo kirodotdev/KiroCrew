@@ -75,6 +75,14 @@ export interface ChatHistorySearchResponse {
   counts?: Partial<Record<ChatHistoryKind, number>>
 }
 
+/** `history/counts`: every tab's count over the chat's whole history. */
+export interface ChatHistoryCountsResponse {
+  counts: Partial<Record<ChatHistoryKind, number>>
+  total: number
+  /** False when the server stopped at its row budget before the first row. */
+  complete: boolean
+}
+
 export interface ChatHistoryAroundResponse {
   messages: ChatMessage[]
   start: number
@@ -211,6 +219,16 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
       if (params.before !== undefined) qs.set('before', String(params.before))
       return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/history/search?' + qs, signal ? { signal } : undefined)
         .then(j) as Promise<ChatHistorySearchResponse>
+    },
+    /** Every tab's count for a query and day, over the whole chat: one read
+     *  shared by every tab, so a tab switch never changes a count. */
+    chatHistoryCounts: (slot: string, params: Pick<ChatHistorySearchParams, 'q' | 'since' | 'until'>, signal?: AbortSignal) => {
+      const qs = new URLSearchParams()
+      if (params.q) qs.set('q', params.q)
+      if (params.since !== undefined) qs.set('since', String(params.since))
+      if (params.until !== undefined) qs.set('until', String(params.until))
+      return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/history/counts?' + qs, signal ? { signal } : undefined)
+        .then(j) as Promise<ChatHistoryCountsResponse>
     },
     /** Rows `[start, end)`, or a range centred on `mid` at its current position. */
     chatHistoryAround: (slot: string, start: number, end: number, signal?: AbortSignal, mid?: string) =>
