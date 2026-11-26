@@ -48,6 +48,16 @@ transcripts reads it. Closing a chat keeps its file, since a closed chat can be
 reopened and searched; the disk cap bounds the folder. No build starts while the
 chat's delete is in flight.
 
+Deletes and builds. A file is written in place, page by page, so the store keeps
+a drop log: each dropped transcript, in order. A drop writes its entry first and
+only then sweeps the files whose stored chain reads it; it never waits for a
+build. A build notes the log's position when it starts and, after every committed
+page and once more before it records the cache as current, removes its own file
+and raises :class:`CacheDropped` when the log names a transcript of its chain
+since. A search reads the log the same way before it reads the file
+(:meth:`ChatSearchCache.reading`). So a page committed before the drop is swept,
+and one committed after it is voided by its build or the next search.
+
 Connections. One connection per chat file, shared by the threads that use it and
 held only under that file's lock, so a drop can close it before the file is
 unlinked (a per-thread connection could not be closed from the dropping thread).
@@ -63,7 +73,7 @@ import logging
 import os
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -102,6 +112,8 @@ FORMAT_VERSION = 2
 _OPEN_STEER_STATES = frozenset({"written", "requeued"})
 #: Watched rows at most this far apart are read in one page.
 _WATCH_SPAN_ROWS = 64
+#: Drop log entries kept (one per dropped transcript stem).
+DROP_LOG_MAX = 4096
 
 #: The ``rows`` columns, in the order ``entry_of`` returns them. ``body`` is the
 #: case-folded text a query matches (what ``rows_fts`` indexes); ``msg`` is 0 for a
@@ -147,6 +159,9 @@ class Snapshot(NamedTuple):
     gen: int
     #: Rows of the transcript the cache covers, ``[0, total)``.
     total: int
+    #: The drop log position the cache's build started at; a transcript of its
+    #: chain dropped after it voids the cache.
+    since: int = 0
 
 
 def row_digest(msg: Any) -> str:
@@ -251,7 +266,11 @@ def _create_tables(conn: Any) -> None:
 
 
 def _init_schema(conn: Any) -> None:
-    """Create the tables; drop them first when they hold another version or rules."""
+    """Create the tables; drop them first when they hold another version or rules.
+
+    A file that already holds this version and these rules is not written, so
+    opening it leaves its mtime (its last-search time, see :meth:`ChatSearchCache.evict`)
+    alone."""
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     rules = loaded_rules_marker()
     stored = None
@@ -263,8 +282,10 @@ def _init_schema(conn: Any) -> None:
         for table in ("rows_fts", "rows", "meta"):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         version = 0
+        stored = None
     _create_tables(conn)
-    conn.execute("INSERT OR REPLACE INTO meta(name, value) VALUES ('rules', ?)", (rules,))
+    if stored != rules:
+        conn.execute("INSERT OR REPLACE INTO meta(name, value) VALUES ('rules', ?)", (rules,))
     if not version:
         conn.execute(f"PRAGMA user_version={FORMAT_VERSION}")
 
@@ -284,6 +305,21 @@ def _read_state(conn: Any) -> _State | None:
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _read_state_read_only(path: Path) -> _State | None:
+    """:func:`_read_state` of the file at *path* through a read-only connection."""
+    conn = sqlite3.connect(
+        f"{path.absolute().as_uri()}?mode=ro",
+        uri=True,
+        timeout=_CONNECT_TIMEOUT_SECS,
+        isolation_level=None,
+    )
+    try:
+        conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+        return _read_state(conn)
+    finally:
+        conn.close()
 
 
 def _write_state(conn: Any, state: _State) -> None:
@@ -357,8 +393,14 @@ class ChatSearchCache:
         #: Per stem, how many times its file was dropped: a build or read that
         #: started under an older count stops instead of writing the file back.
         self._gen: dict[str, int] = {}
-        #: Per key, ``(revision, gen, rules)`` the cache was last brought to.
+        #: Per key, ``(revision, gen, rules, since, chain stems)`` the cache was
+        #: last brought to.
         self._current: dict[str, tuple] = {}
+        #: The drop log: ``(position, stem)`` of each transcript :meth:`drop`
+        #: named, oldest first. A build or a read that started at position N is
+        #: void when an entry after N names a transcript of its chain.
+        self._drops: deque[tuple[int, str]] = deque(maxlen=DROP_LOG_MAX)
+        self._drop_pos = 0
         self._touched: dict[str, float] = {}
         #: Chats whose cache alone passed the disk cap: never built again here.
         self._too_large: set[str] = set()
@@ -371,6 +413,42 @@ class ChatSearchCache:
     def _gen_of(self, stem: str) -> int:
         with self._lock:
             return self._gen.get(stem, 0)
+
+    # ----------------------------------------------------------- drop log
+
+    def _tombstone(self, stems: Iterable[str]) -> None:
+        """Append *stems* to the drop log."""
+        with self._lock:
+            for stem in sorted(set(stems)):
+                self._drop_pos += 1
+                self._drops.append((self._drop_pos, stem))
+
+    def _dropped_since(self, since: int, stems: set[str]) -> bool:
+        """Whether the drop log names one of *stems* after position *since*; also
+        True when the log's oldest kept entry is past *since*. Caller holds ``_lock``.
+
+        shortcut: past ``DROP_LOG_MAX`` drops in one process every older cache
+        counts as dropped and is built again; keep a per-cache floor if mass
+        deletes make that common.
+        """
+        if self._drops and self._drops[0][0] > since + 1:
+            return True
+        for pos, stem in reversed(self._drops):
+            if pos <= since:
+                return False
+            if stem in stems:
+                return True
+        return False
+
+    def _void_if_dropped(self, key: str, since: int, chain: Iterable[str]) -> None:
+        """Remove *key*'s file and raise :class:`CacheDropped` when *key* or a
+        transcript of *chain* was dropped after drop log position *since*."""
+        stem = _safe_key(key)
+        with self._lock:
+            hit = self._dropped_since(since, {stem, *(_safe_key(k) for k in chain)})
+        if hit:
+            self._remove(stem)
+            raise CacheDropped(key)
 
     @contextlib.contextmanager
     def _use(self, key: str, gen: int) -> Iterator[Any]:
@@ -405,9 +483,25 @@ class ChatSearchCache:
 
     @contextlib.contextmanager
     def reading(self, snap: Snapshot) -> Iterator[Any]:
-        """The connection a search of *snap* reads through; see :meth:`_use`."""
-        with self._use(snap.key, snap.gen) as conn:
-            yield conn
+        """The connection a search of *snap* reads through; see :meth:`_use`.
+
+        Raises :class:`CacheDropped`, removing the file, when a transcript of its
+        stored chain was dropped since *snap*'s build started: the file is written
+        in place, so a page a build committed before its own drop check is
+        already readable.
+        """
+        stem = _safe_key(snap.key)
+        with contextlib.ExitStack() as held:
+            conn = held.enter_context(self._use(snap.key, snap.gen))
+            state = _read_state(conn)
+            chain = {_safe_key(k) for k in state.chain} if state is not None else set()
+            with self._lock:
+                hit = self._dropped_since(snap.since, {stem, *chain})
+            if not hit:
+                yield conn
+                return
+        self._remove(stem)
+        raise CacheDropped(snap.key)
 
     def holds(self, key: str) -> bool:
         """Whether this process brought *key*'s cache up to date at least once
@@ -441,19 +535,24 @@ class ChatSearchCache:
 
         One probe of the chain and no build: it never waits for the build thread,
         so a search of an up-to-date chat is not queued behind another chat's
-        build. Blocking IO (the probe), off the loop.
+        build. Blocking IO (the probe), off the loop. Raises :class:`CacheDropped`,
+        removing the file, when a transcript of its chain was dropped since its
+        build started.
         """
         return self._matching(key, log.read_messages_chained_page(key, limit=0))[0]
 
     def _matching(self, key: str, probe: Any) -> tuple[Snapshot | None, int]:
         """``(snapshot, gen)``: the snapshot when the cache held for *key* matches
-        *probe*'s revision under the current drop generation and rules, else None."""
+        *probe*'s revision under the current drop generation and rules, else None.
+        Raises :class:`CacheDropped` as :meth:`current` does."""
         with self._lock:
             gen = self._gen.get(_safe_key(key), 0)
             held = self._current.get(key)
-        if held == (probe.revision, gen, loaded_rules_marker()):
-            return Snapshot(key, gen, probe.total), gen
-        return None, gen
+        if held is None or held[:3] != (probe.revision, gen, loaded_rules_marker()):
+            return None, gen
+        since, chain = held[3], held[4]
+        self._void_if_dropped(key, since, chain)
+        return Snapshot(key, gen, probe.total, since), gen
 
     def update(
         self, log: Any, key: str, entry_of: EntryOf, pause: Callable[[], None] | None = None
@@ -479,8 +578,13 @@ class ChatSearchCache:
         stem = _safe_key(key)
         rules = loaded_rules_marker()
         with _BUILD_LOCK:
-            # A build during a delete of this chat would write back what the
-            # delete just removed: refused until the delete is done.
+            # Taken before the delete-in-flight check below: a delete that check
+            # misses writes its drop log entry after this position.
+            with self._lock:
+                since = self._drop_pos
+            # A build that starts during a delete, after its drop and before the
+            # transcript is unlinked, would read what the delete removes, and no
+            # drop log entry after ``since`` names it: refused until it is done.
             in_flight = getattr(log, "delete_in_flight", None)
             if in_flight is not None and any(
                 in_flight(k) for k in {key, *(item[0] for item in probe.revision)}
@@ -488,23 +592,38 @@ class ChatSearchCache:
                 raise CacheDropped(key)
             for attempt in range(1, UPDATE_ATTEMPTS + 1):
                 try:
-                    revision, total = self._update_once(log, key, gen, entry_of, pause)
+                    revision, total = self._update_once(log, key, gen, since, entry_of, pause)
                     break
                 except TranscriptRevisionChanged:
                     if attempt == UPDATE_ATTEMPTS:
                         raise
                     logger.debug("search cache: %s moved while it was read; again", key)
+            chain = {stem, *(_safe_key(item[0]) for item in revision)}
             with self._lock:
                 if self._gen.get(stem, 0) != gen:
                     raise CacheDropped(key)
-                self._current[key] = (revision, gen, rules)
-                self._touched[stem] = time.time()
+                dropped = self._dropped_since(since, chain)
+                if not dropped:
+                    self._current[key] = (revision, gen, rules, since, frozenset(chain))
+                    self._touched[stem] = time.time()
+            if dropped:
+                self._remove(stem)
+                raise CacheDropped(key)
         self.evict(keep=self.path(key))
-        return Snapshot(key, gen, total)
+        return Snapshot(key, gen, total, since)
 
     def _update_once(
-        self, log: Any, key: str, gen: int, entry_of: EntryOf, pause: Callable[[], None] | None
+        self,
+        log: Any,
+        key: str,
+        gen: int,
+        since: int,
+        entry_of: EntryOf,
+        pause: Callable[[], None] | None,
     ) -> tuple[Any, int]:
+        """One pass of :meth:`update`. After each commit it checks the drop log
+        (:meth:`_void_if_dropped`): a page committed with a dropped transcript's
+        rows is readable at once, so the check follows the commit, never precedes it."""
         probe = log.read_messages_chained_page(key, limit=0)
         revision, total = probe.revision, probe.total
         chain = [item[0] for item in revision]
@@ -513,7 +632,7 @@ class ChatSearchCache:
         if state is not None and (state.key != key or state.chain != chain or total < state.total):
             state = None
         if state is not None and state.total:
-            state = self._verify(log, key, gen, state, revision, entry_of)
+            state = self._verify(log, key, gen, since, state, revision, entry_of)
         if state is None:
             state = _State(key, chain, 0, "", {}, {})
             with self._use(key, gen) as conn, conn:
@@ -528,7 +647,7 @@ class ChatSearchCache:
             page = log.read_messages_chained_page(
                 key, limit=end - state.total, before=end, expected_revision=revision
             )
-            state = self._append(key, gen, state, page.next_before, page.messages, entry_of)
+            state = self._append(key, gen, since, state, page.next_before, page.messages, entry_of)
             stem = _safe_key(key)
             if self._disk_size(stem) > DISK_CAP_BYTES:
                 # One chat alone past the cap: it is never cached, and its
@@ -540,7 +659,14 @@ class ChatSearchCache:
         return revision, total
 
     def _verify(
-        self, log: Any, key: str, gen: int, state: _State, revision: Any, entry_of: EntryOf
+        self,
+        log: Any,
+        key: str,
+        gen: int,
+        since: int,
+        state: _State,
+        revision: Any,
+        entry_of: EntryOf,
     ) -> _State | None:
         """Check *state*'s rows against the transcript; re-read changed rows.
 
@@ -597,10 +723,18 @@ class ChatSearchCache:
             _delete(conn, [index for index, _msg in changed])
             _insert(conn, entries)
             _write_state(conn, state)
+        self._void_if_dropped(key, since, state.chain)
         return state
 
     def _append(
-        self, key: str, gen: int, state: _State, start: int, rows: list, entry_of: EntryOf
+        self,
+        key: str,
+        gen: int,
+        since: int,
+        state: _State,
+        start: int,
+        rows: list,
+        entry_of: EntryOf,
     ) -> _State:
         entries = _entries(rows, start, entry_of)
         end = start + len(rows)
@@ -618,6 +752,7 @@ class ChatSearchCache:
             conn.execute("BEGIN IMMEDIATE")
             _insert(conn, entries)
             _write_state(conn, state)
+        self._void_if_dropped(key, since, state.chain)
         return state
 
     # ------------------------------------------------------------ removal
@@ -650,8 +785,16 @@ class ChatSearchCache:
         """Remove the caches of *names* (every spelling of one chat), and every
         cache whose chain of transcripts reads one of them: a tab's later
         transcript holds its predecessors' rows. False on a file that exists and
-        could not be removed, or a cache directory that could not be listed."""
+        could not be removed, or a cache directory that could not be listed.
+
+        The drop log entry comes first, the sweep of the files second, and never
+        waits for a build (``_BUILD_LOCK``). A build commits a page first and reads
+        the drop log second (:meth:`_update_once`), so a build that committed before
+        the entry is in the files the sweep finds (its chain is stored), and one
+        that commits after it voids itself; a search reads the drop log too
+        (:meth:`reading`)."""
         stems = {_safe_key(name) for name in names}
+        self._tombstone(stems)
         holders = self._holders(stems)
         ok = holders is not None
         for stem in stems | (holders or set()):
@@ -661,8 +804,8 @@ class ChatSearchCache:
     def _holders(self, stems: set[str]) -> set[str] | None:
         """The other cache files whose stored chain names a transcript in *stems*;
         None when the cache directory cannot be listed. A file whose chain cannot
-        be read counts, and so does one with no chain yet (a first build writes
-        its chain only after it opened the file): removing a cache loses nothing."""
+        be read counts (removing a cache loses nothing); one with no chain yet holds
+        no rows, since a build stores its chain before its first page."""
         try:
             names = os.listdir(self.dir)
         except FileNotFoundError:
@@ -681,25 +824,27 @@ class ChatSearchCache:
         return found
 
     def _stored_chain(self, stem: str) -> list[str] | None:
-        """The chain of transcript keys *stem*'s cache was read from, through its
-        one connection (a second one to the same file would drop this process's
-        SQLite locks on it when closed). None when it cannot be read or holds no
-        chain yet."""
+        """The chain of transcript keys *stem*'s cache was read from; ``[]`` when it
+        holds no chain yet, None when it cannot be read.
+
+        An open file is read through its one connection (a second one to the same
+        file would drop this process's SQLite locks on it when closed). Any other
+        is read through a read-only connection made under its handle's lock, so no
+        connection of this process opens it meanwhile: no schema check, no write,
+        no checkpoint, so its mtime (its last-search time) does not move."""
         with self._lock:
             handle = self._open.get(stem)
             if handle is None:
                 handle = self._open[stem] = _Handle(self.dir / f"{stem}{SUFFIX}")
         try:
             with handle.lock:
-                opened = handle.conn is None
-                try:
-                    state = _read_state(handle.open())
-                finally:
-                    if opened:
-                        handle.close()
+                if handle.conn is not None:
+                    state = _read_state(handle.conn)
+                else:
+                    state = _read_state_read_only(handle.path)
         except (OSError, sqlite3.Error):
             return None
-        return state.chain if state is not None else None
+        return state.chain if state is not None else []
 
     def _disk_size(self, stem: str) -> int:
         """Bytes one chat's file and its sidecars hold on disk now."""

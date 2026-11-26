@@ -321,9 +321,10 @@ def test_a_dropped_cache_is_not_written_back_by_its_build(log):
     assert not _store(log).path(KEY).exists()
 
 
-def _app(log) -> web.Application:
+def _app(log, key: str = KEY) -> web.Application:
+    """The search routes, with the slot named ``KEY`` showing transcript *key*."""
     slot = SimpleNamespace(
-        key=KEY, _app="", linked_session_key=KEY, workspace=None, _history_key=KEY
+        key=key, _app="", linked_session_key=key, workspace=None, _history_key=key
     )
     app = web.Application()
     app["state"] = SimpleNamespace(conversation_log=log, _slots={KEY: slot}, _chat_pins=[])
@@ -505,22 +506,194 @@ def test_deleting_a_tab_predecessor_drops_the_caches_that_read_it(log):
     assert _counts(log, _update(log, later), "quincefruit")[""] == 0
 
 
-def test_a_delete_during_a_first_build_drops_the_cache_with_no_chain_yet(log):
-    first, later = "dashboard:chat-1-100", "dashboard:chat-2-200"
-    log.append(first, "user", "the quincefruit note", tab_id="tabchain0001")
-    log.append(later, "user", "a plum note", tab_id="tabchain0001")
+FIRST, LATER = "dashboard:chat-1-100", "dashboard:chat-2-200"
+
+
+def _tab_pair(log) -> None:
+    """Two transcripts of one tab: ``LATER``'s chain reads ``FIRST``'s row first."""
+    log.append(FIRST, "user", "the quincefruit note", tab_id="tabchain0001")
+    log.append(LATER, "user", "a plum note", tab_id="tabchain0001")
+
+
+def _in_thread(fn) -> tuple[threading.Thread, dict]:
+    out: dict = {}
+
+    def run() -> None:
+        try:
+            out["result"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - handed to the test
+            out["error"] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, out
+
+
+def _holding(store, text: str) -> list[str]:
+    return [p.name for p in store.dir.iterdir() if text.encode() in p.read_bytes()]
+
+
+def test_a_drop_between_a_builds_read_and_its_commit_voids_the_build(log, monkeypatch):
+    _tab_pair(log)
     store = _store(log)
-    # A first build of ``later`` has opened its file (schema, no chain yet).
-    with store._use(later, 0):
-        pass
-    assert store.path(later).exists()
+    monkeypatch.setattr(csc, "BUILD_PAGE_ROWS", 1)
+    inside, release = threading.Event(), threading.Event()
+    real_insert = csc._insert
 
-    assert log.delete_session(first)
+    def held(conn, entries):
+        real_insert(conn, entries)
+        if any("quincefruit" in (entry[3] or "") for entry in entries):
+            inside.set()
+            assert release.wait(FALLBACK_TIMEOUT_SECS)
 
-    assert list(store.path(later).parent.glob(store.path(later).name + "*")) == []
+    monkeypatch.setattr(csc, "_insert", held)
+    decoded = _decoded(log, monkeypatch)
+    thread, out = _in_thread(lambda: _update(log, LATER))
+    assert inside.wait(FALLBACK_TIMEOUT_SECS)
+    # The drop's entry lands while the page holding FIRST's row is not committed.
+    store._tombstone([csc._safe_key(FIRST)])
+    release.set()
+    thread.join(FALLBACK_TIMEOUT_SECS)
+
+    assert isinstance(out.get("error"), csc.CacheDropped)
+    # Stopped by the check after that page's commit, before the next page.
+    assert decoded == [1]
+    assert not store.path(LATER).exists()
+    assert _holding(store, "quincefruit") == []
+    monkeypatch.setattr(csc, "_insert", real_insert)
+    assert log.delete_session(FIRST)
+    assert _counts(log, _update(log, LATER), "quincefruit")[""] == 0
+
+
+def test_a_drop_after_a_build_committed_a_page_sweeps_that_file(log, monkeypatch):
+    _tab_pair(log)
+    store = _store(log)
+    monkeypatch.setattr(csc, "BUILD_PAGE_ROWS", 1)
+    pages, inside, release = [0], threading.Event(), threading.Event()
+
+    def pause() -> None:
+        pages[0] += 1
+        if pages[0] == 2:  # FIRST's row is committed; the next page is not read
+            inside.set()
+            assert release.wait(FALLBACK_TIMEOUT_SECS)
+
+    thread, out = _in_thread(lambda: store.update(log, LATER, chc.cache_entry, pause))
+    assert inside.wait(FALLBACK_TIMEOUT_SECS)
+    assert _holding(store, "quincefruit")
+    try:
+        assert csc.drop(log._dir, [FIRST])
+        assert not store.path(LATER).exists()
+        assert _holding(store, "quincefruit") == []
+    finally:
+        release.set()
+        thread.join(FALLBACK_TIMEOUT_SECS)
+
+    assert isinstance(out.get("error"), csc.CacheDropped)
+    assert log.delete_session(FIRST)
+    assert _counts(log, _update(log, LATER), "quincefruit")[""] == 0
+
+
+def test_a_drop_writes_its_entry_before_it_sweeps_the_files(log, monkeypatch):
+    _tab_pair(log)
+    store = _store(log)
+    entered, release = threading.Event(), threading.Event()
+    real_in_flight = log.delete_in_flight
+
+    def in_flight(key):
+        # The build has taken its drop log position and opened no file yet.
+        if threading.current_thread() is not threading.main_thread():
+            entered.set()
+            assert release.wait(FALLBACK_TIMEOUT_SECS)
+        return real_in_flight(key)
+
+    monkeypatch.setattr(log, "delete_in_flight", in_flight)
+    thread, out = _in_thread(lambda: _update(log, LATER))
+    assert entered.wait(FALLBACK_TIMEOUT_SECS)
+    real_holders = store._holders
+
+    def sweep_then_build(stems):
+        # The sweep finds no file of LATER; the whole build runs after it.
+        found = real_holders(stems)
+        release.set()
+        thread.join(FALLBACK_TIMEOUT_SECS)
+        return found
+
+    monkeypatch.setattr(store, "_holders", sweep_then_build)
+    try:
+        assert store.drop([FIRST])
+    finally:
+        release.set()
+        thread.join(FALLBACK_TIMEOUT_SECS)
+
+    assert isinstance(out.get("error"), csc.CacheDropped)
+    assert not store.path(LATER).exists()
+    assert _holding(store, "quincefruit") == []
+
+
+@pytest.mark.asyncio
+async def test_a_search_of_a_cache_whose_chain_was_dropped_reads_the_scan(log, monkeypatch):
+    _tab_pair(log)
+    snap = _update(log, LATER)
+    store = _store(log)
+    assert store.holds(LATER)
+    # Only the drop's entry: no sweep removed the file.
+    store._tombstone([csc._safe_key(FIRST)])
+    started = []
+    monkeypatch.setattr(chc, "start_build", lambda _log, key: started.append(key) or False)
+    monkeypatch.setattr(chc, "BUILD_WAIT_SECS", FALLBACK_TIMEOUT_SECS)
+    async with TestClient(TestServer(_app(log, LATER))) as client:
+        body = await _get(client, SEARCH, "q=quincefruit")
+
+    assert "complete" not in body
+    assert not store.path(LATER).exists()
+    assert not store.holds(LATER)
+    # A search that reads an earlier snapshot directly is refused the same way.
+    _tab_pair(log)
+    snap = _update(log, LATER)
+    store._tombstone([csc._safe_key(FIRST)])
     with pytest.raises(csc.CacheDropped):
-        store._update_once(log, later, 0, chc.cache_entry, None)
-    assert _counts(log, _update(log, later), "quincefruit")[""] == 0
+        _cached(log, snap, "quincefruit")
+    assert not store.path(LATER).exists()
+
+
+def test_a_drop_leaves_the_other_caches_unwritten(log, monkeypatch):
+    others = ["dashboard:chat-7", "dashboard:chat-8"]
+    for key in others:
+        log.append(key, "user", "plum")
+        _update(log, key)
+    store = _store(log)
+    store.close_all()
+    old = 1_600_000_000
+    for i, key in enumerate(others):
+        os.utime(store.path(key), (old + i, old + i))
+    opened = []
+    real_open = csc._Handle.open
+
+    def counted(self):
+        opened.append(self.path.name)
+        return real_open(self)
+
+    monkeypatch.setattr(csc._Handle, "open", counted)
+
+    assert csc.drop(log._dir, ["dashboard:unrelated"])
+
+    assert opened == []
+    assert [store.path(key).stat().st_mtime for key in others] == [old, old + 1]
+
+
+def test_reopening_a_cache_does_not_write_it(log):
+    log.append(KEY, "user", "plum")
+    _update(log)
+    store = _store(log)
+    store.close_all()
+    old = 1_600_000_000
+    os.utime(store.path(KEY), (old, old))
+
+    with store._use(KEY, 0) as conn:
+        assert conn.execute("SELECT count(*) FROM rows").fetchone()[0] == 1
+    store.close_all()
+
+    assert store.path(KEY).stat().st_mtime == old
 
 
 def test_a_variant_switched_far_back_is_seen_on_the_next_search(log):
