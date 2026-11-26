@@ -1474,6 +1474,7 @@ async def _workflow_state(kind: str, params: dict[str, Any], state: Any) -> dict
         "format": str(definition.get("format") or "python"),
         "revision": definition.get("revision"),
         "content_hash": str(definition.get("content_hash") or ""),
+        "builtin": bool(definition.get("builtin")),
     }
 
 

@@ -1035,6 +1035,11 @@ def build_preview(
     elif kind == KIND_WORKFLOW_UPDATE:
         if not snapshot.get("exists"):
             raise _fail("not_found", f"no saved workflow '{p['workflow']}'")
+        if snapshot.get("builtin"):
+            raise _fail(
+                "builtin",
+                f"'{p['workflow']}' is a built-in workflow; save a copy under a new name",
+            )
         if snapshot.get("format") != "python":
             raise _fail("not_python", "only a Python workflow can be revised from a card")
         changed = {k: p[k] for k in ("name", "description") if k in p and p[k] != snapshot.get(k)}

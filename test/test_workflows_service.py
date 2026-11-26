@@ -29,6 +29,7 @@ from kiro_crew.session import SessionManager
 from kiro_crew.taskrunner_switch import TASK_RUNNER_OFF_MESSAGE
 from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until, await_until, finished
+from kiro_crew.workflows import library as workflow_library
 from kiro_crew.workflows.library import WorkflowDefinitionLibrary
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
@@ -39,6 +40,16 @@ from kiro_crew.workflows.store import WorkflowRunStore
 _PLANTED = github_classic(seed=56)
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def _no_builtin_workflows(tmp_path, _floor_monkeypatch):
+    """These tests assert what the library folder holds, so the shipped
+    built-in tier is left out; ``test_workflows_builtin.py`` covers it."""
+    _floor_monkeypatch.setattr(
+        workflow_library, "BUILTIN_WORKFLOWS_DIR", tmp_path / "no-builtin-workflows"
+    )
+
 
 GOOD_SCRIPT = (
     'META = {"name": "demo", "description": "d"}\n'

@@ -443,6 +443,15 @@ def _expected_id(value: Any) -> tuple[Optional[str], Optional[web.Response]]:
     return value, None
 
 
+def _builtin_error(out: dict[str, Any]) -> web.Response:
+    """A write that named a built-in workflow: refused, a copy can be saved instead."""
+    return _error(
+        _redact_obj(out.get("error") or "a built-in workflow cannot be changed"),
+        "workflow_definition_builtin",
+        409,
+    )
+
+
 async def api_workflow_definition_update(request: web.Request) -> web.Response:
     """PATCH /api/workflows/definitions/{ref} — append a validated revision."""
     denied = _require_dashboard_user(request, _OP_DEFINITION_UPDATE)
@@ -496,6 +505,8 @@ async def api_workflow_definition_update(request: web.Request) -> web.Response:
             "workflow_definition_not_found",
             404,
         )
+    if out.get("builtin"):
+        return _builtin_error(out)
     if out.get("conflict"):
         return web.json_response(
             {
@@ -554,6 +565,8 @@ async def api_workflow_definition_remove(request: web.Request) -> web.Response:
             "workflow_definition_conflict",
             409,
         )
+    if out.get("builtin"):
+        return _builtin_error(out)
     if not out.get("ok"):
         return _error("no such saved workflow", "workflow_definition_not_found", 404)
     definition = out.get("definition") or {}
@@ -1094,6 +1107,7 @@ def _run_update_refusal(out: dict[str, Any]) -> web.Response:
         ("source_not_original", "workflow_run_source_not_original", 409),
         ("source_changed", "workflow_run_source_changed", 409),
         ("conflict", "workflow_definition_conflict", 409),
+        ("builtin", "workflow_definition_builtin", 409),
         ("unchanged", "workflow_definition_unchanged", 400),
         ("format_mismatch", "workflow_definition_format_mismatch", 400),
     )

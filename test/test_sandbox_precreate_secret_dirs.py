@@ -116,7 +116,8 @@ def test_the_workflow_library_reads_an_empty_root_as_no_definitions(fresh_home: 
 
     sandbox._materialize_maskable_dirs()
 
-    assert WorkflowDefinitionLibrary().list() == []
+    # No saved definitions; the package's read-only built-ins are not stored there.
+    assert [d for d in WorkflowDefinitionLibrary().list() if not d.get("builtin")] == []
 
 
 def test_the_mcp_apps_spool_accepts_an_empty_root(fresh_home: Path) -> None:

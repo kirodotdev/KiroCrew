@@ -59,7 +59,7 @@ intra-package imports per module, so the direction cannot drift:
 ```
 __init__, validate, dsl, schema, events, registry, store,
 agent_exec, agent_pool, preview, budget_watch   (leaves: no sibling imports, or __init__ only)
-library                         (definition persistence; may import store)
+library                         (definition persistence; may import store, validate)
 update_from_run                 (run-to-revision update; may import library, validate, registry;
                                  handed the service, never imports it)
     ↑
@@ -1270,6 +1270,34 @@ gateway or harness processes sharing the library reject the second update to the
 same revision rather than silently accepting both and losing one writer's source,
 and stops a removal and an update from interleaving so that neither undoes the
 other.
+
+Built-in workflows are a read-only tier shipped as package data in
+`src/kiro_crew/builtin_workflows/` (`setup.cfg` `package_data`). Each
+`<slug>.py` whose name is a slug and whose source passes `validate` reads as a
+record with id `builtin:<slug>`, `builtin: true`, and a `revision` made from the
+first 7 hex digits of its source hash, so a run or a copy that records
+`builtin:<slug>@<revision>` names the exact source. The directory is read on every
+read, like the folder; a missing directory reads as no built-ins, and an
+unreadable or invalid file is skipped with a warning. `list`, `get`, `search`,
+`has_live` and `lineage_candidates` merge the tier with the folder. A built-in's
+id and slug reach the built-in before any tombstone or folder record, so no user
+entry shadows one; slug allocation counts them as taken, so a save or rename gets
+a numbered slug and an `exact_slug` save is refused. A folder record that already
+holds a built-in's slug keeps working by its id, its slug listed in
+`shadowed_refs`. `update` and `remove` on a built-in raise
+`BuiltinWorkflowError` ("save a copy"); the service answers `builtin: true`, the
+PATCH and DELETE routes answer 409 `workflow_definition_builtin`, and a
+`workflow.update` card is refused as `builtin`. A folder record's own `builtin`
+field is dropped on read, so only the package tier is built in. The first
+built-in, `ci-red-triage`, is read-only by instruction (every node prompt
+carries the read-only charter and marks CI text as untrusted data; the nodes run
+with the default agent's tools under the usual sandbox and permission gate): a collect node lists the red checks, a
+pipeline classifies each (`pr`, `main`, `flake`, `infra`, `timeout`) and looks
+for an open fix PR when the cause is `main`, and the script maps each cause to an
+action; a node that fails drops only its own check, listed in `dropped`. A run
+of a built-in is already reusable, so promoting it is refused like any saved
+run; a copy is saved from the source. A built-in keeps only its current
+revision, so lineage to a revision an upgrade replaced no longer resolves.
 
 The library reads every `*.json` file in its folder and keys each record by its
 `id` field, not by its file name, so a copied or restored record file is a live,
