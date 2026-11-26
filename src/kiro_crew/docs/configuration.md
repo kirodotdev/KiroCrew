@@ -1127,6 +1127,12 @@ A notification when the credits used on your plan cross percentages you choose, 
 |-----|-------------|---------|
 | `power.on_battery` | What Knowledge Library background sweeps do while this machine runs on battery; nothing else reads it yet. `normal` ignores the power source; `reduced` cuts each sweep to a quarter of `knowledge.sweep_chunk_budget`, at least 10 chunks and never more than the configured budget; `paused` skips the sweeps until the machine is back on mains. A document you add yourself always ingests; a folder you add ingests its first paced batch at once, and the rest of a large folder arrives with the sweeps, so under `paused` it waits for mains. A host that cannot report its power source counts as plugged in. Read on Linux and Windows; macOS always counts as plugged in for now | `"normal"` |
 
+### Monitoring
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `monitoring.budget_notice_pct` | The share of a structured watch's budget at which its wake names what is used. Once its agent turns, tokens or runtime reach this many percent, the wake carries one line with each bound's used and total, so the agent can raise the budget with `monitor_update` before the watch stops. Accepts 1 to 99; `0` and any other value leave the wake unchanged. Read on every wake, so no restart is needed | `0` |
+
 ### Security event log
 
 The security event log keeps its newest 7 closed 32 MiB segments, and drops

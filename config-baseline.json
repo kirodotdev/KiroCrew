@@ -6952,7 +6952,8 @@
       "enumValues": null,
       "defaultValue": {
         "max_runtime_secs": 604800,
-        "prefer_structured_arming": false
+        "prefer_structured_arming": false,
+        "budget_notice_pct": 0
       }
     },
     {
@@ -6982,6 +6983,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "monitoring.budget_notice_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Budget notice on a watch's wake (percent)",
+      "help": "When a structured watch's wake arrives with this share or more of its agent turns, tokens or runtime used, the wake carries one extra line stating the used and the total of each bound, so the agent can ask for a larger budget with monitor_update before the watch stops. 0 turns it off and the wake is unchanged. Accepts 1 to 99; any other value reads as 0. Read on every wake, so no restart is needed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "browser",
