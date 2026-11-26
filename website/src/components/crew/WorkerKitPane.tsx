@@ -156,9 +156,10 @@ export default function WorkerKitPane({
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<unknown>(null)
   // What the last successful add wrote, shown until the next pick: how many
-  // items it added, whether it replaced the directions, and whether any of
-  // them is an approval (those have no row here).
-  const [done, setDone] = useState<{ count: number; replaced: boolean; approvals: boolean } | null>(null)
+  // items it added, whether it replaced the directions, whether any of them is
+  // an approval (those have no row here), and whether a new gateway-routed
+  // server waits for a gateway restart.
+  const [done, setDone] = useState<{ count: number; replaced: boolean; approvals: boolean; restart: boolean } | null>(null)
 
   const clear = () => { setTemplate(''); setPreview(null); setErr(null) }
 
@@ -197,7 +198,7 @@ export default function WorkerKitPane({
     setBusy(true)
     setErr(null)
     try {
-      await crewWorkerKitApi.apply(member, {
+      const applied = await crewWorkerKitApi.apply(member, {
         template: preview.template,
         revision: preview.revision,
         ...(leftOut(preview) ? { without_write_fallback: true } : {}),
@@ -207,6 +208,7 @@ export default function WorkerKitPane({
         count: wrote.length,
         replaced: preview.changes.some(isReplacement),
         approvals: preview.runs_unasked || wrote.some(c => c.section === 'allowedTools'),
+        restart: applied.gateway_restart_required === true,
       })
       setPreview(null)
       setTemplate('')
@@ -319,6 +321,7 @@ export default function WorkerKitPane({
                 {done.count > 0 && i18nT('crewWorkerKit.done_added', { count: done.count, name })}
                 {done.replaced && `${done.count > 0 ? ' ' : ''}${i18nT('crewWorkerKit.done_replaced')}`}
                 {done.approvals && ` ${i18nT('crewWorkerKit.done_approvals')}`}
+                {done.restart && ` ${i18nT('crewWorkerKit.done_restart_required')}`}
               </span>
               {done.approvals && onOpenApprovals && (
                 // The stock Btn is transparent with a `--border` edge, which

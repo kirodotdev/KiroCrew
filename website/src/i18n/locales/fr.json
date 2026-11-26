@@ -25630,6 +25630,7 @@
     "retry": "Réessayer",
     "done_added": "{{count}} ajoutés à {{name}}.",
     "done_approvals": "Les outils listés dans Approbations automatiques s’exécutent désormais sans demander.",
+    "done_restart_required": "Un serveur MCP copié par cet ajout n’atteint le worker de ce Bot via la passerelle qu’une fois que tu as redémarré la passerelle (Paramètres → À propos → Redémarrer la passerelle).",
     "open_approvals": "Ouvrir Approbations",
     "group_directions": "Consignes de comportement",
     "change_replaced": "Remplace les actuelles",

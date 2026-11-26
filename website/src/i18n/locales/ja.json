@@ -24416,6 +24416,7 @@
     "retry": "再試行",
     "done_added": "{{name}} に {{count}} 件追加しました。",
     "done_approvals": "「自動承認」にあるツールは確認なしで実行されるようになりました。",
+    "done_restart_required": "この追加でコピーされた MCP サーバーがゲートウェイ経由でこの Bot のワーカーに届くのは、ゲートウェイを再起動した後です (設定 → バージョン情報 → ゲートウェイを再起動)。",
     "open_approvals": "承認を開く",
     "group_directions": "行動指示",
     "change_replaced": "現在のものを置換",
