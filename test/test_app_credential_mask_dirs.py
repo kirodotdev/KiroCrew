@@ -46,6 +46,7 @@ def home(tmp_path, monkeypatch) -> Path:
     monkeypatch.setattr(credential_masks, "config_dir", lambda: home)
     # Only the manifests each case writes, not what the built-ins ship.
     monkeypatch.setattr(credential_masks, "_builtin_manifests", lambda: [])
+    monkeypatch.setattr(credential_masks, "_frozen_builtin_declarations", lambda _kind: [])
     credential_masks.clear_cache()
     sandbox.reset_backend()
     yield home

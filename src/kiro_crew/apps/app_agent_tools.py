@@ -25,7 +25,9 @@ MCP server. Only a FIRST-PARTY app's block is read, in one of two ways:
   wheel copy is released, so the block is read from the adopted record's own
   ``app.json``, and a tool is kept only when it equals, route included, one the wheel
   copy's shipped block declares: the wheel copy is the ceiling, so an edited or
-  drifted declaration lists nothing, and narrower (fewer tools) is accepted.
+  drifted declaration lists nothing, and narrower (fewer tools) is accepted. Once a
+  release deletes the wheel copy, the block its pin row froze from that copy stands in
+  for it (:func:`shipped_tools`), so the ceiling is the last shipped copy's, no wider.
 
 The tools are listed under ``kirocrew-core``, which the default agent auto-approves as
 a whole server, so a tool listed there skips the permission prompt; a third-party
@@ -40,7 +42,8 @@ so the core tool keeps its handler and schema. The deny universe of an app agent
 (:func:`shipped_tools`) names every tool a shipped first-party manifest declares, whether
 its app is installed, switched off or neither, so a scoped agent is never handed a tool
 by an install that happens after it was materialized; the gateway refuses a call to an
-app that is not enabled.
+app that is not enabled. A deleted wheel copy's frozen block is in that universe too,
+so a tool its adopted record lists is still withheld from every other app's agent.
 
 The scan stats ``<apps dir>/<name>/app.json`` for every installed app and caches the
 result on each file's ``(mtime_ns, size)`` and on the first-party sets, so a
@@ -120,8 +123,9 @@ def _first_party_apps() -> frozenset[str]:
 def _adopted_first_party_apps(installed: Iterable[str], builtin: frozenset[str]) -> frozenset[str]:
     """The installed former built-ins adopted from their pin: see the module docstring's Trust.
 
-    Only a name the wheel copy declares tools for is asked, so a host with no such
-    adopted record reads no config here.
+    Only a name the wheel copy declares tools for (or, once deleted, its pin row's frozen
+    block, :func:`shipped_tools`) is asked, so a host with no such adopted record reads
+    no config here.
     """
     candidates = {t.app for t in shipped_tools()}.intersection(installed) - builtin
     if not candidates:
@@ -143,7 +147,11 @@ def _adopted_manifest(name: str) -> AppManifest | None:
 
 
 def _within_wheel_copy(name: str, tools: list[DeclaredTool]) -> list[DeclaredTool]:
-    """The *tools* of *name* that equal a declaration of its wheel copy, route included."""
+    """The *tools* of *name* that equal a declaration of its wheel copy, route included.
+
+    The copy's as :func:`shipped_tools` reads it: the shipped block, or the one the pin
+    row froze once a release deleted the copy.
+    """
     ceiling = [t for t in shipped_tools() if t.app == name]
     kept = [t for t in tools if t in ceiling]
     if len(kept) != len(tools):
@@ -180,6 +188,32 @@ def _shipped_first_party_roots() -> dict[str, Path]:
     for root, name in _shipped_builtin_apps():
         roots.setdefault(name, root)
     return roots
+
+
+def _frozen_copy_manifests(shipped: Iterable[str]) -> dict[str, AppManifest]:
+    """Each pinned app with no wheel copy among *shipped*, as the ``agentTools`` its row froze.
+
+    The block the pin row froze from the copy a release deleted
+    (``builtin_adoption_pins.frozen_limit_input``), parsed as a shipped manifest's is,
+    so it lists, withholds and caps exactly as that copy did. A row that froze none, or
+    a table that does not read, adds nothing. Every ``kirocrew-core`` listing reads
+    this, so the table is loaded only when it can freeze a block
+    (``credential_masks.pin_table_may_freeze``).
+    """
+    from kiro_crew.apps.credential_masks import pin_table_may_freeze
+
+    if not pin_table_may_freeze("agentTools"):
+        return {}
+    from kiro_crew.apps.builtin_adoption_pins import frozen_limit_input, load_adoption_pins
+    from kiro_crew.apps.manifest_agent_tools import AgentToolsConfig
+
+    pins = load_adoption_pins()
+    manifests: dict[str, AppManifest] = {}
+    for name in sorted(set(pins) - set(shipped)):
+        block = frozen_limit_input(pins[name], "agentTools")
+        if block:
+            manifests[name] = AppManifest(name=name, agentTools=AgentToolsConfig.from_value(block))
+    return manifests
 
 
 def _collect(
@@ -266,14 +300,18 @@ def shipped_tools() -> tuple[DeclaredTool, ...]:
 
     Read once per process, and without the release check :func:`_first_party_manifest`
     makes: that check reads config, which a names-only tool listing never does, and an
-    app released by adoption only leaves a name that is still withheld.
+    app released by adoption only leaves a name that is still withheld. A pinned app
+    whose wheel copy a release deleted is read from the block its pin row froze
+    (:func:`_frozen_copy_manifests`), so the universe, and the adopted record's ceiling
+    (:func:`_within_wheel_copy`), stay what the last shipped copy made them.
     """
     roots = _shipped_first_party_roots()
-    return _collect(
-        sorted(roots),
-        drop_clashes=False,
-        read=lambda name: _read_shipped_manifest(name, roots[name]),
-    )
+    frozen = _frozen_copy_manifests(roots)
+
+    def read(name: str) -> AppManifest | None:
+        return _read_shipped_manifest(name, roots[name]) if name in roots else frozen[name]
+
+    return _collect(sorted({*roots, *frozen}), drop_clashes=False, read=read)
 
 
 def declared_tool(name: str) -> DeclaredTool | None:

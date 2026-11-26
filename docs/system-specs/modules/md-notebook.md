@@ -29,7 +29,9 @@ and `enabled`; the rail keeps `/md-notebook` and the `NotebookPen` glyph, and th
 the state move into `data/state/` has sealed, whether or not Notes is enabled (State Layout
 below). The repository's `app.json` declares the same `permissions` and the same
 `credentialMasks` as the wheel copy, so E9 holds nothing back, and the tool gate keeps
-fencing `data/state/` after adoption because it reads the shipped wheel copy's declaration.
+fencing `data/state/` after adoption because it reads the shipped wheel copy's declaration
+(once a release deletes that copy, the one its pin row froze from it, app-kit-platform.md
+§ 33).
 A fix to the app lands in that repository first; a change to the wheel copy needs its
 `App repo:` line.
 

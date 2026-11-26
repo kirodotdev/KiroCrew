@@ -835,6 +835,7 @@ def live_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     from kiro_crew.apps import credential_masks
 
     monkeypatch.setattr(credential_masks, "_builtin_manifests", lambda: [])
+    monkeypatch.setattr(credential_masks, "_frozen_builtin_declarations", lambda _kind: [])
     credential_masks.clear_cache()
     return home
 

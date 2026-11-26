@@ -7572,7 +7572,8 @@ shipped `app.json` (`execution.shipped_builtin_app_root`), never from the data-h
 A built-in whose wheel copy is released by adoption is first party too, under the trust
 the tool gate's own-server grant rests on (section 33, "Agent tools through adoption"):
 its block is read from the adopted record's own `app.json`, and a tool lists only when it
-equals, route included, one its wheel copy's shipped block declares. Any other installed
+equals, route included, one its wheel copy's shipped block declares (or, once a release
+deletes that copy, the block its pin row froze, section 33). Any other installed
 or registry app's `agentTools` block lists nothing: it still validates and installs, and
 the app can ship its own `mcpServers` entry, whose calls are approved one by one
 (`_register_mcp_servers` strips its `autoApprove`). Listing such an app's tools needs a
@@ -8626,9 +8627,11 @@ row per app: `name`, `repository` (`https://github.com/<owner>/<repo>`,
 no `.git`, byte-equal to the catalog row `url`), `commit`, `version`,
 `treeSha256`, `archiveSha256`, `minAppSdkLevel` (see "Who sets `minAppSdkLevel`"
 below) and `legacyNav {route, icon}`, and, exactly when the app's wheel copy is gone,
-`deletedCopy {permissions, grants}` from `adoption_pin.py freeze` ("The row freezes the
-deleted copy for E9" below; only its shape is checked at load, and a malformed one
-drops the row).
+`deletedCopy {permissions, grants}` from `adoption_pin.py freeze`, with, beside them,
+each limit input the copy declared out of `mcpServers`, `agentNames`, `agentTools`,
+`credentialMasks` and `agentReadOnlyDirs` ("The row freezes the deleted copy for E9"
+and "The row freezes the limit inputs too" below; only its shape is checked at load, and
+a malformed one drops the row).
 The codeload archive URL is derived from `repository` and `commit`, never
 authored. `builtin_adoption_pins.load_adoption_pins` reads it once per process; a
 bad row is dropped, a duplicated name drops every row with it, more than 64 rows
@@ -8838,8 +8841,9 @@ approved set of everything the copy declares (`manager.builtin_approved_grants`,
 staged family, explicit-only ones included). Once the copy is gone nothing rewrites
 them, so a host that never booted the last release with the copy keeps an older,
 narrower record. The release that deletes a copy therefore adds `deletedCopy` to its
-row (`builtin_adoption_baseline.freeze_deleted_copy`, printed by
-`adoption_pin.py freeze <name>` from the copy it is about to remove): `permissions`,
+row (`builtin_adoption_baseline.freeze_deleted_copy` of the copy's package directory,
+printed by `adoption_pin.py freeze <name>` from the copy it is about to remove). Its E9
+half (`freeze_grant_inputs`) is `permissions`,
 the copy's own `permissions` object verbatim, and `grants`, every family
 `point_grants.grant_source` reads from the copy that declares an entry, so a family
 registered later is carried with no change to the freezer. With no wheel copy, E9
@@ -8857,9 +8861,10 @@ there is never read (the record `register_builtin_apps` rewrote is the baseline)
 row with neither vouches for nothing, so its baseline is empty and any declared grant
 is held back, never the record a past release left. `adoption_pin.py verify` refuses
 either shape, re-derives each `deletedCopy` from the parent of the commit that
-deleted the copy (found by manifest `name` in the checkout's history), and runs E9 of
-the pinned tree against it; `compute` runs the same E9 against the shipped copy or the
-row's frozen one. Pinned by `test/test_builtin_adoption_no_wheel_copy.py`
+deleted the copy (found by manifest `name` in the checkout's history, its whole package
+written out by `git archive` through the gateway's own archive reader, so the freezer
+reads it as from a shipped copy), and runs E9 and E10 of the pinned tree against it;
+`compute` runs the same checks against the shipped copy or the row's frozen one. Pinned by `test/test_builtin_adoption_no_wheel_copy.py`
 (`test_a_host_that_skipped_the_last_copy_adopts_as_one_that_booted_it`, which runs
 both paths and compares their grants, `test_a_pin_that_declares_more_than_the_frozen_copy_is_held_back`,
 `test_a_frozen_copy_wider_than_the_pin_grants_only_what_the_pin_declares`,
@@ -8873,19 +8878,63 @@ both paths and compares their grants, `test_a_pin_that_declares_more_than_the_fr
 `freeze` and `verify` tests). Personal Shopper's and Create Folders From Project's rows
 each carry the copy frozen from the parent of the commit that deleted it.
 
+**The row freezes the limit inputs too.** Rows 1 to 4 and 9 of the table below are
+limits whose input only the wheel copy supplied, so with the copy deleted each failed
+closed for good. The same `deletedCopy` carries those inputs, each read by its limit's
+own reader and present only when the copy declared one
+(`builtin_adoption_pins.DELETED_COPY_LIMIT_KEYS`), and with no wheel copy each reader
+reads the row instead (`builtin_adoption_pins.frozen_limit_input`, or
+`builtin_adoption_baseline.no_copy_limit_input`, which checks the copy is gone itself):
+exactly the answer the last shipped copy gave, capped by the pinned or adopted tree
+wherever the reader caps it while the copy ships, and nothing when the row froze
+nothing. Two of the readers run before every stdio MCP server lists its tools: the
+built-in mask leg, which the `security` import reads for its static rows, and the
+`agentTools` deny universe of the `kirocrew-core` listing. They load the pin table only
+when its file's text names the key (`credential_masks.pin_table_may_freeze`, which
+reads it raw first, and answers at once once the loader is in the process), so a table
+that froze nothing of that kind costs a listing no module
+(`test/test_mcp_listing_import_budget.py`); the first row that does freeze one loads
+`builtin_adoption_pins` there.
+
+| Frozen key | Read from the copy by | Read from the row by |
+|---|---|---|
+| `mcpServers` | the parsed manifest's servers | E10 (`_tree_checks`, `adoption_pin.py`: `pinned_tree_refusal(frozen_servers=...)`) and the own-server grant (`builtin_adoption_gate._server_ceiling`), both through `carried_server` |
+| `agentNames` | `execution.declared_agent_names`, beside `mcpServers` only | the gate's agent-to-app map (`builtin_app_agents(adopted)`), for an adopted app with a kept server, the only one the map names |
+| `agentTools` | the parsed block | `app_agent_tools.shipped_tools` (`_frozen_copy_manifests`), so the listing's ceiling (`_within_wheel_copy`), the adopted-name candidates and the deny universe all hold it |
+| `credentialMasks`, `agentReadOnlyDirs` | `credential_masks.builtin_package_entries` (the built-in leg's read, name from the directory) | the built-in leg (`credential_masks._frozen_builtin_declarations`), so the sandbox masks and seals and the tool gate's static rows hold them; never the backend lift (`declared_crew_leaves_for`), as no code of the deleted copy runs |
+
+The `app-own-tools` row (4) needs no reader of its own: it asks the agent map and
+`declared_tools`, both above. A copy with agents but no server freezes no names (the map
+names an adopted app's agents only beside a server it keeps), which is why Personal
+Shopper's row, frozen before these keys, re-derives unchanged. Rows 2 and 4 are
+auto-approval grants: the frozen value is the last copy's own declaration, reviewed and
+shipped in the same wheel as the copy, so it keeps the built-in's auto-approval and
+grants nothing past it (a server, launch, `autoApprove` verb, `env` value, tool, route or
+agent the copy did not declare still asks). Pinned by
+`test/test_builtin_adoption_frozen_limits.py`, which asks each reader with the fixture
+copy shipping, then deleted and frozen, and compares, then pins the fail-closed answer
+with no frozen value and the refusal past it, at the gate's verdict for rows 2 and 4 and
+end to end through STAGE and APPLY for row 1, and pins that a table naming no frozen key
+is never loaded (`test_a_table_that_names_no_frozen_key_is_never_loaded`); and
+`test_a_deleted_copy_keeps_its_limits_only_through_its_frozen_row`
+(`test/test_builtin_adoption_pins.py`) for the per-limit list below.
+
 Every other core path that reads the wheel copy to decide a limit or a grant finds
-none. The table names each, what it does then, and which way it fails. Rows 1 to 6,
-8 and 9 are open blockers for deleting the copies of the apps they name, and none of
-them is handled yet; row 6 fails OPEN, so dev-fleet's copy must not be deleted before
-it is fixed. Row 7 is handled by the frozen copy above, so it blocks no deletion whose
-row carries one. Row 8 follows from rows 1 and 7: an app that only row 7 held back now
-adopts, so its App Store install never reaches row 8's dead end, which stays open for
-the apps of row 1. Row 10 blocks nothing. Rows 1 to 6 and 9 are pinned by
+none. The table names each, what it does then, and which way it fails. Rows 1 to 4, 7
+and 9 are handled by the frozen copy above, so they block no deletion whose row carries
+it. Rows 5 and 6 are open blockers for deleting the copies of the apps they name; row 6
+fails OPEN, so dev-fleet's copy must not be deleted before it is fixed. Row 8 follows
+from rows 1 and 7: an app they alone held back now adopts once its row carries the
+frozen copy, so its App Store install never reaches row 8's dead end. Row 10 blocks
+nothing. Rows 1 to 6 and 9 are pinned by
 `test_no_wheel_copy_a_security_limit_reads_is_deleted` (`test/test_builtin_adoption_pins.py`,
 deriving from `test/wheel_copy_limit_sources.py`): it pins, per limit and one name per
-line, the pinned apps whose wheel copy supplies its input, read from the files and keys
-these readers read, and compares the derived set with that list exactly. Deleting one
-of those copies fails CI until its limit has a non-wheel source and that PR removes the
+line, the pinned apps that supply its input, from the wheel copy as these readers read
+it (through `freeze_deleted_copy` for the frozen ones) or, for rows 1 to 4 and 9
+(`wheel_copy_limit_sources.FROZEN`), from the row's frozen copy, and compares the derived
+set with that list exactly. Deleting a copy that supplies rows 1 to 4 or 9 passes only
+when its row carries the frozen input, and its line stays; deleting one that supplies
+row 5 or 6 fails CI until that limit has a non-wheel source and that PR removes the
 app's line; a copy that starts supplying a limit adds one. Because the apps are named, a
 deletion cannot pass by another copy gaining the same key, and two deletions for the
 same limit edit different lines, so they merge into the right set or conflict as text
@@ -8895,15 +8944,15 @@ frozen-copy tests above; row 8 reads no wheel file; row 10 is no limit.
 
 | # | Read of the wheel copy | With no wheel copy | Direction | Apps it blocks |
 |---|---|---|---|---|
-| 1 | E10's stdio server ceiling (`builtin_adoption_apply._shipped_manifest` into `builtin_adoption_mcp.adopted_mcp_servers_refusal`; `adoption_pin.py` asks the same) | a pinned tree that declares `mcpServers` is refused `pinned_feature_unsupported`, a never-retried code, so a host that never adopted never adopts, and `adoption_pin.py verify` refuses the row | fail-closed, permanent | auto-improvement, mochi |
-| 2 | the own-server grant (`builtin_adoption_gate.adopted_app_own_mcp_servers`, with the wheel agent map `execution.builtin_app_agents`) | grants nothing: an adopted app's calls to its own servers ask, and an unattended run is refused when its card expires | fail-closed | auto-improvement, mochi |
-| 3 | the `agentTools` ceiling (`app_agent_tools._adopted_first_party_apps`, `_within_wheel_copy`) | an adopted app's tools are not listed, and a call is refused as `unknown_tool` (`dashboard/handlers/app_agent_tools.py`, `mcp_tools/app_tools.py`) | fail-closed | design-tweak, dev-fleet, issue-radar, ops-mission-control |
-| 4 | the gate's `app-own-tools` row (`own_agent_tools.gate_grants`: the wheel agent map and the wheel `agentTools`) | approves nothing, so the app's own agent's calls to its own tools ask | fail-closed | the apps of row 3 |
+| 1 | E10's stdio server ceiling (`builtin_adoption_apply._shipped_manifest` into `builtin_adoption_mcp.adopted_mcp_servers_refusal`; `adoption_pin.py` asks the same) | **handled**: the row's frozen `mcpServers` is the ceiling (`no_copy_limit_input`, "The row freezes the limit inputs too" above); a row without them refuses a pinned tree that declares `mcpServers` `pinned_feature_unsupported`, a never-retried code, and `adoption_pin.py verify` refuses it | fail-closed only past the frozen copy | none once the deletion PR freezes the copy (`adoption_pin.py freeze`) |
+| 2 | the own-server grant (`builtin_adoption_gate.adopted_app_own_mcp_servers`, with the wheel agent map `execution.builtin_app_agents`) | **handled**: the frozen `mcpServers` and `agentNames` keep the grant the copy gave; a row without them grants nothing, so an adopted app's calls to its own servers ask and an unattended run is refused when its card expires | fail-closed only past the frozen copy | none once the deletion PR freezes the copy |
+| 3 | the `agentTools` ceiling (`app_agent_tools._adopted_first_party_apps`, `_within_wheel_copy`) | **handled**: the frozen `agentTools` is the ceiling and stays in the deny universe; a row without it lists nothing, and a call is refused as `unknown_tool` (`dashboard/handlers/app_agent_tools.py`, `mcp_tools/app_tools.py`) | fail-closed only past the frozen copy | none once the deletion PR freezes the copy |
+| 4 | the gate's `app-own-tools` row (`own_agent_tools.gate_grants`: the wheel agent map and the wheel `agentTools`) | **handled** through rows 2 and 3; a row without their frozen inputs approves nothing, so the app's own agent's calls to its own tools ask | fail-closed only past the frozen copy | none once the deletion PR freezes the copy |
 | 5 | the built-in seam providers (`seams._load_builtin_seams` imports `builtins/<package>/seams.py` only) | design-critique's worker slot mode leaves `chat_handlers._CREATABLE_MODES` (read once at import): unless the app may hide sessions (section 23a), `POST /api/chat/slots` refuses the mode and a send that recreates the slot drops it to `""`; a pinned tree that declares `permissions.hiddenSessions` keeps it on both. aws-control's `crew_runtime`, `aws_account_policy` and `transfer_staging` answer None, so their core callers degrade or refuse | breaks (fail-closed) | design-critique, aws-control |
 | 6 | the built-in host grants (`builtin_host_grants.builtin_host_grants` imports `builtins/<package>/host_grants.py` only) | dev-fleet's two pod-token mint routes leave `kiro_relay.limits`' relay credential set, so a relayed caller is **no longer refused** there; its five `/pod/*` routes leave the strict internal set and refuse the internal-secret caller; its BUILD rlimit, `KIROCREW_DEVFLEET_*` forwarding and `dev_fleet` config key go | **fail-open** (relay refusal); fail-closed (strict paths) | dev-fleet |
 | 7 | the record's `app.json` copy and approved grants, which `register_builtin_apps` rewrites from the wheel at every start | **handled**: both stay as the host's last release left them, so E9 and the swap read the row's `deletedCopy` instead (`builtin_adoption_baseline.no_copy_baseline`, "The row freezes the deleted copy for E9" above): the host adopts with the grants the last copy's registration would have stored; a row without one vouches for nothing, so any declared grant is `permission_widening` | fail-closed only past the frozen copy | none once the deletion PR freezes the copy (`adoption_pin.py freeze`) |
 | 8 | not a wheel read: `registry_pipeline/install._adoption_pending` with `builtin_adoption.pending_install_refusal` | when STAGE is refused (rows 1 and 7), the builtin-owned record runs no code and an App Store install is refused `adoption_pending` with a message saying the app "stays a built-in app", which no longer holds: a dead end | fail-closed, no way out | the apps of rows 1 and 7 |
-| 9 | the built-in leg of `credential_masks` (`_builtin_manifests`) and `agent_readonly_dirs` | the built-in declarations go; the installed leg (the record's `app.json`) stays, so an adopted record keeps its masks and read-only dirs | narrows to the installed declaration | md-notebook, meetings, spec-builder |
+| 9 | the built-in leg of `credential_masks` (`_builtin_manifests`) and `agent_readonly_dirs` | **handled**: the frozen `credentialMasks` and `agentReadOnlyDirs` stay in the built-in leg (`_frozen_builtin_declarations`); a row without them narrows to the installed leg (the record's `app.json`), so an adopted record keeps its own masks and read-only dirs | narrows to the installed declaration only without the frozen copy | none once the deletion PR freezes the copy |
 | 10 | auto-research's `stopped_loop_tombstone`, the one other provider the same loader imports | its adopted tree registers the provider itself from `on_startup`, for the life of the gateway process. Only a process where that hook never ran (the app disabled from boot until the stop, or a never-adopted host before APPLY) has none: `_keeps_stopped_loop` then answers False, so the stop removes the loop's row like any other legacy loop's, and after the next enable the watchdog cannot tell that campaign worker's deliberate finish from an unreachable session. No security impact | fails toward the ordinary path; not a deletion blocker | none |
 
 **STAGE** (`builtin_adoption_apply.staging_pass`, kicked by
@@ -8961,7 +9010,7 @@ keeps is `data/`" above), while the ledger keeps its state; then:
 |---|---|---|
 | E7 identity, version (= pin, = wheel, not below the record) | `manifest_identity_mismatch`, `version_mismatch` | never for this pin |
 | E8 no root build input or `.gitattributes` | `tree_requires_build` | never |
-| E10 no `ui.overlays`, `defaultEnabled: true`, nor a name a core table keys on; an `mcpServers` entry only as a stdio server started from the tree within the wheel copy's declaration (below) | `pinned_feature_unsupported` | never |
+| E10 no `ui.overlays`, `defaultEnabled: true`, nor a name a core table keys on; an `mcpServers` entry only as a stdio server started from the tree within the wheel copy's declaration (the row's frozen `mcpServers` once the copy is gone; below) | `pinned_feature_unsupported` | never |
 | E3/E5 host version, `APP_SDK_LEVEL`, `platform.os` | `host_too_old`, `host_sdk_too_old`, `platform_mismatch` | every STAGE pass |
 | E4 admission (`action="update"`, no exemption) | `admission_denied` | every STAGE pass |
 | E9 permission parity: nothing held back, no new `sessionApproval` or `chatSlots`, a `chatLaunch` within the wheel copy's (the row's `deletedCopy` once the copy is gone) | `permission_widening` | every STAGE pass |
@@ -8991,8 +9040,10 @@ target carrying an absolute path, a file outside the tree, a missing file, and a
 ceiling, never more: no server name it does not declare, no `autoApprove` verb it does
 not list (a wildcard it does not list included), no `env` entry it does not set with the same value (a value is a launch input too: `PYTHONPATH` or `PYTHONSTARTUP` would point the server at code outside the tree), a server
 it ships `disabled` stays disabled, and no field beyond `command`, `args`, `env`,
-`autoApprove` and `disabled`. Narrower is accepted, since it only removes reach. With no
-readable wheel manifest every server is refused. After the swap the record is an
+`autoApprove` and `disabled`. Narrower is accepted, since it only removes reach. Once a
+release deletes the wheel copy, the `mcpServers` its pin row froze from it are that
+ceiling (`no_copy_limit_input`, never read beside a wheel manifest); with neither a
+readable wheel manifest nor a frozen value every server is refused. After the swap the record is an
 ordinary registry app, so the boot reconcile re-registers the server under the same
 `<app>:<server>` key through `_register_mcp_servers`, with the gateway's own
 interpreter, and it is spawned, sandboxed and governed like every other registry app's
@@ -9016,14 +9067,16 @@ their own they would drop an adopted record and its server calls would start ask
 governed host (where the `autoApprove` strip removes the local list) and on a harness
 that relies on the gate. The refresh therefore adds, for every server
 `adopted_app_own_mcp_servers` names, its `<app>:<server>`, its app, and the agents the
-WHEEL manifest declares for that app (`builtin_app_agents(adopted)`). A server is named
+WHEEL manifest declares for that app (`builtin_app_agents(adopted)`; once a release
+deletes the copy, the `agentNames` its pin row froze). A server is named
 only when all of these hold: the wheel pins the app; the active record is adopted from
 the pin's repository (`record_is_adopted_from`); the operator's execution grant for the
 app is bound to that same repository and covers the installed code
 (`trusted_app_repository`, `repository_bound_grant_denied`); and the installed manifest
 declares the server as a stdio server started from the adopted tree within the wheel
-copy's declaration (`builtin_adoption_mcp.carried_server`, the E10 predicate above,
-re-asked of the installed entry at every boot). A third-party record under the same name
+copy's declaration, or the one its pin row froze once the copy is deleted
+(`builtin_adoption_mcp.carried_server`, the E10 predicate above, re-asked of the
+installed entry at every boot). A third-party record under the same name
 or server name, a mismatched launch, a grant bound elsewhere, or an unreadable manifest
 names nothing. The adopted tree lives in the data home, so this grant rests on the
 operator's grant to the pinned repository, the same trust that admits the record's code
@@ -9044,9 +9097,10 @@ repository, and the execution grant is bound to that repository and covers the i
 code), the one predicate both grants ask. The block is read from the adopted record's own
 `app.json` and held to the wheel copy's: a tool is kept only when its name, description,
 title, `inputSchema`, `maxResultChars` and the block's `route` equal a tool the wheel's
-shipped block declares, so an edited or drifted declaration lists nothing and a narrower
-one (fewer tools) is accepted. The deny universe (`shipped_tools`) is still read from the
-wheel only, so it names every tool the adopted record can list. A third-party record
+shipped block declares (once a release deletes the copy, the block its pin row froze),
+so an edited or drifted declaration lists nothing and a narrower one (fewer tools) is
+accepted. The deny universe (`shipped_tools`) is read from the wheel, and for a deleted
+copy from that frozen block, so it names every tool the adopted record can list. A third-party record
 under the same name, a grant bound elsewhere or name-only, an unpinned app or an
 unreadable manifest lists nothing, and `POST /api/app-tools/call` answers `unknown_tool`
 for it. Pinned by `test/test_app_agent_tools_adopted.py`, end to end through STAGE and
@@ -9971,7 +10025,9 @@ built-in snapshot (`discovery._manifest_to_builtin_dict`) keep it.
 
 **Where it is read.** Per spawn, cached on each manifest's device, inode, size and mtime:
 every shipped package's `apps/builtins/<package>/app.json` whose `name` is the package
-name hyphenated, and every `<data home>/apps/<dir>/app.json` whose `name` is `<dir>`. The
+name hyphenated (and, for a pinned app whose package has no `app.json` left, the entries
+its pin row froze from the deleted copy, section 33, which no backend lift reads), and
+every `<data home>/apps/<dir>/app.json` whose `name` is `<dir>`. The
 name comes from where the manifest sits, so one app cannot declare a leaf under another
 app's directory. A sidecar (`.`-prefixed) directory is not an app. An absent, unreadable
 or non-JSON manifest, or one nested past the parser's depth, declares nothing; an invalid

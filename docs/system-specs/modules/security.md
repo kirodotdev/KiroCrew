@@ -2342,7 +2342,8 @@ cleanly rewrites or removes that record. Only the app's own backend spawn gets i
 the file is absent or a regular file with one name. Tightening
 only: no seal, carve-out or keystone disposition reads a declaration. The tool gate reads
 the shipped built-ins' declarations at import (`credential_masks.declared_crew_leaves(installed=False)`,
-splatted into `_CREW_SECRET_LEAVES`), and the listing below reads them again, so the agent's file tools refuse a built-in's
+splatted into `_CREW_SECRET_LEAVES`; a pinned app whose wheel copy a release deleted
+declares there what its pin row froze from that copy, app-kit-platform.md § 33), and the listing below reads them again, so the agent's file tools refuse a built-in's
 credential file as they refuse a core one with no core row naming the app. An installed
 app's declaration (every installed tree and retained record, so an adopted former
 built-in's too; seam level 10) reaches the read and the write gate through a listing

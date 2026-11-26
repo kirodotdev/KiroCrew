@@ -15,13 +15,15 @@ first page. ``verify`` does the same for every row and fails on any difference.
 A pin row can outlive its wheel copy: the copy is deleted and the row kept. For such
 a name the tree checks run with no shipped built-in, as the gateway runs them, and
 ``legacyNav`` is carried from the name's current row. A name that is neither shipped
-nor pinned is refused. Such a row must carry ``deletedCopy``, the copy's E9 input,
-and a row whose copy still ships must not (``builtin_adoption_baseline``). ``freeze``
-prints the row with it, read from the wheel copy a deletion PR is about to remove, or,
-once it is gone, from the parent of the commit that deleted it. ``verify`` checks
-both rules, re-derives every ``deletedCopy`` from that parent commit, and runs E9
-against it, so it reads this checkout's git history: run it after committing the
-deletion, in a clone that is not shallow.
+nor pinned is refused. Such a row must carry ``deletedCopy``, the copy's E9 input and
+the input of each limit only a wheel copy supplies, and a row whose copy still ships
+must not (``builtin_adoption_baseline``). ``freeze`` prints the row with it, read from
+the wheel copy a deletion PR is about to remove, or, once it is gone, from the parent
+of the commit that deleted it, written out whole so the copy is read as the gateway's
+readers read a shipped one. ``verify`` checks both rules, re-derives every
+``deletedCopy`` from that parent commit, and runs E9 and E10 against it, so it reads
+this checkout's git history: run it after committing the deletion, in a clone that is
+not shallow.
 
 ``minAppSdkLevel`` is ``--min-sdk-level`` (default 1); the tool never raises it on
 its own. The tree is scanned for the App Kit seams above level 1 it uses
@@ -39,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import gzip
 import hashlib
 import json
 import os
@@ -59,6 +62,7 @@ from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL  # noqa: E402
 from kiro_crew.apps.builtin_adoption_baseline import (  # noqa: E402
     deleted_copy_baseline,
     freeze_deleted_copy,
+    freeze_grant_inputs,
 )
 from kiro_crew.apps.builtin_adoption_checks import (  # noqa: E402
     pinned_tree_refusal,
@@ -286,11 +290,11 @@ def _git(*args: str) -> str:
     ).stdout
 
 
-def _deleted_copy(name: str) -> tuple[str, dict[str, Any]]:
-    """``(revision, app.json)`` of *name*'s wheel copy in the parent of the commit that deleted it.
+def _deleted_copy(name: str) -> tuple[str, str]:
+    """``(revision, package directory)`` of *name*'s wheel copy before the commit that deleted it.
 
-    The most recent deletion wins. The copy is found by its manifest ``name``, so no
-    package directory is spelled here.
+    The revision is that commit's parent; the most recent deletion wins. The copy is
+    found by its manifest ``name``, so no package directory is spelled here.
     """
     pathspec = f"{_BUILTINS_REL}/*/app.json"
     log = _git("log", "--diff-filter=D", "--name-only", "--format=commit %H", "--", pathspec)
@@ -302,17 +306,49 @@ def _deleted_copy(name: str) -> tuple[str, dict[str, Any]]:
         elif commit and line.endswith("/app.json") and line.count("/") == depth:
             raw = json.loads(_git("show", f"{commit}^:{line}"))
             if isinstance(raw, dict) and raw.get("name") == name:
-                return f"{commit}^", raw
+                return f"{commit}^", line.rsplit("/", 1)[0]
     raise SystemExit(
         f"{name}: this checkout has no commit that deletes a wheel copy of that name"
         " (a shallow clone has no history; fetch it, or commit the deletion first)"
     )
 
 
-def _copy_to_freeze(name: str) -> dict[str, Any]:
-    """The raw ``app.json`` *name*'s row freezes: the shipped copy, else the deleted one."""
+def _deleted_copy_root(name: str, dest: Path) -> Path:
+    """*name*'s deleted wheel copy, its whole package directory, written under *dest*.
+
+    Read from the revision :func:`_deleted_copy` finds and extracted by the gateway's own
+    archive reader, which refuses a link or a path outside the package. The directory
+    keeps the package's name, which the credential masks' built-in leg reads the app's
+    name from.
+    """
+    revision, package = _deleted_copy(name)
+    leaf = package.rsplit("/", 1)[1]
+    tar = subprocess.run(
+        ["git", "archive", "--format=tar", f"--prefix={leaf}/", f"{revision}:{package}"],
+        cwd=_ROOT,
+        check=True,
+        capture_output=True,
+        timeout=120,
+    ).stdout
+    dest.mkdir(parents=True, exist_ok=True)
+    archive = dest / f"{leaf}.tar.gz"
+    archive.write_bytes(gzip.compress(tar))
+    root = dest / leaf
+    root.mkdir()
+    fetch._extract_archive(archive, root, root=leaf)
+    return root
+
+
+def _frozen_deleted_copy(name: str) -> dict[str, Any]:
+    """The ``deletedCopy`` of *name*'s wheel copy as the commit that deleted it found it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        return freeze_deleted_copy(_deleted_copy_root(name, Path(tmp)))
+
+
+def _frozen_copy(name: str) -> dict[str, Any]:
+    """The ``deletedCopy`` *name*'s row freezes: from the shipped copy, else the deleted one."""
     shipped = _shipped(name)
-    return shipped[1] if shipped is not None else _deleted_copy(name)[1]
+    return freeze_deleted_copy(shipped[0]) if shipped is not None else _frozen_deleted_copy(name)
 
 
 def _clone(repository: str, commit: str, dest: Path) -> None:
@@ -375,6 +411,7 @@ def _measure(pin: AdoptionPin, work: Path) -> dict[str, Any]:
     manifest = AppManifest.from_json_file(extracted / "app.json")
     shipped = _shipped(pin.name)
     deleted_copy: dict[str, Any] | None = None
+    frozen_servers: Any = None
     if shipped is None:
         current = _current_row(pin.name)
         page = current["legacyNav"]
@@ -386,11 +423,18 @@ def _measure(pin: AdoptionPin, work: Path) -> dict[str, Any]:
                 " print it with `adoption_pin.py freeze` and add it to the row"
             )
         baseline = deleted_copy
+        frozen_servers = deleted_copy.get("mcpServers")
     else:
         page = (shipped[1].get("ui", {}).get("pages") or [{}])[0]
         shipped_manifest = AppManifest.from_json_file(shipped[0] / "app.json")
-        baseline = freeze_deleted_copy(shipped[1])
-    refusal = pinned_tree_refusal(pin, manifest, extracted, shipped_manifest=shipped_manifest)
+        baseline = freeze_grant_inputs(shipped[1])
+    refusal = pinned_tree_refusal(
+        pin,
+        manifest,
+        extracted,
+        shipped_manifest=shipped_manifest,
+        frozen_servers=frozen_servers,
+    )
     if refusal:
         raise SystemExit(f"{pin.name}: the pinned tree is refused: {refusal}")
     sdk_refusal = _sdk_level_refusal(pin.name, pin.min_app_sdk_level, _seam_level_uses(extracted))
@@ -462,7 +506,7 @@ def _compute(repository: str, commit: str, min_sdk_level: int = 1) -> int:
 
 def _freeze(name: str) -> int:
     """Print *name*'s current row with the ``deletedCopy`` its wheel copy freezes."""
-    row = {**_current_row(name), DELETED_COPY_KEY: freeze_deleted_copy(_copy_to_freeze(name))}
+    row = {**_current_row(name), DELETED_COPY_KEY: _frozen_copy(name)}
     print(json.dumps(row, indent=2))
     return 0
 
@@ -490,7 +534,7 @@ def _verify() -> int:
         actual = {key: row.get(key) for key in expected}
         if actual == expected and row.get(DELETED_COPY_KEY) is not None:
             # What the row froze must be the copy the deletion removed, no wider.
-            actual[DELETED_COPY_KEY] = freeze_deleted_copy(_deleted_copy(name)[1])
+            actual[DELETED_COPY_KEY] = _frozen_deleted_copy(name)
         if actual != expected:
             print(f"{name}: shipped {expected} but measured {actual}", file=sys.stderr)
             failed += 1

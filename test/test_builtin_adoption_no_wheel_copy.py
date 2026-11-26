@@ -40,7 +40,7 @@ from kiro_crew.apps import manager
 from kiro_crew.apps.bridges_sources import _app_resource_root, _registration_source
 from kiro_crew.apps.builtin_adoption_baseline import (
     deleted_copy_baseline,
-    freeze_deleted_copy,
+    freeze_grant_inputs,
     no_copy_baseline,
 )
 from kiro_crew.apps.builtin_adoption_state import read_adoption_markers, read_ledger
@@ -336,7 +336,7 @@ async def test_a_row_whose_copy_ships_is_held_to_the_record_not_to_a_frozen_copy
     host(wheel=OLDER, pinned=NEWEST)
     table = json.loads(pins_mod._PINS_PATH.read_text(encoding="utf-8"))
     (row,) = table["pins"]
-    row[pins_mod.DELETED_COPY_KEY] = freeze_deleted_copy(shipped_manifest(permissions=NEWEST))
+    row[pins_mod.DELETED_COPY_KEY] = freeze_grant_inputs(shipped_manifest(permissions=NEWEST))
     pins_mod._PINS_PATH.write_text(json.dumps(table), encoding="utf-8")
     pins_mod.load_adoption_pins.cache_clear()
     pin = pins_mod.adoption_pin(NAME)
@@ -364,7 +364,7 @@ async def test_the_swap_compares_and_carries_the_baseline_it_is_given(host):
     w = host(wheel=NEWEST, pinned=NEWEST)
 
     def swap(permissions):
-        frozen = freeze_deleted_copy(shipped_manifest(permissions=permissions))
+        frozen = freeze_grant_inputs(shipped_manifest(permissions=permissions))
         baseline = deleted_copy_baseline(frozen)
         return manager.adopt_builtin_record(
             NAME, w.tree, repository=REPOSITORY, commit=w.commit, baseline=baseline

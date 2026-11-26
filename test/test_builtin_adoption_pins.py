@@ -444,11 +444,13 @@ def test_a_shipped_row_carries_a_deleted_copy_exactly_when_its_wheel_copy_is_gon
     assert wrong == {}
 
 
-#: The pinned apps whose wheel copy is the only input of each core security limit
-#: (app-kit-platform.md § 33, the table under "A pin row with no wheel copy"), one app
-#: per line. Remove an app's line only in the PR that gives that limit a non-wheel source
-#: for the app whose copy it deletes; add one when a copy starts supplying a limit.
-_WHEEL_ONLY_LIMIT_APPS = {
+#: The pinned apps that supply the input of each core security limit only a wheel copy
+#: reads (app-kit-platform.md § 33, the table under "A pin row with no wheel copy"), one
+#: app per line. For a limit in ``limits.FROZEN`` an app keeps its line when its copy is
+#: deleted, because its pin row then carries the input (``adoption_pin.py freeze``). For
+#: any other limit, remove an app's line only in the PR that gives that limit a non-wheel
+#: source for the app whose copy it deletes. Add one when a copy starts supplying a limit.
+_LIMIT_INPUT_APPS = {
     limits.MCP_SERVERS: {
         "auto-improvement",
         "mochi",
@@ -475,27 +477,31 @@ _WHEEL_ONLY_LIMIT_APPS = {
 
 
 def test_no_wheel_copy_a_security_limit_reads_is_deleted():
-    """A pinned app may lose its wheel copy only if no security limit reads its input there.
+    """A pinned app may lose its wheel copy only if every limit reading it there keeps a source.
 
     The tests above skip a pinned app with no wheel copy, so this is what stops a
     deletion that drops a limit: the relay credential refusal (§ 33 row 6) fails open.
-    The apps are pinned by name, so deleting one copy while another starts supplying
-    the same limit still fails.
+    A limit in ``limits.FROZEN`` keeps the app when its row carries the frozen input, so
+    such a deletion passes only with ``adoption_pin.py freeze``'s ``deletedCopy`` in the
+    row. The apps are pinned by name, so deleting one copy while another starts
+    supplying the same limit still fails.
     """
-    sources = limits.wheel_only_limit_sources()
-    assert set(sources) == set(_WHEEL_ONLY_LIMIT_APPS)
+    sources = limits.limit_sources()
+    assert set(sources) == set(_LIMIT_INPUT_APPS)
+    assert limits.FROZEN < set(sources)
     changed = [
         f"{limit}: dropped {sorted(pinned - sources[limit])},"
         f" added {sorted(sources[limit] - pinned)}"
-        for limit, pinned in _WHEEL_ONLY_LIMIT_APPS.items()
+        for limit, pinned in _LIMIT_INPUT_APPS.items()
         if sources[limit] != pinned
     ]
     assert changed == [], (
-        "the pinned apps whose wheel copy is the only input of a core security limit"
-        " changed. A dropped app lost that limit with its copy: give the limit a non-wheel"
-        " source for it first, then remove its line. An added app supplies the limit from"
-        " its copy alone: add its line. See app-kit-platform.md § 33, 'A pin row with no"
-        " wheel copy'"
+        "the pinned apps that supply the input of a core security limit only a wheel copy"
+        " reads changed. A dropped app lost that limit with its copy: for a limit a pin row"
+        " can carry, add the deletedCopy `adoption_pin.py freeze` prints to its row; for any"
+        " other, give the limit a non-wheel source for it first, then remove its line. An"
+        " added app supplies the limit from its copy: add its line. See"
+        " app-kit-platform.md § 33, 'A pin row with no wheel copy'"
     )
 
 
@@ -512,6 +518,45 @@ def test_the_seam_scan_holds_every_seam_but_the_tombstone(tmp_path):
     ):
         tombstone.write_text(body, encoding="utf-8")
         assert limits._registers_a_limit(tombstone), body
+
+
+def test_a_deleted_copy_keeps_its_limits_only_through_its_frozen_row(tmp_path, monkeypatch):
+    """The derivation behind the list above, on a fixture wheel and table.
+
+    A copy that supplies every frozen limit's input counts for each; deleted, it counts
+    for none until its row carries what ``adoption_pin.py freeze`` printed from it, and
+    then for each again. A limit outside ``limits.FROZEN`` is never satisfied by a row.
+    """
+    import shutil
+
+    from builtin_adoption_helpers import PACKAGE, shipped_manifest, write_tree
+
+    from kiro_crew.apps.builtin_adoption_baseline import freeze_deleted_copy
+
+    builtins = tmp_path / "builtins"
+    copy = write_tree(
+        builtins / PACKAGE,
+        shipped_manifest(
+            mcpServers={"srv": {"command": "python3", "args": ["backend/srv.py"]}},
+            agentTools={"route": "agent-tools", "tools": [{"name": "fixture_former_x"}]},
+            credentialMasks=["secrets.json"],
+        ),
+    )
+    table = tmp_path / "adoption-pins.json"
+    monkeypatch.setattr(limits, "_BUILTINS", builtins)
+    monkeypatch.setattr(limits, "_PINS", table)
+
+    def supplied(row):
+        table.write_text(json.dumps({"schemaVersion": 1, "pins": [row]}), encoding="utf-8")
+        return {limit for limit, apps in limits.limit_sources().items() if NAME in apps}
+
+    assert supplied(_row()) == limits.FROZEN
+    frozen = freeze_deleted_copy(copy)
+    shutil.rmtree(copy)
+    assert supplied(_row()) == set()
+    assert supplied(_row(deletedCopy=frozen)) == limits.FROZEN
+    partial = {key: frozen[key] for key in ("permissions", "grants", "agentTools")}
+    assert supplied(_row(deletedCopy=partial)) == {limits.AGENT_TOOLS}
 
 
 def test_the_package_ships_the_pin_file():
@@ -615,11 +660,11 @@ def _copy(**permissions):
 
 
 def test_a_frozen_copy_is_every_family_grant_source_reads_and_its_own_permissions():
-    from kiro_crew.apps.builtin_adoption_baseline import freeze_deleted_copy
+    from kiro_crew.apps.builtin_adoption_baseline import freeze_grant_inputs
     from kiro_crew.apps.point_grants import grant_source
 
     copy = _copy()
-    frozen = freeze_deleted_copy(copy)
+    frozen = freeze_grant_inputs(copy)
     assert frozen["permissions"] == copy["permissions"]
     assert frozen["grants"] == {f: e for f, e in grant_source(copy).items() if e}
     assert {"api", "events", "workerAutoApprove", "bots"} <= set(frozen["grants"])
@@ -627,7 +672,7 @@ def test_a_frozen_copy_is_every_family_grant_source_reads_and_its_own_permission
 
 def test_a_grant_family_registered_later_is_frozen_with_no_change(monkeypatch):
     from kiro_crew.apps import point_grants
-    from kiro_crew.apps.builtin_adoption_baseline import freeze_deleted_copy
+    from kiro_crew.apps.builtin_adoption_baseline import freeze_grant_inputs
 
     def entries(permissions):
         raw = permissions.get("laterGrant") if isinstance(permissions, dict) else None
@@ -638,13 +683,13 @@ def test_a_grant_family_registered_later_is_frozen_with_no_change(monkeypatch):
         "_PERMISSION_REGISTRY",
         [*point_grants._PERMISSION_REGISTRY, (("laterGrant",), entries)],
     )
-    assert freeze_deleted_copy(_copy(laterGrant=["x"]))["grants"]["laterGrant"] == ["x"]
+    assert freeze_grant_inputs(_copy(laterGrant=["x"]))["grants"]["laterGrant"] == ["x"]
 
 
 def test_a_frozen_copy_stands_for_the_record_registering_that_copy_writes(tmp_path, monkeypatch):
     """The baseline E9 reads is the record ``register_builtin_apps`` leaves for the copy."""
     from kiro_crew.apps import manager
-    from kiro_crew.apps.builtin_adoption_baseline import deleted_copy_baseline, freeze_deleted_copy
+    from kiro_crew.apps.builtin_adoption_baseline import deleted_copy_baseline, freeze_grant_inputs
     from kiro_crew.apps.manifest import AppManifest
 
     home = tmp_path / "home"
@@ -656,7 +701,7 @@ def test_a_frozen_copy_stands_for_the_record_registering_that_copy_writes(tmp_pa
     monkeypatch.setattr(manager, "_edition_builtin_apps", lambda: [])
     manager.register_builtin_apps()
 
-    document = {"schemaVersion": 1, "pins": [_row(deletedCopy=freeze_deleted_copy(copy))]}
+    document = {"schemaVersion": 1, "pins": [_row(deletedCopy=freeze_grant_inputs(copy))]}
     baseline = deleted_copy_baseline(json.loads(parse_adoption_pins(document)[NAME].deleted_copy))
     assert baseline.approved == manager._read_approved_grants(NAME)
     assert baseline.permissions == AppManifest.from_dict(copy).permissions
@@ -666,11 +711,11 @@ def test_a_frozen_copy_stands_for_the_record_registering_that_copy_writes(tmp_pa
 def test_e9_against_a_frozen_copy_holds_back_what_the_copy_did_not_declare():
     from builtin_adoption_helpers import repository_manifest
 
-    from kiro_crew.apps.builtin_adoption_baseline import deleted_copy_baseline, freeze_deleted_copy
+    from kiro_crew.apps.builtin_adoption_baseline import deleted_copy_baseline, freeze_grant_inputs
     from kiro_crew.apps.builtin_adoption_checks import widening_refusal
     from kiro_crew.apps.manifest import AppManifest
 
-    baseline = deleted_copy_baseline(freeze_deleted_copy(_copy()))
+    baseline = deleted_copy_baseline(freeze_grant_inputs(_copy()))
 
     def refusal(**permissions):
         pinned = repository_manifest(permissions={**_COPY_PERMISSIONS, **permissions})
@@ -685,7 +730,7 @@ def test_e9_against_a_frozen_copy_holds_back_what_the_copy_did_not_declare():
         {"chatLaunch": {"keyPrefix": "fixture-launch-", "agents": ["kirocrew"]}},
     ):
         assert refusal(**wider) == "permission_widening", wider
-    narrower = deleted_copy_baseline(freeze_deleted_copy(_copy(chatSlots=False)))
+    narrower = deleted_copy_baseline(freeze_grant_inputs(_copy(chatSlots=False)))
     assert (
         widening_refusal(
             AppManifest.from_dict(repository_manifest(permissions=_COPY_PERMISSIONS)), narrower
@@ -1021,6 +1066,13 @@ def _measure_tree(monkeypatch, tmp_path, tool, files, level):
     return tool._measure(pin, _work(tmp_path))
 
 
+def _copy_dir(base, manifest, files=None):
+    """A wheel copy's package directory under *base*, holding *manifest* and *files*."""
+    from builtin_adoption_helpers import PACKAGE, write_tree
+
+    return write_tree(base / PACKAGE, manifest, files)
+
+
 def _gone_copy_table(monkeypatch, tmp_path, tool, *, frozen_from=None, deleted=None, **row):
     """A table of one fixture row whose wheel copy is gone, served from a local tree.
 
@@ -1036,12 +1088,13 @@ def _gone_copy_table(monkeypatch, tmp_path, tool, *, frozen_from=None, deleted=N
 
     tree, archive = _serve_tree(monkeypatch, tmp_path, tool)
     copy = repository_manifest()
+    deleted_root = _copy_dir(tmp_path / "deleted", deleted or copy)
     monkeypatch.setattr(tool, "_shipped", lambda _name: None)
-    monkeypatch.setattr(tool, "_deleted_copy", lambda _name: ("d" * 40 + "^", deleted or copy))
+    monkeypatch.setattr(tool, "_deleted_copy_root", lambda _name, _dest: deleted_root)
     fields = {
         "treeSha256": adoption_tree_digest(tree),
         "archiveSha256": hashlib.sha256(archive).hexdigest(),
-        "deletedCopy": freeze_deleted_copy(frozen_from or copy),
+        "deletedCopy": freeze_deleted_copy(_copy_dir(tmp_path / "frozen", frozen_from or copy)),
         **row,
     }
     pin = _row(**fields)
@@ -1134,18 +1187,21 @@ def test_the_pin_tool_freezes_the_copy_a_deletion_is_about_to_remove(monkeypatch
     table.write_text(json.dumps({"schemaVersion": 1, "pins": [_row()]}), encoding="utf-8")
     monkeypatch.setattr(tool, "_PINS_PATH", table)
     copy = repository_manifest()
-    monkeypatch.setattr(tool, "_shipped", lambda _name: (tmp_path, copy))
+    root = _copy_dir(tmp_path, copy)
+    monkeypatch.setattr(tool, "_shipped", lambda _name: (root, copy))
     monkeypatch.setattr(tool, "_deleted_copy", lambda _name: pytest.fail("history read"))
     assert tool.main(["freeze", NAME]) == 0
     assert json.loads(capsys.readouterr().out) == {
         **_row(),
-        "deletedCopy": freeze_deleted_copy(copy),
+        "deletedCopy": freeze_deleted_copy(root),
     }
 
 
 @requires_git
 def test_the_pin_tool_reads_a_deleted_copy_from_the_commit_that_removed_it(monkeypatch, tmp_path):
     """Found by its manifest name, newest deletion first; nothing spells a package directory."""
+    import shutil
+
     from builtin_adoption_helpers import git, shipped_manifest
 
     tool = _pin_tool(monkeypatch)
@@ -1157,25 +1213,35 @@ def test_the_pin_tool_reads_a_deleted_copy_from_the_commit_that_removed_it(monke
         for rel, manifest in files.items():
             path = builtins / rel / "app.json"
             if manifest is None:
-                path.unlink()
+                shutil.rmtree(path.parent)
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps(manifest), encoding="utf-8")
+                agent = path.parent / "agents" / "helper.json"
+                agent.parent.mkdir(exist_ok=True)
+                agent.write_text(json.dumps({"name": f"{message}-agent"}), encoding="utf-8")
         git("add", "-A", cwd=repo)
         git("commit", "-q", "-m", message, cwd=repo)
         return git("rev-parse", "HEAD", cwd=repo)
 
     older = shipped_manifest(permissions={"api": [f"/api/apps/{NAME}"]})
-    newest = shipped_manifest()
+    newest = shipped_manifest(agents=["agents/helper.json"])
     commit("ship", {"pkg_a": older, "pkg_b": shipped_manifest(name="other-app")})
     commit("widen", {"pkg_a": newest})
     deletion = commit("delete", {"pkg_a": None})
     commit("delete the other", {"pkg_b": None})
     monkeypatch.setattr(tool, "_ROOT", repo)
 
-    assert tool._deleted_copy(NAME) == (f"{deletion}^", newest)
+    assert tool._deleted_copy(NAME) == (f"{deletion}^", f"{tool._BUILTINS_REL}/pkg_a")
     with pytest.raises(SystemExit, match="no commit that deletes"):
         tool._deleted_copy("never-shipped")
+    # The whole package as that parent held it, under its own directory name: the agent
+    # files the freezer reads beside the manifest come with it.
+    root = tool._deleted_copy_root(NAME, tmp_path / "out")
+    assert root.name == "pkg_a"
+    assert json.loads((root / "app.json").read_text(encoding="utf-8")) == newest
+    helper = json.loads((root / "agents" / "helper.json").read_text(encoding="utf-8"))
+    assert helper == {"name": "widen-agent"}
 
 
 def test_the_pin_tool_refuses_a_name_neither_shipped_nor_pinned(monkeypatch, tmp_path):
