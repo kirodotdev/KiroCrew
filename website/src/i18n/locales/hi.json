@@ -19922,7 +19922,9 @@
         "what_you_d_get_in_version_plain": "{{version}} में क्या है",
         "what_you_d_get_none": "तुम्हारे बिल्ड और इस अपडेट के बीच कोई चेंजलॉग प्रविष्टि नहीं है।",
         "version_label": "वर्ज़न",
-        "named_update_available": "{{name}} {{version}} उपलब्ध है।"
+        "named_update_available": "{{name}} {{version}} उपलब्ध है।",
+        "update_installed_restart": "v{{version}} इंस्टॉल हो गया है। v{{current}} से बदलने के लिए रीस्टार्ट करो। चल रहे जवाब रुक जाएंगे।",
+        "update_armed_restart": "v{{version}} अगली बार रीस्टार्ट करने पर इंस्टॉल होगा। चल रहे जवाब रुक जाएंगे।"
       },
       "botChannelPanel": {
         "allowed_user_ids": "अनुमत उपयोगकर्ता ID",

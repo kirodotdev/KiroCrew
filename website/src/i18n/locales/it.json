@@ -20465,7 +20465,9 @@
         "what_you_d_get_in_version_plain": "Cosa contiene la {{version}}",
         "what_you_d_get_none": "Non ci sono voci del changelog tra la tua build e questo aggiornamento.",
         "version_label": "Versione",
-        "named_update_available": "{{name}} {{version}} è disponibile."
+        "named_update_available": "{{name}} {{version}} è disponibile.",
+        "update_installed_restart": "La v{{version}} è installata. Riavvia per passare dalla v{{current}}. Le risposte in corso si interrompono.",
+        "update_armed_restart": "La v{{version}} si installa al prossimo riavvio. Le risposte in corso si interrompono."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID utente consentiti",

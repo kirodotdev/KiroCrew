@@ -19634,7 +19634,9 @@
         "what_you_d_get_in_version_plain": "[Ẁĥàţ'ş ìñ {{version}} ···············]",
         "what_you_d_get_none": "[Ñø çĥàñğèĺøğ èñţŕìèş ƀèţẁèèñ ýøùŕ ƀùìĺð àñð ţĥìş ùþðàţè. ····················]",
         "version_label": "[Ṽèŕşìøñ ···········]",
-        "named_update_available": "[{{name}} {{version}} ìş àṽàìĺàƀĺè. ··············]"
+        "named_update_available": "[{{name}} {{version}} ìş àṽàìĺàƀĺè. ··············]",
+        "update_installed_restart": "[ṽ{{version}} ìş ìñşţàĺĺèð. Ŕèşţàŕţ ţø şẁìţçĥ ƒŕøɱ ṽ{{current}}. Ŕèþĺìèş ìñ þŕøğŕèşş şţøþ. ·······················]",
+        "update_armed_restart": "[ṽ{{version}} ìñşţàĺĺş àţ ţĥè ñèẋţ ŕèşţàŕţ. Ŕèþĺìèş ìñ þŕøğŕèşş şţøþ. ····················]"
       },
       "botChannelPanel": {
         "allowed_user_ids": "[Àĺĺøẁèð ùşèŕ ÌÐş ··············]",

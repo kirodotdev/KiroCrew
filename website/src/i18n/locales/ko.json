@@ -19379,7 +19379,9 @@
         "what_you_d_get_in_version_plain": "{{version}}에 포함된 내용",
         "what_you_d_get_none": "내 빌드와 이 업데이트 사이에 변경 로그 항목이 없습니다.",
         "version_label": "버전",
-        "named_update_available": "{{name}} {{version}}을(를) 사용할 수 있습니다."
+        "named_update_available": "{{name}} {{version}}을(를) 사용할 수 있습니다.",
+        "update_installed_restart": "v{{version}}이(가) 설치되었습니다. 다시 시작하면 v{{current}}에서 전환됩니다. 진행 중인 응답은 중단됩니다.",
+        "update_armed_restart": "v{{version}}이(가) 다음에 다시 시작할 때 설치됩니다. 진행 중인 응답은 중단됩니다."
       },
       "botChannelPanel": {
         "allowed_user_ids": "허용된 사용자 ID",

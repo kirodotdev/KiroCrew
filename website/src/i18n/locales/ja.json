@@ -19379,7 +19379,9 @@
         "what_you_d_get_in_version_plain": "{{version}} の内容",
         "what_you_d_get_none": "このビルドとこの更新の間に変更履歴の項目はありません。",
         "version_label": "バージョン",
-        "named_update_available": "{{name}} {{version}} を利用できます。"
+        "named_update_available": "{{name}} {{version}} を利用できます。",
+        "update_installed_restart": "v{{version}} がインストールされました。再起動すると v{{current}} から切り替わります。応答中の処理は停止します。",
+        "update_armed_restart": "v{{version}} は次の再起動時にインストールされます。応答中の処理は停止します。"
       },
       "botChannelPanel": {
         "allowed_user_ids": "許可されたユーザー ID",
