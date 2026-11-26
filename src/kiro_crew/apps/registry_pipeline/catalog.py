@@ -47,6 +47,7 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
     _normalize_git_target,
     _public_registry_name,
     _same_git_target,
+    _same_git_url_text,
     _strip_git_target_userinfo,
 )
 from kiro_crew.apps.registry_pipeline.indexes import (
@@ -1723,10 +1724,10 @@ def _pinned_registry_entry(name: str, meta: dict[str, Any]) -> dict[str, Any] | 
     want_registry = str(meta.get("sourceRegistry", "") or "")
     candidates = _registry_app_candidates(name)
     for entry in candidates:
-        # Credentials select how git fetches the source; they are not the source
-        # identity. Rotation from one userinfo value to another must neither
-        # rebind the grant nor strand an update of the same repository.
-        if not _same_git_target(_entry_git_url(entry), want_url):
+        # Credentials select how git fetches the source, not which one, so rotating
+        # them must not strand an update. Any other change to the URL text (a ``.git``
+        # suffix too) may name another repository, so it is not the recorded source.
+        if not _same_git_url_text(_entry_git_url(entry), want_url):
             continue
         current_registry = str(entry.get("_registry", "") or "")
         if current_registry != want_registry and not _same_git_target(
@@ -1734,7 +1735,50 @@ def _pinned_registry_entry(name: str, meta: dict[str, Any]) -> dict[str, Any] | 
         ):
             continue
         return entry
+    reseed = _seed_respelled_by_catalog(name, candidates, want_url, want_registry)
+    if reseed is not None:
+        return reseed
     return _moved_between_pinned_registries(name, candidates, want_url, want_registry)
+
+
+def _seed_respelled_by_catalog(
+    name: str,
+    candidates: list[dict[str, Any]],
+    want_url: str,
+    want_registry: str,
+) -> dict[str, Any] | None:
+    """The catalog row for an app installed from a bundled seed the catalog respelled.
+
+    An app installed while only the bundled seed listed it records the seed's URL.
+    When the official catalog later lists the app under a loosely-equal spelling (a
+    ``.git`` suffix), :func:`_registry_app_candidates` drops the seed row in favour
+    of the catalog row (``_catalog_row_supersedes_seed``), so the exact-text match
+    above finds nothing and the app would never update again. It is still the app
+    the seed named and the user consented to, so resolve it to the catalog row for
+    its pin and metadata, but fetch from the recorded ``sourceUrl``: a respelled URL
+    is never fetched without fresh consent.
+    """
+    if want_registry:
+        # Seed and catalog rows are bundled and carry no registry id; a recorded
+        # external registry is not this case.
+        return None
+    seed_rows = [
+        entry
+        for entry in _load_registry_file()
+        if isinstance(entry, dict)
+        and entry.get("name") == name
+        and _same_git_url_text(_entry_git_url(entry), want_url)
+    ]
+    if not seed_rows:
+        return None
+    for entry in candidates:
+        if entry.get("_registry"):
+            # Only a bundled catalog row supersedes a seed row.
+            continue
+        if any(_catalog_row_supersedes_seed(seed, entry) for seed in seed_rows):
+            # Keep the catalog's pin and metadata; fetch from the consented URL.
+            return {**entry, "gitUrl": want_url, "repo": want_url}
+    return None
 
 
 def _moved_between_pinned_registries(
@@ -1761,7 +1805,7 @@ def _moved_between_pinned_registries(
         current = str(entry.get("_registry", "") or "")
         if not _is_pinned_registry_move(want_registry, current):
             continue
-        if not _same_git_target(_entry_git_url(entry), want_url):
+        if not _same_git_url_text(_entry_git_url(entry), want_url):
             continue
         logger.info(
             "app %r: recorded registry %r no longer lists it; resolving to pinned registry %r",

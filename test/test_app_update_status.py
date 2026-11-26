@@ -296,6 +296,33 @@ class TestRecordedSource:
         )
         assert self._update_for(_installed_from(REG_B_URL, "reg-b")) is None
 
+    @pytest.mark.parametrize(
+        "listed",
+        [REG_B_URL.removesuffix(".git"), REG_B_URL + "/"],
+        ids=["suffix-dropped", "slash-added"],
+    )
+    def test_a_respelled_row_offers_no_update(self, monkeypatch, no_catalog, listed):
+        # Its Update refuses that row as another source, so the badge must not offer it.
+        _registries(
+            monkeypatch, {"reg-b": [{"name": "demo", "version": "9.0.0", "gitUrl": listed}]}
+        )
+        assert self._update_for(_installed_from(REG_B_URL, "reg-b")) is None
+
+    def test_a_seed_install_the_catalog_respelled_shows_the_catalog_version(self, monkeypatch):
+        # Installed from the bundled seed (no .git), registry "". The catalog lists
+        # the same app as .git with a newer version; the Update installs that release
+        # (via _seed_respelled_by_catalog), so the badge must show it.
+        seed_url = "https://github.com/acme/demo"
+        monkeypatch.setattr(
+            update_status, "_load_registry_file", lambda: [{"name": "demo", "gitUrl": seed_url}]
+        )
+        _catalog(monkeypatch, [_catalog_entry("demo", "2.0.0", url=seed_url + ".git")])
+        monkeypatch.setattr(update_status, "_effective_registries", lambda: [])
+        update = self._update_for(_installed_from(seed_url))
+        assert update is not None
+        assert update["available"] is True
+        assert update["latestVersion"] == "2.0.0"
+
     def test_credentials_in_the_recorded_url_do_not_break_the_match(self, monkeypatch, no_catalog):
         _registries(
             monkeypatch, {"reg-b": [{"name": "demo", "version": "1.1.0", "gitUrl": REG_B_URL}]}

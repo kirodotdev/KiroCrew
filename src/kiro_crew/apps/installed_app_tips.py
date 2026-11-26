@@ -103,7 +103,7 @@ def _rows_to_read(
             continue
         git_url = _git_targets._entry_git_url(entry)
         if not any(
-            _git_targets._same_git_target(git_url, url)
+            _git_targets._same_git_url_text(git_url, url)
             and (
                 registry == registry_name
                 or _git_targets._same_git_target(registry, registry_name)
