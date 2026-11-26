@@ -1283,6 +1283,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _evaluate_shareability,
         _invalid_flag_reason,
         _kirocrew_mcp_servers,
+        _live_backend_of_slot,
         _mcp_probe_cache,
         _mcp_probe_in_progress,
         _mcp_probe_task,
