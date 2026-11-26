@@ -75,6 +75,12 @@ REVIEW_TEXT = (
 )
 AGENT_FIRST_TEXT = "This channel runs agent *{agent}*. Send `!channel agent off` first."
 REPLACED_TEXT = " It replaces agent *{agent}*, which a shared user set."
+#: Appended when ``!channel agent`` saves a Bot key: name the Channel Bot path instead.
+AGENT_BOT_HINT_TEXT = (
+    "\nEach thread runs as this Bot on its own session. To have the Bot's own chat answer "
+    "the whole channel, so it shows on the Bots page, send `!channel agent off` and then "
+    "`!channel bot {bot}`."
+)
 PRIVATE_TEXT = (
     "This thread is answered by the channel's Bot or Conductor chat, which is saved, so "
     "`!temporary` and `!incognito` cannot apply here. Nothing was run. "
@@ -873,8 +879,25 @@ async def set_agent(
         resources=f"{channel}:{agent_name or 'default'}",
     )
     label = f"*{agent_name}*" if agent_name else "default"
-    await _say(slack, channel, f"Agent for this channel: {label}", reply_ts)
+    takes = bool(agent_name)
+    if takes:
+        takes = await asyncio.to_thread(_channel_bot_would_take, agent_name, channel)
+    hint = AGENT_BOT_HINT_TEXT.format(bot=agent_name) if takes else ""
+    await _say(slack, channel, f"Agent for this channel: {label}{hint}", reply_ts)
     return ""
+
+
+def _channel_bot_would_take(bot: str, channel: str) -> bool:
+    """True when *bot* is a Bot key that ``!channel bot`` could set here once the agent is off.
+
+    Mirrors :func:`set_bot`'s refusals that hold beyond the pinned agent (a DM, no
+    dashboard, a key with no crew record, a Bot another channel has), so the
+    ``!channel agent`` hint never sends the owner into one. Blocking.
+    """
+    h = _handler()
+    if channel.startswith("D") or h._dashboard_state is None or bot not in h.crew_bots():
+        return False
+    return h.resolve_channel_crew(bot) is not None and not _channel_with_bot(bot, channel)
 
 
 def _channel_with_bot(bot: str, channel: str) -> str:
