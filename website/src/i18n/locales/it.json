@@ -15950,6 +15950,7 @@
       "switch_to_flat_view_hide_folders_in_board_columns": "Passa alla vista piatta (nascondi le cartelle nelle colonne della bacheca)",
       "folders_load_failed": "Impossibile caricare le cartelle",
       "columns_load_failed": "Impossibile caricare le colonne della board",
+      "loading_board": "Caricamento della bacheca…",
       "folder_update_failed": "Aggiornamento della cartella non riuscito",
       "sort_update_failed": "Aggiornamento dell'ordinamento non riuscito",
       "sort_update_failed_detail": "«{{sort}}» non è stato salvato, quindi l’elenco torna a «{{restored}}». Sceglilo di nuovo per riprovare.",

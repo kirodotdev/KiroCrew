@@ -15950,6 +15950,7 @@
       "switch_to_flat_view_hide_folders_in_board_columns": "Mudar para visão plana (ocultar pastas nas colunas do quadro)",
       "folders_load_failed": "Não foi possível carregar as pastas",
       "columns_load_failed": "Não foi possível carregar as colunas do quadro",
+      "loading_board": "Carregando o quadro…",
       "folder_update_failed": "Falha ao atualizar a pasta",
       "sort_update_failed": "Falha ao atualizar a ordenação",
       "sort_update_failed_detail": "“{{sort}}” não foi salvo, então a lista voltou para “{{restored}}”. Escolha-o outra vez para tentar novamente.",

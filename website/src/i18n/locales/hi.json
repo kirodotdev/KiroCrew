@@ -15551,6 +15551,7 @@
       "switch_to_flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू पर जाएँ (बोर्ड कॉलम में फ़ोल्डर छिपाएँ)",
       "folders_load_failed": "फ़ोल्डर लोड नहीं हो सके",
       "columns_load_failed": "बोर्ड कॉलम लोड नहीं हो सके",
+      "loading_board": "बोर्ड लोड हो रहा है…",
       "folder_update_failed": "फ़ोल्डर अपडेट विफल",
       "sort_update_failed": "क्रम अपडेट विफल",
       "sort_update_failed_detail": "“{{sort}}” सहेजा नहीं गया, इसलिए सूची फिर से “{{restored}}” पर है। दोबारा कोशिश करने के लिए इसे फिर से चुनो।",

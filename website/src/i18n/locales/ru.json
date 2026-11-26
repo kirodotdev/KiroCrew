@@ -16349,6 +16349,7 @@
       "switch_to_flat_view_hide_folders_in_board_columns": "Переключиться на плоский вид (скрыть папки в колонках доски)",
       "folders_load_failed": "Не удалось загрузить папки",
       "columns_load_failed": "Не удалось загрузить колонки доски",
+      "loading_board": "Загрузка доски…",
       "folder_update_failed": "Не удалось обновить папку",
       "sort_update_failed": "Не удалось обновить сортировку",
       "sort_update_failed_detail": "«{{sort}}» не сохранено, поэтому список снова в порядке «{{restored}}». Выбери его ещё раз, чтобы повторить попытку.",

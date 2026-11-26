@@ -15152,6 +15152,7 @@
       "switch_to_flat_view_hide_folders_in_board_columns": "フラット表示に切り替え（ボードの列内のフォルダーを非表示）",
       "folders_load_failed": "フォルダーを読み込めませんでした",
       "columns_load_failed": "ボードの列を読み込めませんでした",
+      "loading_board": "ボードを読み込んでいます…",
       "folder_update_failed": "フォルダーの更新に失敗しました",
       "sort_update_failed": "並べ替えの更新に失敗しました",
       "sort_update_failed_detail": "「{{sort}}」は保存されなかったため、一覧は「{{restored}}」に戻りました。もう一度選ぶと再試行できます。",
