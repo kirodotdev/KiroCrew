@@ -1,12 +1,12 @@
 ---
 title: Memory graph -- lay out every memory on the server, draw it with cosmos.gl
-status: draft
+status: accepted
 author: buluoray
 created: 2026-11-26
 last-audited: 2026-11-26
-audited-at: 3e1a8a99cd
-doc-pr: null
-implementation-prs: []
+audited-at: fa33c7d2fd
+doc-pr: 42947
+implementation-prs: [42948]
 tracking-issues: [42180]
 supersedes: []
 superseded-by: []
@@ -14,11 +14,16 @@ superseded-by: []
 
 # RFC: Memory graph, laid out on the server
 
-**Status:** draft. It asks a maintainer to accept two things: a new file on
-disk next to each memory store, and a new frontend dependency (cosmos.gl, §5.6). The build is going on
-in parallel as a draft PR stacked on
-[#42276](https://github.com/kirodotdev/KiroCrew/pull/42276). Every main-side
-reference below was read at `3e1a8a99cd`.
+**Status:** accepted. Accepted at team review, 2026-11-26 (maintainer Ray Xu),
+with the memory page and search redesign it belongs to
+([#43002](https://github.com/kirodotdev/KiroCrew/pull/43002)). The document
+merged in [#42947](https://github.com/kirodotdev/KiroCrew/pull/42947). It
+accepts two things: a new file on disk next to each memory store, and a new
+frontend dependency (cosmos.gl, §5.6). §5.7 says what the graph shows and what
+it no longer shows, and §12 records the decisions made while building it. The
+build is [#42948](https://github.com/kirodotdev/KiroCrew/pull/42948), stacked
+on the memory page PRs. Every main-side reference below was read at
+`3e1a8a99cd`; this revision was checked against `fa33c7d2fd`.
 
 ## 1. Summary
 
@@ -236,6 +241,29 @@ OpenGL ES 3.2)`. The bench panned and zoomed the camera every frame for 5 s at
 
 The API returns plain JSON positions and does not depend on the renderer.
 
+### 5.7 What the graph shows
+
+The graph draws the three kinds of memory record: facts, lessons and
+experiences. They are the rows the Memories list lists, each one has a vector
+or tags to place it by, and a click on one opens it in that list.
+
+It no longer draws the preference, project and history nodes that today's
+graph adds (`GET /api/memory/graph`, §2), or the edges by project name:
+
+- **Preferences and projects** are two Markdown documents
+  (`preferences.md`, `projects.md`), drawn as one node per bullet line and
+  per project heading. A line is not a memory
+  record: it has no vector, no tags and no row in the Memories list, so it has
+  no place by meaning and nothing for a click to open.
+- **History** is the last 14 days of chat, not memory. Recall reads the
+  experiences that consolidation writes from it, and those are on the graph.
+- **The project edges** joined nodes that shared a project name. Position by
+  meaning shows that relation for every record, so the graph draws no edges
+  (§4).
+
+All three stay on the page: preferences and projects on the Profile tab,
+experiences in the Memories list and on the graph.
+
 ## 6. Migration plan
 
 There is no data migration. The first open of a store with no layout file
@@ -246,7 +274,9 @@ its normal loading state.
 
 - `GET /api/memory/graph` stays until the new tab ships. Then it is removed
   with its only reader, the old tab.
-- Memory export leaves out the layout file, because it is derived.
+- A redacted off-host backup drops the layout file and any half-written
+  build as a derived index (`snapshot_redact._is_derived_index`), like
+  `memory_index.db`; the next graph read rebuilds it.
 - Deleting a store deletes the layout file with it.
 
 ## 8. Risks
@@ -281,9 +311,39 @@ its normal loading state.
 
 ## 11. Open questions
 
-- Should the overview label each cluster by its main tag? The design proposes
-  yes, from the tokens already in the file.
+None left open; the one this draft had is answered in §12.
 
 ## 12. Decision
 
-Pending a maintainer.
+Accepted at team review, 2026-11-26 (maintainer Ray Xu), with the memory page
+redesign ([#43002](https://github.com/kirodotdev/KiroCrew/pull/43002)). These
+decisions were made while building it, in
+[#42948](https://github.com/kirodotdev/KiroCrew/pull/42948):
+
+- **Renderer: cosmos.gl 3.x.** Ray first kept sigma 3 unless it fell under
+  60 fps on a real GPU. It held 60 fps on the T4 (§5.6), and he then chose
+  cosmos.gl for its headroom on phones and larger stores, with every feature of
+  the sigma tab kept: gestures, click to open, box select, keyboard access and
+  reduced motion.
+- **Layout: our own build** (PCA-64, k-means, a 2-axis map per cluster), not
+  UMAP, PaCMAP or openTSNE, by the measurements in §5.2.
+- **Cluster labels: yes.** The build names each cluster by its most
+  distinctive tokens, with no model call, and the overview shows them.
+- **What it shows:** facts, lessons and experiences only (§5.7).
+- **V2 stores do not fade.** V2 recall is age-neutral by default
+  (`memory_v2.rank_score`: no decay; an opt-in recency boost only lifts recent
+  rows), so the memory page shows no strength for a V2 store
+  (`memory_decay.applies`, [#43075](https://github.com/kirodotdev/KiroCrew/pull/43075)).
+  The graph follows it: every experience of a V2 store has weight 1, and none
+  fades.
+- **No work at gateway boot.** The layout code imports numpy, so the dashboard
+  registers the graph routes without it and imports the graph service on the
+  first graph request.
+- **The routes say what they do.** Each one first brings the layout file up to
+  date, and may start a background build, so `route_access` names them
+  `memory.graph.<route>.refresh`, not `.read`.
+- **Where it lives:** a Graph tab on the memory page
+  ([rfc-memory-page-audit-and-recall.md](rfc-memory-page-audit-and-recall.md),
+  [#43064](https://github.com/kirodotdev/KiroCrew/pull/43064)).
+- **Later, in their own changes:** edges to a node's nearest neighbours on
+  hover (a change to §4 first), and group-by, colour-by and density contours.
