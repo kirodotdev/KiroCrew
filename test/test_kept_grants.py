@@ -290,6 +290,10 @@ def _one_hour_cap() -> int:
     return 3600
 
 
+#: A monotonic reading below 50 minutes, so "50 minutes before it" is negative.
+_SHORT_UPTIME = 500.123
+
+
 def _yolo_body(home: Path) -> dict:
     body = kept_grants.read_record(kept_grants.YOLO_RECORD, "yolo")
     assert body is not None
@@ -381,8 +385,14 @@ class TestYoloIsKept:
     ) -> None:
         _boot_and_arm()
         _grant(3600)
+        # Both clocks stand still, as they do within one tick of a coarse clock, and
+        # the monotonic one reads a short uptime: the restore and the clamp below
+        # then see the same instant.
+        wall = time.time()
+        monkeypatch.setattr(time, "time", lambda: wall)
+        monkeypatch.setattr(time, "monotonic", lambda: _SHORT_UPTIME)
         body = _yolo_body(home)
-        body["activated_at"] = time.time() - 50 * 60
+        body["activated_at"] = wall - 50 * 60
         kept_grants.write_record(kept_grants.YOLO_RECORD, "yolo", body)
 
         _new_process()
@@ -390,8 +400,11 @@ class TestYoloIsKept:
         kept = _boot_and_arm()
         assert kept is not None
         assert kept.remaining_secs <= 10 * 60
-        # A later clamp still measures from the original activation.
-        assert so.safety_override().clamp_to_cap(3000) is True
+        # A later clamp still measures from the original activation: a 40-minute cap
+        # is ten minutes behind a grant armed 50 minutes ago, and 40 minutes ahead of
+        # one counted from the restore. The cap is not the grant's exact age, where
+        # float rounding of ``uptime - age + cap`` decides the answer.
+        assert so.safety_override().clamp_to_cap(40 * 60) is True
 
     def test_a_cap_installed_during_the_restore_counts_from_the_original_activation(
         self, home: Path, monkeypatch: pytest.MonkeyPatch
