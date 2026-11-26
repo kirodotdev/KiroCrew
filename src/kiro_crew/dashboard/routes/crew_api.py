@@ -13,12 +13,13 @@ here, and ``test_crew_api_owner.py`` fails when a route and its description
 disagree.
 
 Public tier: ``/v1/models``, ``/v1/responses``, ``/v1/responses/{response_id}``,
-``/v1/responses/{response_id}/input_items``, ``/v1/crew/capabilities`` and
+``/v1/responses/{response_id}/input_items``, ``/v1/conversations``,
+``/v1/conversations/{conversation_id}``, ``/v1/crew/capabilities`` and
 ``/v1/crew/info``, each served by its own handler behind the same ``owner_route``
 gate. ``/v1/models`` also serves a verified app
 credential with an empty list until a grant carries a Bot range or a route lets
 an app run an agent. The owner gets the full catalog; the three ``/v1/responses``
-routes serve the owner alone. ``/v1/crew/capabilities`` and ``/v1/crew/info`` serve
+routes and the two ``/v1/conversations`` routes serve the owner alone. ``/v1/crew/capabilities`` and ``/v1/crew/info`` serve
 the machine owner and a verified app credential; the app's ``agents`` come from its
 grant alone.
 ``/v1/crew/grant`` is not behind ``owner_route``: it serves an app credential its own
@@ -31,7 +32,12 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from kiro_crew.dashboard import crew_api_approvals, crew_api_grant_requests, handlers
+from kiro_crew.dashboard import (
+    crew_api_approvals,
+    crew_api_conversations,
+    crew_api_grant_requests,
+    handlers,
+)
 from kiro_crew.dashboard.crew_api_bots import api_bots
 from kiro_crew.dashboard.crew_api_grant_self import api_grant_self
 from kiro_crew.dashboard.crew_api_instance import api_capabilities, api_info
@@ -90,6 +96,12 @@ def register(app: web.Application) -> None:
     app[STORE_KEY] = ResponseStore()
     app.router.add_get("/v1/responses/{response_id}", api_response_read)
     app.router.add_get("/v1/responses/{response_id}/input_items", api_response_input_items)
+    # One store for the conversations and for the turns ``/v1/responses`` runs in them.
+    app[crew_api_conversations.CONVERSATIONS_KEY] = crew_api_conversations.ConversationStore()
+    app.router.add_post("/v1/conversations", crew_api_conversations.api_conversation_create)
+    app.router.add_get(
+        "/v1/conversations/{conversation_id}", crew_api_conversations.api_conversation_read
+    )
     app.router.add_get("/v1/crew/capabilities", api_capabilities)
     app.router.add_get("/v1/crew/info", api_info)
     app.router.add_get("/v1/crew/grant", api_grant_self)

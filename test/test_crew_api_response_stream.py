@@ -438,7 +438,8 @@ async def test_the_stream_ends_with_the_response_the_json_answer_is(client) -> N
     _response_json, body = await _ask(client, {**ASK, "temperature": 0.1})
     _response_sse, events = await _ask_stream(client, {**STREAMED, "temperature": 0.1})
     final = events[-1]["response"]
-    for volatile in ("id", "created_at"):
+    # Each request ran in a conversation of its own.
+    for volatile in ("id", "created_at", "conversation"):
         final.pop(volatile), body.pop(volatile)
     final["output"][0].pop("id"), body["output"][0].pop("id")
     assert final == body

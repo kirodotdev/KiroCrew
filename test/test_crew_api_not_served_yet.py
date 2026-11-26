@@ -63,6 +63,9 @@ NO_VISIBLE_EFFECT = {
 #: shortcut: these three roles are not judged here, served or not; upgrade by probing
 #: each as a user message plus one message of the role.
 REFUSED_FOR_ITS_OWN_SHAPE = {
+    # Served: the probe names a conversation and a response that do not exist.
+    "conversation": "404 not_found",
+    "previous_response_id": "404 not_found",
     "input[].role=assistant": "400 invalid_request",
     "input[].role=developer": "400 invalid_request",
     "input[].role=system": "400 invalid_request",

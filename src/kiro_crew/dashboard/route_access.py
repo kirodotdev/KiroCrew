@@ -147,6 +147,12 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("GET", "/v1/responses/{response_id}/input_items"): RouteAccess(
         "crew_api.responses.input_items.resolve", PREVIEW
     ),
+    # The same two checks (crew_api_conversations): a conversation is its owner's.
+    # Contract test: test_crew_api_conversations.py.
+    ("POST", "/v1/conversations"): RouteAccess("crew_api.conversations.create", PREVIEW),
+    ("GET", "/v1/conversations/{conversation_id}"): RouteAccess(
+        "crew_api.conversations.resolve", PREVIEW
+    ),
     # Connected computers, this computer's own side (feature preview). Owner dashboard
     # only (connected_computers/local_routes.py `_owner`); the action names are the
     # handlers' own audit operation names.

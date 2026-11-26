@@ -27,6 +27,11 @@ def _failed(body: Any) -> None:
     assert body["status"] == "failed", body
 
 
+def _in_a_conversation(body: Any) -> None:
+    _completed(body)
+    assert body["conversation"]["id"].startswith("conv_"), body
+
+
 CASES = [
     Case("the owner runs a turn", OWNER, 200, json=_ask(), check=_completed),
     Case(
@@ -35,6 +40,36 @@ CASES = [
         200,
         json=_ask(input=f"hello {ERROR_TRIGGER}"),
         check=_failed,
+    ),
+    Case(
+        "a turn runs in a conversation the owner made",
+        OWNER,
+        200,
+        json=lambda gateway: _ask(conversation=gateway.conversation())(gateway),
+        check=_in_a_conversation,
+    ),
+    Case(
+        "a turn continues the conversation an earlier turn ran in",
+        OWNER,
+        200,
+        json=lambda gateway: _ask(previous_response_id=gateway.kept_response())(gateway),
+        check=_in_a_conversation,
+    ),
+    Case(
+        "a conversation nobody made is not found",
+        OWNER,
+        404,
+        "not_found",
+        json=_ask(conversation="conv_" + "0" * 32),
+    ),
+    Case(
+        "a conversation and a previous response that do not go together are refused",
+        OWNER,
+        400,
+        "invalid_request",
+        json=lambda gateway: _ask(
+            conversation=gateway.conversation(), previous_response_id=gateway.kept_response()
+        )(gateway),
     ),
     Case("a body with no input is refused", OWNER, 400, "invalid_request", json={"model": "x"}),
     Case(

@@ -413,8 +413,9 @@ async def test_app_scope_uses_the_public_owner_policy(monkeypatch) -> None:
     [
         ("/v1/responses/resp_" + "0123456789abcdef" * 2, (403, "owner_only")),
         ("/v1/responses/resp_" + "0123456789abcdef" * 2 + "/input_items", (403, "owner_only")),
+        ("/v1/conversations/conv_" + "0123456789abcdef" * 2, (403, "owner_only")),
         # A path no route answers keeps the answer it has always had.
-        ("/v1/conversations", (401, "invalid_token")),
+        ("/v1/crew/schedules", (401, "invalid_token")),
     ],
 )
 async def test_app_scope_finds_a_templated_public_owner_route_by_its_pattern(

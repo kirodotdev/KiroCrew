@@ -22,8 +22,8 @@ Endpoints an app calls with a credential the user granted it.
 | [`GET /v1/responses/{response_id}/input_items`](public-responses.md#get-v1responsesresponse_idinput_items) | Read this turn's input | Available now: owner only | preview |
 | [`POST /v1/files`](public-files.md#post-v1files) | Upload a file for input_image / input_file | Planned | stable |
 | [`GET /v1/conversations`](public-conversations.md#get-v1conversations) | List this grant's conversations | Planned | stable |
-| [`POST /v1/conversations`](public-conversations.md#post-v1conversations) | Create a conversation | Planned | stable |
-| [`GET /v1/conversations/{conversation_id}`](public-conversations.md#get-v1conversationsconversation_id) | Read a conversation | Planned | stable |
+| [`POST /v1/conversations`](public-conversations.md#post-v1conversations) | Create a conversation | Available now: owner only | preview |
+| [`GET /v1/conversations/{conversation_id}`](public-conversations.md#get-v1conversationsconversation_id) | Read a conversation | Available now: owner only | preview |
 | [`POST /v1/conversations/{conversation_id}`](public-conversations.md#post-v1conversationsconversation_id) | Update conversation metadata | Planned | stable |
 | [`DELETE /v1/conversations/{conversation_id}`](public-conversations.md#delete-v1conversationsconversation_id) | Delete a conversation opened under this grant | Planned | stable |
 | [`GET /v1/conversations/{conversation_id}/items`](public-conversations.md#get-v1conversationsconversation_iditems) | Read history, paged | Planned | stable |

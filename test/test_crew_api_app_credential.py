@@ -57,7 +57,7 @@ OWNER_ROUTES = [
     ("POST", "/v1/crew/owner/approvals/apr_0123456789abcdef/decision"),
 ]
 #: A Crew API path the gateway registers no route for.
-UNSERVED = "/v1/conversations"
+UNSERVED = "/v1/crew/schedules"
 #: Every Crew API path an app credential is refused on by tier: the Owner routes, the
 #: Public route that serves the owner alone, and a path no route answers.
 CREW_API_ROUTES = [
