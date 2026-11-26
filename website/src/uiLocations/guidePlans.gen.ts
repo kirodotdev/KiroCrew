@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:bd52e1cb6af77fc79a7575ae859fd7a1c7234b16f74bc51e601f1cdb823fc48a"
+export const GUIDE_BUILD_DIGEST = "sha256:f465169d9cdcb86dc0718efc2fe6511c5817c1a6d37ed94f6f78045244542716"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -106,6 +106,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "members.switcher.show-roster",
   "members.switcher.unread",
   "members.switcher.unread-more",
+  "memory.audit-tab",
   "memory.more-actions",
   "memory.test-recall",
   "notifications.clear-all",
@@ -2523,6 +2524,23 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "desktop:members.switcher.unread-more",
             "location": "members.switcher.unread-more",
             "label_key": "pages.membersPage.switch_crewmate"
+          }
+        ]
+      }
+    ]
+  },
+  "memory.audit-tab": {
+    "version": 2,
+    "label_key": "memoryPage.tab_audit",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/settings/memory",
+        "steps": [
+          {
+            "id": "any:memory.audit-tab",
+            "location": "memory.audit-tab",
+            "label_key": "memoryPage.tab_audit"
           }
         ]
       }

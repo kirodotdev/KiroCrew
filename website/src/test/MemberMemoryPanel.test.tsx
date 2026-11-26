@@ -953,6 +953,27 @@ describe('private member memory lifecycle', () => {
     expect(api.memorySeed.mock.calls.flatMap(call => call[2])).toEqual([{ kind: 'fact', id: 'source.fact' }])
   })
 
+  it('keeps Copy all matching while unloaded source pages may still hold the picked kind', async () => {
+    const original = api.memberMemoryPage.getMockImplementation()!
+    // A first page of 100 lessons, so the facts are only on later pages.
+    const lessons = Array.from({ length: 100 }, (_, i) => ({ key: `lesson.l${i}`, value_json: JSON.stringify({ rule: `Rule ${i}` }) }))
+    api.memberMemoryPage.mockImplementation((store: string, table: string, offset: number) => store !== 'default' ? original(store, table, offset)
+      : Promise.resolve({ entries: table === 'semantic' && !offset ? lessons : [] }))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await loaded()
+    await openCopy()
+    const dialog = screen.getByRole('dialog', { name: /^Copy memories to/ })
+    await within(dialog).findByRole('checkbox', { name: 'Rule 0' })
+    const kinds = within(dialog).getByRole('group', { name: 'Memory type' })
+    fireEvent.click(within(kinds).getByRole('button', { name: 'Experiences' }))
+    fireEvent.click(within(kinds).getByRole('button', { name: 'Lessons' }))
+    // No loaded row is a fact, yet more pages remain: the all-matching copy stays offered.
+    expect(within(dialog).queryAllByRole('checkbox', { name: /^Rule / })).toHaveLength(0)
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Copy all' }))
+    expect(within(dialog).getByRole('button', { name: /^Copy all/ })).toBeEnabled()
+    expect(within(dialog).getByRole('button', { name: 'Show more' })).toBeVisible()
+  })
+
   it('stages a confirmed recovery for this member and explains the restart requirement', async () => {
     const name = 'member-backup-20260907.zip'
     api.memoryBackups.mockResolvedValue({ backups: [{ name, size_bytes: 40960, taken_at: '2026-09-07T12:00:00Z' }] })

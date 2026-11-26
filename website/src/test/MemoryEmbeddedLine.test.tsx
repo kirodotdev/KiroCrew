@@ -24,6 +24,19 @@ describe('the embedded count', () => {
     expect(help).toHaveAttribute('title', '6 of 9 memories can be found by meaning. The rest are found by words only until they’re filled in, which happens in the background.')
   })
 
+  it('shows a green dot only when every memory is embedded', async () => {
+    api.vectorStats.mockResolvedValue({ semantic_active: 6, episodic_active: 3, embedded_count: 0, semantic_embedded: 0 })
+    const { unmount } = renderWithProviders(<MemoryEmbeddedLine store="member-reviewer" />)
+    const dot = () => screen.getByTestId('memory-embedded-line').querySelector('span')!
+    await screen.findByText('0 of 9 embedded')
+    expect(dot()).toHaveClass('bg-warn')
+    unmount()
+    api.vectorStats.mockResolvedValue({ semantic_active: 6, episodic_active: 3, embedded_count: 3, semantic_embedded: 6 })
+    renderWithProviders(<MemoryEmbeddedLine store="member-other" />)
+    await screen.findByText('9 of 9 embedded')
+    expect(dot()).toHaveClass('bg-ok')
+  })
+
   it('reads experiences only from a gateway that does not report facts and lessons', async () => {
     api.vectorStats.mockResolvedValue({ semantic_active: 6, episodic_active: 3, embedded_count: 2 })
     renderWithProviders(<MemoryEmbeddedLine store="" />)

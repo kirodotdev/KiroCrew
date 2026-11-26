@@ -1956,7 +1956,19 @@ sorted by: `updated`, or `created` under that sort. It is a server filter
 it shows as one removable chip that Clear all also removes. A quick range is
 kept by name, so "Last 7 days" moves with the calendar.
 
-Each Source value in the rail, and each kind pill, carries a (?)
+The Audit tab, on the global page and every bot's, lists the store's
+`memory_events` newest first: what a write saved, changed, forgot, merged,
+skipped or refused, with Event, Kind and Source in the rail, search over the key
+and both values, newest or oldest first, and the same date range on the event
+time. `memory_audit.list_events` filters, counts and pages in SQL over the whole
+table; kind is derived as the list derives it (`episodic` is an experience, a
+`lesson.*` key a lesson, any other a fact) and source counts under its prefix.
+The rail folds every refusal code (`SemanticRejectCode`'s audited values but
+the unsafe-text block) into one Refused item whose count is their sum; a
+row's chip still names the exact refusal. The detail panel shows the key, kind,
+source, time, raw `event_type`, the value before and after, and for a refusal
+one sentence naming the rule (`memoryAuditLabels`). Nothing prunes the table.
+Each Event, Kind and Source value in the rails, and each kind pill, carries a (?)
 with one sentence on what the type means (`memoryTypeTips`); on a bot's page a
 tip that speaks of the bot names it. The (?) sits outside the checkbox's label
 and beside the pill, so opening it never ticks a filter or picks a kind.
@@ -1988,8 +2000,8 @@ store's text and are not shown. The page mounts the dialog, so it opens on the
 global page with vector memory off too. The embedding download's progress, its setup
 errors with Retry and the model disclosure live in the Embedding Model card
 (`EmbeddingSetupStatus`); whether the global store runs as vector memory is read
-from the same status queries (`useVectorMemoryState`). The page no longer shows
-the old Vector Memory card.
+from the same status queries (`useVectorMemoryState`). The old Vector Memory card
+is gone.
 
 A wheel over the rail moves the innermost scroller under the pointer that can
 still move (a value group, then the rail, `MemoryRail.routeWheel`) and never the
@@ -3964,7 +3976,7 @@ before reading transcript bodies, opening learned memory or billing a model.
 | GET | `/api/memory/semantic` | List all semantic entries |
 | PUT | `/api/memory/semantic` | Create/update (validates key, allowlist, injection; gated) |
 | DELETE | `/api/memory/semantic/{key}` | Tombstone + log event (gated). Optional JSON body for `kirocrew memory forget`: `expect_value_json` (compare-and-delete, 409 `value_changed`) and `superseded_by` (must be live and differ from the key: 409 `superseded_by_absent` / 400 `superseded_by_self`); other fields 400 `invalid_forget_body`. The dashboard sends no body |
-| GET | `/api/memory/events` | Recent audit trail |
+| GET | `/api/memory/events` | The write log, filtered by `event`/`kind`/`source`, `q`, `since`/`until` and `order`, one page with `total`, `has_more` and exact per-value `facets` (`memory_audit.list_events`) |
 | GET | `/api/memory/graph` | Memory as nodes and edges for the graph view: preferences, projects, recent history, at most 200 semantic rows (first by key, lessons excluded, read on the key index) and the 200 newest lessons; `partial` (`{"semantic": bool, "lessons": bool}`) says which capped population left rows out |
 | GET/PUT | `/api/memory/settings` | Consolidation settings; see the memory settings card above |
 | GET | `/api/memory/carve` | Filter or count one crew store by carve facet. Query: the five facet names, `kind`, `count_by`, `limit`, `offset`, plus the shared `?store=`. Absent, it reads the global store; present, it is owner-gated like every other store-scoped route. 409 `facets_unsupported` on the v1 lineage, 400 `unknown_facet`, 400 `invalid_pagination`, 503 `store_unavailable`. Every answer echoes the `store` it read. See [Who reads a facet](#who-reads-a-facet) |

@@ -9,16 +9,15 @@ import { join } from 'node:path'
 // state is `aria-disabled` plus a guard in the click handler, like the Apps
 // store Refresh (DiscoverPage.tsx).
 const OVERVIEW = join(__dirname, '..', 'pages', 'overview')
-// The vector card's and the embedding setup's Retry label also sit on writes, which are not reads.
+// The embedding setup's Retry label also sits on its start, a write, not a read.
 const VECTOR_RETRY = "'pages.overview.vectorMemoryCard.retry'"
-const VECTOR_WRITES = ['onClick={startEmbeddings}', 'deleteEpisodic.mutate(', 'onClick={start}']
+const VECTOR_WRITES = ['onClick={start}']
 // [catalog key the button renders, how many read buttons render it]
 const READ_BUTTONS: Array<[string, number]> = [
   ['memoryV2.retry_', 7],
   ["'memoryV2.show_more'", 3],
   ["'pages.overview.memoryGraphTab.retry'", 1],
-  [VECTOR_RETRY, 6],
-  ["'pages.overview.vectorMemoryCard.load_more'", 2],
+  [VECTOR_RETRY, 1],
 ]
 
 /** Each `<Btn ...>` opening tag whose children name `key`, with its file and

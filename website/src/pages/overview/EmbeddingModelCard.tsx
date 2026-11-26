@@ -301,7 +301,8 @@ export default function EmbeddingModelCard({ onDirtyChange }: { onDirtyChange?: 
     <>
       <Card data-testid="embed-model-card">
         <CardTitle><Cpu className="lucide-inline" /> {i18nT('pages.overview.embedModel.title')}</CardTitle>
-        <div className="text-[13px] text-muted mb-3">{i18nT('pages.overview.embedModel.subtitle')}</div>
+        {/* A <p>, so a grouped Settings frame lifts it out of the box beside the title. */}
+        <p className="text-[13px] text-muted mb-3">{i18nT('pages.overview.embedModel.subtitle')}</p>
         <EmbeddingSetupStatus />
 
         {/* Active model */}

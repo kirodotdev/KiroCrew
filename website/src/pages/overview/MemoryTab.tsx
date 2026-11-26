@@ -11,7 +11,6 @@ import SimpleSelect from '../../components/SimpleSelect'
 import { findReport, parseErrorCode, parseErrorField } from '../../utils/errorReport'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { useVectorMemoryState } from './useVectorMemoryState'
-import VectorMemoryCard from './VectorMemoryCard'
 import EmbeddingModelCard from './EmbeddingModelCard'
 import {
   MEMORY_QUERY_PREFIXES,
@@ -421,7 +420,7 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
   // A lesson saved from the Repeated failures card: with vector memory on, the
   // list the page shows is the vector card's semantic browser, not `lessons`.
   const reloadSavedLesson = useCallback(async () => {
-    await Promise.all([loadLessons(), queryClient.invalidateQueries({ queryKey: ['member-memory', 'default'] })])
+    await Promise.all([loadLessons(), ...MEMORY_QUERY_PREFIXES.map(queryKey => queryClient.invalidateQueries({ queryKey }))])
   }, [loadLessons, queryClient])
   const showLessons = useCallback((step: 'load' | 'add') => {
     const seq = lessonsReadSeq.current + 1
@@ -465,7 +464,7 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
       setDeleteError({ step: 'nothing' })
     }
     try {
-      await loadLessons()
+      await reloadSavedLesson()
     } catch (e) {
       setDeleteError({ step: 'refresh', message: e instanceof Error ? e.message : String(e) })
     }
@@ -542,6 +541,7 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
     const keys = listed.map((s: SessionInfo) => s.key)
     if (keys.length === 0) { setConsolidateMsg(<><XCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.no_sessions_to_consolidate_start_a_chat_first')}</>); setConsolidating(false); return }
     const results = await Promise.allSettled(keys.map((k: string) => api.consolidateMemory(k, true)))
+    for (const prefix of MEMORY_QUERY_PREFIXES) void queryClient.invalidateQueries({ queryKey: prefix })
     const succeeded = results.filter(r => r.status === 'fulfilled').length
     // Sort every rejection: a refusal the route names by its code is a skip the
     // user asked for by choosing the mode, counted apart from a request that
@@ -713,7 +713,7 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
     // edit's own notice, titled as saved-but-not-reloaded, so the old wording
     // still in the table does not read as a lost edit.
     try {
-      await loadLessons()
+      await reloadSavedLesson()
     } catch (e) {
       setEditError({ step: 'refresh', message: e instanceof Error ? e.message : String(e) })
     }
@@ -733,7 +733,7 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
     }
     if (result.outcome === 'inserted' || result.outcome === 'enriched') {
       setRule('')
-      await showLessons('add')
+      await Promise.all([showLessons('add'), ...MEMORY_QUERY_PREFIXES.map(queryKey => queryClient.invalidateQueries({ queryKey }))])
       return
     }
     if (result.outcome === 'unchanged') {
@@ -858,8 +858,8 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
       </>}
       panels={{
         graph: <MemoryGraphPanel store="" />,
-        profile: <>
-          {vectorActive && <p className="text-[13px] text-muted">{i18nT('pages.overview.memoryTab.semantic_memory_active_text_files_are_read_only')}</p>}
+        // With semantic memory on, the three text documents are gone and Global has no profile.
+        profile: vectorActive ? null : <>
         {/* The graph is its own tab. This user-facing V1 browser keeps its
             preferences, projects, history, semantic/episodic records, recovery,
             settings and lessons in the normal page flow. */}
@@ -1035,12 +1035,10 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
               </IconButton>
             )}
 
-            {migrated && <span className="text-[12px] text-muted ml-2">{i18nT('pages.overview.memoryTab.semantic_memory_active_text_files_are_read_only')}</span>}
+            {migrated && <span className="text-[12px] text-muted">{i18nT('pages.overview.memoryTab.semantic_memory_active_text_files_are_read_only')}</span>}
           </div>
         </Card>
         <EmbeddingModelCard onDirtyChange={setEmbedDirty} />
-        {/* Audit and Inspector stay here until the Memory page has its own Audit tab and Test recall. */}
-        <VectorMemoryCard diagnosticsOnly />
         </>,
       }} />
     {confirmDialog}

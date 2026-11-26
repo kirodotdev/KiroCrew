@@ -54,6 +54,15 @@ describe('MemoryPageShell', () => {
     expect(screen.getByRole('dialog', { name: 'New memory' })).toBeInTheDocument()
   })
 
+  it('hides the Profile tab when the store has no profile, and leaves it for Memories', () => {
+    const panels = { graph: <p>graph panel</p>, profile: <p>profile panel</p>, recovery: <p>recovery panel</p>, failures: <p>failures panel</p>, settings: <p>settings panel</p> }
+    const { rerender } = renderWithProviders(<Shell initialTab="profile" panels={panels} />)
+    expect(selectedTab()).toBe('Profile')
+    rerender(<Shell initialTab="profile" panels={{ ...panels, profile: null }} />)
+    expect(screen.queryByRole('tab', { name: 'Profile' })).toBeNull()
+    expect(selectedTab()).toBe('Memories')
+  })
+
   it('saves a fact from New memory, shows it was saved, and keeps the draft when the write fails', async () => {
     const onCreated = vi.fn()
     const onDraftChange = vi.fn()

@@ -383,8 +383,9 @@ test('a bundled download that exhausts its retries shows the terminal notice wit
   const notice = page.getByText('The bundled model could not be downloaded. Check your network or proxy, then retry.', { exact: true })
   await expect(notice).toBeVisible()
   await expect(page.getByText('Retrying download', { exact: false })).toHaveCount(0)
-  const details = page.getByTestId('embedding-setup-diagnostic')
+  const details = page.getByTestId('embed-model-card').getByTestId('embedding-setup-diagnostic')
   await expect(details).toBeVisible()
+  if (before.setup_error) await expect(page.getByText(before.setup_error, { exact: false })).toBeHidden()
   const summary = details.locator('summary')
   await expect(summary).toHaveText('View details')
   // Raw transport prose is behind the fold, never in the notice.

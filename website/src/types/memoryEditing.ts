@@ -35,3 +35,13 @@ export type MemoryEditPreview = {
   preview_offset: number; preview_limit: number; preview_has_more: boolean; warnings: string[]
 }
 export type MemoryRecordRevision = { id: number; revision: number; base_revision: number; status: string; operation: string; source: string; before_json: string | null; after_json: string | null; metadata_json: string; created_at: string }
+
+/** A row of the store's write log (`memory_events`), as `memory_audit.list_events` returns it. */
+export type MemoryAuditEvent = {
+  id: number; event_type: string; memory_type: string; memory_key: string | null
+  old_value: string | null; new_value: string | null; source: string | null; created_at: string
+  kind: MemoryRecordKind
+}
+export type MemoryAuditGroup = 'event' | 'kind' | 'source'
+export type MemoryAuditQuery = { q: string; order: 'asc' | 'desc'; filters: Partial<Record<MemoryAuditGroup, string[]>>; since?: string; until?: string }
+export type MemoryAuditPage = { events: MemoryAuditEvent[]; total: number; has_more: boolean; facets: Record<MemoryAuditGroup, Record<string, number>> }
