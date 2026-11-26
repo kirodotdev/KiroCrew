@@ -95,6 +95,7 @@ class _ChatTurn:
     _skill_trigger_text: "str | None"
     _directive_channel_origin: "bool"
     _directive_source_channels: "tuple[str, ...]"
+    _directive_channel_senders: "tuple[str, ...]"
     _directive_owner_origin: "bool"
     _commands_off: "bool"
     _expansions_off: "bool"
@@ -414,6 +415,7 @@ class _ChatTurn:
         _directive_channel_origin: "bool",
         _directive_owner_origin: "bool",
         _directive_source_channels: "tuple[str, ...]" = (),
+        _directive_channel_senders: "tuple[str, ...]" = (),
         _commands_off: "bool",
         _expansions_off: "bool",
         _recovery_echo_owed: "bool",
@@ -455,6 +457,7 @@ class _ChatTurn:
         self._skill_trigger_text = _skill_trigger_text
         self._directive_channel_origin = _directive_channel_origin
         self._directive_source_channels = tuple(_directive_source_channels)
+        self._directive_channel_senders = tuple(_directive_channel_senders)
         self._directive_owner_origin = _directive_owner_origin
         self._commands_off = _commands_off
         self._expansions_off = _expansions_off

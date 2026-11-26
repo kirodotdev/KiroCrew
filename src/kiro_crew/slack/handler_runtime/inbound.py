@@ -1292,6 +1292,9 @@ async def _route_linked_thread(
                 # Admission judges the turn by this channel even if the thread
                 # is unlinked or relinked before the turn starts.
                 _directive_source_channels=(channel,),
+                # Who wrote these words: the slash gate runs `/goal` and `/workflow`
+                # only for the owner, judged on this message, not the thread's past.
+                _directive_channel_senders=(user_id,),
                 # An OPTIONS answer is the slot's answer, never a ``/`` command,
                 # and its ``@prompt`` / ``$skill`` mentions stay text.
                 _commands_off=not interpret_commands,
@@ -1336,7 +1339,7 @@ async def _route_linked_thread(
         # only a constraint that appears AFTER this enqueue drops the entry.
         # *user_meta* rides on the entry too: the drain writes the turn's own
         # user row from the entry's meta.
-        _linked_slot.queue_append(
+        _queue_id = _linked_slot.queue_append(
             _queued_text,
             meta={
                 **{k: dict(v) if isinstance(v, dict) else v for k, v in (user_meta or {}).items()},
@@ -1353,6 +1356,10 @@ async def _route_linked_thread(
             # drained turn by. On the entry when it joins the queue.
             source_channels=(channel,),
         )
+        # And who typed them, for the drained turn's slash gate (process-local).
+        from kiro_crew.dashboard.slot_queue_repository import stamp_channel_senders
+
+        stamp_channel_senders(_linked_slot, _queue_id, (user_id,))
     _dashboard_state.push_slots_update()  # type: ignore[attr-defined]
     sel().log_tool_invocation(
         session_key=session_key,

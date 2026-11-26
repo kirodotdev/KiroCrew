@@ -1470,6 +1470,7 @@ class TestLinkedThreadRouting:
             _directive_user_origin,
             _directive_channel_origin,
             _directive_source_channels,
+            _directive_channel_senders,
             _commands_off,
             _expansions_off,
             _slack_voice,
@@ -1477,6 +1478,7 @@ class TestLinkedThreadRouting:
             assert _directive_user_origin is True
             assert _directive_channel_origin is True
             assert _directive_source_channels == ("C1",)
+            assert _directive_channel_senders == (owner,)
             assert _commands_off is False
             assert _expansions_off is False
             assert _slack_voice is None

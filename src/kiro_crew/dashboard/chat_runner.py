@@ -966,6 +966,10 @@ async def _run_chat(
     # channels' configured agents whether or not the thread is still linked, so
     # an unlink or relink while the turn waits cannot move it off that check.
     _directive_source_channels: tuple[str, ...] = (),
+    # Who wrote a channel-origin turn's words (the Slack user ids the route
+    # admitted), stamped by that producer. The slash gate runs `/goal` and
+    # `/workflow` from a channel only when every one is the owner.
+    _directive_channel_senders: tuple[str, ...] = (),
     # Whether the OWNER's own dashboard request dispatched this turn
     # (`is_owner_dashboard_request`), declared by the dashboard send, regenerate
     # and rewind handlers and by the queue drain. It rides this call rather than
@@ -1049,6 +1053,7 @@ async def _run_chat(
         _skill_trigger_text=_skill_trigger_text,
         _directive_channel_origin=_directive_channel_origin,
         _directive_source_channels=_directive_source_channels,
+        _directive_channel_senders=_directive_channel_senders,
         _directive_owner_origin=_directive_owner_origin,
         _commands_off=_commands_off,
         _expansions_off=_expansions_off,

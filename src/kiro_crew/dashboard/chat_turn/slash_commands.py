@@ -490,6 +490,59 @@ def _refuse_blocked_slash(turn) -> None:
     state.push_slots_update()
 
 
+#: Local commands a channel's words run only when the Crew's owner wrote them.
+_OWNER_ONLY_CHANNEL_COMMANDS = frozenset({"/goal", "/workflow"})
+
+
+def _channel_sender_refusal(turn: _ChatTurn, slot: _ChatSlot) -> str:
+    """Why *turn*'s channel text may not run an owner-only command, or ``""``.
+
+    A dashboard turn (the owner's or an admitted teammate's; the chat routes judge
+    who may send one) carries none and is never refused here. A channel turn is
+    one marked channel-origin or stamped with the channels it was typed in (a stamp
+    outlives a restart, the mark does not). It passes only when every sender the
+    route stamped on it (``_directive_channel_senders``) is the Slack owner
+    (``is_owner``). A turn with no sender on record -- an entry restored after a
+    restart, whose provenance is not kept -- fails closed.
+    """
+    if not (turn._directive_channel_origin or _channels_judging_turn(turn, slot)):
+        return ""
+    senders = tuple(getattr(turn, "_directive_channel_senders", ()) or ())
+    if not senders or "" in senders:
+        return "who sent it was not kept across a restart. Send it again"
+    try:
+        # Call-time import: the Slack handler imports dashboard modules.
+        from kiro_crew.slack.handler import is_owner
+
+        if all(is_owner(sender) for sender in senders):
+            return ""
+    except Exception:
+        logger.debug("channel sender owner check failed", exc_info=True)
+    return "from a channel only the Crew's owner can run it. Ask them to run it"
+
+
+async def _refuse_channel_owner_command(
+    state: DashboardState, slot: _ChatSlot, session_key: str, first_word: str, why: str
+) -> None:
+    """Answer an owner-only command a channel sent: in the chat, and in its linked thread."""
+    text = f"`{first_word}` was not run: {why}, or run it from the Kiro Crew dashboard."
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=first_word,
+        tool_kind="slash_command",
+        outcome="denied",
+        metadata={"slot": slot.key, "reason": "channel_sender_not_owner"},
+    )
+    _append_command_reply(slot, text)
+    # The turn ends before the reply mirror, so the linked thread is told directly.
+    await _deliver_linked_slack_message(
+        state, slot, getattr(state, "sessions", None), session_key, text
+    )
+    state.push_slots_update()
+
+
 async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     """Answer the local slash commands before a session is claimed."""
     _commands_off = turn._commands_off
@@ -617,6 +670,14 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
         )
         return _Flow.END
 
+    # /goal and /workflow start work that runs on after this turn, so a channel's
+    # words run them only when the Crew's owner wrote them (`_channel_sender_refusal`).
+    _why = _channel_sender_refusal(turn, slot) if first_word in _OWNER_ONLY_CHANNEL_COMMANDS else ""
+    if _why:
+        turn_exit.local_command = first_word
+        await _refuse_channel_owner_command(state, slot, session_key, first_word, _why)
+        return _Flow.END
+
     # ── /goal: arm / clear a goal-driven self-verdict loop (v0) ──
     # v0 rides AutoNudgeService unchanged: the nudge instructs the agent to
     # self-check its Definition of Done each cycle and call autonudge_stop when
@@ -688,6 +749,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     _directive_self_wake=_directive_self_wake,
                     _directive_channel_origin=_directive_channel_origin,
                     _directive_source_channels=getattr(turn, "_directive_source_channels", ()),
+                    _directive_channel_senders=getattr(turn, "_directive_channel_senders", ()),
                     _card_origin=turn._card_origin,
                     _prompt_on_channel=turn._prompt_on_channel,
                     _slack_voice=turn._slack_voice,

@@ -57,6 +57,7 @@ from kiro_crew.dashboard.session_directive_apply import (
 from kiro_crew.dashboard.slot_queue_repository import (
     RESTORED_QUEUE_KEY,
     RESTORED_SEND_CHOSEN_KEY,
+    channel_senders_of,
     run_now_chosen_id,
     source_channels_of,
 )
@@ -1548,6 +1549,12 @@ async def _start_next_queued_turn(
     _source_channels = tuple(sorted({ch for item in consumed for ch in source_channels_of(item)}))
     if _source_channels:
         _run_kwargs["_directive_source_channels"] = _source_channels
+    # Who wrote each consumed entry, for the slash gate's owner check. An entry
+    # with none (a restored one, any other producer) adds "", which no check
+    # reads as the owner, so a batch is the owner's only when every entry is.
+    _senders = {s for item in consumed for s in channel_senders_of(item) or ("",)}
+    if _senders != {""}:
+        _run_kwargs["_directive_channel_senders"] = tuple(sorted(_senders))
     if any(responsive_chat.priority_entry(item) for item in consumed):
         _run_kwargs["_responsive_human"] = True
         _run_kwargs["_responsive_protected"] = any(
