@@ -894,6 +894,12 @@ write allowlist; a whole-filesystem allowlist is not this feature, and `/` is re
   profile emits the layer's rules first and every crew rule after them, and Seatbelt is
   last-match-wins between an allow and a deny. The plan-time refusals are therefore the
   log line an operator sees, not the only thing between an exception and a crew seal.
+  The gateway checkout's git control seals (`sandbox_git_control`) rest on this order
+  alone, like the project MCP files: they sit in the person's own checkout, so an
+  exception that holds it is kept, their parents are pinned with the project files'
+  (`project_ancestor_guards`, `pin_seal_parents`) after the layer, so the pins copy the
+  exception's writable mounts, and each seal lands on top
+  (`test_an_operator_exception_keeps_the_checkout_writable_and_its_git_files_sealed`).
 - **Linux mechanics.** A read-only entry is bound over itself RECURSIVELY (a
   non-recursive bind would hide a filesystem mounted below it, and the kernel refuses one
   over mounts a user namespace has locked), its own mount is remounted `MS_RDONLY` through
