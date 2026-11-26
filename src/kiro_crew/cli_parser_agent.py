@@ -792,6 +792,7 @@ Examples:
   kirocrew artifact show cr-queue --version 2
   kirocrew artifact show cr-queue --meta
   kirocrew artifact show cr-queue --docx cr-queue.docx
+  kirocrew artifact show cr-queue --xlsx cr-queue.xlsx
   kirocrew artifact update cr-queue --content-file widget.html
   kirocrew artifact versions cr-queue
   kirocrew artifact delete cr-queue
@@ -826,6 +827,14 @@ Examples:
         help=(
             "Write a markdown or text artifact to a NEW Word file, one paragraph per source "
             "line with only headings styled; an existing file is refused"
+        ),
+    )
+    show_form.add_argument(
+        "--xlsx",
+        metavar="FILE",
+        help=(
+            "Write the tables of a markdown or text artifact to a NEW spreadsheet file, one "
+            "sheet per table with every cell as text; an existing file is refused"
         ),
     )
 

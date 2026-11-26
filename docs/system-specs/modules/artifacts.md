@@ -557,7 +557,7 @@ caps.
 
 ```
 kirocrew artifact list [--tag T] [--kind K] [--q SUBSTR]
-kirocrew artifact show <slug> [--version N] [--meta | --docx FILE]
+kirocrew artifact show <slug> [--version N] [--meta | --docx FILE | --xlsx FILE]
 kirocrew artifact save --name N [--slug S] [--kind K] [--content C | --content-file F] [--tags A,B] [--description D]
 kirocrew artifact update <slug> [--content C | --content-file F] [--name N] [--description D] [--tags A,B]
 kirocrew artifact versions <slug>
@@ -565,6 +565,8 @@ kirocrew artifact delete <slug>
 ```
 
 `show --docx FILE` writes a markdown or text artifact to a new Word file, one paragraph per source line. An empty name or a sensitive path is refused before any request; an existing file is refused when the write begins, after the artifact is fetched. The file is created owner-only where the filesystem keeps modes (a FAT or exFAT drive keeps its own). Only headings are styled; lists, tables, quotes and inline marks stay as typed text. Over 20,000 lines or 1,000,000 characters it writes nothing, and a failed write, flush or close removes the file it created.
+
+`show --xlsx FILE` writes the pipe tables of a markdown or text artifact to a new workbook, one sheet per table, named after the heading above it (cut to 31 characters, the characters a sheet name cannot hold replaced by a space, `Table N` when there is none or the heading is `History`, a number added when the name is taken in any case). Every cell is stored as text, so a cell that starts with `=`, `+`, `-` or `@` is never a formula and `007` keeps its zeros; the rest of the artifact is not written. It shares the path, kind and create rules of `--docx`. An artifact with no table, over 50 tables, 100,000 cells or 1,000,000 characters, or with a cell over 32,767 characters, writes nothing.
 
 The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 `show --version N` takes N of 1 or more; a lower value or a non-number exits 2

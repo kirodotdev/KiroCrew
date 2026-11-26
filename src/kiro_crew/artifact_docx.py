@@ -100,12 +100,20 @@ def build(text: str, markdown: bool) -> bytes:
 def write_docx(text: str, target: Path, markdown: bool) -> None:
     """Create *target*, owner-only where the filesystem keeps modes, with the Word file for *text*.
 
-    The document is built first, so a build failure leaves no file. The create is
-    exclusive: an existing file (or a symlink at the name) is refused with
-    ``OSError``. A failure after the create, in the write or in the flush and close
-    that end it (a full disk), removes the file this call made, and only that one.
+    The document is built first, so a build failure leaves no file; see
+    :func:`write_new_file` for the create.
     """
-    data = build(text, markdown)
+    write_new_file(build(text, markdown), target)
+
+
+def write_new_file(data: bytes, target: Path) -> None:
+    """Create *target*, owner-only where the filesystem keeps modes, holding *data*.
+
+    The create is exclusive: an existing file (or a symlink at the name) is refused
+    with ``OSError``. A failure after the create, in the write or in the flush and
+    close that end it (a full disk), removes the file this call made, and only that
+    one.
+    """
     created = False
     try:
         with open(target, "xb", opener=owner_only_opener) as handle:
