@@ -148,6 +148,18 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
         from kiro_crew.messaging.session_trust import trust_permitted
 
         trust = flag == "t" and trust_permitted()
+        if (approved or trust) and not self._is_owner(cb.user_id):
+            # Only the owner approves a tool. Anyone else's Approve or Trust is
+            # read as Deny, so the request ends now and nothing is granted.
+            facade.sel().log_api_access(
+                caller=str(cb.user_id) or "unknown",
+                operation="telegram.tool_decision",
+                outcome="denied",
+                source="telegram",
+                resources=f"chat={cb.chat_id}",
+                error="not_owner",
+            )
+            approved = trust = False
         session_key = self._callback_session_key(
             route,
             cb.chat_id,

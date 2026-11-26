@@ -127,9 +127,11 @@ async def _run_turn(
         if persisted:
             agent = persisted
 
+    # Only the owner is asked to approve a tool. Anyone else would be answering
+    # their own request, so they get no prompt and the tool is denied.
     decider = (
         facade.TelegramApprovalDecider(session_key=session_key)
-        if self.approval_mode == APPROVAL_INTERACTIVE
+        if self.approval_mode == APPROVAL_INTERACTIVE and self._is_owner(user_id)
         else None
     )
     renderer = facade.TelegramRenderer(

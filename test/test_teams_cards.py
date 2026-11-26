@@ -471,6 +471,7 @@ def _dispatcher(client) -> TeamsDispatcher:
             agent=SimpleNamespace(default_agent="kirocrew", approval_mode="interactive"),
             teams=SimpleNamespace(soft_threshold_pct=80, hard_threshold_pct=95),
         ),
+        allowed_emails={_EMAIL},
     )
     d.client = client
     return d

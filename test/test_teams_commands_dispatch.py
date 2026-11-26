@@ -139,6 +139,7 @@ def _dispatcher(client, sessions=None) -> TeamsDispatcher:
             teams=SimpleNamespace(soft_threshold_pct=80, hard_threshold_pct=95),
             dashboard=SimpleNamespace(url=""),
         ),
+        allowed_emails={_EMAIL},
     )
     d.client = client
     return d

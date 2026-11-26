@@ -78,7 +78,9 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
   is global by nature, and an operator who turns auto-approve off expects it off
   everywhere rather than off in whichever surface they happened to type it in. It
   does not weaken the PreToolUse gate: sensitive-path, governance-ceiling and
-  deny-list blocks still refuse a tool.
+  deny-list blocks still refuse a tool. Only the owner can change it: the ID in
+  `telegram.owner_user_id`, or, when that is unset, the one ID in
+  `allowed_user_ids`. Anyone else can read the status.
 - `/link` / `/unlink` — resume or stop mirroring dashboard replies here; a
   conversation is its own mirror by default, so `/link` only withdraws an
   earlier `/unlink`
@@ -170,6 +172,10 @@ Each prompt's buttons carry a one-time value, so a button left in your scrollbac
 cannot approve a later tool even if the agent restarts and reuses the same
 internal request number: pressing an old one reports that it expired.
 Neither weakens the security gate — a denied-by-policy tool is still refused.
+
+Only the owner (the same person `/yolo` names) answers these prompts. A turn
+someone else on `allowed_user_ids` started gets no prompt, so a tool that needs
+approval is denied, and their press on Approve or Trust counts as Deny.
 
 Answer-choice buttons are tied to the conversation that created them. If you
 start a new conversation, switch agents, or press an old button after that

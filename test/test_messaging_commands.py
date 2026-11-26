@@ -265,7 +265,13 @@ class TestRunYoloCommand:
 
     def test_on_arms_the_shared_grant_and_audits_it(self, grant: Any, audit: _Sel) -> None:
         reply = asyncio.run(
-            run_yolo_command("on", source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
+            run_yolo_command(
+                "on",
+                source="telegram",
+                caller="7",
+                caller_is_owner=True,
+                phrasing=YOLO_PHRASING_PLAIN,
+            )
         )
         assert grant.is_active() is True
         assert reply.startswith("🟢 YOLO ON (")
@@ -286,7 +292,11 @@ class TestRunYoloCommand:
         grant.activate("test")
         reply = asyncio.run(
             run_yolo_command(
-                "on", source="teams", caller="u@example.com", phrasing=YOLO_PHRASING_MARKDOWN
+                "on",
+                source="teams",
+                caller="u@example.com",
+                caller_is_owner=True,
+                phrasing=YOLO_PHRASING_MARKDOWN,
             )
         )
         assert reply.startswith("🟢 YOLO is already ON (")
@@ -296,7 +306,13 @@ class TestRunYoloCommand:
     def test_off_revokes_and_reports(self, grant: Any, audit: _Sel) -> None:
         grant.activate("test")
         reply = asyncio.run(
-            run_yolo_command("off", source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
+            run_yolo_command(
+                "off",
+                source="telegram",
+                caller="7",
+                caller_is_owner=True,
+                phrasing=YOLO_PHRASING_PLAIN,
+            )
         )
         assert reply == "🔴 YOLO OFF — tools ask for approval again."
         assert grant.is_active() is False
@@ -316,7 +332,13 @@ class TestRunYoloCommand:
 
         monkeypatch.setattr(kept_grants, "settle", _settled, raising=False)
         reply = asyncio.run(
-            run_yolo_command("off", source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
+            run_yolo_command(
+                "off",
+                source="telegram",
+                caller="7",
+                caller_is_owner=True,
+                phrasing=YOLO_PHRASING_PLAIN,
+            )
         )
         # Synced after the off, before the reply that confirms it.
         assert active_at_sync == [False]
@@ -337,7 +359,13 @@ class TestRunYoloCommand:
         monkeypatch.setattr(kept_grants, "kept_dir", lambda home=None: tmp_path)
         monkeypatch.setattr(kept_grants, "fsync_dir", _refused)
         reply = asyncio.run(
-            run_yolo_command("off", source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
+            run_yolo_command(
+                "off",
+                source="telegram",
+                caller="7",
+                caller_is_owner=True,
+                phrasing=YOLO_PHRASING_PLAIN,
+            )
         )
         # Off in memory, and the answer says the disk may not keep it off.
         assert grant.is_active() is False
@@ -347,10 +375,22 @@ class TestRunYoloCommand:
         self, grant: Any, audit: _Sel
     ) -> None:
         plain = asyncio.run(
-            run_yolo_command("renew", source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
+            run_yolo_command(
+                "renew",
+                source="telegram",
+                caller="7",
+                caller_is_owner=True,
+                phrasing=YOLO_PHRASING_PLAIN,
+            )
         )
         coded = asyncio.run(
-            run_yolo_command("renew", source="teams", caller="u", phrasing=YOLO_PHRASING_MARKDOWN)
+            run_yolo_command(
+                "renew",
+                source="teams",
+                caller="u",
+                caller_is_owner=True,
+                phrasing=YOLO_PHRASING_MARKDOWN,
+            )
         )
         assert plain == "🔴 YOLO is not active — use /yolo on first."
         assert coded == "🔴 YOLO is not active — use `/yolo on` first."
@@ -369,7 +409,13 @@ class TestRunYoloCommand:
             ),
         )
         reply = asyncio.run(
-            run_yolo_command("on", source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
+            run_yolo_command(
+                "on",
+                source="telegram",
+                caller="7",
+                caller_is_owner=True,
+                phrasing=YOLO_PHRASING_PLAIN,
+            )
         )
         assert reply == "❌ Couldn't turn YOLO on (audit system unavailable)."
         assert audit.rows[0]["outcome"] == "denied"
@@ -381,7 +427,13 @@ class TestRunYoloCommand:
         # An unrecognised word must never arm the grant, and a status read is not
         # a security event, so it writes no row.
         reply = asyncio.run(
-            run_yolo_command(arg, source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
+            run_yolo_command(
+                arg,
+                source="telegram",
+                caller="7",
+                caller_is_owner=True,
+                phrasing=YOLO_PHRASING_PLAIN,
+            )
         )
         assert reply == "YOLO is OFF 🔴.\nUsage: /yolo on | off | renew"
         assert grant.is_active() is False
@@ -390,7 +442,13 @@ class TestRunYoloCommand:
     def test_status_reports_the_live_lifetime_when_armed(self, grant: Any, audit: _Sel) -> None:
         grant.activate("test")
         reply = asyncio.run(
-            run_yolo_command("", source="teams", caller="u", phrasing=YOLO_PHRASING_MARKDOWN)
+            run_yolo_command(
+                "",
+                source="teams",
+                caller="u",
+                caller_is_owner=True,
+                phrasing=YOLO_PHRASING_MARKDOWN,
+            )
         )
         assert reply.startswith("YOLO is ON 🟢 (")
         assert reply.endswith("Usage: `/yolo on` | `off` | `renew`")
@@ -416,7 +474,11 @@ class TestRunYoloCommand:
         async def go() -> None:
             loop_thread = threading.get_ident()
             await run_yolo_command(
-                "on", source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN
+                "on",
+                source="telegram",
+                caller="7",
+                caller_is_owner=True,
+                phrasing=YOLO_PHRASING_PLAIN,
             )
             assert ran_on and loop_thread not in ran_on
 
