@@ -42,7 +42,7 @@ import { groupJobsByFolder, loadCollapsedFolders, saveCollapsedFolders } from '.
 import type { CronFolder } from '../utils/cronFolders'
 import CronFolderHeader from '../components/CronFolderHeader'
 import CronBatchActionsMenu from '../components/CronBatchActionsMenu'
-import { useScheduleBatchActions, BatchRunConfirmDialog } from './SchedulePageBatchActions'
+import { useScheduleBatchActions, BatchRunConfirmDialog, TelegramResultNotice } from './SchedulePageBatchActions'
 import ScheduleCrewmateRosterNotice from './ScheduleCrewmateRosterNotice'
 import { JobRunText } from './SchedulePageJobRunText'
 import CronRowActions from '../components/CronRowActions'
@@ -706,7 +706,7 @@ export default function SchedulePage() {
   }, [selectedIds, load])
   const confirmArmed = confirmText.trim().toLowerCase() === BULK_DELETE_TOKEN
 
-  const { batchBusy, runConfirmIds, runSkipped, batchMenuLayer, closeRunConfirm, closeBatchConfirm, applyBatch, onBatchAction } =
+  const { batchBusy, runConfirmIds, runSkipped, batchMenuLayer, closeRunConfirm, closeBatchConfirm, applyBatch, onBatchAction, sendToTelegram, telegramResult } =
     useScheduleBatchActions({ selectedJobs, running, load, setSelectedIds, setActionError, setBatchConfirm })
 
   // Open the create panel blank (from "Create your first job" / "Add Job").
@@ -944,6 +944,7 @@ export default function SchedulePage() {
                       await load()
                     }}
                     onNewFolder={handleNewFolder}
+                    onSendToTelegram={sendToTelegram}
                   />
                 </div>
               )}
@@ -984,6 +985,7 @@ export default function SchedulePage() {
             {actionError?.id === 'batch-action' && (
               <ErrorNotice className="mb-2" message={actionError.msg} askAgent testId="schedule-batch-action-error" />
             )}
+            {actionError?.id === 'batch-telegram' && <TelegramResultNotice failed={actionError.msg} result={telegramResult} />}
             {/* `table-fixed`: the column widths below are a CONTRACT, not a
                 hint. With auto layout a single long cell (an agent name, a cron
                 expression) widens the whole table past its container and the
