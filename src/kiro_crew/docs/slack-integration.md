@@ -35,7 +35,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `/agent <name>` | Same as `!ta <name>` (type a space first if Slack offers it as a slash command) |
 | `!channel` | Show current channel activation mode |
 | `!channel always/mention/observe/review/off` | Set channel activation mode |
-| `!channel agent <name/off>` | Set per-channel agent override; a Crew Bot's name runs the whole channel as that Bot |
+| `!channel agent <name/off>` | Set per-channel agent override; a Crew Bot's name runs the whole channel as that Bot. A shared user may use it with a Crew Bot's name or `off` (see "Sharing Slack access") |
 | `!project <path>` / `!project off` | Set or clear the project whose `.kiro` agents `!ta` can find in this thread (does not change the working directory); bare `!project` shows it |
 | `!voice on/off` | Speak this thread's answers as well as typing them |
 | `!voice global on/off` | On: voice replies in every thread. Off: only in threads that ran `!voice on` (or set a voice, engine, speed or pitch), plus replies to voice memos if you set `voice_reply.auto_reply_to_voice` to `true`. Saved, so a restart keeps it; bare `!voice global` toggles it |
@@ -380,12 +380,20 @@ confirmed by Slack: remove them, or fix what their row says, first.
   prompts their own turns post (Approve, Reject, and **Trust session** where
   the card offers it, which turns on the same per-session Trust the owner's
   click does; the audit log names who clicked), and send or edit the review-mode draft of their own
-  turn. On an agent other than Kiro CLI, KAS or Claude Code, and for a
+  turn. They can also put a channel on a Crew Bot with `!channel agent <Bot>` and take
+  it off with `!channel agent off`, when the channel has no agent or a shared user set
+  the one it has. After that, every new thread in that channel runs as that Bot for
+  everyone, you included: its template, workspace and memory, and the tools that
+  template runs without a prompt. Approvals do not change. They cannot change an
+  agent you set, pick a kiro agent that is not a Bot, or do this in a DM with the
+  bot or in a code channel. They cannot set a Bot while a dashboard chat is
+  linked to a thread in the channel, its tab open or closed; `off` still works there. On an agent other than Kiro CLI, KAS or Claude Code, and for a
   call a background sub-agent makes, the approval prompt goes to the owner.
 - **What stays the owner's.** The access list and the switch; YOLO and
   approval-mode changes; answering (Trust included) a prompt someone else's turn
   posted, or one that is no longer waiting; `!dashboard` and other dashboard links; every
-  other `!` command, including `!channel` and agent overrides, and the
+  other `!` command, including the rest of `!channel` (activation, and any agent
+  you set for a channel) and the other agent overrides, and the
   `!temporary` / `!incognito` modifiers; a message that starts with `/` (the
   agent's own commands such as `/agent`, `/model` or `/tools`); the other `/kirocrew`
   slash commands; the Home tab and the `sessions` list; the `spawn`, `status`, cron and `run`
