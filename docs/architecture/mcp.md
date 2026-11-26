@@ -4512,7 +4512,24 @@ The inputs:
   the panel sources and the manual/route/type modules are digested too;
 - registered controls: a `{...uiLocation('<id>')}` marker at the render site plus
   one entry in its area file, `src/uiLocations/areas/<area>.ts`, aggregated by
-  `src/uiLocations/descriptors.ts` (see below).
+  `src/uiLocations/descriptors.ts` (see below);
+- pages from packaged app manifests: every `ui.pages[]` entry of each
+  `src/kiro_crew/apps/builtins/*/app.json`, read by `scripts/lib/ui-index-apps.mjs`
+  (data only: no app is named in generator or index code). Each becomes a
+  generated page `apppage.<manifest name>.<route slug>`. Its label is the catalog
+  key the rail renders for a built-in app's page (`APP_MANIFEST_KEY`'s
+  `apps.<camelCaseId>.manifest.page_label`, first page only) when the English
+  catalog holds the manifest's own words there, else a `literal:` label; the
+  app's `displayName` is `app` on the record (and, through its `display_name`
+  key the same way, an alias when it differs from the page label), and a rail
+  entry that requires `app_enabled`. A page whose route a core page
+  already has is left to that page. Its route must not match a core route: it is
+  served by the `/:builtinApp/*` arm. These are packaged files read at BUILD time,
+  so find_ui still reads only the generated index. Apps a user installs at
+  runtime are not packaged and so not indexed (a follow-up). A manifest edit that
+  changes an indexed page leaves the committed index stale, which `--check`
+  reports; `test/test_find_ui_app_pages.py` also compares the committed index
+  against the manifests, so a backend-only PR catches it too.
 
 Every emitted route is checked against the router itself: the `<Route path>`
 table in `src/App.tsx`, read by a bounded AST adapter (`collectRouteTable`) that
@@ -4521,7 +4538,8 @@ records each route's pattern, its catch-alls (`*`, a leading parameter such as
 directly, or a same-file component that renders nothing else), the static target.
 A route must match a non-catch-all, non-redirect route (most static segments
 win, as the router ranks them), or be an `appOnly` surface served by the
-built-in-app arm; anything else, including an empty route, is an error. A
+built-in-app arm (as an `appOnly` surface or a packaged app manifest's page);
+anything else, including an empty route, is an error. A
 Search Everywhere extra page whose route only redirects (`/mc-agents`, `/tasks`,
 `/instances`) is never returned as a destination: `LEGACY_PAGE_CANONICAL` in
 `descriptors.ts` names the location the redirect lands on, by explicit tab where
