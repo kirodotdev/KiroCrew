@@ -7967,7 +7967,8 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `ctx.kiro_call` (§47), and the SDK's `SessionChanges` and `DiffView` (§18l); level 13 adds
 `/api/apps/<name>/browser-sites` and the SDK's `useBrowserSites` (§45); level 14 adds backend
 SDK names, one batch: `canonical_file_path`, `vet_public_url`, `UrlRejectedError`,
-`address_is_not_public`, `sniff_raster_mime` and `RASTER_SNIFF_BYTES` (§40). Several seams
+`address_is_not_public`, `sniff_raster_mime` and `RASTER_SNIFF_BYTES`, and the
+descriptor-pinned path walk and copy (§40). Several seams
 share level 7, three share level 8, the open batch that level 10 starts shares level 10, and the backend SDK
 batch shares level 14, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
@@ -8596,7 +8597,8 @@ any form in such a file (level 7): the file names both `kiro_crew` and the word
 backend_sdk`, an attribute of an imported parent and a string lookup alike. Once any
 such file names the package, each name of `backend_sdk._EXPORT_LEVELS` that any such
 file holds as a word counts at its own level (`canonical_file_path`, `vet_public_url`,
-`UrlRejectedError`, `address_is_not_public`, level 14), so a
+`UrlRejectedError`, `address_is_not_public`, the pinned path names such as `pin_parent`
+and `copy_file_pinned`, level 14), so a
 shim's lookup in one file and its caller in another still count. A level below the highest one found
 is refused, naming what was found, by `compute` and `verify` alike, so a tree that
 feature-detects a seam and degrades still pins at that seam's level, and a host
@@ -10166,6 +10168,7 @@ that wants one helper does not pay for the security stack.
 | Files | `read_bytes_nofollow(path, *, within_root, max_bytes, within_root_is_canonical)`, `FileTooLargeError` | `hooks.safe_read_file_bytes_nolink`, `hooks.FileTooLargeError` |
 | Files (level 14) | `canonical_file_path(path)` | `hooks.validate_file_path`, called with the path alone |
 | Files | `atomic_write(path, content, *, fsync, mode, newline, restrict_to_owner)`, `ensure_owner_only_dir(path)` | `atomic_write.atomic_write`, `owner_only_files.ensure_directory` |
+| Pinned paths (level 14) | `supports_pinned_walk()`, `is_reparse_point(path)`, `pin_parent(resolved_parent, *, what)`, `copy_file_pinned(src, dst, *, dir_fd, name, force_mode, max_bytes, expected_src_ident, on_skip, on_created)`, `fd_real_path(fd)`, `PinnedPathRefusal` | the `pinned_fs` names of the same spelling |
 | Redaction | `scrub_outbound(text)`, `ScrubResult` | `apps.scrub_sdk.ScrubSDK.outbound` (the `ctx.scrub` pass) |
 | Audit | `audit_log(app_name=None)` | `apps.audit_sdk.AuditSDK` (the `ctx.audit` writer) |
 | Sandboxed children | `run_sandboxed`, `run_sandboxed_async`, `sandboxed_argv`, `sandboxed_argv_async`, `SandboxUnavailableError` | `sandbox.sandboxed_spawn_argv` then `sandbox.run_limited`; `sandbox.sandboxed_spawn_argv_async` then `sandbox.create_subprocess_limited`; the two preparations alone; `sandbox.SandboxUnavailableError` |
@@ -10181,7 +10184,11 @@ the gateway's own `SandboxUnavailableError`; a refused URL raises the gateway's 
 `UnfurlRejected` (as `UrlRejectedError`) with the same `invalid_url` or `blocked_url`
 code, and the result is the gateway's own `link_unfurl.VettedUrl`, which is not an SDK
 name: no app imports the class, so an app reads the result's `url`, `scheme`, `host`,
-`wire_host`, `port`, `ip`, `addresses` and `domain` and never names its type. The
+`wire_host`, `port`, `ip`, `addresses` and `domain` and never names its type. A pinned
+copy refuses exactly what the private copy refuses (a link at the final name, a
+hardlinked or non-regular source, an inode other than the one the caller vetted, a size
+over its cap, an existing destination), and a refused walk raises the gateway's own
+`PinnedPathRefusal`. The
 exception classes are the private ones, not look-alikes, so an `except` written against
 either catches both.
 The sniff answers from the leading bytes the caller holds, never from a name or a declared
@@ -10217,7 +10224,11 @@ only the result's `addresses`, through a resolver keyed on its `wire_host`; a
 second resolution at connect time would dial an address the check never saw. It
 blocks on one `getaddrinfo`, so an in-process app calls it from a worker thread.
 `address_is_not_public` keeps the private polarity (`True` means refuse) and answers
-`True` for a value that is not an IP literal. The SDK spawns nothing that
+`True` for a value that is not an IP literal. The pinned walk has no `refusal` type, so
+it always raises `PinnedPathRefusal`, and the copy has no `src_fd`, `dst_dir_fd` /
+`dst_name`, `skip_existing`, `skip_unreadable` or `on_opened`, which no app uses. The
+copy holds no policy and does not ask the sensitive-path gate, as the private one does
+not: the caller asks `is_sensitive_path` first. The SDK spawns nothing that
 is not sandboxed: `run_sandboxed` and `run_sandboxed_async` prepare through the
 chokepoint and run under the resource limits in the same function, with the
 scrubbed environment and the cleanup path removed on every outcome, so
@@ -10239,7 +10250,8 @@ outlives it; its docstring and the api-reference row point such a child at the
 async form. The private limited spawners, which run whatever argv they are
 handed, are not offered. Nothing here is gated by a
 permission because nothing adds reach: the controls only refuse, redact, record or
-confine (the URL check's one `getaddrinfo` is a lookup any backend can make), and an
+confine (the URL check's one `getaddrinfo` is a lookup any backend can make, and a
+pinned copy writes nothing a plain copy by the same process could not), and an
 in-process app could call the private names anyway.
 
 **Audit attribution.** `audit_log()` returns the `ctx.audit` writer for the name in
@@ -10250,6 +10262,19 @@ attribution is cooperative, as it is for `ctx.audit`. The SEL log is written
 cross-process under its chain lock (`sel_chain_lock`), so a spawned backend's row and
 the gateway's own interleave safely.
 
+**Pinned paths.** For a file a person named by path, which anything running as the
+same user can swap for a link between a check and the open. The caller refuses the
+path when `supports_pinned_walk()` is `False` (Windows, which has no `O_NOFOLLOW` or
+`dir_fd`, so a by-name source there follows a final link), resolves it once, asks
+`is_sensitive_path`, takes `pin_parent` of its directory and copies it with
+`copy_file_pinned(dir_fd=, name=, expected_src_ident=, max_bytes=)` into a directory it
+just created, since the destination is opened by name. `on_created` hands back the
+copy's identity for a later reopen, and `fd_real_path` names where an opened descriptor
+really is. `is_reparse_point` is a cheap name screen before the walk, not the guard; it
+matches what `is_link_or_junction` matches on POSIX and, on Windows, any non-zero
+`st_reparse_tag`, not only a symlink or a junction. The `on_skip` reason codes
+(`symlink`, `not_regular`, `identity_changed`, `too_large`) are the private ones.
+
 **Level.** `SDK_LEVEL` is `APP_SDK_LEVEL`; `BACKEND_SDK_LEVEL` is 7, the level that
 publishes the package. The adoption pin tool counts any non-test source naming the
 package as a level-7 use (§33), so a tree that adopts it is held on a host without it.
@@ -10257,14 +10282,16 @@ A name published later is a row of `_EXPORT_LEVELS` with its own level, and
 `BACKEND_SDK_LEVEL` stays 7. Level 14 is one batch of such names, each added by its own
 change, all sharing the level: `canonical_file_path`, `vet_public_url`,
 `UrlRejectedError`, `address_is_not_public`, `sniff_raster_mime` and
-`RASTER_SNIFF_BYTES`. A host from level 7 to 13 has the
+`RASTER_SNIFF_BYTES`, and the descriptor-pinned path names `supports_pinned_walk`,
+`is_reparse_point`, `pin_parent`, `copy_file_pinned`, `fd_real_path` and
+`PinnedPathRefusal`. A host from level 7 to 13 has the
 package without the name, so an app feature-detects the name with `getattr` and keeps its
 own refusal, and the pin tool counts a tree that names the package and the name as a use
 of the name's level (§33), so a host below it keeps the wheel copy.
 
 **Not in it yet.** The names the apps reach that this package does not cover stay
 private and keep their `_host.py` gap: chat slot and auto-nudge internals (they belong
-to the app-owned chat slot seam of ruling item 4), `pinned_fs` descriptor helpers,
+to the app-owned chat slot seam of ruling item 4),
 `link_unfurl.pinned_connector` and `PinnedResolver`, `asset_downloader.download_to`,
 `executors.subprocess_executor`,
 `apps.registry.minimal_env`, `config.loader.config_dir` and `KiroCrewConfig`,
@@ -10278,10 +10305,11 @@ Writers: `apps/backend_sdk/__init__.py`, `apps/backend_sdk/paths.py`,
 `apps/backend_sdk/files.py`, `apps/backend_sdk/redaction.py`,
 `apps/backend_sdk/audit.py`, `apps/backend_sdk/spawn.py`,
 `apps/backend_sdk/process.py`, `apps/backend_sdk/urls.py`, `apps/backend_sdk/media.py`,
-`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
+`apps/backend_sdk/pinned.py`, `apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
 `scripts/adoption_pin.py` (`_seam_level_uses`, `_BACKEND_SDK_LATER_NAMES`).
 Pinned by `test/test_app_backend_sdk.py`, `test/test_app_backend_sdk_file_gate.py`,
-`test/test_app_backend_sdk_urls.py`, `test/test_app_backend_sdk_media.py` and
+`test/test_app_backend_sdk_urls.py`, `test/test_app_backend_sdk_media.py`,
+`test/test_app_backend_sdk_pinned.py` and
 `test/test_builtin_adoption_pins.py`.
 App authors: `docs/app-kit/api-reference.md` § Backend SDK.
 

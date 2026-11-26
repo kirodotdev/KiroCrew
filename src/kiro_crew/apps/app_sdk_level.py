@@ -22,7 +22,10 @@ file path gate (the UNC and link screens and the sensitive-path list, answered a
 canonical path or None); and ``vet_public_url``, ``UrlRejectedError`` and
 ``address_is_not_public``, the gateway's outbound public-address check for a URL, or
 a resolved address, an app's backend fetches. Level 14 also adds ``sniff_raster_mime``
-and ``RASTER_SNIFF_BYTES``: the gateway's own raster sniffer, by reference.
+and ``RASTER_SNIFF_BYTES``: the gateway's own raster sniffer, by reference. Level 14
+also adds the descriptor-pinned path walk and copy: ``supports_pinned_walk``,
+``is_reparse_point``, ``pin_parent``, ``copy_file_pinned``, ``fd_real_path`` and
+``PinnedPathRefusal``.
 """
 
 APP_SDK_LEVEL = 14

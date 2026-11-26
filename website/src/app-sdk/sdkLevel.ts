@@ -21,5 +21,7 @@
  * resolved address, an app's backend fetches.
  * Level 14 also adds `sniff_raster_mime` and `RASTER_SNIFF_BYTES`: the gateway's
  * raster sniffer, by reference.
+ * Level 14 also adds the pinned path walk and copy (`pin_parent`,
+ * `copy_file_pinned`); the dashboard gains nothing at that level.
  */
 export const APP_SDK_LEVEL = 14
