@@ -89,7 +89,7 @@ const headroomColor = (turns: number): string | undefined =>
 
 // ── Spend ──────────────────────────────────────────────────────
 
-type SpendGroup = 'session' | 'category' | 'model'
+type SpendGroup = 'session' | 'category' | 'model' | 'purpose'
 
 /** One row of GET /api/usage/turns — the same shard rows the totals above
  *  aggregate, returned individually. Every numeric field is optional: the
@@ -453,7 +453,7 @@ function shareCols(first: string, total: number, unit: SpendUnit, firstTip?: str
   ]
 }
 
-const SPEND_GROUPS = ['session', 'category', 'model'] as const
+const SPEND_GROUPS = ['session', 'category', 'model', 'purpose'] as const
 
 /**
  * How many rows a spend block plots before the remainder folds into one row.
@@ -767,6 +767,7 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
                   { key: 'session', label: i18nT('pages.telemetryPanel.session_col') },
                   { key: 'category', label: i18nT('pages.telemetryPanel.category_col') },
                   { key: 'model', label: i18nT('pages.telemetryPanel.model_col') },
+                  { key: 'purpose', label: i18nT('pages.telemetryPanel.purpose_col') },
                 ]}
               />
             </div>
@@ -787,16 +788,28 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
               />
             ) : (
               <DataTable<CostRow>
-                rows={group === 'model' ? c.by_model : c.by_category}
+                rows={
+                  group === 'model'
+                    ? c.by_model
+                    : group === 'purpose'
+                      ? (c.by_purpose ?? [])
+                      : c.by_category
+                }
                 key={`telemetry-spend-share${keySuffix}`}
                 tableId={`telemetry-spend-share${keySuffix}`}
                 cols={shareCols(
                   group === 'model'
                     ? i18nT('pages.telemetryPanel.model_col')
-                    : i18nT('pages.telemetryPanel.category_col'),
+                    : group === 'purpose'
+                      ? i18nT('pages.telemetryPanel.purpose_col')
+                      : i18nT('pages.telemetryPanel.category_col'),
                   c.credits,
                   unit,
-                  group === 'model' ? undefined : i18nT('pages.telemetryPanel.category_col_tip'),
+                  group === 'model'
+                    ? undefined
+                    : group === 'purpose'
+                      ? i18nT('pages.telemetryPanel.purpose_col_tip')
+                      : i18nT('pages.telemetryPanel.category_col_tip'),
                 )}
                 rowKey={r => r.name}
                 defaultSort="credits"

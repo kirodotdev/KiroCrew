@@ -14,7 +14,7 @@
  * SPA to reach the same destination.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -34,7 +34,7 @@ const convo = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
-const resp = (conversations: Record<string, unknown>[]) => ({
+const resp = (conversations: Record<string, unknown>[], extra: Record<string, unknown> = {}) => ({
   enabled: true,
   window_days: 14,
   shard_count: 3,
@@ -61,6 +61,7 @@ const resp = (conversations: Record<string, unknown>[]) => ({
 
     navigable_category: 'dashboard',
     conversation_count: conversations.length,
+    ...extra,
   },
 })
 
@@ -75,9 +76,9 @@ const Wrapper = ({ children }: { children: React.ReactNode }) => (
   </QueryClientProvider>
 )
 
-async function mount(conversations: Record<string, unknown>[]) {
+async function mount(conversations: Record<string, unknown>[], extra: Record<string, unknown> = {}) {
   const { api } = await import('../api/client')
-  vi.mocked(api.telemetryStartup).mockResolvedValue(resp(conversations) as never)
+  vi.mocked(api.telemetryStartup).mockResolvedValue(resp(conversations, extra) as never)
   render(<TelemetryPanel />, { wrapper: Wrapper })
 }
 
@@ -161,5 +162,38 @@ describe('TelemetryPanel — conversations by spend', () => {
     // Still named, though — falling back to "Untitled" would lose the one piece
     // of identity the row has.
     expect(screen.getByText('Asked over Telegram')).toHaveAccessibleDescription('telegram:kirocrew:direct:874')
+  })
+
+  describe('Group by Purpose', () => {
+    const row = (name: string, credits: number) => ({
+      name,
+      credits,
+      turns: 2,
+      per_turn: credits / 2,
+      share_pct: credits,
+      delta_pct: null,
+    })
+
+    async function openPurpose() {
+      await screen.findByRole('button', { name: /full table/i })
+      fireEvent.click(screen.getByRole('button', { name: /full table/i }))
+      fireEvent.click(await screen.findByRole('radio', { name: 'Purpose' }))
+    }
+
+    beforeEach(() => window.localStorage.clear())
+
+    it('lists what each kind of turn cost when Purpose is chosen', async () => {
+      await mount([convo()], { by_purpose: [row('turn', 70), row('helper', 20), row('automation', 10)] })
+      await openPurpose()
+      expect(await screen.findByText('helper')).toBeInTheDocument()
+      expect(screen.getByText('automation')).toBeInTheDocument()
+    })
+
+    it('renders no rows when an older gateway sends no by_purpose', async () => {
+      await mount([convo()])
+      await openPurpose()
+      expect(screen.queryByText('helper')).toBeNull()
+      expect(screen.queryByText('automation')).toBeNull()
+    })
   })
 })

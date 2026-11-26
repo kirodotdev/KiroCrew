@@ -61,6 +61,27 @@ _COMPACTION_PCT = 90.0
 _COMPACTION_DROP_PCT = 1.0
 
 
+def _purpose_of(obj: dict[str, Any], slot: str) -> str:
+    """What a turn was for: ``helper``, ``automation``, ``turn`` or ``unknown``.
+
+    The session key decides everything but the helper case, as it does for the
+    channel: a historical row's ``surface`` can be wrong but non-empty, so only
+    the ``bg:`` prefix, which only the background-call writers produce, is read
+    from it.
+    """
+    # Imported here, not at module level: a name an owner imports from outside
+    # the usage family is served by the facade, and this prefix is not part of it.
+    from kiro_crew.dashboard.handlers.usage_sessions import (
+        _BACKGROUND_CALL_SURFACE_PREFIX,
+    )
+
+    if str(obj.get("surface") or "").startswith(_BACKGROUND_CALL_SURFACE_PREFIX):
+        return "helper"
+    if not slot:
+        return "unknown"
+    return "automation" if session_category(slot) == "bg" else "turn"
+
+
 def cost_breakdown(
     days: float = SPEND_WINDOW_DAYS,
     until: float | None = None,
@@ -140,6 +161,8 @@ def cost_breakdown(
     convos: dict[str, dict[str, Any]] = {}
     by_category: dict[str, dict[str, Any]] = {}
     prev_category: dict[str, float] = {}
+    by_purpose: dict[str, dict[str, Any]] = {}
+    prev_purpose: dict[str, float] = {}
     priciest: dict[str, Any] = {"credits": 0.0, "slot": "", "ts": ""}
     high_context = 0.0
 
@@ -246,6 +269,8 @@ def cost_breakdown(
             prev_channel[ch] = prev_channel.get(ch, 0.0) + credits
             cat = session_category(slot)
             prev_category[cat] = prev_category.get(cat, 0.0) + credits
+            purpose = _purpose_of(obj, slot)
+            prev_purpose[purpose] = prev_purpose.get(purpose, 0.0) + credits
             continue
 
         cur_tot["credits"] += credits
@@ -257,6 +282,7 @@ def cost_breakdown(
             (by_model, model),
             (by_channel, telemetry_channel_of(slot or None)),
             (by_category, session_category(slot)),
+            (by_purpose, _purpose_of(obj, slot)),
         ):
             e = bucket.setdefault(name, {"name": name, "credits": 0.0, "turns": 0})
             e["credits"] = float(e["credits"]) + credits
@@ -429,6 +455,7 @@ def cost_breakdown(
             "by_model": _rank(by_model, prev_model),
             "by_channel": _rank(by_channel, prev_channel),
             "by_category": _rank(by_category, prev_category),
+            "by_purpose": _rank(by_purpose, prev_purpose),
             "context_bands": band_rows,
             # Measured recommendations with their share of the window, or `[]`.
             "advice": advice,

@@ -192,6 +192,8 @@ export type Cost = {
   by_channel: CostRow[]
   /** Spend by the session taxonomy — the grouping the panel offers. */
   by_category: CostRow[]
+  /** Spend by what a turn was for; absent from an older gateway, which means no Purpose choice. */
+  by_purpose?: CostRow[]
   context_bands: CostBand[]
   /** Absent from an older gateway, which means no recommendations. */
   advice?: SpendAdvice[]

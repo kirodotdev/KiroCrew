@@ -822,6 +822,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _COST_CACHE_TTL,
         _COST_MIN_GROWTH_TURNS,
         _COST_TOP_CONVOS,
+        _purpose_of,
         cost_breakdown,
     )
     from kiro_crew.dashboard.handlers.usage_history import (  # noqa: F401

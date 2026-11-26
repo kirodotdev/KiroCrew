@@ -23477,6 +23477,8 @@
       "category_bg": "todo en segundo plano",
       "category_col": "Origen",
       "category_col_tip": "Dónde se inició esta sesión, según consta en su clave de sesión. Todos los procesos en segundo plano (cron, heartbeat, task runner, workflow) se agrupan como «todo en segundo plano». La columna «Superficie del turno» de la pestaña «Contexto» responde otra pregunta: qué ejecutó un turno concreto.",
+      "purpose_col": "Propósito",
+      "purpose_col_tip": "Para qué sirvió cada turno: un turno de una persona, una llamada auxiliar (títulos, etiquetas, consolidación de memoria) o automatización (cron, heartbeat, task runner, workflow). El origen agrupa una llamada auxiliar bajo su sesión.",
       "channel_col": "Canal",
       "cold_count": "{{n}} en frío",
       "cold_label": "en frío",
