@@ -997,7 +997,7 @@ describe('ChatSidebar — header menu view + tag entries', () => {
       expect(screen.queryByTestId('board-columns-loading')).toBeNull()
     })
 
-    it('disables the seed retry once the columns read has failed', async () => {
+    it('hides the seed retry while the columns read has failed', async () => {
       cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
       mocks.tagColumns.mockReset()
       mocks.tagColumns.mockResolvedValueOnce([]).mockRejectedValue(new Error('gateway busy'))
@@ -1006,8 +1006,14 @@ describe('ChatSidebar — header menu view + tag entries', () => {
       await settleSidebarReads()
       openHeaderMenu()
       fireEvent.click(await screen.findByText('Switch to board view'))
-      await screen.findByTestId('tag-columns-error')
-      expect(screen.getByRole('button', { name: 'Try again' })).toBeDisabled()
+      const notice = await screen.findByTestId('tag-columns-error')
+      await screen.findByTestId('lane-seed-error')
+      expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+      const retry = within(notice.parentElement as HTMLElement).getByRole('button', { name: 'Retry' })
+
+      mocks.tagColumns.mockResolvedValue([])
+      fireEvent.click(retry)
+      expect(await screen.findByRole('button', { name: 'Try again' })).toBeInTheDocument()
     })
 
     const REFUSED = Object.assign(new Error('owner only'), { status: 403, body: JSON.stringify({ code: 'owner_only' }) })

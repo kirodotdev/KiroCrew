@@ -1263,13 +1263,14 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
            * failure. It must not show under a toggle-SAVE failure: there its
            * "Try again" label would promise to retry the save but instead seed
            * lanes into a board the user never switched to (UX Review). The
-           * save-failure copy already carries its own next step. */}
-          {!toggleSaveFailed && (
+           * save-failure copy already carries its own next step. It also stays
+           * hidden until the columns read succeeds: seeding needs the loaded
+           * list, and while that read has failed its own Retry is the way on. */}
+          {!toggleSaveFailed && columnsReady && (
             <div>
               <Btn
                 type="button"
                 className="text-[12px] px-2 py-0.5"
-                disabled={!columnsReady}
                 onClick={() => { setSeedError(''); seedStateLanesMutation.mutate() }}
               >
                 {i18nT('pages.chatSidebar.lane_seed_retry')}
