@@ -6473,6 +6473,49 @@ Writers: `website/src/app-sdk/SessionChanges.tsx`, `website/src/app-sdk/SessionC
 `website/src/pages/chat/SessionFilesList.tsx`, `website/src/app-sdk/sdkLevel.ts`,
 `apps/app_sdk_level.py`.
 
+## 18m. `contributes.sessionCreateItems`: an app prepares the project before the session exists
+
+An app row in the Sessions **New** menu (the sidebar's split create button). The app
+does its own preparation (mount a filesystem, check out a worktree) and Kiro Crew
+then creates the person's session on the directory it prepared. The host renders
+and dispatches the row; no app markup or code runs in the menu.
+
+- **Manifest** (`SessionCreateItemsConfig` in `manifest_session_create.py`): at most
+  3 rows per app; `id` (kebab slug of at most 64, unique in the app), `label` (1-120
+  UTF-16 units), optional `icon` (a host glyph name, at most 120), `endpoint` (at most
+  512). A wrong type, an unknown key or a duplicate id refuses the install; a list
+  over the cap is refused with no row kept.
+  `AppManifest.validate` checks `endpoint` with `app_endpoint_allowed` WITHOUT the
+  proxy namespace: it must route under `/api/apps/<app>/`, with no traversal, no
+  other app and no core segment. The block is in the signing payload.
+- **Not a startup app.** The point names an app route, so it is not in
+  `startup_modules.BROWSER_ONLY_CONTRIBUTIONS`.
+- **Render** (`website/src/apps/sessionCreateContributions.tsx`): rows come from the
+  shared `['apps']` cache, enabled apps only, re-validated with the same rules (the
+  in-gateway `endpointAllowed` mirror of `fileMenuContributions.tsx`), capped before
+  validation. Each row names its app beside its label (`contributed_by`).
+- **Dispatch.** Picking a row re-reads the app list and finds the row again; a row
+  whose app is disabled or removed, or whose endpoint changed, calls nothing. The
+  host then POSTs `{ item_id }` to the endpoint (no session key, `redirect: 'error'`).
+  A 2xx answer must be `{ project_dir, title? }` with an absolute `project_dir`; the
+  host creates the session through `createSlot({ project, projectAtCreate: true,
+  title })`, which sends `project` on `POST /api/chat/slots` itself. The server judges
+  it as the project route judges a pick (`probe_project_dir`: real path, a directory,
+  not sensitive; then not inside the data home) and applies it before the session is
+  first published, so a refused directory never makes a session. On Windows a share
+  outside the gateway's own roots (`hooks.unc_probe_allowed`) is refused before any
+  probe, because the text can come from an app. The create runs with
+  `activate: false`; once it settles the session opens (`switchSlot`) only if the
+  person is still where they clicked, crew windows included.
+- **No session on failure.** An endpoint error, an unusable answer or a refused bind
+  leaves no session; the failure shows in the sidebar's existing New chat error
+  notice (`newChatError`).
+
+Writers: `apps/manifest_session_create.py`, `apps/manifest_contributes.py`,
+`apps/manifest.py`, `dashboard/chat_api/slot_create.py` (`_birth_project`),
+`website/src/apps/sessionCreateContributions.tsx`, `website/src/store/chat/lifecycle.ts`,
+`website/src/pages/chat-sidebar/create.ts`, `website/src/pages/chat-sidebar/SidebarHeader.tsx`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns
@@ -7174,6 +7217,7 @@ This section records which module owns which part, so a change lands in its owne
 | `manifest_sections.py` | The typed `app.json` blocks other than `contributes`: `CronEntry`, `UIConfig` with its pages, overlays and sidebar, `BackendConfig` with `HooksConfig`, `Permissions`, `SetupConfig`, `Dependencies`, `PlatformConfig`, `PublishProviderConfig` and `NotificationsConfig` |
 | `manifest_agent_tools.py` | The `agentTools` block: the MCP tools an app serves from its own process, their namespace, route, argument-schema subset and `strictSession` rules (§30.1) |
 | `manifest_memory_providers.py` | The `contributes.memoryProviders` block: the memory providers an app's backend serves, their id, route and display caps |
+| `manifest_session_create.py` | The `contributes.sessionCreateItems` block: Sessions New menu rows, their id, label, icon and endpoint, and the per-app cap (§18m) |
 | `manifest_contributes.py` | The `contributes` block: session controls, Command Bar commands and their argument, side-panel tabs, file-menu rows, `Contributes`, and the caps and grammars the dashboard mirrors for them |
 | `job_sdk.py` | The facade, plus `JobSDK`, the per-app `JobStore`, the process-wide SDK registry, the interruption message `reconcile` composes (`_interrupt_error`), the process identity (`_ORIGIN`) and the tunables only they read |
 | `job_sdk_records.py` | The run record (`JobRun`), its lifecycle states and interruption causes, the params bounds and the ingest redaction (`_validated_params`, `_redact`), the `JobHandle` a runner holds, and the Job SDK exceptions |
@@ -7182,8 +7226,9 @@ This section records which module owns which part, so a change lands in its owne
 
 Imports only point down. `manifest_sections` imports `KEBAB_RE` from `manifest_names`
 and `manifest_contributes` imports `MemoryProvidersConfig` from
-`manifest_memory_providers`; `manifest_containment`, `manifest_agent_tools`,
-`manifest_memory_providers`, `job_sdk_records`, `job_sdk_returns` and
+`manifest_memory_providers` and `SessionCreateItemsConfig` from
+`manifest_session_create`; `manifest_containment`, `manifest_agent_tools`,
+`manifest_memory_providers`, `manifest_session_create`, `job_sdk_records`, `job_sdk_returns` and
 `job_sdk_retention` import no owner, and no owner imports its facade, even for type checking. Each facade
 imports every name its owners define
 at its own import, private names included, so every `from kiro_crew.apps.manifest

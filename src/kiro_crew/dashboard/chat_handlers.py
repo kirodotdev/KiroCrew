@@ -271,6 +271,7 @@ from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
     api_chat_slot_project,
     api_chat_slot_reload,
     api_chat_slot_workspace,
+    probe_project_dir,
     reload_slot_session,
 )
 from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
@@ -302,6 +303,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
     _app_hides_own_mode,
     _birth_default_project,
+    _birth_project,
     _check_new_slot_assignment,
     _created_slot_row,
     _default_template_stamp,

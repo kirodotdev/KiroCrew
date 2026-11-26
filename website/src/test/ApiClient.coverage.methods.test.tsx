@@ -627,6 +627,8 @@ describe('every api method issues one well-formed /api request', () => {
       { id: 'send', app: 'doc-store', endpoint: '/api/apps/doc-store/send' },
       { surface: 'file-overflow', path: '/tmp/a.txt', kind: 'file' },
     ],
+    // `prepareAppSession(item)`: the URL is `item.endpoint`, as above.
+    prepareAppSession: [{ id: 'new-ws', endpoint: '/api/apps/doc-store/create' }],
     // `importSessionFromFile(file)` posts the file's BYTES as the request body,
     // deliberately un-wrapped. The generic `'sw-1'` would arrive as a STRING
     // body, which `call()` then tries to JSON-parse -- a harness artifact,

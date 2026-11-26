@@ -122,11 +122,14 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: substitution-nesting cap into ``security.deny_gate_nesting``, which the deny gate imports
 #: when the security package loads; the module count rose by that one file and nothing new
 #: loads.
+#: Raised by 1 for each server: the manifest's ``contributes`` block reads its Sessions New
+#: rows from the new owner ``apps.manifest_session_create``, which ``manifest_contributes``
+#: imports; the module count rose by that one file and nothing new loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 504,
-    "mcp-cron": 371,
-    "mcp-guide": 365,
-    "mcp-mate": 367,
+    "mcp-core": 505,
+    "mcp-cron": 372,
+    "mcp-guide": 366,
+    "mcp-mate": 368,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

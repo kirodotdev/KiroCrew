@@ -93,7 +93,7 @@ async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | un
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; startModeDefault?: boolean; prefill?: string; automatic?: boolean; projectFromSlot?: string } | string | undefined,
+  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; projectAtCreate?: boolean; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; startModeDefault?: boolean; prefill?: string; automatic?: boolean; projectFromSlot?: string } | string | undefined,
   { fulfilledMeta: Required<OriginMeta> & { activate: boolean; prefillStaged?: boolean; automatic?: boolean } }
 >(
   'chat/createSlot',
@@ -116,6 +116,9 @@ export const createSlot = createAsyncThunk<
     const explicitColor = typeof opts === 'string' ? undefined : opts?.color_index
     const explicitHex = typeof opts === 'string' ? undefined : opts?.color_hex
     const project = typeof opts === 'string' ? undefined : opts?.project
+    // `projectAtCreate` sends `project` on the create itself, so the server binds it
+    // before the chat is first published and a refused one leaves no chat behind.
+    const projectAtCreate = typeof opts === 'object' && opts.projectAtCreate === true && !!project
     // `activate: false` creates the session WITHOUT stealing focus, so a caller
     // that must finish setting the slot up (e.g. scoping it to a worktree) can
     // do so before the user is able to type into it. Defaults to true — every
@@ -155,7 +158,7 @@ export const createSlot = createAsyncThunk<
     // can read or write memory.
     let config: NewChatConfig | undefined
     const memory_mode = requestedMemoryMode || await resolveDefaultMemoryMode(async () => (config = await api.dashboardConfig() as NewChatConfig))
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder, typeof opts === 'string' ? undefined : opts?.projectFromSlot, startModeDefault)
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder, typeof opts === 'string' ? undefined : opts?.projectFromSlot, startModeDefault, ...(projectAtCreate ? [project as string] : []))
     // `crewModeDefault` is OPT-IN like `defaultFolder`: only the person's own New
     // chat entry points pass it, so an app's launch or a hand-off never lands on
     // the conductor.
@@ -223,7 +226,10 @@ export const createSlot = createAsyncThunk<
     // re-issue setSlotAgent here: that endpoint resets the project back to the
     // workspace default, which would clobber this carry. Agent rides the
     // create payload instead.)
-    if (project) {
+    if (project && projectAtCreate) {
+      // Bound by the create; the server's resolved path is the slot's own.
+      slot.project = slot.project || project
+    } else if (project) {
       slot.project = project
       // Await the scope on BOTH paths before publishing the slot. Publishing
       // (dashboardSlice's createSlot.fulfilled matcher) makes the slot

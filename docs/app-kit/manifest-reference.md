@@ -560,7 +560,8 @@ all of these hold:
   `screenshotsDark`, `heroImage`, `heroImageDark`, `heroImageDetail`,
   `heroImageDetailDark`, `highlights`, `useCases`, `configuration`, `ui`, `desktop`
   and `contributes`.
-  `contributes` may hold every point except `fileMenuItems`, `ui.overlays` must be
+  `contributes` may hold every point except `fileMenuItems` and
+  `sessionCreateItems`, `ui.overlays` must be
   empty, and the app must not manage its own resources. Any other key, including
   one added to the manifest format later, is refused.
 - The owner approved its startup entry at its current version and code, from a
@@ -973,6 +974,47 @@ traversal) is refused at install — the same allowlist `publishProvider` uses. 
 a signed app the rows are covered by the signature, because `endpoint` is where
 core sends the reader's chosen path. A stock build with no app declaring these
 renders nothing.
+
+### `contributes.sessionCreateItems` — Rows in the Sessions New Menu
+
+Declares rows an app adds to the Sessions **New** menu, for an app that must
+prepare a project (mount a filesystem, check out a worktree) before the session
+exists. Core draws each row with the app's name beside it; picking it POSTs to the
+app's own `endpoint`, and core then creates the session on the directory the
+endpoint returns.
+
+```json
+{
+  "contributes": {
+    "sessionCreateItems": [
+      {
+        "id": "new-workspace",
+        "label": "New workspace session",
+        "icon": "Package",
+        "endpoint": "/api/apps/workspace-manager/create"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `id` | string | Stable row id (lowercase kebab slug, at most 64 characters), unique within the app |
+| `label` | string | Row label, 1 to 120 characters (an app-owned literal) |
+| `icon` | string | Optional host glyph name, as for `fileMenuItems` |
+| `endpoint` | string | App route core POSTs to, at most 512 characters; **must** sit under `/api/apps/<your-app>/` (a `backend.hooks.routes` route). No traversal, no other app, no core route, and core does not follow a redirect |
+
+At most **3** rows per app. Rows of a disabled app are not shown.
+
+On activation core POSTs `{ item_id }` to `endpoint`. Answer `200` with
+`{ "project_dir": "<absolute path>", "title": "<optional>" }`. Core then creates
+the session on `project_dir` in one step, with the same checks a person's own
+project pick gets (it must resolve to an existing directory that is not a sensitive
+path or inside the Kiro Crew data home), so the session never exists on any other
+directory. An error status, an answer without an absolute `project_dir`, or a
+refused bind creates no session; the error shows where other New chat failures
+show. For a signed app the rows are covered by the signature.
 
 ## Store artwork
 

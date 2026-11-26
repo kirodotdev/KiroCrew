@@ -20,10 +20,25 @@ import { offlineMenuRow, offlineProps } from '../../utils/offline'
 import { isMateManaged } from '../../utils/mateFolders'
 import { errMessage } from '../../utils/thunkError'
 import { SidebarIdentityRow } from './SidebarIdentityRow'
+import { SessionCreateItemLabel, useSessionCreateItems, type SessionCreateItem } from '../../apps/sessionCreateContributions'
+
+/** The New menu rows enabled apps contribute; renders nothing when none do. */
+function AppSessionCreateRows({ connected, disabled, onPick }: { connected: boolean; disabled: boolean; onPick: (item: SessionCreateItem) => void }) {
+  const items = useSessionCreateItems()
+  return (
+    <>
+      {items.map(item => (
+        <DropdownMenuItem className="items-start" key={`${item.app}:${item.id}`} data-testid={`new-app-session-${item.app}-${item.id}`} disabled={disabled} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), item.label, () => { onPick(item) })}>
+          <SessionCreateItemLabel item={item} />
+        </DropdownMenuItem>
+      ))}
+    </>
+  )
+}
 
 /** The header row. */
 export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
-  const { boardLaneActive, cleanupOpen, collapseAllFolders, collapsible, connected, createChatInFolder, createChatMutation, createEphemeralChatMutation,
+  const { boardLaneActive, cleanupOpen, collapseAllFolders, collapsible, connected, createAppSessionMutation, createChatInFolder, createChatMutation, createEphemeralChatMutation,
     createRemoteChatMutation, creatingSlot, folderCleanupOpen, folderModeCompare, folderRowsDrawn, folders, isMobile,
     missingLanes, navigate, newChatMenuOpen, onMenuCloseAutoFocus, onOpenSlotInNewTab,
     paintedSidebarWidth, rawColumns, refuseCreateOffline, remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId,
@@ -218,6 +233,9 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                 <DropdownMenuItem className="items-start" data-testid="new-temporary-chat" disabled={creatingSlot} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_temporary_chat'), () => { createEphemeralChatMutation.mutate('temporary') })} {...uiLocation('sessions.create-menu.temporary')}>
                   <PrivateChatRow kind="temporary">{i18nT('pages.chatSidebar.new_temporary_chat')}</PrivateChatRow>
                 </DropdownMenuItem>
+                {/* Rows enabled apps contribute (`contributes.sessionCreateItems`):
+                 *  host-rendered, each naming its app. */}
+                <AppSessionCreateRows connected={connected} disabled={creatingSlot || createAppSessionMutation.isPending} onPick={item => { createAppSessionMutation.mutate(item) }} />
                 {/* Import creates a session too, so it sits with the create rows
                  *  rather than only in a per-session ⋯ menu that has to be opened
                  *  on some unrelated session first. */}

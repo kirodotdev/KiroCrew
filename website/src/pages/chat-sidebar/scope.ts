@@ -578,6 +578,7 @@ export interface SidebarScope {
   createChatMutation: ReturnType<typeof useSessionCreate>['createChatMutation']
   createRemoteChatMutation: ReturnType<typeof useSessionCreate>['createRemoteChatMutation']
   createEphemeralChatMutation: ReturnType<typeof useSessionCreate>['createEphemeralChatMutation']
+  createAppSessionMutation: ReturnType<typeof useSessionCreate>['createAppSessionMutation']
 
   // From `useNavigate`
   navigate: ReturnType<typeof useNavigate>
