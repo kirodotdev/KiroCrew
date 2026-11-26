@@ -32,7 +32,7 @@ def layout(tmp_path, monkeypatch):
     monkeypatch.setattr(session_mcp, "ensure_agent_materialized", lambda _agent: None)
     monkeypatch.setattr(session_mcp, "require_fresh_derived_spec", lambda *_a: None)
     monkeypatch.setattr(template_mcp_additions, "merge_at_spawn", lambda _agent, spec: spec)
-    monkeypatch.setattr(kas, "with_default_crew_servers", lambda _agent, spec: spec)
+    monkeypatch.setattr(kas, "with_default_crew_servers", lambda _agent, spec, **_kw: spec)
     return user, folder
 
 
