@@ -9749,6 +9749,7 @@
       "desktop_app_only": "Somente aplicativo desktop",
       "panel_toggles": "Alternar painéis",
       "unset": "Não definido",
+      "terminal_focus_only": "Somente em um terminal com foco",
       "save_refused": "Não foi salvo: o armazenamento do navegador está cheio. Libere espaço e tente novamente."
     },
     "sidePanelLayout": {
@@ -12385,6 +12386,7 @@
       "toggle_side_terminal": "Alternar terminal do painel lateral",
       "previous_terminal": "Terminal anterior",
       "next_terminal": "Próximo terminal",
+      "clear_terminal": "Limpar o terminal",
       "toggle_dictation_mute": "Silenciar ou ativar o ditado"
     },
     "useNativeNotification": {
@@ -22205,7 +22207,8 @@
         "clear_shortcut": "Limpar",
         "panel_toggles": "Alternar painéis",
         "skips_shell_hint": "Também funciona dentro do terminal, por isso o seu shell deixa de receber esta tecla — não escolha Ctrl+C nem Ctrl+R.",
-        "skips_shell_hint_mac": "Também funciona dentro do terminal, por isso o seu shell deixa de receber esta tecla — não escolha ⌃C (Ctrl+C) nem ⌃R (Ctrl+R)."
+        "skips_shell_hint_mac": "Também funciona dentro do terminal, por isso o seu shell deixa de receber esta tecla — não escolha ⌃C (Ctrl+C) nem ⌃R (Ctrl+R).",
+        "terminal_focus_hint": "Só funciona enquanto um terminal tem o foco, por isso pode partilhar uma tecla com Pesquisar em tudo. O seu shell deixa de receber esta tecla."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analisa cada sessão concluída e cria um rascunho de SKILL.md reutilizável quando ela demonstra um procedimento recorrente — um que uma sessão futura, trabalhando em um alvo diferente, executaria novamente. Desativado por padrão. Os rascunhos vão para a fila de pendentes em Personalizar → Habilidades para revisão — nada entra em vigor sem a sua aprovação (veja abaixo).",

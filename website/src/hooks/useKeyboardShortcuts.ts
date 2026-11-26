@@ -850,6 +850,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     'terminal-prev': onPrevTerminalTab,
     'terminal-next': onNextTerminalTab,
     'side-terminal': onToggleSideTerminal,
+    // Handled by the focused terminal (TERMINAL_FOCUS_PANEL_TOGGLE_IDS), never here.
+    'terminal-clear': undefined,
   }), [onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal, onCloseTerminalTab, onPrevTerminalTab, onNextTerminalTab, onToggleSideTerminal])
 
   const handler = useCallback((e: KeyboardEvent) => {

@@ -9515,6 +9515,7 @@
       "desktop_app_only": "Nur Desktop-App",
       "panel_toggles": "Panels umschalten",
       "unset": "Nicht festgelegt",
+      "terminal_focus_only": "Nur in einem fokussierten Terminal",
       "save_refused": "Nicht gespeichert: Der Browserspeicher ist voll. Gib etwas Speicher frei und versuche es erneut."
     },
     "sidePanelLayout": {
@@ -12111,6 +12112,7 @@
       "toggle_side_terminal": "Seitenpanel-Terminal umschalten",
       "previous_terminal": "Vorheriges Terminal",
       "next_terminal": "Nächstes Terminal",
+      "clear_terminal": "Terminal leeren",
       "toggle_dictation_mute": "Diktat stummschalten oder fortsetzen"
     },
     "useNativeNotification": {
@@ -21635,7 +21637,8 @@
         "clear_shortcut": "Leeren",
         "panel_toggles": "Panels umschalten",
         "skips_shell_hint": "Funktioniert auch im Terminal, sodass deine Shell diese Taste nicht mehr erhält — wähle nicht Strg+C oder Strg+R.",
-        "skips_shell_hint_mac": "Funktioniert auch im Terminal, sodass deine Shell diese Taste nicht mehr erhält — wähle nicht ⌃C (Strg+C) oder ⌃R (Strg+R)."
+        "skips_shell_hint_mac": "Funktioniert auch im Terminal, sodass deine Shell diese Taste nicht mehr erhält — wähle nicht ⌃C (Strg+C) oder ⌃R (Strg+R).",
+        "terminal_focus_hint": "Wirkt nur, solange ein Terminal den Fokus hat, und kann sich daher eine Taste mit „Überall suchen“ teilen. Deine Shell erhält diese Taste nicht mehr."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Jede abgeschlossene Sitzung analysieren und eine wiederverwendbare SKILL.md entwerfen, wenn die Sitzung ein wiederkehrendes Verfahren zeigt — eines, das eine künftige Sitzung an einem anderen Ziel erneut ausführen würde. Standardmäßig aus. Entwürfe werden in der Warteschlange unter „Anpassen → Fähigkeiten“ zur Überprüfung bereitgestellt — nichts geht ohne deine Genehmigung live (siehe unten).",

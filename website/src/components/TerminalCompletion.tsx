@@ -12,6 +12,9 @@ import { dropTerminalDataForThisKey, sendRawToTerminalSession } from '../utils/t
 import { isMac } from '../utils/platform'
 import { isChordLetter, terminalChord } from '../utils/terminalFullscreen'
 import { getTerminalFont } from '../hooks/useTerminalFont'
+import { SHORTCUTS_ENABLED_KEY } from '../hooks/useKeyboardShortcuts'
+import { isTerminalClearEvent } from '../lib/panelToggleShortcuts'
+import { safeGetItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
 import { apiTransport } from '../api/apiTransport'
@@ -535,6 +538,24 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
       if (Date.now() - imeEndAt.current < IME_GRACE_MS) {
         if (e.key === 'Enter') return true
         if (e.key === 'Tab') return claim(e)
+      }
+      // The user's "Clear terminal" chord (TERMINAL_FOCUS_PANEL_TOGGLE_IDS).
+      // `clear()` keeps the prompt row at fresh buffer coordinates and drops the
+      // scrollback. Re-keying its marker keeps command parsing on that row; the
+      // shell is not told, and cancelling the pending listing keeps an old-row
+      // response from reopening the menu.
+      if ((e.metaKey || e.ctrlKey || e.altKey)
+          && safeGetItem(SHORTCUTS_ENABLED_KEY) !== '0'
+          && isTerminalClearEvent(e)) {
+        const buf = term.buffer.active
+        const promptOffset = markers.current.get(buf.baseY + buf.cursorY)
+        close()
+        setReq(null)
+        term.clear()
+        markers.current.clear()
+        const cleared = term.buffer.active
+        if (promptOffset != null) markers.current.set(cleared.baseY + cleared.cursorY, promptOffset)
+        return claim(e)
       }
       // Ctrl+Shift+C copies the selection. Nothing in this app answers the
       // chord: xterm's evaluateKeyboardEvent yields no key for

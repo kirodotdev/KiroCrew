@@ -9749,6 +9749,7 @@
       "desktop_app_only": "Application de bureau uniquement",
       "panel_toggles": "Affichage des panneaux",
       "unset": "Non défini",
+      "terminal_focus_only": "Uniquement dans un terminal qui a le focus",
       "save_refused": "Non enregistré : le stockage du navigateur est plein. Libère de l’espace et réessaie."
     },
     "sidePanelLayout": {
@@ -12385,6 +12386,7 @@
       "toggle_side_terminal": "Afficher/masquer le terminal du panneau latéral",
       "previous_terminal": "Terminal précédent",
       "next_terminal": "Terminal suivant",
+      "clear_terminal": "Effacer le terminal",
       "toggle_dictation_mute": "Couper ou réactiver le micro de la dictée"
     },
     "useNativeNotification": {
@@ -22205,7 +22207,8 @@
         "clear_shortcut": "Effacer",
         "panel_toggles": "Affichage des panneaux",
         "skips_shell_hint": "Fonctionne aussi dans le terminal, donc votre shell ne reçoit plus cette touche — ne choisissez pas Ctrl+C ni Ctrl+R.",
-        "skips_shell_hint_mac": "Fonctionne aussi dans le terminal, donc votre shell ne reçoit plus cette touche — ne choisissez pas ⌃C (Ctrl+C) ni ⌃R (Ctrl+R)."
+        "skips_shell_hint_mac": "Fonctionne aussi dans le terminal, donc votre shell ne reçoit plus cette touche — ne choisissez pas ⌃C (Ctrl+C) ni ⌃R (Ctrl+R).",
+        "terminal_focus_hint": "Ne fonctionne que lorsqu’un terminal a le focus, et peut donc partager une touche avec Rechercher partout. Ton shell ne reçoit plus cette touche."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analyser chaque session terminée et rédiger un SKILL.md réutilisable lorsqu'elle démontre une procédure récurrente — une procédure qu'une session future, travaillant sur une autre cible, exécuterait à nouveau. Désactivé par défaut. Les brouillons sont placés dans la file d'attente de Personnaliser → Compétences pour relecture — rien n'est activé sans ton approbation (voir ci-dessous).",

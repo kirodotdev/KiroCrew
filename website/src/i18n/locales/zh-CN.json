@@ -9281,6 +9281,7 @@
       "desktop_app_only": "仅桌面应用",
       "panel_toggles": "面板开关",
       "unset": "未设置",
+      "terminal_focus_only": "仅在获得焦点的终端中",
       "save_refused": "未保存：浏览器存储空间已满。请释放一些空间后重试。"
     },
     "sidePanelLayout": {
@@ -11837,6 +11838,7 @@
       "toggle_side_terminal": "切换侧边面板终端",
       "previous_terminal": "上一个终端",
       "next_terminal": "下一个终端",
+      "clear_terminal": "清空终端",
       "toggle_dictation_mute": "切换听写静音"
     },
     "useNativeNotification": {
@@ -21065,7 +21067,8 @@
         "clear_shortcut": "清除",
         "panel_toggles": "面板开关",
         "skips_shell_hint": "在终端内也会生效，因此 shell 将不再收到该按键——请不要选择 Ctrl+C 或 Ctrl+R。",
-        "skips_shell_hint_mac": "在终端内也会生效，因此 shell 将不再收到该按键——请不要选择 ⌃C (Ctrl+C) 或 ⌃R (Ctrl+R)。"
+        "skips_shell_hint_mac": "在终端内也会生效，因此 shell 将不再收到该按键——请不要选择 ⌃C (Ctrl+C) 或 ⌃R (Ctrl+R)。",
+        "terminal_focus_hint": "仅在终端获得焦点时生效，因此可以与全局搜索共用同一按键。shell 将不再收到该按键。"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "分析每个已完成会话，当该会话展示出会复现的流程（即未来会话在处理不同目标时仍会再次执行的流程）时起草可复用 SKILL.md。默认关闭。草稿会暂存到“自定义 → 技能”的待审队列中供审阅 — 未经你批准不会生效（见下文）。",
