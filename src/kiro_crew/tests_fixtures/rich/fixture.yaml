@@ -27,7 +27,8 @@ description: |
   defaultEnabled false, and the gateway keeps an existing record's
   enabled state when it registers builtins at start):
     - design-tweak
-    - project-scaffolder
+    - project-scaffolder (with its owner-enable marker under
+      host-exec-grants/, which its two host routes require)
 
   SQLite stores (memory.db, memory_index.db) are intentionally omitted —
   vector-backed semantic memory and the event log bootstrap themselves

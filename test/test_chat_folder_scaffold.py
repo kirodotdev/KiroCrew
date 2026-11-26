@@ -29,7 +29,8 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from kiro_crew.apps.core_route_grants import RouteGrant
-from kiro_crew.apps.manager import enable_app, install_app
+from kiro_crew.apps.host_exec_grants import grant_host_exec
+from kiro_crew.apps.manager import INSTALLED_META_FILENAME, app_dir, enable_app, install_app
 from kiro_crew.dashboard import chat_folder_scaffold
 from kiro_crew.dashboard.chat_folder_scaffold import (
     MAX_REPORTED_UNKNOWN,
@@ -159,7 +160,7 @@ def _declaring_app(tmp_path: Path, name: str, api: list[str]) -> Path:
 
 class TestGrantFromARealRecord:
     """The gate end to end against real app records, so it is the declaration and
-    the owner's enable that open the routes, whatever the app is called."""
+    the owner's recorded enable that open the routes, whatever the app is called."""
 
     @pytest.fixture
     def home_state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -190,6 +191,39 @@ class TestGrantFromARealRecord:
             status, body = await _scan(client, root)
             assert status == 200, body
             assert body["status"] == STATUS_OK
+
+    @pytest.mark.asyncio
+    async def test_a_record_forged_enabled_is_refused_until_the_owner_enable_is_recorded(
+        self, home_state: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``installed.json`` is writable from the sandbox, so only the sealed owner-enable
+        marker opens the routes; both refusals keep the turned-off app's code and audit row."""
+        root = _sibling_repos(tmp_path / "work")
+        assert install_app(_declaring_app(tmp_path, "folder-maker", ["/api/project-scaffold"])).ok
+        events: list[dict[str, Any]] = []
+        audit = mock.Mock(log_api_access=lambda **kw: events.append(kw))
+        monkeypatch.setattr(chat_folder_scaffold, "sel", lambda: audit)
+        record = app_dir("folder-maker") / INSTALLED_META_FILENAME
+        async with TestClient(TestServer(_make_scaffold_app(home_state))) as client:
+            assert (await _scan(client, root))[1]["error"] == "app 'folder-maker' is not enabled"
+            forged = {**json.loads(record.read_text(encoding="utf-8")), "enabled": True}
+            record.write_text(json.dumps(forged), encoding="utf-8")
+            status, body = await _scan(client, root)
+            assert (status, body["code"]) == (403, "app_not_enabled")
+            assert body["error"] == (
+                "app 'folder-maker' reads enabled, but its enable was not recorded; "
+                "turn it off and on again"
+            )
+            assert grant_host_exec("folder-maker")
+            status, body = await _scan(client, root)
+            assert status == 200, body
+        denied = [e for e in events if e.get("outcome") == "denied"]
+        assert len(denied) == 2 and denied[0] == denied[1]
+        assert [denied[0][k] for k in ("operation", "resources", "error")] == [
+            "chat.folder_scaffold_disabled_app",
+            "/api/project-scaffold/scan",
+            "app is not enabled",
+        ]
 
     @pytest.mark.asyncio
     async def test_an_enabled_app_with_only_a_broad_entry_leaves_them_off(

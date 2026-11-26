@@ -8,21 +8,28 @@ the route asks :func:`core_route_grant` with its own path and namespace, and the
 answer is read from what the installed apps declare.
 
 The route is on while an enabled app holds an approved ``permissions.api`` entry
-that admits its path. That is the grant the app-token check honours
-(:mod:`kiro_crew.dashboard.token_auth_app_scope`): the live manifest's entries,
-less the ones an update added and the owner has not approved yet
-(:func:`~kiro_crew.apps.manager.staged_app_grants`), matched with the same matcher.
-So declaring the entry reaches nothing on its own: an install is approved at the
-owner's enable, and an entry an update adds waits on the app's page for the owner,
-as every other new ``permissions.api`` entry does.
+that admits its path, and the owner's enable of it is recorded. That is the grant the
+app-token check honours (:mod:`kiro_crew.dashboard.token_auth_app_scope`): the live
+manifest's entries, less the ones an update added and the owner has not approved yet
+(:func:`~kiro_crew.apps.manager.staged_app_grants`), matched with the same matcher,
+and honoured only while the sealed owner-enable marker stands
+(:func:`~kiro_crew.apps.host_exec_grants.host_exec_granted`).
+
+The marker, not the record, is the authority. ``apps/<name>/installed.json`` is
+writable from the sandbox, and an install stores the app's approved entries while it
+leaves the app off, so a record that reads enabled without the marker holds nothing.
+Only the owner's enable or registration writes the marker, and every disable and
+uninstall removes it. So declaring the entry reaches nothing on its own: an install is
+approved at the owner's enable, and an entry an update adds waits on the app's page for
+the owner, as every other new ``permissions.api`` entry does.
 
 One rule is narrower than the token check: only an entry at or under the route's
 own namespace counts. A broad entry (``/api``, ``/api/*``, ``*``) admits the path for
 that app's own token, but it names no feature, so it does not turn one on for the
 person.
 
-Every call reads the records, the manifests and the approved sets fresh, so a
-disable, an uninstall or an edit takes effect on the next request. Blocking disk
+Every call reads the records, the markers, the manifests and the approved sets fresh,
+so a disable, an uninstall or an edit takes effect on the next request. Blocking disk
 I/O: callers on the event loop offload it.
 """
 
@@ -31,6 +38,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from kiro_crew.apps.host_exec_grants import host_exec_granted
 from kiro_crew.apps.manager import (
     _recorded_app_names,
     apps_dir,
@@ -47,6 +55,7 @@ GRANT_FAMILY = "api"
 
 _HOLDS = "holds"
 _DISABLED = "disabled"
+_UNRECORDED = "unrecorded"
 
 
 @dataclass(frozen=True)
@@ -55,11 +64,14 @@ class RouteGrant:
 
     ``holder`` is the enabled app whose approved entry admits the path, ``""`` when
     there is none. ``disabled_declarers`` names, in app-name order, the installed apps
-    that declare such an entry but are turned off; it only words a refusal.
+    that declare such an entry but are turned off, and ``unrecorded_declarers`` the ones
+    whose record reads enabled and whose entry is approved but whose owner-enable marker
+    is missing. Both only word a refusal.
     """
 
     holder: str = ""
     disabled_declarers: tuple[str, ...] = ()
+    unrecorded_declarers: tuple[str, ...] = ()
 
 
 def _within(path: str, namespace: str) -> bool:
@@ -90,12 +102,14 @@ def entry_grants_route(entry: str, path: str, namespace: str) -> bool:
 
 
 def _app_answer(name: str, path: str, namespace: str) -> str:
-    """``_HOLDS``, ``_DISABLED`` or ``""`` for one installed app.
+    """``_HOLDS``, ``_DISABLED``, ``_UNRECORDED`` or ``""`` for one installed app.
 
     The manifest is read before ``enabled``, as
     :func:`~kiro_crew.apps.permissions.session_approval_denial_cause` documents, so
-    the enabled state judged is at least as new as the manifest it pairs with; the
-    approved set comes last, through the same read the token check makes.
+    the enabled state judged is at least as new as the manifest it pairs with. The
+    owner-enable marker is read next and the approved set last, through the same read
+    the token check makes; an approved entry without the marker only words the
+    refusal.
     """
     manifest = get_app_manifest(name)
     if manifest is None:
@@ -105,7 +119,10 @@ def _app_answer(name: str, path: str, namespace: str) -> str:
         return ""
     if not is_app_enabled(name):
         return _DISABLED
-    return _HOLDS if staged_app_grants(name, GRANT_FAMILY, lambda: declared) else ""
+    recorded = host_exec_granted(name)
+    if not staged_app_grants(name, GRANT_FAMILY, lambda: declared):
+        return ""
+    return _HOLDS if recorded else _UNRECORDED
 
 
 def core_route_grant(path: str, namespace: str) -> RouteGrant:
@@ -122,6 +139,7 @@ def core_route_grant(path: str, namespace: str) -> RouteGrant:
         logger.warning("Could not list the installed apps; %s stays off", path, exc_info=True)
         return RouteGrant()
     disabled: list[str] = []
+    unrecorded: list[str] = []
     for name in names:
         try:
             answer = _app_answer(name, path, namespace)
@@ -132,4 +150,6 @@ def core_route_grant(path: str, namespace: str) -> RouteGrant:
             return RouteGrant(holder=name)
         if answer == _DISABLED:
             disabled.append(name)
-    return RouteGrant(disabled_declarers=tuple(disabled))
+        elif answer == _UNRECORDED:
+            unrecorded.append(name)
+    return RouteGrant(disabled_declarers=tuple(disabled), unrecorded_declarers=tuple(unrecorded))

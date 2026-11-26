@@ -186,8 +186,17 @@ SCAFFOLD_API_NAMESPACE = "/api/project-scaffold"
 
 
 def _not_enabled_error(grant: RouteGrant) -> str:
-    """The advisory prose of the refusal: the app to turn on, when one declares it."""
+    """The advisory prose of the refusal: the app to turn on, when one declares it.
 
+    An app whose record reads enabled without the owner-enable marker comes first: it
+    looks on to the person, and turning it off and on again records the enable.
+    """
+
+    if grant.unrecorded_declarers:
+        return (
+            f"app {grant.unrecorded_declarers[0]!r} reads enabled, but its enable was not "
+            "recorded; turn it off and on again"
+        )
     if grant.disabled_declarers:
         return f"app {grant.disabled_declarers[0]!r} is not enabled"
     return "no enabled app is approved to use this route"
@@ -202,9 +211,10 @@ async def _refuse_without_app_grant(request: web.Request, resource: str) -> web.
     whose page calls them ships ``defaultEnabled: false``; without this check
     the scan (a read of any directory tree the caller names) and the create
     answer for a person who never turned such an app on. The grant is the
-    app's own declaration, read through the same approval the token check
-    honours, so an app gains these routes only by declaring them and having
-    the owner approve that. Same shape as the proxy's gate: an authorization
+    app's own declaration, read through the same approval and the same sealed
+    owner-enable marker the token check honours, so an app gains these routes
+    only by declaring them and having the owner enable it, never by a record
+    written from the sandbox. Same shape as the proxy's gate: an authorization
     decision, audited as denied, answered with 403 and a machine-readable code.
     """
 

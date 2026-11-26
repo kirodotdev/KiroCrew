@@ -6,7 +6,8 @@ declares and the owner approved, never from its name: an enabled app holding an
 approved ``permissions.api`` entry inside the route's namespace turns it on, a
 disabled one does not, an entry an update added waits for the owner as every new
 ``permissions.api`` entry does, and a broad entry that names no feature turns
-nothing on.
+nothing on. The owner's enable is the sealed owner-enable marker, never the
+sandbox-writable ``installed.json``: a record forged to read enabled holds nothing.
 """
 
 from __future__ import annotations
@@ -20,11 +21,14 @@ import pytest
 
 from kiro_crew.apps import core_route_grants as crg
 from kiro_crew.apps.core_route_grants import RouteGrant, core_route_grant, entry_grants_route
+from kiro_crew.apps.host_exec_grants import grant_host_exec, host_exec_granted, revoke_host_exec
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
+    INSTALLED_META_FILENAME,
     disable_app,
     enable_app,
     install_app,
+    is_app_enabled,
     uninstall_app,
     update_app,
 )
@@ -39,10 +43,10 @@ UNRELATED = "/api/sessions"
 
 
 @pytest.fixture(autouse=True)
-def app_home(tmp_path, monkeypatch):
+def app_home(tmp_path, _floor_monkeypatch):
     home = tmp_path / "kirocrew-home"
     home.mkdir()
-    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(home))
     (home / "config.json").write_text(
         json.dumps({"agent": {"apps_allow_third_party": True}}), encoding="utf-8"
     )
@@ -70,11 +74,20 @@ def _installed(tmp_path: Path, api: list[str], name: str = APP, *, enabled: bool
         assert enable_app(name).ok
 
 
+def _forge_enabled(name: str = APP) -> None:
+    """Write ``enabled: true`` into the app's own record, as a sandboxed shell can."""
+    path = Path(crg.apps_dir()) / name / INSTALLED_META_FILENAME
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["enabled"] = True
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+
 # ── who holds the route ──────────────────────────────────────────────────────
 
 
 def test_an_enabled_app_declaring_the_namespace_holds_both_routes(tmp_path):
     _installed(tmp_path, [UNRELATED, NAMESPACE])
+    assert host_exec_granted(APP), "the owner's enable records the owner-enable marker"
     assert core_route_grant(SCAN, NAMESPACE) == RouteGrant(holder=APP)
     assert core_route_grant(CREATE, NAMESPACE) == RouteGrant(holder=APP)
 
@@ -112,6 +125,60 @@ def test_any_enabled_declaring_app_holds_it_and_disabled_ones_are_listed(tmp_pat
     assert core_route_grant(SCAN, NAMESPACE).holder == "zz-app"
     assert disable_app("zz-app").ok
     assert core_route_grant(SCAN, NAMESPACE) == RouteGrant(disabled_declarers=(OTHER, "zz-app"))
+
+
+# ── the owner's enable is the sealed marker, not the record ─────────────────
+
+
+def test_a_record_forged_enabled_without_the_marker_holds_nothing(tmp_path):
+    """An install stores its approved entries and leaves the app off with no
+    marker; a sandboxed shell then flips the record. It reads enabled, and still
+    turns neither route on: the refusal says the enable was not recorded."""
+    _installed(tmp_path, [NAMESPACE], enabled=False)
+    _forge_enabled()
+    assert is_app_enabled(APP) and not host_exec_granted(APP)
+    assert core_route_grant(SCAN, NAMESPACE) == RouteGrant(unrecorded_declarers=(APP,))
+    assert core_route_grant(CREATE, NAMESPACE) == RouteGrant(unrecorded_declarers=(APP,))
+
+
+def test_an_enabled_record_with_the_marker_holds(tmp_path):
+    _installed(tmp_path, [NAMESPACE], enabled=False)
+    _forge_enabled()
+    assert grant_host_exec(APP)
+    assert core_route_grant(SCAN, NAMESPACE) == RouteGrant(holder=APP)
+
+
+def test_a_marker_on_a_disabled_record_holds_nothing(tmp_path):
+    _installed(tmp_path, [NAMESPACE], enabled=False)
+    assert grant_host_exec(APP)
+    assert core_route_grant(SCAN, NAMESPACE) == RouteGrant(disabled_declarers=(APP,))
+
+
+def test_a_forged_record_with_an_unapproved_entry_words_nothing(tmp_path):
+    """Without an approved entry the app could not hold the route even with the
+    marker, so the refusal does not tell the person to turn it off and on."""
+    _installed(tmp_path, [UNRELATED], enabled=False)
+    _forge_enabled()
+    manifest_path = Path(crg.apps_dir()) / APP / APP_MANIFEST_FILENAME
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    data["permissions"]["api"].append(NAMESPACE)
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert core_route_grant(SCAN, NAMESPACE) == RouteGrant()
+
+
+@pytest.mark.parametrize("recover", ["re-enable", "off and on"])
+def test_an_enable_from_before_the_marker_holds_again_once_the_owner_enables_it(tmp_path, recover):
+    """A record enabled before the marker shipped reads enabled with no marker: the
+    routes stay off until the owner enables the app again, which records it."""
+    _installed(tmp_path, [NAMESPACE])
+    revoke_host_exec(APP)
+    assert core_route_grant(SCAN, NAMESPACE) == RouteGrant(unrecorded_declarers=(APP,))
+
+    if recover == "off and on":
+        assert disable_app(APP).ok
+    assert enable_app(APP).ok
+    assert core_route_grant(SCAN, NAMESPACE) == RouteGrant(holder=APP)
 
 
 # ── the owner's approval ─────────────────────────────────────────────────────
