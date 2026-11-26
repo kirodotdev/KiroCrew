@@ -661,7 +661,13 @@ export function AboutPanelGatewayUpdates({
               button says the same thing twice. This mirrors the auto-update
               row above — a single explanatory label plus its control — and
               spends the space on the consequence instead. */}
-          <span className="text-sm text-muted">{i18nT('pages.settings.aboutPanel.restart_row_note')}</span>
+          {/* With an update armed, this restart is the step that starts the new
+              version, so "without updating" would say the opposite. */}
+          <span className="text-sm text-muted" data-testid="gateway-restart-row-note">
+            {armedVersion
+              ? i18nT('pages.settings.aboutPanel.restart_row_note_armed', { version: armedVersion })
+              : i18nT('pages.settings.aboutPanel.restart_row_note')}
+          </span>
           <div className="shrink-0">
             <RestartGatewayButton
               pending={gwRestart.isPending}

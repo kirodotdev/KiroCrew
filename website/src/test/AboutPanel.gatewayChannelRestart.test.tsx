@@ -584,6 +584,34 @@ describe('AboutPanel gateway restart', () => {
     await waitFor(() => expect(posts.some(p => p.url.includes('/api/restart'))).toBe(true))
   })
 
+  it('says the standing Restart starts the armed version, not "without updating"', async () => {
+    // Once an update is armed it applies at the next start, so this restart IS the update.
+    stubFetch()
+    seedStatus({
+      update_available: true,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
+      update_can_arm: true,
+      update_channel: 'nightly',
+      update_latest_version: '0.14.0.dev2',
+      update_armed_version: '0.14.0.dev2',
+    })
+    mountWeb()
+
+    const note = await screen.findByTestId('gateway-restart-row-note')
+    expect(note.textContent).toContain('0.14.0.dev2')
+    expect(note.textContent).not.toMatch(/without updating/i)
+  })
+
+  it('keeps the "without updating" note when nothing is armed', async () => {
+    stubFetch()
+    seedStatus({ update_channel: 'stable' })
+    mountWeb()
+
+    const note = await screen.findByTestId('gateway-restart-row-note')
+    expect(note.textContent).toMatch(/without updating/i)
+  })
+
   it('keeps the standing Restart when the installer card has no command', async () => {
     stubFetch()
     seedStatus({
