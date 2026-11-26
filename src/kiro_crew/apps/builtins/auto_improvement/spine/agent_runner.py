@@ -1372,6 +1372,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner_authoring import (  # noqa: F401
         _GIT_SAFE_CONFIG,
         _adopt_authored_test,
+        _raise_on_failed_status,
         _repro_test_dir,
         author_bug_fix,
         author_perf_fix,
