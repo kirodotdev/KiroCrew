@@ -672,6 +672,7 @@ export default function App() {
 
   return (
     <ZoomProvider>
+    {shell.tabTitle}
     <WsContext.Provider value={{ subscribeLogs, subscribeSubagents, forceReconnect }}>
     {/* A crew's pop-out framed by a desktop hub's window learns its host here;
         no-op when not framed. */}
