@@ -23,7 +23,10 @@ from kiro_crew.dashboard.effort_overlay_mark import (
     effort_overlay_clear_kwargs,
     settle_effort_overlay_clear,
 )
-from kiro_crew.dashboard.project_mcp_cards import offer_project_mcp_cards
+from kiro_crew.dashboard.project_mcp_cards import (
+    offer_cards_for_refused_start,
+    offer_project_mcp_cards,
+)
 from kiro_crew.dashboard.slot_queue_repository import UNREADABLE_SOURCE_CHANNEL
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.llm_helpers import _billing_stats
@@ -1189,9 +1192,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
                 raise
             _release_dispatch_lock(turn)
             _wait_if_busy = True
-        except BaseException:
+        except BaseException as exc:
             # A start that failed builds nothing: drop the memory read early for it.
             discard_memory_prefetch(slot.workspace or None, memory_store, message)
+            shown = await offer_cards_for_refused_start(state, slot, session_key, exc)
+            if shown is not None:
+                raise shown from exc
             raise
     # Registered: the switch handlers' busy scan sees this session from
     # here on, so the lock has done its job and the turn must not hold it.

@@ -43,18 +43,7 @@ async def offer_project_mcp_cards(
     """
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
     from kiro_crew.agent_sdk.capabilities import UNKNOWN_BACKEND_CAPABILITIES, capabilities_of
-    from kiro_crew.agent_sdk.project_mcp_holds import (
-        _READS_KIRO_PROJECT_FILE,
-        held_server_element,
-        project_hold,
-        server_name_notice,
-        unreadable_notice,
-    )
     from kiro_crew.agent_sdk.spec_hooks import session_agent
-    from kiro_crew.change_card_catalog import CardCatalogError
-    from kiro_crew.change_card_project_mcp import KIND_PROJECT_MCP_SERVER
-    from kiro_crew.dashboard.change_cards import CardError
-    from kiro_crew.dashboard.handlers.change_cards_propose import propose_in_slot
 
     folder = getattr(client, "cwd", "") or getattr(slot, "project", "") or ""
     caps = capabilities_of(client)
@@ -62,17 +51,63 @@ async def offer_project_mcp_cards(
     if not folder or caps is UNKNOWN_BACKEND_CAPABILITIES:
         return
     backend = caps.backend
-    runs = session_agent(client, agent)
     registered = (
         {"registered_agents": getattr(client, "kas_registered_agents", None)}
         if backend == ACP_BACKEND_KAS
         else {}
     )
+    await _offer(
+        state, slot, session_key, backend, session_agent(client, agent), folder, registered
+    )
+
+
+async def offer_cards_for_refused_start(
+    state: Any, slot: Any, session_key: str, exc: BaseException
+) -> BaseException | None:
+    """Propose the cards a chat refused for its held project servers needs.
+
+    *exc* is the start's failure. Only a ``ClaudeHeldProjectServersUnroutable``
+    raises cards: its chat starts once those servers are allowed. Returns that
+    refusal worded for the chat when at least one card is in it (naming the cards
+    alone only when every held server has one), else ``None`` (any other failure,
+    or no card shown), and the caller keeps *exc*.
+    """
+    from kiro_crew.agent_sdk.held_project_refusal import ClaudeHeldProjectServersUnroutable
+
+    if not isinstance(exc, ClaudeHeldProjectServersUnroutable) or not exc.folder:
+        return None
+    shown, held = await _offer(state, slot, session_key, exc.backend, exc.agent, exc.folder, {})
+    return exc.with_cards_shown(every_server=shown == held) if shown else None
+
+
+async def _offer(
+    state: Any,
+    slot: Any,
+    session_key: str,
+    backend: str,
+    runs: str,
+    folder: str,
+    registered: dict[str, Any],
+) -> tuple[int, int]:
+    """Raise the cards; return how many held servers have one in the chat, of how many."""
+    from kiro_crew.agent_sdk.project_mcp_holds import (
+        _READS_KIRO_PROJECT_FILE,
+        held_server_element,
+        project_hold,
+        server_name_notice,
+        unreadable_notice,
+    )
+    from kiro_crew.change_card_catalog import CardCatalogError
+    from kiro_crew.change_card_project_mcp import KIND_PROJECT_MCP_SERVER
+    from kiro_crew.dashboard.change_cards import CardError
+    from kiro_crew.dashboard.handlers.change_cards_propose import propose_in_slot
+
     try:
         hold = await asyncio.to_thread(project_hold, backend, runs, folder, **registered)
     except Exception:  # noqa: BLE001 - a card offer never fails the turn
         logger.debug("project MCP cards: check failed", exc_info=True)
-        return
+        return 0, 0
+    shown = 0
     notice = unreadable_notice(backend, hold)
     notices = [notice] if notice else []
     for i, server in enumerate(hold.pending):
@@ -97,7 +132,11 @@ async def offer_project_mcp_cards(
                 params=params,
                 reason=_reason(server),
             )
+            shown += 1
         except (CardError, CardCatalogError) as exc:
+            if exc.code == "duplicate_card":
+                # The same card is still waiting, and is drawn again at the end.
+                shown += 1
             if exc.code == "too_many_cards":
                 # The slot is at its live-card limit: each further try would only
                 # re-read the file to be refused, so stop and name the rest once.
@@ -130,3 +169,4 @@ async def offer_project_mcp_cards(
             append_and_surface(state, slot, "notice", f"⚠ {notice}", "msg msg-info")
         except Exception:  # noqa: BLE001 - a notice never fails the turn
             logger.debug("project MCP notice not shown", exc_info=True)
+    return shown, len(hold.pending)
