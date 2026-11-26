@@ -6,7 +6,7 @@ created: 2026-11-25
 last-audited: 2026-11-26
 audited-at: 867ca8eab20
 doc-pr: 42890
-implementation-prs: [42246, 42276, 42798]
+implementation-prs: [43031, 42798]
 tracking-issues: [42180, 42787]
 supersedes: []
 superseded-by: []
@@ -16,9 +16,9 @@ superseded-by: []
 
 **Status:** accepted. Accepted at team review, 2026-11-26 (maintainer Ray Xu). The document merged in
 [#42890](https://github.com/kirodotdev/KiroCrew/pull/42890). Nothing in this document is on main. The new Memory page it
-builds on is in draft PRs
-[#42246](https://github.com/kirodotdev/KiroCrew/pull/42246) and
-[#42276](https://github.com/kirodotdev/KiroCrew/pull/42276). The bot memory
+builds on, with its Graph tab (§8), is in
+[#43031](https://github.com/kirodotdev/KiroCrew/pull/43031), which squashes
+the earlier drafts #42246 and #42276. The bot memory
 tools in §7 are in [#42798](https://github.com/kirodotdev/KiroCrew/pull/42798).
 Every `file:line` below was read at `867ca8eab20` unless it names a branch.
 
@@ -90,7 +90,8 @@ Inspector (its `view` switch).
 - Changing what recall returns, how it ranks, or the decay formula.
 - Adding decay to V2 stores.
 - Changing the Memory page's records list (that is #42246 and #42276).
-- The Developer > Memory graph. It stays where it is.
+- Changing how the memory graph lays out or draws a store. §8 moves it, nothing
+  more.
 - Lessons in the bot memory card (follow-up named in #42787).
 
 ## 1. Every old field and where it goes
@@ -293,6 +294,28 @@ document does not re-decide it:
 The two review paths stay separate on purpose. Dreaming proposals wait on the
 Memory page because no person asked for them. Bot proposals answer a request in
 chat, so they appear in that chat.
+
+## 8. The memory graph moves to the Memory page
+
+Amended 2026-11-26. This section replaces the earlier non-goal that kept the
+graph under Settings > Developer > Memory.
+
+The memory graph becomes a Graph tab on the Memory page, after Memories, and
+the Developer > Memory entry goes away. An old `/settings/developer/memory`
+link opens `/settings/memory?focus=graph`.
+
+Why:
+
+1. One memory surface. Every place a person looks at what the bot remembers
+   is the Memory page; a second view under Developer split it in two.
+2. The graph shares the page's bot picker, so it draws the store being read
+   (`GET /api/memory/graph?store=`), not always Global memory.
+3. The graph hands records to the list: a click on a fact or lesson opens it
+   in Memories, and a box drawn on the canvas lists exactly that set there.
+
+Undo: put the Developer > Memory case back in `DeveloperPanel.tsx` and drop
+the Graph tab. The graph then draws Global memory again, with no hand-off to
+the list.
 
 ## Rollout
 
