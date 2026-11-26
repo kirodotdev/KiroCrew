@@ -82,4 +82,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # Owner gate, then the machine owner alone (crew_api_responses).
     # Contract test: test_crew_api_responses.py.
     ("POST", "/v1/responses"): RouteAccess("crew_api.responses.create", PREVIEW),
+    # Owner dashboard only (handlers/project_mcp_approve.py); the mcp.project_server
+    # card's Apply. Records the approval and restarts open chats.
+    ("POST", "/api/mcp/project-servers/approve"): RouteAccess(
+        "mcp.project_servers.approve", UNSTABLE
+    ),
 }

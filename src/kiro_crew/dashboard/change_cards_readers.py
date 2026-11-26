@@ -778,6 +778,10 @@ def _sync_read_state(
         from kiro_crew.dashboard.handlers.request_server_page import server_state
 
         return server_state(p["server"], p)
+    if kind == catalog.KIND_PROJECT_MCP_SERVER:
+        from kiro_crew.change_card_project_mcp import server_snapshot
+
+        return server_snapshot(p)
     if kind == catalog.KIND_MCP_ADD_CUSTOM:
         return {
             "exists": {name: _mcp_exists(name) for name in p["servers"]},

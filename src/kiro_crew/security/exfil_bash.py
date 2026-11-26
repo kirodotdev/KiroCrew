@@ -17,7 +17,12 @@ import re
 
 from kiro_crew import platform_compat
 
-from .denied_rules import _INERT_SEARCH_VERBS, BUILTIN_DENIED_RULES, _exception_eligible
+from .denied_rules import (
+    _INERT_SEARCH_VERBS,
+    _SHELL_TITLE_PREFIX,
+    BUILTIN_DENIED_RULES,
+    _exception_eligible,
+)
 from .shell_commands import pipelines as _pipelines
 from .shell_commands import read_commands as _read_commands
 
@@ -141,8 +146,20 @@ def _exfil_rule_id_for_match(label: str, matched: str, rule_ids: tuple[str, ...]
 # subcommand, so a `-d @` in it cannot reach an HTTP client.
 _DATA_EXFIL_FILE_BODY_RULE = "data-exfil-curl-file-body"
 
-#: `date` plus the inert-search verbs. `date` is local, not added to
-#: `_INERT_SEARCH_VERBS`, which must not grow the `rm -rf /` deny-exception.
+#: The catalog regex for the ``-d @`` / ``--data @`` file-body row. The deny
+#: gate's regex tier matches it as plain text, so a `curl --data-binary @` written
+#: inside a search PATTERN is refused there even though no curl runs. The same
+#: inert-line carve-out that relaxes the substring tier below is wired onto this
+#: pattern in ``deny_gate`` (see ``_file_body_narrows``), keyed off this string.
+_FILE_BODY_PATTERN = next(
+    rule.pattern for rule in BUILTIN_DENIED_RULES if rule.id == _DATA_EXFIL_FILE_BODY_RULE
+)
+
+#: `date` and the inert-search verbs (`grep`). Neither runs the `-d @` text it is
+#: handed as a program, so an invocation of one cannot reach an HTTP client. Search
+#: tools that can run another program -- `rg`, `ag`, `sed`, `awk`, `printf` -- are
+#: deliberately absent. These verbs are NOT added to `_INERT_SEARCH_VERBS`, which
+#: must not grow the `rm -rf /` deny-exception.
 _CARVEOUT_VERBS = frozenset((*_INERT_SEARCH_VERBS, "date"))
 
 
@@ -312,6 +329,26 @@ def _nc_redirect_line_allows(command: str) -> bool:
     return True
 
 
+def _file_body_line_is_inert(command: str) -> bool:
+    """Whether a ``-d @`` / ``--data @`` hit on *command* is a benign search, not
+    an upload: a single ``date``/``grep`` command, or a chain/pipe/quoted
+    ``$(…)``/locale-prefixed line every command of which runs nothing that could
+    reach an HTTP client. Shared by both tiers that enforce the file-body row --
+    the substring tier in :func:`audit_bash_exfiltration` and the catalog-regex
+    tier in :mod:`~kiro_crew.security.deny_gate`.
+
+    kiro-cli titles a shell call ``Running: <command>`` and the deny tiers judge
+    that title as a subject of its own, so one recognized display prefix is read
+    through before the inertness check -- the same way :func:`_exception_applies`
+    does. The caller still matches the original target for the deny and the audit;
+    only this inertness verdict reads past the prefix. Stripping it cannot widen
+    what passes: ``Running: curl --data @f`` strips to a non-inert ``curl`` line
+    and stays refused, and bash would run no program named ``Running:`` anyway."""
+    if command[: len(_SHELL_TITLE_PREFIX)].lower() == _SHELL_TITLE_PREFIX:
+        command = command[len(_SHELL_TITLE_PREFIX) :]
+    return _data_at_carveout_allows(command) or _inert_line_allows(command)
+
+
 def audit_bash_exfiltration(
     command: str, *, enabled_ids: "frozenset[str] | None" = None
 ) -> str | None:
@@ -356,9 +393,7 @@ def audit_bash_exfiltration(
             # once per command and reused).
             if rule_id == _DATA_EXFIL_FILE_BODY_RULE:
                 if carveout_allows is None:
-                    carveout_allows = _data_at_carveout_allows(command) or _inert_line_allows(
-                        command
-                    )
+                    carveout_allows = _file_body_line_is_inert(command)
                 if carveout_allows:
                     continue
             # Offsets into *command* itself: lowercasing can change a line's length.

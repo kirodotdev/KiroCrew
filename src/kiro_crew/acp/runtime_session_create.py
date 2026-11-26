@@ -17,7 +17,8 @@ Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe
 
 Instance fields read: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
 ``_crew_agent``, ``_dead``, ``_entitlement_probe_lock``, ``_expect_mcp_reports``,
-``_fold_mcp_frame``, ``_host_sends_mcp_init``, ``_initialized``, ``_kas_telemetry_sent``,
+``_fold_mcp_frame``, ``_hold_project_servers``, ``_host_sends_mcp_init``, ``_initialized``,
+``_kas_telemetry_sent``,
 ``_mcp_gateway_overlay``, ``_mcp_reports``, ``_member_context``, ``_model``, ``_open_mcp_report``,
 ``_pending_init_notifications``,
 ``_pid``, ``_pool_lookup``, ``_process``, ``_record_tree_in_background``,
@@ -76,6 +77,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_APPROVE_FOR_ME,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
+    ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     METHOD_SESSION_NEW,
     JsonRpcMessage,
 )
@@ -120,8 +122,8 @@ class AcpSessionStartTimeout(AcpRequestTimeout):
 AcpSessionStartTimeout.__module__ = "kiro_crew.acp.runtime"
 
 
-# Entitlement probe (probe_advertised_models). The probe session carries no MCP
-# servers and activates no mode, so it is far cheaper than a real session start;
+# Entitlement probe (probe_advertised_models). The probe session carries only
+# project-server refusal stubs and activates no mode, so it is cheaper than a chat;
 # the timeout is still generous because the probe runs exactly when something is
 # already wrong (a rejection is being revalidated) and a loaded host must not
 # turn a recoverable verdict into a spurious probe failure.
@@ -504,6 +506,10 @@ async def create_session(
     launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents) + crew_bridged
     # A worker stub whose server the payload's later read of the spec muted.
     mcp_servers = _drop_withdrawn_stubs(mcp_servers, kas_extras.withdrawn_stub_names)
+    # Before the exclusion prune, so a held name KAS does not load anyway is dropped.
+    mcp_servers = await self._hold_project_servers(
+        mcp_servers, active_agent, session_work_dir, kas_agents
+    )
     mcp_servers = without_excluded_stubs(mcp_servers, kas_agents)
     kas_agents, mcp_servers = hoist_servers_for_session(
         kas_agents,
@@ -579,6 +585,10 @@ async def create_session(
         )
         if meta is not None:
             params["_meta"] = {**(params.get("_meta") or {}), **meta}
+    if self.acp_backend in ACP_BACKENDS_SEED_LOCAL_SETTINGS:
+        from kiro_crew.agent_sdk.project_mcp_holds import hold_session_params
+
+        params = await hold_session_params(self.acp_backend, active_agent, params)
     # The policy the session was actually asked for, which KAS must acknowledge.
     kas_memory_mode = kas_memory.sent_memory_mode(params)
 
@@ -1435,8 +1445,8 @@ async def probe_advertised_models(
     or a cold start can answer with the default (free-tier) set. A long-lived
     session holding such an answer refuses models the account actually has,
     and nothing ever corrects it. This re-asks the question on the SAME live
-    process with a throwaway minimal session (no MCP servers, no mode
-    activation), terminated before returning.
+    process with a throwaway minimal session (only project-server refusal stubs,
+    no mode activation), terminated before returning.
 
     Single-flight + short TTL, on TWO clocks. A non-empty SUCCESS is replayed
     for :data:`_ENTITLEMENT_PROBE_TTL_SECS` (its result clock); an empty or
@@ -1501,11 +1511,17 @@ async def probe_advertised_models(
             return []
         if not self._initialized or self._dead or self._process is None:
             return []
-        params = build_session_new_params(await self._session_work_dir(), mcp_servers=[])
+        from kiro_crew.agent_sdk.project_mcp_holds import hold_session_params
+
         session_id = ""
         self._session_inits_in_flight += 1
         try:
             try:
+                params = await hold_session_params(
+                    self.acp_backend,
+                    self._agent,
+                    build_session_new_params(await self._session_work_dir(), mcp_servers=[]),
+                )
                 resp = await self._send_and_await(
                     METHOD_SESSION_NEW, params, timeout=_ENTITLEMENT_PROBE_TIMEOUT
                 )

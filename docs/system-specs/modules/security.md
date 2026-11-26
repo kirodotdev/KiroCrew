@@ -243,7 +243,93 @@ the owner-only `POST /api/mcp/project-file` (`dashboard.handlers.mcp_project_fil
 which accepts nothing but a confirmed card's step, so no caller chooses the folder;
 it refuses a link anywhere below the folder, and on POSIX it opens each folder on
 the way by descriptor with `O_NOFOLLOW`, so a link planted after the name check is
-refused too.
+refused too. After a write it records that server's launch as approved in the
+folder (the check below), so the next chat does not ask again for the launch the
+person just confirmed; a file rewritten in between stays held.
+
+Every session start also checks its folder's two files against a record of the
+servers the person approved there (`project_mcp_approvals`, kept at
+`~/.kiro/crew/mcp-launch-approvals/project-servers.json` inside the sealed launch-approvals
+directory, so only gateway code writes it). A server is approved per folder, per
+file and per launch: a digest of `command`, `args`, `env`, `url`, `type`,
+`headers` and `cwd`, so a tool switch is no new launch and any launch change asks
+again. The record keeps the command line, the URL and a digest of each env and header value,
+never the value. A server the host would start and the record does not approve is
+held (`agent_sdk.project_mcp_holds.held_project_servers`, one answer for all three
+readers): kiro-cli and KAS, for a spec that reads the file (`includeMcpJson`, or a
+KAS agent file on the earlier behaviour), get a server with no tools under that
+name in the session-level array (the `--refuse` stub), which outranks the file's
+entry; a name the spec defines itself is the spec's and is not held. KAS also
+counts every registered helper agent that reads the file. Claude Code
+gets the name in `disabledMcpjsonServers` only in the session's inline settings,
+which it reads as rejected even when Crew leaves the folder's settings file
+untouched. The shared settings seed carries no project-server holds. The chat then
+raises one `mcp.project_server` card per held server
+(`dashboard.project_mcp_cards`, a gateway-resolved kind no agent can propose). It
+shows the file, the launch and, for a changed server, the change; Apply posts
+`/api/mcp/project-servers/approve` (owner only, a change-card hooked route), which
+records the launch only while the file still holds the one the card showed (409
+otherwise), then restarts every open chat (`reset_sessions`). Decline
+cancels the card and writes no approval, so the next session in that folder raises it
+again. Once the chat holds `MAX_LIVE_CARDS_PER_SLOT` open
+cards, the offer stops and shows one notice per file with the count of servers still
+held, so a file with many servers costs at most that many card checks per new chat. The record keeps at most 4096 folders,
+256 servers per file, and 256 env keys, 256 header keys and 256 other fields per server. Folder paths
+are at most 4096 characters; server names and env/header keys are at most 256
+characters. The card and approve route use the same folder and server-name bounds.
+The fingerprint covers the whole entry except the fields that never change what a
+server launches or reaches (`mcp_cleanup.NOT_LAUNCH_KEYS`: `autoApprove`,
+`disabled`, `disabledTools`, `poolable`, `timeout`, `timeoutMs`), so adding or
+changing any other field, one Crew does not know included, asks again. The card
+shows each such field outside the command, URL, env, headers, `type` and `cwd` rows
+in a row of its own, named by the field. The record keeps a digest of each of
+those fields' values, never the value. The record also keeps a digest of the full
+command, arguments and URL, for the card's command comparison. The card shows the
+URL in its own row whenever the entry names one, and the command line whenever it
+names a command that is not blank (or names no URL), so an entry with both shows
+both; for a changed server each row shows its own before and after. A launch too
+long to show, or whose command or URL redaction would hide, cannot be approved
+from the card. The server stays held and the chat names the file: shorten oversized
+settings, or move secrets into env or headers, then start a new chat. Only the
+launch Allow would approve is checked; an earlier launch shows as "before" only.
+Gateway boot creates the record once,
+from only the folders in `recent_projects.json` when the gateway starts
+(`begin_boot_migration`): it checks the record's presence and reads that list off
+the event loop, then scans those folders on
+a tracked background task, so readiness does not wait for the scan. A session
+check waits up to 5 s (`MIGRATION_WAIT_SECS`) for that scan; if it has not
+finished or it failed, nothing counts as approved. This trusts, once and without
+a card, every server those known folders already name at the upgrade, so
+existing setups keep starting as before; a server added or changed after that
+asks. Session checks only read the
+record; an absent or unreadable record approves nothing. Approval also removes
+recorded names absent from the file's enabled servers. kiro-cli skips an entry
+that `disabled` mutes; Claude Code has no such field, so every `.mcp.json` entry
+counts as enabled. Every enabled server is checked regardless of the file's server
+count or name lengths. Each server with a usable name is held independently and the
+session starts. The one exception is a server name in the host's project MCP file
+that Kiro Crew cannot send unchanged: that folder's session is refused before the
+request is sent, and the chat names the file and asks the person to rename the
+server there, then start a new chat. KAS checks this regardless of the agent's
+`includeMcpJson` setting. Claude Code sessions whose existing `strictMcpConfig`
+excludes the project file still start; otherwise they receive the same refusal.
+No approval card is offered for an unusable name.
+A launch that cannot be fingerprinted stays held. A project MCP
+file that the credential-gated settings reader refuses is still read for its server
+names (`read_server_entries`). A failed folder check or agent-spec check uses the
+same names reader. Each read requires a fresh file-safety screen, a regular file
+inside the folder, and the bounded, no-follow open with descriptor validation.
+Every enabled name recovered after a failed check stays pending and gets the same
+hold and approval card as any other unapproved server. No unreadable-file notice
+is shown for a file whose names were recovered. When no names can be read, the
+file is held whole (`check_folder`, `project_hold`): a Claude Code session runs
+with `strictMcpConfig`, and a kiro-cli or KAS chat shows one notice naming the file
+and asking the person to fix or delete it, then start a new chat. A failed names
+read never prevents a session from starting. The hold covers every session the
+gateway opens in a folder, including model-entitlement probes and session restores.
+A probe uses its request's folder and carries the same refusal stubs or Claude Code
+inline project-server restrictions as a chat. The same unreadable-file limitations
+apply to probes.
 
 Every installed app's manifest, `<data home>/apps/<name>/app.json`, is sealed under
 the same decision (`app_manifest_files`): the gateway reads it to decide the MCP
@@ -5227,14 +5313,26 @@ variable, `--compress-program` runs one), nor is any `gh` call that can send a
 file. A backslash passes only where bash reads it as a plain character inside
 quotes, and never on a line that also holds `$(`, where the quoting starts over.
 
+The shared predicate (`exfil_bash._file_body_line_is_inert`) reads past one
+`Running: ` display prefix before the inertness check, the same way
+`_exception_applies` does, so an inert search is allowed on the kiro-cli
+permission-title path too; the caller still matches the original target for the
+deny and the audit. `rg` (ripgrep) and `ag` (the silver searcher) are NOT carve-out
+verbs, because each can run another program (ripgrep's `--pre`/`--hostname-bin`,
+the silver searcher's `--pager`), so a line naming the flag text could make them
+launch curl.
+
 A refusal by this gate gets its own guidance (`deny_guidance.DENY_CLASS_FILE_BODY_TEXT`):
 it keeps the upload answer and names the forms that pass. The gate's first line names
 no rule, so the guidance is chosen by the rule id on its own last diagnostic line
-(`diagnostics.refusal_rule_id`). The regex tier's row for the same id
-(`.*curl.*--?data…@.*`) has no inert-line carve-out, so a search line naming `curl`
-with a `--data @` form is still refused there; its refusal keeps the exfil-shape
-guidance, and the file-body guidance says to search for that pair with the
-file-search tool.
+(`diagnostics.refusal_rule_id`). The regex tier enforces the same id
+(`.*curl.*--?data…@.*`) in `is_denied`, and it applies the SAME inert-line carve-out:
+`deny_gate._file_body_narrows` runs the shared predicate and narrows the row (SEL
+exception mechanism `_FILE_BODY_SCOPE`) when the line is an inert search, for the
+shipped pattern only — an operator's own copy of the pattern keeps reading the full
+text — and never on Windows, where a script hook runs under cmd.exe and the bash
+reading does not apply. So on POSIX an inert `grep`/`date` search naming `curl` with
+a `--data @` form passes both tiers; on Windows the regex tier stays fail-closed.
 
 A file search is not a command line at all. A call whose host-trusted identity names
 the `grep` or `glob` built-in (`mcp_identity_trusted`, no server, the name in
