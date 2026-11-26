@@ -6,7 +6,7 @@ import {
   queryLocalFonts,
   queryLocalMonospaceFonts,
 } from '../utils/fontDetect'
-import { CUSTOM_FONT_CANDIDATES } from '../utils/customFontCandidates'
+import { customFontCandidatesFor } from '../utils/customFontCandidates'
 import { BUNDLED_WEB_FONT_FAMILIES } from '../utils/fontFamilyOptions'
 import type { LocalFontQuery } from '../utils/fontDetect'
 
@@ -51,7 +51,11 @@ export interface FontOptionsState {
   enumerate: () => void
 }
 
-export function useFontOptions(mode: 'mono' | 'all' = 'mono'): FontOptionsState {
+/**
+ * `language` is the UI language ('all' only): its own CJK faces lead the probed
+ * list, so the reader's script is at the top of the picker.
+ */
+export function useFontOptions(mode: 'mono' | 'all' = 'mono', language = ''): FontOptionsState {
   const [families, setFamilies] = useState<string[]>([])
   const [lastResult, setLastResult] = useState<FontOptionsState['lastResult']>('idle')
   const [accessSupported] = useState(() => isLocalFontAccessSupported())
@@ -63,7 +67,7 @@ export function useFontOptions(mode: 'mono' | 'all' = 'mono'): FontOptionsState 
       // appends the bundled web fonts the probe has not already found; 'mono' uses
       // detectInstalledFonts' default monospace list.
       const detected = mode === 'all'
-        ? [...new Set([...detectInstalledFonts(CUSTOM_FONT_CANDIDATES), ...BUNDLED_WEB_FONT_FAMILIES])]
+        ? [...new Set([...detectInstalledFonts(customFontCandidatesFor(language)), ...BUNDLED_WEB_FONT_FAMILIES])]
         : detectInstalledFonts()
       // An enumeration can land first; 'all' still lists the probed and bundled
       // rows, ahead of it.
@@ -83,7 +87,7 @@ export function useFontOptions(mode: 'mono' | 'all' = 'mono'): FontOptionsState 
     if (fonts) void fonts.ready.then(probe)
     else probe()
     return () => { cancelled = true }
-  }, [mode])
+  }, [mode, language])
 
   const enumerate = useCallback(() => {
     // Set before awaiting: where permission was already granted the query

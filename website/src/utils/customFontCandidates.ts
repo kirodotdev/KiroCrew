@@ -71,22 +71,90 @@ const PROPORTIONAL_FONT_CANDIDATES = [
   'Source Serif 4',
   'Noto Serif',
   'PT Serif',
-  // CJK-capable proportional faces.
-  'Noto Sans CJK SC',
-  'Source Han Sans',
-  'PingFang SC',
+]
+
+/**
+ * Regional CJK reading faces, one list per script so the picker can lead with
+ * the UI language's own faces. Each list runs macOS/iOS, then Windows, then the
+ * cross-platform and Linux faces. Japanese lists Meiryo ahead of Yu Gothic:
+ * Windows draws Yu Gothic Regular thin and faint at body sizes, which is what
+ * Japanese readers report as hard to read.
+ */
+const JAPANESE_FONT_CANDIDATES = [
+  'Hiragino Sans',
   'Hiragino Kaku Gothic ProN',
-  'Microsoft YaHei',
+  'Meiryo',
+  'Meiryo UI',
+  'Yu Gothic UI',
   'Yu Gothic',
+  'Yu Gothic Medium',
+  'BIZ UDPGothic',
+  'Noto Sans JP',
+  'Noto Sans CJK JP',
+  'Source Han Sans JP',
+  'IPAexGothic',
+]
+const SIMPLIFIED_CHINESE_FONT_CANDIDATES = [
+  'PingFang SC',
+  'Hiragino Sans GB',
+  'Microsoft YaHei',
+  'Microsoft YaHei UI',
+  'Noto Sans SC',
+  'Noto Sans CJK SC',
+  'Source Han Sans SC',
+  'WenQuanYi Micro Hei',
+]
+const TRADITIONAL_CHINESE_FONT_CANDIDATES = [
+  'PingFang TC',
+  'PingFang HK',
+  'Microsoft JhengHei',
+  'Microsoft JhengHei UI',
+  'Noto Sans TC',
+  'Noto Sans CJK TC',
+  'Source Han Sans TC',
+]
+const KOREAN_FONT_CANDIDATES = [
+  'Apple SD Gothic Neo',
   'Malgun Gothic',
+  'Noto Sans KR',
+  'Noto Sans CJK KR',
+  'Source Han Sans KR',
+  'Nanum Gothic',
 ]
 
 /**
  * Every family name worth probing for the custom-font picker, deduplicated and in
  * display order: proportional families first (the common case for a reading
- * surface), then the monospace candidates (Nerd Font builds included) for a user
- * who wants a coding or ligature font.
+ * surface), then the regional CJK faces, then the monospace candidates (Nerd Font
+ * builds included) for a user who wants a coding or ligature font.
  */
 export const CUSTOM_FONT_CANDIDATES: readonly string[] = Array.from(
-  new Set([...PROPORTIONAL_FONT_CANDIDATES, ...MONO_FONT_CANDIDATES]),
+  new Set([
+    ...PROPORTIONAL_FONT_CANDIDATES,
+    ...JAPANESE_FONT_CANDIDATES,
+    ...SIMPLIFIED_CHINESE_FONT_CANDIDATES,
+    ...TRADITIONAL_CHINESE_FONT_CANDIDATES,
+    ...KOREAN_FONT_CANDIDATES,
+    ...MONO_FONT_CANDIDATES,
+  ]),
 )
+
+/** The regional list for a BCP-47 UI language, or null outside ja/zh/ko. */
+function regionalCandidates(language: string): readonly string[] | null {
+  const tag = language.toLowerCase()
+  if (tag === 'ja' || tag.startsWith('ja-')) return JAPANESE_FONT_CANDIDATES
+  if (tag === 'ko' || tag.startsWith('ko-')) return KOREAN_FONT_CANDIDATES
+  if (/^zh-(tw|hk|mo|hant)\b/.test(tag)) return TRADITIONAL_CHINESE_FONT_CANDIDATES
+  if (tag === 'zh' || tag.startsWith('zh-')) return SIMPLIFIED_CHINESE_FONT_CANDIDATES
+  return null
+}
+
+/**
+ * `CUSTOM_FONT_CANDIDATES` with the UI language's own CJK faces moved to the
+ * top, so a Japanese reader opening the picker sees Meiryo and Hiragino first
+ * instead of below forty Latin faces.
+ */
+export function customFontCandidatesFor(language: string): readonly string[] {
+  const lead = regionalCandidates(language)
+  return lead ? Array.from(new Set([...lead, ...CUSTOM_FONT_CANDIDATES])) : CUSTOM_FONT_CANDIDATES
+}
