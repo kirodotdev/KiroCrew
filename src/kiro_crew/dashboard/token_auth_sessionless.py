@@ -48,7 +48,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.dashboard.origin import is_proxied_request
-from kiro_crew.dashboard.token_auth_callers import KNOWN_INTERNAL_CALLERS
+from kiro_crew.dashboard.token_auth_callers import KNOWN_INTERNAL_CALLERS, live_dashboard_mode
 from kiro_crew.executors import local_auth_executor
 from kiro_crew.sel import sel as _sel_fn
 
@@ -73,14 +73,7 @@ _sessionless_log_last: dict[tuple[str, str], float] = {}
 
 def sessionless_internal_call_mode() -> str:
     """The configured mode, from the live config; ``"log"`` when unset or unreadable."""
-    try:
-        from kiro_crew.config import live
-
-        cfg = live.snapshot()
-    except Exception:  # noqa: BLE001 - an unreadable config keeps the default
-        cfg = None
-    value = getattr(getattr(cfg, "dashboard", None), "sessionless_internal_calls", "log")
-    return value if value in SESSIONLESS_INTERNAL_CALL_MODES else "log"
+    return live_dashboard_mode("sessionless_internal_calls", SESSIONLESS_INTERNAL_CALL_MODES)
 
 
 def _platform_has_sandbox() -> bool:
