@@ -12887,6 +12887,7 @@
     "tool_access_tool_on_server": "Can use {{tool}} on {{server}}",
     "done_added": "Added {{count}} to {{name}}.",
     "done_approvals": "Tools under Auto-approvals now run without asking.",
+    "done_restart_required": "An MCP server this add copied reaches this bot's worker through the gateway only after you restart the gateway (Settings → About → Restart gateway).",
     "open_approvals": "Open Approvals",
     "group_directions": "Behavior directions",
     "change_replaced": "Replaces current",

@@ -24416,6 +24416,7 @@
     "retry": "重试",
     "done_added": "已向 {{name}} 添加 {{count}} 项。",
     "done_approvals": "“自动审批”下的工具现在会直接运行，无需询问。",
+    "done_restart_required": "这次添加复制的 MCP 服务器要等你重启网关（设置 → 关于 → 重启网关）后，才能通过网关提供给这个 Bot 的工作者。",
     "open_approvals": "打开审批",
     "group_directions": "行为指引",
     "change_replaced": "替换当前",

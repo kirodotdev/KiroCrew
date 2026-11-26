@@ -81,7 +81,7 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/dashboard/mate_user_actions.py` + `handlers/mate_terminal_run.py` | What the user did with a Bot's card or Run in terminal command, as one queued `[User action]` line on that Bot's own thread ("The user's answer reaches the Bot"); the route is `POST /api/chat/slots/{slot}/terminal-run` |
 | `src/kiro_crew/dashboard/handlers/crew_workers.py` | A conductor mode root's or a Bot thread's worker list (`GET /api/chat/slots/{slot}/crew-workers`), its timeline (`GET .../crew-timeline`) and the person's steer into one worker (`POST .../crew-workers/{worker}/steer`), owner only |
 | `src/kiro_crew/dashboard/handlers/crew_worker_status.py` | A worker's status in that list (approval, question card, running turn, idle, closed) and its side panel group, from real signals only |
-| `src/kiro_crew/crew_timeline.py` | The timeline's lanes, bars, marks, hand-offs and header, derived from recorded transcript rows only, and the named gaps it does not draw |
+| `src/kiro_crew/crew_timeline.py` | The timeline's lanes, bars, marks, hand-offs and header, derived from recorded transcript rows only, and the named gaps it does not draw; a lane's credits are the per-turn usage store's for its slot since its first loaded row (`add_billed_credits`), so a turn that ended with no reply still counts |
 | `src/kiro_crew/dashboard/handlers/agent_templates.py` | The Custom agents tab's roster (`/api/agents/templates`), create, delete with reference guard, and the read-only rule the detail PATCH applies to definition edits |
 | `src/kiro_crew/dashboard/handlers/agent_templates_unlisted.py` | The roster's `unlisted` list (the spec files it does not show although each still takes its stem), the delete's lookup of an unreadable file by its exact stem, and the `409 name_taken` sentence that names such a file |
 | `website/src/pages/overview/AgentTemplatesTab.tsx` | The **Custom agents** tab of `CapabilitiesPage` (Customize): list by origin, edit the shared definition, create, delete, chat-with / enroll (`EnrollAsBotDialog.tsx`: a Bot under a free name, then the agent's abilities added to it; the created Bot invalidates `['kirocrew-agents']` and `['kirocrewConfig']`) |
@@ -5567,6 +5567,12 @@ would refuse whole, `kas_tool_view.permissions_block_refusal`), and
 Bot's worker backend (`mate_worker.crewmate_worker_backend`) is not KAS. An apply that changes the file's hooks, permissions or tool settings
 reloads the Bot's live workers onto it (`crewmate_worker_reload`, a busy
 one at its turn end), since a live KAS session keeps the batch it registered.
+An apply that copies a gateway-routed server (the rewriter's own rule over
+`mcp_gateway.stub_servers`) writes the file inside the gateway's overlay refresh,
+as the capabilities change card's save does
+([mcp](../../architecture/mcp.md#bot-overlays)), and reloads the workers the same
+way; when the refresh does not publish that server's stub, it answers
+`gateway_restart_required: true`.
 Other refusals: `not_a_mate_file`,
 `template_unreadable`, `template_required`, `revision_required`,
 `invalid_spec`, and `503 capabilities_unavailable` for a GET whose read did
@@ -5588,7 +5594,8 @@ only for `mode: "mate"`): picking an agent previews at once. A `stale_revision`
 or `revision_required` apply makes a fresh preview for the same agent and keeps
 the reason above it, because re-picking the same agent fires no change; a failed
 preview offers **Try again** and **Cancel**. A finished add says so under the
-picker ("Added N to <name>."), and when it granted auto-approvals it says those
+picker ("Added N to <name>."), says a gateway restart is needed after an apply
+that answered `gateway_restart_required`, and when it granted auto-approvals it says those
 tools now run without asking and offers **Open Approvals**, a button with an
 opaque `--bg-elevated` fill and a `--border-strong` edge so it reads on the green
 tint before any hover. Its rows name items through
@@ -5596,9 +5603,10 @@ tint before any hover. Its rows name items through
 counted heading, added before skipped (`components/crew/workerKitGroups.ts`),
 each change word a badge tinted by its hue with a hue-coloured glyph, the word
 itself in `--text`; a tool selector reads as what the worker can use ("Can use
-every jira tool"). An add changes only the file: a running worker keeps the
-abilities it started with (`acp/harness/kas.mate_worker_projection` reads the
-file at session start). Every "Built from" shows a template's name, never an id
+every jira tool"). An add changes the file, and the Bot's gateway overlay when
+it copies a gateway-routed server and the gateway's refresh applies: a running
+worker keeps the abilities it started with unless the add reloads it (above), since
+`acp/harness/kas.mate_worker_projection` reads the file at session start. Every "Built from" shows a template's name, never an id
 (`components/crew/builtFromName.ts`); a Bot that owns its file shows the
 generic "Mate" label (`builtFromName.mateAbilitiesLabel`). The Abilities
 section and its Tools / MCP Servers / Skills / Resources lists read one set,

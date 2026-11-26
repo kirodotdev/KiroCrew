@@ -1439,6 +1439,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         dynamic_dashboard_cards=section.read("dynamic_dashboard_cards", _safe_bool),
         audit_secret_reads=section.read("audit_secret_reads", _safe_bool),
         sessionless_internal_calls=section.get("sessionless_internal_calls"),
+        unattested_session_keys=section.get("unattested_session_keys"),
         turn_cache_estimate=section.read("turn_cache_estimate", _safe_bool),
         qr_session_until_restart=section.read("qr_session_until_restart", _safe_bool),
         qr_session_persist_across_restart=section.read(

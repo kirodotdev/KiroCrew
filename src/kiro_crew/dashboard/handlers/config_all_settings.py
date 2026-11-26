@@ -96,6 +96,9 @@ READONLY_REASONS: dict[str, str] = {
     # Whether a session-less internal call from a sandboxed process is refused
     # (dashboard/token_auth_sessionless.py): only the operator turns it.
     "dashboard.sessionless_internal_calls": WHY_REACH,
+    # Whether an unattested declared session key over TCP is refused
+    # (token_auth_callers.unattested_session_key_mode): only the operator turns it.
+    "dashboard.unattested_session_keys": WHY_REACH,
     # The decision judge's provider timeout: its owner control lives behind the
     # consent route, not in config.json.
     "decisions.provider.timeout_ms": WHY_OWNED,

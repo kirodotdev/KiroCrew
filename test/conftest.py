@@ -411,6 +411,7 @@ from conftest_resets_relay_client import (  # noqa: E402,F401 -- bound for pytes
     _reset_unsaved_relay_instance_ids,
 )
 from conftest_resets_search import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_chat_search_cache_stores,
     _reset_search_shown_text_memo,
 )
 from conftest_resets_shared_crew import (  # noqa: E402,F401 -- bound for pytest and importers

@@ -34,3 +34,33 @@ def _reset_search_shown_text_memo():
         yield
     finally:
         clear()
+
+
+@per_test_guard
+def _reset_chat_search_cache_stores():
+    """Start each test with no chat history search cache store open.
+
+    ``chat_search_cache`` keeps one store per sessions directory (``_stores``,
+    emptied by ``reset_stores``) with its open
+    SQLite connections and the transcript revision each chat was last brought to,
+    and ``chat_history_cached`` keeps the builds in flight. A store one test left
+    would hold a connection into that test's removed ``tmp_path``.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.chat_search_cache")
+        if module is not None:
+            module.reset_stores()
+        glue = sys.modules.get("kiro_crew.dashboard.chat_history_cached")
+        if glue is not None:
+            glue._updates.clear()
+            executor, glue._executor = glue._executor, None
+            if executor is not None:
+                # A build a test left running finishes before the next test.
+                executor.shutdown(wait=True)
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()

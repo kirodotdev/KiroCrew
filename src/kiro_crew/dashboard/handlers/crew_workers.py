@@ -1270,6 +1270,7 @@ async def api_crew_timeline(request: web.Request) -> web.Response:
         # The closed conductor's lane comes first, as a live one does.
         lanes[:0] = await asyncio.to_thread(closed_lanes, [root], "conductor")
     lanes.extend(await asyncio.to_thread(closed_lanes, closed, "worker"))
+    await asyncio.to_thread(crew_timeline.add_billed_credits, lanes, now=now)
     no_record = any(lane.get("record") is False for lane in lanes)
     live = any(lane["running"] or lane["waiting"] for lane in lanes)
     # Off the event loop like the lane derivation: pairing scans every seed

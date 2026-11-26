@@ -1152,34 +1152,69 @@ def _route_template(request: web.Request) -> str:
     return canonical if isinstance(canonical, str) and canonical else "unmatched"
 
 
-async def _note_unattested_tcp_session_key(request: web.Request) -> None:
-    """Log and count an internal TCP request whose declared session key is unattested.
+def live_dashboard_mode(name: str, modes: Sequence[str], default: str = "log") -> str:
+    """``dashboard.<name>`` from the config in force now; *default* when unset or invalid.
+
+    Read through :func:`kiro_crew.config.live.current`: the watcher's snapshot once
+    primed, and before that (the boot window) a disk load, so an operator's
+    ``"enforce"`` holds from the first request. When the disk read fails too, a
+    default config stands in, so an unreadable config yields *default* -- it never
+    starts refusing and never stops the gateway.
+    """
+    try:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg: Any = live.current(KiroCrewConfig(), log_prefix="token_auth")
+    except Exception:  # noqa: BLE001 - an unreadable config keeps the default
+        cfg = None
+    value = getattr(getattr(cfg, "dashboard", None), name, default)
+    return value if value in modes else default
+
+
+def unattested_session_key_mode() -> str:
+    """``dashboard.unattested_session_keys``: ``"log"`` (default) or ``"enforce"``.
+
+    ``"log"`` is today's behaviour -- :func:`_note_unattested_tcp_session_key`
+    records the request and it is answered as before. ``"enforce"`` is the opt-in
+    that refuses it. Read from the live config on each call (the on-disk value
+    before the watcher is primed); ``"log"`` when unset or unreadable, so a broken
+    config never starts refusing.
+    """
+    return live_dashboard_mode("unattested_session_keys", ("log", "enforce"))
+
+
+async def _note_unattested_tcp_session_key(request: web.Request) -> bool:
+    """Log an internal TCP request whose declared session key is unattested; say so.
 
     The internal secret proves a request came from this machine, not which session
     sent it, and on TCP loopback no kernel peer check runs, so the app claim
     :func:`_derive_internal_caller_app` publishes rests on the caller's own
     ``X-Session-Key``. The attestation a strict check would require is
-    :func:`~kiro_crew.member_memory_auth.session_key_is_attested`. This only
-    records the requests that check would refuse; it decides nothing, and the
-    request is answered exactly as before.
+    :func:`~kiro_crew.member_memory_auth.session_key_is_attested`. This records the
+    requests that check would refuse and returns ``True`` for them, so the caller
+    refuses when ``dashboard.unattested_session_keys`` is ``"enforce"``; the logging
+    and counting are unchanged, and in the default ``"log"`` mode the request is
+    still answered exactly as before.
 
     ``dashboard:ui`` and a blank key are exempt: they derive no app claim. The line
     names the key's kind, the internal caller, the route template and whether a
-    token was sent, never the key, the token, the secret or the query string.
+    token was sent, never the key, the token, the secret or the query string. A
+    check that raises returns ``False`` -- an internal error never starts refusing.
     """
     try:
         key = request.headers.get("X-Session-Key", "")
         if not isinstance(key, str):
-            return
+            return False
         key = key.strip()
         if not key or key == "dashboard:ui":
-            return
+            return False
         # With no token there is nothing to verify and the answer is "unattested", so
         # the common tokenless case pays no thread hop and no file read. The token
         # branch does blocking file I/O, so it runs off the event loop.
         if request.headers.get("X-Session-Token") or request.get("peer_verified") is True:
             if await asyncio.to_thread(session_key_is_attested, request, key):
-                return
+                return False
         caller = (request.headers.get("X-Internal-Caller") or "").strip()
         bucket = (
             _session_key_kind(key),
@@ -1189,22 +1224,23 @@ async def _note_unattested_tcp_session_key(request: web.Request) -> None:
         _WOULD_REFUSE_COUNTS[bucket] += 1
         now = time.monotonic()
         last = _would_refuse_log_last.get(bucket)
-        if last is not None and now - last < _WOULD_REFUSE_LOG_INTERVAL_SECS:
-            return
-        _would_refuse_log_last[bucket] = now
-        token = "unverified" if request.headers.get("X-Session-Token") else "absent"
-        logger.warning(
-            "would refuse: internal request over tcp declared a session key that no "
-            "transport attests (kind=%s, caller=%s, route=%s %s, session token %s); allowed, "
-            "this check only logs. %d such requests for this kind, caller and route "
-            "since start; repeats are suppressed for %ds.",
-            bucket[0],
-            bucket[1],
-            request.method[:16],
-            bucket[2],
-            token,
-            _WOULD_REFUSE_COUNTS[bucket],
-            int(_WOULD_REFUSE_LOG_INTERVAL_SECS),
-        )
-    except Exception:  # noqa: BLE001 - a log-only check must never change the answer
+        if last is None or now - last >= _WOULD_REFUSE_LOG_INTERVAL_SECS:
+            _would_refuse_log_last[bucket] = now
+            token = "unverified" if request.headers.get("X-Session-Token") else "absent"
+            logger.warning(
+                "would refuse: internal request over tcp declared a session key that no "
+                "transport attests (kind=%s, caller=%s, route=%s %s, session token %s); "
+                "%d such requests for this kind, caller and route since start; repeats are "
+                "suppressed for %ds.",
+                bucket[0],
+                bucket[1],
+                request.method[:16],
+                bucket[2],
+                token,
+                _WOULD_REFUSE_COUNTS[bucket],
+                int(_WOULD_REFUSE_LOG_INTERVAL_SECS),
+            )
+        return True
+    except Exception:  # noqa: BLE001 - this check must never change the answer on error
         logger.debug("would-refuse session-key check failed", exc_info=True)
+        return False

@@ -328,6 +328,19 @@ class DashboardConfig:
             enum=["log", "enforce"],
         ),
     )
+    unattested_session_keys: str = field(
+        default="log",
+        metadata=_meta(
+            "Unattested session-key internal calls",
+            "What the gateway does with an internal call over loopback TCP that declares "
+            "a session key no transport can prove is the caller's own (no kernel peer "
+            "attestation and no valid session token). 'log' (today's behavior) records the "
+            "request and answers it as before; 'enforce' refuses it with 403. A blank key "
+            "and 'dashboard:ui' are exempt. Stays 'log' until the log shows which callers "
+            "would be refused. Takes effect on the next call; no restart.",
+            enum=["log", "enforce"],
+        ),
+    )
     turn_cache_estimate: bool = field(
         default=False,
         metadata=_meta(

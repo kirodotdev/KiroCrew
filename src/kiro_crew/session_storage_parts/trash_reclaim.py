@@ -84,9 +84,19 @@ def _purge_search_index(stems: list[str]) -> bool:
     file moves; the background indexer takes the same lock, so it cannot write the row
     back in between. A missing index is not created (no copy to remove); one that
     exists but will not open is a refusal, since unprovable removal is not removal.
+
+    The chat history search cache keeps the same text, redacted, by stem. Its drop
+    runs before the files move and marks *stems* trashed, so no cache build starts
+    on them between this call and the move; that stays until restore
+    (``trash_restore``) or until the caller finds the session left in place, which
+    each clears with ``chat_search_cache.untrash``.
     """
     if not stems:
         return True
+    from kiro_crew import chat_search_cache
+
+    if not chat_search_cache.drop(_crew_sessions_dir(), stems, trashed=True):
+        return False
     db_path = _crew_sessions_dir() / ".index" / INDEX_FILENAME
     if not db_path.exists():
         return True
@@ -286,6 +296,8 @@ def _move_to_trash_locked(
     # Sessions left in place because the search index kept its copy of their text;
     # reported like ``revived``, since doing less than asked silently is a defect.
     refused_index: list[str] = []
+    # ``(uid, stems)`` of each session whose search cache drop marked it trashed.
+    purged: list[tuple[str, tuple[str, ...]]] = []
     refresh_failed = False
     staged_dirs: set[Path] = set()
     source_dirs: set[Path] = set()
@@ -333,6 +345,7 @@ def _move_to_trash_locked(
             with ExitStack() as unit_locks:
                 for stem in sorted(unit.stems):
                     unit_locks.enter_context(log._locked(stem))
+                purged.append((uid, unit.stems))
                 if not _purge_search_index(list(unit.stems)):
                     logger.warning(
                         "could not remove the search index copy for %r; not moving it", uid
@@ -545,6 +558,15 @@ def _move_to_trash_locked(
         # Inside the handle's scope, so the manifest can still be synced through the
         # descriptor that wrote it. Closing only flushes to the OS.
         _sync_batch(target, staged_dirs, manifest, source_dirs)
+
+    # A session left in place keeps its transcript in the sessions directory, so
+    # its chat may be cached again. One that raised out of the loop stays marked,
+    # which only keeps its search on the paged scan until a restart.
+    from kiro_crew import chat_search_cache
+
+    kept = [stem for uid, stems in purged if uid not in moved for stem in stems]
+    if kept:
+        chat_search_cache.untrash(_crew_sessions_dir(), kept)
 
     if revived:
         # Reported, not just skipped: the endpoint's own rule is that doing less

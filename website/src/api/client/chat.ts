@@ -81,6 +81,9 @@ export interface ChatHistoryCountsResponse {
   total: number
   /** False when the server stopped at its row budget before the first row. */
   complete: boolean
+  /** True while the chat's search cache is being built: these counts came
+   *  from a row walk, and a read once the build is done can differ. */
+  indexing?: boolean
 }
 
 export interface ChatHistoryAroundResponse {

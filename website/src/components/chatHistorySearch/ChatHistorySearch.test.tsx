@@ -283,6 +283,46 @@ describe('ChatHistorySearch', () => {
     expect(screen.queryByTestId('chat-history-tab-count-links')).toBeNull()
   })
 
+  it('reads the counts again while the chat is being indexed, until it is not', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(NOW)
+    mocks.chatHistoryCounts
+      .mockResolvedValueOnce({ counts: { '': 3 }, total: 50, complete: true, indexing: true })
+      .mockResolvedValueOnce({ counts: { '': 3 }, total: 50, complete: true, indexing: true })
+      .mockResolvedValue({ counts: { '': 40, links: 7 }, total: 50, complete: true })
+    const { input } = open()
+    fireEvent.change(input, { target: { value: 'plum' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+    expect(mocks.chatHistoryCounts).toHaveBeenCalledTimes(1)
+    // 1 s, then 2 s later: the third reply is the built cache's.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(mocks.chatHistoryCounts).toHaveBeenCalledTimes(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(mocks.chatHistoryCounts).toHaveBeenCalledTimes(3)
+    // The reply lands, then the tabs render it.
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    expect(screen.getByTestId('chat-history-tab-count-all')).toHaveTextContent('40')
+    expect(screen.getByTestId('chat-history-tab-count-links')).toHaveTextContent('7')
+    // A reply without `indexing` ends the re-reads.
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(mocks.chatHistoryCounts).toHaveBeenCalledTimes(3)
+  })
+
+  it('stops reading the counts again after three tries', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(NOW)
+    mocks.chatHistoryCounts.mockResolvedValue({ counts: { '': 3 }, total: 50, complete: true, indexing: true })
+    const { input } = open()
+    fireEvent.change(input, { target: { value: 'plum' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+    for (const wait of [1000, 2000, 4000]) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(wait) })
+    }
+    expect(mocks.chatHistoryCounts).toHaveBeenCalledTimes(4)
+    await act(async () => { await vi.advanceTimersByTimeAsync(50_000) })
+    expect(mocks.chatHistoryCounts).toHaveBeenCalledTimes(4)
+  })
+
   it('keeps the list and flags a failed count read through ErrorNotice', async () => {
     mocks.chatHistoryCounts.mockRejectedValue(new Error('503'))
     const { input } = open()

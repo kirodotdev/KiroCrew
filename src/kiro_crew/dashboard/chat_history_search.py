@@ -51,6 +51,7 @@ from kiro_crew.messaging.outbound_files import (
     iter_local_refs,
     local_destination,
 )
+from kiro_crew.search_shown_text import shown_text
 from kiro_crew.security import redact
 from kiro_crew.validation import sanitize_string
 from kiro_crew.widget_parse import is_markdown_widget_body, parse_widgets
@@ -344,12 +345,14 @@ def _without_widgets(content: str, widgets: list) -> str:
 class _Row:
     """What one transcript row carries, read once: the text a query matches, the
     excerpt source, and each attachment kind. ``kinds`` names every ``kind``
-    filter the row passes ("" always)."""
+    filter the row passes ("" always); ``art`` is every saved-artifact link in
+    the prose as ``(label, slug)``."""
 
     __slots__ = (
         "role",
         "match",
         "prose",
+        "art",
         "shown",
         "files",
         "images",
@@ -368,6 +371,7 @@ class _Row:
         self.prose = prose
         self.widgets: list[str] = []
         self.match = prose
+        self.art: list[tuple[str, str]] = []
         self.shown = ""
         self.images: list[str] = []
         self.links: list[str] = []
@@ -405,7 +409,7 @@ def _read_row(
         row = _Row("file", [attached], "", record)
         # A sent file's card names it: the name is its text and its excerpt,
         # matched as the redacted form the result shows.
-        row.shown = redact(name)
+        row.shown = shown_text(name)
         row.match = row.shown
         row.images = row_images({"role": "file"}, row.files)
         row.videos = row_videos(msg, row.files)
@@ -426,20 +430,24 @@ def _read_row(
         row.images = row_images(media, row.files)
         row.links = row_links(prose)
         row.videos = row_videos(media, row.files)
-        if artifact_kind is not None and _ARTIFACT_LINK in prose:
+        if _ARTIFACT_LINK in prose:
+            row.art = artifact_links(prose)
+        if artifact_kind is not None:
             # A saved html artifact is an HTML file the chat links instead of attaching.
             row.html_labels.extend(
-                label or slug
-                for label, slug in artifact_links(prose)
-                if artifact_kind(slug) == "html"
+                label or slug for label, slug in row.art if artifact_kind(slug) == "html"
             )
         # The query matches the redacted text the result shows. Redacted FIRST:
         # shortening a URL drops the scheme a credential pattern keys on.
-        shown_prose = redact(prose)
+        shown_prose = shown_text(prose)
         row.match = (
-            "\n".join([shown_prose, *(redact(t) for t in row.widgets)]) if widgets else shown_prose
+            "\n".join([shown_prose, *(shown_text(t) for t in row.widgets)])
+            if widgets
+            else shown_prose
         )
-        row.shown = snippet_text(shown_prose) if prose.strip() else redact(", ".join(row.widgets))
+        row.shown = (
+            snippet_text(shown_prose) if prose.strip() else shown_text(", ".join(row.widgets))
+        )
     row.kinds = {
         k
         for k, has in (
@@ -469,7 +477,7 @@ def _row_matches(row: _Row, query: Any) -> bool:
 
 def _label(text: str) -> str:
     """*text* redacted, then cut to ``MAX_LABEL_CHARS``, as a hit lists it."""
-    shown = redact(text)
+    shown = shown_text(text)
     return shown if len(shown) <= MAX_LABEL_CHARS else shown[: MAX_LABEL_CHARS - 1] + "\u2026"
 
 
@@ -477,17 +485,28 @@ def _names(paths: list[str]) -> list[str]:
     return [_label(_basename(p)) for p in paths[:MAX_NAMES]]
 
 
-def _hit_of(msg: dict, index: int, row: _Row, query: Any) -> dict:
-    """The hit *row* makes at *index*: the excerpt, counts and preview names."""
-    shown = row.shown
+def hit_snippet(shown: str, query: Any) -> str:
+    """The excerpt of a hit whose redacted excerpt source is *shown*."""
     if query is not None:
         found, _count = message_hits(
-            [{**msg, "role": "user", "content": shown}], query, _ROLES, max_hits=1
+            [{"role": "user", "content": shown}], query, _ROLES, max_hits=1
         )
-        snippet = found[0]["snippet"] if found else _plain_snippet(shown)
-    else:
-        snippet = _plain_snippet(shown)
-    hit: dict[str, Any] = {"index": index, "role": row.role, "snippet": snippet}
+        if found:
+            return found[0]["snippet"]
+    return _plain_snippet(shown)
+
+
+def _hit_of(msg: dict, index: int, row: _Row, query: Any) -> dict:
+    """The hit *row* makes at *index*: the excerpt, counts and preview names."""
+    hit = static_hit(msg, index, row)
+    hit["snippet"] = hit_snippet(row.shown, query)
+    return with_html_labels(hit, len(row.html), row.html_labels)
+
+
+def static_hit(msg: dict, index: int, row: _Row) -> dict:
+    """The part of *row*'s hit that no query or caller changes: no excerpt, and
+    no linked html artifact (``with_html_labels`` adds those per caller)."""
+    hit: dict[str, Any] = {"index": index, "role": row.role}
     if isinstance(msg.get("ts"), str):
         hit["ts"] = msg["ts"]
     meta = msg.get("meta")
@@ -520,14 +539,20 @@ def _hit_of(msg: dict, index: int, row: _Row, query: Any) -> dict:
         if paths:
             hit[f"{field}_count"] = len(paths)
             hit[f"{field}_names"] = _names(paths)
-    if row.html_labels:
-        # A label is shown whole: cutting it at a "/" like a path would drop part of it.
-        hit["html_count"] = len(row.html) + len(row.html_labels)
-        names = hit.get("html_names", []) + [_label(t) for t in row.html_labels]
-        hit["html_names"] = names[:MAX_NAMES]
     if row.widgets:
         hit["widget_count"] = len(row.widgets)
         hit["widget_titles"] = [_label(t) for t in row.widgets[:MAX_NAMES]]
+    return hit
+
+
+def with_html_labels(hit: dict, html_files: int, labels: list[str]) -> dict:
+    """*hit* with the linked html artifacts *labels* counted and named after its
+    *html_files* attached html files."""
+    if labels:
+        # A label is shown whole: cutting it at a "/" like a path would drop part of it.
+        hit["html_count"] = html_files + len(labels)
+        names = hit.get("html_names", []) + [_label(t) for t in labels]
+        hit["html_names"] = names[:MAX_NAMES]
     return hit
 
 
@@ -720,10 +745,13 @@ class Pinned:
 
     def holds(self, msg: dict) -> bool:
         meta = msg.get("meta")
-        mid = meta.get("mid") if isinstance(meta, dict) else None
+        return self.holds_ids(meta.get("mid") if isinstance(meta, dict) else None, msg.get("ts"))
+
+    def holds_ids(self, mid: object, ts: object) -> bool:
+        """Whether a row with this ``meta.mid`` and ``ts`` is pinned."""
         if isinstance(mid, str) and mid in self.mids:
             return True
-        return bool(self.times) and msg.get("ts") in self.times
+        return bool(self.times) and isinstance(ts, str) and ts in self.times
 
 
 def _successor_key(msg: dict) -> tuple[str, str | None] | None:
@@ -926,29 +954,49 @@ async def api_chat_slot_history_search(request: web.Request) -> web.Response:
     key = slot_history_key(slot)
     floor = await _floor(state, key)
     artifact_kind, pinned = _caller_scope(request, state)
+    search: dict[str, Any] = {
+        "query": query,
+        "kind": kind,
+        "since": since,
+        "until": until,
+        "before": before if isinstance(before, int) else None,
+        "limit": hits_wanted,
+        "artifact_kind": artifact_kind,
+        "pinned": pinned,
+    }
+    from kiro_crew.dashboard import chat_history_cached
+
+    log = state.conversation_log
+    # shortcut: a cron tab's display floor is read by the paged scan only; cache
+    # it too if cron tabs grow long enough for their search to be slow.
+    if not floor:
+        cached = await chat_history_cached.cached_search(log, key, **search)
+        if cached is not None:
+            return web.json_response(cached)
     try:
-        body = await asyncio.to_thread(
-            _read_settled,
-            search_history,
-            state.conversation_log,
-            key,
-            query=query,
-            kind=kind,
-            since=since,
-            until=until,
-            before=before if isinstance(before, int) else None,
-            limit=hits_wanted,
-            floor=floor,
-            artifact_kind=artifact_kind,
-            pinned=pinned,
-        )
+        with chat_history_cached.scanning():
+            body = await asyncio.to_thread(
+                lambda: _read_settled(search_history, log, key, floor=floor, **search)
+            )
     except (OSError, TranscriptRevisionChanged):
         logger.warning("history search failed for %s", key, exc_info=True)
         return web.json_response(
             {"error": "could not read this chat's history", "code": "history_unreadable"},
             status=503,
         )
+    if _build_after_scan(log, key, floor):
+        # The chat's cache is still being built: these counts cover only the
+        # rows this reply read.
+        body["indexing"] = True
     return web.json_response(body)
+
+
+def _build_after_scan(log: Any, key: str, floor: str) -> bool:
+    """Start the chat's cache build once the paged scan has answered, so the two
+    never share the reply's time; whether a build runs."""
+    from kiro_crew.dashboard import chat_history_cached
+
+    return not floor and chat_history_cached.start_build(log, key)
 
 
 async def api_chat_slot_history_counts(request: web.Request) -> web.Response:
@@ -976,11 +1024,12 @@ async def api_chat_slot_history_counts(request: web.Request) -> web.Response:
     key = slot_history_key(slot)
     floor = await _floor(state, key)
     artifact_kind, pinned = _caller_scope(request, state)
-    try:
-        body = await asyncio.to_thread(
-            _read_settled,
-            search_history,
-            state.conversation_log,
+    from kiro_crew.dashboard import chat_history_cached
+
+    log = state.conversation_log
+    if not floor:
+        cached = await chat_history_cached.cached_search(
+            log,
             key,
             query=query,
             kind="",
@@ -988,24 +1037,46 @@ async def api_chat_slot_history_counts(request: web.Request) -> web.Response:
             until=until,
             before=None,
             limit=0,
-            floor=floor,
-            budget=COUNT_BUDGET_ROWS,
-            # Rows are appended, so an index read stays the row it was while
-            # the chat writes; a pinned walk this long would rarely finish in
-            # a busy chat. shortcut: a rotation during the walk can skew one
-            # reply's counts; the next read is right again.
-            pin_revision=False,
             artifact_kind=artifact_kind,
             pinned=pinned,
         )
+        if cached is not None:
+            return web.json_response(
+                {"counts": cached["counts"], "total": cached["total"], "complete": True}
+            )
+    try:
+        with chat_history_cached.scanning():
+            body = await asyncio.to_thread(
+                _read_settled,
+                search_history,
+                state.conversation_log,
+                key,
+                query=query,
+                kind="",
+                since=since,
+                until=until,
+                before=None,
+                limit=0,
+                floor=floor,
+                budget=COUNT_BUDGET_ROWS,
+                # Rows are appended, so an index read stays the row it was while
+                # the chat writes; a pinned walk this long would rarely finish in
+                # a busy chat. shortcut: a rotation during the walk can skew one
+                # reply's counts; the next read is right again.
+                pin_revision=False,
+                artifact_kind=artifact_kind,
+                pinned=pinned,
+            )
     except (OSError, TranscriptRevisionChanged):
         logger.warning("history counts failed for %s", key, exc_info=True)
         return web.json_response(
             {"error": "could not read this chat's history", "code": "history_unreadable"},
             status=503,
         )
+    reply: dict[str, Any] = {"indexing": True} if _build_after_scan(log, key, floor) else {}
     return web.json_response(
         {
+            **reply,
             "counts": body["counts"],
             "total": body["total"],
             "complete": body["next_before"] is None,

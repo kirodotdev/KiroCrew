@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from windows_sim import replace_sharing_violation
 
+from kiro_crew import atomic_write, platform_compat
 from kiro_crew.apps import manager, protected_app_state
 from kiro_crew.apps.builtins import _FOLDED_BUILTIN_SWITCHES, _MIGRATED_BUILTINS
 from kiro_crew.apps.manager import (
@@ -88,6 +90,25 @@ def test_a_disabled_record_turns_the_setting_off_and_stays_as_a_backup() -> None
     assert get_app(NAME) is None
     assert NAME not in {a["name"] for a in list_apps()}
     assert NAME not in detect_orphaned_builtins(force_refresh=True)
+
+
+def test_a_record_held_open_on_windows_is_still_retired(monkeypatch: pytest.MonkeyPatch) -> None:
+    # On Windows a rename fails with WinError 32 while any other handle (a scanner,
+    # the indexer) is open on the file; the retire renames through the bounded retry.
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+    root = _seed_record(enabled=False)
+
+    with replace_sharing_violation(match=APP_MANIFEST_FILENAME, times=1) as sim:
+        result = cleanup_migrated_builtin(NAME)
+
+    assert result.ok, result.error
+    # One faulted attempt, then the retry that renamed it.
+    assert sim["n"] == 2
+    assert (root / (APP_MANIFEST_FILENAME + RETIRED_RECORD_SUFFIX)).is_file()
+    assert (root / (INSTALLED_META_FILENAME + RETIRED_RECORD_SUFFIX)).is_file()
+    assert (root / "data" / "keep.txt").read_text(encoding="utf-8") == "keep me"
+    assert _config()["taskrunner"] == {"enabled": False}
 
 
 def test_an_enabled_record_writes_no_setting() -> None:
