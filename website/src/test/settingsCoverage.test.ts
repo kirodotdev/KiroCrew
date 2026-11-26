@@ -358,6 +358,18 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     counts: { Checkbox: 1 },
     reason: 'a confirm-modal ack (blanket third-party app trust)',
   },
+  'McpManagementHero.tsx': {
+    counts: { input: 1 },
+    reason:
+      'the Review dialog\'s per-server "Always trust changes to this server" box: part of one ' +
+      'approval press, stored with that server\'s launch approval, not a config path',
+  },
+  'McpManagementLaunchReview.tsx': {
+    counts: { input: 1 },
+    reason:
+      'a shared row\'s "Always trust changes to this server" box, shown only to take the ' +
+      'choice off: it lives in the launch approval store, not a config path',
+  },
   'SettingsSearch.tsx': {
     counts: { input: 1 },
     reason: 'the settings search box itself',

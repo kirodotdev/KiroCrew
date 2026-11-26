@@ -633,6 +633,13 @@ class _RefuseAll:
     def __init__(self) -> None:
         # The real store's per-pass refusal reasons, read on each refusal.
         self.refused: dict[str, str] = {}
+        # The servers the pass saw declared, which the rewrite records.
+        self.declared: set[str] = set()
+
+    def note_declared(self, name: str) -> None:
+        from kiro_crew.mcp_gateway.launch_approval import target_stem
+
+        self.declared.add(target_stem(name))
 
     def admit(self, *_a: object, **_kw: object) -> bool:
         return False

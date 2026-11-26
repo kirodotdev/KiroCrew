@@ -1705,9 +1705,13 @@ daemon's own `PATH` is rewritten at spawn. Only that current part folds: a value
 saved already expanded (App Kit register writes `emit_env` output into
 `mcp.json`) asks for approval once after the part moves, because an earlier part
 read as entries after the spec's own would be a search path nobody approved. An
-approval stored before the fold holds the literal digest, which matches no folded
-identity, so that launch is refused once as `changed_needs_reapproval` and
-approved again. A daemon's pong reports the part it was handed, and a gateway
+approval stored before the fold holds the literal digests. When the literal
+digests of a launch, its command, args and env byte for byte, are the approved
+ones, that launch keeps its approval with no prompt and its folded digest
+replaces the literal one (`launch_approval_heal.prefold_approval_of`, audited as
+`PREFOLD_AUDIT_REASON`); any other launch is refused as before. A server the operator approved with **Always trust changes to this
+server** checked keeps a changed launch shared too; see
+[security.md](../system-specs/modules/security.md#mcp-launch-authorization-leaves). A daemon's pong reports the part it was handed, and a gateway
 pinned to another part treats it as drift and replaces it rather than adopting
 it. Security detail:
 [security.md](../system-specs/modules/security.md#mcp-launch-authorization-leaves).

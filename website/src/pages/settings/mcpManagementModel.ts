@@ -158,6 +158,8 @@ export function stubErrorKey(error: unknown): string {
   if (code === 'launch_over_cap') return 'pages.mcpManagement.stub_error_launch_over_cap'
   if (code === 'approval_write_failed') return 'pages.mcpManagement.stub_error_approval_write_failed'
   if (code === 'cwd_unconfirmed') return 'pages.mcpManagement.stub_error_cwd_unanswered'
+  if (code === 'trust_needs_shared') return 'pages.mcpManagement.stub_error_trust_needs_shared'
+  if (code === 'trust_needs_approved_launch') return 'pages.mcpManagement.stub_error_trust_needs_approved_launch'
   return 'pages.mcpManagement.stub_failed'
 }
 

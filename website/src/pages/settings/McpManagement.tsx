@@ -64,7 +64,9 @@ import {
   ServerDetailsBody,
   serverNameId,
   SHARE_BUTTON_CLASS,
+  ServerName,
   ShareAction,
+  TrustChangesChoice,
 } from './McpManagementLaunchReview'
 import { AssessmentView } from './McpManagementAssessment'
 import { CwdQuestionDialog } from './McpManagementCwdQuestion'
@@ -265,10 +267,22 @@ export function McpManagement({
     if (reads.every(r => r.status === 'fulfilled') && fresh && !fresh.enabled) setConfirmSharing(true)
   }
 
+  // The Sharing row's "Always trust changes to this server". Unchecked, the
+  // share stays and the next changed launch asks again; ticked again, the
+  // server trusts changes while its current launch stays approved.
+  const setTrust = useMutation({
+    mutationFn: ({ name, trusted }: { name: string; trusted: boolean }): Promise<unknown> =>
+      trusted ? api.mcpGatewayTrustChanges(name) : api.mcpGatewayStopTrustingChanges(name),
+    onSettled: () => invalidate(),
+    onError: (err, { name }) => setError(i18nT(stubErrorKey(err), { name })),
+  })
+
   const setStub = useMutation({
     // `refused` is the stored refusal's own `expected_launch` behind the press.
-    mutationFn: ({ name, stub, expectedLaunch, cwdUse }: { name: string; stub: boolean; expectedLaunch?: string; refused?: string; cwdUse?: McpCwdUse }) =>
-      cwdUse ? api.mcpGatewaySetStub(name, stub, expectedLaunch, false, cwdUse) : api.mcpGatewaySetStub(name, stub, expectedLaunch),
+    mutationFn: ({ name, stub, expectedLaunch, cwdUse, trustChanges }: { name: string; stub: boolean; expectedLaunch?: string; refused?: string; cwdUse?: McpCwdUse; trustChanges?: boolean }) =>
+      trustChanges
+        ? api.mcpGatewaySetStub(name, stub, expectedLaunch, false, cwdUse, true)
+        : cwdUse ? api.mcpGatewaySetStub(name, stub, expectedLaunch, false, cwdUse) : api.mcpGatewaySetStub(name, stub, expectedLaunch),
     onSuccess: async (res, vars) => {
       invalidate()
       dropCurrentLaunch(vars.name)
@@ -315,7 +329,7 @@ export function McpManagement({
   const [cwdAsk, setCwdAsk] = useState<{
     name: string
     routed: boolean
-    approve?: { expectedLaunch: string; refused?: string }
+    approve?: { expectedLaunch: string; refused?: string; trustChanges?: boolean }
   } | null>(null)
   const answerCwd = useMutation({
     mutationFn: ({ name, answer, routed }: { name: string; answer: McpCwdUse; routed: boolean }) =>
@@ -706,17 +720,19 @@ export function McpManagement({
   // and the refusal comes back as the error line the dialog shows in that
   // block; a moved-past refusal instead brings the launch the block then
   // shows, with an error above it asking for its approval.
-  const approveFromReview = async (name: string, expectedLaunch: string, refused?: string): Promise<ReviewAnswer> => {
+  const approveFromReview = async (name: string, expectedLaunch: string, refused?: string, trustChanges = false): Promise<ReviewAnswer> => {
     const server = servers.find(s => s.name === name)
     if (server && needsCwdAnswer(server)) {
       // The approval needs the working-folder answer first: ask it, and send
       // the approval with a "No".
       closeReview()
-      setCwdAsk({ name, routed: true, approve: { expectedLaunch, refused } })
+      setCwdAsk({ name, routed: true, approve: { expectedLaunch, refused, trustChanges } })
       return null
     }
     try {
-      const res = await api.mcpGatewaySetStub(name, true, expectedLaunch)
+      const res = trustChanges
+        ? await api.mcpGatewaySetStub(name, true, expectedLaunch, false, undefined, true)
+        : await api.mcpGatewaySetStub(name, true, expectedLaunch)
       dropCurrentLaunch(name)
       if (res && res.restart_required) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
       // An approval only clears the refusal; with sharing off nothing is shared
@@ -905,12 +921,16 @@ export function McpManagement({
                 <Fragment key={s.name}>
                   <tr className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 border-t border-[var(--border)] px-3 py-3 md:table-row md:px-0 md:py-0">
                     <td className="col-start-1 row-start-1 min-w-0 p-0 align-top md:table-cell md:px-4 md:py-3">
-                      <span
-                        id={serverNameId(s.name)}
-                        className="block break-words font-mono text-[13px] text-[var(--text)] [overflow-wrap:anywhere]"
-                      >
-                        {s.name}
-                      </span>
+                      <ServerName id={serverNameId(s.name)} name={s.name} />
+                      <TrustChangesChoice
+                        server={s}
+                        approved={!waiting}
+                        busy={busy || setTrust.isPending}
+                        onTrustChange={trusted => {
+                          setError(null)
+                          setTrust.mutate({ name: s.name, trusted })
+                        }}
+                      />
                       <DetailsToggle
                         server={s}
                         open={detailsOpen}

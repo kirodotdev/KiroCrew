@@ -74,11 +74,54 @@ gateway part is not folded even where it follows the own entries: an agent could
 insert one there, and its directories would then search for executables outside
 the sandbox with no approval. So a value saved already expanded and expanded
 again (App Kit register writes `emit_env` output into `mcp.json`) asks once after
-the gateway's part moves. An approval stored before this fold is not carried
-over: its literal digest matches no folded identity, so the launch is refused
-once as `changed_needs_reapproval` and the operator approves it again. Nothing
-admits a launch on an old digest, so no migration rule can widen what was
-approved. A package-installer move in the resolved command path is not
+the gateway's part moves. An approval stored before this fold carries over only for the
+launch it was given for: the rewriter hands `admit` the literal digests of each
+launch (`launch_approval_heal.prefold_digests`), and only when that exact
+fingerprint and pair are approved does the folded digest inherit the approval,
+written by `save_pass` only while the store still approves the literal one, which it then replaces, so the launch counts once against the per-server cap.
+The literal digests cover the command, args and every env byte, so this admits
+no launch the operator did not approve; a changed own entry is still refused.
+
+**"Always trust changes to this server"** is a per-server opt-in, off by
+default. Only an owner's click in the dashboard sets it: the approve press in
+the Review dialog, with the launch it displays (`trust_changes` on
+`POST /api/mcp-gateway/servers/stub` beside `expected_launch`; refused with
+`expected_entry`, so an agent-proposed card never carries it), or a tick of the
+Sharing row's box (`trust_changes: true` alone). The tick is taken only for a
+server on the share list whose current resolved launch the store already admits,
+with no refusal pending (`trust_needs_shared` / `trust_needs_approved_launch`
+otherwise, writing nothing); it records that same launch through `approve`, so
+it approves nothing new. It is stored as `trust_changes: true` on the server's
+record in the approval store, which agent tools cannot write. With it set, a
+changed launch of that server is admitted at the next rewrite pass
+(`launch_approval_heal.trusts_change`, audited as `TRUST_AUDIT_REASON`) instead
+of being refused as `changed_needs_reapproval`; a never-pooled server never is.
+Each approve press without it clears it; so do stopping sharing, the Sharing
+row's unchecked box (`trust_changes: false` alone) and a complete full pass
+in which no agent spec declares the server any more (`forget_unseen_trust`
+reads `LaunchApprovals.declared`, so a declared server whose launch was skipped
+keeps it, and every server named in the global settings counts as declared; a
+pass served from cache, or one that skipped an agent or the settings file for any
+reason but deletion, drops nothing). A declaration census is incomplete when a
+source cannot be read or parsed, its top level or `mcpServers` is not an object,
+a server entry is not an object, or a server name is not a string. The census
+checks the raw global settings and agent maps before filtering or injection,
+including crewmate specs; skipped crewmate sources also preserve trust without
+changing which overlays are written or cached. A missing `mcpServers` means an
+empty map, so a well-formed source that removes a server still retires its trust.
+A dashboard trust withdrawal refuses an unreadable or malformed approval store
+with 503 `approval_write_failed`, rather than reporting success. An absent or
+blank store needs no write. A failed withdrawal while stopping sharing restores
+the revoked approval rows before returning and leaves the config unchanged.
+The SEL log records each grant, from Review or the row (`mcp_gateway_set_stub … trust_changes=True`), and
+each removal from the row (`mcp_gateway_trust_changes`), so a server added again under
+the same name starts untrusted. A complete pass replaces a trusted server's approved launches
+with the ones it found live (`retire_trusted`), so its changes never fill the
+per-server launch cap. The live fingerprint set obeys that cap too; an overflow
+marks the pass incomplete, so it retires no approvals. Declared names share the
+snapshot's server-record and name-length bounds. If a declaration exceeds either,
+the pass forgets no trust choices and retires no trusted approvals.
+A package-installer move in the resolved command path is not
 folded: see
 [the decision](../../decisions/2026-11-20-the-gateways-own-path-is-not-a-launch-change.md).
 The residual: `${VAR}` values come from the gateway environment, so an
