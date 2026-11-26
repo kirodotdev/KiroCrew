@@ -239,6 +239,19 @@ export function focusHostOf(frame: HTMLIFrameElement): void {
   if (document.activeElement === frame) frame.blur()
 }
 
+const frameKeys = new WeakMap<HTMLIFrameElement, number>()
+let nextFrameKey = 0
+
+/** A stable number per frame element, for keying the button by its frame. */
+function frameKeyOf(frame: HTMLIFrameElement): number {
+  let key = frameKeys.get(frame)
+  if (key === undefined) {
+    key = ++nextFrameKey
+    frameKeys.set(frame, key)
+  }
+  return key
+}
+
 /** The bridge's default: every web URL may open. */
 function neverRefuse(): boolean {
   return false
@@ -328,6 +341,9 @@ export function useFrameLinkBridge(
   if (!chip) return null
   const { url, frame, tab } = chip
   return createElement(FrameLinkChip, {
+    // A new asking frame or URL gets a new button, so its scroll rule measures
+    // from that frame's position rather than the previous one's.
+    key: `${frameKeyOf(frame)} ${url}`,
     url,
     frame,
     onOpen: () => {
