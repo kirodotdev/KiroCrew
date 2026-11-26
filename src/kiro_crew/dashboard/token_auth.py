@@ -91,7 +91,10 @@ from kiro_crew.dashboard.token_auth_paths import (
     _log_query_token_refused,
 )
 from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401  # re-export through this facade
+    ANCESTORS_CLAIM,
     APP_IAT_CLAIM,
+    FAMILY_CLAIM,
+    FAMILY_STATE_UNAVAILABLE,
     LINK_NOT_A_SESSION,
     MAX_SESSION_TTL_SECS,
     OWNER_MINT_CLAIM,
@@ -104,9 +107,13 @@ from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401  # re-export t
     bind_token_peer,
     check_token_peer,
     claims_an_app_unverified,
+    credential_family_refusal,
     generate_token,
     required_peer_key_unverified,
     requires_verified_peer_unverified,
+    token_ancestors,
+    token_family,
+    token_lineage,
     validate_token_with_app,
     validate_token_with_app_off_loop,
 )
@@ -1165,12 +1172,19 @@ def token_auth_middleware(
             _no_refresh = False
             _owner_minted = False
             _session_peer_key = ""
+            _family = ""
+            _ancestors = ""
             try:
                 payload_bytes = _b64url_decode(token.split(".")[0])
                 data = json.loads(payload_bytes)
                 session_exp = float(data.get("session_exp", 0.0))
                 _owner_minted = str(data.get(OWNER_MINT_CLAIM, "")) == "1"
                 _link_nonce = str(data.get("nonce", ""))
+                # The credential family: this link, the session it becomes and its
+                # refresh chain end together (``revoke_token_family``), and so
+                # do they when a family it descends from ends.
+                _family = token_family(data)
+                _ancestors = token_ancestors(data)
                 # Carry the multi-instance frame-ancestors claim (the embedding
                 # parent dashboard's port) THROUGH the exchange. The framed
                 # document is authenticated by the session cookie minted below,
@@ -1262,6 +1276,10 @@ def token_auth_middleware(
                 # again (see OWNER_MINT_CLAIM). Relabels a denial only.
                 if _owner_minted:
                     _carried[OWNER_MINT_CLAIM] = "1"
+                if _family:
+                    _carried[FAMILY_CLAIM] = _family
+                if _ancestors:
+                    _carried[ANCESTORS_CLAIM] = _ancestors
                 if app_name:
                     # An app session keeps the issue time of the app token it was
                     # exchanged from: a request whose token passed the check just
@@ -1481,7 +1499,14 @@ def token_auth_middleware(
                     max_age=0,
                     path=REFRESH_COOKIE_PATH,
                 )
-            else:
+            elif not app_name and not credential_family_refusal(_family, _ancestors):
+                # An app session gets no chain either: a rotation mints a plain
+                # session with no ``app`` claim, so one refresh would lift the app's
+                # scope. The app re-exchanges its secret when the session ends. A
+                # refresh cookie already in the browser is not this credential's, so
+                # unlike ``no_refresh`` it is left alone. The family is checked again
+                # because the owner may have ended it while the handler ran; nothing
+                # between this check and the mint below awaits.
                 try:
                     # The refresh chain inherits the boot binding. Without this
                     # the chain is the escape hatch: the access cookie would die
@@ -1523,6 +1548,8 @@ def token_auth_middleware(
                         require_peer=_refresh_require_peer,
                         peer_key=_refresh_peer_key,
                         owner_mint=_owner_minted,
+                        family=_family,
+                        ancestors=_ancestors,
                         embed_parent_port=_embed_parent_port,
                         embed_forward_port=_embed_forward_port,
                     )
@@ -1647,12 +1674,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         register_app_window_paths,
     )
     from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401
+        _FAMILY_KEY_PREFIX,
+        _FAMILY_RECORD_MARGIN_SECS,
         _REVOKED_NONCES_FILE,
         CONNECTOR_AUDIENCE,
         CONNECTOR_CREDENTIAL_REASON,
+        FAMILY_MARKER_CLAIM,
         LINK_TOKEN_MAX_CHARS,
         LINK_WINDOW_SECS,
         MAX_CONCURRENT_NONCES,
+        LegacyFamilyLink,
         RevokedNonceStore,
         TokenStateManager,
         _app_secret_move_lock,
@@ -1682,6 +1713,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         revoke_access_cookie,
         revoke_all_sessions,
         revoke_all_sessions_async,
+        revoke_token_family,
         token_embed_parent_port,
         token_owner_minted_unverified,
         try_consume,

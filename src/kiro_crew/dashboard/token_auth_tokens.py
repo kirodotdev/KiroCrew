@@ -83,13 +83,14 @@ class RevokedNonceStore:
         # True while the file exists but could not be read (e.g. a Windows handle without
         # read sharing). Cookies fail closed and _persist refuses until a re-read works.
         self._state_path = state_path
+        self._reloading = False  # a background recovery read is in flight
         self._unreadable = not self._load()
 
     def revoke(self, nonce: str, session_exp: float) -> bool:
         """Record *nonce* as revoked until *session_exp*, evicting expired entries.
 
-        Returns False when the file could not be read, so the record is kept in memory only
-        (the next write after a successful re-read stores it). Callers run it off the loop.
+        Returns False when the file could not be read or written, so the record is kept in
+        memory only (the next write that lands stores it). Callers run it off the loop.
         """
         now = time.time()
         with self._lock:
@@ -100,8 +101,7 @@ class RevokedNonceStore:
                 self._revoked.pop(n, None)
         if not self.readable():
             return False
-        self._persist()
-        return True
+        return self._persist()
 
     def is_revoked(self, nonce: str) -> bool:
         """Return True if *nonce* is on the denylist and not yet past its floor."""
@@ -167,9 +167,32 @@ class RevokedNonceStore:
             self._unreadable = False
         return not self._unreadable
 
-    def _persist(self) -> None:
-        if self._state_path is None or self._unreadable:
-            return
+    def read_ok_in_memory(self) -> bool:
+        """:meth:`readable` without the re-read: no I/O, so the event loop may call it."""
+        return not self._unreadable
+
+    def reload_in_background(self) -> None:
+        """Retry the read on a daemon thread, one at a time, while the file is unreadable."""
+        with self._lock:
+            if not self._unreadable or self._reloading:
+                return
+            self._reloading = True
+
+        def _reload() -> None:
+            try:
+                self.readable()
+            finally:
+                with self._lock:
+                    self._reloading = False
+
+        threading.Thread(target=_reload, name="revoked-nonce-reload", daemon=True).start()
+
+    def _persist(self) -> bool:
+        """Write the denylist; False when it could not be stored (the record stays in memory)."""
+        if self._state_path is None:
+            return True
+        if self._unreadable:
+            return False
         with self._io_lock:
             # Snapshot under _lock, then release it before any I/O (see the
             # class docstring).
@@ -209,6 +232,8 @@ class RevokedNonceStore:
                 os.replace(tmp, self._state_path)
             except OSError:
                 logger.warning("could not persist revoked-nonce store", exc_info=True)
+                return False
+        return True
 
 
 _revoked_store_singleton: RevokedNonceStore | None = None
@@ -421,6 +446,9 @@ _state: TokenStateManager = TokenStateManager(max_concurrent_nonces=MAX_CONCURRE
 LINK_WINDOW_SECS = 300  # 5 minutes
 # Maximum session TTL — cookie cannot exceed this
 MAX_SESSION_TTL_SECS = 20 * 3600  # 20 hours
+#: Signed on every token this gateway mints: its family reaches what it opens, so
+#: :func:`revoke_token_family` may revoke it. A token without it predates families.
+FAMILY_MARKER_CLAIM = "fam_v"
 #: Longest token :func:`generate_token` mints with a ``prompt`` claim. Slack splits
 #: a message line at about 4,000 bytes, which cuts a longer link: the cut token
 #: fails its signature and the link signs nobody in. 3,000 leaves room for the
@@ -565,6 +593,9 @@ def generate_token(
         # below the current persisted value, so revoke_all_sessions() kills
         # established cookies (not just the per-process nonce store).
         "gen": current_revocation_gen(),
+        # Minted by a gateway whose exchange and rotation carry the credential
+        # family, so revoking this token's family reaches what it opens.
+        FAMILY_MARKER_CLAIM: "1",
     }
     # A link is printed, posted to chat and kept in history, so the session
     # path accepts only a token its minter declared a session.
@@ -588,6 +619,7 @@ def generate_token(
             "prompt",
             "peer_key",
             "kind",
+            FAMILY_MARKER_CLAIM,
         }
         for k, v in extra.items():
             if k not in _reserved and isinstance(v, str) and v:
@@ -707,6 +739,12 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
         valid, reason = _state.is_nonce_valid(token_nonce)
         if not valid:
             return False, "", reason
+    # The owner ended this credential family, or one it descends from
+    # (``revoke_token_family``): the link itself and every session descended from it,
+    # on both paths.
+    family_refusal = credential_family_refusal(token_family(data), token_ancestors(data))
+    if family_refusal:
+        return False, "", family_refusal
     return True, data.get("sub", ""), ""
 
 
@@ -1252,8 +1290,8 @@ def try_consume(token: str, session_exp: float = 0.0) -> bool:
 def revoke_access_cookie(token: str) -> bool:
     """Revoke a SINGLE access cookie by adding its nonce to the denylist.
 
-    Raises ``OSError`` when the denylist file could not be read, so the record
-    is in memory only and the caller must not report the logout as stored.
+    Raises ``OSError`` when the denylist file could not be read or written, so the
+    record is in memory only and the caller must not report the logout as stored.
 
     Validates the token (signature + session_exp + gen) first — deny-by-default,
     so attacker-controlled junk is never written into the persisted store. Then
@@ -1285,8 +1323,138 @@ def revoke_access_cookie(token: str) -> bool:
     if session_exp <= time.time():
         return False
     if not _get_revoked_store().revoke(nonce, session_exp):
-        # Held in memory only: a restart before the file reads again would forget it.
-        raise OSError("revoked-nonce store could not be read; the logout was not stored")
+        # Held in memory only: a restart before the file is stored would forget it.
+        raise OSError("revoked-nonce store could not be read or written; the logout was not stored")
+    return True
+
+
+#: The signed claim naming the credential a session descends from: the ``nonce`` of
+#: the link it was exchanged from. The exchange stamps it on the session token and the
+#: refresh chain, and every rotation carries it, so one revocation reaches all of them.
+FAMILY_CLAIM = "family"
+#: The families a credential's family descends from, nearest first, comma-separated.
+#: A child link a session lends a phone (``_caller_bounds``) keeps its own nonce as its
+#: family and lists the lender's family and ancestors here, so revoking the lender ends
+#: the child while revoking the child ends only the child and what it opened. Carried
+#: like ``family`` through the exchange, the chain and every rotation.
+ANCESTORS_CLAIM = "ancestors"
+# Family revocations share the revoked-nonce store under their own key prefix, so a
+# family id can never collide with a per-cookie nonce entry.
+_FAMILY_KEY_PREFIX = "family:"
+
+
+def token_family(data: object) -> str:
+    """The credential family of a decoded token payload: its claim, else its own nonce."""
+    if not isinstance(data, dict):
+        return ""
+    family = data.get(FAMILY_CLAIM) or data.get("nonce") or ""
+    return family if isinstance(family, str) else ""
+
+
+def token_ancestors(data: object) -> str:
+    """A decoded token payload's ``ancestors`` claim, or ``""`` when it has none."""
+    if not isinstance(data, dict):
+        return ""
+    ancestors = data.get(ANCESTORS_CLAIM) or ""
+    return ancestors if isinstance(ancestors, str) else ""
+
+
+def token_lineage(data: object) -> str:
+    """The ``ancestors`` a credential this payload lends carries: its family, then its own."""
+    return ",".join(part for part in (token_family(data), token_ancestors(data)) if part)
+
+
+class LegacyFamilyLink(ValueError):
+    """:func:`revoke_token_family` was handed a token minted before credential families."""
+
+
+#: The refusal reason while the family denylist file cannot be read.
+FAMILY_STATE_UNAVAILABLE = "session revocation state unavailable"
+
+#: Margin on a family record's lifetime past ``MAX_REFRESH_TTL_SECS``. A rotation
+#: checks the family in memory just before it mints, with no await between, so a
+#: chain token minted after the check predates the record by no more than the instant
+#: between this module stamping the record's expiry and storing it; an hour covers it.
+_FAMILY_RECORD_MARGIN_SECS = 3600
+
+
+def credential_family_refusal(family: str, ancestors: str = "") -> str:
+    """Why a credential of *family* descending from *ancestors* is refused, or ``""``.
+
+    Revoking any family in the lineage ends the credential. Fails closed while the
+    denylist file cannot be read (a background thread retries the read), so a refresh
+    chain the owner ended cannot rotate on an empty reading of it.
+    """
+    lineage = [part for part in (family, *ancestors.split(",")) if part]
+    if not lineage:
+        return ""
+    store = _get_revoked_store()
+    # Memory only: this runs on the event loop for every family-bearing credential, so
+    # the recovery read goes to a background thread and the credential is refused until
+    # it lands.
+    if not store.read_ok_in_memory():
+        store.reload_in_background()
+        return FAMILY_STATE_UNAVAILABLE
+    if any(store.is_revoked(_FAMILY_KEY_PREFIX + part) for part in lineage):
+        return "session revoked"
+    return ""
+
+
+def revoke_token_family(token: str) -> bool:
+    """End the link *token* and every session and refresh chain it minted.
+
+    Only the signature is checked: the link's own click window and session may have
+    run out while the sessions it minted live on, and those are what this ends. The
+    record outlives everything the family can still hold: a chain token the family
+    mints after the record is refused, and one minted just before it lapses within
+    ``MAX_REFRESH_TTL_SECS``, inside the record's lifetime by
+    ``_FAMILY_RECORD_MARGIN_SECS``. Returns False for a token that is not a signed
+    dashboard credential, and raises :class:`LegacyFamilyLink` for one without
+    :data:`FAMILY_MARKER_CLAIM` or for a session with no :data:`FAMILY_CLAIM`. Raises ``OSError`` when the denylist could not be
+    stored, like :func:`revoke_access_cookie`.
+    """
+    from kiro_crew.dashboard.refresh_tokens import MAX_REFRESH_TTL_SECS
+
+    parts = token.split(".", 1)
+    if len(parts) != 2:
+        return False
+    try:
+        payload = _b64url_decode(parts[0])
+    except Exception:
+        return False
+    if not _ct_eq(parts[1], _sign(payload)):
+        return False
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return False
+    if not isinstance(data, dict) or data.get("aud") == CONNECTOR_AUDIENCE:
+        return False
+    if data.get(FAMILY_MARKER_CLAIM) != "1":
+        # Minted before families: the sessions it opened carry no family, so a
+        # record here would end the link alone while reporting them ended too.
+        raise LegacyFamilyLink("this link predates per-link revocation")
+    if data.get("kind") == "session" and not data.get(FAMILY_CLAIM):
+        # A session rotated from a chain minted before families: it carries the
+        # marker, but its chain carries no family, so a record keyed on the
+        # session's own nonce would end it alone while the chain mints the next.
+        raise LegacyFamilyLink("this session's chain predates per-link revocation")
+    family = token_family(data)
+    if not family:
+        return False
+    key = _FAMILY_KEY_PREFIX + family
+    record_exp = time.time() + MAX_REFRESH_TTL_SECS + _FAMILY_RECORD_MARGIN_SECS
+    if not _get_revoked_store().revoke(key, record_exp):
+        raise OSError(
+            "revoked-nonce store could not be read or written; the revocation was not stored"
+        )
+    _sel_fn().log_api_access(
+        caller="system",
+        operation="dashboard_sessions_revoked",
+        outcome="ok",
+        source="token_auth",
+        resources="action=revoke_family",
+    )
     return True
 
 

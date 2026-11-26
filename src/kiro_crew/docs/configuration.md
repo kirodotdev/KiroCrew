@@ -1410,7 +1410,10 @@ that was interrupted. Depending on the install, the check is a `git fetch` or a
 release-feed fetch. Docker and the desktop app's bundled gateway skip it (see
 below); everywhere else it runs whatever `auto_update` is set to.
 
-**The gateway never updates or restarts itself while it is running.** What
+**The gateway never updates or restarts itself while it is running.** (The one
+exception is not an update: when a central policy stops permitting the address the
+gateway listens on, the gateway restarts once nothing is running, so the narrowed
+address applies.) What
 `auto_update` decides is what happens to an update the check finds. With `true`
 (the default), the `cli.sh` managed venv builds the new version beside the live
 install while turns keep running, and nothing the running gateway loads from is
