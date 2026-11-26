@@ -264,11 +264,11 @@ language (the script of their last three genuine messages):
 1. **Goal**: the conductor's ledger goal, else the session ledger's goal, else
    the owner's newest genuine message.
 2. **Needs you**: each open item the Board's own `awaits_person` test says waits
-   on the owner (a person-naming report the conductor relayed with a current
-   `ask` record), with its state, its PR state when read live, and "checked
+   on the owner (the conductor asked them about it and its `ask` record still
+   stands), with its state, its PR state when read live, and "checked
    HH:MM"; under it that record (`work_ask_record`: why, each option with what
    it leads to, the pick with its reason), or, when the record holds only its
-   `what`, one line pointing at the question by the item's report time ("See the
+   `what`, one line pointing at the question by the time its record was written ("See the
    question at HH:MM."). Question cards and change cards follow with their
    option labels and a line saying why and what each leads to were not written;
    a reply's open `[OPTIONS:]` line is listed with "The choices are in the

@@ -6,10 +6,11 @@ workspace's own per-channel refresh (no second publisher):
 
 * **The board** (:mod:`.publisher`): one pinned message, edited in place: a
   context line ("Work board · updated HH:MM UTC") and the bold summary
-  ("2 working · 1 waiting on you · 1 of 4 done"), then Slack's plan block with
-  one task per worker -- title, state, the current call or last report line,
-  its PR and CI. The goal and round are not shown. A worker that waits on a
-  person gets one threaded reply mentioning the owner.
+  ("1 needs you · 2 working · 1 of 4 done"), then Slack's plan block with
+  one task per worker, most urgent first -- its state word and title, then the
+  current call or last report line, its PR and CI. The goal and round are not
+  shown. A worker that waits on a person gets one threaded reply mentioning the
+  owner.
 * **The Code tab** (``workspace.service._build_diff``): the combined change, the
   channel's own diff, then each worker's commits under a header naming it.
 * **The wrap-up** (:func:`outcome_lines`): one outcome line per worker.
