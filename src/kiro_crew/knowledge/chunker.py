@@ -416,9 +416,13 @@ class HeadingAwareChunker:
 
         # Include any text before the first heading
         if splits[0][0] > 0:
-            preamble = text[: splits[0][0]].strip()
+            lead = text[: splits[0][0]]
+            preamble = lead.strip()
             if preamble:
-                sections.insert(0, (None, 1, preamble, 0))
+                # The stored text starts at its first non-blank character, so
+                # that is the line the citation names.
+                blank = len(lead) - len(lead.lstrip())
+                sections.insert(0, (None, 1 + text.count("\n", 0, blank), preamble, blank))
 
         # Merge small sections, split oversized ones
         results: list[dict] = []
