@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from conftest import requires_symlinks
+from kiro_crew.testing.module_table import patched_sys_modules
 
 SCRIPTS_DIR = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "skills" / "artifact-deploy" / "scripts"
 
@@ -176,7 +177,6 @@ class TestReaperOACPending:
     def _setup(self):
         # The reaper lambda imports boto3 at module top-level. Mock it to avoid
         # needing a real AWS environment.
-        import sys
         mock_boto3 = MagicMock()
         mock_botocore = MagicMock()
         mock_botocore_exceptions = MagicMock()
@@ -192,7 +192,7 @@ class TestReaperOACPending:
         mock_botocore.exceptions = mock_botocore_exceptions
 
         with patch.dict(os.environ, {"BUCKET": "test-bucket", "DIST_ID": "E123TEST"}), \
-             patch.dict(sys.modules, {
+             patched_sys_modules({
                  "boto3": mock_boto3,
                  "botocore": mock_botocore,
                  "botocore.exceptions": mock_botocore_exceptions,
