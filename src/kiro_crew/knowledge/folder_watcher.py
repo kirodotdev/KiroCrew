@@ -787,14 +787,18 @@ class FolderWatcher:
                 # here would leave that commit unrecorded.
                 stats["skipped"] += 1
             else:
+                kept_group = bool(item_ids) and set(item_ids) <= set(old_ids)
                 # Only lands when the commit callback's own write did not: see
                 # _settle_done. Drained like _persist_state.
                 await run_to_completion(functools.partial(
                     self._settle_done, source_id, file_path, content_hash, mtime,
-                    list(item_ids), now, included))
-                ingested_paths.append(file_path)
+                    list(item_ids), now, None if kept_group else included))
+                if not kept_group:
+                    # A kept group ingested nothing new; dedup could collapse its edit.
+                    ingested_paths.append(file_path)
                 if chunk_budget:
-                    chunks_ingested += len(item_ids)
+                    # A kept old group (an item edited during the read) still cost the extraction.
+                    chunks_ingested += attempted[0] if kept_group else len(item_ids)
                     if chunks_ingested >= chunk_budget:
                         # Stop this sweep. Files not reached simply have no state
                         # row (or keep their old one), so the next sweep resumes
@@ -1464,6 +1468,7 @@ class FolderWatcher:
             # on this worker, autocommit -- no separate commit hop.
             nonlocal committed
             committed = list(item_ids)
+            record = None if committed and set(committed) <= set(old_item_ids) else included
             # Fail-safe, never fail-closed: the write below is a durability
             # UPGRADE over the in-memory capture, not a precondition. Before it
             # existed this callback could not raise; letting a raise escape now
@@ -1481,7 +1486,7 @@ class FolderWatcher:
             # IMMEDIATE``, which waits for the writer lock instead of failing
             # on it.
             try:
-                self._mark_committed(source_id, file_path, committed, included)
+                self._mark_committed(source_id, file_path, committed, record)
                 self.store.db.commit()
                 return
             except Exception:
@@ -1492,7 +1497,7 @@ class FolderWatcher:
             try:
                 self.store.db.execute("BEGIN IMMEDIATE")
                 try:
-                    self._mark_committed(source_id, file_path, committed, included)
+                    self._mark_committed(source_id, file_path, committed, record)
                     self.store.db.execute("COMMIT")
                 except BaseException:
                     self.store.db.execute("ROLLBACK")
@@ -1534,7 +1539,8 @@ class FolderWatcher:
                 embed_priority=embed_priority,
                 count_toward_import_budget=False,
                 on_progress=on_progress,
-                include_paths=include_paths, included=included)
+                include_paths=include_paths, included=included,
+                keep_edited_group=True)
 
             if refused:
                 return [], "deduped"
