@@ -12,13 +12,17 @@ const sshRemoteAuthority = '//vscode-remote/ssh-remote+'
 /**
  * The link that opens `absPath` in the viewer's local `editor`, which connects to
  * `host` over the viewer's own SSH: `<editor>://vscode-remote/ssh-remote+<host><path>`,
- * ending in `:1` for a file.
+ * ending in `:1` for a file and in `?windowId=_blank` for a folder.
  *
  * The `:1` line suffix is what makes the editor open a FILE: without it, VS Code
  * and Kiro both treat an `ssh-remote` path as a folder and open it as a remote
  * workspace. So a `kind: 'dir'` link carries no suffix and opens the folder, and
  * a file link carries it and shows the file. The editor strips the suffix
  * before opening the file.
+ *
+ * A folder opens as a workspace in the window that has focus, which replaces the
+ * workspace already open there; `windowId=_blank` makes the editor open it in a
+ * new window instead. A file stays in the current window, as a tab.
  *
  * null when the editor or host is unset, or the path is not absolute or has a
  * `.`/`..` segment: URL parsing drops dot segments before the editor reads the
@@ -44,7 +48,7 @@ export function remoteEditorUrl(
   const encode = (segment: string) =>
     encodeURIComponent(segment).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
   try {
-    return `${editor}:${sshRemoteAuthority}${host}${segments.map(encode).join('/')}${kind === 'file' ? ':1' : ''}`
+    return `${editor}:${sshRemoteAuthority}${host}${segments.map(encode).join('/')}${kind === 'file' ? ':1' : '?windowId=_blank'}`
   } catch {
     return null
   }

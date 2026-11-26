@@ -230,7 +230,7 @@ describe('FolderPanel', () => {
     await waitFor(() => expect(within(menu).getByRole('menuitem', { name: label })).toBeTruthy())
   })
 
-  it('opens the folder in the chosen remote editor, as a folder link with no line suffix', async () => {
+  it('opens the folder in the chosen remote editor in a new window, with no line suffix', async () => {
     vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
     brandingEnv.remoteEditor = 'kiro'
     brandingEnv.remoteEditorHost = 'dev-box'
@@ -238,7 +238,7 @@ describe('FolderPanel', () => {
     const menu = await openMoreMenu()
     const link = within(menu).getByRole('menuitem', { name: 'Open in Kiro' })
     expect(link.tagName).toBe('A')
-    expect(link.getAttribute('href')).toBe('kiro://vscode-remote/ssh-remote+dev-box/Users/me/ws')
+    expect(link.getAttribute('href')).toBe('kiro://vscode-remote/ssh-remote+dev-box/Users/me/ws?windowId=_blank')
   })
 
   it('keeps the header to Refresh plus one overflow trigger holding Reveal and the editor link', async () => {
