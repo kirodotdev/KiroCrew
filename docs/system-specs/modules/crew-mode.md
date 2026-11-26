@@ -5226,7 +5226,7 @@ things here and leaves every other git step to the worker's prompt
    or `master`, else `HEAD`; full ref names, so a tag never stands in for the <!-- wokeignore:rule=master -->
    branch). After that a worktree git registers at that place is used as it is,
    on whatever branch the worker has checked out; one whose folder was deleted
-   by hand is pruned and made again. A name segment the cleaning changed (or
+   by hand is deregistered and made again. A name segment the cleaning changed (or
    one over 40 characters) keeps a digest of the whole and is a legal git ref
    component. The prefix is `agent.member_branch_prefix`, `crew/` unless set
    (`crewmate_worktree.coerce_branch_prefix`, at config load): one trailing
@@ -5301,7 +5301,15 @@ it cut (`test/test_crewmate_worktree.py`). On a platform that cannot pin a tree
 walk (Windows), where that descriptor-bound removal refuses, the empty folder is
 removed by a guarded `os.rmdir` of that same folder while `os.lstat` still shows
 it is a directory (never a link or junction) whose `(dev, ino)` is the one made,
-so the next turn builds the worktree as on POSIX.
+so the next turn builds the worktree as on POSIX. A stale registration, whether
+a Bot worktree's or a run worktree's folder deleted by hand or a half-made
+add's, is dropped by path (`handlers/worktree._deregister_missing`:
+`git worktree remove <path>`, only once the folder is gone), never by
+`git worktree prune`. That git runs inside the sandbox, which hides every
+session's scratch root, so a repository-wide prune reads every scratch worktree
+of the repository another session keeps there as prunable and deletes its
+metadata while that session still works in it. No gateway code runs the prune
+(`test_the_gateway_never_runs_a_repository_wide_worktree_prune`).
 
 The same module also makes the worktree an isolated `spawn_run` worker runs in
 (`isolate: "worktree"`; `make_run_worktree`, `remove_run_worktree`): detached,

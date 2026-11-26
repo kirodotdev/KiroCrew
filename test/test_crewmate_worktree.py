@@ -86,6 +86,17 @@ def repo(tmp_path, git_here):
     return _init(root)
 
 
+def _not_a_worktree_reason(path: str) -> str:
+    """Git's reason the checkout at *path* cannot find its repository, or ``""``."""
+    proc = subprocess.run(
+        ["git", "-C", path, "rev-parse", "--git-dir"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return "" if proc.returncode == 0 else proc.stderr.strip()
+
+
 def _commit_in(path: str, name: str, message: str) -> None:
     with open(os.path.join(path, name), "w", encoding="utf-8") as fh:
         fh.write(message + "\n")
@@ -372,6 +383,43 @@ def test_a_worktree_folder_deleted_by_hand_is_rebuilt_on_its_branch(repo, tmp_pa
     again = cw.ensure("atlas", ws, repo)
     assert again.path == found.path and again.branch == "crew/atlas/tasklog"
     assert _git(again.path, "rev-parse", "HEAD") == kept
+
+
+def test_rebuilding_a_deleted_worktree_keeps_a_sibling_whose_folder_git_cannot_see(repo, tmp_path):
+    """The gateway's git runs under the sandbox, which hides every session's scratch,
+    so a sibling worktree of the same repository kept there reads as prunable. A
+    repository-wide ``git worktree prune`` would delete its metadata while it is in
+    use; only the Bot worktree's own stale registration may go."""
+    ws = str(tmp_path / "ws-atlas")
+    other_session = tmp_path / "scratch-of-another-session"
+    sibling = other_session / "wt"
+    _git(repo, "worktree", "add", "--detach", str(sibling), "HEAD")
+    found = cw.ensure("atlas", ws, repo)
+    shutil.rmtree(found.path)
+    other_session.rename(tmp_path / "masked")
+    again = cw.ensure("atlas", ws, repo)
+    (tmp_path / "masked").rename(other_session)
+    assert again.path == found.path
+    assert _not_a_worktree_reason(str(sibling)) == ""
+
+
+def test_the_gateway_never_runs_a_repository_wide_worktree_prune():
+    """``git worktree prune`` drops the registration of every worktree whose folder
+    the sandboxed git cannot see, other sessions' live scratch worktrees included.
+    Gateway code removes its own stale entry by path (``git worktree remove <path>``).
+
+    ``apps/builtins/`` is outside this pin: those are wheel copies of adopted apps,
+    which are fixed in their own repositories and mirrored back, never changed here.
+    """
+    from source_corpus import iter_candidate_sources, src_root
+
+    offenders = sorted(
+        rel
+        for path, text in iter_candidate_sources(require_all=('"worktree", "prune"',))
+        for rel in [path.relative_to(src_root()).as_posix()]
+        if not rel.startswith("apps/builtins/")
+    )
+    assert offenders == []
 
 
 def test_a_folder_git_does_not_register_is_refused(repo, tmp_path):
