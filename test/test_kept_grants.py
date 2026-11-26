@@ -29,6 +29,7 @@ from kiro_crew import atomic_write, kept_grants, kept_yolo
 from kiro_crew import safety_override as so
 from kiro_crew import safety_override_grant as so_grant
 from kiro_crew.dashboard import token_secret
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until
 
 
@@ -388,11 +389,11 @@ class TestYoloIsKept:
         # Both clocks stand still, as they do within one tick of a coarse clock, and
         # the monotonic one reads a short uptime: the restore and the clamp below
         # then see the same instant.
-        wall = time.time()
-        monkeypatch.setattr(time, "time", lambda: wall)
-        monkeypatch.setattr(time, "monotonic", lambda: _SHORT_UPTIME)
+        clock = ManualClock(start=time.time(), monotonic_start=_SHORT_UPTIME)
+        clock.install(monkeypatch, kept_yolo)
+        clock.install(monkeypatch, so_grant)
         body = _yolo_body(home)
-        body["activated_at"] = wall - 50 * 60
+        body["activated_at"] = clock.time() - 50 * 60
         kept_grants.write_record(kept_grants.YOLO_RECORD, "yolo", body)
 
         _new_process()
