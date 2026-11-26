@@ -610,6 +610,84 @@ class TestInlinePayloadNamesTheMintSurface:
     def test_a_quoted_import_without_a_loader_is_prose(self):
         assert _rule_of("python -c \"print('from kiro_crew.acp import x; token docs')\"") is None
 
+    _RUN_THE_CLI = "\"import subprocess; subprocess.run(['kirocrew', 'x'])\""
+
+    @pytest.mark.parametrize(
+        "program",
+        [
+            pytest.param(f"import re\nre.compile = exec\nre.compile({_RUN_THE_CLI})", id="assign"),
+            pytest.param(
+                f"import re\nsetattr(re, 'compile', exec)\nre.compile({_RUN_THE_CLI})", id="setattr"
+            ),
+            pytest.param(
+                f"import re\nre.__setattr__('compile', exec)\nre.compile({_RUN_THE_CLI})",
+                id="dunder-setattr",
+            ),
+            pytest.param(
+                f"import re\nvars(re).update(compile=exec)\nre.compile({_RUN_THE_CLI})",
+                id="vars-update",
+            ),
+            pytest.param(
+                f"import operator, re\noperator.setitem(vars(re), 'compile', exec)\n"
+                f"re.compile({_RUN_THE_CLI})",
+                id="operator-setitem",
+            ),
+            pytest.param(
+                f"import re as r, sys\nsys.modules['re'].compile = exec\nr.compile({_RUN_THE_CLI})",
+                id="sys-modules-alias",
+            ),
+            pytest.param(
+                f"from sys import modules\nimport re\nmodules['re'].compile = exec\n"
+                f"re.compile({_RUN_THE_CLI})",
+                id="from-sys-import-modules",
+            ),
+            pytest.param(
+                f"import os, re\nos.path.sys.modules['re'].compile = exec\n"
+                f"re.compile({_RUN_THE_CLI})",
+                id="os-path-sys-modules",
+            ),
+            pytest.param(
+                f"import re\nglobals()['re'].compile = exec\nre.compile({_RUN_THE_CLI})",
+                id="globals",
+            ),
+            pytest.param(
+                f"import re\nlocals()['re'].compile = exec\nre.compile({_RUN_THE_CLI})",
+                id="locals",
+            ),
+            pytest.param(
+                f"import re\nfrom re import __dict__ as d\nd['compile'] = exec\n"
+                f"re.compile({_RUN_THE_CLI})",
+                id="module-dict",
+            ),
+            pytest.param(
+                f"import re\nre._compile.__globals__['compile'] = exec\nre.compile({_RUN_THE_CLI})",
+                id="function-globals",
+            ),
+            pytest.param(
+                f"import re\n[re][0].compile = exec\nre.compile({_RUN_THE_CLI})", id="subscript"
+            ),
+            pytest.param(
+                f"import builtins, sys\nsys.modules.update(re=builtins)\nimport re\n"
+                f"re.compile({_RUN_THE_CLI}, 'k', 'exec')",
+                id="module-swap",
+            ),
+            pytest.param(
+                f"import re\nm = re\nm.compile = exec\nm.compile({_RUN_THE_CLI})", id="local-alias"
+            ),
+        ],
+    )
+    def test_a_runner_rebound_onto_re_compile_stays_a_loader(self, program):
+        """A method named like a loader is read as that loader, whatever its receiver.
+
+        Each program turns ``re.compile`` into a code loader (``exec``, or the builtin
+        ``compile`` once the module is swapped), through a binding no static reading of the
+        receiver can follow, so the call's argument is still read as code. These are the
+        cases a receiver-based exemption for a regex pattern has to keep refusing.
+        """
+        cmd = f"python3 - <<'PY'\n{program}\nPY"
+        assert argv_floor._is_credential_mint(cmd.lower(), raw_text=cmd), cmd
+        assert _rule_of(cmd) == _MINT, cmd
+
     def test_the_mint_surface_covers_every_token_producer_in_the_tree(self, product_tree):
         """Every module that can produce a dashboard token is in reach of the gate -- derived
         from the tree, not from a list.

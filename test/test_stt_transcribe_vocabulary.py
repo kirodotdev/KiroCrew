@@ -48,8 +48,13 @@ def _req(method: str = "GET", body: dict | None = None, *, app_token: str | None
     req = MagicMock(spec=web.Request)
     req.method = method
     req.path = "/api/stt/vocabularies"
-    claims = {"user": "dashboard", "app": app_token}
+    # The local owner's own session (no owner configured), so ``/api/config/stt``
+    # passes its owner gate.
+    claims = {"user": "local-app", "app": app_token}
     req.get = lambda key, default=None: claims.get(key, default)
+    req.__contains__.side_effect = lambda key: key in claims
+    req.__getitem__.side_effect = claims.__getitem__
+    req.app = {"state": SimpleNamespace(owner_id="")}
     if body is not None:
         req.json = AsyncMock(return_value=body)
     return req

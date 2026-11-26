@@ -41,7 +41,7 @@ import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import get_args
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 from tailnet_mobile_helpers import quiet_audit_fixture  # noqa: F401
@@ -950,7 +950,7 @@ class TestQrRefusals:
                     _request(tailnet_host=_HOST, cookie_token=_owner_session_token())
                 )
         assert resp.status == 200
-        assert captured["extra"] == {"boot": current_boot_id()}
+        assert captured["extra"] == {"boot": current_boot_id(), "ancestors": ANY}
         assert "no_refresh" not in (captured["extra"] or {})
 
     @pytest.mark.asyncio
@@ -977,7 +977,7 @@ class TestQrRefusals:
                     _request(tailnet_host=_HOST, cookie_token=_owner_session_token())
                 )
         assert resp.status == 200
-        assert captured["extra"] == {"no_refresh": "1"}
+        assert captured["extra"] == {"no_refresh": "1", "ancestors": ANY}
         assert "boot" not in (captured["extra"] or {})
 
     @pytest.mark.asyncio
@@ -1092,7 +1092,7 @@ class TestQrRefusals:
                     _request(tailnet_host=_HOST, cookie_token=_owner_session_token())
                 )
         assert resp.status == 200
-        assert captured["extra"] == {"boot": current_boot_id()}
+        assert captured["extra"] == {"boot": current_boot_id(), "ancestors": ANY}
 
     @pytest.mark.asyncio
     async def test_persistent_shape_refused_when_timed_shape_is_in_force(
@@ -1121,7 +1121,7 @@ class TestQrRefusals:
                     _request(tailnet_host=_HOST, cookie_token=_owner_session_token())
                 )
         assert resp.status == 200
-        assert captured["extra"] == {"no_refresh": "1"}
+        assert captured["extra"] == {"no_refresh": "1", "ancestors": ANY}
 
     @pytest.mark.asyncio
     async def test_unreadable_config_falls_back_to_the_default(
@@ -1183,7 +1183,7 @@ class TestQrRefusals:
                 )
         assert resp.status == 200
         assert loads["n"] >= 2, "the handler must do its own read, not reuse _live_state's"
-        assert captured["extra"] == {"boot": current_boot_id()}
+        assert captured["extra"] == {"boot": current_boot_id(), "ancestors": ANY}
 
     @pytest.mark.asyncio
     async def test_ttl_cannot_be_talked_past_the_endpoint_ceiling(
@@ -1384,7 +1384,7 @@ class TestQrCallerBounds:
         captured: dict[str, object] = {}
         resp = await self._mint(captured, cookie_token=_owner_session_token())
         assert resp.status == 200
-        assert captured["extra"] == {"boot": current_boot_id()}
+        assert captured["extra"] == {"boot": current_boot_id(), "ancestors": ANY}
         assert captured["ttl"] == tailnet_mobile.DEFAULT_QR_TTL_SECS
 
     @pytest.mark.asyncio

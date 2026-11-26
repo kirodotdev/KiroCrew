@@ -12,6 +12,7 @@ const {
   INCUMBENT_RETRY_STATUS,
 } = require("../../gateway-recovery");
 const { INIT_PPID } = require("../../gateway-stop");
+const { canonicalWindowsPath } = require("../../windows-port");
 
 // How long a gateway that holds the port for this app's own data folder may
 // go on failing its health check at launch before the user is offered to stop
@@ -22,6 +23,13 @@ const STUCK_GATEWAY_POLL_MS = 1_000;
 // How a Windows gateway proven to serve this data folder is adopted when the
 // user chooses to use it (see provenWindowsHomeGateway): a plain local one.
 const PROVEN_HOME_OWNER = "kirocrew";
+
+// The executable a Windows process identity (`"<ExecutablePath>" <CommandLine>`,
+// windowsProcessCommand) opens with, or "" when it does not open with a quoted path.
+function quotedExecutable(command) {
+  const end = command.startsWith('"') ? command.indexOf('"', 1) : -1;
+  return end > 1 ? command.slice(1, end) : "";
+}
 
 /**
  * What a launch does about a gateway already holding its port: adopt it, wait
@@ -90,6 +98,28 @@ function createHolderDecision({
   }
 
   /**
+   * isCurrentBundleGateway for the update-time stop (shutdown.js), answered on
+   * Windows too: there the one listener's executable, read through
+   * windowsCommand, must lie beneath this bundle's backend-dist, compared
+   * without case, as spelled or through the junction a Toolbox-style install
+   * is reached by (Windows reports a process by the folder it resolved to).
+   * Every other caller keeps the Windows answer false, so what a launch shows
+   * and the governance gate do not change.
+   */
+  async function isCurrentBundleGatewayForUpdate() {
+    if (!IS_WIN) return isCurrentBundleGateway();
+    if (!app.isPackaged || !windowsCommand || !path.isAbsolute(processObj.resourcesPath || "")) return false;
+    const pids = await snapshotGatewayPortPids(PORT);
+    if (pids?.length !== 1) return false;
+    const executable = quotedExecutable(String((await windowsCommand(pids[0])) || "").trim()).toLowerCase();
+    const realpath = fs?.realpathSync?.native;
+    const resolved = realpath ? canonicalWindowsPath(processObj.resourcesPath, realpath) : "";
+    return [processObj.resourcesPath, resolved].some(
+      (resources) => resources && executable.startsWith((path.join(resources, "backend-dist") + path.sep).toLowerCase()),
+    );
+  }
+
+  /**
    * A managed install keeps each version in its own folder, so after an update
    * the previous version's detached gateway runs from a sibling folder and
    * isCurrentBundleGateway (this bundle only) does not see it. This recognizes
@@ -104,7 +134,7 @@ function createHolderDecision({
    * listener is not such a gateway.
    *
    * Only the stale warning reads this. The update-time stop keeps
-   * isCurrentBundleGateway, so nothing is stopped because of it.
+   * isCurrentBundleGatewayForUpdate, so nothing is stopped because of it.
    */
   async function previousManagedVersionFolder(gatewayVersion) {
     if (!app.isPackaged || IS_WIN || !path.isAbsolute(processObj.resourcesPath || "")) return "";
@@ -263,8 +293,7 @@ function createHolderDecision({
     const lock = await probeLockHolderPid({ port: PORT });
     if (lock?.verdict !== "captured" || lock.pid !== pids[0]) return null;
     const command = String((await windowsCommand(pids[0])) || "").trim();
-    const end = command.startsWith('"') ? command.indexOf('"', 1) : -1;
-    const executable = end > 1 ? command.slice(1, end) : "";
+    const executable = quotedExecutable(command);
     // The executable is the observed one, so this checks the server shape
     // only; the lock-holder match above is what ties it to this data folder.
     if (!executable || !isKirocrewGatewayCommand(command, { trustedExecutablePaths: [executable] })) {
@@ -580,6 +609,7 @@ function createHolderDecision({
 
   return {
     isCurrentBundleGateway,
+    isCurrentBundleGatewayForUpdate,
     resolveUnresponsiveHolder,
     resolveGatewayConflict,
   };

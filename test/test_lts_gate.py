@@ -739,6 +739,7 @@ _EXPECTED_OPEN_ROUTES = {
     ("POST", "/api/kiro-prerequisite/update-cli"),
     ("POST", "/api/auth/refresh"),
     ("POST", "/api/logout"),
+    ("POST", "/api/logout/link"),
     ("POST", "/api/shutdown"),
 }
 

@@ -20,9 +20,11 @@ from typing import TYPE_CHECKING, Callable
 from aiohttp import web
 
 from kiro_crew.dashboard.token_auth import (
+    ANCESTORS_CLAIM,
     MAX_SESSION_TTL_SECS,
     _b64url_decode,
     required_peer_key_unverified,
+    token_lineage,
 )
 
 if TYPE_CHECKING:
@@ -248,6 +250,13 @@ def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
             carried["no_refresh"] = "1"
         if str(data.get("owner_mint", "")) == "1":
             carried["owner_mint"] = "1"
+        # The child keeps its own nonce as its family and descends from the caller's:
+        # revoking the link the caller came from (or any it descends from) also ends the
+        # device it lent a session to, while revoking the child ends only the child and
+        # what it opened.
+        lineage = token_lineage(data)
+        if lineage:
+            carried[ANCESTORS_CLAIM] = lineage
         if str(data.get("require_peer", "")) == "1":
             carried["require_peer"] = "1"
             # Middleware refuses a claimless require_peer cookie, so the

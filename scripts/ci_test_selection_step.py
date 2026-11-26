@@ -78,6 +78,9 @@ REQUEST_TIMEOUT = 10.0
 MIN_SCORE_SECS = 5.0
 # Characters of the reason the summary line shows; the verdict file holds all of it.
 SUMMARY_REASON_CHARS = 200
+# The timings of the verdict, in the order the summary line prints them: `fetch` is the
+# step's own (finding, downloading and checking the bundle), the rest the scorer's.
+TIMED = ("fetch", "load", "readers", "score")
 # Ten times the bundle of the day this was written (2.4 MB): an archive past it
 # is not the bundle.
 MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
@@ -285,13 +288,17 @@ def fetch_bundle(get: Get, repo: str, token: str, path: Path, at: datetime) -> t
 
 
 def summary_line(verdict: Mapping[str, Any], age: timedelta | None) -> str:
-    """The step's one line: verdict, reason, would-run share, bundle age."""
+    """The step's one line: verdict, reason, would-run share, bundle age, and its timings."""
     built = "no bundle" if age is None else f"bundle {age.total_seconds() / 3600:.1f} h old"
+    timings = verdict.get("timings") or {}
+    took = ", ".join(f"{name} {timings[name]:.1f} s" for name in TIMED if name in timings)
+    if "modified_py" in timings:
+        took += f"; {timings['modified_py']} modified .py files"
     return (
         f"Test selection (shadow, nothing acts on it): verdict `{verdict['verdict']}`, "
         f"reason: {str(verdict['reason'])[:SUMMARY_REASON_CHARS]}, "
         f"would run {verdict['would_run_share']:.1%} of the Linux "
-        f"test node ids, {built}."
+        f"test node ids, {built}. Took: {took}."
     )
 
 
@@ -317,7 +324,9 @@ def score(
             raise NoBundle(f"{left:.0f}s of the step's {BUDGET_SECS:g}s were left to score in")
     except Exception as exc:  # noqa: BLE001  (the step never fails the job)
         reason = str(exc) if isinstance(exc, NoBundle) else f"{type(exc).__name__}: {exc}"
-        return selection.unscored(meta, f"no_bundle: {reason}"), None
+        verdict = selection.unscored(meta, f"no_bundle: {reason}")
+        verdict["timings"] = {"fetch": round(clock() - started, 2)}
+        return verdict, None
     args = argparse.Namespace(
         root=str(root),
         bundle=str(bundle),
@@ -326,7 +335,10 @@ def score(
         timeout=left,
         **meta,
     )
-    return selection.run(args), age
+    fetched = round(clock() - started, 2)
+    verdict = selection.run(args)
+    verdict["timings"] = {"fetch": fetched, **verdict.get("timings", {})}
+    return verdict, age
 
 
 def main(env: Mapping[str, str] | None = None, root: Path = REPO_ROOT, get: Get = http_get) -> int:

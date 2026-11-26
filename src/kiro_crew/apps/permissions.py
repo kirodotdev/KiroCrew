@@ -73,10 +73,33 @@ def check_tool_permission(app_name: str, tool_name: str, manifest: AppManifest) 
 
     Returns True if the tool is in the app's declared mcpTools list,
     or if the app declares no tool restrictions (empty list = unrestricted).
+    A host tool declared in ref form (``@kirocrew-core/memory_recall``) counts
+    as its bare name; see :func:`_declared_tool_names`.
     """
     if not manifest.permissions.mcpTools:
         return True  # no restrictions declared
-    return tool_name in manifest.permissions.mcpTools
+    return tool_name in _declared_tool_names(manifest)
+
+
+def _declared_tool_names(manifest: AppManifest) -> set[str]:
+    """``permissions.mcpTools`` with each managed-server ref cut to its bare tool name.
+
+    Agent ``tools`` lists name a host tool as ``@<server>/<tool>``, so an author may
+    write that form here too. Managed tools are judged by bare name, so a ref whose
+    ``<server>`` is a host-managed server counts as ``<tool>``. Any other entry, an
+    app's own ``@<app>/...`` or ``@<app>:...`` tool included, is kept as written.
+    """
+    from kiro_crew.mcp_discovery import _MANAGED_SERVER_TOOL_MODULES
+
+    names: set[str] = set()
+    for entry in manifest.permissions.mcpTools:
+        if entry.startswith("@"):
+            server, sep, tool = entry[1:].partition("/")
+            if sep and tool and server in _MANAGED_SERVER_TOOL_MODULES:
+                names.add(tool)
+                continue
+        names.add(entry)
+    return names
 
 
 #: Managed tools the framework wires into every app agent's own view, so a

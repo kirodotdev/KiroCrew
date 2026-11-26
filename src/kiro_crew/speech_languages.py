@@ -23,4 +23,5 @@ COMMON_LANGUAGE_CODES: tuple[str, ...] = (
     "ko-KR",
     "zh-CN",
     "vi-VN",
+    "hi-IN",
 )

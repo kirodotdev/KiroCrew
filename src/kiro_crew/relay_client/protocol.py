@@ -296,6 +296,16 @@ def is_display_name(value: object) -> TypeGuard[str]:
     return len(value.encode("utf-8")) <= DISPLAY_NAME_MAX_BYTES
 
 
+def _check_access_token(frame: Dict[str, Any], sid: int) -> None:
+    """Refuse an ``accessToken`` that is present but not a string.
+
+    Optional while the relay does not send it on every frame. Its contents are
+    checked before the caller is stamped (``relay_client.access_token``).
+    """
+    if "accessToken" in frame and not isinstance(frame["accessToken"], str):
+        raise FrameError(ERR_INVALID_MESSAGE, "accessToken must be a string", stream_id=sid)
+
+
 def _display_fields(frame: Dict[str, Any]) -> None:
     """Drop a ``userEmail`` or ``userName`` outside the grammar; never refuse the frame.
 
@@ -390,6 +400,7 @@ def _check_request(frame: Dict[str, Any]) -> None:
     if frame.get("streaming") is not True:
         raise FrameError(ERR_INVALID_MESSAGE, "requests always stream in version 1", stream_id=sid)
     _check_user(frame, sid)
+    _check_access_token(frame, sid)
     _display_fields(frame)
     if "traceparent" in frame and not isinstance(frame["traceparent"], str):
         raise FrameError(ERR_INVALID_MESSAGE, "traceparent must be a string", stream_id=sid)
@@ -418,6 +429,7 @@ def _check_ws_upgrade(frame: Dict[str, Any]) -> None:
             )
         _check_header(pair[0], pair[1], sid)
     _check_user(frame, sid)
+    _check_access_token(frame, sid)
     _display_fields(frame)
 
 

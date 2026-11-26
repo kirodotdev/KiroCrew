@@ -258,6 +258,33 @@ async def _deny_non_owner_stt_custom_model(request: web.Request, body: dict) -> 
     return _owner_denial_response(request, "the custom speech model is owner-only")
 
 
+#: Speech fields only the owner (or a teammate) may write, on endpoints an app token
+#: may otherwise reach: the AWS profile and region the speech calls spend on, and
+#: ``polish``, the consent to send a finished transcript to a model.
+OWNER_ONLY_SPEECH_FIELDS = frozenset(
+    {"aws_profile", "region", "transcribe_profile", "transcribe_region", "polish"}
+)
+
+
+def deny_non_owner_speech_fields(
+    request: web.Request, body: dict, operation: str
+) -> web.Response | None:
+    """Refuse a caller that is not the owner the :data:`OWNER_ONLY_SPEECH_FIELDS`.
+
+    Refused on PRESENCE, before any write, like the custom-model pair: a 200 would
+    say the field was stored. Every other field keeps its caller rules. An internal
+    caller (no app claim) is not judged here.
+    """
+    if "app" not in request or not (OWNER_ONLY_SPEECH_FIELDS & body.keys()):
+        return None
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    if is_owner_dashboard_request(request):
+        return None
+    _audit_stt_refusal(request, operation, "owner-only speech field from a non-owner")
+    return _owner_denial_response(request, "the speech account and polish settings are owner-only")
+
+
 def _stt_custom_model_refusal(body: dict) -> web.Response | None:
     """A 400 for a custom-model field that may not be stored, else ``None``.
 

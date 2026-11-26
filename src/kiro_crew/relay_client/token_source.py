@@ -69,9 +69,11 @@ def token_claims(token: str) -> dict:
     """The host token's payload, read but not verified: the relay verifies it.
 
     The client reads only ``kind`` and ``sub``, which say whose Crew this is, to
-    tell the dashboard's relay ingress who the owner is, and the lease client reads
-    ``iat`` and ``exp`` for the token's lifetime. Nothing here trusts the token for
-    access; the relay checks its signature on every dial.
+    tell the dashboard's relay ingress who the owner is; ``iss``, ``rgn`` and ``ep``,
+    which say what a person's access token for this Crew must name
+    (``access_token.access_scope``); and the lease client reads ``iat`` and ``exp``
+    for the token's lifetime. Nothing here trusts the token for access; the relay
+    checks its signature on every dial.
     """
     parts = token.split(".")
     if len(parts) != 3:

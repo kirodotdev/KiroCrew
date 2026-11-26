@@ -1,11 +1,12 @@
 """The dashboard shows a reply's last word sooner, and the mask says what it said.
 
 The live stream withholds the trailing run of credential-class characters, so a
-credential split across two chunks is never shown in parts. On the dashboard a run
-that is one plain word ending a sentence is released with its own chunk
-(``StreamRedactor.release_sentence_end``): no later text can make such a word part
-of a credential, and text glued to it never shows more than it did. Every other
-run, and every other consumer of the stream (the channels), holds as it did.
+credential split across two chunks is never shown in parts. On the dashboard, and
+in a managed sub-agent run's thinking stream, a run that is one plain word ending a
+sentence is released with its own chunk (``StreamRedactor.release_sentence_end``):
+no later text can make such a word part of a credential, and text glued to it never
+shows more than it did. Every other run, and every other consumer of the stream (the
+channels), holds as it did.
 """
 
 from __future__ import annotations
@@ -261,7 +262,7 @@ class TestTheChannelsHoldAsBefore:
         assert provider.sent_before == ["", "All is "]
         assert out == "All is done."
 
-    def test_only_the_dashboards_chunk_handler_asks_the_redactor_for_the_release(self) -> None:
+    def test_only_the_dashboard_and_a_managed_runs_thinking_ask_the_redactor_for_it(self) -> None:
         """Slack's stream has a method of the same name; it settles at a tool card with ``flush``."""
         src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
         asks = re.compile(r"(?<!self)\.release_sentence_end\(")
@@ -271,4 +272,4 @@ class TestTheChannelsHoldAsBefore:
             if asks.search(path.read_text(encoding="utf-8"))
         )
 
-        assert callers == ["dashboard/chat_turn/stream_chunks.py"]
+        assert callers == ["dashboard/chat_turn/stream_chunks.py", "subagent_manager/run_turn.py"]

@@ -18,8 +18,9 @@ Config bytes and Includes are sandbox-read into a snapshot fed to ssh -G on stdi
 NUL, lone CR and whitespace other than space, tab and newline refuse before
 parsing; CRLF line endings are accepted.
 The proof runs ssh, sh and head from trusted system directories, never through PATH.
-Unreadable files, nested-block Includes, unsafe Match criteria and absent
-sandboxing or trusted executables refuse. Runs off-loop; failures cannot retain
+An Include inside a block is inlined there, and its file may not open a block
+of its own. Unreadable files, unsafe Match criteria and absent sandboxing or
+trusted executables refuse. Runs off-loop; failures cannot retain
 a route-only allow.
 """
 
@@ -210,11 +211,14 @@ def _read_config(
     out: "list[str]",
     mode: str,
     required: bool,
+    nested: bool = False,
 ) -> None:
     """Read sandbox-visible bytes into sections and a bounded snapshot.
 
-    Top-level Includes are inlined with Match-all resets. Unsafe Match or
-    Include forms raise _Unknowable; a missing required file does too.
+    Top-level Includes are inlined with Match-all resets. An Include inside a
+    Host or Match block is inlined into that block (*nested*), so its file may
+    hold no Host or Match line of its own. Unsafe Match or Include forms raise
+    _Unknowable; a missing required file does too.
     """
     if depth > _INCLUDE_DEPTH_MAX:
         raise _Unknowable(path)
@@ -234,7 +238,7 @@ def _read_config(
         raise _Unknowable(path)
     if sum(len(line) for line in out) + len(text) > _SNAPSHOT_BYTES_MAX:
         raise _Unknowable(path)
-    in_block = False
+    in_block = nested
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -244,6 +248,8 @@ def _read_config(
             raise _Unknowable(path)
         words = _ssh_config_words(stripped)
         keyword = _keyword(stripped)
+        if nested and keyword in ("match", "host"):
+            raise _Unknowable(path)
         if keyword == "match":
             criteria = _ssh_config_words(_bare(stripped))[1:]
             while criteria:
@@ -258,8 +264,6 @@ def _read_config(
             in_block = True
             blocks.append(_Block("host", words[1:]))
         elif keyword == "include":
-            if in_block:
-                raise _Unknowable(path)
             for pattern in words[1:]:
                 if "%" in pattern or "$" in pattern:
                     raise _Unknowable(path)
@@ -267,9 +271,12 @@ def _read_config(
                 if not os.path.isabs(pattern):
                     pattern = os.path.join(base, pattern)
                 for target in _glob_in_sandbox(pattern, mode):
-                    _read_config(target, base, depth + 1, blocks, out, mode, required=True)
-                    out.append(_MATCH_ALL)
-                    blocks.append(_Block("all", []))
+                    _read_config(
+                        target, base, depth + 1, blocks, out, mode, required=True, nested=in_block
+                    )
+                    if not in_block:
+                        out.append(_MATCH_ALL)
+                        blocks.append(_Block("all", []))
             continue
         elif keyword in _DESTINATION_KEYS:
             if not blocks:

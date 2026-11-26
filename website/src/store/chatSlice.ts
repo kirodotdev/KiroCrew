@@ -1402,7 +1402,7 @@ export { FOLDER_SUGGESTION_MAX_TURNS, capturePendingAskId, isAnsweredQuestionEnd
 export { mcpAppKey } from './chat/mcpApps'
 export {
   isActiveSubagent, isChipSubagent, isAwaitingSpawnApproval, isSpawnApprovalGone, isSpawnApprovalRetired, selectSidebarApprovalCounts, selectSidebarStartedSubagentCounts, selectSidebarSubagentCounts, selectSlotPendingSpawnApprovals,
-  selectSlotSubagents, selectSlotSubagentsActive, selectSubagentActivityCount,
+  selectSlotSubagents, selectSlotSubagentsActive, selectSubagentActivityCount, SUBAGENT_THINKING_CAP, SUBAGENT_THINKING_KEEP,
 } from './chat/subagents'
 export { WORKFLOW_TERMINAL_STATUSES, isTerminalWorkflowStatus, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys } from './chat/workflows'
 export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './chat/automations'

@@ -957,7 +957,10 @@ files own it:
   layers, emits `@tailwind utilities` UNLAYERED (see the header comment there:
   the component CSS after it was written against v3's unlayered utilities and
   must keep competing with them on plain specificity), and lists the template
-  sources with `@source`. Then the Preflight compensation, three v3 Preflight
+  sources with `@source`. It also imports `src/tailwind-adopted-app-classes.css`,
+  the generated, append-only list of utilities adopted former built-ins use
+  (theming-contract, *Adopted apps' utilities*); never hand-edit it. Then the
+  Preflight compensation, three v3 Preflight
   defaults restored as token-backed base rules (default border colour
   `var(--border)`, placeholder colour `var(--muted)`, `cursor: pointer` on
   enabled buttons). Then the imports of `font-faces.css`, `design-tokens.css` and

@@ -215,24 +215,23 @@ _CREDENTIAL_PATTERNS = re.compile(
     # `test_link_token_signature_is_43_chars`, which fails loudly if `_sign` changes
     # digest, instead of letting redaction silently stop matching.
     #
-    # `generate_token` always emits 6 claims (`sub`/`exp`/`session_exp`/`iat`/`nonce`/
-    # `gen`), with a 16-hex-char nonce and float timestamps; `kind`, `app`, `prompt`
+    # `generate_token` always emits 7 claims (`sub`/`exp`/`session_exp`/`iat`/`nonce`/
+    # `gen`/`fam_v`), with a 16-hex-char nonce and float timestamps; `kind`, `app`, `prompt`
     # and `extra` only ADD. Payload length is NOT fixed. It scales with `len(sub)`, and
     # `json.dumps` writes each float timestamp at its own repr width, which base64
     # then quantises into 4-char steps. So the floor is derived, not sampled: a
     # 1-char `sub` (the narrowest a caller passes: the app validator requires at
     # least one char and the other call sites supply a literal fallback), `gen=0`,
     # and all three timestamps at their shortest 12-char repr (an exactly-integral
-    # `time.time()` in the current 10-digit epoch era) measures 145 chars past
-    # `eyJ`, which leaves the `{96,}` floor 49 chars of headroom against a future
+    # `time.time()` in the current 10-digit epoch era) measures 161 chars past
+    # `eyJ`, which leaves the `{96,}` floor 65 chars of headroom against a future
     # shorter claim set while still excluding `eyJ2IjoxfQ.json`. ONLY that derived
     # floor is pinned, by `test_link_token_payload_clears_the_96_char_floor`, which
     # reads the bound from the compiled pattern and the claim keys from a real mint
     # so a dropped claim fails loudly instead of silently disabling redaction. Live
     # payloads are much larger and are NOT pinned, because the exact spread moves
-    # with float reprs and caller mix: measured 168-185 for the mandatory-only
-    # callers and 192-223 for the two that also pass `app=` (`handlers/core.py`,
-    # `token_auth.py`), which adds an `"app"` claim.
+    # with float reprs and caller mix; the two callers that also pass `app=`
+    # (`handlers/core.py`, `token_auth.py`) add an `"app"` claim on top.
     #
     # Order matters: the 3-to-5-segment
     # alternative is tried first at each position, so a real JWS still redacts whole

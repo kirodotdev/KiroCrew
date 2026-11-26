@@ -8964,6 +8964,13 @@
         "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · forced layout {{forced}}",
         "slow_frame_log_frames_unsupported": "This browser does not report long frames."
       },
+      "deepseekKey": {
+        "title": "Provider key",
+        "intro": "Paste the API key DeepSeek Harness uses for DeepSeek's hosted models. It goes to Settings > Secrets, and the config keeps only a reference to it. A model served on this machine needs no key.",
+        "desc_api_key": "Your DeepSeek API key, from the DeepSeek platform.",
+        "value_missing": "The key this names is no longer in Secrets, so new DeepSeek Harness sessions are refused. Save a new key, or remove it.",
+        "read_failed": "Could not read your DeepSeek Harness settings. Reload the page to try again."
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
         "open_webhooks": "Open Webhooks",

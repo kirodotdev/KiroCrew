@@ -73,6 +73,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/chat/slots/{slot}/approve-for-me"): RouteAccess(
         "chat.approve_for_me.change", UNSTABLE
     ),
+    # Loopback or same-user socket plus X-Local-Secret (handlers/core.py); revokes one
+    # link's credential family for `kirocrew logout --link`.
+    ("POST", "/api/logout/link"): RouteAccess("auth.logout_link.revoke", UNSTABLE),
     # Dashboard user only (chat_folders._toggle_slot_user_flag): 403 for an app token
     # and an internal caller.
     ("PATCH", "/api/chat/slots/{slot}/source-links-off"): RouteAccess(
@@ -158,4 +161,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # first-party session is answered 404. Reads only.
     # Contract test: test_crew_api_grant_self.py.
     ("GET", "/v1/crew/grant"): RouteAccess("crew_api.grant.read", PREVIEW),
+    # Owner dashboard only (handlers/project_mcp_approve.py); the mcp.project_server
+    # card's Apply. Records the approval and restarts open chats.
+    ("POST", "/api/mcp/project-servers/approve"): RouteAccess(
+        "mcp.project_servers.approve", UNSTABLE
+    ),
 }

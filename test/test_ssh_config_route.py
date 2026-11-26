@@ -399,13 +399,58 @@ def test_a_config_changed_after_the_scan_does_not_reach_ssh_g(config_dir, ssh_g)
     assert ssh_g.snapshots == [scanned + "Match all\n"]
 
 
-@pytest.mark.parametrize("block", ["Host *.example", "Match host *"])
-def test_an_include_inside_a_block_skips_ssh_g(config_dir, ssh_g, block):
-    (config_dir / "config").write_text(f"{block}\n  Include extra\n")
-    (config_dir / "extra").write_text("User someone\n")
+@pytest.mark.parametrize("block", ["Host *.example", "Match host *", "Match final all"])
+def test_an_include_inside_a_block_is_inlined_into_that_block(config_dir, ssh_g, block):
+    (config_dir / "config").write_text(f"{block}\n  Include extra\n  User other\n")
+    (config_dir / "extra").write_text("User someone\nCiphers aes256-ctr\n")
+    ssh_g.stdout = _effective()
+    assert ssh_config_route.route_is_not_self(HOST) is True
+    # The file's lines stay inside the block: no Match-all reset follows them.
+    assert ssh_g.snapshots[0].startswith(
+        f"{block}\nUser someone\nCiphers aes256-ctr\n  User other\n"
+    )
+
+
+def test_the_stock_red_hat_system_config_does_not_refuse(config_dir, ssh_g):
+    system = config_dir.parent / "system"
+    (system / "ssh_config.d").mkdir()
+    (system / "ssh_config").write_text(
+        "Include /etc/ssh/ssh_config.d/*.conf\n".replace("/etc/ssh", str(system))
+    )
+    (system / "crypto.config").write_text("Ciphers aes256-gcm@openssh.com\nMACs hmac-sha2-256\n")
+    (system / "ssh_config.d" / "50-redhat.conf").write_text(
+        f"Match final all\n\tInclude {system / 'crypto.config'}\n"
+        "\tGSSAPIAuthentication yes\n\tForwardX11Trusted yes\n"
+    )
+    ssh_g.stdout = _effective(proxyjump="jump.example")
+    assert ssh_config_route.route_is_not_self(HOST) is True
+
+
+@pytest.mark.parametrize(
+    "included",
+    [
+        pytest.param("Host other.example\n  User x\n", id="opens-a-host-block"),
+        pytest.param("Match host *\n  User x\n", id="opens-a-match-block"),
+        pytest.param("  Include deeper\n", id="nested-include-opens-a-block"),
+        pytest.param("  Include missing\n", id="nested-include-missing"),
+    ],
+)
+def test_an_include_inside_a_block_that_cannot_stay_in_it_skips_ssh_g(config_dir, ssh_g, included):
+    (config_dir / "config").write_text("Host *.example\n  Include extra\n")
+    (config_dir / "extra").write_text(included)
+    (config_dir / "deeper").write_text("Host x\n  User y\n")
     ssh_g.stdout = _effective()
     assert ssh_config_route.route_is_not_self(HOST) is False
     assert ssh_g.wraps == []
+
+
+@pytest.mark.parametrize("key", ["HostName elsewhere.example", "ProxyJump elsewhere.example"])
+def test_a_destination_key_an_in_block_include_sets_counts_for_that_block(config_dir, ssh_g, key):
+    # The block applies to the hop, so the key it inherits refuses the hop.
+    (config_dir / "config").write_text("Host jump.example\n  Include extra\n")
+    (config_dir / "extra").write_text(f"{key}\n")
+    ssh_g.stdout = _effective(proxyjump="jump.example")
+    assert ssh_config_route.route_is_not_self(HOST) is False
 
 
 @pytest.mark.parametrize(("mode", "backend"), [("off", "namespace"), ("auto", "none")])

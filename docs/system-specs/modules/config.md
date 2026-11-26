@@ -51,7 +51,7 @@ the loader therefore reaches `config set`, an undo restores it, and a patch of
 | `config/fields.py` | `_meta` field metadata, the `_safe_*` value coercers every section shares, and `field_default`, the one reader of a DTO field's declared default (`SectionReader` reads through it). An integer coercer keeps a legacy numeric string or integral float already in a config file (`"5"` -> 5, `5.0` -> 5) and rejects booleans and non-integral, malformed or non-finite values in favour of the default. A leaf: it imports nothing from `kiro_crew`. |
 | `config/sections.py` | The facade other specs and tests name for the section DTOs below and for the three domain owners after them: it re-exports every name they define as the same object, and defines nothing of its own. |
 | `config/sections_defaults.py` | `SectionReader`, which resolves a builder's omitted key and coercer fallback to the DTO field's declared default, and the named defaults a DTO field and a load fallback share (`DEFAULT_MODEL`, `DEFAULT_POOL_SIZE`, ...). |
-| `config/sections_agent_env.py` | The environment an agent process receives: the `agent.env` name policy and its refusals, `agent.child_env_defaults` and `agent.deepseek_env`. |
+| `config/sections_agent_env.py` | The environment an agent process receives: the `agent.env` name policy and its refusals, `agent.child_env_defaults` and `agent.deepseek_env`, and the keyed dashboard writes of `agent.strands_env` and `agent.deepseek_env` (`DASHBOARD_KEYED_ENV_MAPS`: one validator per map over a shared body, one merge). |
 | `config/sections_agent_fields.py` | Field coercion for `agent` and the crew records: model pins, role maps, effort, the context-token map, approval modes, the avatar record and bot-name filter, the jail, ACP-backend, YOLO-duration and completion-keep readers, and the KAS bundle url. |
 | `config/sections_agent.py` | `AgentConfig`, and the readers that resolve against its declared defaults. |
 | `config/sections_session.py` | `session`, the crew record `KiroCrewAgentConfig`, `workspaces`, `session_environments` (its DTOs; validation lives in `config/session_environments.py`) and a session's `ResolvedBindings`. |
@@ -5314,12 +5314,11 @@ Returns the effective config for a channel:
 
 `dashboard.entry_port` (default `0`, off; restart) is a second port for a reverse
 proxy on this machine, bound on both loopback addresses (127.0.0.1 and ::1); the
-bind address is not configurable. It is for Linux and macOS only for now: on
-Windows a non-zero value stops the start of the regular or the headless
-`kirocrew gateway`. An integer that is neither `0` nor 1024 to 65535, or that
+bind address is not configurable. On Windows each entry listener has a listener
+guard. An integer that is neither `0` nor 1024 to 65535, or that
 equals the gateway's own port, or that equals `dashboard.shared_crew.ssm_port`
-while the SSM listener is configured to run, stops that start too
-(`EntryPortError`). The API-only server (`--slack-only`) neither checks the value
+while the SSM listener is configured to run, stops the start of the regular or
+the headless `kirocrew gateway` (`EntryPortError`). The API-only server (`--slack-only`) neither checks the value
 nor opens the port: it logs a warning and starts.
 The shared config validation replaces a wrong-typed value (for example `8443.5`,
 `"abc"`, `true`, or `null`) with the default `0`, so the entry port stays off. It

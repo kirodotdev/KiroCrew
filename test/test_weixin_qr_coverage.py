@@ -207,7 +207,10 @@ def _config(creds: dict[str, str] | None = None, **weixin: Any) -> SimpleNamespa
 
 def _get(monkeypatch, cfg: SimpleNamespace, state: Any = None):
     monkeypatch.setattr(qr, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
-    request = SimpleNamespace(app={} if state is None else {"state": state})
+    # No app claim, as on the internal transport: the owner gate passes.
+    request = SimpleNamespace(
+        app={} if state is None else {"state": state}, get=lambda _key, default=None: default
+    )
     return _run(qr.weixin_config_get, request)
 
 
