@@ -1139,6 +1139,13 @@ describe('index assembly, continued', () => {
     expect(build({ settingsTabs }).errors.some(e => /duplicate location id 'settings.tab.chat'/.test(e))).toBe(true)
   })
 
+  it('stores an interpolated alias without its placeholder, so find_ui never searches the placeholder name', () => {
+    const older = baseInputs().descriptors['chat.older']
+    const { index, errors } = build({ descriptors: { ...baseInputs().descriptors, 'chat.older': { ...older, aliasKeys: ['k.count'] } } })
+    expect(errors).toEqual([])
+    expect(index.labels.en['k.count']).toBe('items')
+  })
+
   it('serializes deterministically and changes when a label changes (the --check oracle)', () => {
     const a = serializeIndex(build().index)
     expect(serializeIndex(build().index)).toBe(a)

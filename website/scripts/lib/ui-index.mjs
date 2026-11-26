@@ -777,7 +777,7 @@ export function buildUiIndex(inputs) {
         continue
       }
       const v = cat[key]
-      if (typeof v === 'string' && v.trim()) out[key] = v.replaceAll('{{productName}}', inputs.productName)
+      if (typeof v === 'string' && v.trim()) out[key] = searchableLabel(v, inputs.productName)
       else if (locale !== 'en') (missing[locale] ??= []).push(key)
     }
     labels[locale] = out
@@ -999,6 +999,17 @@ function buildAutoLocations(inputs, locations, errors, addLocation) {
 const MAX_TERMS_PER_LOCALE = 16
 const MAX_TERM_CHARS = 60
 
+/**
+ * A catalog value as the index stores and searches it: the product name filled
+ * in, and any other placeholder left out. That one is a value only the running
+ * dashboard knows (the top-bar search button's `{{shortcut}}`), so find_ui
+ * searches the words around it, never the placeholder's own name.
+ */
+function searchableLabel(text, productName) {
+  const filled = text.replaceAll('{{productName}}', productName)
+  return /\{\{\w+\}\}/.test(filled) ? filled.replace(/\{\{\w+\}\}/g, '').trim() : filled
+}
+
 /** Approximates the search's normalization (NFKC, casefold, punctuation as space). */
 function foldTerm(text) {
   return text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ').trim()
@@ -1026,7 +1037,7 @@ function settingTermsFromKeywords(inputs, locations, claimed, errors) {
   const formsOf = (loc) => [loc.label_key, ...(loc.alias_keys ?? [])]
     .map((k) => (k.startsWith(LITERAL_PREFIX) ? k.slice(LITERAL_PREFIX.length) : en[k]))
     .filter((v) => typeof v === 'string')
-    .map((v) => foldTerm(v.replaceAll('{{productName}}', inputs.productName)))
+    .map((v) => foldTerm(searchableLabel(v, inputs.productName)))
   const namedBy = new Map()
   for (const loc of locations.values()) {
     for (const f of formsOf(loc)) (namedBy.get(f) ?? namedBy.set(f, new Set()).get(f)).add(loc.id)
@@ -1133,7 +1144,7 @@ function validateTerms(id, terms, origin, loc, inputs, errors) {
       [loc.label_key, ...(loc.alias_keys ?? [])]
         .map((k) => (k.startsWith(LITERAL_PREFIX) ? k.slice(LITERAL_PREFIX.length) : cat[k]))
         .filter((v) => typeof v === 'string')
-        .map((v) => foldTerm(v.replaceAll('{{productName}}', inputs.productName))),
+        .map((v) => foldTerm(searchableLabel(v, inputs.productName))),
     )
     const seen = new Set()
     const kept = []
