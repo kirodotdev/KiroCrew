@@ -297,7 +297,10 @@ folding and whitespace collapse, must be a substring of one turn whose role is
 the person's and that carries no relayed-message marker. A turn the person
 edited is matched in its final stored form. A quote shorter than three P4
 tokens does not count. A relayed agent message never counts, even if it quotes
-the person.
+the person. The quote must also back the rule: the cosine between the store
+embedder's vectors of the quote and the rule is at least 0.6, so a real but
+unrelated sentence ("help me fix this bug" for "always run the full test
+suite") does not count. With no vector, no quote counts.
 
 **P3 Item identity.** One function `same_item(a, b)` used everywhere:
 
@@ -543,10 +546,11 @@ shadow answers the C2 agent-text question with live counts. Its rules:
 - **Modes.** `off`: nothing is read; prompt and writes are byte-identical.
   `shadow`: writes as `off` and logs. `enforce`: applies the demotion. No mode
   changes the prompt or a stored row.
-- **Known gaps.** A mixed span keeps its tiers: tracing one lesson to one turn
-  is not deterministic today, and the L2 quote check (R3) is the precise fix.
-  A `learn_add` from a session with no live chat (a sub-agent, a channel
-  thread) is left as submitted. An auto-nudge counts as automatic even in a
+- **Per lesson.** A mixed span keeps its tiers under R0a: R0a does not trace
+  one lesson to one turn. The mixed-span gap is closed by R3 `enforce`, which
+  judges each standing lesson by the P2 quote check, not by R0a.
+- **Known gaps.** A `learn_add` from a session with no live chat (a sub-agent,
+  a channel thread) is left as submitted. An auto-nudge counts as automatic even in a
   loop the person armed. A transcript written before `meta.human` existed
   reads as automatic. A messaging-channel session (Discord, Telegram, Slack and
   the rest) is not gated at all: most channel transports write the person's
@@ -593,11 +597,12 @@ produce the counts that sign-off waits for. Its rules:
   lesson keeps its tier only with a `user_quote` that passes the P2 check.
   `learn_add`, dashboard and CLI writes and every stored row are unchanged.
   A messaging-channel session is not gated, for R0a's reason.
-- **Prompt.** Only `enforce` asks for `user_quote`. Asking changes the tier the
-  model picks, so a shadow that asked would stop measuring today's writes.
-  `shadow` therefore counts every standing lesson as a would-be demotion (an
-  upper bound on `enforce`), and its quote counts cover only quotes the model
-  offers unasked; quote pass and fail rates come from `enforce`.
+- **Prompt.** Only R3 `enforce` asks for `user_quote`; R0a never does. Asking
+  changes the tier the model picks, so a shadow that asked would stop measuring
+  today's writes. `shadow` therefore asks in one separate bounded call after the
+  writes, shown only the `always` rules and the person's own unrelayed messages,
+  and runs its quotes through the same check; the pass, fail and support counts
+  come from that call. Its answer never reaches a write.
 - **Re-teach.** Under `shadow`, each `learn_add` with a vector is compared,
   before its write, with the stored vectors of the logged would-be demoted
   keys; a cosine above 0.85 counts as a re-teach. An agent's own

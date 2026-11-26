@@ -92,8 +92,7 @@ STAGES: Final[tuple[Stage, ...]] = (
         "lesson_tier_policy",
         "memory_tier_log:",
         _modes.lesson_tier_policy_mode_from,
-        "upper bound: shadow asks for no quote, so every standing rule counts as demoted",
-        ("consolidation",),
+        drop_paths=("consolidation",),
     ),
     Stage("fact_origin_gate", "memory_fact_origin_log:", _modes.fact_origin_gate_mode_from),
     Stage("member_lesson_dedup", "memory_dedup_log:", _modes.member_lesson_dedup_mode_from),
@@ -524,14 +523,46 @@ def _base_and_changed(stage: Stage, total: dict[str, int]) -> tuple[int, int | N
     return total.get("rows", 0), None
 
 
+#: The stages that judge each standing lesson by the person's quote.
+_QUOTE_STAGES: Final = frozenset({"lesson_tier_policy"})
+#: The first tier-policy rules version whose counters measure quotes.
+_QUOTE_RULES_VERSION: Final = 2
+
+
+def _quote_summary(stage: Stage, total: dict[str, int], policy: int | None) -> dict | None:
+    """How the quotes behind a lesson stage's standing lessons came out, or ``None``.
+
+    ``absent``, ``fail`` and ``pass`` count measured ``always`` lessons; ``backed``
+    is the passing quotes that state their rule; ``unmeasured`` the lessons whose
+    shadow quote call failed. ``support`` counts passing quotes by cosine bucket.
+    """
+    if stage.name not in _QUOTE_STAGES or (policy or 0) < _QUOTE_RULES_VERSION:
+        return None
+    absent = total.get("always", 0) - total.get("quote_present", 0) - total.get("unmeasured", 0)
+    prefix = "support_"
+    return {
+        "absent": max(absent, 0),
+        "fail": total.get("quote_fail", 0),
+        "pass": total.get("quote_pass", 0),
+        "backed": total.get("backed", 0),
+        "unmeasured": total.get("unmeasured", 0),
+        "support": {k[len(prefix) :]: n for k, n in sorted(total.items()) if k.startswith(prefix)},
+        "calls": total.get("quote_calls", 0),
+        "call_failed": total.get("quote_call_failed", 0),
+        "cut": total.get("quote_cut", 0),
+    }
+
+
 def _meta_stage(stage: Stage, meta: dict[str, str], lines: list[dict], store: str, since) -> dict:
     # The window opens on the first day with shadow counters, or later at the
     # stage's rules-change instant. ``shadow_started_at`` is not read: the origin,
     # tier and dedup stages stamp it only on the first pass that keeps an id, after
     # their counters have already started.
-    # shortcut: origin/tier/dedup record no rules-change instant and their counters
-    # carry no rules_version, so a rules bump there needs a window key written
-    # with the counters before this report can split the days.
+    # Only the tier policy stamps ``rules_changed_at``, with its first counter
+    # write under a new rules version, so the window skips older days.
+    # shortcut: dedup records no rules-change instant and its counters carry no
+    # rules_version, so a rules bump there needs that window key written with the
+    # counters before this report can split the days.
     changed_at = _instant(meta.get(stage.source + "rules_changed_at"))
     raw_version = meta.get(stage.source + "rules_version")
     policy = int(raw_version) if raw_version and raw_version.isdigit() else None
@@ -595,6 +626,12 @@ def build_report(
             card = _receipt_stage(s, stage_log, lines, store, since)
         else:
             card = _meta_stage(s, meta, lines, store, since)
+        card["quotes"] = _quote_summary(s, card["detail"], card["policy"])
+        if s.name in _QUOTE_STAGES and card["quotes"] is None and card["data"]:
+            card["bias"] = (
+                "upper bound: these counters predate the quote measurement "
+                f"(rules version < {_QUOTE_RULES_VERSION}), so every standing rule counts as demoted"
+            )
         mode = s.mode_from(getattr(memory_config, s.name, None))
         card["mode"] = mode
         if mode == "off":
@@ -658,6 +695,16 @@ def _fraction(score: dict) -> str:
     return f"{score['missed']}/{score['items']}" if score["items"] else "-"
 
 
+def _quote_line(card: dict) -> str:
+    q = card["quotes"]
+    support = " ".join(f"{k}={v}" for k, v in q["support"].items()) or "-"
+    return (
+        f"quotes {card['stage']}: absent={q['absent']} fail={q['fail']} pass={q['pass']} "
+        f"(backed={q['backed']}) unmeasured={q['unmeasured']}  support {support}  "
+        f"quote calls={q['calls']} failed={q['call_failed']} cut={q['cut']}"
+    )
+
+
 def _row(cells: Iterable[str]) -> str:
     return "  ".join(str(c).ljust(w) for c, (_, w) in zip(cells, _COLUMNS)).rstrip()
 
@@ -692,6 +739,10 @@ def render_text(report: dict[str, Any]) -> list[str]:
     if notes:
         out.append("")
         out.extend(f"note {c['stage']}: {c['bias']}" for c in notes)
+    quoted = [c for c in report["stages"] if c.get("quotes") and c["data"]]
+    if quoted:
+        out.append("")
+        out.extend(_quote_line(c) for c in quoted)
     out.append("")
     out.append(
         "seen = lines (render stages: sampled receipt lines) or items the stage looked at; "
