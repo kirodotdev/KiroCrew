@@ -157,6 +157,7 @@ from kiro_crew.apps.manifest_names import (  # noqa: F401
     SEMVER_RE,
     UNPORTABLE_APP_NAMES,
     app_name_error,
+    is_app_dir_name,
     is_reserved_app_name,
 )
 from kiro_crew.apps.manifest_sections import (  # noqa: F401
