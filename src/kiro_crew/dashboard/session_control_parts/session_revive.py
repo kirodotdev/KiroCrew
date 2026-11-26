@@ -43,10 +43,10 @@ from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     _normalize_slot_key,
     _safe_folder_tree,
+    bot_member,
     count_restored_workers,
     creator_slot_cap_refusal,
     note_new_worker,
-    own_worker_member,
     read_worker_execution,
 )
 from kiro_crew.mate_worker_conducts import effective_worker_cap_refusal, holds_conducting_kit
@@ -655,10 +655,10 @@ async def revive_session(
             return ResumeRefusal(
                 "sessions mirrored to a channel are not addressable", "mirrored_target", 403
             )
-        # A revived Bot worker takes a seat under its Bot's `max_workers`: its saved
-        # record is read here, and the seat is checked in `_final_check`.
+        # A revived session that runs as a Bot takes a seat under its `max_workers`:
+        # its saved record is read here, and the seat is checked in `_final_check`.
         revived_execution[0] = await asyncio.to_thread(read_worker_execution, history_key)
-        if own_worker_member(revived_execution[0]):
+        if bot_member(revived_execution[0]):
             await count_restored_workers(state)
         claimed_creator = str(meta.get("created_by") or "")
         if not getattr(built, "_created_by", "") and claimed_creator:

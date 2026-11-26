@@ -275,9 +275,12 @@ async def _record_explicit_agent_selection(
         raise cancelled
     # The backend and model selection read the worker set in memory: a worker
     # switched to an ordinary template leaves it at the commit, not at its next turn.
+    # So does a counted session's Bot seat, once the new record carries no member id.
+    from kiro_crew.dashboard.state import refresh_bot_session
     from kiro_crew.mate_worker import note_worker_session
 
     note_worker_session(session_key, bindings.execution_context)
+    refresh_bot_session(session_key, bindings.execution_context)
     return change
 
 
