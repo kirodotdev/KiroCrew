@@ -1,10 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { Loader2 } from 'lucide-react'
 import { api, type KasBundleStatus } from '../api/client'
 import type { KiroPrerequisiteStatus } from '../api/client/onboarding'
 import { useKasLoginStatus } from '../hooks/useKasLogin'
 import FirstRunHarnessSetup from './FirstRunHarnessSetup'
 import KasLoginGate from './KasLoginGate'
+import { i18nT } from '../i18n/t'
 
 const KAS_BUNDLE_QUERY_KEY = ['kas-bundle'] as const
 // Its own key: an answer read before setup admits must never stand in for the hold's own read.
@@ -88,6 +90,8 @@ export function builtInEngineOn(bundle: KasBundleStatus): boolean {
  * (settings import) paints for that wait and then vanishes under the setup
  * step. The early read only decides that paint, under its own key, never the
  * hold; with the engine off, or before it answers, the app paints as on main.
+ * While it is hidden that way, a spinner shows, so the wait does not read as a
+ * blank page.
  */
 export default function FirstRunSignInHold({ hold, status, resolved, undecided = false, children }: {
   hold: SignInHold
@@ -148,7 +152,17 @@ export default function FirstRunSignInHold({ hold, status, resolved, undecided =
       <HeldContext.Provider value={!shown}>
         <div style={{ display: shown ? 'contents' : 'none' }}>{children}</div>
       </HeldContext.Provider>
-      {through ? null : needed.current === 'setup'
+      {through ? (shown ? null : (
+        // Neutral: who gets the setup step is not known yet.
+        <div
+          role="status"
+          aria-label={i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready')}
+          className="fixed inset-0 flex items-center justify-center bg-bg"
+          data-testid="first-run-paint-wait"
+        >
+          <Loader2 className="h-6 w-6 animate-spin text-muted" aria-hidden="true" />
+        </div>
+      )) : needed.current === 'setup'
         ? <FirstRunHarnessSetup status={status} onDone={admit} />
         : <KasLoginGate onSkip={admit} />}
     </>
