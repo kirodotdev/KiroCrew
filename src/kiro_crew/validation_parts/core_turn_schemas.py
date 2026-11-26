@@ -1,6 +1,6 @@
 """``kirocrew-core`` tool schemas a turn uses on its own conversation and workspace.
 
-Message edits, the skill catalog, ``kiro_cli_logs``, ``set_project``,
+Message edits, the skill catalog, the App Store search, ``kiro_cli_logs``, ``set_project``,
 ``reset_conversation``, ``chat_tag``, ``chat_rename``, ``suggest_followup`` with its git branch
 grammar, ``nothing_to_do`` and the ``workflow_*`` tools.
 
@@ -85,6 +85,14 @@ SKILL_FETCH_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("id", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("provider", str, max_len=MAX_SHORT_STRING),
+    ],
+)
+
+APP_STORE_SEARCH_SCHEMA = ToolSchema(
+    tool_name="app_store_search",
+    fields=[
+        FieldSpec("query", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("limit", int),
     ],
 )
 

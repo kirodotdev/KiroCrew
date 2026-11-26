@@ -46,6 +46,10 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # handler re-asserts ``internal_auth`` and hands it to the declaring app's own
         # route. One fixed core path for every app, so no app route is admitted here.
         "/api/app-tools/call",
+        # The ``app_store_search`` tool's read of the store listing; no browser page
+        # calls it (the store reads ``/api/apps/registry``). A loopback cookie still
+        # reaches it, as it does every strict path, and sees the same rows there.
+        "/api/app-store/search",
         # External terminal grant redemption. Its only caller is the desktop
         # shell's main process, loopback + internal-secret; the browser holds
         # the grant but must never redeem it, so
