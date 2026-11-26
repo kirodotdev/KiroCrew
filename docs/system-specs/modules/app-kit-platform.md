@@ -2982,7 +2982,10 @@ because iterating a string yields its characters (`"*"` → the wildcard, and
 `bridges_agents._register_agents` → `_enforce_declared_mcp_tools` adds every
 host-managed tool the app did not declare (judged by
 `permissions.check_tool_permission`) to each app agent's `managedToolPolicy.exclude`,
-unioned with any exclude the agent spec authored. The managed-tool universe is each
+unioned with any exclude the agent spec authored. A host tool may be declared bare
+(`memory_recall`) or in the ref form agent `tools` lists use
+(`@kirocrew-core/memory_recall`); a ref whose server is a managed server counts as its
+bare name. The managed-tool universe is each
 managed server's unconditional declaration (`mcp_discovery_managed.managed_tool_names_for_policy`),
 so a tool hidden behind a runtime enable is excluded before the enable flips. A managed
 server whose declaration cannot be read has no names to exclude, so it fails closed: it
