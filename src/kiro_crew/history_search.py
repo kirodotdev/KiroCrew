@@ -159,6 +159,7 @@ from kiro_crew.history_search_rank import (  # noqa: F401 - facade re-exports
     saturated_frequency,
 )
 from kiro_crew.jsonl_util import bounded_records
+from kiro_crew.search_shown_text import on_shown_title, shown_text, shown_title_folded
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
@@ -787,7 +788,7 @@ class SessionCatalogProjection:
         if scope is not None:
             if not scope.term:
                 return []
-            title_filter = scope.title_filter()
+            title_filter = on_shown_title(scope.title_filter())
             if not scope.rest:
                 return self._search_titles(title_filter, limit, keys)
             # The rest is the query from here on: it is what the content gate
@@ -937,7 +938,7 @@ class SessionCatalogProjection:
         for rank, meta in enumerate(window):
             key = meta["key"]
             visible = not is_incognito_transcript(meta.get("memory_mode"))
-            title_folded = (meta.get("title") or "").casefold()
+            title_folded = shown_title_folded(meta.get("title"))
             vouched = weights.has_postings and key in rowids
             if allowed is not None and key not in allowed:
                 # The index vouches for this session's current text and proved it
@@ -1277,7 +1278,7 @@ class SessionCatalogProjection:
             in_title = {
                 meta["key"]
                 for meta in window
-                if count_needle(needle, (meta.get("title") or "").casefold())
+                if count_needle(needle, shown_title_folded(meta.get("title")))
             }
             satisfied = content_keys | in_title | unvouched
             allowed = satisfied if allowed is None else (allowed & satisfied)
@@ -1501,7 +1502,7 @@ class SessionCatalogProjection:
         return (sum(len(t) for t in texts), fold_texts(texts))
 
     def _iter_message_texts(self, key: str) -> Iterator[str]:
-        """Yield each message's non-empty string ``content`` from *key*'s files.
+        """Yield each message's non-empty string ``content`` from *key*'s files, redacted.
 
         One definition of "what counts as searchable text in a session file",
         shared by the fold and the snippet so their skip rules cannot drift apart
@@ -1523,7 +1524,8 @@ class SessionCatalogProjection:
 
         # The size-rotated head first: it is older than every row the live file
         # still holds, and the chat's own paging corpus serves it too.
-        yield from iter_rotated_texts(self._log._dir, key)
+        for text in iter_rotated_texts(self._log._dir, key):
+            yield shown_text(text)
         path = self._log._path(key)
         with open(path, "rb") as handle:
             for line in bounded_records(handle, path, label="history_search"):
@@ -1540,7 +1542,9 @@ class SessionCatalogProjection:
                     continue
                 content = data.get("content")
                 if isinstance(content, str) and content:
-                    yield content
+                    # Search folds, indexes, ranks and excerpts the redacted
+                    # text the results show, never the text before it.
+                    yield shown_text(content)
 
     #: Characters of context kept before / after a snippet's match.
     _SNIPPET_LEAD = 40

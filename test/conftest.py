@@ -410,6 +410,9 @@ from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and imp
 from conftest_resets_relay_client import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_unsaved_relay_instance_ids,
 )
+from conftest_resets_search import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_search_shown_text_memo,
+)
 from conftest_resets_token_auth import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_would_refuse_session_key_log,
 )
