@@ -159,6 +159,10 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
   const imeEndAt = useRef(0)
   /** Whether the last keydown outside a composition was a dead key. */
   const deadKey = useRef(false)
+  /** Set when a dead key's composition ends, until xterm sends something for a key. */
+  const afterDeadKey = useRef(false)
+  /** How many times xterm has sent data, so a handler can tell whether a key reached it. */
+  const sends = useRef(0)
   /**
    * Whether the user has moved the highlight (ArrowUp/ArrowDown) on the CURRENT
    * listing. Enter accepts the highlighted row only after that; otherwise it
@@ -512,12 +516,15 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
       return word.argv.length !== s.argv.length
         || word.argv.some((w, i) => w !== s.argv[i])
     }
-    term.attachCustomKeyEventHandler((e) => {
+    const onKey = (e: KeyboardEvent): boolean => {
       if (e.type !== 'keydown') return true
       // Firefox sends the key that ends a dead key's composition with its own keyCode; xterm 5.5 then
       // sends the text composed so far, and the committed text again on `compositionend`. Drop the first.
       if (!e.isComposing) deadKey.current = e.key === 'Dead'
-      else if (deadKey.current) dropTerminalDataForThisKey(sessionId)
+      else if (deadKey.current) {
+        dropTerminalDataForThisKey(sessionId)
+        afterDeadKey.current = true
+      }
       // An IME candidate is committed with a keydown the browser marks as
       // composing (Chrome reports keyCode 229 for it). Leave that native action
       // alone. Some browsers clear both flags before the committing key arrives,
@@ -636,15 +643,63 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
         default:
           return true
       }
+    }
+    // When Space ends a dead key's composition in Firefox, xterm 5.5 keeps its dead-key state and
+    // swallows the next key it maps: Enter, Backspace, an arrow (a printable key still arrives by its
+    // keypress). If nothing reached xterm for such a key and no other key followed, hand it the key
+    // again: its state is clear by then, so it sends the key. Shift+PageUp/PageDown only scroll.
+    let resending = false
+    let keydowns = 0
+    term.attachCustomKeyEventHandler((e) => {
+      if (resending) return true
+      const pass = onKey(e)
+      if (e.type !== 'keydown') return pass
+      const n = ++keydowns
+      if (pass && afterDeadKey.current && !e.isComposing && e.keyCode !== 229 && e.key !== 'Dead'
+        && (e.key.length > 1 || e.ctrlKey || e.altKey || e.metaKey)
+        && !(e.shiftKey && (e.key === 'PageUp' || e.key === 'PageDown'))) {
+        const before = sends.current
+        setTimeout(() => {
+          if (sends.current === before && keydowns === n) {
+            resending = true
+            term.textarea?.dispatchEvent(new KeyboardEvent('keydown', {
+              key: e.key, code: e.code, keyCode: e.keyCode, location: e.location, cancelable: true,
+              ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey,
+            }))
+            resending = false
+          }
+          if (sends.current !== before) afterDeadKey.current = false
+        }, 0)
+      }
+      return pass
     })
     // xterm exposes a single handler slot; hand it back on unmount so a future
     // consumer (or a re-mount of this pane) is not shadowed by a stale closure.
     return () => { term.attachCustomKeyEventHandler(() => true) }
   }, [term, sessionId, accept, close, readWord])
 
+  useEffect(() => {
+    const sub = term.onData(() => { sends.current += 1 })
+    return () => sub.dispose()
+  }, [term])
+
   /* ── IME composition boundary ── */
   useEffect(() => {
-    const done = () => { imeEndAt.current = Date.now() }
+    // Without an input method, Firefox commits a dead key's character as an `insertText` after
+    // `compositionend`, which xterm ignores while the key is down; xterm's own read on
+    // `compositionend` can run before it lands. Forward it when that read sent nothing.
+    let deadEnd: number | null = null
+    const done = () => {
+      imeEndAt.current = Date.now()
+      deadEnd = deadKey.current ? sends.current : null
+    }
+    const late = (ev: Event) => {
+      const { inputType, data } = ev as InputEvent
+      if (deadEnd === null || inputType !== 'insertText' || !data) return
+      const mark = deadEnd
+      deadEnd = null
+      setTimeout(() => { if (sends.current === mark) term.input(data) }, 0)
+    }
     let attached: HTMLTextAreaElement | null = null
     const attach = (): boolean => {
       if (attached) return true
@@ -654,6 +709,7 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
       // xterm routes typing through a hidden textarea, which is where composition
       // events land.
       ta.addEventListener('compositionend', done)
+      ta.addEventListener('input', late)
       return true
     }
     // On FIRST mount this child's effects run before the parent has called
@@ -665,6 +721,7 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
     return () => {
       rendered.dispose()
       attached?.removeEventListener('compositionend', done)
+      attached?.removeEventListener('input', late)
     }
   }, [term])
 
