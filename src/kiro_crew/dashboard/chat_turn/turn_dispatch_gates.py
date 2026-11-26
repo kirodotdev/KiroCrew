@@ -50,6 +50,7 @@ if TYPE_CHECKING:
         telemetry_channel_of,
     )
     from kiro_crew.dashboard.chat_turn.agent_started import _agent_turn_still_pending
+    from kiro_crew.dashboard.chat_turn.checklist_rule import checklist_rule_for
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _crew_log_model
     from kiro_crew.dashboard.chat_turn.decisions_hooks import (
         _jev_route_armed,
@@ -406,6 +407,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         )
         turn._todo_recovery_carried = _todo_recovery_carried
         turn._todo_sync_rendered = _todo_sync_rendered
+        _checklist_rule = checklist_rule_for(turn, client)
+        if _checklist_rule:
+            full_message = f"{_checklist_rule}\n\n{full_message}"
         turn.full_message = full_message
 
     # Slash commands use _kiro.dev/commands/execute for full native output;
@@ -993,9 +997,10 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             # (a loop switched off, a failed activity probe, a cancelled child)
             # leaves no stamp this run is measured from. Every other turn
             # continues the open run, or starts one (the ``task`` setter).
-            started = slot._task_started_at
-            slot._run_started_at = started if started is not None else _run_clock.now()
-            slot._run_started_turns = slot._turns_started
+            started, started_wall = slot._task_started_at, slot._task_started_wall
+            if started is None or started_wall is None:
+                started, started_wall = _run_clock.now(), _run_clock.wall_now()
+            slot.stamp_run_start(started, started_wall)
         slot._turns_started += 1
     crew_log_emit.on_turn_started(
         _crew_log_sid,

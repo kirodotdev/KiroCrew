@@ -70,6 +70,7 @@ import QueueStack, { SubagentDeliveryProgress } from '../../../components/QueueS
 import McpLoadingBar from '../McpLoadingBar'
 import SubagentProgressBar from '../SubagentProgressBar'
 import TaskProgressBar from '../TaskProgressBar'
+import TurnClock from '../TurnClock'
 import type { ChatConfig } from '../ChatSettings'
 import { KnowledgePicker } from '../KnowledgePicker'
 import { JumpToBottomButton } from '../../../app-sdk/ChatScrollChrome'
@@ -463,6 +464,8 @@ export default function ComposerDockView({
               {/* Not gated on activityOpen (unlike the two bars below): the
                   activity sidebar has no TODO view, so hiding it there would
                   lose the information rather than de-duplicate it. */}
+              {/* How long the running turn has taken, beside the step pill below it. */}
+              <TurnClock slot={activeSlot} />
               <TaskProgressBar slot={activeSlot} />
               {/* De-duplicate ONLY against the matching sidebar tab (#728): each
                   bar is redundant when the activity sidebar is actually SHOWING

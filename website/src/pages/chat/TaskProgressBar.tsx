@@ -11,8 +11,10 @@ import { useRowDisclosure } from './rowDisclosure'
 import { Glass } from '../../components/Glass'
 
 import { i18nT } from '../../i18n/t'
-import { fmtNumber } from '../../i18n/format'
+import { fmtElapsed, fmtNumber } from '../../i18n/format'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { useSecondClock } from '../../hooks/useSecondClock'
+import { serverNowMs } from '../../utils/serverClock'
 /** Rows rendered before the list scrolls internally — bounds DOM on long plans. */
 const MAX_VISIBLE_ROWS = 12
 
@@ -48,6 +50,21 @@ function tickFailureDetail(e: unknown): string | null {
     default:
       return null
   }
+}
+
+/**
+ * "running 12m 3s" on the current step, counted from the gateway's
+ * `step_started_at` (the agent's own snapshot reaching the step; a person's
+ * tick does not move it), on the gateway's clock (`utils/serverClock.ts`). Its
+ * own leaf so only it repaints each second.
+ */
+function StepElapsed({ startedAt, className = '' }: { startedAt: number; className?: string }) {
+  const secs = useSecondClock(now => Math.max(0, Math.floor(serverNowMs(now) / 1000 - startedAt)))
+  return (
+    <span aria-live="off" className={`shrink-0 tabular-nums text-muted/80 ${className}`} data-testid="todo-step-elapsed">
+      {i18nT('pages.chat.taskProgressBar.step_running', { elapsed: fmtElapsed(secs * 1000, { wholeSeconds: true }) })}
+    </span>
+  )
 }
 
 /**
@@ -87,6 +104,11 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
   // A `read_only` list is one the harness keeps itself (an ACP `plan`): a click
   // could never reach the agent, so it takes the same read-only rows.
   const editable = !remote && todo?.read_only !== true
+  // The step clock runs only while a turn does: between turns nothing works on
+  // the step, so a figure still counting would read as work in progress.
+  const running = useAppSelector(s =>
+    (s.dashboard.slots ?? []).find(x => x.key === slot)?.running === true
+  )
 
   const tasks = useMemo(() => todo?.tasks ?? [], [todo])
   const toggle = useCallback(() => setExpanded(v => !v), [setExpanded])
@@ -195,6 +217,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
   const current = sanitizeLlmOutput(todo.current || '')
   const label = allDone ? i18nT('pages.chat.taskProgressBar.all_tasks_complete') : current || i18nT('pages.chat.taskProgressBar.current_task')
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
+  const showStepElapsed = running && !allDone && typeof todo.step_started_at === 'number'
 
   return (
     // `relative z-[2]` clears the transcript's bottom mask (`z-[1]`), which
@@ -202,6 +225,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
     // is empty. Whenever this bar is the topmost thing in that stack, an auto
     // z-index let the mask's opaque tail shave its top border and corners.
     <div className="px-4 mx-auto w-full relative z-[2]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+      <div className="@container/task-progress" data-testid="todo-progress">
       {/* Collapsed = a small pill that hugs its content; expanded = a full-width
           panel. Keeping the collapsed state inline stops it reading as another
           full-width bar competing with the composer below it. Both states are
@@ -229,7 +253,11 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
           aria-label={expanded
             ? i18nT('pages.chat.taskProgressBar.aria_collapse_task_list', { done, total })
             : i18nT('pages.chat.taskProgressBar.aria_expand_task_list', { done, total })}
-          className={`flex items-center gap-2 py-1.5 text-[13px] font-mono bg-transparent border-none cursor-pointer hover:bg-accent/5 transition-colors focus-ring-accent-inset ${
+          className={`${
+            showStepElapsed
+              ? 'grid grid-cols-[auto_auto_minmax(0,1fr)_auto] gap-x-2 gap-y-0.5 @[28rem]/task-progress:flex @[28rem]/task-progress:gap-2'
+              : 'flex gap-2'
+          } items-center py-1.5 text-[13px] font-mono bg-transparent border-none cursor-pointer hover:bg-accent/5 transition-colors focus-ring-accent-inset ${
             expanded ? 'w-full px-3' : 'px-3 min-w-0'
           }`}
         >
@@ -238,20 +266,26 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
             : <ChevronRight size={14} className="text-accent shrink-0" aria-hidden="true" />}
           <ListTodo size={14} className="text-accent shrink-0" aria-hidden="true" />
           <span
-            className={`shrink-0 tabular-nums font-medium ${allDone ? 'text-ok' : 'text-text-strong'}`}
+            className={`${showStepElapsed ? 'col-start-3 row-start-2 ' : ''}shrink-0 tabular-nums font-medium ${allDone ? 'text-ok' : 'text-text-strong'}`}
             data-testid="todo-count"
           >
-            {i18nT('pages.chat.taskProgressBar.done_of_total', { done: fmtNumber(done), total: fmtNumber(total) })}
+            {i18nT('pages.chat.taskProgressBar.done_left', { done: fmtNumber(done), left: fmtNumber(Math.max(0, total - done)) })}
           </span>
           <span
-            className={`truncate text-left text-muted ${expanded ? 'min-w-0 flex-1' : 'min-w-0 max-w-[42ch]'}`}
+            className={`${showStepElapsed ? 'col-start-3 row-start-1 ' : ''}truncate text-left text-muted ${expanded ? 'min-w-0 flex-1' : 'min-w-0 max-w-[42ch]'}`}
             data-testid="todo-current"
           >
             {label}
           </span>
+          {showStepElapsed && (
+            <StepElapsed
+              startedAt={todo.step_started_at!}
+              className="col-start-4 row-start-2 justify-self-end @[28rem]/task-progress:justify-self-auto"
+            />
+          )}
           {/* Thin progress rail — a glanceable second channel for the same count. */}
           <span
-            className={`shrink-0 h-1 w-12 rounded-full bg-border/60 overflow-hidden ${expanded ? '' : 'ml-1'}`}
+            className={`${showStepElapsed ? 'col-start-4 row-start-1 ' : ''}shrink-0 h-1 w-12 rounded-full bg-border/60 overflow-hidden ${expanded ? '' : showStepElapsed ? '@[28rem]/task-progress:ml-1' : 'ml-1'}`}
             role="progressbar"
             aria-valuenow={done}
             aria-valuemin={0}
@@ -370,6 +404,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
         )}
         </div>
       </Glass>
+      </div>
     </div>
   )
 })

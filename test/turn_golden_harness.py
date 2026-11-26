@@ -81,6 +81,8 @@ VALUE_KEYS = frozenset(
         "governanceGeneration",
         "last_active",
         "last_activity",
+        "run_started_ts",
+        "step_started_at",
         "tags_revision",
         "ts",
         "ttft_ms",

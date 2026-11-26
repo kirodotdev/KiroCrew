@@ -153,7 +153,9 @@ async def _status_frame(state: DashboardState, *, dashboard_user: bool) -> dict[
     from the shared reader, and publishes an unknown count as ``null`` — a
     loading skeleton — instead of ``status_snapshot``'s inline on-loop fallback
     ever running here. The ``version``/``platform`` fields the periodic frame
-    carries are appended on top.
+    carries are appended on top, with ``server_now``: the gateway's epoch second
+    as the frame was built, from which the chat's live clocks take the offset
+    between the gateway's clock and the browser's.
 
     The client replaces its stored status with each frame, so the dashboard
     user's frame also carries the live auto-approve grant ``/api/status``
@@ -164,6 +166,7 @@ async def _status_frame(state: DashboardState, *, dashboard_user: bool) -> dict[
         **await cached_status_snapshot(state),
         "version": _local_version,
         "platform": sys.platform,
+        "server_now": round(time.time(), 3),
     }
     if dashboard_user:
         frame.update(yolo_grant_fields())

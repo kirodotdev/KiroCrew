@@ -13989,7 +13989,15 @@
         "untracked": "Einige Server werden nicht erfasst",
         "list_label": "MCP-Server dieser Sitzung"
       },
+      "turnClock": {
+        "running_for": "Läuft seit {{elapsed}}",
+        "notify_offer": "Benachrichtigen, wenn fertig",
+        "notify_offer_hint": "Zeigt eine Desktop-Benachrichtigung, wenn ein Chat fertig wird, während du nicht in diesem Fenster bist.",
+        "dismiss_offer": "Nicht mehr anbieten"
+      },
       "taskProgressBar": {
+        "done_left": "{{done}} erledigt, {{left}} offen",
+        "step_running": "läuft seit {{elapsed}}",
         "all_tasks_complete": "Alle Aufgaben abgeschlossen",
         "aria_collapse_task_list": "{{done}} von {{total}} Aufgaben abgeschlossen. Aufgabenliste einklappen",
         "aria_expand_task_list": "{{done}} von {{total}} Aufgaben abgeschlossen. Aufgabenliste aufklappen",
@@ -14008,7 +14016,6 @@
         "set_by_you_done": "Du hast das als erledigt markiert; der Agent hat es noch nicht bestätigt.",
         "set_by_you_open": "Du hast das als offen markiert; der Agent hat es noch nicht bestätigt.",
         "sending": "Wird gesendet",
-        "done_of_total": "{{done}} von {{total}}",
         "more_count_one": "+ {{n}} mehr…",
         "more_count_other": "+ {{n}} mehr…"
       },

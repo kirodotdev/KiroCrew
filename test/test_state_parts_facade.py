@@ -343,6 +343,12 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, report: 'dict[str, Any] | None', session_id: 'str' = '') -> " "'bool'",
     ),
+    "restart_step_clock": (
+        "function",
+        False,
+        False,
+        "(self, run_started_wall: 'float') -> 'None'",
+    ),
     "set_todo": ("function", False, False, "(self, todo: 'dict[str, Any] | None') -> 'bool'"),
     "set_todo_task_completed": (
         "function",
@@ -384,6 +390,12 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, *, include_check_status: 'bool' = False, dashboard_user: 'bool' = False) "
         "-> 'dict'",
+    ),
+    "stamp_run_start": (
+        "function",
+        False,
+        False,
+        "(self, started: 'float', started_wall: 'float') -> 'None'",
     ),
     "todo_payload": ("function", False, False, "(self) -> 'dict[str, Any] | None'"),
     "todo_recovery_pending": ("property", False, False, "(self) -> 'bool'"),
@@ -700,6 +712,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_todo_overrides": ("value", "{}"),
     "_todo_rebuild_expected": ("value", "False"),
     "_todo_recovery_pending": ("value", "False"),
+    "_todo_step_started_at": ("value", "None"),
     "_todo_sync_rendered": ("value", "()"),
     "_tool_stall_exhausted_emitted": ("value", "False"),
     "_tool_stall_retries": ("value", "0"),
@@ -725,6 +738,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_run_started_at": ("value", "None"),
     "_run_started_turns": ("value", "-1"),
     "_task_started_at": ("value", "None"),
+    "_task_started_wall": ("value", "None"),
+    "_run_started_wall": ("value", "None"),
     "_turn_owner_sent": ("value", "False"),
     "_turn_agent_started": ("value", "False"),
     "_turn_project_pin": ("value", "None"),

@@ -407,6 +407,15 @@ class SessionCapabilities:
     #: other harness lends those trees, so Crew delivers them itself or not at all.
     inherits_kiro_default_resources: bool
 
+    #: Whether the agent on this harness holds kiro-cli's ``todo_list`` built-in, the
+    #: tool whose results fill the chat's step pill.
+    #:
+    #: True for kiro-cli only. KAS registers no such tool, and a harness that keeps
+    #: its checklist itself (:attr:`keeps_own_checklist`) sends an ACP ``plan``
+    #: instead. The dashboard asks the agent to keep a step list only where this is
+    #: True, so no agent is told to call a tool it does not have.
+    has_todo_list_tool: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -453,6 +462,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         crew_merges_user_hook_files=backend == ACP_BACKEND_KAS,
         keeps_session_across_compaction=is_claude_backend_name(backend),
         inherits_kiro_default_resources=backend == ACP_BACKEND_KIRO,
+        has_todo_list_tool=backend == ACP_BACKEND_KIRO,
     )
 
 
@@ -502,6 +512,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     crew_merges_user_hook_files=False,
     keeps_session_across_compaction=False,
     inherits_kiro_default_resources=False,
+    has_todo_list_tool=False,
 )
 
 

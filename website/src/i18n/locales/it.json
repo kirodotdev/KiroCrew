@@ -14328,7 +14328,15 @@
         "untracked": "Alcuni server non sono monitorati",
         "list_label": "Server MCP di questa sessione"
       },
+      "turnClock": {
+        "running_for": "In corso da {{elapsed}}",
+        "notify_offer": "Avvisami quando finisce",
+        "notify_offer_hint": "Mostra una notifica sul desktop quando una chat finisce mentre sei lontano da questa finestra.",
+        "dismiss_offer": "Non proporre più"
+      },
       "taskProgressBar": {
+        "done_left": "{{done}} fatte, {{left}} rimanenti",
+        "step_running": "in corso da {{elapsed}}",
         "all_tasks_complete": "Tutte le attività completate",
         "aria_collapse_task_list": "{{done}} di {{total}} attività completate. Comprimi l’elenco delle attività",
         "aria_expand_task_list": "{{done}} di {{total}} attività completate. Espandi l’elenco delle attività",
@@ -14347,7 +14355,6 @@
         "set_by_you_done": "Hai segnato questa riga come fatta; l'agente non l'ha ancora confermato.",
         "set_by_you_open": "Hai segnato questa riga come non fatta; l'agente non l'ha ancora confermato.",
         "sending": "Invio in corso",
-        "done_of_total": "{{done}} di {{total}}",
         "more_count_one": "+ {{n}} altro…",
         "more_count_many": "+ {{n}} altri…",
         "more_count_other": "+ {{n}} altri…"

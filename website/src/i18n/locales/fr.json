@@ -14328,7 +14328,15 @@
         "untracked": "Certains serveurs ne sont pas suivis",
         "list_label": "Serveurs MCP de cette session"
       },
+      "turnClock": {
+        "running_for": "En cours depuis {{elapsed}}",
+        "notify_offer": "M’avertir à la fin",
+        "notify_offer_hint": "Affiche une notification de bureau quand une discussion se termine pendant que tu n’es pas sur cette fenêtre.",
+        "dismiss_offer": "Ne plus proposer"
+      },
       "taskProgressBar": {
+        "done_left": "{{done}} faites, {{left}} restantes",
+        "step_running": "en cours depuis {{elapsed}}",
         "all_tasks_complete": "Toutes les tâches sont terminées",
         "aria_collapse_task_list": "{{done}} sur {{total}} tâches terminées. Réduire la liste des tâches",
         "aria_expand_task_list": "{{done}} sur {{total}} tâches terminées. Développer la liste des tâches",
@@ -14347,7 +14355,6 @@
         "set_by_you_done": "Tu as marqué cette ligne terminée ; l'agent ne l'a pas encore confirmé.",
         "set_by_you_open": "Tu as marqué cette ligne non terminée ; l'agent ne l'a pas encore confirmé.",
         "sending": "Envoi en cours",
-        "done_of_total": "{{done}} sur {{total}}",
         "more_count_one": "+ {{n}} de plus…",
         "more_count_many": "+ {{n}} de plus…",
         "more_count_other": "+ {{n}} de plus…"

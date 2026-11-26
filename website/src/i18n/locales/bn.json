@@ -13989,7 +13989,15 @@
         "untracked": "কিছু সার্ভার ট্র্যাক করা হয়নি",
         "list_label": "এই সেশনের MCP সার্ভার"
       },
+      "turnClock": {
+        "running_for": "{{elapsed}} ধরে চলছে",
+        "notify_offer": "শেষ হলে আমাকে জানাও",
+        "notify_offer_hint": "তুমি এই উইন্ডো থেকে দূরে থাকার সময় কোনো চ্যাট শেষ হলে ডেস্কটপ বিজ্ঞপ্তি দেখায়।",
+        "dismiss_offer": "আর দেখাবেন না"
+      },
       "taskProgressBar": {
+        "done_left": "{{done}}টি সম্পন্ন, {{left}}টি বাকি",
+        "step_running": "{{elapsed}} ধরে চলছে",
         "all_tasks_complete": "সব টাস্ক সম্পূর্ণ",
         "aria_collapse_task_list": "{{total}}টির মধ্যে {{done}}টি টাস্ক সম্পূর্ণ। টাস্ক তালিকা সংকুচিত করো",
         "aria_expand_task_list": "{{total}}টির মধ্যে {{done}}টি টাস্ক সম্পূর্ণ। টাস্ক তালিকা প্রসারিত করো",
@@ -14008,7 +14016,6 @@
         "set_by_you_done": "তুমি এটা সম্পন্ন চিহ্নিত করেছ; এজেন্ট এখনও নিশ্চিত করেনি।",
         "set_by_you_open": "তুমি এটা অসম্পন্ন চিহ্নিত করেছ; এজেন্ট এখনও নিশ্চিত করেনি।",
         "sending": "পাঠানো হচ্ছে",
-        "done_of_total": "{{done}} / {{total}}",
         "more_count_one": "+ আরও {{n}}টি…",
         "more_count_other": "+ আরও {{n}}টি…"
       },

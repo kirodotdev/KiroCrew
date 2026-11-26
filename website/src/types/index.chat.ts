@@ -82,6 +82,10 @@ export interface TodoList {
    * checklist): no click can reach it, so the pill shows it read-only and the
    * gateway refuses a tick with `todo_read_only`. Absent on a `todo_list` list. */
   read_only?: boolean
+  /** Epoch seconds (backend clock) the agent's own snapshot reached the current
+   * step: the pill's "running N" counts up from it. A person's tick never moves it.
+   * Absent before the first agent snapshot and from an older gateway. */
+  step_started_at?: number
 }
 
 /**
@@ -507,6 +511,9 @@ export interface ChatSlot extends TurnIdentityFields {
    * accepts the turn). Only ever true while `running`; absent from an older
    * gateway. */
   wake_starting?: boolean
+  /** Epoch seconds (backend clock) the running run started: the chat's live clock
+   * counts up from it. Null while no turn is in flight; absent from an older gateway. */
+  run_started_ts?: number | null
   /** The directory the running turn's process works in. `project` follows a
    * pick made mid-reply at once; this does not. Null when no turn has claimed
    * its session yet, absent from an older gateway. */

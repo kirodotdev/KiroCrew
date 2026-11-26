@@ -6,6 +6,9 @@
 export interface StatusData {
   uptime: string
   start_time?: number
+  /** The gateway's epoch second as the WebSocket frame was built
+   *  (`utils/serverClock.ts`). Absent from `/api/status`. */
+  server_now?: number
   sessions: number
   messages: number
   /**

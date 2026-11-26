@@ -7773,7 +7773,6 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
       },
       "taskProgressBar": {
-        "done_of_total": "{{done}} of {{total}}",
         "task_completion": "Task completion",
         "more_count_one": "+ {{n}} more…",
         "more_count_other": "+ {{n}} more…"

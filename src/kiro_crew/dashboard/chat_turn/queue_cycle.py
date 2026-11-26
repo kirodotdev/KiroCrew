@@ -544,6 +544,7 @@ def _report_run_seconds(slot: _ChatSlot, payload: dict[str, Any]) -> None:
         return
     started = slot._run_started_at
     slot._run_started_at = None
+    slot._run_started_wall = None
     if started is not None and slot._run_started_turns != slot._turns_started:
         payload["run_seconds"] = _run_clock.seconds_since(started)
 

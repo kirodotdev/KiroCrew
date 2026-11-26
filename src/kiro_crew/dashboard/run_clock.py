@@ -1,4 +1,7 @@
-"""The clock a chat run is measured on, for the ``run_seconds`` of its final ``chat_done``.
+"""The clocks a chat run is measured and shown on.
+
+:func:`now` measures the ``run_seconds`` of a run's final ``chat_done``;
+:func:`wall_now` is the epoch second the browser counts a live clock up from.
 
 Every reading of a run goes through :func:`now`: the ``_ChatSlot.task`` setter stamps
 a run's first turn, the dispatch gates restamp a person's message, and
@@ -25,3 +28,14 @@ def seconds_since(started: float) -> int:
     them.
     """
     return max(0, round(now() - started))
+
+
+def wall_now() -> float:
+    """The current epoch second (``time.time()``), for a browser to count up from.
+
+    Read at the same moment as the :func:`now` reading it accompanies, never
+    derived from one: the run clock stops while the machine sleeps, so a fixed
+    offset between the two clocks drifts by every sleep and every NTP slew.
+    A display value, never a measure.
+    """
+    return time.time()

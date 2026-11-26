@@ -1475,6 +1475,11 @@ sent from the dashboard and refuse with one line anywhere else, a message from
 Slack or another channel included; `find_ui` and `search_docs` still answer
 there.
 
+The default spec also mounts and auto-approves the `todo_list` built-in, whose
+list the chat's step pill shows. A spec from before that default gains it in
+`tools` and `allowedTools` once (`todo_list_granted.json` marks it), and keeps
+whatever you do with it afterwards.
+
 The same specs mount the Bot's own-record server `kirocrew-mate`, on the
 same terms: always emitted, no `autoApprove`, and exactly the tools in
 `agent._MATE_AUTO_GRANTS` as exact `allowedTools` grants (`update_self`, which

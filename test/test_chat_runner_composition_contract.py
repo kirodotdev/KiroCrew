@@ -1343,6 +1343,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     ),
     r"capabilities_of\(": (
         "dashboard/chat_turn/builtin_tools_notice.py",
+        "dashboard/chat_turn/checklist_rule.py",
         "dashboard/chat_turn/mcp_oauth_notice.py",
         "dashboard/chat_turn/mcp_session.py",
         "dashboard/chat_turn/model_fallback.py",
