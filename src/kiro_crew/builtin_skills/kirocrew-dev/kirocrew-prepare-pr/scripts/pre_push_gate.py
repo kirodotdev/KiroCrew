@@ -189,24 +189,28 @@ def toplevel() -> str:
     return os.fsdecode(_git_stdout(["rev-parse", "--show-toplevel"], None)).removesuffix("\n")
 
 
-def git_bytes(args: list[str]) -> bytes:
+def git_bytes(args: list[str], top: str | None = None) -> bytes:
     """Stdout of ``git -C <toplevel> <args>`` as bytes; a failing git is an error.
 
     Run from the work tree's root whatever the current directory is. Paths come back as bytes
     because a file name is not text: git quotes a non-ASCII name unless the listing is
     NUL-separated (``-z``), and a name may hold spaces or newlines.
+
+    ``top`` is the root one run of ``main`` asked for, handed down so each read is one git
+    start; without it the root is asked from the current directory. It is an argument and
+    never a module value: one process may run ``main`` in two repositories.
     """
-    return _git_stdout(args, toplevel())
+    return _git_stdout(args, top or toplevel())
 
 
-def git_line(args: list[str]) -> str:
+def git_line(args: list[str], top: str | None = None) -> str:
     """One value git prints (a sha, a directory): only the final newline is removed."""
-    return os.fsdecode(git_bytes(args)).removesuffix("\n")
+    return os.fsdecode(git_bytes(args, top)).removesuffix("\n")
 
 
-def git_paths(args: list[str]) -> list[str]:
+def git_paths(args: list[str], top: str | None = None) -> list[str]:
     """Paths from a ``-z`` listing, split on NUL and decoded the way the OS names files."""
-    return [os.fsdecode(name) for name in git_bytes(args).split(b"\0") if name]
+    return [os.fsdecode(name) for name in git_bytes(args, top).split(b"\0") if name]
 
 
 def load_map(path: str | None = None) -> dict[str, Any]:
@@ -296,8 +300,8 @@ def proof_path(git_dir: str) -> str:
     return os.path.join(git_dir, PROOF_FILENAME)
 
 
-def head_tree() -> str:
-    return git_line(["rev-parse", "HEAD:"])
+def head_tree(top: str | None = None) -> str:
+    return git_line(["rev-parse", "HEAD:"], top)
 
 
 def read_proof(git_dir: str, tree: str) -> dict[str, Any] | None:
@@ -356,8 +360,8 @@ def _check_skips(values: list[str], known: set[str]) -> dict[str, str]:
     return skips
 
 
-def _base_sha(base: str) -> str:
-    top = toplevel()
+def _base_sha(base: str, top: str | None = None) -> str:
+    top = top or toplevel()
     if not base:
         symbolic = git_argv(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], top)
         sym = run(symbolic, env=clean_environ())[1]
@@ -366,7 +370,7 @@ def _base_sha(base: str) -> str:
     return run(merge_base, env=clean_environ())[1].strip()  # no merge base: ""
 
 
-def _changed(base_sha: str) -> list[str] | None:
+def _changed(base_sha: str, top: str | None = None) -> list[str] | None:
     """Paths changed since the merge base, or None when git cannot say."""
     if not base_sha:
         return None
@@ -375,27 +379,35 @@ def _changed(base_sha: str) -> list[str] | None:
     # here (a run refuses while it is not), so HEAD's tree is the tree the gates checked.
     try:
         return sorted(
-            git_paths(["diff-tree", "-r", "--name-only", "--no-renames", "-z", base_sha, "HEAD"])
+            git_paths(
+                ["diff-tree", "-r", "--name-only", "--no-renames", "-z", base_sha, "HEAD"], top
+            )
         )
     except ValueError:
         return None
 
 
-def _worktree_state() -> tuple[str, str, list[str]]:
+def _worktree_state(top: str | None = None) -> tuple[str, str, list[str]]:
     """(HEAD sha, HEAD tree, dirty entries): what a proof can be about.
 
-    A dirty entry is one ``git status --porcelain=v1 -z`` record, "XY path" with the path
-    unquoted. A git that fails raises, so a broken status is never read as a clean tree.
+    The sha and the tree come from one ``rev-parse``, one name a line. A dirty entry is one
+    ``git status --porcelain=v1 -z`` record, "XY path" with the path unquoted. A git that
+    fails raises, so a broken status is never read as a clean tree.
     """
-    head = git_line(["rev-parse", "HEAD"])
+    top = top or toplevel()
+    names = git_line(["rev-parse", "HEAD", "HEAD:"], top).split("\n")
+    if len(names) != 2:
+        raise ValueError("git rev-parse printed {} names for HEAD and its tree".format(len(names)))
+    head, tree = names
     dirty = git_paths(
-        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"]
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
+        top,
     )
-    return head, head_tree(), dirty
+    return head, tree, dirty
 
 
-def _verify(git_dir: str) -> int:
-    proof = read_proof(git_dir, head_tree())
+def _verify(git_dir: str, top: str) -> int:
+    proof = read_proof(git_dir, head_tree(top))
     if proof is None:
         print("NO PROOF: nothing recorded for this tree. Optional: python3 pre_push_gate.py")
         return EXIT_NO_PROOF
@@ -407,7 +419,7 @@ def _gate_run(args: argparse.Namespace, git_dir: str, top: str) -> int:
     gate_map = load_map()
     known = {g["id"] for g in gate_map["gates"]}
     skips = _check_skips(args.skip, known)
-    head, tree, dirty = _worktree_state()
+    head, tree, dirty = _worktree_state(top)
     if dirty:
         print(
             "REFUSED: uncommitted changes. The gates check the working tree and a proof names "
@@ -416,8 +428,8 @@ def _gate_run(args: argparse.Namespace, git_dir: str, top: str) -> int:
         )
         print("\n".join("    " + entry for entry in dirty[:_TAIL_LINES]))
         return EXIT_UNRUNNABLE
-    base_sha = _base_sha(args.base)
-    changed = _changed(base_sha)
+    base_sha = _base_sha(args.base, top)
+    changed = _changed(base_sha, top)
     if changed is None:
         print(
             "NOTE: no merge base with origin/<base>; running every gate, "
@@ -452,7 +464,7 @@ def _gate_run(args: argparse.Namespace, git_dir: str, top: str) -> int:
         return EXIT_FAILED
     if unrunnable:
         return EXIT_UNRUNNABLE
-    if _worktree_state() != (head, tree, []):
+    if _worktree_state(top) != (head, tree, []):
         print("REFUSED: HEAD or the working tree changed while the gates ran; no proof written.")
         return EXIT_UNRUNNABLE
     proof = {
@@ -519,14 +531,14 @@ def main(argv: list[str]) -> int:
         return _selftest()
     try:
         # Two calls, and only the final newline removed: a directory name may end in a space.
-        git_dir = git_line(["rev-parse", "--absolute-git-dir"])
         top = toplevel()
+        git_dir = git_line(["rev-parse", "--absolute-git-dir"], top)
     except ValueError:
         sys.stderr.write("ERROR: not inside a git repository.\n")
         return EXIT_ENV
     try:
         if args.verify:
-            return _verify(git_dir)
+            return _verify(git_dir, top)
         return _gate_run(args, git_dir, top)
     except (OSError, ValueError, KeyError) as exc:
         sys.stderr.write("ERROR: {}\n".format(exc))

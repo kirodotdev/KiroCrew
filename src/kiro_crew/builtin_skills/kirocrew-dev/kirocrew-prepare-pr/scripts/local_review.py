@@ -149,6 +149,15 @@ def _load_sibling(module_name: str, filename: str) -> Any:
 
 # argv[0] resolution and the batch-launcher guard ``run`` applies.
 _tool_argv = _load_sibling("_lr_tool_argv", "_tool_argv.py")
+# The base-side reads of one review, through one git process.
+_base_files = _load_sibling("_lr_base_files", "_review_base_files.py")
+
+
+def _show_base(worktree: str, base_sha: str, relpath: str, base: Any = None) -> tuple[int, str, str]:
+    """``git show <base_sha>:<relpath>``, from the review's reader when there is one."""
+    if base is not None:
+        return base.show(base_sha, relpath)
+    return run(["git", "show", "{}:{}".format(base_sha, relpath)], cwd=worktree)
 
 
 # --------------------------------------------------------------------------
@@ -632,9 +641,11 @@ def _write_staged(target: str, body: str) -> None:
 
 
 def stage_files(
-    worktree: str, base_sha: str, stage_dir: str, specs: list[FileSpec]
+    worktree: str, base_sha: str, stage_dir: str, specs: list[FileSpec], base: Any = None
 ) -> list[str]:
     """Write ``git show <base_sha>:<src>`` for each spec into the staging tree.
+
+    ``base`` is the review's ``BaseFiles`` reader; without one each file is its own git.
 
     Absent/empty source: use the spec's fallback text when the workflow has one,
     otherwise raise ParityError (the workflow fails the job in that case, and a
@@ -642,7 +653,7 @@ def stage_files(
     """
     written: list[str] = []
     for spec in specs:
-        rc, out, _ = run(["git", "show", "{}:{}".format(base_sha, spec.src)], cwd=worktree)
+        rc, out, _ = _show_base(worktree, base_sha, spec.src, base)
         target = _staged_target(stage_dir, spec.dest)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         if rc == 0 and out.strip():
@@ -1141,7 +1152,9 @@ def _contract_relpath(contract: Any, name: Optional[str]) -> str:
     return posixpath.sep.join(segments)
 
 
-def read_base_contract(worktree: str, base_sha: str, relpath: str, name: Optional[str]) -> str:
+def read_base_contract(
+    worktree: str, base_sha: str, relpath: str, name: Optional[str], base: Any = None
+) -> str:
     """Read a reviewer's contract workflow out of the BASE commit, not the branch.
 
     The workflow text IS the reviewer's instructions: the brief lifts its prompt,
@@ -1154,7 +1167,7 @@ def read_base_contract(worktree: str, base_sha: str, relpath: str, name: Optiona
     pipeline runs base-side workflows), so it is also what keeps a local verdict
     comparable to the server's.
     """
-    rc, out, errtext = run(["git", "show", "{}:{}".format(base_sha, relpath)], cwd=worktree)
+    rc, out, errtext = _show_base(worktree, base_sha, relpath, base)
     if rc != 0 or not out.strip():
         detail = errtext.strip()
         raise ParityError(
@@ -1346,6 +1359,20 @@ def assemble(
     they are settled, so a caller handling a ParityError knows which base
     commit the failing extraction read.
     """
+    # One reader for this review's base-side files: it starts git at its first read
+    # and is closed here however the assembly ends.
+    with _base_files.BaseFiles(run, _tool_argv.resolve, worktree) as base:
+        return _assemble(worktree, base_ref, out_dir, stage_dir, resolved, base)
+
+
+def _assemble(
+    worktree: str,
+    base_ref: Optional[str],
+    out_dir: str,
+    stage_dir: str,
+    resolved: Optional[dict[str, str]],
+    base: Any,
+) -> dict[str, Any]:
     resolve_profile = _load_sibling("_lr_resolve_profile", "resolve_profile.py")
     # The ref the profile is READ from is settled BEFORE any profile value is
     # trusted -- the caller's --base, else git's own record of the remote
@@ -1457,17 +1484,17 @@ def assemble(
         # text below (the lifted prompt, the sed placeholders, the rule and
         # prompt-file specs, the model pin, the blocking budget) is authority, and
         # a branch edit to it would be the branch grading its own paper.
-        workflow_text = read_base_contract(worktree, base_sha, contract_relpath, name)
+        workflow_text = read_base_contract(worktree, base_sha, contract_relpath, name, base)
         scalars = block_scalars(workflow_text)
 
         lane_rules = stage_files(
-            worktree, base_sha, stage_dir, extract_base_rule_specs(workflow_text)
+            worktree, base_sha, stage_dir, extract_base_rule_specs(workflow_text), base
         )
         for path in lane_rules:
             if path not in rule_paths:
                 rule_paths.append(path)
         staged_prompts = stage_files(
-            worktree, base_sha, stage_dir, extract_prompt_file_specs(workflow_text)
+            worktree, base_sha, stage_dir, extract_prompt_file_specs(workflow_text), base
         )
 
         local_model = _profile_model(
@@ -1665,7 +1692,8 @@ def stale_copy_hint(worktree: str, base_sha: str, base_ref: str) -> Optional[lis
     relpath = posixpath.join(*_SCRIPT_PARTS)
     # cat-file, not show: `git show <rev>:<path>` also stats the argument as a
     # filename, which fails with "Filename too long" on Windows for a deep
-    # worktree, and that error would read as "no copy at the base".
+    # worktree, and that error would read as "no copy at the base". One read, so
+    # one process: a batch reader would start as many.
     rc, base_text, _ = run(
         ["git", "cat-file", "blob", "{}:{}".format(base_sha, relpath)], cwd=worktree
     )
