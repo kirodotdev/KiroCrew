@@ -19,8 +19,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from skill_script_helpers import skill_text
+from windows_sim import read_sharing_violation, read_text_sharing_violation
 
-from kiro_crew import crew_mode, crew_pause, platform_compat
+from kiro_crew import atomic_write, crew_mode, crew_pause, platform_compat
 from kiro_crew.dashboard.handlers.office_slides import _KeyedLocks
 from kiro_crew.dashboard.turn_dispatch import mark_turn_unstarted
 from kiro_crew.testing.wait import until_parked
@@ -165,6 +166,31 @@ def test_a_damaged_file_pauses_nothing(_pause_store, body):
     rec = crew_pause.record("root")
     assert rec is None or rec["held"] == rec["tree"] == rec["stopped"] == []
     assert not crew_pause.holds_turn("w1")
+
+
+def test_a_pause_file_that_cannot_be_read_is_read_again_and_never_written_over(
+    _pause_store, monkeypatch
+):
+    crew_pause.pause("rootA", ["w1"], ["w1"])
+    before = _pause_store.read_bytes()
+    _forget_memory()
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+    # Held open by another program for longer than the read retry waits.
+    name = _pause_store.name
+    with (
+        read_sharing_violation(match=name, times=10_000),
+        read_text_sharing_violation(match=name, times=10_000),
+    ):
+        crew_pause.load()  # the startup preload: logged, never raised
+        with pytest.raises(OSError):
+            crew_pause.pause("rootB", ["w2"], ["w2"])
+    assert _pause_store.read_bytes() == before
+    # Once the hold ends, the next read finds rootA paused without a restart.
+    crew_pause.load()
+    assert crew_pause.root_paused("rootA") and crew_pause.holds_turn("w1")
+    crew_pause.pause("rootB", ["w2"], ["w2"])
+    _restart()
+    assert crew_pause.root_paused("rootA") and crew_pause.root_paused("rootB")
 
 
 # ── the routes ─────────────────────────────────────────────────────────────────
