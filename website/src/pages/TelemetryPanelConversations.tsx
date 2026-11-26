@@ -4,7 +4,7 @@
  *  occupancy and headroom colour thresholds they read. Both name and link a
  *  conversation row through the same two rules, `sessionLabel` and
  *  `linksToConversation`. */
-import React, { useContext, useMemo } from 'react'
+import React, { useContext, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, Coins } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -12,6 +12,7 @@ import { api } from '../api/client'
 import ErrorNotice from '../components/ErrorNotice'
 import InfoTip from '../components/InfoTip'
 import SegmentedControl from '../components/SegmentedControl'
+import SimpleSelect from '../components/SimpleSelect'
 import TruncatedText from '../components/TruncatedText'
 import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
 import { usePersistedBool } from '../hooks/usePersistedBool'
@@ -640,6 +641,14 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
   // second question: the blocks above it already say where the credits went, and
   // opening on 45 rows puts the answer below the fold.
   const [tableOpen, setTableOpen] = usePersistedBool(`telemetry:spend-table-open${keySuffix}`, false)
+  // '' is every origin. The options are the window's own origins (`by_category`,
+  // grouped over every row), so an app's sessions can be picked out of the table
+  // by the same name its bar carries. A choice the window no longer holds reads
+  // as no filter rather than as an empty table.
+  const [origin, setOrigin] = useState('')
+  const origins = c.by_category.map(r => r.name)
+  const convos =
+    origin && origins.includes(origin) ? c.conversations.filter(v => v.category === origin) : c.conversations
   const bands = c.context_bands
   const unit = spendUnit(c)
   const fmtAmount = (v: number) => fmtSpend(v, unit)
@@ -805,10 +814,23 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
                     : []),
                 ]}
               />
+              {group === 'session' && origins.length > 1 && (
+                // Capped to the row so a long app name shrinks the trigger
+                // instead of pushing the table controls past a narrow pane.
+                <div className="min-w-0 max-w-full">
+                  <SimpleSelect
+                    options={['', ...origins]}
+                    optionLabels={[i18nT('pages.telemetryPanel.all_origins'), ...origins.map(categoryLabel)]}
+                    value={origins.includes(origin) ? origin : ''}
+                    aria-label={i18nT('pages.telemetryPanel.filter_by_origin')}
+                    onChange={setOrigin}
+                  />
+                </div>
+              )}
             </div>
             {group === 'session' ? (
               <DataTable<CostConvo>
-                rows={c.conversations}
+                rows={convos}
                 key={`telemetry-spend-conversation${keySuffix}`}
                 tableId={`telemetry-spend-conversation${keySuffix}`}
                 cols={convoCols(
@@ -925,10 +947,12 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
  * no category, and link all of them.
  */
 function linksToConversation(
-  convo: Pick<CostConvo, 'title' | 'category'> | undefined,
+  convo: Pick<CostConvo, 'title' | 'channel'> | undefined,
   navigable: string | undefined,
 ): boolean {
-  return !!convo?.title && !!navigable && convo.category === navigable
+  // The transport, not the origin: a dashboard chat an app opened is filed under
+  // `app:<name>` but still opens at /chat like any other dashboard chat.
+  return !!convo?.title && !!navigable && convo.channel === navigable
 }
 
 function sessionLabel(convo: CostConvo | undefined, slot: string): string {

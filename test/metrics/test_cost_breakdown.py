@@ -19,13 +19,16 @@ from kiro_crew.messaging.link import TELEMETRY_CHANNELS, telemetry_channel_of
 
 
 def _row(*, slot, model="m", credits=1.0, used=0, window=1_000_000, age_days=0.0,
-         surface="dashboard"):
+         surface="dashboard", app=None):
     ts = datetime.now(timezone.utc) - timedelta(days=age_days)
-    return {
+    row = {
         "_type": "tokens", "ts": ts.isoformat(), "slot": slot, "model": model,
         "credits": credits, "context_used": used, "context_window": window,
         "surface": surface, "agent": "kirocrew", "provider": "acp",
     }
+    if app is not None:
+        row["app"] = app
+    return row
 
 
 @pytest.fixture()
@@ -276,6 +279,77 @@ class TestConversations:
         assert rows["chat-1-1"]["category"] == "dashboard"
         assert rows["cron:default:nightly"]["category"] == "bg"
         assert rows["cron:default:nightly"]["channel"] == "cron"
+
+
+class TestAppAttribution:
+    """An app's own chat sessions: keyed ``<app>-<id>``, which matches no
+    transport, so only the row's ``app`` stamp can group them by app."""
+
+    def test_a_stamped_row_is_filed_under_its_app(self, store):
+        store([_row(slot="radar-item-7", credits=2.0, app="radar")])
+        d = usage_mod.cost_breakdown(7)
+        assert d["conversations"][0]["category"] == "app:radar"
+        assert {r["name"]: r["credits"] for r in d["by_category"]} == {"app:radar": 2.0}
+
+    def test_an_unstamped_row_keeps_its_key_based_category(self, store):
+        # An empty stamp is an unstamped row; a non-string one is not an app name.
+        store([
+            _row(slot="chat-1-1", credits=1.0),
+            _row(slot="radar-item-7", credits=2.0, app=""),
+            _row(slot="cron:default:nightly", credits=4.0, app=7),
+        ])
+        d = usage_mod.cost_breakdown(7)
+        rows = {r["slot"]: r["category"] for r in d["conversations"]}
+        assert rows == {
+            "chat-1-1": "dashboard",
+            "radar-item-7": "other",
+            "cron:default:nightly": "bg",
+        }
+        assert {r["name"]: r["credits"] for r in d["by_category"]} == {
+            "dashboard": 1.0, "other": 2.0, "bg": 4.0,
+        }
+
+    def test_an_apps_total_counts_sessions_past_the_table_cut(self, store, monkeypatch):
+        # The table keeps only the priciest sessions; the app's total must still
+        # be the sum of every one of its rows in the window, not of the listed ones.
+        monkeypatch.setattr(usage_mod, "_COST_TOP_CONVOS", 1)
+        store([
+            _row(slot="chat-1-1", credits=50.0),
+            _row(slot="radar-a", credits=1.0, app="radar"),
+            _row(slot="radar-a", credits=0.5, app="radar"),
+            _row(slot="radar-b", credits=2.0, app="radar"),
+            _row(slot="radar-c", credits=3.0, app="radar", age_days=10.0),  # prior window
+        ])
+        d = usage_mod.cost_breakdown(7)
+        assert [r["slot"] for r in d["conversations"]] == ["chat-1-1"]
+        by = {r["name"]: r for r in d["by_category"]}
+        assert by["app:radar"]["credits"] == 3.5
+        assert by["app:radar"]["turns"] == 3
+        # The prior window is grouped the same way, so the delta compares like with like.
+        assert by["app:radar"]["delta_pct"] == round((3.5 - 3.0) / 3.0 * 100, 0)
+        assert d["credits"] == 53.5
+
+    def test_the_stamp_moves_the_origin_not_the_purpose(self, store):
+        # Origin answers who owns the session, Purpose what a call was for: an
+        # app's turn is a turn and its helper call a helper, and both splits
+        # still sum to the card total.
+        store([
+            _row(slot="radar-a", credits=2.0, app="radar"),
+            _row(slot="radar-a", credits=1.0, app="radar", surface="bg:auto_title"),
+            _row(slot="cron:default:nightly", credits=4.0),
+        ])
+        d = usage_mod.cost_breakdown(7)
+        purpose = {r["name"]: r["credits"] for r in d["by_purpose"]}
+        assert purpose == {"turn": 2.0, "helper": 1.0, "automation": 4.0}
+        assert {r["name"]: r["credits"] for r in d["by_category"]} == {"app:radar": 3.0, "bg": 4.0}
+        assert sum(purpose.values()) == d["credits"] == 7.0
+
+    def test_the_context_tab_files_the_session_under_the_same_app(self, store, monkeypatch):
+        store([_row(slot="radar-a", credits=1.0, used=100, app="radar")])
+        monkeypatch.setattr(usage_mod, "_CONTEXT_CACHE", None)
+        monkeypatch.setattr(usage_mod, "_CONTEXT_CACHE_KEY", None)
+        sessions = usage_mod.context_occupancy(7)["sessions"]
+        assert [s["category"] for s in sessions] == ["app:radar"]
 
 
 class TestNonFiniteCredits:

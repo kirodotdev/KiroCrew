@@ -23608,6 +23608,8 @@
       "gauges_latest": "última amostra",
       "credits_by_origin": "Créditos por origem",
       "cost_by_origin": "Custo por origem",
+      "all_origins": "Todas as origens",
+      "filter_by_origin": "Filtrar sessões por origem",
       "advice_title": "Onde você pode economizar",
       "advice_tip": "Cada linha é medida a partir dos turnos deste período, não estimada. Os turnos de subagentes não entram nestes números.",
       "advice_high_context": "{{share}} do gasto vai para turnos com mais de {{tokens}} de contexto: compacte antes",

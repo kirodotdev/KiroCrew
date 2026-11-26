@@ -142,6 +142,12 @@ def context_occupancy(days: float = 14, until: float | None = None) -> dict[str,
                             "_ts_epoch": 0.0,
                         }
                         per_session[slot] = cur
+                    # The Spend tab's rule: a row stamped with its owning app
+                    # files the session under that app, so one session reads the
+                    # same origin on both tabs.
+                    app = obj.get("app")
+                    if app and isinstance(app, str):
+                        cur["category"] = session_category(slot, app)
                     cur["turns"] = int(cur["turns"]) + 1
                     if p > float(cur["peak_pct"]):
                         cur["peak_pct"] = p

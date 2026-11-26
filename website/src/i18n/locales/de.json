@@ -23030,6 +23030,8 @@
       "gauges_latest": "letzter Messwert",
       "credits_by_origin": "Guthaben nach Ursprung",
       "cost_by_origin": "Kosten nach Ursprung",
+      "all_origins": "Alle Ursprünge",
+      "filter_by_origin": "Sitzungen nach Ursprung filtern",
       "advice_title": "Hier kannst du sparen",
       "advice_tip": "Jede Zeile ist aus den Durchläufen dieses Zeitraums gemessen, nicht geschätzt. Durchläufe von Subagenten zählen in diesen Zahlen nicht mit.",
       "advice_high_context": "{{share}} der Ausgaben entfallen auf Durchläufe mit mehr als {{tokens}} Kontext: verdichte früher",
