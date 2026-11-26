@@ -3830,7 +3830,9 @@ this install is derived once".)
 
 **No update restarts the gateway under running work, and no unattended path
 restarts a running gateway at all** (maintainer decision of 2026-11-10,
-[decision](../../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)).
+[decision](../../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)),
+except the restart once idle that applies a refused bind address
+([decision](../../decisions/2026-11-25-a-refused-bind-address-restarts-the-gateway-once-idle.md)).
 A click on Update ("Update when I restart", `POST /api/update`) only ARMS the
 update (`202 {armed: true, version}`; `{"when": "cancel"}` disarms it, a legacy
 `force` is ignored), whatever is running. The apply runs at the next start, before
