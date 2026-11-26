@@ -14,11 +14,13 @@ are stdlib, pytest and the floor parts loaded before this one, and nothing here 
 from __future__ import annotations
 
 import functools
+import importlib.util
 import os
 import pathlib
 import shutil
 import subprocess
 import sys
+import time
 import warnings
 from importlib.metadata import entry_points as _installed_entry_points
 
@@ -147,6 +149,87 @@ def _redirect_bytecode_cache() -> None:
         return
     sys.pycache_prefix = candidate
     os.environ["PYTHONPYCACHEPREFIX"] = candidate
+
+
+#: A sibling checkout's mirror with no directory changed for this long is retired
+#: even though its source still exists: nothing has compiled there in two weeks.
+_MIRROR_IDLE_SECONDS = 14 * 24 * 3600.0
+#: How many ancestors of the rootdir have their mirror's children checked. Two
+#: covers both usual layouts: ``<repo>/.worktrees/<name>`` (the parent holds the
+#: sibling worktrees) and ``<scratch root>/<id>/<clone>`` (the grandparent holds
+#: the sibling scratch dirs, which the scratch sweep deletes as a whole).
+_MIRROR_PRUNE_LEVELS = 2
+
+
+def _mirror_path(source: str) -> str:
+    """The ``sys.pycache_prefix`` mirror CPython uses for sources under *source*.
+
+    Asks CPython's own mapping, so the drive handling on Windows is the interpreter's.
+    """
+    probe = os.path.join(os.path.abspath(source), "_mirror_probe.py")
+    return os.path.dirname(importlib.util.cache_from_source(probe))
+
+
+def _mirror_is_idle(mirror: str, cutoff: float) -> bool:
+    """Whether no directory under *mirror* changed since *cutoff*.
+
+    CPython writes a ``.pyc`` by renaming a temp file into place, which bumps its
+    directory's mtime, so the newest directory mtime is when bytecode last landed.
+    Stops at the first fresh directory, so a mirror in use costs a few stats.
+    """
+    for dirpath, _dirnames, _filenames in os.walk(mirror):
+        try:
+            if os.stat(dirpath).st_mtime >= cutoff:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _prune_bytecode_mirror_of_gone_checkouts(rootdir: str) -> None:
+    """Drop the mirrors of sibling checkouts that are gone or idle for two weeks.
+
+    :func:`_redirect_bytecode_cache` keys the mirror on each source's absolute path,
+    so every worktree and every throwaway clone gets a full copy, and that copy
+    outlives ``git worktree remove`` and the scratch sweep that delete its source.
+    Left alone, these copies reach tens of gigabytes on a busy host.
+
+    For the rootdir's parent and grandparent, each child of their mirror is removed
+    when its source path is gone, or when the source is a checkout (it holds a
+    ``.git``) and nothing under its mirror was written for :data:`_MIRROR_IDLE_SECONDS`.
+    A non-checkout child such as a shared ``.venv`` is only read once warm, so it is
+    never retired for age. The chain the rootdir sits on is never touched. Deleting
+    bytecode only costs a recompile, so a concurrent run is slowed at worst.
+    """
+    if not getattr(sys, "pycache_prefix", None):
+        return
+    here = os.path.abspath(rootdir)
+    cutoff = time.time() - _MIRROR_IDLE_SECONDS
+    ancestor = here
+    for _ in range(_MIRROR_PRUNE_LEVELS):
+        parent = os.path.dirname(ancestor)
+        if parent == ancestor:
+            return
+        ancestor = parent
+        try:
+            names = os.listdir(_mirror_path(ancestor))
+        except OSError:
+            continue
+        for name in names:
+            source = os.path.join(ancestor, name)
+            if here == source or here.startswith(source + os.sep):
+                continue
+            mirror = _mirror_path(source)
+            if not os.path.isdir(mirror) or os.path.islink(mirror):
+                continue
+            gone = not os.path.lexists(source)
+            idle_checkout = (
+                not gone
+                and os.path.lexists(os.path.join(source, ".git"))
+                and _mirror_is_idle(mirror, cutoff)
+            )
+            if gone or idle_checkout:
+                shutil.rmtree(mirror, ignore_errors=True)
 
 
 def _put_the_tree_under_test_first_on_child_paths() -> None:
