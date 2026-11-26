@@ -100,6 +100,17 @@ async def _bind_route_bot(self: TelegramDispatcher, session_key: str, bot: str) 
     await bind_bot_memory(session_key, bot, self.sessions, self.conv_log)
 
 
+def _bot_bound_store(session_key: str) -> str:
+    """The named memory store *session_key*'s execution record binds, or ``""``.
+
+    Only a Bot pick binds a Telegram key to a named store (``bind_bot_memory``);
+    Global is ``""``. Blocking.
+    """
+    from kiro_crew.context import store_of_session
+
+    return store_of_session(None, session_key)
+
+
 def _has_execution_record(session_key: str) -> bool:
     """Whether *session_key* already carries an execution record. Blocking."""
     from kiro_crew.execution_context import read_session_execution
@@ -251,7 +262,18 @@ async def _run_turn(
         if _channel_crew is not None and not _pickers.is_bot_owner(self._allowed, user_id):
             # The pick was made by the owner, but the Topic is shared, or the
             # allow-list grew since: nobody else runs on the Bot's memory.
+            _pickers._audit_bot_refusal(user_id, "telegram.bot_turn", _channel_crew.crew_agent)
             raise UnknownMemoryStore(_pickers.BOT_OWNER_ONLY)
+        if _channel_crew is None and resumed_key is None:
+            # A template turn on a key a Bot bound. The key carries only the name,
+            # and the generation is seeded by name, so an ``/agent`` pick of a
+            # Bot's name (after a restart clears the picks, or by another member
+            # of the allow-list) can land on the Bot's conversation without its
+            # owner check. What the KEY records decides, not the in-memory pick.
+            _bound = await asyncio.to_thread(_bot_bound_store, session_key)
+            if _bound:
+                _pickers._audit_bot_refusal(user_id, "telegram.bot_bound_turn", _bound)
+                raise UnknownMemoryStore(_pickers.BOT_BOUND_REFUSAL)
         if _channel_crew is not None:
             # Before the store is read, so the Bot's first turn already runs on its
             # own memory. Raises ``UnknownMemoryStore`` with a user-worded reason,

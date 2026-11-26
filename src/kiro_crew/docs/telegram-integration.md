@@ -108,7 +108,10 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
   agent until you pick again. Bots are owner-only, because a Bot pick opens
   that Bot's memory to everyone in the Topic: `/bots`, a press on a Bot row and
   a Bot's turn are all refused unless `telegram.allowed_user_ids` holds exactly
-  one person and that person sent it, the same rule `/sessions` follows.
+  one person and that person sent it, the same rule `/sessions` follows. A
+  conversation bound to a Bot's memory only runs as that Bot: reached any other
+  way (an `/agent` pick of the Bot's name, say) it is refused, and `/new` starts
+  a fresh one.
 - `/status` — uptime, message counts, tool decisions, sessions
 - `/ping` — answers `pong`. Answered by the gateway itself, never by the model,
   so it still works when the thing that is wedged is the model.

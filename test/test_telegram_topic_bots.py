@@ -156,6 +156,7 @@ def _bot_turn(
     record: Any = None,
     allowed: frozenset[int] = frozenset({7}),
     as_bot: bool = True,
+    bound_store: str = "",
 ) -> tuple[Any, _KwSessions, list[tuple[str, str]]]:
     prime_live("agent", default_agent="")
     d, _client, _sessions = _dispatcher(set(allowed))
@@ -182,6 +183,11 @@ def _bot_turn(
 
     monkeypatch.setattr(turn_engine, "bind_bot_memory", _bind)
     monkeypatch.setattr(turn_engine, "_has_execution_record", lambda key: record is not None)
+    monkeypatch.setattr(turn_engine, "_bot_bound_store", lambda key: bound_store)
+    d.audits = []
+    monkeypatch.setattr(
+        pickers, "_audit_bot_refusal", lambda uid, op, bot: d.audits.append((uid, op, bot))
+    )
     asyncio.run(d.handle_message(_dm("turn on the lights")))
     return d, sess, bound
 
@@ -282,6 +288,8 @@ def test_a_bot_turn_from_a_shared_allow_list_is_refused(
     assert sess.alloc_kwargs == []
     assert bound == []
     assert pickers.BOT_OWNER_ONLY in _said(d.client)
+    # Audited like the command and the press refusals.
+    assert d.audits == [(7, "telegram.bot_turn", _BOT)]
 
 
 def test_the_owner_rule() -> None:
@@ -341,3 +349,55 @@ def test_the_busy_reply_names_the_command_that_was_used(
     out = asyncio.run(pickers._apply_pick(d, _ROUTE, _BOT, "🤖 Home Bot", bot=True))
 
     assert "send /bots again" in out
+
+
+# ── a key a Bot bound, reached without a Bot pick ───────────────────────────
+
+
+@pytest.mark.parametrize(
+    "allowed",
+    [
+        # The owner after a restart: the picks are gone, ``/agent`` names the Bot.
+        frozenset({7}),
+        # Another allow-listed member's ``/agent`` pick of the Bot's name.
+        frozenset({7, 8}),
+    ],
+)
+def test_a_template_turn_on_a_key_a_bot_bound_is_refused(
+    monkeypatch: pytest.MonkeyPatch, allowed: frozenset[int]
+) -> None:
+    # The template turn's key holds Bot ``home-bot``'s execution record (the
+    # generation is seeded by name), so it would read the Bot's private store.
+    d, sess, bound = _bot_turn(
+        monkeypatch, _CREW, as_bot=False, allowed=allowed, bound_store="home-bot"
+    )
+
+    assert sess.alloc_kwargs == []
+    assert bound == []
+    assert pickers.BOT_BOUND_REFUSAL in _said(d.client)
+    assert d.audits == [(7, "telegram.bot_bound_turn", "home-bot")]
+
+
+def test_a_template_turn_on_a_global_key_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _d, sess, _bound = _bot_turn(monkeypatch, None, as_bot=False, bound_store="")
+
+    assert len(sess.alloc_kwargs) == 1
+
+
+def test_a_bot_named_like_the_default_template_is_a_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No explicit pick: the route runs the default template ``kirocrew``. Its
+    # Bot of the same name must switch, not answer "Already using".
+    prime_live("agent", default_agent="")
+    d, client, _sessions = _dispatcher({7})
+    _bots(monkeypatch, {"kirocrew": "Crew"})
+    before = d._session_key(_ROUTE)
+    asyncio.run(d.handle_message(_dm("/bots")))
+
+    asyncio.run(d.on_callback(_press("g:1")))
+
+    assert client.edits[-1][1] == "✅ Bot set to 🤖 Crew."
+    assert d._agent_picks.get(_ROUTE) == "kirocrew"
+    assert d._bot_picks.get(_ROUTE) == "kirocrew"
+    assert d._session_key(_ROUTE) != before

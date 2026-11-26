@@ -470,6 +470,11 @@ def _agent_choices(
     return tuple(rows)
 
 
+BOT_BOUND_REFUSAL = (
+    "🔒 This conversation is bound to a Bot's memory, and it is not running as "
+    "that Bot. Send /new to start a fresh conversation, or pick the Bot with /bots."
+)
+
 BOT_OWNER_ONLY = (
     "🔒 Running a chat as a Bot is owner-only: it opens that Bot's memory and "
     "workspace, so it needs `telegram.allowed_user_ids` to hold exactly one "
@@ -642,13 +647,16 @@ async def _apply_pick(
     # The same name picked as the other kind (a template and a Bot can share
     # one): the session key carries only the name, so a fresh generation keeps
     # the Bot's memory binding off the template's conversation and back.
-    if agent_id and agent_id == self._agent_picks.get(route):
+    # Compared with what the route RUNS, its default included: a Bot named like
+    # the default template is a switch, not "Already using".
+    if agent_id and agent_id == (self._agent_picks.get(route) or running):
         if bool(self._bot_picks.get(route)) != bot:
             if self.sessions.is_busy(self._session_key(route)):
                 return (
                     f"⏳ Still working on your last message — send {command} again once "
                     f"it finishes to switch to {label}."
                 )
+            self._agent_picks.set(route, agent_id)
             self._bot_picks.set(route, agent_id if bot else "")
             self._conv.bump_gen(route)
             return f"✅ {'Bot' if bot else 'Agent'} set to {label}."
