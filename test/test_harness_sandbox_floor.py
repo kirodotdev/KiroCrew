@@ -180,8 +180,10 @@ def test_a_scratch_cwd_is_judged_by_the_floor_of_the_sessions_own_harness(
         patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
         patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
     ):
-        cwd = str(root / "runtime-old" / "x")
-        assert _stored_cwd_is_hidden_scratch(cwd, None, "dashboard_floor", override) is hidden
+        # The tree exists, so only the tier decides: a missing cwd is never kept.
+        cwd = root / "runtime-old" / "x"
+        cwd.mkdir(parents=True)
+        assert _stored_cwd_is_hidden_scratch(str(cwd), None, "dashboard_floor", override) is hidden
 
 
 @pytest.mark.asyncio
