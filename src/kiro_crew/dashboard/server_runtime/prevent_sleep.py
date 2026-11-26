@@ -215,7 +215,8 @@ async def _tailnet_publish_keeps_awake(port: int) -> bool:
     if expiry > now:
         return cached
     try:
-        serve = await asyncio.to_thread(tailnet_serve.serve_state, port)
+        https_port = await asyncio.to_thread(tailnet_serve.configured_https_port)
+        serve = await asyncio.to_thread(tailnet_serve.serve_state, port, https_port=https_port)
         # ``published is None`` means we could not tell. Treated as NOT published,
         # because the fail-closed direction for this decision is letting the host
         # sleep — an unresolvable probe must not pin a laptop awake indefinitely.

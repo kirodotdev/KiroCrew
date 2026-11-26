@@ -3650,7 +3650,8 @@ bare "Telemetry", because this scope governs the outbound heartbeat and OTLP exp
 
 `dashboard.tailscale.enabled` lets the gateway ask the local Tailscale daemon for
 this machine's MagicDNS name at startup and add `https://<name>` to the CSRF origin
-allowlist and the DNS-rebinding `Host` barrier, so `tailscale serve` reaches the
+allowlist (`https://<name>:<port>` in its place when `dashboard.tailscale.https_port`
+is not 443) and the DNS-rebinding `Host` barrier, so `tailscale serve` reaches the
 dashboard without a hand-written `dashboard.url` (`dashboard/tailnet.py`; RFC
 `request-for-change/rfc-tailnet-dashboard-access.md`). Governed by the
 `capabilities.tailnet_origin` `SCOPE_CATALOG` capability row

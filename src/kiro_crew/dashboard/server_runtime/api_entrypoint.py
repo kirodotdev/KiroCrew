@@ -288,6 +288,7 @@ async def start_api_server(
         local_only,
         configured_host,
         tailnet_host=_tailnet_host,
+        tailnet_https_port=_ts_cfg.https_port,
     )
     # Stashed for the same reason as in start_dashboard, and set here too even
     # though /api/tailnet/status is registered on the dashboard app: leaving one of
@@ -308,6 +309,7 @@ async def start_api_server(
         enabled=_ts_cfg.enabled,
         initial_host=_tailnet_host,
         load_enabled=_tailnet_origin_enabled,
+        https_port=_ts_cfg.https_port,
     )
 
     # Per-session internal secret for machine-to-machine (mcp-core, cron) auth.

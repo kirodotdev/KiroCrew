@@ -10882,6 +10882,7 @@
           "allowed_logins": [],
           "pin_scope": "node",
           "bind_refresh_chains": true,
+          "https_port": 443,
           "keep_awake": true
         },
         "shared_crew": {
@@ -11047,6 +11048,7 @@
         "allowed_logins": [],
         "pin_scope": "node",
         "bind_refresh_chains": true,
+        "https_port": 443,
         "keep_awake": true
       }
     },
@@ -11137,6 +11139,21 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.tailscale.https_port",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tailscale HTTPS Port",
+      "help": "The HTTPS port `tailscale serve` fronts the dashboard on. The trusted tailnet origin carries it when it is not 443 (https://<name>:<port>). Run `kirocrew tailnet down` before changing it: Kiro Crew manages only the port it is set to. A value outside 1-65535 reads as 443. Takes effect at the next gateway start.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 443,
       "requiresRestart": true
     },
     {

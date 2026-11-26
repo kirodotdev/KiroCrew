@@ -2170,7 +2170,9 @@ a present value the reader cannot use takes the reader's value:
   `dashboard.tailscale.bind_refresh_chains`, `false` for a non-boolean
   `slack.show_in_session_list` (a malformed value reads as the default, which
   keeps Slack conversations out of the list), `node` for an unrecognised
-  `dashboard.tailscale.pin_scope`, `auto` for an unknown `agent.jail`, `false` for
+  `dashboard.tailscale.pin_scope`, `443` for a `dashboard.tailscale.https_port`
+  that is not an integer from 1 to 65535 (with one logged warning, never clamped),
+  `auto` for an unknown `agent.jail`, `false` for
   a present non-boolean `agent.dangerously_skip_permissions` (never a grant),
   `per-channel-peer` for an unknown `messaging.dm_scope` (never one session for
   two people's DMs).

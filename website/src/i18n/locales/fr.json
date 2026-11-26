@@ -10854,7 +10854,7 @@
       "trust_off_title": "Autoriser l'accès par le nom réseau de cet ordinateur",
       "trust_off_body": "Le tableau de bord refuse les requêtes provenant d'adresses qu'il ne reconnaît pas. Autorisez son propre nom de réseau privé pour qu'un téléphone puisse l'atteindre. Cela n'ouvre aucun port vers Internet et ne modifie pas votre façon de vous connecter.",
       "restart_gateway_title": "Redémarrer {{productName}} pour terminer",
-      "restart_gateway_body": "Un nom de réseau est désormais disponible, mais ce serveur n'en a résolu aucun à son démarrage ; le nom n'est donc pas encore approuvé. Redémarrez {{productName}} une fois et la dernière étape sera prête.",
+      "restart_gateway_body": "Ce serveur doit redémarrer pour utiliser son adresse tailnet actuelle. Redémarre {{productName}} une fois et la dernière étape sera prête.",
       "occupied_title": "Quelque chose d'autre est déjà servi ici",
       "occupied_body": "Tailscale sert déjà autre chose à cette adresse. La publication le remplacerait, donc rien n'a été modifié.",
       "occupied_replace": "Si le remplacement est sans risque, exécute <cmd/>",

@@ -659,16 +659,17 @@ def withdraw_refused_origins(app: web.Application, loop: asyncio.AbstractEventLo
     """
     # Deferred: the tailnet module loads the daemon and sandbox stack, which nothing
     # else in this module needs.
-    from kiro_crew.dashboard.tailnet import running_tailnet_origin
+    from kiro_crew.dashboard.tailnet import running_tailnet_https_port, running_tailnet_origin
 
     def kept() -> set[str]:
         tailnet_origin = running_tailnet_origin(app)[0]
-        floor = origin_floor(app["port"], tailnet_origin)
+        https_port = running_tailnet_https_port(app)
+        floor = origin_floor(app["port"], tailnet_origin, https_port)
         # Under --port auto app["port"] is the requested 0 and served_port the bound
         # one; the start-time set floors both, so the refresh keeps both.
         served = app.get("served_port")
         if served and served != app["port"]:
-            floor |= origin_floor(served, tailnet_origin)
+            floor |= origin_floor(served, tailnet_origin, https_port)
         return floor | {dashboard_origin(url) for url in access.tailnet_direct().urls}
 
     allowed: set[str] = app["allowed_origins"]

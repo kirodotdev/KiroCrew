@@ -323,22 +323,24 @@ def _emit_session_urls(port: int, token: str) -> None:
                 file=sys.stderr,
             )
             return
-        tailnet_url = tailnet_origin()
+        https_port = cfg.dashboard.tailscale.https_port
+        tailnet_url = tailnet_origin(https_port)
         if tailnet_url and tailnet_url != origin:
-            # Ownership of the 443/ mount, not just "a tailnet name exists". The URL
+            # Ownership of the mount on the HTTPS port this URL carries
+            # (dashboard.tailscale.https_port), not just "a tailnet name exists". The URL
             # carries a bearer session, so printing it when something ELSE is serving
             # that name hands the operator a link that delivers their token to a
             # foreign service, which can then replay it against the dashboard.
             #
             # That state is reachable, not theoretical: `tailnet up` deliberately
-            # REFUSES to overwrite a foreign 443/ handler, so a host can sit with the
+            # REFUSES to overwrite a foreign handler on that port, so a host can sit with the
             # trust flag on and a resolvable name while the mount belongs to something
             # unrelated. The flag and the name were never evidence of ownership.
             #
             # `published` is tri-state and only True is safe: False means nothing is
             # serving, None means the serve config could not be read -- and unknown
             # ownership is exactly the risk, so it fails closed.
-            state = tailnet_serve.serve_state(port)
+            state = tailnet_serve.serve_state(port, https_port=https_port)
             if state.published is True:
                 print()
                 print(f"{tailnet_url}/?token={token}")

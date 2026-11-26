@@ -10366,7 +10366,7 @@
       "trust_off_title": "允许通过这台电脑的网络名称访问",
       "trust_off_body": "仪表板会拒绝来自它不认识的地址的请求。允许它自己的专用网络名称，手机才能访问。这不会向互联网开放任何端口，也不会改变你的登录方式。",
       "restart_gateway_title": "重启 {{productName}} 以完成设置",
-      "restart_gateway_body": "现在已经能取到网络名称，但本服务启动时还没取到，所以该名称尚未被信任。重启 {{productName}} 一次，最后一步就绪。",
+      "restart_gateway_body": "本服务需要重启才能使用当前的 tailnet 地址。重启 {{productName}} 一次，最后一步就绪。",
       "occupied_title": "该地址已被其他服务占用",
       "occupied_body": "Tailscale 已在这个地址上提供其他服务。发布会覆盖它，因此本次未做任何改动。",
       "occupied_replace": "如果确认可以覆盖，请运行 <cmd/>",
