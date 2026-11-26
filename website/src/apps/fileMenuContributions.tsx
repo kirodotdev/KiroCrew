@@ -29,15 +29,10 @@
  */
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { MoreHorizontal } from 'lucide-react'
 import { api, type FileMenuContext, type FileMenuSurface } from '../api/client'
 import AppIcon from '../components/AppIcon'
-import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
-} from '../components/ui/dropdown-menu'
 import { i18nT } from '../i18n/t'
 import { store } from '../store'
-import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import { pathBasename } from '../utils/pathBasename'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { filePopoutSlot } from '../utils/filePopout'
@@ -477,88 +472,4 @@ export function invokeFileMenuItem(
 export function FileMenuItemIcon({ name }: { name?: string }) {
   if (!name) return null
   return <AppIcon icon={name} size={14} />
-}
-
-/**
- * Hover-revealed actions for the `folder-row` surface, behind ONE overflow trigger.
- *
- * A row of peer buttons is capped at two (`max-two-buttons-per-row`), and the count here
- * is an app's to choose — three declaring apps would put three unranked icon buttons in a
- * listing row that a sidebar or split pane clips before it degrades. So the rows always
- * collapse into a single kebab, even for one contribution: the trigger is one control
- * whatever it holds, and a row whose control count changes when an app is installed is
- * worse than one that never does.
- *
- * `DropdownMenu` is the row-action overflow the dashboard already uses
- * (`CronRowActions`), which is what supplies the roving focus, Escape-to-close and
- * focus-restore rather than this file re-deriving them.
- */
-export function FolderRowActions({
-  items,
-  node,
-  onError,
-}: {
-  items: readonly ContributedFileMenuItem[]
-  node: FileMenuNode
-  /** Where a dispatch failure goes; the panel renders it through its own ErrorNotice. */
-  onError: ReportFileMenuError
-}) {
-  if (items.length === 0) return null
-  const label = i18nT('components.fileMenuContributions.app_actions')
-  return (
-    // role="presentation" keeps the wrapper out of the accessibility tree while it stops
-    // the interaction from reaching the enclosing row: the row is a `role="button"` with
-    // its own click and Enter/Space handlers, so opening this menu would otherwise also
-    // navigate into the folder or open the file.
-    <span
-      role="presentation"
-      onClick={e => e.stopPropagation()}
-      onKeyDown={e => e.stopPropagation()}
-      // Hover-reveal keeps the row quiet on a pointer device, but on a touch screen
-      // there is no hover and nothing here has been focused yet, so `opacity-0` alone
-      // left the ONLY trigger for these actions permanently invisible. Keyed on hover
-      // CAPABILITY rather than a width breakpoint (`HOVER_NONE_ACTIONS_ROW_CLS`, the
-      // repo's owned constant): a narrow desktop window still hovers, and a wide tablet
-      // still does not.
-      className={`flex items-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}
-    >
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            aria-label={label}
-            title={label}
-            // The row constant above carries `[&_button]:p-3` for the tap target, but
-            // padding cannot grow a box whose width and height are fixed — so the SIZE
-            // is overridden here instead, or the trigger would become visible on touch
-            // and still be a 22px target.
-            className="flex items-center justify-center w-[22px] h-[22px] [@media(hover:none)]:w-9 [@media(hover:none)]:h-9 rounded text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer"
-          >
-            <MoreHorizontal size={14} className="lucide-inline" />
-          </button>
-        </DropdownMenuTrigger>
-        {/* Capped like `RejectDropdown`: `KEBAB_RE` bounds an app name's alphabet and not
-            its length, so an unconstrained menu widened past a 320px viewport and pushed
-            its own rows off-screen. `calc(100vw-2rem)` is what keeps it inside the
-            narrowest one. */}
-        <DropdownMenuContent align="end" className="min-w-[180px] max-w-[min(420px,calc(100vw-2rem))]">
-          {items.map(item => (
-            <DropdownMenuItem
-              key={`${item.app}:${item.id}`}
-              onSelect={() =>
-                invokeFileMenuItem(
-                  item,
-                  { surface: 'folder-row', path: node.path, kind: node.kind },
-                  onError,
-                )
-              }
-            >
-              <FileMenuItemIcon name={item.icon} />
-              <FileMenuItemLabel item={item} />
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </span>
-  )
 }

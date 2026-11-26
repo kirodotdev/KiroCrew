@@ -21,9 +21,10 @@ const read = (...p: string[]) => readFileSync(join(__dirname, '..', ...p), 'utf-
 const CAP = 'max-w-[min(420px,calc(100vw-2rem))]'
 
 const HOSTS: Array<[string, string]> = [
-  ['the folder-row overflow menu', read('apps', 'fileMenuContributions.tsx')],
+  // One menu for the Pierre tree's rows and the folder tab's listing rows
+  // (#43258): the cap is asserted once because the two surfaces now share it.
+  ['the shared file row menu (tree context + folder-row)', read('components', 'FileRowMenu.tsx')],
   ['the MarkdownPanel overflow menu', read('components', 'MarkdownPanelHeader.tsx')],
-  ['the Pierre tree context menu', read('pierre', 'PierreWorkspaceTreeImpl.tsx')],
 ]
 
 describe('contributed menu rows fit a narrow viewport', () => {

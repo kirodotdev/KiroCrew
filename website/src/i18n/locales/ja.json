@@ -10397,7 +10397,6 @@
       "show_the_exact_markdown_source": "正確なマークダウンソースを表示します"
     },
     "fileMenuContributions": {
-      "app_actions": "アプリの操作",
       "contributed_by": "アプリ: {{app}}"
     },
     "featurePreviewIntro": {

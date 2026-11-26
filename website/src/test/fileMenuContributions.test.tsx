@@ -45,12 +45,12 @@ import {
   visibleFileMenuItems,
   useFileMenuItems,
   invokeFileMenuItem,
-  FolderRowActions,
   FileMenuItemLabel,
   CORE_APP_ROUTE_SEGMENTS,
   type ContributedFileMenuItem,
   type FileMenuAppRecord,
 } from '../apps/fileMenuContributions'
+import FileRowMenu from '../components/FileRowMenu'
 import { RESERVED_APP_PATH_SEGMENTS } from '../apps/coreAppRoutes'
 import FileMenuResultToast, { FileMenuResultToastFrame } from '../components/notifications/FileMenuResultToast'
 import { BANNER_AUTO_HIDE_MS } from '../hooks/notificationBanner'
@@ -398,62 +398,52 @@ describe('fileMenuItemMatches — declarative when predicate', () => {
   })
 })
 
-describe('FolderRowActions — folder-row surface', () => {
+describe('FileRowMenu — folder-row surface', () => {
   const onError = vi.fn()
 
   /**
-   * The parent row's handler is a REACT onClick on a wrapping div, not a native
-   * `addEventListener` on the container: React delegates from its own root, so a native
-   * container listener sits BELOW that root and a synthetic `stopPropagation()` cannot
-   * reach it — the assertion would pass whether or not the click was actually stopped.
-   * `role="presentation"` keeps the wrapper out of the accessibility tree, so what
-   * `getAllByRole('button')` counts is unchanged; the real row (FolderPanel's `Row`)
-   * carries `role="button"` and its own Enter/Space handler, which this probe stands in
-   * for rather than reproduces.
+   * The folder tab's listing rows open the shared `FileRowMenu` for the
+   * `folder-row` surface (#43258; before that a `FolderRowActions` kebab held the
+   * app rows alone). Rendered OPEN here, as the panel renders it once a row has
+   * asked for it: what these tests pin is the dispatch and its host toast, not
+   * the trigger, which is the row's (`FolderPanel.test.tsx`). `onError` is the
+   * panel's notice; the anchor is a stand-in row.
    */
   function renderRow(items: ContributedFileMenuItem[]) {
-    const rowActivate = vi.fn()
+    const row = document.createElement('div')
+    document.body.appendChild(row)
+    const anchor = { anchorElement: row, anchorRect: row.getBoundingClientRect(), close: vi.fn() }
     render(
       <>
         <FileMenuResultToast />
-        <div role="presentation" onClick={rowActivate}>
-          <FolderRowActions items={items} node={{ path: 'notes/x.md', kind: 'file' }} onError={onError} />
-        </div>
+        <FileRowMenu node={{ path: 'notes/x.md', kind: 'file' }} anchor={anchor} projectRoot="" contrib={{ surface: 'folder-row', items }} onError={onError} />
       </>,
     )
-    return { rowActivate }
+    return { close: anchor.close }
   }
 
-  it('renders nothing when no row matches', () => {
-    const { container } = render(
-      <FolderRowActions items={[]} node={{ path: 'x', kind: 'file' }} onError={onError} />,
-    )
-    expect(container.querySelector('button')).toBeNull()
-  })
-
-  it('collapses every contributed row behind ONE trigger, whatever the count', () => {
-    // `max-two-buttons-per-row`: the count is an app's to choose, so three declaring
-    // apps would otherwise put three unranked icon buttons in a listing row.
+  it('lists every contributed row after the built-in Download, however many', () => {
     renderRow([item(), item({ id: 'second' }), item({ id: 'third' })])
-    expect(screen.getAllByRole('button')).toHaveLength(1)
-    expect(screen.queryByRole('menuitem')).toBeNull()
+    expect(screen.getAllByRole('menuitem').map(el => el.textContent)).toEqual([
+      'Download', expect.stringMatching(/^Send to store/), expect.stringMatching(/^Send to store/), expect.stringMatching(/^Send to store/),
+    ])
   })
 
-  it('opens the menu and POSTs the PATH, never the content', () => {
-    const { rowActivate } = renderRow([item(), item({ id: 'second', label: 'Second' })])
-    fireEvent.click(screen.getByRole('button'))
-    expect(screen.getAllByRole('menuitem')).toHaveLength(2)
+  it('POSTs the PATH under the folder-row surface with no root, never the content', () => {
+    const { close } = renderRow([item(), item({ id: 'second', label: 'Second' })])
 
     fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
     expect(invokeApi).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'send' }),
+      // The exact payload the pre-shared kebab sent: an app that declared this
+      // surface keeps receiving what it received.
       { surface: 'folder-row', path: 'notes/x.md', kind: 'file' },
       'dashboard:slot-7',
     )
     // The dispatched context carries no file content.
     expect(invokeApi.mock.calls[0][1]).not.toHaveProperty('content')
-    // Opening and selecting are stopped, so the row's own onActivate never fires.
-    expect(rowActivate).not.toHaveBeenCalled()
+    // Selecting closes the menu through the host's anchor.
+    expect(close).toHaveBeenCalledTimes(1)
   })
 
   it('sends the OWNING SLOT as the session key, not the dashboard:ui placeholder', () => {
@@ -530,7 +520,6 @@ describe('FolderRowActions — folder-row surface', () => {
     const url = 'https://example.com/doc/42?view=1'
     invokeApi.mockResolvedValueOnce({ message, url })
     renderRow([item()])
-    fireEvent.click(screen.getByRole('button'))
     fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
     // The link names its destination host, not the raw URL, which stays on the title.
     const link = await screen.findByRole('link', { name: 'example.com' })
@@ -548,7 +537,6 @@ describe('FolderRowActions — folder-row surface', () => {
     'keeps the Send message but does not link unsafe URL %s', async url => {
       invokeApi.mockResolvedValueOnce({ message: 'Uploaded', url })
       renderRow([item()])
-      fireEvent.click(screen.getByRole('button'))
       fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
       expect(await screen.findByRole('status')).toHaveTextContent('Uploaded')
       expect(screen.queryByRole('link')).toBeNull()
@@ -560,7 +548,6 @@ describe('FolderRowActions — folder-row surface', () => {
     'does not invent a toast for an empty/malformed result %j', async result => {
       invokeApi.mockResolvedValueOnce(result)
       renderRow([item()])
-      fireEvent.click(screen.getByRole('button'))
       await act(async () => {
         fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
       })
@@ -572,7 +559,6 @@ describe('FolderRowActions — folder-row surface', () => {
   it.each(['approval required', 'cancelled', 'HTTP 401'])('preserves rejected Send outcome %s without a success toast', async reason => {
     invokeApi.mockRejectedValueOnce(new Error(reason))
     renderRow([item()])
-    fireEvent.click(screen.getByRole('button'))
     fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(reason))
     expect(screen.queryByRole('status')).toBeNull()
@@ -583,7 +569,6 @@ describe('FolderRowActions — folder-row surface', () => {
     onTestFinished(() => vi.useRealTimers())
     invokeApi.mockResolvedValueOnce({ message: 'Uploaded', url: 'https://example.com/doc/42' })
     renderRow([item()])
-    fireEvent.click(screen.getByRole('button'))
     await act(async () => {
       fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
     })
@@ -601,13 +586,20 @@ describe('FolderRowActions — folder-row surface', () => {
 
   it('shows the Send result in its own fixed corner in a popout or embed frame', async () => {
     invokeApi.mockResolvedValueOnce({ message: 'Uploaded', url: 'https://example.com/doc/42' })
+    const row = document.createElement('div')
+    document.body.appendChild(row)
     render(
       <>
         <FileMenuResultToastFrame />
-        <FolderRowActions items={[item()]} node={{ path: 'notes/x.md', kind: 'file' }} onError={onError} />
+        <FileRowMenu
+          node={{ path: 'notes/x.md', kind: 'file' }}
+          anchor={{ anchorElement: row, anchorRect: row.getBoundingClientRect(), close: vi.fn() }}
+          projectRoot=""
+          contrib={{ surface: 'folder-row', items: [item()] }}
+          onError={onError}
+        />
       </>,
     )
-    fireEvent.click(screen.getByRole('button'))
     fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
     const toast = await screen.findByRole('status')
     const frame = screen.getByTestId('file-menu-result-toast-frame')
@@ -629,7 +621,6 @@ describe('FolderRowActions — folder-row surface', () => {
     // leaves the reader with a row that silently did nothing.
     invokeApi.mockRejectedValueOnce(new Error('endpoint refused'))
     renderRow([item()])
-    fireEvent.click(screen.getByRole('button'))
     fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith('endpoint refused'))
   })

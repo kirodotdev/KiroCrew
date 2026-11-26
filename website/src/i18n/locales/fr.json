@@ -10881,7 +10881,6 @@
       "show_the_exact_markdown_source": "Afficher la source markdown exacte"
     },
     "fileMenuContributions": {
-      "app_actions": "Actions de l'application",
       "contributed_by": "Application : {{app}}"
     },
     "featurePreviewIntro": {
