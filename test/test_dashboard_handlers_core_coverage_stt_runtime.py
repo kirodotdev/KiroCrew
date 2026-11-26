@@ -900,9 +900,7 @@ class TestSttTranscribe:
             ("rec.web m", ".webm"),
         ],
     )
-    async def test_temp_name_takes_only_a_plain_suffix(
-        self, monkeypatch, filename, suffix
-    ) -> None:
+    async def test_temp_name_takes_only_a_plain_suffix(self, monkeypatch, filename, suffix) -> None:
         """The client's filename must not shape the temp path: on Windows a colon
         in the suffix names an NTFS stream, the publish rename fails with a 500,
         and a zero-byte base file is left in the temp folder."""
