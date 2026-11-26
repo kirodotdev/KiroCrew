@@ -409,3 +409,37 @@ class TestDenialNamesItsRule:
     )
     def test_every_branch_names_its_rule(self, cmd: str, rule: str) -> None:
         assert f"Refusal diagnostic: rule={rule} component=exfil-gate span=" in (audit(cmd) or "")
+
+
+class TestPowerShellSearch:
+    """PowerShell's `Select-String`, as one plain command, is a search like `grep`."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            'Select-String -Path notes.md -Pattern "--data-binary @"',
+            'Select-String -Path notes.md -Pattern "-d @"',
+            'SELECT-STRING -Path a.txt -Pattern "-d@"',
+        ],
+    )
+    def test_a_plain_select_string_search_is_allowed(self, cmd: str) -> None:
+        assert audit(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            'Select-String -Path a.txt -Pattern "-d @"; ' + "cur" + "l " + _FLAG + _URL,
+            "Get-Content a.txt | " + "cur" + "l -d @-",
+            # Its alias `sls` is also another program's name.
+            'sls -Path notes.md -Pattern "-d @"',
+            "'Select-String' -Pattern " + _FLAG,
+            "Select-String\u00a0x -Pattern " + _FLAG,
+        ],
+    )
+    def test_anything_more_stays_refused(self, cmd: str) -> None:
+        assert (audit(cmd) or "").startswith(_EXFIL_DENIAL)
+
+    def test_a_pipeline_into_select_string_is_refused(self) -> None:
+        reason = audit('Get-Content a.txt | Select-String "-d@"') or ""
+        rule = "rule=data-exfil-curl-file-body "
+        assert rule in reason, "GH #42339: the whole-line reader's program set is unchanged"

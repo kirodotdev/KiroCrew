@@ -1340,6 +1340,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _FILE_BODY_PATTERN,
         _NC_FILE_REDIRECT_PATTERN,
         _NC_FILE_REDIRECT_RULE,
+        _POWERSHELL_SEARCH_VERB,
         _READ_ONLY_GH,
         _backslashes_are_quoted_literals,
         _data_at_carveout_allows,

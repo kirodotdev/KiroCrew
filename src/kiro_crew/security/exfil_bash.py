@@ -162,18 +162,27 @@ _FILE_BODY_PATTERN = next(
 #: must not grow the `rm -rf /` deny-exception.
 _CARVEOUT_VERBS = frozenset((*_INERT_SEARCH_VERBS, "date"))
 
+#: PowerShell's search cmdlet, named in any letter case there. Single plain command
+#: only: not in `_CARVEOUT_VERBS`, so never in `_inert_line_allows`, and never its
+#: alias `sls`, which is also the Serverless Framework's CLI.
+_POWERSHELL_SEARCH_VERB = "select-string"
+
 
 def _data_at_carveout_allows(command: str) -> bool:
-    """A `-d @` hit in a benign `date`/`grep` command, not an upload: reuses
-    `denied_rules._exception_eligible` (the blessed single-plain-command test)
-    and requires a first word in `_CARVEOUT_VERBS`, which runs no subcommand.
+    """A `-d @` hit in a benign `date`/`grep`/`Select-String` command, not an
+    upload: reuses `denied_rules._exception_eligible` (the blessed
+    single-plain-command test) and requires a first word in `_CARVEOUT_VERBS`, or
+    `_POWERSHELL_SEARCH_VERB` in any case, which runs no subcommand.
 
     The first word is the shared reader's RAW word, split at live space and tab
     only (never NBSP), with its quotes kept: `'date'` is not the verb `date`."""
     if not _exception_eligible(command):
         return False
     words = _read_commands(command)[0].words
-    return bool(words) and words[0].raw in _CARVEOUT_VERBS
+    if not words:
+        return False
+    first = words[0].raw
+    return first in _CARVEOUT_VERBS or first.lower() == _POWERSHELL_SEARCH_VERB
 
 
 def _inert_line_allows(command: str) -> bool:
