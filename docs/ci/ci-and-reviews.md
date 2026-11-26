@@ -668,8 +668,10 @@ both with `read` permissions only; it opens no issue and posts no comment.
   yesterday (UTC) one cause, writes the day's summary and the script's call
   counts to the job summary, and uploads `red-jobs.csv`, `ci-pushes.csv`,
   `workflows.csv`, `summary.md`, `summary.json` and the printed output as the
-  artifact `ci-red-census-day`, kept 90 days. It reads `CI` to its end before
-  the workers start on any other workflow, in the same calls, so a night the
+  artifact `ci-red-census-day`, kept 90 days. It lists `CI`'s runs, then the
+  runs of every other workflow, and then reads the check suites of `CI`'s
+  runs to their end before the workers start on any other workflow's suites,
+  in the same calls, so a night the
   budget cuts short after that still has every `CI` row: the first and third
   numbers are counted from those alone. A stop while the other workflows' runs
   are still being listed leaves every check suite unread, `CI`'s included. A

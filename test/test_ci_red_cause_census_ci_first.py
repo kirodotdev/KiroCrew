@@ -143,8 +143,10 @@ def test_the_order_asks_for_no_more_batches_than_the_suites_need(
 ) -> None:
     second = OTHER if first == CI else CI
     gh = two_workflows(first, second, ci_runs, other_runs)
+    # One worker: the order of the calls is asserted, and a pool does not fix it.
+    args = census_args(tmp_path, "--workers", "1")
 
-    assert CENSUS.main(census_args(tmp_path), api=api_for(gh), clock=ticks(0.0, 1.0)) == 0
+    assert CENSUS.main(args, api=api_for(gh), clock=ticks(0.0, 1.0)) == 0
 
     batches = [len(fields["ids"]) for kind, fields in gh.calls if kind == "suites"]
     assert len(batches) == math.ceil((ci_runs + other_runs) / CENSUS.SUITE_BATCH)
@@ -269,10 +271,14 @@ def test_four_workers_cut_short_after_the_ci_suites_have_every_ci_row(
     assert workflows_csv(tmp_path) == {CI: "yes", **{name: "no" for name in OTHERS}}
 
 
-def mixed_batch(passes_cursor: str | None = "PASSED1") -> FakeGh:
+def mixed_batch(
+    passes_cursor: str | None = "PASSED1", red_cursor: str | None = None, whole: bool = True
+) -> FakeGh:
     """One `CI` suite and a rerun of another workflow in one batch, a second `CI` suite a tier up.
 
-    The rerun has more passed jobs than one page holds, so it needs a further call.
+    The rerun has more passed jobs than one page holds, so it needs a further call;
+    with ``red_cursor`` it has more red jobs than one page holds. Without ``whole``
+    GitHub does not answer the batch that holds both, only each suite asked alone.
     """
     runs = {
         f"W_{CI}": [
@@ -286,16 +292,20 @@ def mixed_batch(passes_cursor: str | None = "PASSED1") -> FakeGh:
         "CS_1000": (connection([check_run(1000, notes=[failing()])]), connection([])),
         "CS_1001": (connection([check_run(1001, notes=[failing()])]), connection([])),
         "CS_5000": (
-            connection([check_run(5000, notes=[failing()])]),
+            connection([check_run(5000, notes=[failing()])], red_cursor),
             connection(passes, passes_cursor),
         ),
     }
-    last = check_run(6100, conclusion="SUCCESS", failed_step=None)
+    pages = {
+        "PASSED1": check_run(6100, conclusion="SUCCESS", failed_step=None),
+        "RED1": check_run(5001, name="Backend Tests (3.12, 2)", notes=[failing()]),
+    }
+    answer = suites_of(suites)
     return FakeGh(
         workflows=workflows_page(OTHER, CI),
         runs=lambda fields: {"node": {"runs": connection(runs[fields["workflow"]])}},
-        suites=suites_of(suites),
-        suite_page=lambda fields: {"node": {"page": connection([last])}},
+        suites=lambda fields: answer(fields) if whole or len(fields["ids"]) < 2 else None,
+        suite_page=lambda fields: {"node": {"page": connection([pages[fields["after"]]])}},
     )
 
 
@@ -330,8 +340,9 @@ def test_another_workflows_further_page_waits_until_every_ci_suite_is_read(
 
 def test_a_page_that_waited_is_read_once_and_costs_no_further_call(tmp_path: Path) -> None:
     gh = mixed_batch()
+    args = census_args(tmp_path, "--workers", "1")
 
-    assert CENSUS.main(census_args(tmp_path), api=api_for(gh), clock=ticks(0.0, 1.0)) == 0
+    assert CENSUS.main(args, api=api_for(gh), clock=ticks(0.0, 1.0)) == 0
 
     # The same three calls a census in the other order makes, the page last.
     assert suite_calls(gh) == [["CS_1000", "CS_5000"], ["CS_1001"], "CS_5000"]
@@ -350,3 +361,31 @@ def test_a_suite_of_another_workflow_that_is_whole_in_its_batch_does_not_wait(
     # One call for suites: the rerun needed no page, so its row is kept with the `CI` one.
     assert suite_calls(gh) == [["CS_1000", "CS_5000"]]
     assert sorted(int(row["run_id"]) for row in read_csv(tmp_path)) == [1000, 5000]
+
+
+def test_a_further_page_of_red_jobs_waits_like_one_of_passes(tmp_path: Path) -> None:
+    gh = mixed_batch(passes_cursor=None, red_cursor="RED1")
+    args = census_args(tmp_path, "--workers", "1")
+
+    assert CENSUS.main(args, api=api_for(gh), clock=ticks(0.0, 1.0)) == 0
+
+    assert suite_calls(gh) == [["CS_1000", "CS_5000"], ["CS_1001"], "CS_5000"]
+    assert sorted(int(row["job_id"]) for row in read_csv(tmp_path)) == [1000, 1001, 5000, 5001]
+
+
+def test_a_page_waits_when_its_batch_was_answered_in_two_halves(tmp_path: Path) -> None:
+    gh = mixed_batch(whole=False)
+    args = census_args(tmp_path, "--workers", "1")
+
+    assert CENSUS.main(args, api=api_for(gh), clock=ticks(0.0, 1.0)) == 0
+
+    calls = suite_calls(gh)
+    # The batch of both is asked for and not answered, then each suite alone.
+    assert [call for call in calls if call != ["CS_1000", "CS_5000"]] == [
+        ["CS_1000"],
+        ["CS_5000"],
+        ["CS_1001"],
+        "CS_5000",
+    ]
+    assert calls.index("CS_5000") > calls.index(["CS_1001"])
+    assert sorted(int(row["run_id"]) for row in read_csv(tmp_path)) == [1000, 1001, 5000]
