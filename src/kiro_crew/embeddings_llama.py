@@ -781,6 +781,10 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # a second oversubscribed pool on this thread.
                 n_threads=threads,
                 n_threads_batch=threads,
+                # The most texts one call carries (_embed_batch chunks to it).
+                # llama.cpp reserves its output buffer for this many sequences when
+                # the context is created (the vendored `n_seq_max` divergence).
+                n_seq_max=_MAX_EMBED_BATCH_TEXTS,
                 verbose=False,
             )
             if not embedding_weight_repack():

@@ -332,6 +332,15 @@ the step in "Private ggml names on Linux".
   `kiro_crew.embeddings` passes `False` only when `memory.embedding_weight_repack`
   is `false`. `test/test_embeddings_weight_repack.py` parses this file and fails
   if the divergence goes missing.
+- `llama_cpp/llama.py`, `Llama.__init__` — an `n_seq_max` keyword (default
+  `None`) caps an embedding context's parallel sequences. llama.cpp reserves its
+  output buffer for `n_seq_max` outputs of `n_vocab + n_embd` floats when the
+  context is created, before it knows the graph, and never shrinks it: 149.11 MiB
+  at upstream's 256 for the shipped model. `embed()` decodes at most `n_seq_max`
+  sequences at once, and `kiro_crew.embeddings` sends at most
+  `_MAX_EMBED_BATCH_TEXTS` (8) texts per call, so it passes that value. `None`
+  keeps upstream's value; `__getstate__` carries it. `test/test_embed_seq_cap.py`
+  parses this file and fails if the divergence goes missing.
 - `llama_cpp/llama_cpp.py`, module level — the library directory is resolved
   from the process-local seam first (`sys.modules["_kiro_crew_llama_cpp_lib_path"].LIBS_DIR`,
   registered by `kiro_crew.embeddings._publish_lib_path_for_import`), then from
