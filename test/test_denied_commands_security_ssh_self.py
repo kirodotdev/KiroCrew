@@ -110,7 +110,7 @@ class TestSandboxEscapeSshSelf:
         assert is_safe_user_regex(_rule_pattern(self._RULE))
 
     def test_refusal_note_is_actionable(self):
-        """The note carries the three facts a refused caller needs.
+        """The note carries the four facts a refused caller needs.
 
         A first-contact refusal is a PENDING classification, so the note must
         say so and tell the caller the action that resolves it (retry the same
@@ -121,8 +121,11 @@ class TestSandboxEscapeSshSelf:
         refusal is only settled once it repeats after the check has had time to
         finish; the note must say how long to keep retrying and what to use
         instead after that (an unresolvable name, an IP address while the
-        address list cannot be read, or this machine).  The cases are labelled
-        so an agent can find its own without parsing a conditional sentence.
+        address list cannot be read, or this machine).  A ``*`` word followed by a
+        bare ``0`` (a Sunday cron schedule in backticks) reads as an ssh to this
+        machine, so the note must name that reading and the schedule spelling
+        that passes.  The cases are labelled so an agent can find its own
+        without parsing a conditional sentence.
         Content-pinned here because the note is the whole UX of this floor: a
         reword that drops the retry hint leaves the caller with no way forward.
         """
@@ -149,6 +152,12 @@ class TestSandboxEscapeSshSelf:
         )
         assert "(3) FORWARDED port" in note
         assert "per-rule toggle in Settings" in note
+        assert "(4) WILDCARD" in note
+        assert "a bare `0` (0.0.0.0, read as this machine)" in note
+        assert "write Sunday as `7`" in note
+        # The case's claims hold: the schedule it names is refused, the spelling it gives passes.
+        assert _denied_by("echo '`0 3 * * 0`'") == self._RULE
+        assert _denied_by("echo '`0 3 * * 7`'") is None
         # One line: the note is the refusal's second line, which the recovery
         # card and the suite's ``_denied_by`` split on.
         assert "\n" not in note
