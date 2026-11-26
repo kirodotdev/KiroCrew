@@ -88,6 +88,16 @@ DERIVED_KEY = "x-kirocrew-derived"
 # routing switch must not read it as the user turning the server off.
 WITHHELD_KEY = "x-kirocrew-withheld"
 
+# A FOURTH reserved key: the ``{app}:{server}`` source key of the app manifest
+# declaration this agent-spec entry was mounted from. Written only by the two
+# writers of app entries (the agent-spec rebuild and the app bridge's
+# registration), so it records which app an entry belongs to however the rebuild
+# aliased it: a user's own server never carries it, whatever its command, url,
+# args or headers. The ``x-`` namespace argument for :data:`MARKER_KEY` covers it
+# too: a kiro-cli field can never contain a hyphen, and unknown keys are dropped
+# at deserialization rather than rejected.
+SOURCE_KEY = "x-kirocrew-app-source"
+
 
 def is_withheld_mute(entry: Any) -> bool:
     """True when *entry*'s mute is the rebuild's :data:`WITHHELD_KEY` mute."""

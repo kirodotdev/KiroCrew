@@ -6030,9 +6030,9 @@ for a `query`, `registry` -- `mcp_discover.search_registry`, the search behind
 transport. The conductor then calls `request_capabilities` with a draft naming
 `additions`: `{server, source: "gateway"}` copies this gateway's own entry
 (`_find_server_spec_anywhere`, minus `autoApprove`, `disabled`,
-`disabledTools` and the rendered spec's `x-kirocrew-derived` and
-`x-kirocrew-withheld` records, which `request_server`'s record would refuse as
-unknown keys) of a server the gateway lists as switched on
+`disabledTools` and the rendered spec's `x-kirocrew-derived`,
+`x-kirocrew-withheld` and `x-kirocrew-app-source` records, which `request_server`'s
+record would refuse as unknown keys) of a server the gateway lists as switched on
 (`member_capability_catalog._switched_on`). A card's params and plan reach the
 proposing Bot, so the entry's `env` and `headers` values are masked on the card
 (`member_capability_catalog.mask_settings`: each set value reads `[REDACTED]`,

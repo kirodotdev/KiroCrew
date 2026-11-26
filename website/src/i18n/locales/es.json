@@ -18553,6 +18553,8 @@
         "builtin": "Integrado en {{productName}}",
         "builtin_help": "{{productName}} ejecuta sus propias funciones (memoria, programación, sesiones, guía) en este servidor, así que aquí no se puede desactivar ni desinstalar.",
         "scope_builtin": "{{label}}: activado (integrado en {{productName}}; no se puede desactivar)",
+        "app_owned": "De la app {{app}}",
+        "app_owned_help": "La app {{app}} proporciona este servidor, así que no se puede desinstalar aquí: {{productName}} lo volvería a añadir desde la app. Desactívalo aquí, o desactiva o desinstala la app en Apps.",
         "scope_switch_pending_on": "{{label}}: se activará al pulsar Aplicar (haz clic para revertir)",
         "scope_switch_pending_off": "{{label}}: se desactivará al pulsar Aplicar (haz clic para revertir)",
         "all_off": "Desactivar todos",

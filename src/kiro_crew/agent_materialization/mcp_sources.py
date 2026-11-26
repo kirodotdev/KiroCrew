@@ -46,6 +46,7 @@ from kiro_crew.mcp_cleanup import (
 from kiro_crew.mcp_gateway.secret_uri import routed_for_secret_reference, secret_reference_keys
 from kiro_crew.mcp_provenance import (
     DERIVED_KEY,
+    SOURCE_KEY,
     WITHHELD_KEY,
     command_is_ours,
     is_withheld_mute,
@@ -223,6 +224,44 @@ def _app_owned_mcp_keys() -> dict[str, bool]:
             # the family is on only while every claiming app is (deny, not grant).
             owned[_alias] = enabled and owned.get(_alias, True)
     return owned
+
+
+def _app_owned_mcp_server_apps(mounted_servers: Mapping[str, Any]) -> dict[str, str]:
+    """Mounted aliases in the agent spec mapped to their owning app.
+
+    Ownership is the :data:`~kiro_crew.mcp_provenance.SOURCE_KEY` stamp the
+    rebuild and the app bridge write on the entries they mount for an app: its
+    ``{app}:{server}`` value names the app, whatever alias the entry is mounted
+    under. A user's own server never carries it, whatever its command, url, args
+    or headers. The fields the rebuild rewrites or the store sets (``command``,
+    ``env``, ``disabled``, ``disabledTools``, ``autoApprove``) leave the stamp in
+    place, so a server switched off in the store is still owned. A stamp counts
+    only while its exact ``{app}:{server}`` is a declaration of an installed,
+    enabled app (:func:`_collect_app_mcp_servers`, a read with no audit rows):
+    a stamp from a removed or switched-off app claims nothing, and another app's
+    switched-off declaration of the same name does not unlock this one.
+
+    The app bridge writes a stamped entry under its raw ``{app}:@scope/pkg`` key
+    and the next rebuild mounts it as ``scope-pkg``, the name the MCP Servers
+    list shows for either spelling; until that rebuild the raw key answers for
+    the alias, unless another entry already holds it.
+
+    Never raises.
+    """
+    owners: dict[str, str] = {}
+    declared = _collect_app_mcp_servers(audit=False)
+    for key, spec in mounted_servers.items():
+        source = spec.get(SOURCE_KEY) if isinstance(spec, dict) else None
+        if not (isinstance(source, str) and ":" in source):
+            continue
+        if source not in declared:
+            continue
+        app = source.split(":", 1)[0]
+        owners[key] = app
+        alias = mcp_server_alias(key)
+        if alias != key and alias not in mounted_servers:
+            owners.setdefault(alias, app)
+    return owners
 
 
 # Keys a source AUTHORS that are also TRANSPORT-INDEPENDENT, so one the source
@@ -702,15 +741,26 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # Names a PREVIOUS rebuild left behind -- the only stale projections a changed
     # source reconciles. Seeded here so the app loop can retire what it claims.
     _stale = set(config.get("mcpServers", {}))
+    # Only the entries THIS pass mounts for an app carry the app-source stamp. A
+    # carried-over entry keeps its dict when a user source reconciles onto it, so
+    # a stamp left on it would name the app as the owner of the user's server.
+    for _carried in config.get("mcpServers", {}).values():
+        if isinstance(_carried, dict):
+            _carried.pop(SOURCE_KEY, None)
     _replaced: dict[str, dict] = {}
     # The user's own declaration under each edition name, from the file that
     # wins a tie: the store, then the Kiro global, then a provider global.
     _claims: dict[str, tuple[Path, dict]] = {}
     _app_aliases: set[str] = set()
+    _app_stamped: set[str] = set()
     for _app_srv, _app_spec in _collect_app_mcp_servers().items():
         if _app_srv not in managed_names:
             _app_aliases.add(mcp_server_alias(_app_srv))
-            config.setdefault("mcpServers", {})[_app_srv] = _app_spec
+            # Stamped with its source key, as the app bridge stamps what it
+            # registers: the stamp is how an app's ownership of the mounted
+            # alias is read back (_app_owned_mcp_server_apps).
+            config.setdefault("mcpServers", {})[_app_srv] = {**_app_spec, SOURCE_KEY: _app_srv}
+            _app_stamped.add(_app_srv)
             # The manifest just spoke, so a same-named shared-file leftover must
             # not reconcile onto it -- this is how the app entry keeps outranking.
             _stale.discard(_app_srv)
@@ -846,6 +896,11 @@ def merge_mcp_sources(config: dict) -> McpSources:
                         mcps[name]["env"] = {**shipped_env, **store_env}
             else:
                 mcps[name] = dict(spec)
+    # A stamp a user file carries (a hand copy of a rendered entry) is not
+    # app-sourced: only the app loop's own entries keep one.
+    for name, entry in config.get("mcpServers", {}).items():
+        if name not in _app_stamped and isinstance(entry, dict):
+            entry.pop(SOURCE_KEY, None)
     return McpSources(
         kirocrew_mcp,
         shared_mcp,

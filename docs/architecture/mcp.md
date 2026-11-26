@@ -1333,6 +1333,46 @@ whole batch before any write, as are `POST /api/mcp/toggle` with
 `POST /api/mcp/toggle-all` skips them when it disables. Turning one on, its tool
 overrides and its Globals edits are accepted.
 
+An installed app's server (`{app}:{server}`, the key its manifest mints) is never
+removed from the list either: `merge_mcp_sources` re-derives every enabled app's
+servers from its manifest on each rebuild, and the boot reconcile registers them
+again, so a purge was written straight back by the rebuild the apply itself ran and
+the row reappeared after the restart (#42615). Ownership
+(`_app_owned_mcp_server_apps`) is read from provenance: both writers of app
+entries, `merge_mcp_sources` and the app bridge's `_register_mcp_servers`, stamp
+each entry they mount with `x-kirocrew-app-source` (`mcp_provenance.SOURCE_KEY`),
+whose value is the `{app}:{server}` source key, and the stamp rides to whatever
+alias the entry is mounted under. A user's own server never carries it, whatever
+its command, url, args or headers, so a global `team-service` and an app's
+`team/service` mounted at `team-service-2` with the same url are told apart. The
+rewrites the rebuild and the store apply (`command` resolution, `env`,
+`disabled`, `disabledTools`, `autoApprove`) leave the stamp in place, so a
+server switched off in the store is still owned; the alias dedupe ignores it,
+and a copy into the store (`_find_server_spec_anywhere`) drops it. Each rebuild
+clears the stamp from every carried-over entry before the app loop stamps the
+ones it mounts, so a user's declaration that takes an alias over from an app's
+earlier mount is not left stamped. A stamp
+counts only while its exact `{app}:{server}` is a declaration of an installed,
+enabled app (`_collect_app_mcp_servers(audit=False)`), so a removed or
+switched-off app claims nothing, another app's switched-off declaration of the
+same name does not unlock this one, and the read writes no audit rows. Until a
+rebuild aliases the raw `{app}:@scope/pkg` key the bridge writes, that stamped raw
+key answers for `scope-pkg`, the name the list shows, unless another entry holds
+that alias; the refusal asks about both the requested name and its alias, the two
+spellings the removal would pop. kiro-cli never reads the stamp
+(`session_mcp._NATIVE_INERT_KEYS`), so it does not withhold an app server's
+per-session identity element. `_app_owned_mcp_servers` reads the agent spec through the hardened
+`_read_agent_spec` reader (operation `mcp_app_owned_servers`), so a spec it refuses
+owns nothing. `_app_owned_server_refusal` answers
+`409 mcp_server_app_owned`, naming the app in `app`, for an `/api/mcp/apply` change
+with `uninstall`, `POST /api/mcp/remove`, `DELETE /api/mcp/servers/{name}` and
+`POST /api/capability/mcp/uninstall`, before any write. Switching the server off is
+accepted: the store's `disabled: true` on that key is what the rebuild honours, so
+that is the control that works, and disabling or uninstalling the app is what
+removes the server. The row carries the owning app as `app`
+(`_stamp_config_state`), and the MCP Servers tab shows a "From the <app> app" chip
+in place of Uninstall.
+
 `POST /api/mcp/toggle` writes `disabled` into the Kiro global `mcp.json` for a
 server that file holds or that only another scope (an agent file, a provider
 global) holds. A server the Kiro global file does not hold but Kiro Crew's own

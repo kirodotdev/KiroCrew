@@ -23,6 +23,7 @@ from typing import Any
 
 from kiro_crew.atomic_write import atomic_write, open_access_control_source
 from kiro_crew.config.paths import kiro_home
+from kiro_crew.mcp_provenance import SOURCE_KEY
 from kiro_crew.user_json import loads_user_json
 
 #: kiro-cli's enterprise-governance discriminator. The spec WRITER owns the
@@ -126,12 +127,22 @@ def mcp_entry_is_remote(entry: Any) -> bool:
 #: ``mcpServers`` entry keys that never change which process a server launches or
 #: which endpoint it reaches: tool switches, approval lists, a start budget
 #: (``timeout`` and its ``timeoutMs`` alias), the pooling hint ``poolable``, and the
-#: mute, which decides WHETHER an entry starts (:func:`mcp_entry_is_muted`), not what.
-#: Every other key counts as launch input, so a key not named here is never ignored
-#: by a site that compares launches (``acp.kas_subagent_targets``,
+#: mute, which decides WHETHER an entry starts (:func:`mcp_entry_is_muted`), not what,
+#: and the app-source stamp (:data:`~kiro_crew.mcp_provenance.SOURCE_KEY`), which
+#: records which app declared the entry. Every other key counts as launch input, so a
+#: key not named here is never ignored by a site that compares launches
+#: (``acp.kas_subagent_targets``,
 #: ``project_mcp_approvals.fingerprint``).
 NOT_LAUNCH_KEYS = frozenset(
-    {"autoApprove", "disabled", "disabledTools", "poolable", "timeout", "timeoutMs"}
+    {
+        "autoApprove",
+        "disabled",
+        "disabledTools",
+        "poolable",
+        "timeout",
+        "timeoutMs",
+        SOURCE_KEY,
+    }
 )
 
 

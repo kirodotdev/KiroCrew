@@ -17597,6 +17597,8 @@
         "builtin": "{{productName}} に組み込み",
         "builtin_help": "{{productName}} は自身の機能（メモリ、スケジュール、セッション、ガイド）をこのサーバーで動かしているため、ここではオフにもアンインストールもできません。",
         "scope_builtin": "{{label}}: オン（{{productName}} に組み込み。オフにはできません）",
+        "app_owned": "{{app}} アプリから",
+        "app_owned_help": "このサーバーは {{app}} アプリが提供しているため、ここではアンインストールできません。{{productName}} がアプリから再び追加します。ここでオフにするか、「アプリ」でそのアプリを無効化またはアンインストールしてください。",
         "scope_switch_pending_on": "{{label}}: 「適用」を押すとオンになります（クリックで取り消し）",
         "scope_switch_pending_off": "{{label}}: 「適用」を押すとオフになります（クリックで取り消し）",
         "all_off": "すべてオフ",

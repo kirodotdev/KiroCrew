@@ -17,6 +17,8 @@ from mcp_discovery_helpers import (  # noqa: F401 -- the autouse fixture registe
     _stub_remote_probe_ssrf_vet,
 )
 
+from kiro_crew.mcp_provenance import SOURCE_KEY
+
 RAW = "npm:@playwright/mcp"
 ALIAS = "playwright-mcp"
 SPEC = {"command": "/usr/bin/cat", "args": ["pw"]}
@@ -808,7 +810,8 @@ def test_an_app_server_aliasing_onto_the_name_is_not_adopted(
             return home.mounted()
 
     mounted = _layout(adopt=True)
-    assert sorted(mounted.values(), key=len) == [SPEC, app], mounted
+    stamped = {**app, SOURCE_KEY: "demo:@playwright/mcp"}
+    assert sorted(mounted.values(), key=len) == [SPEC, stamped], mounted
     assert mounted == _layout(adopt=False)
 
 

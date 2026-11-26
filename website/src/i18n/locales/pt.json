@@ -18553,6 +18553,8 @@
         "builtin": "Integrado ao {{productName}}",
         "builtin_help": "O {{productName}} executa os próprios recursos (memória, agendamento, sessões, guia) neste servidor, por isso ele não pode ser desligado nem desinstalado aqui.",
         "scope_builtin": "{{label}}: ligado (integrado ao {{productName}}; não pode ser desligado)",
+        "app_owned": "Do app {{app}}",
+        "app_owned_help": "O app {{app}} fornece este servidor, por isso ele não pode ser desinstalado aqui: o {{productName}} o adicionaria de volta a partir do app. Desligue-o aqui, ou desative ou desinstale o app em Apps.",
         "scope_switch_pending_on": "{{label}}: será ligado ao pressionar Aplicar (clique para reverter)",
         "scope_switch_pending_off": "{{label}}: será desligado ao pressionar Aplicar (clique para reverter)",
         "all_off": "Desligar todos",
