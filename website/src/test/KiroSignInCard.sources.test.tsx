@@ -492,6 +492,74 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
   })
 })
 
+// The Kiro CLI harness (kiro-cli's own launch) runs only on kiro-cli's sign-in,
+// whatever is stored here: the gateway reports kiro-cli's as active.
+const KIRO_CLI_HARNESS: KasLoginSources = {
+  ...TWO_ACCOUNTS,
+  active: 'kiro_cli',
+  kiro_crew: { stored: true, account_type: 'IamIdentityCenter', portal_host: 'example.awsapps.com' },
+  kiro_cli: { stored: true, usable: true, account_type: 'BuilderId' },
+  can_use_kiro_cli: false,
+  kiro_cli_harness: true,
+}
+
+// The sign-in stored here is only Kiro Agent's on this harness: one small line,
+// never the account header, with its own buttons kept.
+describe('KiroSignInCard: the Kiro CLI harness', () => {
+  beforeEach(() => {
+    kasLoginStatus.mockReset()
+    kasLoginSources.mockReset()
+    localStorage.removeItem(KIRO_ACCOUNT_EMAIL_HIDDEN_KEY)
+  })
+
+  it('signed in here: says the agents run as the Kiro CLI account, not this one, and how to switch', async () => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, provider: 'Enterprise', identity: 'identity_center' })
+    kasLoginSources.mockResolvedValue(KIRO_CLI_HARNESS)
+    renderWithProviders(<KiroSignInCard />)
+    const notice = await screen.findByTestId('kiro-sign-in-sources')
+    expect(notice).toHaveAttribute('data-notice', 'kiro_cli_harness')
+    expect(notice).toHaveTextContent('Your agents use the Kiro CLI sign-in')
+    expect(notice).toHaveTextContent(
+      'Your harness is Kiro CLI, which runs as the account Kiro CLI is signed in to: Builder ID. Only Kiro Agent uses a sign-in made here.',
+    )
+    expect(within(notice).getByTestId('kiro-sign-in-open-agent-harness')).toHaveAttribute(
+      'href',
+      expect.stringContaining('/settings/agent'),
+    )
+    expect(screen.getAllByTestId('kiro-sign-in-sources')).toHaveLength(1)
+    expect(screen.queryByText(/Kiro Agent is not using/)).toBeNull()
+    expect(screen.queryByText('Two different accounts are signed in')).toBeNull()
+    // Nothing to switch to: kiro-cli's sign-in is already the one in use.
+    expect(screen.queryByTestId('kiro-sign-in-use-kiro-cli')).toBeNull()
+    // Release's card keeps the stored sign-in's own summary below the notice.
+    expect(await screen.findByTestId('kiro-sign-in-summary')).toBeInTheDocument()
+  })
+
+  it('kiro-cli signed out: says the agents cannot start and names both ways forward', async () => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, provider: 'Enterprise', identity: 'identity_center' })
+    kasLoginSources.mockResolvedValue({
+      ...KIRO_CLI_HARNESS,
+      active: 'none',
+      kiro_cli: { stored: false, usable: false },
+    })
+    renderWithProviders(<KiroSignInCard />)
+    const notice = await screen.findByTestId('kiro-sign-in-sources')
+    expect(notice).toHaveAttribute('data-notice', 'kiro_cli_harness_signed_out')
+    expect(notice).toHaveTextContent("Kiro CLI isn't signed in")
+    expect(notice).toHaveTextContent('Choose Kiro Agent to run on a sign-in made here, or sign Kiro CLI in by running kiro-cli login in a terminal.')
+    expect(within(notice).getByTestId('kiro-sign-in-open-agent-harness')).toBeInTheDocument()
+    expect(await screen.findByTestId('kiro-sign-in-summary')).toBeInTheDocument()
+  })
+
+  it('off the harness, the kiro-cli harness notice does not lead the card', async () => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, provider: 'Enterprise', identity: 'identity_center' })
+    kasLoginSources.mockResolvedValue({ ...KIRO_CLI_HARNESS, active: 'kiro_crew', kiro_cli_harness: false })
+    renderWithProviders(<KiroSignInCard />)
+    expect(await screen.findByTestId('kiro-sign-in-summary')).toBeInTheDocument()
+    expect(screen.queryByTestId('kiro-sign-in-open-agent-harness')).toBeNull()
+  })
+})
+
 describe('sourcesNotice', () => {
   it.each([
     [undefined, null],
@@ -506,6 +574,12 @@ describe('sourcesNotice', () => {
     [{ ...TWO_ACCOUNTS, kiro_cli: { stored: true, usable: false } }, null],
     // A store that could not be read is unknown, never "two accounts".
     [{ ...TWO_ACCOUNTS, kiro_cli: { stored: null, usable: false } }, null],
+    // The Kiro CLI harness never compares the two: only kiro-cli's sign-in counts.
+    [KIRO_CLI_HARNESS, 'kiro_cli_harness'],
+    [{ ...KIRO_CLI_HARNESS, active: 'none' as const }, 'kiro_cli_harness_signed_out'],
+    [{ ...KIRO_CLI_HARNESS, active: 'unknown' as const }, null],
+    // The KAS path is unchanged when the field is false or absent.
+    [{ ...TWO_ACCOUNTS, kiro_cli_harness: false }, 'two_accounts'],
   ])('%#', (sources, expected) => {
     expect(sourcesNotice(sources as KasLoginSources | undefined)).toBe(expected)
   })

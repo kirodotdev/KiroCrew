@@ -9,8 +9,10 @@ import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
+import { SettingsLink } from '../../components/SettingsLink'
 import { RELAY_VIEWER_CREWS_KEY, closeRelayCrews } from '../../hooks/useRelayViewerCrews'
 import { i18nT } from '../../i18n/t'
+import { AGENT_HARNESS_SETTINGS_TAB } from './kiroSignInLink'
 
 /** Cache key of `GET /api/kas-login/sources`: which stored sign-in sessions run as. */
 export const SOURCES_QUERY_KEY = ['kas-login-sources'] as const
@@ -67,11 +69,29 @@ export function useKiroSignOut(identity: string, onSignedOut: () => void) {
   })
 }
 
-export type SourcesNotice = 'using_kiro_cli' | 'two_accounts' | 'maybe_two_accounts'
+export type SourcesNotice =
+  | 'using_kiro_cli'
+  | 'kiro_cli_harness'
+  | 'kiro_cli_harness_signed_out'
+  | 'two_accounts'
+  | 'maybe_two_accounts'
+
+/** Notices that say which sign-in sessions use, shown above the card's sign-in state. */
+export function noticeLeadsCard(kind: SourcesNotice | null): boolean {
+  return kind === 'using_kiro_cli' || kind === 'kiro_cli_harness' || kind === 'kiro_cli_harness_signed_out'
+}
 
 /** What the card has to say about the two stored sign-ins, or `null` for nothing. */
 export function sourcesNotice(sources: KasLoginSources | undefined): SourcesNotice | null {
   if (!sources) return null
+  // The Kiro CLI harness runs only on kiro-cli's sign-in, so the one stored here
+  // is never compared with it: only whether kiro-cli is signed in matters. An
+  // unreadable kiro-cli store says so through its own error.
+  if (sources.kiro_cli_harness) {
+    if (sources.active === 'kiro_cli') return 'kiro_cli_harness'
+    if (sources.active === 'none') return 'kiro_cli_harness_signed_out'
+    return null
+  }
   if (sources.active === 'kiro_cli') return 'using_kiro_cli'
   if (sources.active !== 'kiro_crew') return null
   // `usable` is false for a kiro-cli sign-in no session could run on (the backend
@@ -193,6 +213,46 @@ export function KiroSignInSourcesNotice({
               : i18nT('pages.developer.kiroSignInCard.using_kiro_cli_body_unnamed')}
           </p>
           <AccountNameError sources={sources} besideChooser />
+        </div>
+      </div>
+    )
+  }
+  if (kind === 'kiro_cli_harness' || kind === 'kiro_cli_harness_signed_out') {
+    const signedOut = kind === 'kiro_cli_harness_signed_out'
+    return (
+      <div
+        className="mb-3 flex items-start gap-3"
+        role="status"
+        data-testid="kiro-sign-in-sources"
+        data-notice={kind}
+      >
+        <div
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${signedOut ? 'bg-warn/15 text-warn-text' : 'bg-ok/15 text-ok-text'}`}
+          aria-hidden="true"
+        >
+          {signedOut ? <AlertTriangle className="lucide-inline" /> : <Info className="lucide-inline" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-text-strong">
+            {signedOut
+              ? i18nT('pages.developer.kiroSignInCard.kiro_cli_harness_signed_out_title')
+              : i18nT('pages.developer.kiroSignInCard.kiro_cli_harness_title')}
+          </p>
+          <p className="mt-0.5 text-[13px] leading-relaxed text-muted">
+            {signedOut
+              ? i18nT('pages.developer.kiroSignInCard.kiro_cli_harness_signed_out_body', { command: 'kiro-cli login' })
+              : cli
+                ? i18nT('pages.developer.kiroSignInCard.kiro_cli_harness_body', { account: cli })
+                : i18nT('pages.developer.kiroSignInCard.kiro_cli_harness_body_unnamed')}
+          </p>
+          {signedOut ? null : <AccountNameError sources={sources} besideChooser />}
+          <SettingsLink
+            tab={AGENT_HARNESS_SETTINGS_TAB}
+            className="mt-1 inline-block rounded text-[13px] font-medium text-accent hover:underline focus-ring-accent"
+            data-testid="kiro-sign-in-open-agent-harness"
+          >
+            {i18nT('pages.developer.kiroSignInCard.open_agent_harness')}
+          </SettingsLink>
         </div>
       </div>
     )
