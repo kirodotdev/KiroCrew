@@ -283,6 +283,15 @@ class Gateway:
         )
         return str(json.loads(made.body)["id"])
 
+    def conversation_with_a_turn(self) -> str:
+        """The id of a conversation the owner ran one turn in."""
+        ran = self._must(
+            self._owner_call("POST", "/v1/responses", {"model": self.model, "input": "hello"}),
+            200,
+            "POST /v1/responses",
+        )
+        return str(json.loads(ran.body)["conversation"]["id"])
+
     def approval_state(self, approval_id: str) -> str:
         read = self._must(
             self._owner_call("GET", f"/v1/crew/owner/approvals/{approval_id}"),

@@ -1,5 +1,6 @@
-"""``POST /v1/conversations`` and ``GET /v1/conversations/{conversation_id}``, and what
-the gateway keeps about each conversation.
+"""``POST /v1/conversations`` and the ``GET``, ``POST`` and ``DELETE`` of
+``/v1/conversations/{conversation_id}``, and what the gateway keeps about each
+conversation. The two paged reads are in ``crew_api_conversation_lists``.
 
 A conversation is the turns ``POST /v1/responses`` ran one after another under one
 ``conv_`` id. It is a record, not a session: one JSON file per conversation under
@@ -19,6 +20,14 @@ What these routes serve:
 * ``GET /v1/conversations/{conversation_id}``: the conversation, with ``crew.status``
   ``running`` while a turn runs in it. An id that names no conversation, an id of
   another shape and a conversation whose retention is over are one ``404 not_found``.
+* ``POST /v1/conversations/{conversation_id}``: replaces the conversation's
+  ``metadata`` whole. The body holds ``metadata`` and nothing else. The
+  conversation's retention is not renewed, and the ``Idempotency-Key`` header is
+  not read.
+* ``DELETE /v1/conversations/{conversation_id}``: removes the conversation and the
+  records of the turns it lists. ``409 response_in_progress`` while a turn runs in
+  it; the delete holds the conversation as a turn does, so a turn asked for during
+  it is ``409`` too.
 
 Who a record belongs to is its ``created_by_grant``, written here from the caller the
 route verified: ``None`` for the machine owner, the grant's id for an app credential
@@ -64,6 +73,7 @@ from kiro_crew.dashboard.crew_api_response_records import (
     NAMESPACE,
     RETENTION_LOCK,
     RETENTION_SECS,
+    STORE_KEY,
     SWEEP_EVERY_SECS,
     ResponseStore,
     is_conversation_id,
@@ -82,6 +92,10 @@ CREATE_PATH: Final = "/v1/conversations"
 READ_PATH: Final = "/v1/conversations/{conversation_id}"
 CREATE_OPERATION: Final = OWNER_ONLY_PUBLIC_ROUTES[CREATE_PATH]
 READ_OPERATION: Final = OWNER_ONLY_PUBLIC_ROUTES[READ_PATH]
+#: The other methods of the two paths. ``OWNER_ONLY_PUBLIC_ROUTES`` names a path once,
+#: and every method of a path it names is behind the owner gate.
+UPDATE_OPERATION: Final = "crew_api.conversations.update"
+DELETE_OPERATION: Final = "crew_api.conversations.delete"
 
 #: The most of a record file that is read, and so the most that is written. A record
 #: holds 16 metadata pairs and one 37-character id for each turn that was kept. The
@@ -234,11 +248,13 @@ class ConversationStore:
                 type(exc).__name__,
             )
 
-    def create(self, metadata: dict[str, str], caller: Caller) -> dict[str, Any]:
+    def create(
+        self, metadata: dict[str, str], caller: Caller, *, conversation_id: str | None = None
+    ) -> dict[str, Any]:
         """Make and keep a conversation of *caller* with no turn in it."""
         now = int(self.clock())
         record = {
-            "id": "conv_" + uuid.uuid4().hex,
+            "id": conversation_id if conversation_id is not None else "conv_" + uuid.uuid4().hex,
             "created_at": now,
             "updated_at": now,
             "metadata": dict(metadata),
@@ -361,6 +377,85 @@ class ConversationStore:
             return None
         return kept
 
+    def listed(self, caller: Caller) -> list[dict[str, Any]]:
+        """Every kept conversation of *caller*, oldest first; equal ages by id.
+
+        The order is by ``created_at``, which never changes, so a conversation a turn
+        runs in between two pages keeps its place. A record that cannot be read
+        raises its ``OSError``.
+        """
+        # shortcut: every record in the directory is read on each call; keep an index
+        # of (created_at, id) per caller when one data home holds many thousands.
+        try:
+            names = [entry.name for entry in os.scandir(self._dir())]
+        except FileNotFoundError:
+            return []
+        records = []
+        for name in names:
+            if not name.endswith(_SUFFIX):
+                continue
+            record = self.load(name.removesuffix(_SUFFIX), caller)
+            if record is not None:
+                records.append(record)
+        return sorted(records, key=lambda record: (record["created_at"], record["id"]))
+
+    def set_metadata(
+        self, conversation_id: str, caller: Caller, metadata: dict[str, str]
+    ) -> dict[str, Any] | None:
+        """Replace the ``metadata`` of *caller*'s conversation; the record as it is
+        now, ``None`` when the conversation is not the caller's to change.
+
+        Nothing else changes: ``updated_at`` stays, so the conversation's retention
+        still counts from its latest turn. Held under the lock a turn's end writes
+        the record under, so neither write loses the other's.
+        """
+        with RETENTION_LOCK:
+            record = self.load(conversation_id, caller)
+            if record is None:
+                return None
+            record["metadata"] = dict(metadata)
+            self._write(record)
+            return record
+
+    def delete(self, conversation_id: str, caller: Caller, responses: ResponseStore) -> bool:
+        """Remove *caller*'s conversation and the records of the turns it lists;
+        ``False`` when the conversation is not the caller's to remove.
+
+        The caller holds the conversation (:meth:`claim`), so no turn runs in it.
+        The conversation's record goes first: from then on every turn it listed
+        reads as absent (:meth:`kept_turn`), whether or not its own record is gone
+        yet. A turn's record that cannot be removed is logged and goes with the
+        sweep when its time is up.
+        """
+        with RETENTION_LOCK:
+            record = self.load(conversation_id, caller)
+            if record is None:
+                return False
+            path = self._path(conversation_id)
+            path.unlink()
+            for response_id in record["turns"]:
+                try:
+                    responses.discard(response_id)
+                except OSError as exc:
+                    logger.warning(
+                        "Crew API response %s of the deleted conversation %s is still on "
+                        "disk: %s",
+                        response_id,
+                        conversation_id,
+                        type(exc).__name__,
+                    )
+            try:
+                fsync_dir(path.parent)
+            except OSError as exc:
+                # Deleted; only its survival of a power loss is unconfirmed.
+                logger.warning(
+                    "Crew API conversation %s was deleted, and it is not confirmed that "
+                    "the deletion survives a power loss: %s",
+                    conversation_id,
+                    type(exc).__name__,
+                )
+            return True
+
     def _set_aside(self, path: Path) -> None:
         try:
             target = set_aside(path, self.clock())
@@ -423,7 +518,7 @@ def _bad(request: web.Request, message: str) -> web.Response:
     return contract_error(400, "invalid_request", message, request_id_for(request))
 
 
-def _unavailable(request: web.Request) -> web.Response:
+def unavailable(request: web.Request) -> web.Response:
     return contract_error(
         503,
         "instance_unavailable",
@@ -432,7 +527,15 @@ def _unavailable(request: web.Request) -> web.Response:
     )
 
 
-async def _audit(request: web.Request, operation: str, resources: str) -> None:
+def missing(request: web.Request) -> web.Response:
+    """One answer for an id that never existed, one of another shape, one whose time
+    is up and a conversation of another caller."""
+    return contract_error(
+        404, "not_found", "no such conversation, or it is no longer kept", request_id_for(request)
+    )
+
+
+async def audit(request: web.Request, operation: str, resources: str) -> None:
     caller = str(request.get("user") or "unknown")
 
     def write() -> None:
@@ -472,8 +575,8 @@ async def _create(request: web.Request) -> web.Response:
         record = await asyncio.to_thread(store.create, metadata, OWNER)
     except (OSError, ValueError) as exc:
         logger.warning("Crew API conversation was not recorded: %s", type(exc).__name__)
-        return _unavailable(request)
-    await _audit(request, CREATE_OPERATION, f"conversation={record['id']}")
+        return unavailable(request)
+    await audit(request, CREATE_OPERATION, f"conversation={record['id']}")
     return web.json_response(served(record, False))
 
 
@@ -486,21 +589,90 @@ async def _read(request: web.Request) -> web.Response:
     try:
         record = await asyncio.to_thread(store.load, conversation_id, OWNER)
     except OSError:
-        return _unavailable(request)
+        return unavailable(request)
     # The id is the caller's text until it has this gateway's shape.
     named = conversation_id if is_conversation_id(conversation_id) else "invalid"
-    await _audit(request, READ_OPERATION, f"conversation={named} found={'yes' if record else 'no'}")
+    await audit(request, READ_OPERATION, f"conversation={named} found={'yes' if record else 'no'}")
     if record is None:
-        # One answer for an id that never existed, one of another shape and one whose
-        # time is up.
-        return contract_error(
-            404,
-            "not_found",
-            "no such conversation, or it is no longer kept",
-            request_id_for(request),
-        )
+        return missing(request)
     return web.json_response(served(record, store.is_busy(conversation_id)))
 
+
+async def _update(request: web.Request) -> web.Response:
+    denied = await _host_owner_refusal(request, UPDATE_OPERATION)
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except ValueError:
+        return _bad(request, "the body must be JSON")
+    if not isinstance(body, dict) or set(body) != {"metadata"}:
+        return _bad(request, "the body must be a JSON object with metadata and nothing else")
+    refusal = metadata_refusal(body["metadata"])
+    if refusal is not None:
+        return _bad(request, refusal)
+    store: ConversationStore = request.app[CONVERSATIONS_KEY]
+    conversation_id = request.match_info["conversation_id"]
+    try:
+        record = await asyncio.to_thread(
+            store.set_metadata, conversation_id, OWNER, body["metadata"]
+        )
+    except (OSError, ValueError) as exc:
+        logger.warning("Crew API conversation was not updated: %s", type(exc).__name__)
+        return unavailable(request)
+    named = conversation_id if is_conversation_id(conversation_id) else "invalid"
+    await audit(
+        request, UPDATE_OPERATION, f"conversation={named} found={'yes' if record else 'no'}"
+    )
+    if record is None:
+        return missing(request)
+    return web.json_response(served(record, store.is_busy(conversation_id)))
+
+
+async def _delete(request: web.Request) -> web.Response:
+    denied = await _host_owner_refusal(request, DELETE_OPERATION)
+    if denied is not None:
+        return denied
+    store: ConversationStore = request.app[CONVERSATIONS_KEY]
+    responses: ResponseStore = request.app[STORE_KEY]
+    conversation_id = request.match_info["conversation_id"]
+    if not is_conversation_id(conversation_id):
+        await audit(request, DELETE_OPERATION, "conversation=invalid found=no")
+        return missing(request)
+    # Taken as a turn takes it: a turn that runs is not deleted under, and no turn
+    # starts in a conversation that is being deleted.
+    if not store.claim(conversation_id):
+        return contract_error(
+            409,
+            "response_in_progress",
+            "the conversation has a turn running",
+            request_id_for(request),
+        )
+    try:
+        try:
+            deleted = await asyncio.to_thread(store.delete, conversation_id, OWNER, responses)
+        except OSError as exc:
+            logger.warning("Crew API conversation was not deleted: %s", type(exc).__name__)
+            return unavailable(request)
+    finally:
+        store.release(conversation_id)
+    await audit(
+        request,
+        DELETE_OPERATION,
+        f"conversation={conversation_id} found={'yes' if deleted else 'no'}",
+    )
+    if not deleted:
+        return missing(request)
+    return web.json_response(
+        {"id": conversation_id, "object": "conversation.deleted", "deleted": True}
+    )
+
+
+#: POST /v1/conversations/{conversation_id}. The same two checks as the routes below.
+api_conversation_update = owner_route(_update, UPDATE_OPERATION)
+
+#: DELETE /v1/conversations/{conversation_id}. The same two checks.
+api_conversation_delete = owner_route(_delete, DELETE_OPERATION)
 
 #: POST /v1/conversations. Served by the owner gate, then by the machine-owner check
 #: in the handler.

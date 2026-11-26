@@ -1010,6 +1010,14 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "model name and the names of ignored fields go back as the owner sent them.",
     ),
     (
+        "Crew API conversation history",
+        "dashboard/crew_api_conversation_lists.py",
+        "The input texts and the reply text of each kept turn of a conversation, "
+        "served by GET /v1/conversations/{conversation_id}/items. Each is redacted "
+        "again with the route's _redact on its way out, as a turn read back is. A "
+        "turn's failure reason is not served here.",
+    ),
+    (
         "Crew API response stream",
         "dashboard/crew_api_response_stream.py",
         "The text deltas of a streamed POST /v1/responses turn pass through "
