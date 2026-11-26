@@ -443,6 +443,20 @@ describe('pinning', () => {
     expect(pins.unpinById).toHaveBeenCalledWith('p9')
   })
 
+  it('opens the Pins tab from a pinned mark, on a phone and over a search too, and not without a chat', () => {
+    const mobile = props({ isMobile: true, search: { isOpen: true } as never })
+    const { result } = renderHook(() => useTranscriptPins(mobile), { wrapper: withQueryClient() })
+    act(() => { result.current.handleShowPins() })
+    expect(openPanelView).toHaveBeenCalledWith('slot-a', 'pins')
+    expect(mobile.dispatch).toHaveBeenCalledWith(openActivityPanel())
+    vi.mocked(openPanelView).mockClear()
+    const none = props({ activeSlot: null })
+    const r2 = renderHook(() => useTranscriptPins(none), { wrapper: withQueryClient() }).result
+    act(() => { r2.current.handleShowPins() })
+    expect(openPanelView).not.toHaveBeenCalled()
+    expect(none.dispatch).not.toHaveBeenCalledWith(openActivityPanel())
+  })
+
   it('splits refused requests (errors) from answers (status), and lets only the answer time out', () => {
     vi.useFakeTimers()
     pins.state.error = 'pin'

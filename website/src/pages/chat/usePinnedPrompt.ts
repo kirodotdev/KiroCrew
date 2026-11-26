@@ -424,11 +424,17 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // strip's OWN rect, so whatever a host renders there is measured rather than
     // assumed. A row without a strip falls back to the fold itself. The strip is
     // a direct child of the user root (UserMessage renders it beside the
-    // bubble), never something found inside the bubble — see `userRoot`.
+    // bubble), never something found inside the bubble — see `userRoot`. The
+    // pinned mark (`data-pinned-mark`), rendered below the strip, is measured
+    // on its own (`markUncovered`), so a covered strip never re-shows with it.
     const strip = userRoot
       ? Array.from(userRoot.children).find(c => c.hasAttribute('data-message-actions')) ?? null
       : null
     const stripBottom = strip ? strip.getBoundingClientRect().bottom : null
+    const mark = userRoot
+      ? Array.from(userRoot.children).find(c => c.hasAttribute('data-pinned-mark')) ?? null
+      : null
+    const markBottom = mark ? mark.getBoundingClientRect().bottom : null
     // Against the card's LIVE bottom — the one read of the live card this
     // geometry makes. The resting-height rule below exists because the card's
     // size must not feed the geometry that SETS the card's size; this flag only
@@ -453,6 +459,7 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     const stripUncovered = stripBottom != null
       ? stripBottom > cardBottom + 0.5
       : liveH != null
+    const markUncovered = markBottom != null && markBottom > cardBottom + 0.5
     // The SETTLED resting height, never the live card rect.
     //
     // The card grows past its resting size in two states — the hover peek
@@ -500,6 +507,7 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       liveH,
       maxH,
       stripUncovered,
+      markUncovered,
     }))
   }, [requiresMountedHandoff, scrollerRef, setPinned])
   const updatePinnedPromptRef = useRef(updatePinnedPrompt)

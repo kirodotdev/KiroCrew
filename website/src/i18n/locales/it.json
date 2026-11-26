@@ -14748,6 +14748,8 @@
         "copy_link_failed": "Impossibile copiare il link. Controlla che questa pagina possa usare gli appunti, poi riprova.",
         "jump_to_named_message": "Vai al messaggio, {{author}}: {{label}}",
         "jump_to_message": "Vai al messaggio",
+        "pinned_mark": "Fissato",
+        "show_all_pinned": "Mostra tutti i messaggi fissati",
         "copy_failed": "Copia non riuscita"
       },
       "earlierMessagesBar": {

@@ -14398,6 +14398,8 @@
         "copy_link_failed": "লিংক কপি করা যায়নি। এই পেজ ক্লিপবোর্ড ব্যবহার করতে পারে কি না দেখো, তারপর আবার চেষ্টা করো।",
         "jump_to_named_message": "বার্তায় যান, {{author}}: {{label}}",
         "jump_to_message": "বার্তায় যান",
+        "pinned_mark": "পিন করা",
+        "show_all_pinned": "সব পিন করা বার্তা দেখো",
         "copy_failed": "কপি ব্যর্থ হয়েছে"
       },
       "earlierMessagesBar": {

@@ -506,8 +506,13 @@ file-tree-container{
    The re-show matches the strip only as a direct child of UserMessage's
    `data-role="user"` root, the one place it is rendered: structural scoping, so
    the sanitizer's `data-message-*` reservation (MarkdownRenderer) is not the only
-   guard keeping a marker minted inside a message body off this paint path. */
-[data-pinned-standin="folding"] [data-role="user"] > [data-message-actions]{visibility:visible;opacity:1}
+   guard keeping a marker minted inside a message body off this paint path.
+   The pinned mark (PinnedMark's `data-pinned-mark`) is rendered below the strip,
+   so it shows with it on `folding`, and alone on `mark`: the stretch where the
+   strip is under the card but the mark is not (usePinnedPrompt measures each). */
+[data-pinned-standin="folding"] [data-role="user"] > [data-message-actions],
+[data-pinned-standin="folding"] [data-role="user"] > [data-pinned-mark],
+[data-pinned-standin="mark"] [data-role="user"] > [data-pinned-mark]{visibility:visible;opacity:1}
 [data-pinned-standin] [data-message-edit]{display:none}
 
 

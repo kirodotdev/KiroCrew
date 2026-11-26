@@ -14398,6 +14398,8 @@
         "copy_link_failed": "Link konnte nicht kopiert werden. Prüfe, ob diese Seite die Zwischenablage nutzen darf, und versuch es noch einmal.",
         "jump_to_named_message": "Zur Nachricht springen, {{author}}: {{label}}",
         "jump_to_message": "Zur Nachricht springen",
+        "pinned_mark": "Angeheftet",
+        "show_all_pinned": "Alle angehefteten Nachrichten anzeigen",
         "copy_failed": "Kopieren fehlgeschlagen"
       },
       "earlierMessagesBar": {

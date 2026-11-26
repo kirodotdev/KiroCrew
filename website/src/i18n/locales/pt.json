@@ -14748,6 +14748,8 @@
         "copy_link_failed": "Não foi possível copiar o link. Verifique se esta página pode usar a área de transferência e tente de novo.",
         "jump_to_named_message": "Ir para a mensagem, {{author}}: {{label}}",
         "jump_to_message": "Ir para a mensagem",
+        "pinned_mark": "Fixada",
+        "show_all_pinned": "Mostrar todas as mensagens fixadas",
         "copy_failed": "Falha ao copiar"
       },
       "earlierMessagesBar": {

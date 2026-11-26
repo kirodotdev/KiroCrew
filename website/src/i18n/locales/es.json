@@ -14748,6 +14748,8 @@
         "copy_link_failed": "No se pudo copiar el enlace. Comprueba que esta página puede usar el portapapeles y vuelve a intentarlo.",
         "jump_to_named_message": "Ir al mensaje, {{author}}: {{label}}",
         "jump_to_message": "Ir al mensaje",
+        "pinned_mark": "Fijado",
+        "show_all_pinned": "Ver todos los mensajes fijados",
         "copy_failed": "Error al copiar"
       },
       "earlierMessagesBar": {

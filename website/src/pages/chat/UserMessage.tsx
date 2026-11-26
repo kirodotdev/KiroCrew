@@ -28,6 +28,7 @@ import { Btn } from '../../components/ui'
 import SteerDecisionLine from './SteerDecisionLine'
 import EditSkillPicker, { type EditFieldBinding, type EditSkillPickerTarget } from './EditSkillPicker'
 import QuoteCard from './QuoteCard'
+import PinnedMark from './PinnedMark'
 import { QuoteJumpCtx } from '../../components/markdown/contexts'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
 import MessageActionMenuItems, { NO_ACTIONS, useMessageActionsFor } from '../../messageActions/MessageActionMenuItems'
@@ -121,6 +122,8 @@ interface UserMessageProps {
   mode?: string
   pinned?: boolean
   onTogglePin?: () => void
+  /** Open the session's Pins tab from the row's pinned mark. Absent: the mark is a plain label. */
+  onShowPins?: () => void
   /** Open (or start) the reply thread on this message. Only a crewmate's chat offers it. */
   onReplyInThread?: () => void
   /** Whether the slot currently has a running turn. Gates the pending-steer
@@ -191,7 +194,7 @@ interface UserMessageProps {
   steerActionRequestFailed?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp: timestampProp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, editSkillPicker, sessions, onSessionOpen, mode, pinned, onTogglePin, onReplyInThread, slotRunning, showQueuedSend, continuesRun, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onJumpToQuotedText, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp: timestampProp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, editSkillPicker, sessions, onSessionOpen, mode, pinned, onTogglePin, onShowPins, onReplyInThread, slotRunning, showQueuedSend, continuesRun, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onJumpToQuotedText, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Settings -> Chat -> Show Timestamps, read here so every surface that draws
   // this bubble follows it, as AssistantMessage does.
@@ -1189,6 +1192,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
             the Font Family setting never writes. */}
         {timestamp && <span className="text-muted text-[12px] leading-5 tabular-nums" title={timestampTitle}>{timestamp}</span>}
       </div>
+      {/* Below the strip: usePinnedPrompt's uncovered check measures the
+          lowest of the strip and this mark, so the stand-in keeps both shown
+          while any of the mark is below the pinned card. */}
+      {pinned && <PinnedMark onShowPins={onShowPins} />}
       {/* No hand-off: the row's own inline editor and the composer draft are
           unsaved text a navigation would discard (same ruling as AssistantMessage). */}
       <ErrorNotice

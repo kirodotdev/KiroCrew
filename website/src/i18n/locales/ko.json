@@ -14048,6 +14048,8 @@
         "copy_link_failed": "링크를 복사하지 못했습니다. 이 페이지가 클립보드를 사용할 수 있는지 확인한 뒤 다시 시도하세요.",
         "jump_to_named_message": "메시지로 이동, {{author}}: {{label}}",
         "jump_to_message": "Jump to message",
+        "pinned_mark": "고정됨",
+        "show_all_pinned": "고정된 메시지 모두 보기",
         "copy_failed": "복사 실패"
       },
       "earlierMessagesBar": {

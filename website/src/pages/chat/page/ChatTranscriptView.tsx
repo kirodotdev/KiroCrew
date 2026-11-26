@@ -343,7 +343,7 @@ export default function ChatTranscriptView({
           const pinnedStandin = !!(pinned && (pinned.ts != null
             ? (item.kind === 'single' && item.msg.ts === pinned.ts)
             : pinned.idx === displayIdx))
-          return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} data-image-turn="" className={`px-4 mx-auto w-full py-1 empty:hidden`} data-pinned-standin={pinnedStandin ? (pinned?.stripUncovered ? 'folding' : '') : undefined} style={{
+          return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} data-image-turn="" className={`px-4 mx-auto w-full py-1 empty:hidden`} data-pinned-standin={pinnedStandin ? (pinned?.stripUncovered ? 'folding' : pinned?.markUncovered ? 'mark' : '') : undefined} style={{
             maxWidth: 'var(--mc-content-width, 900px)',
             // The pinned banner is styled as this row's own bubble and sits
             // at the exact position and width the bubble had when its top

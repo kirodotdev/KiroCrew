@@ -14748,6 +14748,8 @@
         "copy_link_failed": "Impossible de copier le lien. Vérifie que cette page peut utiliser le presse-papiers, puis réessaie.",
         "jump_to_named_message": "Aller au message, {{author}} : {{label}}",
         "jump_to_message": "Aller au message",
+        "pinned_mark": "Épinglé",
+        "show_all_pinned": "Afficher tous les messages épinglés",
         "copy_failed": "Échec de la copie"
       },
       "earlierMessagesBar": {

@@ -151,6 +151,28 @@ describe('pinned stand-in row keeps its action strip', () => {
     expect(getComputedStyle(copy!).display, 'Copy keeps its box').not.toBe('none')
   })
 
+  it.each([
+    ['folding', 'visible', 'visible'],
+    ['mark', 'visible', 'hidden'],
+    ['', 'hidden', 'hidden'],
+  ])('shows the pinned mark on its own gate (marker %j)', (marker, expected, stripExpected) => {
+    const style = document.createElement('style')
+    style.setAttribute('data-test-stylesheet', 'pinned-standin')
+    style.textContent = pinnedStandinRules()
+    document.head.append(style)
+    const { container } = render(
+      <div data-display-index={0} data-pinned-standin={marker} style={{ visibility: 'hidden' }}>
+        <UserMessage content={LONG_PROMPT} renderContent={c => <p>{c}</p>} pinned onShowPins={() => {}} />
+      </div>,
+    )
+    const mark = container.querySelector<HTMLElement>('[data-testid="pinned-mark"]')
+    expect(mark, 'the pinned row renders its mark').not.toBeNull()
+    expect(getComputedStyle(mark!).visibility, 'pinned mark while standing in').toBe(expected)
+    const strip = container.querySelector<HTMLElement>('[data-message-actions]')
+    expect(getComputedStyle(strip!).visibility, 'action strip while standing in').toBe(stripExpected)
+    expect(strip!.compareDocumentPosition(mark!) & Node.DOCUMENT_POSITION_FOLLOWING, 'mark follows the strip').toBeTruthy()
+  })
+
   it('also leaves out the row pencil of the Quote-offering row', () => {
     const style = document.createElement('style')
     style.setAttribute('data-test-stylesheet', 'pinned-standin')
