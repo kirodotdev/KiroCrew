@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { embedModelDisclosure } from '../pages/overview/VectorMemoryCard'
+import { embedModelDisclosure } from '../pages/overview/embeddingStatusText'
 
 // A custom model's id is '<label>:sha256:<digest>' of its weights, with the
 // label from memory.embed_model_id or 'custom'. That does not read well through

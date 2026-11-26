@@ -19,7 +19,6 @@ const { api } = vi.hoisted(() => ({
   },
 }))
 vi.mock('../api/client', () => ({ api }))
-vi.mock('../pages/overview/VectorMemoryCard', () => ({ SEMANTIC_CARD_ID: 'memory-semantic-card', default: () => <div /> }))
 vi.mock('../pages/overview/EmbeddingModelCard', () => ({ default: () => <div /> }))
 vi.mock('../pages/overview/MemoryRecordsEditor', () => ({ default: () => <div /> }))
 vi.mock('../pages/overview/MemoryFailuresCard', () => ({ default: () => <div /> }))

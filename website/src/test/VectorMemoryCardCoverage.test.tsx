@@ -1380,33 +1380,6 @@ describe('a model path error is reported once, under the path field', () => {
     reembed: { step: 'idle' },
   }
 
-  it('points from the Vector Memory card to the field instead of repeating the message and path', async () => {
-    const { default: EmbeddingModelCard } = await import('../pages/overview/EmbeddingModelCard')
-    setupApi({ emb: { ...PATH_ERROR, setup_step: 'error', model_active: false } })
-    Object.assign(api, { vectorValidateEmbedModel: vi.fn(), vectorApplyEmbedModel: vi.fn() })
-    renderWithProviders(<><VectorMemoryCard /><EmbeddingModelCard /></>)
-    const field = await screen.findByTestId('embed-model-path-status-error')
-    // A model identifier is not a repeated error: the existing disclosure
-    // names the custom file even when the configured model is unavailable.
-    const disclosure = screen.getByText('missing.gguf · 2-dim')
-    expect(disclosure).toHaveAttribute('title', 'custom-model · 2-dim · runs locally in-process — /models/missing.gguf')
-    expect(screen.getAllByText(/missing\.gguf/)).toEqual([disclosure])
-    expect(field).toHaveTextContent('No file at that path.')
-    const pointer = await screen.findByTestId('embedding-setup-error-pointer')
-    expect(pointer).toHaveTextContent('keyword search')
-    expect(within(pointer).getByRole('link', { name: 'Open embedding model settings' })).toHaveAttribute('href', '#embed-model-path')
-    expect(pointer).not.toHaveTextContent('missing.gguf')
-    expect(field).not.toHaveTextContent('missing.gguf')
-    expect(pointer).not.toHaveTextContent('No file at that path.')
-    // Where the fix lives is said ONCE, by the link: the pointer's prose ends
-    // at the consequence (keyword search) and does not restate the destination.
-    expect(within(pointer).getAllByText(/settings/i)).toHaveLength(1)
-    expect(pointer).not.toHaveTextContent('Fix the path')
-    // The localized message body renders exactly once on the page: under the field.
-    expect(screen.getAllByText(/No file at that path\./)).toHaveLength(1)
-    expect(screen.queryByText(/Path: \/models\/missing\.gguf/)).not.toBeInTheDocument()
-  })
-
   it('keeps the full message and path on the Vector Memory card when no path field is on the page', async () => {
     setupApi({ emb: PATH_ERROR })
     renderWithProviders(<VectorMemoryCard />)
@@ -1416,45 +1389,8 @@ describe('a model path error is reported once, under the path field', () => {
     expect(screen.queryByTestId('embedding-setup-error-pointer')).not.toBeInTheDocument()
   })
 
-  it('does not shorten a non-path error even when the field is on the page', async () => {
-    const { default: EmbeddingModelCard } = await import('../pages/overview/EmbeddingModelCard')
-    const raw = 'memory.embed_model_path could not be read: [Errno 5] Input/output error'
-    setupApi({ emb: { ...PATH_ERROR, setup_error: raw, setup_error_code: 'model_verification_failed', setup_error_params: { path: '/models/missing.gguf', error: raw } } })
-    Object.assign(api, { vectorValidateEmbedModel: vi.fn(), vectorApplyEmbedModel: vi.fn() })
-    renderWithProviders(<><VectorMemoryCard /><EmbeddingModelCard /></>)
-    const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent('/models/missing.gguf')
-    expect(screen.queryByTestId('embedding-setup-error-pointer')).not.toBeInTheDocument()
-    expect(screen.getByTestId('embedding-setup-diagnostic')).toBeInTheDocument()
-    expect(screen.queryByTestId('embed-model-path-status-error')).not.toBeInTheDocument()
-  })
 })
 
-
-describe('embedding model apply shares status with vector memory', () => {
-  it('clears the sibling warning without remounting either card', async () => {
-    const { default: EmbeddingModelCard } = await import('../pages/overview/EmbeddingModelCard')
-    let applied = false
-    setupApi()
-    Object.assign(api, { vectorApplyEmbedModel: vi.fn(async () => { applied = true; return { ok: true } }) })
-    vi.mocked(api.vectorEmbeddingStatus).mockImplementation(async () => ({
-      ...ACTIVE_EMB, model_path: '/models/model.gguf', model_id: 'custom-model', model_dim: 2,
-      setup_warning_code: applied ? '' : 'legacy_embedding_vectors',
-      setup_warning: applied ? '' : 'legacy warning',
-      reembed: { step: applied ? 'done' : 'idle' },
-    }))
-    renderWithProviders(<><EmbeddingModelCard /><VectorMemoryCard diagnosticsOnly /></>)
-    await screen.findByTestId('embedding-setup-warning')
-    const card = screen.getByTestId('embed-model-card')
-    // The field holds the configured path, so this is a reapply of that path.
-    await screen.findByDisplayValue('/models/model.gguf')
-    fireEvent.click(within(card).getByRole('button', { name: 'Rebuild memory vectors' }))
-    const dialog = await screen.findByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Rebuild memory vectors' }))
-    await waitFor(() => expect(applied).toBe(true))
-    await waitFor(() => expect(screen.queryByTestId('embedding-setup-warning')).not.toBeInTheDocument())
-  })
-})
 
 describe('embedding setup UX regressions', () => {
   const missing = {
@@ -1462,20 +1398,6 @@ describe('embedding setup UX regressions', () => {
     setup_warning_code: 'legacy_embedding_vectors', setup_error_code: 'model_path_not_found',
     setup_error_params: { path: '/models/missing.gguf' }, reembed: { step: 'idle' },
   }
-
-  it('keeps one settings link in the legacy path warning and the full error under the field', async () => {
-    const { default: EmbeddingModelCard } = await import('../pages/overview/EmbeddingModelCard')
-    setupApi({ emb: missing })
-    renderWithProviders(<><VectorMemoryCard /><EmbeddingModelCard /></>)
-    await screen.findByTestId('embed-model-path-status-error')
-    await waitFor(() => expect(screen.queryByTestId('embedding-setup-error-pointer')).not.toBeInTheDocument())
-    const links = screen.getAllByRole('link', { name: 'Open embedding model settings' })
-    expect(links).toHaveLength(1)
-    expect(screen.getByTestId('embedding-setup-warning')).toContainElement(links[0])
-    expect(links[0]).toHaveAttribute('href', '#embed-model-path')
-    expect(document.getElementById('embed-model-path')).toBeInTheDocument()
-    expect(screen.getAllByText(/No file at that path\./)).toHaveLength(1)
-  })
 
   it('retains the full legacy path error without the sibling field', async () => {
     setupApi({ emb: missing })

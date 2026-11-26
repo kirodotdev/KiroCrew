@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Code, Cpu, Fingerprint, Globe, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
+import { Bell, Brain, Code, Cpu, Fingerprint, Globe, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
 import { KiroGhostMark } from '../components/KiroGhostMark'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
@@ -20,6 +20,8 @@ import { DeveloperPanel } from './settings/DeveloperPanel'
 import { SecurityPanel } from './settings/SecurityPanel'
 import { ChannelsPanel, CHANNEL_KEYS } from './settings/ChannelsPanel'
 import { OverviewPanel } from './settings/OverviewPanel'
+import { MemoryPanel } from './settings/MemoryPanel'
+import { MEMORY_PARAMS, legacyMemoryRedirect } from './settings/memoryRoute'
 import { NotificationsPanel } from './settings/NotificationsPanel'
 import { ShortcutsPanel } from './settings/ShortcutsPanel'
 import { RELEASE_NOTES_LINK, RELEASE_PARAM } from './settings/ReleasesPanel'
@@ -86,6 +88,7 @@ import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { useConfigPendingCount } from './settings/configPendingQuery'
 import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { GuideTrustRootRegion } from '../guide/trustRoot'
+import { isOverviewDrillView } from './overviewDrillViews'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
 // whenever this string changes), so they are resolved inside `buildTabs()` —
 // which runs per render — rather than at module load. Translating them at module
@@ -106,8 +109,10 @@ function buildTabs() {
   const GROUP_PREFERENCES = i18nT('settings.groups.preferences')
   const GROUP_SYSTEM = i18nT('settings.groups.system')
   return [
-    // OverviewPage's drill-in (`?view=memory&store=…&focus=…`).
-    { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description'), drillInParams: ['view', 'store', 'focus', 'lesson'] },
+    // OverviewPage's drill-in (`?view=usage`, `?view=wakatime`).
+    { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description'), drillInParams: ['view'] },
+    // Its own entry: inside Overview it was too hard to find. `?store=` picks a bot.
+    { key: 'memory', tile: 'var(--tile-purple)', label: i18nT('settings.tabs.memory.label'), icon: <Brain size={16} />, description: i18nT('settings.tabs.memory.description'), drillInParams: MEMORY_PARAMS },
     // Kiro sign-in, on its own tab: the agent harness is one of several things
     // that run as this account (Team Crews and Shared Crews do too), so it is
     // reachable whichever harness is selected.
@@ -306,10 +311,11 @@ export default function SettingsPage() {
         : t
   ))
 
+  // An Overview drill-in (Usage, WakaTime) draws its own back row and
+  // title, so the tab's "Overview" title and the mobile back bar step aside.
   const memorySelection = new URLSearchParams(search)
-  const memberMemoryView = pathname.replace(/\/$/, '') === '/settings/overview'
-    && memorySelection.get('view') === 'memory' && !!memorySelection.get('store')
-    && memorySelection.get('store') !== 'default'
+  const overviewDrillIn = pathname.replace(/\/$/, '') === '/settings/overview'
+    && isOverviewDrillView(memorySelection.get('view'))
 
   // The release notes used to be a Releases tab of their own and now sit at the
   // foot of About, so its old addresses (`/settings/releases`,
@@ -317,6 +323,11 @@ export default function SettingsPage() {
   // with the release notes section, or a named version in it, scrolled into
   // view. Rendered in place of
   // the layout so no other tab paints for a frame on the way.
+  // Memory used to be an Overview drill-in; its old links (a chat's "Review
+  // lessons", bookmarks) land on Settings > Memory with the same store and focus.
+  const memoryRedirect = legacyMemoryRedirect(pathname, search)
+  if (memoryRedirect) return <Navigate replace to={memoryRedirect} />
+
   const releasesSegments = parsePathSegments(SETTINGS_BASE_PATH, pathname)
   const legacyReleasesTab = !releasesSegments[0] && memorySelection.get('tab') === 'releases'
   if (releasesSegments[0] === 'releases' || legacyReleasesTab) {
@@ -345,7 +356,7 @@ export default function SettingsPage() {
     <SidePanelLayout
       title={i18nT('nav.account_and_settings')}
       tabs={tabs}
-      paneOwnsHeader={memberMemoryView}
+      paneOwnsHeader={overviewDrillIn}
       basePath={SETTINGS_BASE_PATH}
       headerRightDock="bottom-float"
       // Keyed apart from the main window: a pane and the window that holds it
@@ -373,6 +384,7 @@ export default function SettingsPage() {
           </div>
         )}
         {tab === 'overview' && <OverviewPanel />}
+        {tab === 'memory' && <MemoryPanel />}
         {tab === 'kiro-account' && (
           <Suspense fallback={<ContentSkeleton rows={6} />}>
             <KiroAccountPanel signInOffered={kiroSignInOffered} usage={kiroUsageState} showCredits={kiroAccountEntry} />

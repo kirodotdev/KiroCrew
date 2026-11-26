@@ -12,7 +12,7 @@ import { fmtCurrency } from '../i18n/format'
  * (an exact-zero cost is a different fact from "too small to show").
  * Non-finite / missing input renders as an em dash rather than "$NaN".
  *
- * NOTE: for MONEY only. Similarity scores (VectorMemoryCard) legitimately want
+ * NOTE: for MONEY only. Similarity scores legitimately want
  * 2–3dp — do not route those through here.
  *
  * Formatting goes through `Intl.NumberFormat`'s currency style, so the symbol's

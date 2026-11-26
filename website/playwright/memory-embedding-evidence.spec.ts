@@ -161,7 +161,7 @@ test('missing configured model and no inherited vectors: short pointer to the fi
   const fieldError = card.getByTestId('embed-model-path-status-error')
   await expect(fieldError).toContainText('No file at that path.')
   await expect(page.getByText('No file at that path.', { exact: false })).toHaveCount(1)
-  // …so the Vector Memory card renders the SHORT pointer, not the message or the path.
+  // …so the setup status in the Embedding Model card renders the SHORT pointer, not the message or the path.
   const pointer = page.getByTestId('embedding-setup-error-pointer')
   await expect(pointer).toHaveCount(1)
   await expect(pointer).toContainText('memory uses keyword search meanwhile')
@@ -230,15 +230,7 @@ test('a known configured model that is not serving reads configured-not-active w
   await expect(page.getByTestId('embed-model-card').getByRole('alert')).toHaveCount(0)
   if (before.setup_error) await expect(page.getByTestId('embed-model-card')).not.toContainText(before.setup_error)
   await expect(page.getByTestId('embed-model-card')).not.toContainText('Keyword search still works')
-  // The Vector Memory card's Embeddings stat tile on the same tab agrees with
-  // the header: not active, in the same muted colour, never a guessed "model
-  // loading" warning and never the success colour.
-  const tile = page.getByTestId('embeddings-stat-badge')
-  await expect(tile).toHaveAttribute('data-state', 'inactive')
-  await expect(tile).toHaveText('not active')
-  await expect(tile).toHaveClass(/text-\[var\(--muted\)\]/)
-  await expect(tile).not.toHaveClass(/text-warn/)
-  await expect(tile).not.toHaveClass(/text-ok/)
+  // Nothing on the tab guesses a "model loading" state the header does not show.
   await expect(page.getByText('model loading', { exact: true })).toHaveCount(0)
   // Nothing configured differs from the bundled default, so the button offers a reapply.
   const reapply = page.getByTestId('embed-model-card').getByRole('button', { name: 'Rebuild memory vectors', exact: true })
@@ -246,13 +238,6 @@ test('a known configured model that is not serving reads configured-not-active w
   await expect(reapply).toBeEnabled()
   await header.scrollIntoViewIfNeeded()
   const images = [await shot(page, testInfo, 'configured-inactive')]
-  // The tile lives on the Vector Memory card above the header, outside the
-  // viewport once the header is framed: scroll it in and photograph it on its
-  // own so the muted "not active" tile is evidence, not only an assertion.
-  await tile.scrollIntoViewIfNeeded()
-  await expect(tile).toBeInViewport()
-  images.push(await shot(page, testInfo, 'configured-inactive-stat-tile'))
-  await header.scrollIntoViewIfNeeded()
   // The reapply's confirm modal borrows the card's own neutral title and names
   // the action it confirms; its body describes reloading the configured model.
   // Opened and CANCELLED: the capture is of the modal, and no apply is sent to

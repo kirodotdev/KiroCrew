@@ -65,7 +65,7 @@ export interface SidePanelTab {
    *  chrome, and nothing on that page would flag it. */
   hostsSubNav?: boolean
   /** Query params holding THIS tab's own drill-in (Settings > Overview's
-   *  `?view=memory`). Every rail selection drops them, like a SubNav
+   *  `?view=usage`). Every rail selection drops them, like a SubNav
    *  selection, so a picked tab opens at its root. */
   drillInParams?: readonly string[]
 }

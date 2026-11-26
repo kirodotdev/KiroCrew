@@ -116,12 +116,12 @@ describe('OverviewPage — mission control', () => {
     expect(screen.queryByText('All systems running')).not.toBeInTheDocument()
   })
 
-  it('renders usage and memory summary cards', async () => {
+  it('renders the usage summary card, and no Memory card: Memory is its own Settings entry', async () => {
     renderWithProviders(<OverviewPage />, { store: statusStore() })
     expect(screen.getByText('Usage')).toBeInTheDocument()
-    expect(screen.getByText('Memory')).toBeInTheDocument()
-    expect(await screen.findByText(/Summarizes chats into memory after 3h idle/)).toBeInTheDocument()
     expect(await screen.findByText(/Today:/)).toBeInTheDocument()
+    expect(screen.queryByText('Memory')).toBeNull()
+    expect(screen.getAllByRole('button', { name: /View details/ })).toHaveLength(2)
   })
 
   it('reads the Today line as one phrase with plural counts and a formatted cost', async () => {
@@ -155,25 +155,6 @@ describe('OverviewPage — mission control', () => {
       usageToday.sessions = 3
       usageToday.messages = 42
     }
-  })
-
-  it('drills into Memory and back', async () => {
-    renderWithProviders(<OverviewPage />, { store: statusStore() })
-    // Summary cards share the verb, in render order: Usage (0), WakaTime (1),
-    // Memory (2).
-    fireEvent.click(screen.getAllByRole('button', { name: /View details/ })[2])
-    expect(await screen.findByTestId('memory-tab')).toBeInTheDocument()
-    expect(screen.queryByText('All systems running')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Overview/ }))
-    expect(screen.getByText('All systems running')).toBeInTheDocument()
-    expect(screen.queryByTestId('memory-tab')).not.toBeInTheDocument()
-  })
-
-  it('lets a member drill-in own its title while keeping one back action', async () => {
-    renderWithProviders(<OverviewPage />, { store: statusStore(), route: '/settings/overview?view=memory&store=member-alice' })
-    expect(await screen.findByTestId('memory-tab')).toBeInTheDocument()
-    expect(screen.queryByText('Memory')).toBeNull()
-    expect(screen.getAllByRole('button', { name: /Overview/ })).toHaveLength(1)
   })
 
   it('drills into Usage and back', () => {
@@ -250,13 +231,13 @@ describe('OverviewPage — mission control', () => {
     // The time-boxed pointer to the sign-in card is retired, on every
     // backend.
     const first = renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(await screen.findByText('Memory')).toBeInTheDocument()
+    expect(await screen.findByText(/Today:/)).toBeInTheDocument()
     expect(screen.queryByTestId('kiro-sign-in-moved')).not.toBeInTheDocument()
     first.unmount()
 
     vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: KIRO_SIGN_IN_BACKEND } })
     renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(await screen.findByText('Memory')).toBeInTheDocument()
+    expect(await screen.findByText(/Today:/)).toBeInTheDocument()
     expect(screen.queryByTestId('kiro-sign-in-moved')).not.toBeInTheDocument()
     expect(screen.queryByText(/sign-in moved/i)).not.toBeInTheDocument()
   })
@@ -341,38 +322,6 @@ describe('OverviewPage — health line and the Kiro sign-in', () => {
   })
 })
 
-// The Memory card line was five catalog fragments glued around two raw
-// numbers, so every language kept English word order and "1 days" (#32430).
-describe('OverviewPage — Memory card line', () => {
-  afterEach(async () => {
-    await act(async () => { await i18next.changeLanguage('en') })
-  })
-
-  it('reads as one sentence with a plural day count', async () => {
-    const { api } = await import('../api/client')
-    vi.mocked(api.memorySettings).mockResolvedValueOnce({ history_idle_hours: 2, history_max_days: 1, migrated: false })
-    renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(await screen.findByText('Summarizes chats into memory after 2h idle · keeps 1 day of history')).toBeInTheDocument()
-  })
-
-  it('reads as one sentence once semantic memory is on', async () => {
-    const { api } = await import('../api/client')
-    vi.mocked(api.memorySettings).mockResolvedValueOnce({ history_idle_hours: 3, history_max_days: 90, migrated: true })
-    renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(await screen.findByText('Summarizes chats into memory after 3h idle · semantic memory active')).toBeInTheDocument()
-  })
-
-  it('follows the word order of the language, not English', async () => {
-    await act(async () => { await i18next.changeLanguage('ja') })
-    const { api } = await import('../api/client')
-    vi.mocked(api.memorySettings).mockResolvedValueOnce({ history_idle_hours: 3, history_max_days: 90, migrated: false })
-    renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(await screen.findByText('3 時間使われないとチャットをメモリに要約 · 90 日分の履歴を保持')).toBeInTheDocument()
-  })
-})
-
-// The health line, the Usage card's no-usage note and the WakaTime line were
-// catalog fragments glued around a value in English order (#32431).
 describe('OverviewPage — whole-sentence lines', () => {
   afterEach(async () => {
     usageCaps.usageBilling = true

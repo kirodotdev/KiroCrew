@@ -189,7 +189,6 @@ const CONVERTED = [
   'pages/chat/SessionColorPicker.tsx',
   'pages/chat/command-center/ConductorModeCrewPanel.tsx',
   'pages/knowledge/SourcesList.tsx',
-  'pages/overview/VectorMemoryCard.tsx',
   'pages/overview/WakaTimeTab.tsx',
   'pages/settings/DisplayPanel.tsx',
   'pages/system/PerformanceTab.tsx',

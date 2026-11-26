@@ -6,13 +6,18 @@ orders the matches, so a page of records can be sorted across the whole store
 while only that page is assembled.
 
 A facet is something the page can filter on: the lesson fields (category, applies,
-repo scope), the write origin (source) and an experience's tags. Confidence is a
+repo scope), the write origin (source), the channel (surface) and crew a row came
+from, and an experience's tags. Surface and crew are stamped on the crew lineage
+only; a Global V1 row has neither, so it counts toward no value of them. Confidence is a
 range, not a facet: facts and lessons carry it, experiences do not.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
+from datetime import datetime, timezone
 from typing import Any
 
 from kiro_crew.lesson_validation import LESSON_APPLIES_UNSTATED, LESSON_APPLIES_VALUES
@@ -23,10 +28,24 @@ from kiro_crew.validation_parts.input_bounds import normalize_lesson_category
 # never holds ":" (project_scope.scope_is_admissible), so no real scope can equal it.
 SCOPE_UNUSABLE = ":unusable"
 SOURCE_UNKNOWN = "unknown"
-FACET_GROUPS = ("category", "applies", "scope", "source", "tag")
+FACET_GROUPS = ("category", "applies", "scope", "source", "surface", "crew", "tag")
 SORTS = ("updated", "created", "confidence", "importance", "key", "match")
+# A date range filters on one of these times: the list's sort field, updated unless sorted by created.
+DATE_FIELDS = ("updated", "created")
 _MAX_VALUES = 50
+# A graph selection: at most this many record refs (the graph draws at most 400 records).
+_MAX_REFS = 500
+_REF = re.compile(r"[0-9a-f]{10}")
 _MAX_VALUE_LENGTH = 512
+
+
+def record_ref(kind: str, record_id: Any) -> str:
+    """A short, URL-safe name for one record: ten hex digits of ``sha256("kind:id")``.
+
+    A graph selection names its records by these, so hundreds of them fit in one
+    query string (``GET /api/memory/records?ref=…``).
+    """
+    return hashlib.sha256(f"{kind}:{record_id or ''}".encode()).hexdigest()[:10]
 
 
 class FacetError(ValueError):
@@ -79,12 +98,36 @@ def episode_tags(tags_json: Any) -> list[str]:
     return list(dict.fromkeys(tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()))
 
 
-def summary_facets(kind: str, value_json: Any, tags_json: Any, source: Any) -> dict[str, Any]:
+def source_group(source: Any) -> str:
+    """The source facet value for a row's write origin.
+
+    An origin written as ``<prefix>:<id>`` (``consolidation:dashboard:<session>``,
+    one per chat) counts under its prefix, so the filter lists one "Learned from
+    chat" value instead of one per session. The record itself keeps the full source.
+    """
+    if not isinstance(source, str) or not source.strip():
+        return SOURCE_UNKNOWN
+    prefix, colon, _ = source.strip().partition(":")
+    return prefix if colon and prefix else source.strip()
+
+
+def summary_facets(
+    kind: str,
+    value_json: Any,
+    tags_json: Any,
+    source: Any,
+    *,
+    surface: str | None = None,
+    crew: str | None = None,
+) -> dict[str, Any]:
+    """The facet values one row carries; ``None`` is no value for that group."""
     facets: dict[str, Any] = {
         "category": None,
         "applies": None,
         "scope": None,
-        "source": source.strip() if isinstance(source, str) and source.strip() else SOURCE_UNKNOWN,
+        "source": source_group(source),
+        "surface": surface,
+        "crew": crew,
         "tag": episode_tags(tags_json) if kind == "episode" else [],
     }
     if kind == "directive":
@@ -126,6 +169,12 @@ def parse_filters(raw: dict[str, Any]) -> dict[str, Any]:
             values = _values(raw[group], group)
             if values:
                 filters[group] = values
+    if "ref" in raw:
+        refs = raw["ref"] if isinstance(raw["ref"], list) else [raw["ref"]]
+        if len(refs) > _MAX_REFS or not all(isinstance(r, str) and _REF.fullmatch(r) for r in refs):
+            raise FacetError(f"Use at most {_MAX_REFS} record refs of ten hex digits.")
+        if refs:
+            filters["ref"] = list(dict.fromkeys(refs))
     low = _bound(raw["conf_min"], "conf_min") if "conf_min" in raw else None
     high = _bound(raw["conf_max"], "conf_max") if "conf_max" in raw else None
     if low is not None and high is not None and low > high:
@@ -134,7 +183,54 @@ def parse_filters(raw: dict[str, Any]) -> dict[str, Any]:
         filters["conf_min"] = low
     if high is not None:
         filters["conf_max"] = high
+    since = _instant(raw["since"], "since") if raw.get("since") else None
+    until = _instant(raw["until"], "until") if raw.get("until") else None
+    if since and until and since >= until:
+        raise FacetError("since must be before until.")
+    if since:
+        filters["since"] = since.isoformat()
+    if until:
+        filters["until"] = until.isoformat()
+    date_field = raw.get("date_field", "updated")
+    if date_field not in DATE_FIELDS:
+        raise FacetError("date_field must be updated or created.")
+    if (since or until) and date_field != "updated":
+        filters["date_field"] = date_field
     return filters
+
+
+def _instant(raw: Any, name: str) -> datetime:
+    if not isinstance(raw, str):
+        raise FacetError(f"{name} must be an ISO date or time.")
+    parsed = utc_time(raw)
+    if parsed is None:
+        raise FacetError(f"{name} must be an ISO date or time.")
+    return parsed
+
+
+def utc_time(raw: Any) -> datetime | None:
+    """A stored or sent ISO time as an aware UTC datetime; a naive one is UTC."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (
+        parsed.replace(tzinfo=timezone.utc)
+        if parsed.tzinfo is None
+        else parsed.astimezone(timezone.utc)
+    )
+
+
+def _in_range(summary: dict[str, Any], filters: dict[str, Any]) -> bool:
+    field = "created_at" if filters.get("date_field") == "created" else "updated_at"
+    when = utc_time(summary.get(field))
+    if when is None:
+        return False
+    if "since" in filters and when < datetime.fromisoformat(filters["since"]):
+        return False
+    return not ("until" in filters and when >= datetime.fromisoformat(filters["until"]))
 
 
 def matches(summary: dict[str, Any], filters: dict[str, Any], *, skip: str | None = None) -> bool:
@@ -149,12 +245,16 @@ def matches(summary: dict[str, Any], filters: dict[str, Any], *, skip: str | Non
                 return False
         elif facets[group] not in wanted:
             return False
+    if "ref" in filters and summary.get("ref") not in filters["ref"]:
+        return False
     if "conf_min" in filters or "conf_max" in filters:
         confidence = summary["confidence"]
         if confidence is None:
             return False
         if confidence < filters.get("conf_min", 0) or confidence > filters.get("conf_max", 1):
             return False
+    if ("since" in filters or "until" in filters) and not _in_range(summary, filters):
+        return False
     return True
 
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatEmbedModel } from '../pages/overview/VectorMemoryCard'
+import { formatEmbedModel } from '../pages/overview/embeddingStatusText'
 
 // The Memory tab discloses which embedding model runs locally. formatEmbedModel
 // turns the backend's raw model_id into a friendly display name, and must
