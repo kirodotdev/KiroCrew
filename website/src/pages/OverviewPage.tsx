@@ -1,8 +1,9 @@
-import { lazy, Suspense, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
-import { ArrowLeft, ArrowRight, BarChart3, Brain, Clock } from 'lucide-react'
+import { ArrowLeft, ArrowRight, BarChart3, Clock } from 'lucide-react'
+import { isOverviewDrillView, type OverviewDrillView } from './overviewDrillViews'
 import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
 import { Uptime } from '../components/Uptime'
@@ -13,7 +14,7 @@ import type { AcpBackendConfig } from '../api/acpBackend'
 import { KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
 import { signInLapsed } from './developer/kiroSignInState'
 import type { RootState } from '../store'
-import { Card, CardTitle, StatCard, Btn, ContentSkeleton } from '../components/ui'
+import { Card, CardTitle, StatCard, Btn } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
 import { TailnetMobileCard } from '../components/TailnetMobileCard'
 import ErrorBoundary from '../components/ErrorBoundary'
@@ -29,13 +30,11 @@ import { failedWithNoData } from '../api/queryState'
 import { reportForError } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
-import { uiLocation } from '../uiLocations/uiLocation'
 import { compactPluralCount, fmtCompact, fmtDuration, fmtNumber, fmtPercentFloor } from '../i18n/format'
 import { formatCost } from '../utils/formatCost'
 
 // The record editor and recovery tools are needed only inside this drill-in.
 // Keep them out of the dashboard shell's initial bundle.
-const MemoryTab = lazy(() => import('./overview/MemoryTab'))
 /**
  * Settings > Overview — mission control.
  *
@@ -47,8 +46,7 @@ const MemoryTab = lazy(() => import('./overview/MemoryTab'))
  * on the Import tab.
  */
 
-const DRILL_VIEWS = ['memory', 'usage', 'wakatime'] as const
-type DrillView = (typeof DRILL_VIEWS)[number]
+type DrillView = OverviewDrillView
 
 /** A Today-line count: `amount` is the locale's compact number, and `count`, the
  *  quantity it shows, picks the plural form that agrees with it. */
@@ -198,40 +196,6 @@ function WakaTimeSummaryCard({ onOpen }: { onOpen: () => void }) {
   )
 }
 
-/** Memory summary card — consolidation cadence + retention at a glance. */
-function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
-  const { data, isError, error } = useQuery<{ history_idle_hours?: number; history_max_days?: number; migrated?: boolean }>({
-    queryKey: ['memory-settings'],
-    queryFn: () => api.memorySettings(),
-  })
-  return (
-    <Card>
-      <CardTitle>
-        <Brain className="lucide-inline" /> {i18nT('pages.overviewPage.memory')}
-        <button onClick={onOpen} className="ml-auto inline-flex items-center gap-1 text-[12px] font-medium text-accent bg-transparent border-none cursor-pointer hover:underline" {...uiLocation('overview.memory-details')}>
-          {i18nT('pages.overviewPage.view_details')} <ArrowRight size={12} />
-        </button>
-      </CardTitle>
-      {isError ? (
-        // askAgent on: a read of the persisted memory settings; the card holds no
-        // input. Without this branch a rejected fetch left the skeleton up forever.
-        <ErrorNotice message={error?.message} askAgent testId="overview-memory-error" />
-      ) : !data ? (
-        <div className="skeleton h-14 rounded" />
-      ) : (
-        <div className="flex flex-col gap-1 text-[13px] text-muted">
-          <span>
-            {data.migrated
-              ? i18nT('pages.overviewPage.memory_summary_semantic', { hours: fmtNumber(data.history_idle_hours ?? 3) })
-              : i18nT('pages.overviewPage.memory_summary_kept', { hours: fmtNumber(data.history_idle_hours ?? 3), count: data.history_max_days ?? 90, days: fmtNumber(data.history_max_days ?? 90) })}
-          </span>
-          <Link to="/settings/developer/memory" className="text-accent hover:underline w-fit">{i18nT('pages.overviewPage.memory_developer_link')} <ArrowRight size={12} className="lucide-inline" /></Link>
-        </div>
-      )}
-    </Card>
-  )
-}
-
 /** The uptime tile. Its own component so the 1 Hz uptime tick re-renders this
  *  card, not the whole Overview page. */
 function UptimeStatCard(props: { label: string; accent?: boolean; delay?: number }) {
@@ -322,14 +286,10 @@ function HealthHero({ connected, status }: { connected: boolean; status: RootSta
 export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
   const connected = useAppSelector(s => s.dashboard.connected)
-  const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
-  // Moves on every turn end: the Memory view re-reads its store list on it, and
-  // the rest of the view when that list changed.
-  const liveRefreshTrigger = useAppSelector(s => s.dashboard.liveRefreshTrigger)
   const [params, setParams] = useSearchParams()
 
   const rawView = params.get('view')
-  const view: DrillView | null = DRILL_VIEWS.includes(rawView as DrillView) ? (rawView as DrillView) : null
+  const view: DrillView | null = isOverviewDrillView(rawView) ? rawView : null
   const setView = (v: DrillView | null) => setParams(prev => {
     const next = new URLSearchParams(prev)
     if (v) next.set('view', v)
@@ -337,18 +297,6 @@ export default function OverviewPage() {
     return next
   }, { replace: true })
 
-  if (view === 'memory') {
-    const selectedStore = params.get('store') || ''
-    return <DrillIn title={i18nT('pages.overviewPage.memory')} hideTitle={!!selectedStore && selectedStore !== 'default'} onBack={() => setView(null)}>
-      <Suspense fallback={<ContentSkeleton rows={6} />}><MemoryTab refreshTrigger={refreshTrigger} liveRefreshTrigger={liveRefreshTrigger} selectedStore={selectedStore} focus={params.get('focus')} focusLessonKey={params.get('lesson')} onStoreNavigate={store => setParams(previous => {
-        const next = new URLSearchParams(previous)
-        if (store) next.set('store', store)
-        else next.delete('store')
-        next.delete('lesson')
-        return next
-      }, { replace: true })} /></Suspense>
-    </DrillIn>
-  }
   if (view === 'usage') {
     return <DrillIn title={i18nT('pages.overviewPage.usage')} onBack={() => setView(null)}><UsageTab /></DrillIn>
   }
@@ -421,7 +369,6 @@ export default function OverviewPage() {
       <div className="grid gap-3.5 grid-cols-2 max-[760px]:grid-cols-1">
         <UsageSummaryCard onOpen={() => setView('usage')} />
         <WakaTimeSummaryCard onOpen={() => setView('wakatime')} />
-        <MemorySummaryCard onOpen={() => setView('memory')} />
       </div>
 
       {/* Extension slot: the single downstream-owned panel for the region below

@@ -2534,7 +2534,7 @@
       "title": "Memory browser",
       "user_story": "As a user, I want to browse preferences, projects, history, lessons and the vector store, so that I know what the agent remembers about me.",
       "start_url": "/settings/overview",
-      "entry_path": "Settings → Overview → memory drill-in (?view=memory)",
+      "entry_path": "Settings → Memory (/settings/memory)",
       "preconditions": {
         "seed": "memory-populated",
         "members": [],
@@ -2565,7 +2565,7 @@
       "title": "Embeddings",
       "user_story": "As a user, I want to enable the vector store and pick its model, so that semantic memory search works.",
       "start_url": "/settings/overview",
-      "entry_path": "Memory browser (?view=memory) → vector card",
+      "entry_path": "Memory browser (/settings/memory) → vector card",
       "preconditions": {
         "seed": "memory-populated",
         "members": [],
@@ -2590,7 +2590,7 @@
       "title": "Episodic search",
       "user_story": "As a user, I want to search past episodic memories, so that I can recover a fact from an earlier session.",
       "start_url": "/settings/overview",
-      "entry_path": "Open Settings > Overview and switch to the Memory view. Memory browser (?view=memory) > search box",
+      "entry_path": "Open Settings > Memory. Memory browser (/settings/memory) > search box",
       "preconditions": {
         "seed": "memory-populated",
         "members": [],

@@ -510,7 +510,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
       <ErrorNotice message={statsRead.error ? extractError(statsRead.error) : undefined} />
       {/* No hand-off: a status retry must not discard the same unsaved memory drafts. */}
       <ErrorNotice message={embeddingRead.error ? extractError(embeddingRead.error) : undefined} />
-      {setupWarning && (
+      {setupWarning && !diagnosticsOnly && (
         <p role="status" data-testid="embedding-setup-warning" className="flex items-start gap-1.5 text-[12px] text-warn">
           <AlertTriangle className="lucide-inline shrink-0 mt-0.5" />
           <span>
@@ -524,7 +524,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         </p>
       )}
       {/* No hand-off: the card may still hold unsaved memory drafts. */}
-      {active && setupError && pointToPathField && embStatus?.setup_warning_code !== 'legacy_embedding_vectors' && (
+      {active && !diagnosticsOnly && setupError && pointToPathField && embStatus?.setup_warning_code !== 'legacy_embedding_vectors' && (
         <div className="flex items-center gap-1.5 flex-wrap text-[12px]" data-testid="embedding-setup-error-pointer">
           <ErrorNotice message={setupErrorPointer} variant="inline" />
           {/* Same fragment the legacy warning uses: focus lands on the path field. */}
@@ -533,8 +533,8 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
           </a>
         </div>
       )}
-      {active && setupError && !pointToPathField && <ErrorNotice message={setupError} variant="inline" />}
-      {active && setupError && setupDiagnostic && <SetupDiagnostic text={setupDiagnostic} />}
+      {active && !diagnosticsOnly && setupError && !pointToPathField && <ErrorNotice message={setupError} variant="inline" />}
+      {active && !diagnosticsOnly && setupError && setupDiagnostic && <SetupDiagnostic text={setupDiagnostic} />}
       {summaryFailed && <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={statsRead.isFetching || embeddingRead.isFetching || undefined} onClick={() => { if (!statsRead.isFetching && !embeddingRead.isFetching) void load() }}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
       {summaryFailed && !statsRead.error && !embeddingRead.error && <p role="status" className="text-muted text-sm">{i18nT('pages.overview.vectorMemoryCard.loading')}</p>}
       {!active && !enabling && !summaryFailed && (
@@ -592,7 +592,8 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
       })()}
       {active && (
         <div className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {/* The page header counts what is embedded; diagnostics keeps only its views. */}
+          {!diagnosticsOnly && <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
               { key: 'semantic', label: i18nT('pages.overview.vectorMemoryCard.semantic'), value: stats ? stats.semantic_active ?? 0 : '…' },
               { key: 'episodic', label: i18nT('pages.overview.vectorMemoryCard.episodic'), value: stats ? stats.episodic_active ?? 0 : '…' },
@@ -631,7 +632,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                 </div>
               )}
             </div>
-          </div>
+          </div>}
           <div className="flex gap-2 flex-wrap items-center">
             <RadioChipGroup className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated w-fit" ariaLabel={i18nT('pages.overview.vectorMemoryCard.view_switch_label')}>
             {(['semantic','episodic','audit','inspector'] as const).filter(v => !diagnosticsOnly || v === 'audit' || v === 'inspector').map(v => (

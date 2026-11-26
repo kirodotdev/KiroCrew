@@ -16,6 +16,9 @@ import userEvent from '@testing-library/user-event'
 const { api } = vi.hoisted(() => ({
   api: {
     lessons: vi.fn(),
+    // The header's embedded-count line: no provider, so it stays hidden.
+    vectorEmbeddingStatus: vi.fn(),
+    vectorStats: vi.fn(),
     memoryPreferences: vi.fn(),
     memoryProjects: vi.fn(),
     memoryHistory: vi.fn(),
@@ -51,11 +54,8 @@ vi.mock('react-router-dom', async () => {
 })
 // Both cards own their own queries and their own tests; here they are seams that
 // report the vector/migration state this tab branches on.
-vi.mock('../pages/overview/VectorMemoryCard', () => ({
-  default: ({ diagnosticsOnly }: { diagnosticsOnly?: boolean }) => <div data-testid="vector-card" data-diagnostics-only={diagnosticsOnly ? 'true' : 'false'} />,
-}))
 vi.mock('../pages/overview/EmbeddingModelCard', () => ({ default: () => <div data-testid="embed-card" /> }))
-vi.mock('../pages/overview/MemoryRecordsEditor', () => ({ default: () => <div data-testid="records-editor" /> }))
+vi.mock('../pages/overview/memoryPage/MemoryList', () => ({ default: () => <div data-testid="memory-list" /> }))
 vi.mock('../pages/overview/MemoryFailuresCard', () => ({
   default: ({ onLessonSaved }: { onLessonSaved?: () => unknown }) => <button type="button" aria-label="save a failure lesson" data-testid="failures-card" onClick={() => void onLessonSaved?.()} />,
 }))
@@ -71,6 +71,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
   api.lessons.mockResolvedValue({ lessons: LESSONS })
+  api.vectorEmbeddingStatus.mockResolvedValue({ provider: 'none' })
+  api.vectorStats.mockResolvedValue({})
   api.memoryPreferences.mockResolvedValue({ content: 'zzq-prefs-body' })
   api.memoryProjects.mockResolvedValue({ content: 'zzq-projects-body' })
   api.memoryHistory.mockResolvedValue({ content: 'zzq-history-body' })
@@ -99,6 +101,11 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
 })
+
+/** Open one of the page's tabs. Radix selects a tab on a primary-button mousedown. */
+function openTab(name: 'Memories' | 'Profile' | 'Recovery' | 'Failures' | 'Settings') {
+  fireEvent.mouseDown(screen.getByRole('tab', { name }), { button: 0, ctrlKey: false })
+}
 
 /** The Save button inside the card whose heading contains `heading`.
  *
@@ -138,32 +145,38 @@ function lessonRows(): HTMLTableRowElement[] {
 }
 
 describe('MemoryTab — settings', () => {
-  it('keeps bulk management lazy while the legacy browser remains visible', async () => {
+  it('puts each card on its tab: list and lessons, profile, recovery, failures, settings', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
-    expect(screen.queryByTestId('records-editor')).toBeNull()
-    expect(await screen.findByText(/^Memory Settings$/i)).toBeInTheDocument()
+    // Memories opens first. With vector memory off the store has no records to
+    // list, so the tab shows the lessons card alone once the status has answered.
+    expect(await screen.findByRole('heading', { name: /^Lessons\b/i })).toBeVisible()
+    await waitFor(() => expect(screen.queryByTestId('memory-list')).toBeNull())
+    expect(screen.queryByRole('heading', { name: /^Memory Settings\s*$/i })).toBeNull()
 
+    openTab('Profile')
+    expect(await screen.findByRole('heading', { name: /^Preferences\b/i })).toBeVisible()
+
+    openTab('Failures')
+    expect(screen.getByTestId('failures-card')).toBeVisible()
+
+    openTab('Settings')
     const ordered = [
       // The InfoTip beside the title is an icon-only button named by its own
       // aria-label, so it adds nothing to the heading's accessible name.
       screen.getByRole('heading', { name: /^Memory Settings\s*$/i }),
-      screen.getByTestId('vector-card'),
       screen.getByTestId('embed-card'),
-      screen.getByText(/^Edit saved memories$/i),
-      screen.getByRole('heading', { name: /^Preferences\b/i }),
-      screen.getByRole('heading', { name: /^Lessons\b/i }),
     ]
     for (let index = 0; index < ordered.length - 1; index += 1) {
       expect(ordered[index].compareDocumentPosition(ordered[index + 1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     }
-
-    await userEvent.click(screen.getByText(/^Edit saved memories$/i))
-    expect(screen.getByTestId('records-editor')).toBeInTheDocument()
-    expect(screen.getByTestId('vector-card')).toHaveAttribute('data-diagnostics-only', 'false')
+    // The graph is its own tab now, not a link to Developer.
+    expect(screen.queryByRole('button', { name: /Memory graph and internals/i })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Graph' })).toBeVisible()
   })
 
   it('loads the saved retention settings and writes both fields back', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     const inputs = await waitFor(() => {
       const found = screen.getAllByRole('spinbutton') as HTMLInputElement[]
       expect(found[0].value).toBe('4')
@@ -188,6 +201,7 @@ describe('MemoryTab — settings', () => {
       return event.defaultPrevented
     }
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     const inputs = await waitFor(() => {
       const found = screen.getAllByRole('spinbutton') as HTMLInputElement[]
       expect(found[0].value).toBe('4')
@@ -204,6 +218,7 @@ describe('MemoryTab — settings', () => {
   it('reports a refused settings save instead of showing Saved', async () => {
     api.saveMemorySettings.mockRejectedValue(new Error('zzq-owner-only'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     const inputs = await waitFor(() => {
       const found = screen.getAllByRole('spinbutton') as HTMLInputElement[]
       expect(found[0].value).toBe('4')
@@ -221,6 +236,7 @@ describe('MemoryTab — settings', () => {
   it('says the settings were not loaded when their read fails', async () => {
     api.memorySettings.mockRejectedValue(new Error('zzq-gateway-down'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     expect(await screen.findByText(/Could not load the memory settings/i)).toBeInTheDocument()
     expect(screen.getByText(/zzq-gateway-down/)).toBeInTheDocument()
     expect(screen.queryByText(/Could not save the memory settings/i)).toBeNull()
@@ -231,6 +247,7 @@ describe('MemoryTab — settings', () => {
       history_idle_hours: 4, history_max_days: 730, migrated: false,
     })
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     const inputs = await waitFor(() => {
       const found = screen.getAllByRole('spinbutton') as HTMLInputElement[]
       expect(found[1].value).toBe('730')
@@ -258,6 +275,7 @@ describe('MemoryTab — settings', () => {
     let finish: (v: { ok: boolean }) => void = () => {}
     api.saveMemorySettings.mockImplementationOnce(() => new Promise(r => { finish = r }))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     const inputs = await waitFor(() => {
       const found = screen.getAllByRole('spinbutton') as HTMLInputElement[]
       expect(found[0].value).toBe('4')
@@ -278,6 +296,7 @@ describe('MemoryTab — settings', () => {
     let load: (v: object) => void = () => {}
     api.memorySettings.mockImplementationOnce(() => new Promise(r => { load = r }))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     const inputs = await waitFor(() => screen.getAllByRole('spinbutton') as HTMLInputElement[])
     fireEvent.change(inputs[0], { target: { value: '6' } })
     await act(async () => { load({ history_idle_hours: 4, history_max_days: 730, migrated: false }) })
@@ -292,6 +311,7 @@ describe('MemoryTab — settings', () => {
     let load: (v: object) => void = () => {}
     api.memorySettings.mockImplementationOnce(() => new Promise(r => { load = r }))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     const inputs = await waitFor(() => screen.getAllByRole('spinbutton') as HTMLInputElement[])
     fireEvent.change(inputs[0], { target: { value: '6' } })
     await userEvent.click(saveIn(/Memory Settings/i))
@@ -306,6 +326,7 @@ describe('MemoryTab — settings', () => {
       history_idle_hours: 3, history_max_days: 90, migrated: true,
     })
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await waitFor(() => expect(screen.getAllByRole('spinbutton')).toHaveLength(1))
     expect(screen.getByText(/read-only/i)).toBeInTheDocument()
   })
@@ -313,6 +334,7 @@ describe('MemoryTab — settings', () => {
   it('clears the transient Saved marker on its own timer', async () => {
     vi.useFakeTimers()
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await act(async () => {})
     const save = saveIn(/Memory Settings/i)
     fireEvent.click(save)
@@ -334,6 +356,7 @@ describe('MemoryTab — the three text stores', () => {
         api.memoryPreferences.mockRejectedValue(Object.assign(new Error('zzq-read-failed'), { status: 403 }))
       }
       renderWithProviders(<MemoryTab refreshTrigger={0} />)
+      openTab('Profile')
       await screen.findByDisplayValue('zzq-projects-body')
       if (state === 'failed') await screen.findByText('zzq-read-failed')
 
@@ -347,6 +370,7 @@ describe('MemoryTab — the three text stores', () => {
   it('can save a genuinely empty document after its read succeeds', async () => {
     api.memoryPreferences.mockResolvedValue({ content: '' })
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Profile')
     await screen.findByDisplayValue('zzq-projects-body')
     const save = saveIn(/^Preferences$/)
     await waitFor(() => expect(save).toBeEnabled())
@@ -360,6 +384,7 @@ describe('MemoryTab — the three text stores', () => {
       content_redacted: true,
     })
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Profile')
 
     const preferences = await screen.findByDisplayValue('keep [REDACTED: credential] hidden')
     expect(preferences).toBeDisabled()
@@ -372,6 +397,7 @@ describe('MemoryTab — the three text stores', () => {
 
   it('preserves a draft but blocks stale cached content during a redacted refetch', async () => {
     const view = renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Profile')
     const preferences = await screen.findByDisplayValue('zzq-prefs-body')
     fireEvent.change(preferences, { target: { value: 'recover this unrelated draft' } })
     let finishRead!: (value: unknown) => void
@@ -396,6 +422,7 @@ describe('MemoryTab — the three text stores', () => {
 
   it('does not save cached clean content after its confirming refetch fails', async () => {
     const view = renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Profile')
     await screen.findByDisplayValue('zzq-prefs-body')
     api.memoryPreferences.mockRejectedValueOnce(
       Object.assign(new Error('fresh read failed'), { status: 403 }),
@@ -420,6 +447,7 @@ describe('MemoryTab — the three text stores', () => {
   // owner-only one. Asserting the arity is what pins that.
   it('loads each store and saves the edited text back to its own endpoint', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Profile')
     const prefs = await screen.findByRole('textbox', { name: /preferences/i }) as HTMLTextAreaElement
     await waitFor(() => expect(prefs.value).toBe('zzq-prefs-body'))
 
@@ -440,6 +468,7 @@ describe('MemoryTab — the three text stores', () => {
 
   it('re-reads every store when the parent bumps the refresh trigger', async () => {
     const { rerender } = renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Profile')
     await waitFor(() => expect(api.memoryPreferences).toHaveBeenCalled())
     const before = api.memoryPreferences.mock.calls.length
     const lessonsBefore = api.lessons.mock.calls.length
@@ -452,6 +481,7 @@ describe('MemoryTab — the three text stores', () => {
   it('tolerates an empty payload rather than rendering undefined', async () => {
     api.memoryPreferences.mockResolvedValue({})
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Profile')
     const prefs = await screen.findByRole('textbox', { name: /preferences/i }) as HTMLTextAreaElement
     await waitFor(() => expect(prefs.value).toBe(''))
   })
@@ -482,7 +512,7 @@ describe('MemoryTab — lessons', () => {
     const sources = lessonRows().map((tr) => tr.querySelector('td:nth-child(4)'))
       .map((td) => td?.textContent)
     expect(sources).toEqual([
-      'Saved by you or the agent',
+      'Saved on purpose',
       'Learned from chat',
       'Learned from a task',
       'init',
@@ -919,6 +949,7 @@ describe('MemoryTab — lesson search and edit (#17982)', () => {
 describe('MemoryTab — manual consolidation', () => {
   it('consolidates every known session and reports the count', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     await waitFor(() => expect(api.consolidateMemory).toHaveBeenCalledTimes(2))
@@ -931,6 +962,7 @@ describe('MemoryTab — manual consolidation', () => {
       .mockResolvedValueOnce({ ok: true })
       .mockRejectedValueOnce(new Error('zzq-consolidate-failed'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     // A failed request is an error, so the failed tally renders through
@@ -971,6 +1003,7 @@ describe('MemoryTab — manual consolidation', () => {
       .mockResolvedValueOnce({ ok: true })
       .mockRejectedValueOnce(new Error('zzq-consolidate-failed'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     const notice = await screen.findByRole('alert')
@@ -993,6 +1026,7 @@ describe('MemoryTab — manual consolidation', () => {
       .mockRejectedValueOnce(new Error('zzq-first-failure'))
       .mockRejectedValueOnce(new Error('zzq-second-failure'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     // The reader was "stuck" on which session failed: the footer names the
@@ -1006,6 +1040,7 @@ describe('MemoryTab — manual consolidation', () => {
 
   it('says what the button does, under it, before it is ever pressed', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await screen.findByRole('button', { name: /Summarize now/i })
     // Load-bearing for the blind reader: hesitant over "summarize WHAT" without
     // it, willing to press with it. Static text under the row, not part of the
@@ -1023,14 +1058,16 @@ describe('MemoryTab — manual consolidation', () => {
       .mockResolvedValueOnce({ ok: true })
       .mockRejectedValueOnce(new Error('zzq-consolidate-failed'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await act(async () => {})
     fireEvent.click(screen.getByRole('button', { name: /Summarize now/i }))
     await act(async () => {})
-    expect(screen.getByRole('alert')).toBeInTheDocument()
+    // Scoped: the Settings tab also holds the vector card, whose own reads can alert.
+    expect(screen.getByTestId('consolidate-failed')).toBeInTheDocument()
     await act(async () => { vi.advanceTimersByTime(4000) })
-    expect(screen.getByRole('alert')).toBeInTheDocument()
-    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: /dismiss/i }))
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByTestId('consolidate-failed')).toBeInTheDocument()
+    fireEvent.click(within(screen.getByTestId('consolidate-failed')).getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByTestId('consolidate-failed')).toBeNull()
   })
 
   /** The route's refusal for a Temporary or Incognito target, as `j()` rejects it:
@@ -1051,6 +1088,7 @@ describe('MemoryTab — manual consolidation', () => {
       .mockResolvedValueOnce({ ok: true })
       .mockRejectedValueOnce(restrictedTarget('incognito'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     const msg = await screen.findByText(/Summarized/)
@@ -1066,6 +1104,7 @@ describe('MemoryTab — manual consolidation', () => {
       .mockRejectedValueOnce(restrictedTarget('temporary'))
       .mockRejectedValueOnce(Object.assign(new Error('zzq-consolidate-failed'), { status: 500, body: '{"error": "boom"}' }))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     const notice = await screen.findByRole('alert')
@@ -1089,6 +1128,7 @@ describe('MemoryTab — manual consolidation', () => {
       .mockRejectedValueOnce(restrictedTarget())
       .mockRejectedValueOnce(new Error('zzq-consolidate-failed'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     const notice = await screen.findByRole('alert')
@@ -1112,6 +1152,7 @@ describe('MemoryTab — manual consolidation', () => {
       .mockRejectedValueOnce(restrictedTarget('temporary'))
       .mockRejectedValueOnce(restrictedTarget('incognito'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     const msg = await screen.findByText(/Summarized/)
@@ -1148,6 +1189,7 @@ describe('MemoryTab — manual consolidation', () => {
       .mockRejectedValueOnce(restrictedTarget('temporary'))
       .mockRejectedValueOnce(new Error('zzq-consolidate-failed'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     // The skip fragment beside the notice names a mode as well, so it carries
@@ -1178,6 +1220,7 @@ describe('MemoryTab — manual consolidation', () => {
       .mockRejectedValueOnce(restrictedTarget('temporary'))
       .mockRejectedValueOnce(restrictedTarget('incognito'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     const msg = await screen.findByText(/Summarized/)
@@ -1194,6 +1237,7 @@ describe('MemoryTab — manual consolidation', () => {
       .mockResolvedValueOnce({ ok: true })
       .mockRejectedValueOnce(restrictedTarget())
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     const msg = await screen.findByText(/Summarized/)
@@ -1211,6 +1255,7 @@ describe('MemoryTab — manual consolidation', () => {
       .mockRejectedValueOnce(restrictedTarget())
       .mockRejectedValueOnce(Object.assign(new Error('zzq-consolidate-failed'), { status: 500, body: '{"error": "boom"}' }))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     const notice = await screen.findByRole('alert')
@@ -1224,6 +1269,7 @@ describe('MemoryTab — manual consolidation', () => {
   it('says there is nothing to summarize when no session exists', async () => {
     api.sessions.mockResolvedValue({ sessions: [] })
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
     expect(await screen.findByText(/No sessions to summarize/i)).toBeInTheDocument()
     expect(api.consolidateMemory).not.toHaveBeenCalled()
@@ -1236,6 +1282,7 @@ describe('MemoryTab — manual consolidation', () => {
     // request: its failure is the press's failure.
     api.sessions.mockRejectedValueOnce(new Error('zzq-list-down'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
     const notice = await screen.findByRole('alert')
@@ -1257,6 +1304,7 @@ describe('MemoryTab — manual consolidation', () => {
   it('clears the outcome message on its own timer', async () => {
     vi.useFakeTimers()
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await act(async () => {})
     fireEvent.click(screen.getByRole('button', { name: /Summarize now/i }))
     await act(async () => {})
@@ -1276,6 +1324,7 @@ describe('MemoryTab — manual consolidation', () => {
       .mockRejectedValueOnce(restrictedTarget('temporary'))
       .mockRejectedValueOnce(restrictedTarget('incognito'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await act(async () => {})
     fireEvent.click(screen.getByRole('button', { name: /Summarize now/i }))
     await act(async () => {})
@@ -1294,6 +1343,7 @@ describe('MemoryTab — manual consolidation', () => {
 
   it('gives the all-success tally no dismiss control, since it clears itself', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
     expect((await screen.findByTestId('consolidate-msg')).textContent).toContain('Summarized 2 sessions')
     expect(screen.queryByRole('button', { name: 'Dismiss summary result' })).toBeNull()
@@ -1304,6 +1354,7 @@ describe('MemoryTab — manual consolidation', () => {
     // landed within four seconds of it.
     vi.useFakeTimers()
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    openTab('Settings')
     await act(async () => {})
     fireEvent.click(screen.getByRole('button', { name: /Summarize now/i }))
     await act(async () => {})

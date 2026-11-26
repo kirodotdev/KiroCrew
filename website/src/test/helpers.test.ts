@@ -70,30 +70,3 @@ describe('fmtSpeed', () => {
   })
 })
 
-import { parseTags } from '../pages/overview/VectorMemoryCard'
-
-describe('parseTags', () => {
-  it('parses a JSON array string', () => {
-    expect(parseTags('["a","b"]')).toEqual(['a', 'b'])
-  })
-  it('wraps a plain non-JSON string as single-element array', () => {
-    expect(parseTags('some-tag')).toEqual(['some-tag'])
-  })
-  it('wraps a JSON-encoded bare string as single-element array', () => {
-    expect(parseTags('"some-tag"')).toEqual(['some-tag'])
-  })
-  it('passes through a native array', () => {
-    expect(parseTags(['x', 'y'])).toEqual(['x', 'y'])
-  })
-  it('returns [] for null/undefined', () => {
-    expect(parseTags(null)).toEqual([])
-    expect(parseTags(undefined)).toEqual([])
-  })
-  it('returns [] for non-string non-array values', () => {
-    expect(parseTags(42)).toEqual([])
-    expect(parseTags({})).toEqual([])
-  })
-  it('returns [] for empty string', () => {
-    expect(parseTags('')).toEqual([])
-  })
-})

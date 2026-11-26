@@ -124,6 +124,17 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
     en: ['api key', 'api keys', 'credentials', 'tokens', 'passwords'],
     'zh-CN': ['密钥', 'api 密钥', '凭据', '凭证', '令牌'],
   },
+  // Settings > Memory: the user-facing way to see and edit what is remembered
+  // (preferences, projects, history, lessons), for Global memory and each bot.
+  // Its Graph tab draws the memory graph.
+  'settings.tab.memory': {
+    en: [
+      'see my memory', 'view my memory', 'edit my memory', 'what do you remember about me',
+      'what the bot remembers', 'what the assistant remembers', 'memory browser', 'manage memory',
+      'delete a memory', 'forget something', 'my preferences memory', 'saved lessons',
+    ],
+    'zh-CN': ['查看记忆', '编辑记忆', '管理记忆', '你记得我什么', '删除记忆', '记忆浏览', '让它忘掉', '我的偏好'],
+  },
   // The phone's only view of the account balance: its Credits section.
   'settings.tab.kiro-account': {
     en: ['account balance', 'credits', 'my account', 'usage'],

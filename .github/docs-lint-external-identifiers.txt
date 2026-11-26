@@ -176,7 +176,6 @@ get_spreadsheet
 label_message
 label_thread
 list_drafts
-list_events
 read_file_content
 read_slide_page
 read_slide_page_thumbnail
