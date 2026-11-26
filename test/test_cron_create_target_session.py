@@ -48,8 +48,8 @@ def session_member(monkeypatch):
     return members
 
 
-def _chat(linked: str = "") -> SimpleNamespace:
-    return SimpleNamespace(linked_session_key=linked, messages=[])
+def _chat(linked: str = "", app: str = "") -> SimpleNamespace:
+    return SimpleNamespace(linked_session_key=linked, messages=[], _app=app)
 
 
 async def _create(tmp_path, body, slots):
@@ -93,6 +93,8 @@ async def test_no_session_key_stores_no_target(tmp_path, session_member, body):
         ("nope", {}, "unknown_session"),
         # A tab showing a channel's or a job's conversation is not this chat.
         ("chat-1", {"chat-1": _chat("slack:C1:1.2")}, "unknown_session"),
+        # An app's own chat: delivery never posts into it, so naming it is refused.
+        ("chat-1", {"chat-1": _chat(app="some-app")}, "unknown_session"),
         ("slack:C1:1.2", {}, "unsupported_session_namespace"),
         (42, {}, "invalid_session_key"),
         # Within the cap bare, over it once namespaced.

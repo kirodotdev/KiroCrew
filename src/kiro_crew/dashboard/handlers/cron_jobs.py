@@ -756,9 +756,13 @@ async def _resolve_target_session(
         return _target_session_refusal(
             "a job hidden from chat cannot post into a chat", "hidden_job_cannot_target_session"
         )
+    # Body-scope: keeps ``_app_owned`` out of this module's names (the cron.py facade).
+    from kiro_crew.dashboard.cron_inject import _app_owned
+
     slot = state.get_slot(key.removeprefix("dashboard:"))
     linked = (getattr(slot, "linked_session_key", "") or "") if slot is not None else ""
-    if slot is None or (linked and linked != key):
+    # Judged as delivery judges it: an app-owned chat never receives the result.
+    if slot is None or (linked and linked != key) or _app_owned(slot):
         return _target_session_refusal("no such open chat", "unknown_session")
     from kiro_crew.execution_context import read_session_execution
 
