@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 import threading
 import time
@@ -26,6 +27,8 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.shared_crew.contracts import SsmGuest
 from kiro_crew.shared_crew.tailscale_invite_store import MAX_ALIAS_CHARS, clean_alias
+
+logger = logging.getLogger(__name__)
 
 ROOT_LEAF = "shared-crew-ssm"
 STATE_FILE = "invites.json"
@@ -38,10 +41,17 @@ _LOCK = threading.Lock()
 #: The parsed file, kept so a request never reads the disk. This process is the
 #: only writer, so the copy stays current.
 _cache: dict[str, dict[str, Any]] | None = None
+#: Whether ``_cache`` stands in for a file that exists but could not be read. A
+#: request answers from it, so no invite verifies; a create reads the file again.
+_unreadable = False
 
 
 class InviteLimitError(Exception):
     """The store already holds :data:`MAX_INVITES` invites."""
+
+
+class InvitesUnreadableError(Exception):
+    """The store's file exists but could not be read, so it is not rewritten."""
 
 
 def root() -> Path:
@@ -51,10 +61,14 @@ def root() -> Path:
 
 
 def _read() -> dict[str, dict[str, Any]]:
+    """The invites on disk; a missing file is empty, an unreadable or non-JSON one raises."""
+    path = root() / STATE_FILE
     try:
-        data = json.loads((root() / STATE_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as exc:
+        raise InvitesUnreadableError(f"{path}: {exc}") from exc
     rows = data.get("invites") if isinstance(data, dict) and data.get("schema") == SCHEMA else None
     if not isinstance(rows, dict):
         return {}
@@ -68,9 +82,13 @@ def _read() -> dict[str, dict[str, Any]]:
 
 
 def _invites() -> dict[str, dict[str, Any]]:
-    global _cache
+    global _cache, _unreadable
     if _cache is None:
-        _cache = _read()
+        try:
+            _cache = _read()
+        except InvitesUnreadableError as exc:
+            logger.warning("ssm invites could not be read, so none is admitted: %s", exc)
+            _cache, _unreadable = {}, True
     return _cache
 
 
@@ -91,9 +109,15 @@ def _digest(secret: str) -> str:
 
 
 def create(alias: object) -> tuple[str, str]:
-    """Make an invite and return ``(invite_id, credential)``. The credential is not stored."""
-    global _cache
+    """Make an invite and return ``(invite_id, credential)``. The credential is not stored.
+
+    Raises :class:`InvitesUnreadableError` while the file exists but cannot be read.
+    """
+    global _cache, _unreadable
     with _LOCK:
+        if _cache is None or _unreadable:
+            # Never publish an empty store over invites that could not be read.
+            _cache, _unreadable = _read(), False
         rows = dict(_invites())
         if len(rows) >= MAX_INVITES:
             raise InviteLimitError
@@ -181,13 +205,14 @@ def public_rows() -> list[dict[str, Any]]:
 
 
 def _reset_for_tests() -> None:
-    global _cache
+    global _cache, _unreadable
     with _LOCK:
-        _cache = None
+        _cache, _unreadable = None, False
 
 
 __all__ = [
     "InviteLimitError",
+    "InvitesUnreadableError",
     "MAX_INVITES",
     "SsmGuest",
     "create",

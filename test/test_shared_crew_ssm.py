@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -264,6 +265,38 @@ def test_warm_reads_the_store_so_a_request_does_not(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(ssm_invites, "_read", lambda: pytest.fail("a request read the disk"))
     assert ssm_invites.verify(credential) is not None
     assert ssm_invites.has_invites() is True
+
+
+def test_a_store_unreadable_at_warm_admits_no_one_and_is_never_rewritten_empty(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    credentials = [ssm_invites.create(alias)[1] for alias in ("a", "b", "c")]
+    path = ssm_invites.root() / ssm_invites.STATE_FILE
+    on_disk = path.read_bytes()
+    ssm_invites._reset_for_tests()
+    read_text = Path.read_text
+
+    def refused(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return read_text(self, *args, **kwargs)
+
+    # Another process holds the file without read sharing while the listener starts.
+    with monkeypatch.context() as held, caplog.at_level(logging.WARNING, ssm_invites.__name__):
+        held.setattr(Path, "read_text", refused)
+        ssm_invites.warm()
+        with monkeypatch.context() as no_disk:
+            no_disk.setattr(ssm_invites, "_read", lambda: pytest.fail("a request read the disk"))
+            assert ssm_invites.verify(credentials[0]) is None
+        with pytest.raises(ssm_invites.InvitesUnreadableError):
+            ssm_invites.create("while held")
+    [warning] = [r for r in caplog.records if r.name == ssm_invites.__name__]
+    assert str(path) in warning.getMessage()
+    assert path.read_bytes() == on_disk
+    # Once the file is released, the next invite keeps every earlier one.
+    ssm_invites.create("after")
+    assert len(json.loads(path.read_text())["invites"]) == 4
+    assert all(ssm_invites.verify(c) is not None for c in credentials)
 
 
 def test_the_store_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -924,6 +957,25 @@ async def test_no_invite_is_made_while_the_listener_is_not_active(servers: Serve
             assert resp.status == 409
             assert (await resp.json())["code"] == "ssm_not_active"
     assert ssm_invites.public_rows() == []
+
+
+@pytest.mark.asyncio
+async def test_no_invite_is_made_while_the_store_cannot_be_read(servers: Servers) -> None:
+    ssm_invites.create("Dana")
+    path = ssm_invites.root() / ssm_invites.STATE_FILE
+    path.write_text(path.read_text()[:-2], encoding="utf-8")
+    on_disk = path.read_bytes()
+    ssm_invites._reset_for_tests()
+    access_set.acknowledge_first_share("owner")
+    async with _jar() as client:
+        async with client.post(
+            f"http://127.0.0.1:{servers.main}/api/shared-crew/ssm/invites",
+            params={"token": _owner_token()},
+            json={"alias": "Lee"},
+        ) as resp:
+            assert resp.status == 503
+            assert (await resp.json())["code"] == "ssm_invites_unreadable"
+    assert path.read_bytes() == on_disk
 
 
 @pytest.mark.asyncio
