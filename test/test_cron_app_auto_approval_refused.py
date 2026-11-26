@@ -82,7 +82,7 @@ async def _request(svc: CronService, app_claim: str, method: str, path: str, bod
 
 
 def _create_body(**extra) -> dict:
-    return {"name": "job", "message": "task", "every": 3600, **extra}
+    return {"name": "job", "message": "task", "every": 3600, "agent": "app-agent", **extra}
 
 
 async def _app_job(svc: CronService) -> str:

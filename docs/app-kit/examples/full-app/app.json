@@ -11,7 +11,8 @@
     {
       "name": "ticket-refresh",
       "every": 300,
-      "message": "Check for new high-severity tickets and summarize status"
+      "message": "Check for new high-severity tickets and summarize status",
+      "agent": "ticket-analyst"
     }
   ],
   "ui": {

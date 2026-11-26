@@ -211,7 +211,11 @@ async def test_owner_still_manages_an_app_job(svc, sel_calls, route) -> None:
 
 async def _rest_create(svc: CronService, app_claim: str) -> str:
     status, payload = await _request(
-        svc, app_claim, "POST", "/api/crons", {"name": "poller", "message": "go", "every": 3600}
+        svc,
+        app_claim,
+        "POST",
+        "/api/crons",
+        {"name": "poller", "message": "go", "every": 3600, "agent": "app-agent"},
     )
     assert status == 200, (status, payload)
     return payload["id"]

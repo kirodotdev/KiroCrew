@@ -564,6 +564,8 @@ def scaffold_app(
                 "name": f"{name}-check",
                 "every": 300,
                 "message": f"Run periodic check for {display_name}",
+                # An app's model-turn cron names one of the app's own agents.
+                "agent": _AGENT_TEMPLATE["name"],
             }
         ]
         # Manifest validation refuses crons without this grant.

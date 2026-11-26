@@ -313,6 +313,51 @@ class CronSDK:
             return f"{file_path}:{func_name}"
         return script
 
+    def _vet_agent(
+        self,
+        name: str,
+        agent: str,
+        agent_sequence: list[str] | None,
+        command: str,
+        script: str,
+    ) -> None:
+        """Refuse a job that starts a model turn and names none of the app's agents.
+
+        Such a job would run on the owner's default agent, with every tool the owner
+        has (``cron_service.identity.app_schedule_lacks_agent``). Raises
+        ``ValueError`` (SEL-audited) before anything is stored. In memory only.
+        """
+        from kiro_crew.cron_service.identity import APP_JOB_NEEDS_AGENT, app_schedule_lacks_agent
+
+        if app_schedule_lacks_agent(
+            agent or "", "", agent_sequence=agent_sequence, command=command, script=script
+        ):
+            sel().log_api_access(
+                caller="cron_sdk",
+                operation="cron_agent_vetted",
+                outcome="denied",
+                resources=f"app={self._owner_prefix} cron={name}",
+                error=APP_JOB_NEEDS_AGENT,
+            )
+            raise ValueError(APP_JOB_NEEDS_AGENT)
+
+    def _vet_update_agent(self, job_id: str, kwargs: dict[str, Any]) -> None:
+        """The :meth:`_vet_agent` rule for an update that changes ``agent_id``."""
+        if "agent_id" not in kwargs:
+            return
+        from kiro_crew.cron_service.identity import APP_JOB_NEEDS_AGENT, app_update_lacks_agent
+
+        job = self._find_owned_job(job_id)
+        if job is not None and app_update_lacks_agent(job, str(kwargs["agent_id"] or "")):
+            sel().log_api_access(
+                caller="cron_sdk",
+                operation="cron_agent_vetted",
+                outcome="denied",
+                resources=f"app={self._owner_prefix} job={job_id}",
+                error=APP_JOB_NEEDS_AGENT,
+            )
+            raise ValueError(APP_JOB_NEEDS_AGENT)
+
     def _add_job_kwargs(
         self,
         name: str,
@@ -370,6 +415,7 @@ class CronSDK:
           30s for a script when it is unset, so without it an app cannot create
           a command job with a wake budget under 305s at all.
         """
+        self._vet_agent(name, agent, agent_sequence, command, script)
         # An app-created cron is NOT promoted to a member selection even when
         # ``agent`` names a crew member: apps are confined (as Spawn SDK confines
         # them with an agent-scope check) and must not reach a member's private
@@ -738,6 +784,7 @@ class CronSDK:
         self._assert_owned(job_id, "cron_update_job")
         if "enabled" in kwargs or "user_paused" in kwargs:
             raise ValueError("Use set_enabled or set_enabled_async to pause/resume a job")
+        self._vet_update_agent(job_id, kwargs)
         result = _run_sync_mutator(self._cron.update_job, job_id, _api="update_job", **kwargs)
         self._audit_update(job_id)
         return result
@@ -748,6 +795,7 @@ class CronSDK:
         self._assert_owned(job_id, "cron_update_job")
         if "enabled" in kwargs or "user_paused" in kwargs:
             raise ValueError("Use set_enabled or set_enabled_async to pause/resume a job")
+        self._vet_update_agent(job_id, kwargs)
         result = await self._cron.update_job_async(job_id, **kwargs)
         self._audit_update(job_id)
         return result

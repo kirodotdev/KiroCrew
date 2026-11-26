@@ -49,7 +49,13 @@ def _manifest(cron: dict) -> AppManifest:
 
 
 def _daily_cron(**extra) -> dict:
-    return {"name": SHORT, "cron_expr": "50 6 * * *", "message": "gather the report", **extra}
+    return {
+        "name": SHORT,
+        "cron_expr": "50 6 * * *",
+        "message": "gather the report",
+        "agent": "app-agent",
+        **extra,
+    }
 
 
 @pytest.fixture()
@@ -156,7 +162,9 @@ class TestEachLayerCarriesTheField:
     def test_a_def_written_before_the_key_existed_registers_the_default(self, home):
         """An ``app-crons.json`` from an older install has no such key."""
         _app_crons_path(APP).write_text(
-            json.dumps([{"name": NAME, "every": 600, "message": "go", "app": APP}]),
+            json.dumps(
+                [{"name": NAME, "every": 600, "message": "go", "agent": "app-agent", "app": APP}]
+            ),
             encoding="utf-8",
         )
 

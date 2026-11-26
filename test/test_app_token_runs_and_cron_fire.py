@@ -1089,13 +1089,19 @@ def test_an_apps_script_still_refuses_a_stored_bot_identity(monkeypatch, bot_sou
 @pytest.mark.parametrize("sequence", [[], ["plain"]], ids=["no_sequence", "dormant_sequence"])
 @pytest.mark.parametrize(
     ("created_by", "app", "refused"),
-    [(f"app:{APP}", "", True), ("", APP, False), ("", "", False)],
+    [
+        (f"app:{APP}", "", "bot"),
+        # The capture names the app, so the job is the app's and needs an agent of its own.
+        ("", APP, "no_agent"),
+        ("", "", None),
+    ],
     ids=["app_creator", "app_capture", "owner"],
 )
 async def test_agentless_job_with_a_bots_own_file_as_default(
     monkeypatch, tmp_path, sequence, created_by, app, refused
 ):
     from kiro_crew import mate_worker, subagent
+    from kiro_crew.cron_service.identity import APP_JOB_NEEDS_AGENT
     from kiro_crew.slack import gateway
 
     monkeypatch.setattr(mate_worker, "is_mate_owned_agent", lambda name: name == "beta")
@@ -1116,12 +1122,11 @@ async def test_agentless_job_with_a_bots_own_file_as_default(
     assert not job.agent_id
     assert job.execution_context == captured.to_record()
     if refused:
+        reason = gateway.APP_JOB_BOT_REFUSAL if refused == "bot" else APP_JOB_NEEDS_AGENT
         gw.sessions.get_or_create.assert_not_awaited()
-        assert (job.last_status, job.last_error) == ("error", gateway.APP_JOB_BOT_REFUSAL)
+        assert (job.last_status, job.last_error) == ("error", reason)
         assert job.fire_time_denied is True
-        gw._alert_cron_failure.assert_awaited_once_with(
-            job, gateway.APP_JOB_BOT_REFUSAL, denied=True
-        )
+        gw._alert_cron_failure.assert_awaited_once_with(job, reason, denied=True)
     else:
         agent, crew, cwd = _dispatches(gw)[0]
         assert (agent, crew) == ("beta", "")

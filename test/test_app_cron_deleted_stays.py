@@ -48,8 +48,8 @@ def _manifest() -> AppManifest:
             "author": "t",
             "permissions": {"cron": True},
             "crons": [
-                {"name": KEEP, "every": 600, "message": "keep me"},
-                {"name": DROP, "every": 600, "message": "drop me"},
+                {"name": KEEP, "every": 600, "message": "keep me", "agent": "app-agent"},
+                {"name": DROP, "every": 600, "message": "drop me", "agent": "app-agent"},
             ],
         }
     )

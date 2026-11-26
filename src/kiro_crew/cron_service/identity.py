@@ -110,8 +110,8 @@ def app_schedule_names_bot(
        such an alias onto its row, so that row's execution is judged as in 2.
 
     A selection that does not resolve is refused rather than handed to an app on a
-    guess. Naming neither an agent nor a member is allowed: the job runs as its
-    maker, or as the operator's default agent. Neither entry takes an
+    guess. Naming neither an agent nor a member names no Bot; whether such a job
+    may run at all is :func:`app_schedule_lacks_agent`'s question. Neither entry takes an
     ``agent_sequence``; a step an App Kit job stores is refused at fire time.
 
     shortcut: a job the ``cron_add`` tool makes carries no ``app:`` tag, so it is
@@ -163,6 +163,111 @@ def app_schedule_names_bot(
         is_bot_own_execution(record, config) and not is_same_bot(maker, record)
         for record in (stored, alias)
         if record is not None
+    )
+
+
+#: The template a job that names no agent is captured under. It is the owner's main
+#: agent, with every server and tool the owner has, and at fire time the configured
+#: ``agent.default_agent`` may stand in for it.
+FLOOR_TEMPLATE = "kirocrew"
+
+#: Why an app's schedule that names none of its own agents is refused.
+APP_JOB_NEEDS_AGENT = (
+    "an app's schedule must name one of the app's own agents; "
+    "without one it would run on the owner's default agent"
+)
+
+
+def names_no_agent(template_id: str) -> bool:
+    """Whether *template_id* is the floor a job that names no agent runs on.
+
+    A generated skill-view name counts too: dispatch runs the agent the view was
+    projected from, which may be the floor, and the name alone does not say which.
+    """
+    from kiro_crew.agent_spec_format import is_native_skill_alias_name
+
+    name = (template_id or "").strip()
+    return name in ("", FLOOR_TEMPLATE) or is_native_skill_alias_name(name)
+
+
+def app_schedule_lacks_agent(
+    agent_id: str,
+    member_id: str,
+    *,
+    agent_sequence: list[str] | None = None,
+    command: str = "",
+    script: str = "",
+    maker_session: str = "",
+) -> bool:
+    """Whether a schedule an app is creating would run on the owner's default agent.
+
+    Only a job that starts a model turn is judged: a ``command`` or ``script`` job
+    runs no agent. A dispatching ``agent_sequence`` is judged step by step: each step
+    runs as the agent it names, so one step naming none lacks an agent. A ``member_id``
+    is a selection of its own. Otherwise the job names an agent only when
+    ``agent_id`` names one other than :data:`FLOOR_TEMPLATE`, or, for a ``cron_add``
+    call from an app's session (*maker_session*), when the capture
+    :func:`cron_capture_execution` makes from that session carries a template other
+    than the floor: such a job runs on the agent the session already runs on.
+
+    The create entries an app reaches ask this before storing: ``POST /api/crons``
+    from an app token, the ``cron_add`` tool from an app's session, and the App Kit
+    SDK (``apps.cron_sdk``), which the manifest bridge also creates through. A
+    session record that cannot be read is refused rather than guessed. Reads the
+    session record from disk when *maker_session* is set, so an ``async`` caller
+    hands this function to ``asyncio.to_thread``.
+    """
+    if command or script:
+        return False
+    steps = list(agent_sequence or [])
+    if agent_sequence_dispatches(steps):
+        # Each step dispatches on its own, so one that names no agent runs the floor.
+        return any(names_no_agent(str(step or "")) for step in steps)
+    if (member_id or "").strip():
+        return False
+    if not names_no_agent(agent_id):
+        return False
+    if not maker_session:
+        return True
+    try:
+        captured = cron_capture_execution(maker_session, "", (agent_id or "").strip(), "")
+    except (OSError, ValueError):
+        return True
+    return (
+        captured.member_id is None
+        and captured.selection_kind != "member"
+        and names_no_agent(captured.template_id)
+    )
+
+
+def app_update_lacks_agent(job: CronJob, agent_id: str) -> bool:
+    """Whether an app's update setting *job*'s agent to *agent_id* leaves it with none.
+
+    The rule :func:`app_schedule_lacks_agent` holds on create, for the update entries
+    an app reaches: ``PATCH /api/crons/{id}`` from an app token, the ``cron_update``
+    tool from an app's session, and ``CronSDK.update_job``. An unchanged name moves
+    nothing (:func:`recapture_cron_template`), so it is never refused; a member
+    schedule keeps its member's template whatever ``agent_id`` says. A capture that
+    cannot be read is refused rather than guessed.
+    """
+    if (agent_id or "").strip() == (job.agent_id or "").strip():
+        return False
+    member = job.member_id or ""
+    if not member and job.execution_context is not None:
+        from kiro_crew.execution_context import execution_from_record
+
+        try:
+            execution = execution_from_record({"execution_context": job.execution_context})
+        except ValueError:
+            return True
+        if execution.member_id is not None or execution.selection_kind == "member":
+            return False
+    return app_schedule_lacks_agent(
+        agent_id,
+        member,
+        agent_sequence=list(job.agent_sequence or []),
+        command=job.command or "",
+        script=job.script or "",
     )
 
 
