@@ -26,6 +26,10 @@ cards and commands (:func:`queue_user_action`,
 then the reports, then the refs installed apps sent while the thread was busy
 (:func:`app_wakes`, written by :mod:`kiro_crew.dashboard.app_bot_wake`) as one
 turn with crew-log actor ``app``, so app wakes never hold a report back.
+After a person's Stop (:func:`hold_after_stop`) the flush starts nothing until
+the next turn starts in the thread (a person's message, a scheduled check-in, a
+cron or patrol turn, a queued entry; :func:`release_stop_hold`), and that turn's
+end delivers what was held.
 Per-gateway state lives on the dashboard state object, never in module globals.
 """
 
@@ -577,6 +581,39 @@ async def offer_upgrade_notices(state: Any) -> None:
             )
 
 
+def _stop_holds(state: Any) -> set[str]:
+    """Threads a person stopped from the dashboard, until the next turn starts in one."""
+    holds = getattr(state, "_mate_stop_holds", None)
+    if not isinstance(holds, set):
+        holds = set()
+        state._mate_stop_holds = holds
+    return holds
+
+
+def hold_after_stop(state: Any, slot: Any) -> None:
+    """A person pressed Stop on *slot*: a crewmate thread starts no wake turn for now."""
+    if is_crewmate_thread(slot):
+        _stop_holds(state).add(slot.key)
+
+
+def release_stop_hold(state: Any, key: str) -> None:
+    """A new turn starts in thread *key*: end its hold, schedule the delivery for that turn's end.
+
+    The flush waits on that turn whatever its depth, as on any busy thread
+    (:func:`_flush`); an upgrade or kept notice keeps its own rule, the next idle
+    turn end. A thread that held nothing starts no task.
+    """
+    holds = _stop_holds(state)
+    if key in holds:
+        holds.remove(key)
+        schedule_flush(state, key)
+
+
+def stop_held(state: Any, key: str) -> bool:
+    """Whether a person's Stop holds thread *key* (:func:`hold_after_stop`)."""
+    return key in _stop_holds(state)
+
+
 def _idle(slot: Any) -> bool:
     return not slot.running and not getattr(slot, "_queue", None)
 
@@ -604,6 +641,10 @@ async def _flush(state: Any, key: str) -> None:
             # A restart cuts the worker whose turn end brought us here; a wake
             # started now would be cut too and leave the crewmate's thread
             # reading as interrupted. Nothing is popped.
+            return
+        if stop_held(state, key):
+            # A person stopped this thread: all of it waits for the end of the
+            # next turn that starts in it.
             return
         if _idle(slot) and key in _notices(state):
             # The upgrade notice goes first, as its own turn; the loop then
@@ -652,9 +693,10 @@ async def _flush(state: Any, key: str) -> None:
                 state.get_slot(key) is not slot
                 or not is_crewmate_thread(slot)
                 or getattr(slot, "is_closing", False)
+                or stop_held(state, key)
             ):
-                # The same fence as the report turn below: the thread was closed or
-                # replaced during the read, so nothing starts on it and the refs stay.
+                # The same fence as the report turn below: the thread was closed,
+                # replaced or stopped during the read, so nothing starts and the refs stay.
                 return
             _take_app_refs(state, key, snapshot)
             dropped = sorted(set(snapshot) - set(granted))
@@ -711,9 +753,10 @@ async def _flush(state: Any, key: str) -> None:
             state.get_slot(key) is not slot
             or not is_crewmate_thread(slot)
             or getattr(slot, "is_closing", False)
+            or stop_held(state, key)
         ):
-            # The thread was closed or replaced during the read: no wake on it, and
-            # what is pending stays for the thread's next turn end.
+            # The thread was closed, replaced or stopped during the read: no wake on
+            # it, and what is pending stays for the thread's next turn end.
             return
         # A rebind notice is offered from inside the thread's own turn, and the
         # turn-end tail schedules app wakes before that turn has released the

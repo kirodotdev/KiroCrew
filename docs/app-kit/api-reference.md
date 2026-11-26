@@ -204,9 +204,11 @@ text }], key_results: [{ id, text, target, current, updated_at, goal_ids, histor
 A wake sends no text. `ref` is an opaque id your app minted (1 to 64 of
 `A-Z a-z 0-9 _ . : -`). The Bot reads a line the gateway writes, naming your app and
 the ref, and fetches the message through your app's own tools if it has them. A busy
-Bot gets the wake when its current turn ends. Each app may wake one Bot at most 20 times
-in 5 minutes, and at most 10 refs from one app wait on a busy Bot; past either limit the
-call fails with a 429 and a `Retry-After` header.
+Bot gets the wake when its current turn ends. A Bot a person stopped in its chat answers
+`queued` and gets the wake after the next turn that starts in that chat, for instance
+the person's next message. Each app may wake one Bot at most 20 times in 5 minutes,
+and at most 10 refs from one app wait on a busy Bot; past either limit the call fails
+with a 429 and a `Retry-After` header.
 
 No scope reaches a Bot's chats, briefing or rules. A Bot that is not ticked answers 404,
 the same as one that does not exist.

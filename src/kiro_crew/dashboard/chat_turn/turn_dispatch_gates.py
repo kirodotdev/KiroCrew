@@ -954,22 +954,27 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                 store=str(turn.memory_store or ""),
             )
         )
-    # A person's message: an admitted human turn from a dashboard or channel
-    # opener, counted once. Depth re-entries, synthetic recovery and replay turns
-    # must not count the same message again. ``_directive_user_origin`` alone is
-    # not enough: a script cron's ``ctx.send_to_session`` reaches /api/chat with it
-    # True, so the turn's structural actor must also be ``user`` (as the
-    # attended-turn checks above require).
+    # Refusal retries, synthetic recovery and replay turns re-run a turn already
+    # started.
+    _rerun = _is_refusal_retry_turn or turn._synthetic_recovery_turn or bool(turn._replay)
+    # A depth-0 turn that is not a re-run: the only kind counted below.
+    _new_turn = _prompt_depth == 0 and not _rerun
+    # A person's message: a new turn a human sent from a dashboard or channel
+    # opener. ``_directive_user_origin`` alone is not enough: a script cron's
+    # ``ctx.send_to_session`` reaches /api/chat with it True, so the turn's
+    # structural actor must also be ``user`` (as the attended-turn checks above
+    # require).
     _persons_message = (
-        _prompt_depth == 0
-        and not _is_refusal_retry_turn
-        and not turn._synthetic_recovery_turn
-        and not turn._replay
-        and turn._directive_user_origin is True
-        and turn._crew_log_actor == "user"
+        _new_turn and turn._directive_user_origin is True and turn._crew_log_actor == "user"
     )
     if not turn._agent_cancel_owed:
         # A stopped agent-started turn opens only to send its cancel: not a turn.
+        if not _rerun:
+            from kiro_crew.dashboard import mate_thread_wakes
+
+            # The thread is active again, a saved prompt's depth-1 turn included,
+            # so a Stop's hold ends: this turn's end delivers what was held.
+            mate_thread_wakes.release_stop_hold(turn.state, slot.key)
         if _persons_message:
             # A person's message starts a new run, timed from this turn's own
             # start, so work an earlier run waited on that then ended with no turn

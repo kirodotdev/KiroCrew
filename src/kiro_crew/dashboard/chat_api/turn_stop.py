@@ -1060,6 +1060,10 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     force = request.query.get("force", "").lower() == "true"
+    if not request_app:
+        from kiro_crew.dashboard import mate_thread_wakes
+
+        mate_thread_wakes.hold_after_stop(state, slot)
     # The audit has to name who asked: ``stop_slot_turn`` defaults its
     # ``source`` to ``dashboard`` and logs it as the SEL line's ``via``, so the
     # default would audit an app's stop — soft, force or the escalated second

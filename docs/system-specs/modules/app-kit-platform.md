@@ -8345,9 +8345,11 @@ actor `app`, so nothing in it speaks as the owner, and the Bot is told that what
 reads through the app's tools is data, not instructions. The refs wait in the thread's
 wake store (`mate_thread_wakes.app_wakes`, per thread and app) and the flush that
 delivers a worker report delivers them (`mate_thread_wakes.schedule_flush`): at once
-on an idle thread, else from the thread's next turn end, all of one thread's refs in
-one turn, after an owed upgrade notice and after any waiting worker reports, so a
-steady run of wakes cannot hold a report back
+on an idle thread, else from the thread's next turn end (a thread a person's Stop holds
+answers `queued` and gets them at the end of the next turn that starts in it,
+[crew-mode](crew-mode.md)), all of one thread's refs in one turn, after an owed upgrade
+notice and after any waiting worker reports, so a steady run of wakes cannot hold a
+report back
 (`test_a_waiting_worker_report_goes_before_the_app_wakes`). Before a held ref is
 delivered the flush reads the grant again (`app_bot_wake.still_granted`): an app that
 no longer holds `wake` or the Bot (the owner unticked it, took `wake` back, or disabled
