@@ -374,8 +374,9 @@ class OtlpDestination:
       sends the Resource as built.
     - ``named_entity_namespaces`` -- the namespaces whose apps this destination may
       see by name.  An edition that names the apps of a registry it ships gives
-      them ``Entity`` values of ``<namespace>.<app>``; a destination is sent such a
-      value only when its namespace is listed here, and ``private`` (with
+      them ``Entity`` values of ``<namespace>.<app>`` on ``kirocrew.app.*``
+      metrics (the namespace is all before the last ``.``); a destination is sent
+      such a value only when its namespace is listed here, and ``private`` (with
       ``entity_version`` ``private`` too) otherwise.  Points left with the same
       attributes are merged into one, so the destination sees one ``private``
       series.  Empty, the default, names nothing: a destination that says nothing

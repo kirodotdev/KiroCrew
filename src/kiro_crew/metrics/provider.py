@@ -1545,11 +1545,10 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
         otlp_governance.gate_exporter(
             exporter, endpoint, _policy_ceiling, redact=_policy_redactor(), named_by=named_by
         )
-        # Narrowing, when this destination declared any: a metric allowlist, fixed
-        # point attributes, a reduced Resource. Applied as a WRAPPER around this
-        # destination's own exporter, so the local sink and every other
-        # destination are untouched by construction, and a destination that
-        # declared none is handed back the exporter object itself.
+        # Narrowing, when this destination declared any (or hides app names, which
+        # the operator's own entries never do), as a WRAPPER around this
+        # destination's own exporter: the local sink and every other destination
+        # are untouched, and one that narrows nothing gets the exporter itself.
         exporter = destination_filter.wrap_if_narrowed(
             dest, exporter, operator_owned=dest in otlp_endpoints.config_destinations(cfg)
         )

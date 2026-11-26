@@ -612,6 +612,24 @@ class TestNamedEntityNamespaces:
         local = {(p.get("attributes") or {}).get("Entity") for p in points}
         assert {"acme.tool-a", "acme.tool-b", "acmex.tool"} <= local, local
 
+    @pytest.mark.parametrize(
+        ("named", "sent"),
+        [("acme", "private"), ("acme.tools", "acme.tools.weather")],
+    )
+    def test_a_namespace_is_everything_before_the_last_dot(self, harness, named, sent):
+        h = harness([_listing(frozenset({named}))])
+        h.meter.create_counter(APP_PRESENT).add(1, attributes={"Entity": "acme.tools.weather"})
+        h.flush()
+
+        assert h.exporters["listing"].attrs(APP_PRESENT) == [{"Entity": sent}]
+
+    def test_another_metric_keeps_a_dotted_entity(self, harness):
+        h = harness([_operator()])
+        h.meter.create_counter("kirocrew.tip.feedback").add(1, attributes={"Entity": "apps.md"})
+        h.flush()
+
+        assert h.exporters["operator"].attrs("kirocrew.tip.feedback") == [{"Entity": "apps.md"}]
+
     def test_nothing_is_wrapped_while_no_registry_declares_a_namespace(self, monkeypatch):
         monkeypatch.setattr("kiro_crew.apps.store_origin.edition_names_apps", lambda: False)
         inner = _RecordingExporter()

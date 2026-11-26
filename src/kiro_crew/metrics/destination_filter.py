@@ -62,6 +62,10 @@ ALLOWED_POINT_ATTRIBUTE_KEYS = frozenset({"ClientType", "machineId"})
 #: ``feature_usage.APP_PRIVATE``, spelled here so this module stays import-light.
 PRIVATE = "private"
 
+#: The metrics whose ``Entity`` is an app's public id (``feature_usage.APP_*``).
+#: Another metric's ``Entity`` (a tip's document name) may hold a ``.`` too.
+APP_METRIC_PREFIX = "kirocrew.app."
+
 
 def validate_point_attributes(attributes: Optional[Mapping[str, str]]) -> "dict[str, str]":
     """Return *attributes* as a plain dict, or raise on an unreviewed key.
@@ -139,8 +143,9 @@ class FilteredMetricExporter:
         self._allow = None if allow is None else frozenset(allow)
         self._point_attributes = validate_point_attributes(point_attributes)
         self._resource_allow = None if resource_allow is None else frozenset(resource_allow)
-        # An app name holds no ``.``, so an ``Entity`` with one is ``<namespace>.<app>``.
-        # The namespace is the text before the first ``.``: ``a`` is not ``ab``.
+        # An app name holds no ``.``, so on an app metric an ``Entity`` with one is
+        # ``<namespace>.<app>``, and the namespace is all before the LAST ``.``: a
+        # namespace may hold a ``.`` itself, and ``a`` is not ``a.b`` or ``ab``.
         self._hide_names = hide_entity_names
         self._named = frozenset(named_entity_namespaces or ())
         # One warning for the first narrowing failure, then debug. A per-minute
@@ -268,7 +273,7 @@ class FilteredMetricExporter:
         with a point that was ``private`` already; on a counter the two are summed
         into one, so the destination never sees two points of one series.
         """
-        if not self._hide_names:
+        if not self._hide_names or not metric.name.startswith(APP_METRIC_PREFIX):
             return metric
         data = getattr(metric, "data", None)
         points = getattr(data, "data_points", None)
@@ -282,7 +287,7 @@ class FilteredMetricExporter:
             if not (
                 isinstance(entity, str)
                 and "." in entity
-                and entity.partition(".")[0] not in self._named
+                and entity.rpartition(".")[0] not in self._named
             ):
                 out.append(point)
                 continue
