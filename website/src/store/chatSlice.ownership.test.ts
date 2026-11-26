@@ -168,14 +168,14 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
   ['mcpApps', mcpApps, ['mcpAppKey']],
   ['subagents', subagents, [
     'isActiveSubagent', 'isChipSubagent', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired', 'selectSidebarApprovalCounts', 'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSlotPendingSpawnApprovals',
-    'selectSlotSubagents', 'selectSlotSubagentsActive', 'selectSubagentActivityCount',
+    'selectSlotSubagents', 'selectSlotSubagentsActive', 'selectSubagentActivityCount', 'SUBAGENT_THINKING_CAP', 'SUBAGENT_THINKING_KEEP',
   ]],
   ['workflows', workflows, ['WORKFLOW_TERMINAL_STATUSES', 'isTerminalWorkflowStatus', 'selectSidebarWorkflowActive', 'selectSidebarWorkflowActiveKeys']],
   ['automations', automations, ['selectAutomationForSlot', 'selectSidebarAutomationRunningKeys']],
   ['side', side, ['beginSideQueueEdit', 'finishSideQueueEdit', 'forgetSideSteerSubmittedText', 'noteSideQueueCancelWaiting', 'noteSideQueueDroppedByClose', 'queueEditBroadcastAt', 'readSideSteerSubmittedText', 'recordSideSteerSubmittedText', 'setSideQueueEditDraft', 'takeSideQueueDroppedByClose', 'takeSideQueueDroppedByResyncThenClose', 'takeSideSteerDroppedByClose', 'takeSideQueueEditForClose']],
   ['selectors', selectors, [
     'selectActiveSlotProject', 'selectComposerBusy', 'selectContinuable', 'selectProjectChipLocked', 'selectSendAccepted', 'selectSendAttempts', 'selectSendConfirmed', 'selectSlotMessages',
-    'selectPendingTurn', 'selectSlotPendingApproval', 'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotToolLog', 'selectSlotTurnRunning', 'selectTrailingSendUnconfirmed',
+    'selectPageLoaded', 'selectPendingTurn', 'selectSlotPendingApproval', 'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotToolLog', 'selectSlotTurnRunning', 'selectTrailingSendUnconfirmed',
     'selectResumeInterrupted', 'selectSlotTurnFromWake', 'selectTurnInterrupted', 'QUIET_END_SERVER', 'QUIET_END_TOOL',
   ]],
   ['slotSwitch', slotSwitch, ['clearSwitchSlotGone', 'setSwitchSlotGone', 'switchSlot', 'switchSlotNoticeCopy']],

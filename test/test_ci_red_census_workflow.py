@@ -20,7 +20,8 @@ job summary. What is pinned, for every job of the workflow unless said:
   dispatch, and the executed steps below get their environment from those
   expressions, not from a hand-written copy.
 * DEADLINES -- each deadline is longer than the wait inside it: one `gh` call
-  against the wrapper's wait, each job's timeout against its work and that wait.
+  against the wrapper's wait, each job's timeout against its work, that wait
+  and the census's wait for the bucket's reset.
 * THE STEPS, executed with `python3` or `gh` stubbed -- what each is started
   with, what each exit code does to the job and to the job summary, and that an
   input that is not a date starts nothing and is not echoed.
@@ -281,10 +282,11 @@ def test_the_budget_step_expects_a_weekday() -> None:
     assert WEEKDAY_POINTS <= needs <= WEEKDAY_POINTS * 5 // 4
 
 
-def test_the_census_never_waits_for_a_bucket() -> None:
+def test_the_census_waits_for_a_bucket_only_inside_the_script() -> None:
+    # The script waits at the reserve, for a reset that is near; no step sleeps.
     for name in (BUDGET_STEP, DAY_STEP):
-        run = _step(name)["run"]
-        assert "sleep" not in run and "--max-wait" not in run
+        assert "sleep" not in _step(name)["run"]
+    assert 0 < _flag(DAY_STEP, "--wait-for-reset-seconds") <= 30 * 60
 
 
 def test_the_week_spends_no_graphql_point() -> None:
@@ -308,8 +310,9 @@ def test_one_gh_call_outlasts_the_wait_the_wrapper_may_spend_inside_it(
 def test_each_job_timeout_holds_its_work_and_the_wrappers_wait(job_id: str) -> None:
     job = _jobs()[job_id]
     work = 2 * WEEKDAY_SECONDS if job_id == "day" else CALL_SECONDS
-    assert work + _wrapper_wait(job_id) < job["timeout-minutes"] * 60
-    assert job["timeout-minutes"] <= 60, "no job of the census holds a runner for hours"
+    reset = _flag(DAY_STEP, "--wait-for-reset-seconds") if job_id == "day" else 0
+    assert work + _wrapper_wait(job_id) + reset < job["timeout-minutes"] * 60
+    assert job["timeout-minutes"] <= 90, "no job of the census holds a runner for hours"
 
 
 def test_no_job_asks_for_a_larger_runner() -> None:
@@ -416,7 +419,7 @@ posix_bash = pytest.mark.skipif(
 )
 
 SUMMARY = "### Red-cause census: example/repo, 2026-11-19 to 2026-11-19 UTC (1 day(s))\n"
-COUNTS = "GraphQL calls: 1900 (2900 points)\nREST calls: 1\nRun time: 1300.0s\n"
+COUNTS = "GraphQL calls: 1900 (2900 points)\nReset wait: 65s\nREST calls: 1\nRun time: 1300.0s\n"
 
 
 def _run_script(

@@ -18,7 +18,7 @@ import instancesReducer from '../../store/instancesSlice'
 import type { ChatSlot } from '../../types'
 import { attachReport, type ErrorReport } from '../../utils/errorReport'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../../components/NavigationLeaveGuard'
-import { DockMatesSection, DockMatesTiles } from './matesDock'
+import { DockMatesSection, DockMatesTiles, useDockMatesSectionOpen } from './matesDock'
 
 // Keep real sortable context; deliver drops at its callback boundary instead
 // of depending on layout measurements that the test DOM does not implement.
@@ -48,7 +48,13 @@ vi.mock('../../components/CrewAvatar', () => ({
 }))
 
 const clients: QueryClient[] = []
-beforeEach(() => { dnd.props = null; dnd.started.length = 0; handoff.prompts.length = 0; localStorage.removeItem('mc-dock-mates-expanded') })
+beforeEach(() => {
+  dnd.props = null
+  dnd.started.length = 0
+  handoff.prompts.length = 0
+  localStorage.removeItem('mc-dock-mates-expanded')
+  localStorage.removeItem('mc-dock-mates-section-open')
+})
 afterEach(() => {
   cleanup()
   for (const client of clients) client.clear()
@@ -74,6 +80,14 @@ function deferred<T>() {
 const settleCache = (change: () => void) =>
   act(async () => { change(); await new Promise(done => setTimeout(done, 0)) })
 
+/** Fake timers for one test. Framer paints through jsdom's interval-driven rAF, so
+ *  the frame it last asked for runs before the real clock returns; otherwise no
+ *  later test in this file gets a frame. Teardown runs after afterEach's cleanup(). */
+function fakeClockForThisTest() {
+  vi.useFakeTimers()
+  onTestFinished(() => { vi.advanceTimersByTime(100); vi.useRealTimers() })
+}
+
 /** Prints the router's current address, so a test can read where a click went. */
 function Where() {
   const loc = useLocation()
@@ -84,6 +98,12 @@ function Where() {
 function LeaveGuard({ guard }: { guard: () => boolean }) {
   useRegisterNavigationLeaveGuard(guard)
   return null
+}
+
+/** The section as the rail mounts it: the rail owns the header's disclosure. */
+function RailSection(props: { collapsed: boolean; isMobile: boolean; onDragActiveChange?: (active: boolean) => void }) {
+  const [sectionOpen, onToggleSection] = useDockMatesSectionOpen()
+  return <DockMatesSection {...props} sectionOpen={sectionOpen} onToggleSection={onToggleSection} />
 }
 
 /** Seeds the roster cache unless the test needs to exercise its first read. */
@@ -109,7 +129,7 @@ function renderDock(roster: MemberRosterRow[] | undefined, { url = '/schedule', 
             {guard && <LeaveGuard guard={guard} />}
             {/* The rail's own landmark, which the row menu's focus move looks inside. */}
             <div role="navigation">
-              {visibleSurface !== 'tiles' && <DockMatesSection collapsed={collapsed} isMobile={isMobile} onDragActiveChange={onDragActiveChange} />}
+              {visibleSurface !== 'tiles' && <RailSection collapsed={collapsed} isMobile={isMobile} onDragActiveChange={onDragActiveChange} />}
               {visibleSurface !== 'section' && <DockMatesTiles onActivate={() => {}} />}
             </div>
             {visibleSurface !== 'tiles' && <Where />}
@@ -195,6 +215,48 @@ describe('DockMatesSection', () => {
   it('has no toggle when every starred mate fits', () => {
     renderDock(['a', 'b', 'c'].map(n => row(n, { starred: true })))
     expect(screen.queryByTestId('dock-mates-more')).toBeNull()
+  })
+
+  it('puts every mate away behind the section header and brings them back', async () => {
+    const roster = ['a', 'b', 'c', 'd'].map((n, i) => row(n, { starred: true, star_order: i + 1 }))
+    renderDock(roster)
+    const toggle = screen.getByTestId('dock-mates-section-toggle')
+    expect(toggle).toHaveAccessibleName('Bots')
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(dockNames()).toEqual(['a', 'b', 'c'])
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    // The rows close up rather than vanishing in the click's own frame: they
+    // leave once the exit motion's promise settles, never within the click.
+    expect(dockNames()).toEqual(['a', 'b', 'c'])
+    await waitFor(() => expect(dockNames()).toEqual([]))
+    // The header stays, and so does the way back; the fold row goes with the rows.
+    expect(screen.getByTestId('dock-mates-section-toggle')).toBeInTheDocument()
+    expect(screen.queryByTestId('dock-mates-more')).toBeNull()
+    expect(localStorage.getItem('mc-dock-mates-section-open')).toBe('0')
+    fireEvent.click(toggle)
+    expect(dockNames()).toEqual(['a', 'b', 'c'])
+    expect(screen.getByTestId('dock-mates-more')).toBeInTheDocument()
+    expect(localStorage.getItem('mc-dock-mates-section-open')).toBe('1')
+  })
+
+  it('stays put away across a reload', async () => {
+    const roster = ['a', 'b'].map(n => row(n, { starred: true }))
+    renderDock(roster)
+    fireEvent.click(screen.getByTestId('dock-mates-section-toggle'))
+    await waitFor(() => expect(dockNames()).toEqual([]))
+    cleanup()
+    renderDock(roster)
+    expect(screen.getByTestId('dock-mates-section-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(dockNames()).toEqual([])
+  })
+
+  it('keeps the icon rail listing mates: it draws no header to click', () => {
+    const roster = ['a', 'b'].map(n => row(n, { starred: true }))
+    localStorage.setItem('mc-dock-mates-section-open', '0')
+    renderDock(roster, { collapsed: true })
+    expect(screen.queryByTestId('dock-mates-section-toggle')).toBeNull()
+    expect(dockNames()).toEqual(['a', 'b'])
   })
 
   it('lets a mate starred late be dragged from below the fold into the top three', async () => {
@@ -361,8 +423,7 @@ describe('DockMatesSection', () => {
   })
 
   it('never asks again for the roster a guest is refused', async () => {
-    vi.useFakeTimers()
-    onTestFinished(() => { vi.useRealTimers() })
+    fakeClockForThisTest()
     const members = vi.spyOn(api, 'members').mockRejectedValue(new ApiError(403, 'owner only', '{"code":"owner_only"}'))
     renderDock(undefined, { surface: 'both' })
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
@@ -444,8 +505,7 @@ describe('DockMatesSection', () => {
   })
 
   it('re-reads a roster that stays failed every 30s, so its notice clears once a read lands', async () => {
-    vi.useFakeTimers()
-    onTestFinished(() => { vi.useRealTimers() })
+    fakeClockForThisTest()
     const roster = [row('a', { starred: true })]
     const members = vi.spyOn(api, 'members').mockRejectedValue(new TypeError('Failed to fetch'))
     const { qc } = renderDock(roster)
@@ -465,8 +525,7 @@ describe('DockMatesSection', () => {
   })
 
   it('keeps a dismissed notice away through a failed 30s re-read', async () => {
-    vi.useFakeTimers()
-    onTestFinished(() => { vi.useRealTimers() })
+    fakeClockForThisTest()
     const roster = [row('a', { starred: true })]
     const members = vi.spyOn(api, 'members').mockRejectedValue(new TypeError('Failed to fetch'))
     const { qc } = renderDock(roster)

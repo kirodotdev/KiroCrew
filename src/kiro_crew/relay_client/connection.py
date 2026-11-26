@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from kiro_crew.relay_client.access_token import access_scope
 from kiro_crew.relay_client.backoff import ConnectionEnd
 from kiro_crew.relay_client.ingress import CrewIngress, IngressUnavailable
 from kiro_crew.relay_client.protocol import (
@@ -63,7 +64,7 @@ from kiro_crew.relay_client.streams import (
     WsStream,
     decode_body_data,
 )
-from kiro_crew.relay_client.token_source import HostCredential
+from kiro_crew.relay_client.token_source import HostCredential, token_claims
 
 logger = logging.getLogger(__name__)
 
@@ -524,7 +525,11 @@ class HostConnection:
         try:
             # Bound before ready is marked, so no request this connection carries
             # can reach the ingress ahead of its binding.
-            self._ingress.bind_host(crew_kind=crew_kind, owner_user_id=owner_user_id)
+            self._ingress.bind_host(
+                crew_kind=crew_kind,
+                owner_user_id=owner_user_id,
+                access_scope=access_scope(token_claims(self._credential.token)),
+            )
         except IngressUnavailable as exc:
             logger.error("the dashboard's relay ingress refused the host binding: %s", exc)
             ws = self._ws

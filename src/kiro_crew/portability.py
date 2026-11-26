@@ -206,7 +206,9 @@ def _move_home_paths(snap: Path, summary: dict) -> frozenset[str]:
     file names of the staged transcripts whose folder could not be moved: such a chat
     opens in the default workspace, and `_merge_sessions` counts the ones it installs.
     """
-    old_home, new_home = archive_home(snap), this_home()
+    # This home first: when it is unknown (Windows) no path the archive names is looked at.
+    new_home = this_home()
+    old_home = archive_home(snap) if new_home is not None else None
     if old_home is None or new_home is None:
         return frozenset()
     rewrite = rewrite_staged_paths(snap, old_home, new_home)
@@ -995,7 +997,7 @@ def apply_import_zip(
             snap, mc, None, mode, allow_unpinned=not staging_pinned
         )
         if held_config:
-            summary["held_agent_config"] = [f"workspace/{name}" for name in held_config]
+            summary["held_agent_config"] = held_config
 
         if mode == "replace":
             # Strip sensitive files and skills/auto/ from snapshot before replace

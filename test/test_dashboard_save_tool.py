@@ -1820,6 +1820,8 @@ def test_only_a_save_of_a_written_page_can_start_a_check():
         "dashboard/handlers/member_dashboard_fields.py",
         "dashboard_page_image.py",
         "dashboard_verify.py",
+        # names the module only as a row of its redaction allowlist
+        "security_posture.py",
     ]
     # a mirror facade: its code is in the owners it lists
     tree = ast.parse(

@@ -74,6 +74,14 @@
   text-underline-offset: 2px;
 }
 
+/* The quoted words in the reply a jump from a sent quote lands on
+   (pages/chat/quotedReply.ts), for three seconds after it lands. A passage
+   mark, not a find match, so it takes the annotation fill. */
+[data-hl-scope]::highlight(mc-quote-mark),
+[data-hl-scope] ::highlight(mc-quote-mark) {
+  background-color: var(--accent-subtle);
+}
+
 /* The comment shown beside the pointer over a highlighted passage or a box on
    an image (MarkdownPanel). It follows the pointer, so it takes no events. */
 .mc-comment-tooltip {

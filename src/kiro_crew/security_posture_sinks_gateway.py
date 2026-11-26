@@ -992,7 +992,22 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "dashboard/crew_api_responses.py",
         "The reply text and the failure reason of a POST /v1/responses turn, redacted "
         "before the answer leaves. `metadata`, the model name and the names of ignored "
-        "fields go back as the caller sent them.",
+        "fields go back as the caller sent them. The turn's record holds that answer, "
+        "with the same fields as sent, and each input text is redacted here before "
+        "it is written to the record.",
+    ),
+    (
+        "Crew API response read-back",
+        "dashboard/crew_api_response_reads.py",
+        "The reply text, the failure reason and the input texts of a kept POST "
+        "/v1/responses turn, served again by GET /v1/responses/{response_id} and its "
+        "input_items. Each is redacted again with the route's _redact on its way out; "
+        "a record file that is not the one shape the store writes is not served, and "
+        "in that shape every other field is a fixed value or one of the three sent "
+        "back as they are. No stream event is kept: a stream's events are made again "
+        "from the redacted answer, and from the kept text of its deltas only when "
+        "that redaction changes nothing in them, judged joined. `metadata`, the "
+        "model name and the names of ignored fields go back as the owner sent them.",
     ),
     (
         "Crew API response stream",
@@ -1129,5 +1144,22 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "URLs too, before the name is cut to 64 characters; a host whose "
         "policy cannot be composed lists no name. The CLI repeats it on what "
         "it prints.",
+    ),
+    (
+        "A chat's history search results",
+        "dashboard/chat_history_search.py",
+        "The excerpt each search hit shows in the browser, cut from a transcript "
+        "row. The row's text passes both redactors (exfiltration URLs and "
+        "credentials) whole before URLs are shortened and the excerpt is cut, so "
+        "a credential inside a long URL never reaches the excerpt.",
+    ),
+    (
+        "A Bot's held limits on its Profile tab",
+        "mate_held_rules.py",
+        "The stored text of each limit a Bot's move held for a person, on its way "
+        "to the Bot's Profile tab. The text can quote an old permission rule's "
+        "match, so each one passes the "
+        "exfiltration-URL and credential redactors (`redact`) before it leaves the "
+        "record, and a release compares the list it was sent with that same view.",
     ),
 )

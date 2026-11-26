@@ -491,3 +491,30 @@ class TestWhichRolesRunKiroCli:
     )
     def test_required(self, cfg: SimpleNamespace, expected: bool) -> None:
         assert any(cli_doctor._selected_roles_run_kiro_cli(cfg)) is expected
+
+    @pytest.mark.parametrize(
+        ("saved", "build_prefers_bundle", "relay"),
+        [
+            # Unset on a build that prefers the engine: the bundle, no kiro-cli.
+            (None, True, False),
+            # Unset on a build that does not: kiro-cli's relay.
+            (None, False, True),
+            # Explicit false wins over the build's preference: kiro-cli's relay.
+            (False, True, True),
+        ],
+    )
+    def test_kas_role_follows_the_route_the_spawn_takes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        saved: bool | None,
+        build_prefers_bundle: bool,
+        relay: bool,
+    ) -> None:
+        """A KAS role runs kiro-cli only on the relay route the spawn resolves, not
+        whenever ``agent.kas_bundle`` is unset."""
+        _kas_route_on_host(monkeypatch, saved=saved, build_prefers_bundle=build_prefers_bundle)
+        assert kas_route.resolve_kas_route().bundle is not relay
+
+        cfg = _cfg(ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, kas_bundle=bool(saved))
+
+        assert cli_doctor._selected_roles_run_kiro_cli(cfg) == (False, relay)

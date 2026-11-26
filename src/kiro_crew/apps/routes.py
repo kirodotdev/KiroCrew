@@ -302,6 +302,10 @@ def register_app_routes(app: web.Application) -> None:
     from kiro_crew.apps.browser_sites_routes import register_browser_sites_routes
 
     register_browser_sites_routes(app)
+    # The owner turning off one watch recipe's run-by-itself yes.
+    from kiro_crew.apps.browser_recipes_routes import register_browser_recipes_routes
+
+    register_browser_recipes_routes(app)
     app.router.add_delete("/api/apps/{name}/migrate-cleanup", handle_migrate_cleanup)
     app.router.add_get("/apps/{name}/ui/{path:.*}", handle_app_ui_file)
     app.router.add_get("/apps/{name}/art/{path:.*}", handle_app_art_file)

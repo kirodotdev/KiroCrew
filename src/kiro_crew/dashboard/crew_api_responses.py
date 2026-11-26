@@ -18,7 +18,8 @@ What this route serves:
   turn inside ``_run_chat``, as for every turn. A turn it refuses never reaches the
   engine and is answered ``200`` with ``status: failed`` and the capacity message.
 
-Nothing about a response is stored beyond the session's own transcript, and the
+A turn that ended is kept as a record (``crew_api_response_records``) for the
+retention period, and ``crew_api_response_reads`` reads it back. The
 ``Idempotency-Key`` header is not read.
 """
 
@@ -55,6 +56,14 @@ from kiro_crew.dashboard.crew_api_errors import (
 from kiro_crew.dashboard.crew_api_grant_requests import _host_owner_refusal
 from kiro_crew.dashboard.crew_api_models import usable_models_off_loop
 from kiro_crew.dashboard.crew_api_owner import owner_route
+from kiro_crew.dashboard.crew_api_response_records import (
+    MAX_REQUEST_BYTES,
+    NAMESPACE,
+    STORE_KEY,
+    RecordNotDurable,
+    ResponseStore,
+    request_bytes,
+)
 from kiro_crew.dashboard.crew_api_response_stream import Events, encode
 from kiro_crew.dashboard.kiro_readiness import (
     KAS_TURN_REFUSED_CODE,
@@ -169,6 +178,10 @@ class Refusal(Exception):
         self.extra = extra
 
 
+class CallerGone(Refusal):
+    """The caller's connection was lost while its turn ran, and the turn was stopped."""
+
+
 def _invalid(message: str) -> Refusal:
     return Refusal(400, "invalid_request", message)
 
@@ -186,6 +199,8 @@ class ParsedRequest:
     metadata: dict[str, str] = field(default_factory=dict)
     ignored: list[str] = field(default_factory=list)
     stream: bool = False
+    #: The input items as sent, each its role and its text. ``instructions`` is not one.
+    items: tuple[tuple[str, str], ...] = ()
 
 
 def _flag(body: dict[str, Any], name: str) -> bool:
@@ -335,7 +350,29 @@ def parse_request(body: object) -> ParsedRequest:
         metadata=_metadata(body.get("metadata")),
         ignored=sorted(name for name in body if name not in _READ_FIELDS),
         stream=stream,
+        items=_sent_items(body["input"]),
     )
+
+
+def _sent_items(given: Any) -> tuple[tuple[str, str], ...]:
+    """The roles and texts of an input :func:`_messages` already accepted."""
+    if isinstance(given, str):
+        return (("user", given),)
+    return tuple((item["role"], _content_text(item.get("content"))) for item in given)
+
+
+def _input_items(parsed: ParsedRequest) -> list[dict[str, Any]]:
+    """The turn's input as the items ``GET .../input_items`` lists, each text redacted."""
+    return [
+        {
+            "type": "message",
+            "id": "msg_" + uuid.uuid4().hex,
+            "role": role,
+            "status": "completed",
+            "content": [{"type": "input_text", "text": _redact(text)}],
+        }
+        for role, text in parsed.items
+    ]
 
 
 @dataclass(frozen=True)
@@ -463,7 +500,7 @@ async def _answer(
         if _client_gone(request):
             await stop_slot_turn(state, slot, source="crew_api", escalate=False)
             await _settled(task)
-            raise Refusal(500, "internal_error", "the caller closed the connection")
+            raise CallerGone(500, "internal_error", "the caller closed the connection")
         # A new row or the turn's end, whichever comes first: a turn that dies
         # without a row sets no event.
         row_written = asyncio.ensure_future(slot.event.wait())
@@ -503,8 +540,9 @@ async def _stream(
     slot: Any,
     task: "asyncio.Task[Any]",
     answering: _Answering,
+    keep: "Callable[[dict[str, Any], dict[str, Any] | None], Awaitable[None]]",
 ) -> web.StreamResponse:
-    """Answer the turn as Responses stream events.
+    """Answer the turn as Responses stream events, and *keep* how it ended.
 
     The events end on the ``Response`` the JSON answer would be. The headers leave
     before the turn ends, so a turn that cannot be answered is an ``error`` event.
@@ -528,15 +566,34 @@ async def _stream(
         else:
             await _write(events.text(text))
 
+    kept = False
     try:
         await resp.prepare(request)
         await _write(events.start(answering.response("in_progress")))
         try:
             final = await _answer(request, state, slot, task, answering, _said)
+        except CallerGone:
+            # Stopped for a reader that left: the ending the write path below keeps.
+            raise ConnectionResetError from None
         except Refusal as refusal:
-            await _write(events.error(refusal.message))
+            batch = events.error(refusal.message)
+            final = answering.response("failed", error=refusal.message)
+            closed_on_error = True
         else:
-            await _write(events.end(final))
+            batch = events.end(final)
+            final = batch[-1]["response"]
+            closed_on_error = False
+        # Kept before the last events leave: a reader that saw the turn end finds it.
+        kept = True
+        await keep(
+            final,
+            {
+                "deltas": list(events.deltas),
+                "item_id": answering.item_id,
+                "error": closed_on_error,
+            },
+        )
+        await _write(batch)
     except ConnectionResetError:
         # The reader is gone: nobody is left to read this turn. A recovery may have
         # handed it to a new task meanwhile.
@@ -544,6 +601,10 @@ async def _stream(
         if not task.done():
             await stop_slot_turn(state, slot, source="crew_api", escalate=False)
             await _settled(task)
+        if not kept:
+            # The reader holds the id. The stream it was sent has no end, so the
+            # record keeps nothing of it and a later stream is made from this Response.
+            await keep(answering.response("cancelled", events.text_sent), None)
     return resp
 
 
@@ -588,6 +649,43 @@ async def _audit(request: web.Request, response_id: str, slot_key: str, model: s
         logger.warning("No audit row written for %s %s", OPERATION, response_id)
 
 
+async def _record(
+    store: ResponseStore,
+    response: dict[str, Any],
+    items: list[dict[str, Any]],
+    stream: dict[str, Any] | None,
+) -> None:
+    """Keep the turn that ended as *response*, so it can be read back.
+
+    *stream* is what a stream's events are made from again
+    (``crew_api_response_stream.rebuilt``), ``None`` for a turn answered as JSON.
+    """
+    record = {
+        "id": response["id"],
+        "created_at": response["created_at"],
+        "response": response,
+        "input": items,
+        "stream": stream,
+        # The owner's turn: no grant made it. Nothing reads these two yet; they are
+        # written so that a record can be told from another caller's later.
+        "created_by_grant": None,
+        "namespace": NAMESPACE,
+    }
+    try:
+        await asyncio.to_thread(store.save, record)
+    except RecordNotDurable as exc:
+        logger.warning(
+            "Crew API response %s was recorded, and it is not confirmed that the record "
+            "survives a power loss: %s",
+            response["id"],
+            type(exc.__cause__ or exc).__name__,
+        )
+    except Exception as exc:  # the record must never change the turn's answer
+        logger.warning(
+            "Crew API response %s was not recorded: %s", response["id"], type(exc).__name__
+        )
+
+
 async def _run(request: web.Request) -> web.StreamResponse:
     state: DashboardState = request.app["state"]
     try:
@@ -597,6 +695,14 @@ async def _run(request: web.Request) -> web.StreamResponse:
     parsed = parse_request(body)
     if parsed.model not in {row["id"] for row in await usable_models_off_loop()}:
         raise Refusal(404, "model_not_found", "no agent or Bot has that name")
+    store: ResponseStore = request.app[STORE_KEY]
+    # What the record will keep of the request. A request too large to keep is run
+    # and answered all the same; its texts are then not redacted for a record. Off
+    # the loop: redacting a megabyte takes long enough to hold every session up.
+    items: list[dict[str, Any]] | None = None
+    sent = [text for _role, text in parsed.items]
+    if request_bytes(sent, parsed.ignored) <= MAX_REQUEST_BYTES:
+        items = await asyncio.to_thread(_input_items, parsed)
     if state.live_slot_count() >= MAX_LIVE_SLOTS:
         raise Refusal(
             429, "concurrency_limit", "too many sessions are live", extra={"limit": "turns"}
@@ -637,10 +743,29 @@ async def _run(request: web.Request) -> web.StreamResponse:
             with state.suspend_slots_push():
                 state.push_slots_update()
             answering = _Answering(response_id, int(time.time()), parsed)
+
+            async def _keep(response: dict[str, Any], stream: dict[str, Any] | None) -> None:
+                if items is None:
+                    logger.warning(
+                        "Crew API response %s was not recorded: its request is too large",
+                        response_id,
+                    )
+                else:
+                    await _record(store, response, items, stream)
+
+            if items is not None:
+                # Readable as in_progress until its record is written.
+                store.live[response_id] = {
+                    "response": answering.response("in_progress"),
+                    "input": items,
+                }
             if parsed.stream:
-                return await _stream(request, state, slot, task, answering)
-            return web.json_response(await _answer(request, state, slot, task, answering))
+                return await _stream(request, state, slot, task, answering, _keep)
+            final = await _answer(request, state, slot, task, answering)
+            await _keep(final, None)
+            return web.json_response(final)
     finally:
+        store.live.pop(response_id, None)
         task = slot.task or task
         if task is not None and not task.done():
             task.cancel()

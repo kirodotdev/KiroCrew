@@ -1140,3 +1140,73 @@ def test_a_prompt_loop_wakes_when_its_runtime_budget_runs_out(
     )
     svc._arm_from_deadline(loop)
     assert armed == [armed_secs]
+
+
+async def _turn_ends(svc, loop):
+    svc.notify_turn_complete(loop.slot_key)
+
+
+async def _reply_then_turn_ends(svc, loop):
+    svc.notify_user_input(loop.slot_key)
+    svc.notify_turn_complete(loop.slot_key)
+
+
+async def _channel_turn_ends(svc, loop):
+    await svc._finish_fire_cycle(loop)
+
+
+async def _armed_not_after_a_turn(svc, loop):
+    svc._arm_from_deadline(loop)
+
+
+@pytest.mark.parametrize(
+    ("arm", "shape", "due_in", "armed_secs"),
+    [
+        (_turn_ends, {}, 0.0, 120.0),
+        (_reply_then_turn_ends, {}, 86370.0, 120.0),
+        (_channel_turn_ends, {"slot_key": "slack:1700000000.1"}, 0.0, 120.0),
+        (_turn_ends, {"max_cycles": 2}, 0.0, 86400.0),
+        (_turn_ends, {"idle_secs": 60}, 0.0, 60.0),
+        (_turn_ends, {"waiting_on_person": True}, 0.0, 86400.0),
+        (_turn_ends, {"monitor": _structured_monitor()}, 0.0, 86400.0),
+        (_armed_not_after_a_turn, {}, 0.0, 86400.0),
+    ],
+    ids=[
+        "last-turn-ends",
+        "a-reply-after-it",
+        "channel-loop",
+        "cycles-left",
+        "short-interval",
+        "person-wait",
+        "monitor",
+        "arm-not-after-a-turn",
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_prompt_loop_at_its_cycle_cap_wakes_soon_after_a_turn(
+    tmp_path, monkeypatch, manual_clock, arm, shape, due_in, armed_secs
+):
+    """A turn that leaves the cycle cap spent wakes the timer within the grace, so
+    ``_timer`` stops the loop then, not a day later; the deadline itself stays put.
+    Any arm not after a turn keeps the deadline: an app reviving a capped loop would
+    otherwise stop it, and notify, every two minutes."""
+    manual_clock.install(monkeypatch, _timers)
+    manual_clock.install(monkeypatch, _model)
+    now = manual_clock.time()
+    svc = AutoNudgeService(base_dir=tmp_path)
+    armed: list[float | None] = []
+    monkeypatch.setattr(svc, "_arm_timer", lambda target, delay=None: armed.append(delay))
+    monkeypatch.setattr(svc, "_persist_soon", lambda: None)
+    fields: dict = {"slot_key": "chat-1-123", "idle_secs": 86400, "max_cycles": 1, **shape}
+    loop = NudgeLoop(
+        id="cap01",
+        message="go",
+        cycle_count=1,
+        created_ts=now - 100,
+        next_due_ts=now + due_in if due_in else 0.0,
+        **fields,
+    )
+    svc._loops[loop.id] = loop
+    await arm(svc, loop)
+    assert armed == [armed_secs]
+    assert loop.next_due_ts == now + (due_in or loop.idle_secs)

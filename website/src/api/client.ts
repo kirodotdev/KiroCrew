@@ -204,6 +204,7 @@ export type {
 export type { MemoryCarveQuery, MemoryCarveResult, RecurringFailure } from './client/memory'
 export { SEARCH_MIN_CHARS } from './client/sessions'
 export type { ArchiveEntry, MessageSearchHit, MessageSearchParams, MessageSearchResponse, MessageSearchResult } from './client/sessions'
+export type { ChatHistoryAroundResponse, ChatHistoryCountsResponse, ChatHistoryHit, ChatHistoryKind, ChatHistorySearchParams, ChatHistorySearchResponse } from './client/chat'
 export type {
   McpShareReason,
   McpShareRecommendation,
@@ -216,6 +217,7 @@ export type {
   CrewmateExportChoices,
   CrewmateExportPreview,
   MemberRosterRow,
+  MemberHeldLimit,
   MemberActivityEntry,
   MemberGoals,
   MemberGoal,

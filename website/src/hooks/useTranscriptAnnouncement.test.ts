@@ -22,8 +22,10 @@ function useAnnouncement(
   pendingApprovals?: Parameters<typeof useTranscriptAnnouncement>[4],
   rowCount = 0,
   tailUserSpeaker: Parameters<typeof useTranscriptAnnouncement>[6] = YOU,
+  // Unless a case says otherwise, a transcript counts as loaded once it has a row.
+  loaded = lastMsg != null,
 ) {
-  return useTranscriptAnnouncement(lastMsg, isStreaming, assistantName, sessionKey, pendingApprovals, rowCount, tailUserSpeaker)
+  return useTranscriptAnnouncement(lastMsg, isStreaming, assistantName, sessionKey, pendingApprovals, rowCount, tailUserSpeaker, loaded)
 }
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z')) })
@@ -284,6 +286,70 @@ describe('useTranscriptAnnouncement rows that arrive finished', () => {
     expect(result.current).toBe('')
   })
 
+  it('speaks the first message into a session that loaded empty', () => {
+    // The empty transcript is the baseline once the host says it has loaded,
+    // so a teammate's first message after it is new.
+    type Msg = { role: string, content: string, ts?: string } | undefined
+    const { result, rerender } = renderHook(
+      ({ msg, loaded }: { msg: Msg, loaded: boolean }) => useAnnouncement(msg, false, undefined, 's1', undefined, msg ? 1 : 0, { speaker: 'Alex', own: false }, loaded).announcement,
+      { initialProps: { msg: undefined as Msg, loaded: false } },
+    )
+    rerender({ msg: undefined, loaded: true })
+    rerender({ msg: { role: 'user', content: 'can you check the build?', ts: 't1' }, loaded: true })
+    expect(result.current).toBe('Alex: can you check the build?')
+  })
+
+  it('speaks the reply to a send made before the page loaded', () => {
+    // A failed open leaves the chat selected and never loaded, and the reader
+    // can still send into it; the send starts the baseline.
+    type Msg = Row | undefined
+    const { result, rerender } = renderHook(
+      ({ msg, count }: { msg: Msg, count: number }) => useAnnouncement(msg, false, undefined, 's1', undefined, count, YOU, false),
+      { initialProps: { msg: undefined as Msg, count: 0 } },
+    )
+    act(() => { result.current.announceSent('hi') })
+    rerender({ msg: { role: 'user', content: 'hi', meta: { clientTs: 'c1' } }, count: 1 })
+    expect(result.current.announcement).toBe('You: hi')
+    act(() => { vi.advanceTimersByTime(ANNOUNCEMENT_HOLD_MS) })
+    rerender({ msg: { role: 'assistant', content: 'Hello.', meta: { mid: 'a1' } }, count: 2 })
+    expect(result.current.announcement).toBe('Kiro Crew: Hello.')
+  })
+
+  it('stays silent for rows a loading page brings in after a cached copy', () => {
+    // A switch can show the session's cached rows while its page loads; the
+    // loaded page, not the cache, is the baseline.
+    const { result, rerender } = renderHook(
+      ({ msg, loaded }) => useAnnouncement(msg, false, undefined, 's1', undefined, 1, YOU, loaded).announcement,
+      { initialProps: { msg: { role: 'assistant', content: 'cached reply', meta: { mid: 'm1' } } as Row, loaded: false } },
+    )
+    rerender({ msg: { role: 'assistant', content: 'a reply from while you were away', meta: { mid: 'm2' } }, loaded: true })
+    expect(result.current).toBe('')
+  })
+
+  it('speaks an app or scheduled task row under the label its bubble shows', () => {
+    const app = { role: 'inject', content: '[MCP app message from "Notes"]\nStand-up in 5 minutes\n[End of MCP app message]', meta: { mid: 'i1', appLabel: 'Notes/notes-app', injectKind: 'mcp_app' } }
+    const cron = { role: 'inject', content: '[Cron notification from "Daily digest"]\nSummarise the inbox\n[End of cron notification]', meta: { mid: 'i2', cronLabel: 'Daily digest', injectKind: 'cron' } }
+    const first = { role: 'assistant', content: 'done', meta: { mid: 'a1' } }
+    const { result, rerender } = render([first])
+    rerender({ rows: [first, app], streamingNow: false })
+    expect(result.current).toBe('Notes: Stand-up in 5 minutes')
+    act(() => { vi.advanceTimersByTime(ANNOUNCEMENT_HOLD_MS) })
+    rerender({ rows: [first, app, cron], streamingNow: false })
+    expect(result.current).toBe('Daily digest: Summarise the inbox')
+  })
+
+  it('does not speak an app row again when an older page loads above it during a running turn', () => {
+    const app = { role: 'inject', content: '[MCP app message from "Notes"]\nStand-up in 5 minutes\n[End of MCP app message]', meta: { mid: 'i1', appLabel: 'Notes/notes-app', injectKind: 'mcp_app' } }
+    const first = { role: 'assistant', content: 'done', meta: { mid: 'a1' } }
+    const older = { role: 'assistant', content: 'older', meta: { mid: 'o1' } }
+    const { result, rerender } = render([first], true)
+    rerender({ rows: [first, app], streamingNow: true })
+    expect(result.current).toBe('Notes: Stand-up in 5 minutes')
+    act(() => { vi.advanceTimersByTime(ANNOUNCEMENT_HOLD_MS) })
+    rerender({ rows: [older, first, app], streamingNow: true })
+    expect(result.current).toBe('')
+  })
+
   it('speaks a new reply whose timestamp is behind the browser clock', () => {
     const { result, rerender } = render([{ role: 'user', content: 'status?' }])
     const gatewayBehind = String(Date.now() / 1000 - 3600)
@@ -407,6 +473,18 @@ describe('useTranscriptAnnouncement rows that arrive finished', () => {
     expect(result.current).toBe('Ann: please also check this')
     rerender({ msg: { role: 'assistant', content: 'Done.', meta: { mid: 'a2' } }, running: false, count: 3 })
     expect(result.current).toBe('Kiro Crew: Done.')
+  })
+
+  it.each([['during a running turn', true], ['between turns', false]])("speaks a teammate's message once its sender resolves, %s", (_turn, running) => {
+    const { result, rerender } = renderHook(
+      ({ msg, running, count, speaker }) => useAnnouncement(msg, running, undefined, 's1', [], count, speaker).announcement,
+      { initialProps: { msg: { role: 'assistant', content: 'old', meta: { mid: 'a1' } } as Row, running, count: 1, speaker: YOU } },
+    )
+    const teammate = { role: 'user', content: 'please also check this', meta: { mid: 'u2' } }
+    rerender({ msg: teammate, running, count: 2, speaker: YOU })
+    expect(result.current).toBe('')
+    rerender({ msg: teammate, running, count: 2, speaker: { speaker: 'Ann', own: false } })
+    expect(result.current).toBe('Ann: please also check this')
   })
 
   it("does not speak a user row whose heading resolves to You", () => {

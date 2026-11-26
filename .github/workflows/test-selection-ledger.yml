@@ -1,0 +1,102 @@
+name: Test Selection Ledger
+
+# SHADOW ONLY. Reads, every night, the shadow verdicts pull requests uploaded
+# (`test-selection-verdict`, from ci.yml's `changes` job) and what their runs
+# really failed, and keeps the miss ledger the enforcement gate counts days of:
+# scripts/ci_test_selection_ledger.py. It reads; it posts nothing, changes
+# nothing, and nothing reads its numbers to decide anything. A verdict is
+# uploaded by the pull request's own run, so these numbers are evidence for a
+# person: nothing may turn selection on, make a tier skippable or pass the gate
+# on them alone.
+#
+# The history lives only in this workflow's own artifacts (verdicts are kept a
+# week). Each pass restores the ledger the last pass kept, adds what it read,
+# and uploads it again, and only when the pass script says what it left may be
+# continued. Which run is trusted for the restore, what starts an empty ledger
+# and what refuses to go on: scripts/ci_test_selection_ledger_night.py.
+#
+# Several short passes, not one long one: each spends at most 700 of the REST
+# requests every job of the repository shares, and does not start unless the
+# hour's pool holds 7,500 beyond them. Under that it reads nothing, uploads
+# nothing and ends green with a notice, since keeping out of a low pool is
+# what it should do; it never waits for a reset, and the next tick reads what
+# this one did not. A failed read or a restored file that is no ledger is red,
+# and scheduled-failure-watch.yml files a red scheduled pass as an issue. The
+# ticks sit in the hours the pool is fullest and keep clear of the red-cause
+# census (07:17 UTC).
+
+on:
+  schedule:
+    - cron: "11 5 * * *"
+    - cron: "41 5 * * *"
+    - cron: "11 6 * * *"
+    - cron: "41 6 * * *"
+    - cron: "11 8 * * *"
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "First UTC day of runs to list, YYYY-MM-DD. Empty: two days back."
+        required: false
+        default: ""
+      restore_run:
+        description: "Restore the ledger from this run of this workflow. Empty: the newest successful one."
+        required: false
+        default: ""
+      start_empty:
+        description: "Start an empty ledger. The days of data kept so far leave the chain."
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  issues: read
+
+# One pass at a time, and a running one is never cancelled: two passes would
+# both restore the same ledger, and the later upload would drop the other's rows.
+concurrency:
+  group: test-selection-ledger
+  cancel-in-progress: false
+
+jobs:
+  ledger:
+    name: Miss ledger pass
+    # The ledger reads this repository's runs by name: a fork's schedule has
+    # nothing of its own to read.
+    if: github.repository == 'kirodotdev/KiroCrew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            scripts
+
+      # The ledger's log fallback passes `gh api` a flag older versions lack.
+      - name: Show the gh version
+        run: gh --version
+
+      - name: Read a pass into the ledger
+        id: pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
+          SINCE: ${{ inputs.since }}
+          RESTORE_RUN: ${{ inputs.restore_run }}
+          START_EMPTY: ${{ inputs.start_empty }}
+        run: python3 scripts/ci_test_selection_ledger_night.py --out ledger
+
+      # Only on the pass script's own word that what it left is a ledger the
+      # next pass may continue: a pass that did not start leaves none.
+      - name: Upload the ledger
+        if: steps.pass.outputs.upload == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-selection-ledger
+          path: ledger/
+          if-no-files-found: error
+          retention-days: 90

@@ -45,6 +45,11 @@ async def api_tool_grants_list(request: web.Request) -> web.Response:
     With ``server``, also ``refusal``: the code that keeps that server's toggles
     off (``""`` when they may be turned on).
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "tool_grants.list")
+    if denied is not None:
+        return denied
     server = request.query.get("server", "")
     if server and not always_allow_tool.tool_ref(server, "x"):
         return web.json_response({"error": "invalid server", "code": "invalid_server"}, status=400)

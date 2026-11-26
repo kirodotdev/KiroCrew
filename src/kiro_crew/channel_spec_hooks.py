@@ -6,7 +6,8 @@ opencode, strands), Crew fires them itself, and the projection sends every call 
 it first. :func:`kiro_crew.channel._stream_task` answers a member's permission
 requests, so it reads the spec once per turn (:func:`turn_spec`) and asks
 :func:`pre_tool_refusal` before any approval tier. ``kirocrew chat`` asks it on
-each permission request too, before its y/n prompt (``cli_chat._spec_hook_refusal``).
+each permission request too, before its y/n prompt (``cli_chat._spec_hook_refusal``),
+and so do a native Slack turn and the unattended turns :class:`SessionSpecGate` serves.
 
 Only the spec's hooks gate here, through an empty store, so the Hooks page's hooks
 stay out of an agent channel and the CLI. A spec hook blocks on exit 2 or a policy refusal to
@@ -65,3 +66,28 @@ async def pre_tool_refusal(
         acp_session_id=sid if isinstance(sid, str) and sid else None,
         raw_tool_params=getattr(event, "raw_tool_params", None),
     )
+
+
+class SessionSpecGate:
+    """:func:`pre_tool_refusal` for an unattended turn on a live session.
+
+    The ``spec_hooks`` a ``stream_and_collect`` turn asks on each permission request:
+    a sub-agent report in its parent's session, a plain Slack auto-nudge. Read on each
+    request as a native Slack turn reads it, for the agent the session runs, so a
+    mid-turn switch is followed. Only the PreToolUse gate; no other spec event fires.
+    """
+
+    def __init__(self, client: Any, session_key: str) -> None:
+        # Deferred, as in turn_spec: the agent_sdk package reaches acp.client.
+        from kiro_crew.agent_sdk.capabilities import capabilities_of
+
+        self._client = client
+        self._session_key = session_key
+        self.gated = capabilities_of(client).crew_fires_spec_hooks
+
+    async def observe(self, event: Any) -> None:
+        """Nothing to re-read: each request reads the spec the session runs then."""
+
+    async def refusal(self, event: Any) -> str | None:
+        spec = await turn_spec(self._client, "")
+        return await pre_tool_refusal(spec, self._client, event, self._session_key)

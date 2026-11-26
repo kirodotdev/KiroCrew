@@ -601,6 +601,7 @@ from kiro_crew.dashboard.deny_override import (  # noqa: F401
     DENY_OVERRIDE_ACTIONS,
     is_deny_override_card,
 )
+from kiro_crew.dashboard.effort_overlay_mark import set_effort_overlay_clear_mark  # noqa: F401
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _SLOT_SCOPED_TRUST_MODES,
     _owner_denial_response,
@@ -939,6 +940,9 @@ _DEFERRED_PLAIN_CREATE_KNOWN_KEYS = frozenset(
         # Only a request; a create that it actually files is not plain,
         # because the handler then sees a folder_id.
         "default_folder",
+        # Only a request for the owner's start mode, applied in memory before the
+        # slot's first frame (``chat_default_mode``).
+        "start_mode_default",
     }
 )
 

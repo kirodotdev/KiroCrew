@@ -956,11 +956,20 @@ def may_skip_gate_now(ref: str) -> bool:
     names asks on every call, so no writer may grant it statically. So does a
     ``hooks.auto_deny_tools`` pattern that names the grant: the gate refuses
     its calls, and a granted call never reaches the gate.
+
+    Inside one :func:`kiro_crew.build_reuse.one_build` block (one session start)
+    each *ref* is answered once; an answer that raises is not kept.
     """
-    return (
-        _policy_may_skip_gate_now(ref)
-        and not _operator_requires_confirmation(ref)
-        and not _operator_denies(ref)
+    from kiro_crew.build_reuse import reuse
+
+    return reuse(
+        ("governance.may_skip_gate_now", ref),
+        lambda: (
+            _policy_may_skip_gate_now(ref)
+            and not _operator_requires_confirmation(ref)
+            and not _operator_denies(ref)
+        ),
+        weight=lambda _: len(ref),
     )
 
 
@@ -1335,7 +1344,8 @@ __all__ = [
 #   ``parsing`` -- a policy or profile document into its carrier
 #   ``signature`` -- proving a policy's ``identity.signature``
 #   ``tiers`` -- the tier ladder and the installed ceiling
-#   ``evaluator`` -- ``resolve``, ``resolve_ordinal``, ``gate_decision``, the command pins
+#   ``evaluator`` -- ``resolve``, ``resolve_ordinal``, ``gate_decision``,
+#   ``command_chain_refusal``, the command pins
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.platform.governance_parts.matching",
@@ -1430,6 +1440,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.platform.governance_parts.catalog import (  # noqa: F401
         _SCOPE_ALIASES,
         CAPABILITY,
+        COMMAND_CHAINS_SCOPE,
         COMMANDS_SCOPE,
         RETIRED_SCOPES,
         RULESET,
@@ -1445,6 +1456,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _every_operation_names_a_path,
         _policy_level,
         _query_level,
+        command_chain_refusal,
         resolve,
         resolve_ordinal,
         resolve_pinned_commands,

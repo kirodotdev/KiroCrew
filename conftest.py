@@ -315,6 +315,7 @@ from conftest_floor_git import (  # noqa: E402,F401 -- bound for pytest and for 
     _git_maintenance_off_entries,
     _git_vars_to_strip,
     _load_git_maintenance_helpers,
+    _no_gateway_checkout_from_the_source_tree,
 )
 
 # The fixtures that run the per-test floors; ``seal_floor_guards`` at the end of

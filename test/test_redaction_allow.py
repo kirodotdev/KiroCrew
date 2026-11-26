@@ -298,10 +298,56 @@ def test_a_failing_audit_does_not_change_the_decision(monkeypatch: pytest.Monkey
         assert scoped_blocked_links(url) == []
 
 
-def test_a_corrupt_file_means_nothing_is_allowed(_store: Path) -> None:
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        pytest.param(b"{not json", "not valid JSON", id="invalid-json"),
+        pytest.param(b'\xef\xbb\xbf{"ws1": ["git.example.com"]}', "not valid JSON", id="bom"),
+        pytest.param(b'["git.example.com"]', "not an object", id="top-level-array"),
+        pytest.param(None, "unreadable", id="directory"),
+    ],
+)
+def test_a_corrupt_file_means_nothing_is_allowed(
+    _store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    content: bytes | None,
+    reason: str,
+) -> None:
+    from kiro_crew.security import exfil
+
+    logged: list = []
+
+    class _Log:
+        def log(self, event) -> None:
+            logged.append(event)
+
+    monkeypatch.setattr(exfil, "SecurityEventLog", _Log)
+    # raising=False keeps the assertions below reachable on a module without the memo.
+    monkeypatch.setattr(redaction_allow, "_UNLOADED_REPORTED", set(), raising=False)
     _store.parent.mkdir(parents=True)
-    _store.write_text("{not json")
-    assert redaction_allow.allowed_hosts_for("ws1") == frozenset()
+    if content is None:
+        _store.mkdir()
+    else:
+        _store.write_bytes(content)
+    with caplog.at_level("WARNING", logger=redaction_allow.__name__):
+        assert redaction_allow.list_allowed() == {}
+        # A second load of the same file for the same reason reports nothing new.
+        redaction_allow.preload()
+        assert redaction_allow.allowed_hosts_for("ws1") == frozenset()
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 1, messages
+    assert str(_store) in messages[0] and reason in messages[0]
+    assert len(logged) == 1, logged
+    event = logged[0]
+    assert event.event_type == "redaction.allowed_hosts.load_failed"
+    assert (event.resources, event.metadata) == (str(_store), {"reason": reason})
+
+
+def test_a_missing_file_is_not_reported(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING", logger=redaction_allow.__name__):
+        assert redaction_allow.list_allowed() == {}
+    assert caplog.records == []
 
 
 def test_an_allowed_host_renders_its_long_query_link_live() -> None:

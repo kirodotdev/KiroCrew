@@ -258,6 +258,91 @@ def _recording_builtin_tools(*args: Any, **kwargs: Any) -> Any:
 
 setattr(_harness_agent_module, "_builtin_tools", _recording_builtin_tools)
 
+# ── bedrock-mantle: the Bedrock API key Kiro Crew maps ──
+#
+# shortcut: SDK mints a SigV4 token even with AWS_BEARER_TOKEN_BEDROCK set; delete when strands-agents honours it
+#
+# The Model provider card maps AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key) and
+# AWS_REGION, and the sandbox holds no AWS credentials. strands-harness builds a
+# ``bedrock-mantle/<id>`` model with an empty ``BedrockMantleConfig``, whose region
+# comes from boto3 (``AWS_DEFAULT_REGION`` only) and whose bearer token is always
+# minted with SigV4, so that route fails twice. The harness's provider entry keeps
+# its own build (effort, web search, the web_fetch summarizer); only how each
+# request finds its key, region and base URL changes, and only when the key is set.
+# Resolved per request, never at build: the read-back boot runs with a canary under
+# every mapped name, which is no region.
+
+_MANTLE_PROVIDER = "bedrock-mantle"
+_BEDROCK_API_KEY_ENV = "AWS_BEARER_TOKEN_BEDROCK"
+#: The strands-agents helpers a mantle request needs, from
+#: ``strands.models._openai_bedrock``: the SDK's own region rules, region check and
+#: per-model base path, so no model list is copied here.
+_MANTLE_HELPERS = (
+    "resolve_bedrock_client_args",
+    "_resolve_region",
+    "_resolve_base_url",
+    "validate_region",
+)
+
+_harness_providers: dict[str, Any] = getattr(
+    importlib.import_module("strands_harness.models"), "_PROVIDERS", {}
+)
+_original_mantle_provider: Any = _harness_providers.get(_MANTLE_PROVIDER)
+
+
+def _mantle_helpers() -> Any:
+    """``strands.models._openai_bedrock``, or a refusal naming the helpers it lacks."""
+    helpers = importlib.import_module("strands.models._openai_bedrock")
+    missing = [name for name in _MANTLE_HELPERS if not callable(getattr(helpers, name, None))]
+    if missing:
+        raise RuntimeError(
+            "This Strands .venv's strands-agents has no strands.models._openai_bedrock."
+            + ", ".join(missing)
+            + ", which Kiro Crew's bedrock-mantle route needs. Re-run Kiro Crew's Strands "
+            "install command."
+        )
+    return helpers
+
+
+def _mantle_client_args(model: Any, helpers: Any) -> dict[str, Any]:
+    """The OpenAI client arguments for one request of a ``bedrock-mantle`` *model*.
+
+    The region is the SDK's (an explicit one, then boto3's chain), else
+    ``AWS_REGION``: the order plain ``bedrock`` reads them in. With
+    ``AWS_BEARER_TOKEN_BEDROCK`` set it is the bearer key and nothing is minted;
+    without it the SDK's own SigV4 route runs. The region is checked before it goes
+    into a URL, since a crafted one could send the key to another host. Nothing here
+    is logged: the read-back surfaces the probe's stderr.
+    """
+    config = dict(getattr(model, "_bedrock_mantle_config", None) or {})
+    model_id = str(model.config.get("model_id", ""))
+    if not config.get("region") and config.get("boto_session") is None:
+        import boto3
+
+        region = os.environ.get("AWS_REGION")
+        if region and not boto3.Session().region_name:
+            config["region"] = region
+    key = os.environ.get(_BEDROCK_API_KEY_ENV)
+    if not key:
+        return helpers.resolve_bedrock_client_args(config, model.client_args, model_id=model_id)
+    region = helpers.validate_region(helpers._resolve_region(config))
+    resolved = dict(model.client_args or {})
+    resolved["base_url"] = helpers._resolve_base_url(config, region, model_id)
+    resolved["api_key"] = key
+    return resolved
+
+
+def _mantle_build(model_id: str, effort: str | None, web_search: bool, caching: bool) -> Any:
+    """The harness's own ``bedrock-mantle`` model, resolving each request's auth here."""
+    model = _original_mantle_provider.build(model_id, effort, web_search, caching)
+    helpers = _mantle_helpers()
+    model._resolve_client_args = lambda: _mantle_client_args(model, helpers)
+    return model
+
+
+if _original_mantle_provider is not None:
+    _harness_providers[_MANTLE_PROVIDER] = _original_mantle_provider._replace(build=_mantle_build)
+
 
 def _tool_identity(event: BeforeToolCallEvent) -> tuple[str, str]:
     """The title and owner Kiro Crew judges this call by.

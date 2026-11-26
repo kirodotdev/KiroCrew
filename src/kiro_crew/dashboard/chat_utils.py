@@ -499,8 +499,9 @@ def _broadcast_compaction_result(
     per-slot consecutive-failure streak and a short cooldown avoid that:
     the first couple of failures are shown as-is (so the user sees it's
     happening), then subsequent failures within the cooldown window are
-    suppressed from the chat (still logged server-side via
-    AcpClient._handle_compaction_status) until the cooldown elapses, at which
+    suppressed from the chat until the cooldown elapses (a kiro-cli failure
+    is still logged server-side, by AcpClient._handle_compaction_status or,
+    for a failure the session owns, by the pooled AcpSessionHandle), at which
     point a single collapsed notice reports the streak length instead of
     repeating the same line indefinitely.
     """

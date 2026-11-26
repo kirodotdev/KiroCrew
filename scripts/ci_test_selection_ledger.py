@@ -55,15 +55,18 @@ appends only what the ledger does not hold; a rerun appends a fresh observation
 of the whole run, and the report reads each run's newest attempt only:
 
     {"kind": "run", "run", "attempt", "source", "fork", "pr", "head", "date",
-     "verdict", "tiers": {tier: files}, "covered": {status letter: rows}}
+     "verdict", "tiers": {tier: files}, "covered": {cause: rows}}
     {"kind": "failure", <the same seven>, "file", "tier", "miss", "rerun_green", "main_red"}
     {"kind": "skip", <the same seven>, "reason"}
 
-`covered` is the verdict's own: how many changed docs and frontend paths, by
-git status letter (`A`, `D`, `M`, `R`), had their readers take the place of a
-fall-back (`scripts/ci_test_data_readers.py`). A verdict written before the
+`covered` is the verdict's own: what let the diff be narrowed where a rule
+would else fall back. A git status letter (`A`, `D`, `M`, `R`) counts the
+changed docs and frontend paths whose readers took the place of a fall-back
+(`scripts/ci_test_data_readers.py`); `added_test` counts the test files the
+diff adds. Any key of letters and underscores is kept as written, so a cause
+the scorer names later needs no change here. A verdict written before the
 scorer had the field reads as none, and so does a run row without it. The
-summary splits the `select` runs and every miss by it, so a status that lets
+summary splits the `select` runs and every miss by it, so a cause that lets
 misses through shows before selection is turned on.
 
 Rows are joined and deduplicated only on values every later pass reads the same:
@@ -153,6 +156,7 @@ import re
 import subprocess
 import sys
 import zipfile
+import zlib
 from collections import Counter
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
@@ -243,7 +247,7 @@ _TIMING_FAILURE = re.compile(
 )
 
 _TIER = re.compile(r"[A-Za-z0-9_-]{1,20}")
-_STATUS = re.compile(r"[A-Z]")
+_STATUS = re.compile(r"[A-Za-z_]{1,20}")
 _FILE = re.compile(r"[A-Za-z0-9_./-]{1,300}\.py")
 _SHA = re.compile(r"[0-9a-f]{40}")
 _DAY = re.compile(r"\d{4}-\d\d-\d\d")
@@ -268,7 +272,7 @@ def _files(value: object) -> set[str] | None:
 
 
 def _covered(value: object) -> dict[str, int] | None:
-    """A `covered` table, `{status letter: rows}` with every count above zero, else None."""
+    """A `covered` table, `{cause: rows}` with every count above zero, else None."""
     if not isinstance(value, dict):
         return None
     for status, rows in value.items():
@@ -409,7 +413,8 @@ class Verdicts:
 
 def _only_json(archive: bytes) -> str | None:
     """The text of the JSON file an archive holds and nothing else; "" for any other
-    archive (never a valid verdict), None for bytes that are no archive.
+    archive (never a valid verdict), None for bytes that are no archive or whose
+    member does not unpack.
 
     Nothing is unpacked on the archive's word for its size: the one member is
     read through to `MAX_VERDICT_BYTES` and no further.
@@ -424,7 +429,8 @@ def _only_json(archive: bytes) -> str | None:
             with held.open(members[0]) as member:
                 text = shadow.capped(member, MAX_VERDICT_BYTES)
             return "" if text is None else text.decode("utf-8", errors="replace")
-    except zipfile.BadZipFile:
+    except (zipfile.BadZipFile, zlib.error, EOFError):
+        # Damaged on the way or in the making: what it held cannot be known.
         return None
     except (OSError, ValueError, RuntimeError):
         return ""
@@ -842,12 +848,18 @@ def recorded_lanes(rows: list[Row]) -> tuple[dict[int, int], dict[int, int]]:
     return linux, windows
 
 
+class BudgetSpent(Exception):
+    """A pass is at a limit of its budget: the call it was about to make is not made."""
+
+
 class Budget:
     """What one pass may spend of the REST requests every job of the repository shares.
 
     `most` is the calls this pass makes at most (0: no limit) and `reserve` what
     the pool must keep (0: not checked). The pool is read from `/rate_limit`,
     which costs nothing, before the pass and again every `RECHECK_CALLS` calls.
+    Both are checked before each call, so a pass never makes a call past either;
+    the run it was reading is then left whole for a later pass.
     """
 
     def __init__(self, most: int, reserve: int, root: Path) -> None:
@@ -877,7 +889,7 @@ class Budget:
         return None
 
     def ended(self) -> str | None:
-        """Why the pass takes no further run, None while it may."""
+        """Why the pass makes no further call, None while it may."""
         if self.most and self.spent >= self.most:
             return f"this pass has made its {self.most} calls ({self.spent})"
         if self.reserve and self.spent - self._checked >= RECHECK_CALLS:
@@ -900,6 +912,9 @@ class Budget:
                 # One reader may go through another: the outermost is the call.
                 if inside[0]:
                     return call(*args, **kwargs)
+                ended = self.ended()
+                if ended:
+                    raise BudgetSpent(ended)
                 self.spent += 1
                 inside[0] = True
                 try:
@@ -930,8 +945,22 @@ def collect(
     the lanes the ledger lacks are written: a Windows half is collected for an
     attempt whose Linux half an earlier pass recorded, without repeating it.
     Every row passes `valid_row`, so the ledger never holds a line a later pass
-    refuses. A run the ledger holds costs no call beyond the listing.
+    refuses. A run the ledger holds costs no call beyond the listing. A run the
+    budget ends in the middle of yields nothing: no part of it is recorded.
     """
+    try:
+        yield from _each_run(args, recorded, root, budget)
+    except BudgetSpent as spent:
+        print(f"stopped early: {spent}; a later pass reads the rest", file=sys.stderr)
+
+
+def _each_run(
+    args: argparse.Namespace,
+    recorded: tuple[dict[int, int], dict[int, int]],
+    root: Path,
+    budget: Budget,
+) -> Iterator[list[Row]]:
+    """`collect`, without the end a spent budget puts to it."""
     parse = shadow._nodeid_parser()
     red_since, red_files = main_red_files(root)
     verdicts = Verdicts(root, args.artifact)
@@ -1228,7 +1257,7 @@ def _where(row: Row) -> list[object]:
 
 
 def _covered_cell(covered: dict[str, int]) -> str:
-    return " ".join(f"{status}{rows}" for status, rows in sorted(covered.items()))
+    return " ".join(f"{cause}:{rows}" for cause, rows in sorted(covered.items()))
 
 
 def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> str:
@@ -1247,8 +1276,8 @@ def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> st
         f"Runs excluded: {sum(skipped.values())}"
         + "".join(f"; {cell(reason)}: {n}" for reason, n in sorted(skipped.items()))
         + ".",
-        "Fitted runs by the status of the docs and frontend paths their verdict covered "
-        f"(a run counts under each status it has): none {sum(1 for r in fitted if not r.get('covered'))}"
+        "Fitted runs by what their verdict covered, a status of a docs or frontend path "
+        f"or an added test file (a run counts under each it has): none {sum(1 for r in fitted if not r.get('covered'))}"
         + "".join(f"; {cell(status)}: {n}" for status, n in sorted(by_status.items()))
         + ".",
         "",

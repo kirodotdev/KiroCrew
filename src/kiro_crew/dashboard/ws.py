@@ -1372,14 +1372,15 @@ async def _serve_ws(
                         # the buffered history. Mirrors the per-send re-check in
                         # handlers/updates_streams._safe_ws_send.
                         _live = effective_allowed_events(ws_app, allowed_events)
-                        if not ws.get("_is_dashboard_user", False) and not (
-                            "log" in _live or "log:all" in _live
-                        ):
+                        # A dashboard session passes the owner gate, as on GET /api/logs.
+                        _dash = ws.get("_is_dashboard_user", False)
+                        _scoped = "log" in _live or "log:all" in _live
+                        if not (owner_request if _dash else _scoped):
                             try:
                                 _audit_deny(
-                                    ws_app or "<unknown>",
+                                    _grant_auditee(ws, ws_app) or "<unknown>",
                                     "subscribe_logs",
-                                    "log_scope_not_declared",
+                                    "owner_only" if _dash else "log_scope_not_declared",
                                 )
                             except Exception:
                                 logger.debug(

@@ -33,6 +33,7 @@ export const CARD_KINDS = [
   'mcp.add_custom',
   'mcp.toggle',
   'mcp.server',
+  'mcp.project_server',
   'connection.connect',
   'secret.save',
   'trust.app',
@@ -122,6 +123,8 @@ export interface Card {
   params: Record<string, unknown>
   plan: { apply: CardPlanStep[]; undo: CardPlanStep[] | null }
   undo_unavailable_reason?: string | null
+  /** Set on an applied card whose write the gateway serves only after a restart (a Bot's new gateway-routed MCP server). */
+  gateway_restart_required?: boolean
   undo_label?: CardUndoLabel
   progress?: { op: CardOp; done: number; total: number; waiting?: boolean } | null
   /** Present while `applying`: where an interrupted apply continues, and what earlier steps returned. */

@@ -77,3 +77,53 @@ class FakeLlama:
 
 def load_class() -> type:
     return FakeLlama
+
+
+def resident_kib(path: str) -> int:
+    """Resident KiB of this process's mappings of *path* (Linux smaps)."""
+    target = os.path.realpath(path)
+    total, inside = 0, False
+    with open("/proc/self/smaps", encoding="utf-8") as smaps:
+        for line in smaps:
+            head = line.split()
+            if head and "-" in head[0] and not head[0].endswith(":"):
+                inside = line.rstrip("\n").endswith(target)
+            elif inside and line.startswith("Rss:"):
+                total += int(head[1])
+    return total
+
+
+class MappedLlama(FakeLlama):
+    """:class:`FakeLlama` that maps its model file read-only and reads all of it per embed.
+
+    The text ``__rss`` returns the resident KiB of that mapping in slot 0.
+    """
+
+    instances: list = []
+
+    def __init__(self, **kwargs: object) -> None:
+        import mmap
+
+        super().__init__(**kwargs)
+        self.model_path = str(kwargs["model_path"])
+        with open(self.model_path, "rb") as f:
+            self._map = mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ)
+        type(self).instances.append(self)
+
+    def create_embedding(self, texts: list[str]) -> dict:
+        if texts == ["__rss"]:
+            return {
+                "data": [{"embedding": [float(resident_kib(self.model_path))] + [0.0] * (DIM - 1)}]
+            }
+        digest = hashlib.sha256(self._map[:]).hexdigest()  # every weight page is read
+        out = super().create_embedding(texts)
+        for item, text in zip(out["data"], texts):
+            item["embedding"] = vector_for(text + digest)
+        return out
+
+    def close(self) -> None:
+        self._map.close()
+
+
+def load_mapped_class() -> type:
+    return MappedLlama

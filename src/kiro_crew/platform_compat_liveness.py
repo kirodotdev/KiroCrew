@@ -1,9 +1,10 @@
 """Whether a pid is alive, and which process group it is in.
 
 The three-way liveness probe, thread-group leaders, zombies, process-group
-membership and the thread count, answered without sending a signal that could act
-on the target. Whether a whole process group is alive (``pgroup_exists``) is
-answered by ``platform_compat_kill``, which holds every ``os.killpg`` call.
+membership, whether this process has a supervisor's child's shape, and the thread
+count, answered without sending a signal that could act on the target. Whether a
+whole process group is alive (``pgroup_exists``) is answered by
+``platform_compat_kill``, which holds every ``os.killpg`` call.
 
 One of the owners ``kiro_crew.platform_compat`` is split into: every name here stays
 readable and patchable as ``kiro_crew.platform_compat.<name>``.
@@ -16,7 +17,7 @@ import os
 import sys
 from ctypes import wintypes
 
-from kiro_crew.platform_compat_native import IS_LINUX, IS_POSIX
+from kiro_crew.platform_compat_native import _WINDOWS_PID_MAX, IS_LINUX, IS_POSIX
 from kiro_crew.platform_compat_proctable import (
     _LINUX_EXITED_STATES,
     darwin_pid_is_zombie,
@@ -27,7 +28,7 @@ from kiro_crew.platform_compat_proctable import (
 # Tri-state liveness results for pid_liveness().
 PID_DEAD = "dead"  # confirmed not running -> safe to prune
 PID_ALIVE = "alive"  # confirmed running
-PID_UNSIGNALABLE = "unsignalable"  # exists but we cannot signal it (POSIX EPERM)
+PID_UNSIGNALABLE = "unsignalable"  # cannot be signalled or not knowable (POSIX EPERM, out of range)
 
 
 def live_thread_group_leaders() -> frozenset[int] | None:
@@ -116,7 +117,8 @@ def pid_liveness(pid: int) -> str:
     ``PermissionError`` or an out-of-range PID -> UNSIGNALABLE, success ->
     ALIVE.
     Windows: no EPERM distinction for our processes; map ``pid_exists`` onto
-    DEAD/ALIVE (UNSIGNALABLE never returned).
+    DEAD/ALIVE, except a PID wider than the Win32 DWORD boundary, which is
+    UNSIGNALABLE as on POSIX.
     """
     if IS_POSIX:
         try:
@@ -135,6 +137,8 @@ def pid_liveness(pid: int) -> str:
             # Unknown errno — be conservative and treat as unsignalable
             # (leave it alone) rather than risk pruning/killing a live PID.
             return PID_UNSIGNALABLE
+    if pid > _WINDOWS_PID_MAX:
+        return PID_UNSIGNALABLE
     return PID_ALIVE if pid_exists(pid) else PID_DEAD
 
 
@@ -159,6 +163,55 @@ def pgroup_of(pid: int) -> int | None:
         return os.getpgid(pid)
     except OSError:
         return None
+
+
+#: Why :func:`supervision_shape_failure` finds no supervisor: stdin is this
+#: process's controlling terminal.
+SUPERVISION_TERMINAL = "terminal"
+#: ... this process leads its own group, or its parent is outside that group.
+SUPERVISION_OWN_GROUP = "own_group"
+#: ... the platform has no process groups to read.
+SUPERVISION_NOT_POSIX = "not_posix"
+
+
+def supervision_shape_failure() -> str | None:
+    """Why this process does not look like a supervisor's child, or ``None`` when it does.
+
+    A supervisor that relaunches its child (a shell-script loop, a runit or
+    daemontools service) runs it inside the supervisor's own process group, with
+    no terminal on stdin. The two readings that tell that shape apart:
+
+    * stdin is not this process's controlling terminal: ``os.tcgetpgrp(0)``
+      raises (``ENOTTY`` for a non-tty or a tty that belongs to another session,
+      ``EBADF`` for a closed fd 0). A process run in a terminal answers, so it
+      fails with :data:`SUPERVISION_TERMINAL`.
+    * this process does not lead its group, and its parent is in that group. A
+      detached child (a new session), a job-control job, a service manager's main
+      process and an orphan whose reaper sits outside the group fail with
+      :data:`SUPERVISION_OWN_GROUP`; so does a parent whose group cannot be read,
+      and one outside this pid namespace, which ``getppid`` names as 0.
+
+    It is a shape, not a proof: a parent that never relaunches its child passes
+    when it has that shape, and a supervisor that gives its child a terminal or a
+    group of its own fails. Off POSIX it never claims supervision
+    (:data:`SUPERVISION_NOT_POSIX`). Reads only this process and its parent, and
+    signals nothing.
+    """
+    if not IS_POSIX:
+        return SUPERVISION_NOT_POSIX
+    try:
+        os.tcgetpgrp(0)
+    except OSError:
+        pass
+    else:
+        return SUPERVISION_TERMINAL
+    group = os.getpgrp()
+    parent = os.getppid()
+    # ``getpgid(0)`` answers for the caller itself, so a parent the kernel names
+    # as 0 must not be read.
+    if group == os.getpid() or parent <= 0 or pgroup_of(parent) != group:
+        return SUPERVISION_OWN_GROUP
+    return None
 
 
 def pgroup_of_leader(pid: int) -> int | None:
@@ -200,7 +253,9 @@ def pid_exists(pid: int) -> bool:
     """Return True iff ``pid`` currently exists (best-effort).
 
     POSIX: ``os.kill(pid, 0)``.
-    Windows: ``OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)``.
+    Windows: ``OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)``. A PID wider
+    than its DWORD argument reads as existing (unknown), as an out-of-range PID
+    does on POSIX, rather than being truncated into a different process.
     """
     if IS_POSIX:
         try:
@@ -210,6 +265,8 @@ def pid_exists(pid: int) -> bool:
             return False
         except (PermissionError, OSError, OverflowError):
             return True  # exists but we can't signal it
+    if pid > _WINDOWS_PID_MAX:
+        return True
     try:
         _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000  # noqa: N806 — Windows API constant
         _STILL_ACTIVE = 259  # noqa: N806 — Windows STILL_ACTIVE exit code

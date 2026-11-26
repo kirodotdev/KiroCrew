@@ -129,3 +129,40 @@ def test_a_single_fatal_clone_failure_keeps_its_whole_cause(tmp_path: Path) -> N
     assert err.endswith("self-signed certificate in certificate chain")
     assert "Cloning into" not in err
     assert "autoimprove-scratch" not in err
+
+
+#: A clone whose checkout failed, as Git for Windows writes it: the cause is the
+#: ``fatal:`` line, and git ends on a recovery hint that names no cause. The tracked
+#: path alone is 215 characters, so the fatal line is longer than the old 200 bound.
+_DEEP_PATH = "/".join(["level-of-a-deeply-nested-tree"] * 7) + "/f.txt"
+_CHECKOUT_FAILURE = (
+    "Cloning into 'C:/Users/alice/.autoimprove-scratch/o--r'...\n"
+    f"fatal: cannot create directory at '{_DEEP_PATH}': Filename too long\n"
+    "warning: Clone succeeded, but checkout failed.\n"
+    "You can inspect what was checked out with 'git status'\n"
+    "and retry with 'git restore --source=HEAD :/'\n"
+)
+
+
+def test_a_failed_checkout_reports_its_fatal_line_not_the_recovery_hint() -> None:
+    assert clone_setup._git_stderr_summary(_CHECKOUT_FAILURE) == (
+        f"fatal: cannot create directory at '{_DEEP_PATH}': Filename too long"
+    )
+
+
+def test_a_failed_clone_checkout_returns_the_whole_fatal_line(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    spec = CloneSpec("o/r", "https://github.com/o/r.git", "o--r", "github", "github.com", "o/r")
+    failed = subprocess.CompletedProcess(["git", "clone"], 128, "", _CHECKOUT_FAILURE)
+    with (
+        mock.patch.object(clone_setup, "validate_target_url", return_value=(spec, "")),
+        mock.patch.object(clone_setup.subprocess, "run", return_value=failed),
+    ):
+        result, err = clone_setup.setup_safe_clone("https://github.com/o/r", root)
+
+    assert result == {}
+    assert err == (
+        f"git clone failed: fatal: cannot create directory at '{_DEEP_PATH}': Filename too long"
+    )
+    assert "git status" not in err

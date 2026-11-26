@@ -1553,6 +1553,15 @@ describe('ArtifactDetailPage — upstream sync banner', () => {
     expect(screen.getByText('CR Queue')).toBeInTheDocument()
   })
 
+  it('gives the publication notice\'s re-check a resting fill and a strong edge on its tint', async () => {
+    vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({})
+    await mount(mkArtifact({ publication: { ...publication, notice: 'still rolling out', notice_code: 'rolling_out' } }))
+    const recheck = await screen.findByRole('button', { name: "Re-check this publication's status" }, PUBLISHED_LINE_WAIT)
+    expect(recheck).toHaveClass('bg-bg-elevated', 'border-border-strong')
+    expect(recheck).not.toHaveClass('bg-transparent')
+    expect(recheck).not.toHaveClass('border-border')
+  })
+
   it('shows no published link when the publication carries no URL', async () => {
     vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({})
     await mount(mkArtifact({ publication: { ...publication, view_url: '' } }))

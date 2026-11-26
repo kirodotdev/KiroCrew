@@ -163,6 +163,10 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   left changed, and names the test), and a new process-global ships its floor entry
   (`test/test_process_cache_floor_ratchet.py` fails a new module-level cache in
   `src/kiro_crew` that no floor resets).
+  Never fake a spawn or kill by patching an attribute of a module other code shares
+  (a module's `subprocess` alias's `Popen` is `subprocess.Popen` for the whole worker, the
+  subprocess pool's helper child included): rebind the name in the module under test
+  alone, as `test_acp_deepseek_backend.py`'s `_module_with` does for `subprocess_mod`.
   [Class 4](#4-order-dependence-and-shared-state).
 - **D12. Prove it.** Each new or changed test passes 20 times at `-n0`, 10 times at
   `-n 4` beside its neighbours, and in a shuffled order. A FIX to a flaky test also
@@ -528,7 +532,17 @@ every supported platform's `pid_max`
 several; `test/test_update_provider.py::_UNALLOCATABLE_PID` is the same value), or
 neutralise the killer
 and assert the ordering instead
-(`test/test_platform_compat_kill_reap.py::TestKillAndReap`). The first spelling IS gated:
+(`test/test_platform_compat_kill_reap.py::TestKillAndReap`).
+Neutralising the killer means every host READ that picks the kill path too, not only the
+signal calls: `pgroup_of`, `pgroup_of_leader`, `pgroup_exists`, `pid_exists` and
+`process_start_time` answer from the real table for a fabricated pid. The forwarder
+reclaim asks `pgroup_of(pid) == pid` and, when a real group leader owns the number, takes
+a group path the test never stubbed: it signalled that stranger's group with the real
+`kill_process_group` and polled a group that never went, so
+`test_windows_kill_is_pinned_to_the_recorded_start_time` read `not_gone` on four macOS PRs
+at once (pid 4242). Stub the branch-picking read too
+(`test/test_instances_orphan_reclaim.py::_fabricated_pid_leads_no_group`) and make the
+unstubbed killer raise, so a new path fails loudly instead of signalling the runner. The first spelling IS gated:
 `semgrep/mock-pid-allocatable.yaml` (`kirocrew.mock-pid-allocatable`), which
 `code-review.yml`'s SAST job runs diff-scoped and blocking, refuses a literal below
 `2**32` assigned to `.pid` or passed as `pid=` to a `Mock` / `SimpleNamespace`
@@ -3482,7 +3496,12 @@ on an item that never started. The banner names that worker, that item and how
 many selected items the scheduler still queued, and says to re-run the shard;
 that worker's `session_end` progress record carries `channel_closed` to tell the
 two causes apart (other workers' channels close at teardown, so only its own
-record counts).
+record counts). One way a test closes its own worker's channel: rebinding
+`struct.unpack` on the stdlib module to a fake that raises. xdist's receiver
+thread decodes every frame from the controller with it, so a frame that lands
+while the patch holds ends that thread. Replace the module-under-test's own
+`struct` binding instead, as *Never rebind a stdlib clock* below shows for
+`time`.
 
 So any override that still runs MANY tests must carry
 `-n auto --dist loadgroup --max-worker-restart=2`, and keep `-p no:platformdirs`
@@ -5183,6 +5202,19 @@ gates the test names and leave `configured_kind_routing_mode()` (or any
 `configured_mode()`) reading config. Good: `monkeypatch.setattr(memory_kind_routing,
 "configured_kind_routing_mode", lambda: "off")` beside the other pins in the pass
 helper, so a default flip in another stage cannot change what this test compares.
+
+### Lines that several threads print to one pipe
+
+A child process whose threads each `print()` a line, compared line by line by the
+parent, races on the pipe. `print(x)` writes `x` and its newline as two writes, so two
+threads released by the same event can land as `runningdropped` plus an empty line.
+`test_a_normal_exit_finishes_running_and_queued_work_and_refuses_new_work` in
+`test/test_enqueue_only_pool.py` red this way on macOS runners, on five PRs over four
+bases, while every line was really printed. `flush=True` does not help: it flushes
+after both writes, not between them. Bad: `print(line, flush=True)` from a worker.
+Good: one `os.write(1, (line + "\n").encode())` per line, a single `write(2)` well under
+`PIPE_BUF`, so no other writer can land inside it; send every line through the same
+helper so no buffered `print` mixes in.
 
 ### A CI wait that runs out is infrastructure, not a red test
 

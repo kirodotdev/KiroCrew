@@ -5,6 +5,7 @@ import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { SlotProvider } from '../providers/SlotContext'
 import { loadChatConfig, saveChatConfig } from '../pages/chat/ChatSettings'
+import { optimizeRow } from './optimizeRow'
 
 /**
  * Settings > Chat > Composer > Optimize Before Sending: the first Send of a draft
@@ -107,7 +108,8 @@ describe('ChatInput: Optimize Before Sending', () => {
     renderWithProviders(<Host initial={ORIGINAL} onSend={onSend} />)
 
     pressEnter()
-    await screen.findByTestId('optimize-error')
+    const error = await screen.findByTestId('optimize-error')
+    expect(error.parentElement!.className).toMatch(/\bliquid-glass\b.*\bglass-thick\b/)
     expect(screen.getByLabelText('Message input')).toHaveValue(ORIGINAL)
     expect(onSend).not.toHaveBeenCalled()
 
@@ -158,6 +160,8 @@ describe('ChatInput: Optimize Before Sending', () => {
     const busy = await screen.findByTestId('optimize-busy')
     expect(busy).toHaveTextContent('Optimizing another chat — please wait')
     expect(busy).toHaveAttribute('role', 'status')
+    // Drawn on a thick glass pane: the transcript under the dock stays behind it.
+    expect(busy.className).toMatch(/\bliquid-glass\b.*\bglass-thick\b/)
     expect(screen.queryByTestId('optimize-error')).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
     expect(onSend).not.toHaveBeenCalled()
@@ -193,19 +197,20 @@ describe('ChatInput: Show Optimize Prompt', () => {
 
   const chord = () => fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter', ctrlKey: true, metaKey: true, shiftKey: true })
 
-  it('shows the Optimize button by default', () => {
+  it('shows the Optimize row by default', () => {
     vi.stubGlobal('fetch', stubFetch())
     renderWithProviders(<Host initial={ORIGINAL} onSend={vi.fn()} />)
-    expect(screen.getByRole('button', { name: 'Optimize prompt' })).toBeInTheDocument()
+    expect(optimizeRow()).toHaveTextContent('Optimize prompt')
   })
 
-  it('hides the button, ignores the shortcut and sends at once when turned off', () => {
+  it('hides the row, ignores the shortcut and sends at once when turned off', () => {
     saveChatConfig({ ...loadChatConfig(), showOptimizePrompt: false, optimizeBeforeSend: true })
     const fetchMock = stubFetch()
     vi.stubGlobal('fetch', fetchMock)
     const onSend = vi.fn()
     renderWithProviders(<Host initial={ORIGINAL} onSend={onSend} />)
-    expect(screen.queryByRole('button', { name: 'Optimize prompt' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('composer-more-optimize')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('composer-menu-optimize')).not.toBeInTheDocument()
 
     chord()
     expect(optimizerCalls(fetchMock)).toBe(0)

@@ -232,6 +232,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.validation_parts.core_agent_schemas import (  # noqa: F401
         _BACKEND_NAME_RE,
+        _MONITOR_ALSO_WAKE_ON_FIELD,
         _MONITOR_WATCH_FIELD,
         _WATCH_WORK_LEDGER,
         AUTONUDGE_STOP_SCHEMA,

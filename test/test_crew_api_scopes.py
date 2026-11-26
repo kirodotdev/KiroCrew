@@ -202,13 +202,19 @@ def test_the_owner_only_list_is_read_before_the_table() -> None:
 
 def test_the_routes_that_serve_an_app_credential() -> None:
     """The whole list, so a route joins it only by a change to this test."""
-    assert crew_api_auth.APP_SERVED_ROUTES == {MODELS}
+    assert crew_api_auth.APP_SERVED_ROUTES == {
+        MODELS,
+        ("GET", "/v1/crew/grant"),
+        ("GET", "/v1/crew/bots"),
+        ("GET", "/v1/crew/capabilities"),
+        ("GET", "/v1/crew/info"),
+    }
     for key in crew_api_auth.APP_SERVED_ROUTES:
         assert ROUTES[key].api_tier == PUBLIC and not ROUTES[key].entitlements
     assert crew_api_auth.app_owner_only_routes() == {
         "/v1/responses",
-        "/v1/crew/capabilities",
-        "/v1/crew/info",
+        "/v1/responses/{response_id}",
+        "/v1/responses/{response_id}/input_items",
     }
 
 
@@ -266,14 +272,6 @@ async def test_an_app_credential_reaches_only_the_listed_routes_the_gateway_regi
             "POST",
             "/v1/conversations",
             "responses:write",
-            "owner_only",
-            "owner_only:no-app-route",
-            crew_api_auth.APP_CREDENTIAL_REFUSED,
-        ),
-        (
-            "GET",
-            "/v1/crew/grant",
-            "bots:read",
             "owner_only",
             "owner_only:no-app-route",
             crew_api_auth.APP_CREDENTIAL_REFUSED,

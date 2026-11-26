@@ -1130,6 +1130,95 @@ class TestProvisionProvenance:
         assert "dist" not in prov._read_provenance(co)
         assert prov.has_dist(co) is True
 
+    def _fake_build(self, co: Path, monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+        """Stub the npm build: it records each run and writes a dist stamped
+        with the current HEAD:website tree, as a clean vite build does."""
+        runs: list[Path] = []
+        tree = prov._resolve_oid(co, "website") or ""
+
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
+            runs.append(cwd)
+            d = co / "website" / "dist"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "build-id.json").write_text(json.dumps({"buildId": "t", "websiteTree": tree}))
+            return 0
+
+        monkeypatch.setattr(prov, "ensure_node_modules", lambda website: True)
+        monkeypatch.setattr(prov, "_npm_bin", lambda: "npm")
+        monkeypatch.setattr(prov, "_run", fake_run)
+        return runs
+
+    def test_build_dist_keeps_a_dist_built_from_the_clean_current_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        co = self._repo(tmp_path)
+        self._stage_dist(co)
+        runs = self._fake_build(co, monkeypatch)
+
+        assert prov.build_dist(co) is True
+        assert runs == []
+
+    def test_build_dist_rebuilds_a_dist_vite_built_from_a_dirty_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Vite writes an empty websiteTree when website/ was dirty at build time.
+        has_dist cannot verify such a dist and still reports it built (the Fleet
+        view never hides one), but provision must not keep serving it once the
+        edits are committed: a pod would run the old bundle."""
+        co = self._repo(tmp_path)
+        self._stage_dist(co, website_tree="")
+        self._commit(co, "website/src.ts", "export const fixed = true")
+        runs = self._fake_build(co, monkeypatch)
+
+        assert prov.has_dist(co) is True
+        assert prov.build_dist(co) is True
+        assert runs == [co / "website"]
+        from kiro_crew.dashboard.stale_bundle_guard import read_dist_tree
+
+        built = read_dist_tree(prov.dist_dir(co))
+        assert built is not None and built[0] == prov._resolve_oid(co, "website")
+
+    def test_build_dist_rebuilds_when_website_has_uncommitted_edits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A clean build stamped with HEAD:website does not carry an uncommitted
+        website/ edit, though its stamp still matches HEAD."""
+        co = self._repo(tmp_path)
+        self._stage_dist(co)
+        (co / "website" / "src.ts").write_text("export const edited = 1")
+        runs = self._fake_build(co, monkeypatch)
+
+        assert prov.has_dist(co) is True
+        assert prov.build_dist(co) is True
+        assert runs == [co / "website"]
+
+    def test_build_dist_sees_a_new_untracked_website_file_whatever_status_shows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        co = self._repo(tmp_path)
+        self._git(co, "config", "status.showUntrackedFiles", "no")
+        self._stage_dist(co)
+        (co / "website" / "new-asset.svg").write_text("<svg/>")
+        runs = self._fake_build(co, monkeypatch)
+
+        assert prov.build_dist(co) is True
+        assert runs == [co / "website"]
+
+    def test_a_checkout_naming_a_clean_filter_reads_dirty_without_git_status(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """git status would run a repo-named filter driver, so the probe refuses
+        to run it and takes the rebuild direction."""
+        from kiro_crew.platform import update_governance
+
+        co = self._repo(tmp_path)
+        monkeypatch.setattr(
+            update_governance, "repo_exec_driver_reason", lambda proj, git="": "filter.x.clean"
+        )
+        monkeypatch.setattr(prov.subprocess, "run", lambda *a, **k: pytest.fail("git status ran"))
+
+        assert prov._website_dirty(co) is True
+
     def test_node_modules_rebase_gap_closes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

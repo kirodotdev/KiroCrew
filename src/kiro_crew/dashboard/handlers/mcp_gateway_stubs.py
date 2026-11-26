@@ -41,6 +41,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.mcp_gateway import hazards, launch_resolve
 from kiro_crew.mcp_gateway.launch_approval import (
     approve,
+    check_store_rewritable,
     display_launches,
     load_approvals,
     refused_servers,
@@ -657,6 +658,17 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 status=409,
             )
 
+        def _approval_write_failed(exc: OSError) -> web.Response:
+            logger.warning("mcp launch approval store write failed: %s", exc)
+            _log_stub_rejection("approval_write_failed")
+            return web.json_response(
+                {
+                    "error": "could not record the launch approval",
+                    "code": "approval_write_failed",
+                },
+                status=503,
+            )
+
         revoked_snapshot = None
         # An answer that the server uses the folder also forgets its approval, so
         # a later edit that loses the answer cannot bring it back routed.
@@ -664,19 +676,23 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             try:
                 revoked_snapshot = await asyncio.to_thread(revoke, names)
             except OSError as exc:
-                logger.warning("mcp launch approval store write failed: %s", exc)
-                _log_stub_rejection("approval_write_failed")
-                return web.json_response(
-                    {
-                        "error": "could not record the launch approval",
-                        "code": "approval_write_failed",
-                    },
-                    status=503,
-                )
+                return _approval_write_failed(exc)
 
         async def _restore_revoked() -> None:
             if revoked_snapshot is not None:
-                await asyncio.to_thread(restore, revoked_snapshot)
+                try:
+                    await asyncio.to_thread(restore, revoked_snapshot)
+                except OSError as exc:
+                    # The response already names the failure that led here.
+                    logger.warning("mcp launch approval restore failed: %s", exc)
+
+        # A stub on writes the config before it records the approval, so a store
+        # the approval write would refuse is refused first, with nothing written.
+        if stub and any(launches.get(n) for n in names):
+            try:
+                await asyncio.to_thread(check_store_rewritable)
+            except OSError as exc:
+                return _approval_write_failed(exc)
 
         # The launch each name declares now, which a ``not_used`` answer is bound
         # to. A scan that fails reads as "cannot tell", which keeps every answer
@@ -890,15 +906,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             try:
                 await asyncio.to_thread(approve, approved)
             except OSError as exc:
-                logger.warning("mcp launch approval store write failed: %s", exc)
-                _log_stub_rejection("approval_write_failed")
-                return web.json_response(
-                    {
-                        "error": "could not record the launch approval",
-                        "code": "approval_write_failed",
-                    },
-                    status=503,
-                )
+                return _approval_write_failed(exc)
 
         state: DashboardState = request.app["state"]
         apply = getattr(state, "_mcp_gateway_apply_stub", None)

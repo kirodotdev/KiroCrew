@@ -204,9 +204,11 @@ text }], key_results: [{ id, text, target, current, updated_at, goal_ids, histor
 A wake sends no text. `ref` is an opaque id your app minted (1 to 64 of
 `A-Z a-z 0-9 _ . : -`). The Bot reads a line the gateway writes, naming your app and
 the ref, and fetches the message through your app's own tools if it has them. A busy
-Bot gets the wake when its current turn ends. Each app may wake one Bot at most 20 times
-in 5 minutes, and at most 10 refs from one app wait on a busy Bot; past either limit the
-call fails with a 429 and a `Retry-After` header.
+Bot gets the wake when its current turn ends. A Bot a person stopped in its chat answers
+`queued` and gets the wake after the next turn that starts in that chat, for instance
+the person's next message. Each app may wake one Bot at most 20 times in 5 minutes,
+and at most 10 refs from one app wait on a busy Bot; past either limit the call fails
+with a 429 and a `Retry-After` header.
 
 No scope reaches a Bot's chats, briefing or rules. A Bot that is not ticked answers 404,
 the same as one that does not exist.
@@ -326,6 +328,12 @@ A conversation the embed's own send begins (no `onSend`) is recorded as begun on
 app's page, so uninstalling the app gives it a fresh start: the agent does not resume
 it. Its transcript stays, as for every conversation an app leaves behind, and the
 session stays the person's: the record grants your app nothing.
+
+While the embed is on screen in a focused window, the rows it shows count as
+read, so the session's unread badge clears on every device up to the newest of
+those rows. A newer row, such as a tool approval the embed has not loaded yet,
+keeps its badge. An embed out of sight (`display: none`, collapsed,
+scrolled out of view, or in a host tab that is not active) reads nothing.
 
 | Prop | Type | Default | What it does |
 |---|---|---|---|
@@ -1286,6 +1294,48 @@ browser's autoplay rule; the route then clicks the element once, which counts as
 gesture. The hook draws nothing, so the buttons are yours. Only the dashboard owner's own
 page can call it: the agent's tools and app tokens are refused.
 
+### Browser recipes
+
+`runRecipe(name)` (`APP_SDK_LEVEL >= 15`) runs one of your approved
+[`permissions.browserRecipes`](manifest-reference.md) on the same tab: fixed clicks on
+CSS selectors, with no agent turn and no guessed wait. It resolves to `{ ok: true }`, or
+`{ ok: false, code, step }` naming the step that failed (from 0), so your page can ask its
+agent instead. A click is `el.click()` on the matched element (`"click": "script"` in the
+answer): the site sees `isTrusted` false, and one that ignores such clicks does nothing
+while the answer is still `ok: true`. Check the effect (for play, `state`) and fall back to
+your agent then too.
+
+```tsx
+const { runRecipe } = sdk.useBrowserMedia(sessionKey)
+const played = await runRecipe('play')
+if (!played.ok) chat.send('The play button did not work. Press play on the video.')
+```
+
+The route is the same `POST /api/browser/media`, with every gate above, and body
+`{"session_key", "action": "recipe", "recipe": "<name>"}` (success adds `"click":
+"script"`). Recipes sit behind the
+`app_browser_sdk` Feature Preview (Settings > Developer > Feature previews), off by
+default. Answers: `{"ok": true, "session_key", "recipe", "steps"}`; HTTP 403
+`preview_off` while that preview is off; HTTP 403 `recipe_not_approved` for a name that is
+not an approved recipe (undeclared, waiting for the owner, or changed since approval); or
+`{"ok": false, "code", "error", "recipe", "step"}` with `code` one of `not_found` (no
+element matches), `hidden` (it matches but is not shown in the viewport), `covered` (something else is
+drawn over it),
+`wait_timeout`, `bad_selector`, `password_field`, `wrong_site` (the page is not the
+recipe's `site`) or `redirect_refused` (the page left your approved sites).
+
+A recipe with `"watch": true` can also run by itself, once the owner turns on its own
+"runs by itself" switch on your app's page (approving the recipe alone lets your page run
+it, nothing more). The owner can turn that switch off again; the recipe then runs only
+when your page asks. Then, while the gateway watches your agent's
+tab (above), each 3-second tick while the media plays (never while it is paused or has ended) runs it when its first click's element is shown, so
+`{"name": "skip_ad", "watch": true, "steps": [{"click": "button.ytp-skip-ad-button"}]}`
+presses "Skip ad" with nobody in a turn. Each run writes an audit row. It is skipped while
+the person has taken the tab over, and stops when the tab closes, the app is turned off or
+untrusted, the preview is turned off, or the recipe is no longer approved. Every click lands in the owner's own
+signed-in browser; it is bounded to the selectors the owner approved, on your approved
+sites.
+
 ## Browser View
 
 `BrowserView` shows the live browser of one of your app's own chat slots, and lets the
@@ -1855,8 +1905,9 @@ publish(result.text)          # only the scrubbed text may leave
 A credential is masked at its value, inside a URL too. A link the dashboard would
 draw as a Blocked link chip (its query carries data out, and its host is not one the
 owner allowed) is replaced whole with `[REDACTED: suspicious URL to <host>]` and
-counted in `urls_removed`, because your page has no chip to hold it back. Every
-other link leaves as written.
+counted in `urls_removed`, because your page has no chip to hold it back. A fixed
+reason for the rule that blocked it follows in parentheses, such as `(credential)`
+or `(long query)`; it never carries URL text. Every other link leaves as written.
 
 You get **counts, not descriptions**, and there is deliberately no way to learn
 which value was removed. That is not an omission to be filled in later: the
@@ -2305,7 +2356,7 @@ slots.send(state, slot, "Start with the README.")
 | `track(state, task)` | `None` | Hold a follow-up task with the Gateway's background work, so shutdown cancels and awaits it |
 | `nudges(state=None)` | view or `None` | The AutoNudge loops on live slots you own (`get_by_slot`, `list_all`, `remove`, `remove_on_slot`, `deactivate_and_wait`); `None` when AutoNudge is not running. Non-blocking |
 | `nudge_maintenance(state=None)` | async context manager | The same view over the AutoNudge store, serialized with startup, for recovery; it also lists loops whose slot is not live when the saved transcript records your app. A loop you pause there stays paused until you remove it or the block ends |
-| `arm_nudge(state, slot, *, message, idle_secs, max_cycles, stop_sentinel_path="", caller="")` | `(loop, error, status)` | Arm a loop through the same authorization `POST /api/autonudge` uses, with source `app:<your app>` (async). Armed only when `error` is `None` |
+| `arm_nudge(state, slot, *, message, idle_secs, max_cycles, stop_sentinel_path="", caller="", max_runtime_secs=None)` | `(loop, error, status)` | Arm a loop through the same authorization `POST /api/autonudge` uses, with source `app:<your app>` (async). Armed only when `error` is `None`. `max_runtime_secs` is 1 up to the owner's `monitoring.max_runtime_secs` ceiling, and the ceiling when left out, so the loop always ends; out of range is `(None, <reason>, 400)`. Disabling your app stops the loop |
 
 A key is `<app>-<id>`, where *id* is 1 to 400 of `A-Z a-z 0-9 . _ -`, as for
 `ctx.turns`, and the whole key is at most 193 characters, the length the Gateway folds a
@@ -2569,9 +2620,15 @@ adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browse
 dashboard's `appWebOriginStatus(name)`, and level 12 adds
 `permissions.kiroOperations` with its route and `ctx.kiro_call` ([Kiro calls](#kiro-calls)) and the dashboard's
 [`SessionChanges` and `DiffView`](#session-changes-and-diff-view), and level 13 adds
-[`useBrowserSites`](#browser-sites) and `/api/apps/<name>/browser-sites`; each level
-includes every level below it. Several seams share level 7, three share level 8, and
-level 10 is shared by the seams of the batch it opens, so an app that needs one
+[`useBrowserSites`](#browser-sites) and `/api/apps/<name>/browser-sites`, and level 14
+adds the [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk)'s `canonical_file_path`,
+its outbound URL check (`vet_public_url`, `UrlRejectedError` and
+`address_is_not_public`), its raster sniff (`sniff_raster_mime` and
+`RASTER_SNIFF_BYTES`) and its pinned path walk and copy (`pin_parent`,
+`copy_file_pinned` and their helpers), and level 15 adds `permissions.browserRecipes`
+with [`runRecipe`](#browser-recipes); each level includes every level below it. Several seams
+share level 7, three share level 8, level 10 is shared by the seams of the batch it
+opens, and level 14 by the backend SDK names of its batch, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
@@ -2580,11 +2637,13 @@ The dashboard exports the same number as `APP_SDK_LEVEL`.
 ### Backend SDK (`kiro_crew.apps.backend_sdk`)
 
 The host controls your backend's own Python may call when no `ctx` seam fits: a
-sensitive-path check, a no-follow read, an atomic write, outbound redaction, an audit
-row, a sandboxed child process and the cross-platform process and lock helpers. Each
-name calls the control the Gateway itself enforces, so a check tightened in a later
-release reaches your app with the upgrade. Use these instead of a private `kiro_crew`
-name: a private name moves between releases, and these do not.
+sensitive-path check, the file path gate, a no-follow read, an atomic write, outbound
+redaction, an audit row, a sandboxed child process, the cross-platform process and
+lock helpers, the public-address check for a URL your backend fetches, a media-type
+sniff and a descriptor-pinned path walk and copy. Each name calls the control the
+Gateway itself enforces, so a check tightened in a later release reaches your app with
+the upgrade. Use these instead of a private `kiro_crew` name: a private name moves
+between releases, and these do not.
 
 It works the same in a hooks backend (in the Gateway process) and in an `entryPoint`
 backend the Gateway spawns on its own interpreter. A backend on its own venv
@@ -2608,13 +2667,61 @@ def read_attachment(path: str, root: str) -> bytes | None:
     return sdk.read_bytes_nofollow(path, within_root=root, max_bytes=5_000_000)
 ```
 
+A name added after level 7 is feature-detected by name as well, since the level alone
+does not say which batch member a host has: `getattr(sdk, "copy_file_pinned", None)`
+is `None` on a Gateway older than level 14. Keep your own refusal when it is.
+
+To copy a file a person named by path, refuse when `supports_pinned_walk()` is
+`False`, resolve the path once (`os.path.realpath`), check it with
+`is_sensitive_path`, then pin its directory and copy through it:
+
+```python
+import os
+
+def snapshot(sdk, path: str, into_dir: str, max_bytes: int) -> str | None:
+    """Copy *path* into *into_dir*, a directory this request just created."""
+    if not sdk.supports_pinned_walk() or sdk.is_reparse_point(path):
+        return None  # no race-free open here, or a link at the name: refuse
+    real = os.path.realpath(path)
+    if sdk.is_sensitive_path(real):
+        return None
+    dst = os.path.join(into_dir, "copy" + os.path.splitext(real)[1])
+    try:
+        judged = os.stat(real)
+        dir_fd = sdk.pin_parent(os.path.dirname(real), what="import source")
+    except (sdk.PinnedPathRefusal, OSError):
+        return None
+    try:
+        copied = sdk.copy_file_pinned(
+            real,
+            dst,
+            dir_fd=dir_fd,
+            name=os.path.basename(real),
+            force_mode=0o600,
+            max_bytes=max_bytes,
+            expected_src_ident=(judged.st_dev, judged.st_ino),
+        )
+    except OSError:
+        return None
+    finally:
+        os.close(dir_fd)
+    return dst if copied else None
+```
+
 | Name | What it does |
 |---|---|
 | `is_sensitive_path(path)` | `True` when `path` is inside a location the Gateway never reads or writes (credential homes, its own policy files). Refuse on `True`. |
 | `contains_sensitive_path(directory)` | `True` when such a location lies under `directory`. Check it before a bulk operation rooted there (`git add -A`, an archive, a recursive copy). |
 | `read_bytes_nofollow(path, *, within_root=None, max_bytes=None, within_root_is_canonical=False)` | The file's bytes, or `None` when refused: a link at the last component, a hardlinked or non-regular file, a sensitive path, or a file whose opened descriptor resolves outside `within_root`. Raises `FileTooLargeError` past `max_bytes`. |
+| `canonical_file_path(path)` | Level 14. The canonical path of `path`, every link followed, or `None` when the Gateway's file path gate refuses it: an empty path, a Windows UNC path outside the trusted roots, a Windows link the Gateway refuses, or a path whose real target is sensitive. It judges the name, not the file, so read the bytes with `read_bytes_nofollow` or through a descriptor you opened and checked, never a plain `open()` of the answer. It blocks: call it off the event loop. A host below level 14 has the package without this name, so look it up with `getattr(sdk, "canonical_file_path", None)` and refuse the path when it is `None`. |
 | `atomic_write(path, content, *, fsync=False, mode=None, newline=None, restrict_to_owner=False)` | Writes through a temp file and one rename, so a reader never sees a torn file. `restrict_to_owner=True` makes the file owner-only on every platform. |
 | `ensure_owner_only_dir(path)` | `mkdir -p`, owner-only (`0700`) inside the data home and a plain `mkdir -p` elsewhere. |
+| `supports_pinned_walk()` | Level 14. `True` when this platform can open a path relative to a directory descriptor without following a link. `False` on Windows: refuse a path the person named rather than open it by name. |
+| `is_reparse_point(path)` | Level 14. `True` when `path` itself is a symlink or, on Windows, any reparse point (wider than `is_link_or_junction` there). A cheap first refusal at the name, not the guard. |
+| `pin_parent(resolved_parent, *, what)` | Level 14. An open descriptor for an already-resolved directory, walked one component at a time without following a link. Raises `PinnedPathRefusal` for a component that is a link or not a directory. Close the descriptor yourself. Only when `supports_pinned_walk()` is `True`. |
+| `copy_file_pinned(src, dst, *, dir_fd=None, name=None, force_mode=None, max_bytes=None, expected_src_ident=None, on_skip=None, on_created=None)` | Level 14. Copies one file from a descriptor judged before a byte is read, opened through `dir_fd` + `name` when given. `True` when copied; `False` when refused, with `on_skip(reason, src)` told `"symlink"`, `"not_regular"` (a hardlinked or non-regular file), `"identity_changed"` (not the inode `expected_src_ident` names) or `"too_large"` (over `max_bytes`, checked before and while copying). `dst` is created exclusively and never overwritten (`FileExistsError`), so put it in a directory you just created. `on_created` gets the copy's `fstat`. Other `OSError`s propagate. It does not check sensitive paths: call `is_sensitive_path` first. |
+| `fd_real_path(fd)` | Level 14. Where an open descriptor really is, from the kernel, or `None` when that cannot be read. Treat `None` as a refusal. |
+| `PinnedPathRefusal` | Level 14. Raised by `pin_parent`. It subclasses `Exception`, not `OSError`. |
 | `scrub_outbound(text)` | The same pass as [`ctx.scrub.outbound`](#content-scrubbing-ctxscrub), with the same rules: send only `.text`, and do not send when it raises. |
 | `audit_log(app_name=None)` | The same writer as [`ctx.audit`](#audit-events-ctxaudit). Without a name it uses `KIROCREW_APP_NAME`, which a spawned backend always has; with neither it raises `LookupError`. `record(...)` never raises. |
 | `run_sandboxed(argv, *, mode="standard", env=None, strip_python_env=False, **run_kwargs)` | Runs `argv` to completion in the Gateway's OS sandbox, with its resource limits and a scrubbed environment, and returns a `subprocess.CompletedProcess`. `run_kwargs` are the `subprocess.run` keywords that shape stdio, the working directory and the result (`input`, `capture_output`, `timeout`, `check`, `cwd`, `stdin`, `stdout`, `stderr`, `text`, `encoding`, `errors`, `universal_newlines`, `bufsize`); any other keyword raises `TypeError` and starts nothing. Past `timeout` the child is killed (its whole tree on Windows), but a POSIX descendant that outlives it is not: use `run_sandboxed_async` for a child that leaves work running in the background. `mode` is `"standard"` or `"strict"`; anything else raises `ValueError`. Raises `SandboxUnavailableError` when the host cannot sandbox the child, and then no child starts. |
@@ -2625,10 +2732,15 @@ def read_attachment(path: str, root: str) -> bytes | None:
 | `rmtree_force(path)` | Removes a tree, read-only files included; `True` when it is gone. Never raises. |
 | `file_lock(fd, *, exclusive=True, required=False, wait=True, timeout=None)` | An advisory lock for a `with` block. It raises rather than run the block unlocked, so call it from a worker thread when it may wait. |
 | `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_POSIX` | The platform flags. |
+| `vet_public_url(url)` | Level 14. The Gateway's check for a URL your backend is about to fetch: `http` or `https`, no user name or password, port 80 or 443, a host that is not a `.onion` or `.local` name, and every address the name resolves to public (an alternate or tunnel spelling of an address is unwrapped first). Returns the vetted URL, whose attributes are `url` (normalized, fragment stripped), `scheme`, `host` (for TLS and the `Host` header), `wire_host` (the name your HTTP client hands its resolver), `port`, `ip` (the first address), `addresses` (every approved address, in resolver order, without repeats) and `domain` (`host` without a leading `www.`); its class is not an SDK name, so read the attributes and never import it. Raises `UrlRejectedError` otherwise, and when the name does not resolve. It performs one DNS lookup and opens no connection, so call it from a worker thread, never on the event loop. It pins nothing: connect only to `.addresses`, through a resolver keyed on `.wire_host` that answers with them, because resolving the name again at connect time would dial an address the check never saw. A host below level 14 has the package without this name, so look it up with `getattr(sdk, "vet_public_url", None)` and refuse the URL when it is `None`. |
+| `UrlRejectedError` | Level 14. Raised by `vet_public_url`. `.code` is `"invalid_url"` (not an absolute `http(s)` URL, or one carrying credentials) or `"blocked_url"` (a well-formed URL the address, port or host rule refused, or one that did not resolve). |
+| `address_is_not_public(address)` | Level 14. `True` when an address you resolved yourself (a redirect hop, say) must be refused: anything that is not a globally reachable unicast address, an IPv4-mapped or 6to4 spelling included. A value that is not an IP literal also answers `True`. |
+| `sniff_raster_mime(head)`, `RASTER_SNIFF_BYTES` | Level 14. The raster type a file's leading bytes start with (`"image/png"`, `"image/jpeg"`, `"image/gif"`, `"image/webp"` or `"image/bmp"` today), or `None`. It decides from the bytes, never from a filename or a declared type: SVG is never an answer, and a RIFF file that is not WebP (a WAVE, say) is `None`. Pass at least `RASTER_SNIFF_BYTES` leading bytes; a longer buffer answers the same. The answer says what the bytes are, not what to accept: check it against your own allowlist, so a type the Gateway learns to sniff later does not widen what your app takes. On a gateway without it, refuse the file rather than trust its name. |
 
 The sandbox has no option to show a hidden directory or open a sealed one for
-writing: those choices are the Gateway's. None of these names needs a permission,
-because none of them adds reach. Your manifest declares nothing for them.
+writing, and the URL check has no option to allow another port or a private address:
+those choices are the Gateway's. None of these names needs a permission, because none
+of them adds reach. Your manifest declares nothing for them.
 
 ### Lessons
 
@@ -2708,6 +2820,7 @@ POST /api/member-records/{slug}
 
 **Ownership for app callers** (a dashboard caller is unrestricted). The rule follows the request's app claim: an app token, and also an agent running in one of your app's sessions, whose internal calls carry your app's identity.
 - `POST /api/approvals/{id}/{action}` needs `permissions.sessionApproval`, exactly like `POST /api/chat/slots/{slot}/approve`: without it both answer 403 `session_approval_not_granted` to an app-token caller, even for your own slots. An agent running in your app's sessions that calls over the internal secret is NOT exempt on these routes: a bare internal-secret caller is refused 403 like a non-owner on both `POST /api/approvals/{id}/{action}` and `POST /api/chat/slots/{slot}/approve`. The one internal path still admitted is a cron script's attested `cron:` key on `set_approval_mode`'s `POST /api/chat/mode`; see `docs/system-specs/modules/app-kit-platform.md`. With the grant, the id resolves a request on a slot you own or on a local user session, and with `permissions.memberThreads` declared beside it also on a Bot's pinned DM thread (`member-<slug>`), the one member-mode session the grant can reach ([manifest-reference](manifest-reference.md#permissionsmemberthreads--a-bots-own-thread)). Request ids can recur across sessions, so an id pending on more than one session you may control is refused; name the session with the slot route instead (`resolve_approval(id, action, slot_id)`). A background approval (cron, autonudge, subagent, task runner) is never resolvable by an app.
+- `POST /api/autonudge`, `PATCH /api/autonudge/{id}`, `DELETE /api/autonudge/{id}` and `POST /api/autonudge/{id}/fire` need `permissions.chatSlots` and your app enabled, and reach only a loop on a slot you own: without the grant they answer 403 `dashboard_owner_required` with a `cause` (`chat_slots_not_declared`, `disabled`, `unavailable`), and a slot or loop you do not own answers the uniform 404 `slot_not_found`. They follow the same rules as `ctx.chat_slots.arm_nudge`: `gate` and `judge` answer 400 `unknown_field`, `max_runtime_secs` is 1 up to the owner's ceiling (the ceiling when left out on start), and disabling your app stops its loops. A stopped loop keeps its record, so `DELETE` it before you arm the same slot again (a second `POST` answers 409). Each decision is audited under `app:<your app>`. The read routes are unchanged.
 - `GET /api/approvals` lists only what the app could resolve. The list carries background approvals only, so for an app it is always empty. Read a slot's pending requests from its history instead.
 - `GET /api/sessions`, `GET /api/sessions/search`, `GET /api/sessions/{key}`, `GET /api/sessions/{key}/meta`, `DELETE /api/sessions/{key}` and `POST /api/sessions/summarize` reach only transcripts that record the calling app as their owner. `total` counts only those, search ranks only those, and summarize skips any other key as if it were missing (so `list_sessions` with `summarize` from your app's agent returns summaries for your transcripts only). A delete is also refused when a live slot holding the transcript belongs to someone else.
 - `DELETE /api/sessions` (bulk clear) and `GET /api/sessions/clearable/count` act on every closed transcript at once, so an app is always refused them.

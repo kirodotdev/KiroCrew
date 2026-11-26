@@ -1,0 +1,2 @@
++3
+The file-edit write gate refuses every installed app's app.json (apps/<name>/app.json under the data home) through app_manifest_files.app_manifest_write, with the request_server remedy.

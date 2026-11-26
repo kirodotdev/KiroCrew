@@ -87,7 +87,9 @@ def _on(_floor_monkeypatch, tmp_path):
     ct.forget_told()
 
 
-def _bind(channel: str = PRIVATE, *, key: str = "chat-conductor", ended: bool = False) -> Binding:
+def _bind(
+    channel: str = PRIVATE, *, key: str = "chat-conductor", ended: bool = False, opener: str = ""
+) -> Binding:
     from kiro_crew.slack.code_channels.store import store
 
     stored = store().put_thread_binding(
@@ -98,6 +100,7 @@ def _bind(channel: str = PRIVATE, *, key: str = "chat-conductor", ended: bool = 
             anchor_ts=THREAD,
             thread=True,
             room=ROOM_PRIVATE,
+            opener=opener,
         )
     )
     if ended:
@@ -287,6 +290,161 @@ def test_a_shared_users_message_is_dropped_too(monkeypatch):
     _bind()
     monkeypatch.setattr(_handler, "is_shared_user", lambda user: user == "U0SHARED001")
     assert _gate(_Slack(), "hi", user="U0SHARED001") is True
+
+
+SHARED = "U0SHARED001"
+
+
+def _shared_confirmed(monkeypatch, confirmed: bool = True) -> None:
+    from kiro_crew.slack import shared_access
+
+    monkeypatch.setattr(_handler, "is_shared_listed", lambda user: user == SHARED)
+    monkeypatch.setattr(_handler, "is_shared_user", lambda user: confirmed and user == SHARED)
+    monkeypatch.setattr(
+        shared_access, "still_confirmed", lambda cfg, user, owner: confirmed and user == SHARED
+    )
+
+
+def test_a_confirmed_shared_user_may_start_one_and_is_its_opener(monkeypatch, dashboard):
+    _shared_confirmed(monkeypatch)
+    assert ct.opener_for(SHARED) == SHARED
+    assert ct.opener_for(OWNER) == ""
+    assert _refusal(_Slack(), user=SHARED)[0] != "Owner-only command."
+
+
+def test_an_unconfirmed_shared_user_may_not_start_one(monkeypatch, dashboard):
+    _shared_confirmed(monkeypatch, confirmed=False)
+    assert ct.opener_for(SHARED) == ""
+    assert _refusal(_Slack(), user=SHARED)[0] == "Owner-only command."
+
+
+@pytest.mark.parametrize(
+    "goal", ["/tools trust-all", " /model x", "<@U0BOT00001> /goal y", "!incognito fix it"]
+)
+def test_a_shared_starters_goal_is_never_one_of_the_owners_commands(monkeypatch, dashboard, goal):
+    """The goal is routed to the conductor with commands on."""
+    _shared_confirmed(monkeypatch)
+    _room(monkeypatch, private=True)
+    assert _refusal(_Slack(), user=SHARED, goal=goal) == (ct.GOAL_OWNER_ONLY_TEXT, "")
+    assert _refusal(_Slack(), user=SHARED, goal="fix /tmp/x") == ("", ROOM_PRIVATE)
+    assert _refusal(_Slack(), goal=goal) == ("", ROOM_PRIVATE)  # the owner's is theirs
+    # Both starts ask with the goal, the slash one before it posts a parent.
+    slack = _Slack()
+    assert asyncio.run(ct.start(slack, PRIVATE, THREAD, SHARED, goal)) == (
+        False,
+        ct.GOAL_OWNER_ONLY_TEXT,
+    )
+    slashed, replies = _slash(monkeypatch, goal.strip(), user=SHARED)
+    assert replies == [f"❌ {ct.GOAL_OWNER_ONLY_TEXT}"]
+    assert slack.posts == [] and slashed.posts == []
+
+
+def test_the_opener_and_the_owner_reach_their_thread_and_nobody_else(monkeypatch):
+    from kiro_crew.slack.code_channels.shared_refusal import shared_user_refused_in
+
+    _shared_confirmed(monkeypatch)
+    _bind(opener=SHARED)
+    assert _gate(_Slack(), "fix the bug", user=SHARED) is False
+    assert _gate(_Slack(), "fix the bug") is False
+    assert _gate(_Slack(), "me too", user=STRANGER) is True
+    assert shared_user_refused_in(PRIVATE, THREAD, sender=SHARED) is False
+    assert shared_user_refused_in(PRIVATE, THREAD, sender="U0SHARED002") is True
+
+
+def test_an_opener_taken_off_the_list_is_cut_off(monkeypatch):
+    from kiro_crew.slack.code_channels.shared_refusal import shared_user_refused_in
+
+    _shared_confirmed(monkeypatch, confirmed=False)
+    _bind(opener=SHARED)
+    assert _gate(_Slack(), "still here?", user=SHARED) is True
+    assert shared_user_refused_in(PRIVATE, THREAD, sender=SHARED) is True
+
+
+def test_the_opener_is_recorded_as_the_first_turns_author(monkeypatch):
+    from kiro_crew.dashboard.session_control_parts import code_channel_exemption as ex
+
+    _shared_confirmed(monkeypatch)
+    binding = _bind(opener=SHARED)
+    noted: list[str] = []
+    monkeypatch.setattr(ex, "note_channel_sender", lambda slot, user: noted.append(user))
+    assert ex.note_thread_conductor_start(object(), SHARED, binding) is True
+    assert ex.note_thread_conductor_start(object(), "U0SHARED002", binding) is False
+    assert ex.note_thread_conductor_start(object(), SHARED) is False
+    assert noted == [SHARED]
+
+
+OTHER_SHARED = "U0SHARED002"
+
+
+def _click(
+    monkeypatch,
+    who: str,
+    action: str,
+    *,
+    channel: str = PRIVATE,
+    slot_key: str = "chat-conductor",
+    confirmed: frozenset[str] = frozenset({SHARED, OTHER_SHARED}),
+) -> tuple[str | None, MagicMock]:
+    """*who* presses *action* on a linked card in the Conductor thread, asked by a turn
+    of *slot_key* that *who* opened; returns the answer and the dashboard state."""
+    from kiro_crew.slack import shared_access
+    from kiro_crew.slack.handler import _linked_approvals, _LinkedApproval, handle_interaction
+    from kiro_crew.slack.turn_requester import note_turn_requester
+
+    listed = {SHARED, OTHER_SHARED}
+    monkeypatch.setattr(_handler, "is_shared_listed", lambda user: user in listed)
+    monkeypatch.setattr(_handler, "is_shared_user", lambda user: user in confirmed)
+    monkeypatch.setattr(
+        shared_access, "still_confirmed", lambda cfg, user, owner: user in confirmed
+    )
+    dstate = MagicMock()
+    dstate.resolve_slot_approval = MagicMock(return_value=True)
+    key = f"{channel}:{MSG}"
+
+    async def go() -> str | None:
+        turn = asyncio.get_running_loop().create_future()
+        dstate._slots = {slot_key: SimpleNamespace(key=slot_key, task=turn)}
+        note_turn_requester(turn, who)  # type: ignore[arg-type]
+        # A waiting card that offers Trust: an answered one names no requester.
+        waiting = asyncio.get_running_loop().create_future()
+        _linked_approvals[key] = _LinkedApproval(
+            "7", f"dashboard:{slot_key}", True, slot_key, waiting, who
+        )
+        return await handle_interaction(channel, MSG, action, user_id=who, thread_ts=THREAD)
+
+    monkeypatch.setattr(_handler, "_dashboard_state", dstate)
+    try:
+        return asyncio.run(go()), dstate
+    finally:
+        _linked_approvals.pop(key, None)
+
+
+@pytest.mark.parametrize("action", ["approve_tool", "reject_tool"])
+def test_the_opener_answers_the_prompts_their_turns_post_in_their_thread(monkeypatch, action):
+    _bind(opener=SHARED)
+    answered, dstate = _click(monkeypatch, SHARED, action)
+    assert answered == action
+    dstate.resolve_slot_approval.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "who, action, kw",
+    [
+        (SHARED, "trust_tool", {}),  # Trust stays the owner's
+        (OTHER_SHARED, "approve_tool", {}),  # not the thread's opener
+        (SHARED, "approve_tool", {"confirmed": frozenset({OTHER_SHARED})}),  # removed
+        (SHARED, "approve_tool", {"slot_key": "chat-worker"}),  # a worker's card
+        (SHARED, "approve_tool", {"channel": PUBLIC}),  # the thread's session elsewhere
+    ],
+)
+def test_nobody_else_answers_a_conductor_threads_prompts(monkeypatch, who, action, kw):
+    from kiro_crew.slack.code_channels.store import store
+
+    _bind(opener=SHARED)
+    store().record_worker("chat-worker", "chat-conductor")
+    answered, dstate = _click(monkeypatch, who, action, **kw)
+    assert answered is None
+    dstate.resolve_slot_approval.assert_not_called()
 
 
 @pytest.mark.parametrize("ended, slot", [(True, "live"), (False, None)])
@@ -536,3 +694,40 @@ def test_a_refused_slash_conductor_audits_the_denial(monkeypatch, dashboard, _on
         }
     ]
     assert slack.posts == []
+
+
+def _slash_gate(monkeypatch, text: str, user: str) -> tuple[AsyncMock, list[str]]:
+    """Send ``/kirocrew <text>`` from *user* through ``_handle_slash``'s sender gate."""
+    monkeypatch.setattr("kiro_crew.slack.events.sel", lambda: MagicMock())
+    monkeypatch.setattr("kiro_crew.slack.events.is_shared_user", lambda u: u == SHARED)
+    monkeypatch.setattr("kiro_crew.slack.events.prime_shared_user", AsyncMock())
+    handler = AsyncMock()
+    monkeypatch.setitem(events_slash.SLASH_REGISTRY, "conductor", (handler, ""))
+    replies: list[str] = []
+
+    async def respond(self: Any, url: str, **kw: Any) -> None:
+        replies.append(kw["json"]["text"])
+
+    monkeypatch.setattr(events_slash.aiohttp.ClientSession, "post", respond)
+    orch = SimpleNamespace(
+        slack=_Slack(), _owner_id=OWNER, slack_command="kirocrew", _cfg=_cfg(), _handler_tasks=set()
+    )
+    payload = {"command": "/kirocrew", "text": text, "user_id": user, "response_url": "https://x"}
+
+    async def run() -> None:
+        await events_slash._handle_slash(orch, payload)
+        await asyncio.gather(*orch._handler_tasks)
+
+    asyncio.run(run())
+    assert orch.slack_command == "kirocrew"
+    return handler, replies
+
+
+def test_a_shared_user_reaches_the_slash_conductor_and_nothing_else(monkeypatch):
+    handler, replies = _slash_gate(monkeypatch, "conductor fix it", SHARED)
+    assert handler.await_count == 1 and replies == []
+    handler, replies = _slash_gate(monkeypatch, "sessions", SHARED)
+    assert replies == ["⛔ You are not authorized to use this command."]
+    handler, replies = _slash_gate(monkeypatch, "conductor fix it", STRANGER)
+    assert handler.await_count == 0
+    assert replies == ["⛔ You are not authorized to use this command."]

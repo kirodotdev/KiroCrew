@@ -475,13 +475,20 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
             *(t for t in _relocated_crew_targets(app_readonly_leaves) if _sealed(t)),
         )
     )
-    # kiro-cli's own trusted files ride one host field: its agents tree and its user MCP
-    # registry, each sealed read-only with its parents guarded against rename. The spawn
-    # folder's project MCP files get their own field (``PlanHost.project_mcp_targets``).
-    # Call-time import: kept off this module's names, which ``kiro_crew.sandbox`` forwards.
+    # kiro-cli's own trusted files ride one host field: its agents tree, its user MCP
+    # registry and every installed app's ``app.json`` (it names the MCP servers that app
+    # brings, and only the gateway's own app install and update writes it), each sealed
+    # read-only with its parents guarded against rename. The spawn folder's project MCP
+    # files get their own field (``PlanHost.project_mcp_targets``).
+    # Call-time imports: kept off this module's names, which ``kiro_crew.sandbox`` forwards.
+    from kiro_crew.app_manifest_files import app_manifest_targets
     from kiro_crew.project_mcp_files import project_mcp_targets
 
-    kiro_cli_targets = (*_resolved_kiro_agents_targets(), *_resolved_kiro_mcp_registry_targets())
+    kiro_cli_targets = (
+        *_resolved_kiro_agents_targets(),
+        *_resolved_kiro_mcp_registry_targets(),
+        *app_manifest_targets(home),
+    )
     kiro_agents_targets = tuple(dict.fromkeys(kiro_cli_targets))
     project_targets = tuple(
         t for t in project_mcp_targets(request.project_folder) if t not in kiro_cli_targets
@@ -491,10 +498,21 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
     # shortcut: on macOS a prepared folder moved in where none existed sidesteps the
     # path rule on a file not created yet; the file-edit refusal still holds. Upgrade:
     # seal the absent name inside the sandbox view (security.md, project MCP files).
+    # Call-time import, so the facade's census of this module's names is unchanged.
+    from kiro_crew.sandbox_git_control import resolved_git_control_layout
+
+    # The gateway checkouts' git control files are guarded the same way: sealed files
+    # in the person's own folder, whose parents no exception is checked against.
+    git_control = resolved_git_control_layout()
     project_parents = tuple(
         entry
         for target in project_targets
         for entry in (os.path.dirname(target), *_resolution_entries(target))
+        if os.path.lexists(entry)
+    ) + tuple(
+        entry
+        for name in git_control.names
+        for entry in (os.path.dirname(name), *_resolution_entries(name))
         if os.path.lexists(entry)
     )
     install_root_targets = tuple(_resolved_install_root_targets())
@@ -563,14 +581,15 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
     )
     # On the namespace backend, the folder of each app that declares a credential mask,
     # ``apps/<app>``, is pinned AFTER every mask instead of with the other pins before
-    # them; the set of pinned folders stays the same. An update replaces that folder from
-    # the gateway's namespace and renames ``data/`` into the new one. A mount placed
+    # them; the set of pinned folders stays the same. A keep-data uninstall, and an install
+    # over the data it kept, replace that folder from the gateway's namespace and rename
+    # ``data/`` into the new one (an update leaves the folder in place). A mount placed
     # through a pin of the old folder stays on the old folder's mount, so a running
     # session would read the restored credential plain. With the app folder unpinned
     # while the rest are placed, ``data/``'s pin and the masks sit on the mount the rename
     # keeps, and the app folder's pin, bound last, only adds one copy of them: one pin per
     # app spelling, nothing pinned above another after the masks.
-    # shortcut: the replacement ``apps/<app>`` an update creates is not pinned in a
+    # shortcut: the replacement ``apps/<app>`` either one creates is not pinned in a
     # session already running, so that session can rename it until its next spawn;
     # closing that needs a layout change (one top-level credentials folder).
     # Matched by the folder each guard resolves to, not by its spelling: a linked data
@@ -636,6 +655,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         if guard in caller_after_masks:
             app_dir_pins.setdefault(os.path.realpath(guard), guard)
     caller_ancestor_guards = tuple(g for g in caller_ancestor_guards if g not in caller_after_masks)
+
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     operator_paths, operator_exceptions = configured_readonly_layer()
     operator_readonly_probes = _operator_layer_probes(operator_paths, keep_unprobeable=True)
@@ -721,6 +741,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         project_ancestor_guards=project_ancestor_guards,
         caller_ancestor_guards=caller_ancestor_guards,
         mask_parent_pins=mask_parent_pins,
+        git_control_readonly=git_control.readonly,
         carveout_probes=carveout_probes,
         operator_readonly_probes=operator_readonly_probes,
         operator_exception_probes=operator_exception_probes,

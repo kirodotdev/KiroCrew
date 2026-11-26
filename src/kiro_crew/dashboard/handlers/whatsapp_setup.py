@@ -33,6 +33,12 @@ def _live_client(request: web.Request) -> Any:
 
 async def whatsapp_config_get(request: web.Request) -> web.Response:
     """GET /api/whatsapp/config: status + policy (the channel has no secrets)."""
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "whatsapp.config.read")
+    if owner_denied is not None:
+        return owner_denied
 
     def _read() -> "tuple[Any, tuple[bool, bool, str]]":
         # One thread hop for both filesystem reads: the config, and the SDK
@@ -205,6 +211,12 @@ async def whatsapp_qr_start(request: web.Request) -> web.Response:
 
 async def whatsapp_qr_status(request: web.Request) -> web.Response:
     """GET /api/channels/whatsapp/qr/status — current rotating QR as data URL."""
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "whatsapp.qr_status.read")
+    if owner_denied is not None:
+        return owner_denied
     client = _live_client(request)
     if client is None:
         return web.json_response(
@@ -338,6 +350,12 @@ async def whatsapp_unlink(request: web.Request) -> web.Response:
 
 async def whatsapp_groups_get(request: web.Request) -> web.Response:
     """GET /api/whatsapp/groups: joined groups for the Settings picker."""
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "whatsapp.groups.read")
+    if owner_denied is not None:
+        return owner_denied
     client = _live_client(request)
     if client is None or not client.is_connected:
         return web.json_response({"groups": []})

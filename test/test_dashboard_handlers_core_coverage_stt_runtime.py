@@ -10,6 +10,8 @@ import asyncio
 import json
 import os
 import platform
+import re
+import tempfile
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -63,6 +65,26 @@ def stt_background(monkeypatch) -> set:
     tasks: set = set()
     monkeypatch.setattr(core_mod, "_stt_background_tasks", tasks)
     return tasks
+
+
+@pytest.fixture
+def as_the_owner(_floor_monkeypatch) -> None:
+    """Every request is the owner's own: prepare, prewarm and the decoder fetch ask
+    the owner gate, which reads the caller's subject against the gateway's owner."""
+    import sys
+
+    module = sys.modules[__name__]
+
+    def owner(build):
+        def request(*args, **kwargs):
+            kwargs.setdefault("user", "local-app")
+            kwargs.setdefault("app", {"state": SimpleNamespace(owner_id="")})
+            return build(*args, **kwargs)
+
+        return request
+
+    _floor_monkeypatch.setattr(module, "_req", owner(_req))
+    _floor_monkeypatch.setattr(module, "_json_req", owner(_json_req))
 
 
 def _availability(ok: bool, code: str = "", detail: str = ""):
@@ -306,6 +328,7 @@ class TestSttStatus:
         assert resp.status == 403
 
 
+@pytest.mark.usefixtures("as_the_owner")
 class TestSttPrepare:
     """``POST /api/stt/prepare`` starts, or joins, the one-time model download."""
 
@@ -413,6 +436,7 @@ class TestSttPrepare:
         assert self.requested == []
 
 
+@pytest.mark.usefixtures("as_the_owner")
 class TestSttResolveStaysOffTheLoop:
     """Neither STT handler may resolve a model name on the gateway's event loop.
 
@@ -469,6 +493,7 @@ class TestSttResolveStaysOffTheLoop:
         assert all(t is not loop_thread for t in resolved_on), resolved_on
 
 
+@pytest.mark.usefixtures("as_the_owner")
 class TestSttFfmpegDownload:
     """``POST /api/stt/ffmpeg/download`` fetches the audio decoder into the store.
 
@@ -596,6 +621,7 @@ class TestSttFfmpegDownload:
         assert ("POST", "/api/stt/ffmpeg/download") in paths
 
 
+@pytest.mark.usefixtures("as_the_owner")
 class TestSttPrewarm:
     """``POST /api/stt/prewarm`` pays the load while the user is still speaking."""
 
@@ -701,6 +727,22 @@ class TestSttTranscribe:
             core_mod, "availability_detail", lambda _cfg: _availability(True)
         )
         _floor_monkeypatch.setattr(core_mod, "audio_exceeds_secs", AsyncMock(return_value=False))
+
+    @pytest.fixture(autouse=True)
+    def _as_the_owner(self, _floor_monkeypatch):
+        """Every request here is the owner's own: transcription asks the owner gate
+        first, which reads the caller's subject against the gateway's owner."""
+        import sys
+
+        module = sys.modules[__name__]
+        plain = _req
+
+        def owner_req(**kwargs):
+            kwargs.setdefault("user", "local-app")
+            kwargs.setdefault("app", {"state": SimpleNamespace(owner_id="")})
+            return plain(**kwargs)
+
+        _floor_monkeypatch.setattr(module, "_req", owner_req)
 
     @pytest.mark.asyncio
     async def test_unavailable_backend_is_503_naming_the_reason(self, monkeypatch) -> None:
@@ -870,6 +912,57 @@ class TestSttTranscribe:
         await core_mod.api_stt_transcribe(_multipart_req(field))
 
         assert len(seen) == 1
+        assert not os.path.exists(seen[0])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("filename", "suffix"),
+        [
+            ("rec.webm:x", ".webmx"),
+            ("rec.webm::$DATA", ".webmDATA"),
+            ("rec.ogg:x.part", ".part"),
+            ("..\\..\\evil.exe", ".exe"),
+            ("../../evil.webm", ".webm"),
+            ("rec.WEBM", ".WEBM"),
+            ("rec.mp4", ".mp4"),
+            ("rec.ogg", ".ogg"),
+            ("rec.wav", ".wav"),
+            ("rec.wave", ".wave"),
+            ("rec.caf", ".caf"),
+            ("rec.mkv", ".mkv"),
+            ("rec.3gp", ".3gp"),
+            ("rec.m4b", ".m4b"),
+            ("rec.abcdefghi", ".abcdefghi"),
+            ("rec.wébm", ".wbm"),
+            ("rec", ".webm"),
+            ("rec.", ".webm"),
+            (".webm", ".webm"),
+            ("rec.web m", ".webm"),
+        ],
+    )
+    async def test_temp_name_takes_only_a_plain_suffix(self, monkeypatch, filename, suffix) -> None:
+        """The client's filename must not shape the temp path: on Windows a colon
+        in the suffix names an NTFS stream, the publish rename fails with a 500,
+        and a zero-byte base file is left in the temp folder."""
+        seen: list[str] = []
+
+        async def transcribe(path, _cfg):
+            seen.append(path)
+            return "hello"
+
+        monkeypatch.setattr("kiro_crew.transcribe.transcribe_audio", transcribe)
+        field = SimpleNamespace(
+            name="audio",
+            filename=filename,
+            read_chunk=AsyncMock(side_effect=[b"audio-bytes", b""]),
+        )
+
+        resp = await core_mod.api_stt_transcribe(_multipart_req(field))
+
+        assert resp.status == 200
+        name = os.path.basename(seen[0])
+        assert os.path.dirname(seen[0]) == tempfile.gettempdir()
+        assert re.fullmatch(r"kc_stt_[0-9a-f]{32}" + re.escape(suffix), name)
         assert not os.path.exists(seen[0])
 
     @pytest.mark.asyncio

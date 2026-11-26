@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { clickOptimize, isOptimizeDisabled, optimizeRow } from './optimizeRow'
 
 /**
  * While "Optimize prompt" runs, the composer is read-only and Send is disabled
@@ -32,9 +33,6 @@ const hangingOptimizer = (signals: AbortSignal[]) =>
     }
     return Promise.resolve({ ok: true, json: async () => [] })
   })
-
-const clickOptimize = () =>
-  fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
 
 describe('ChatInput optimize: the in-flight overlay can be cancelled', () => {
   beforeEach(() => {
@@ -70,7 +68,7 @@ describe('ChatInput optimize: the in-flight overlay can be cancelled', () => {
     expect(screen.queryByTestId('optimize-error')).toBeNull()
     // The draft is the user's own text: a cancel writes nothing back.
     expect(onChange).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: 'Optimize prompt' })).not.toBeDisabled()
+    expect(isOptimizeDisabled(optimizeRow())).toBe(false)
   })
 
   it('puts focus back in the composer so the keyboard returns without a second tap', async () => {
@@ -192,6 +190,22 @@ describe('ChatInput optimize: the in-flight overlay can be cancelled', () => {
     expect(signals).toHaveLength(1)
     expect(signals[0].aborted).toBe(true)
     expect(onStop).not.toHaveBeenCalled()
+  })
+
+  it('cancels on Escape after starting from the + menu row, which hands focus back to +', async () => {
+    const signals: AbortSignal[] = []
+    vi.stubGlobal('fetch', hangingOptimizer(signals))
+    renderWithProviders(<ChatInput value={ORIGINAL} onChange={vi.fn()} onSend={vi.fn()} connected={true} onUploadFiles={vi.fn()} />)
+    const row = optimizeRow()
+    expect(row).toHaveAttribute('data-testid', 'composer-menu-optimize')
+    act(() => { row.focus() })
+    fireEvent.click(row)
+    await screen.findByRole('button', { name: 'Cancel optimizing' })
+    const plus = screen.getByTitle('Add files & options')
+    expect(document.activeElement).toBe(plus)
+    await act(async () => { fireEvent.keyDown(plus, { key: 'Escape' }) })
+    expect(signals).toHaveLength(1)
+    expect(signals[0].aborted).toBe(true)
   })
 
   it('drops a rewrite whose body was already read when Cancel landed', async () => {

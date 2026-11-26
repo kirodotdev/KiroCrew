@@ -1105,6 +1105,53 @@ def test_the_reserve_can_be_lowered_by_flag(tmp_path: Path) -> None:
     assert json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))["partial"] is None
 
 
+def bucket_resetting_in(seconds: int, remaining: int = 1999) -> dict[str, Any]:
+    reset = (THE_20TH + dt.timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"rateLimit": {"cost": 1, "remaining": remaining, "resetAt": reset}}
+
+
+def census_waiting_up_to_1800s(tmp_path: Path, gh: FakeGh, waits: list[float]) -> int:
+    api = CENSUS.Api(run=gh, sleep=waits.append, now=lambda: THE_20TH)
+    args = census_args(tmp_path, "--wait-for-reset-seconds", "1800")
+    return int(CENSUS.main(args, api=api, clock=ticks(0.0, 1.0)))
+
+
+def test_under_the_reserve_a_near_reset_is_waited_out_and_the_census_goes_on(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    waits: list[float] = []
+    gh = FakeGh(
+        budget=lambda fields: bucket_resetting_in(60),
+        workflows=workflows_page("CI"),
+        runs=runs_pages({None: connection([])}),
+    )
+    assert census_waiting_up_to_1800s(tmp_path, gh, waits) == 0
+    assert waits == [60 + CENSUS.RESET_MARGIN_SECONDS]
+    assert "Reset wait: 65s\n" in capsys.readouterr().out
+    assert gh.kinds() == ["budget", "issues", "workflows", "runs"]
+    assert json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))["partial"] is None
+
+
+def test_a_reset_further_off_than_the_wait_left_stops_as_without_one(tmp_path: Path) -> None:
+    waits: list[float] = []
+    gh = FakeGh(budget=lambda fields: bucket_resetting_in(1800))
+    assert census_waiting_up_to_1800s(tmp_path, gh, waits) == CENSUS.PARTIAL_EXIT
+    assert (waits, gh.kinds()) == ([], ["budget"])
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["partial"].startswith("1999 GraphQL points left, under the --reserve-points")
+
+
+def test_a_reply_sent_before_the_reset_it_waited_out_leaves_the_new_count_alone() -> None:
+    stale = bucket_resetting_in(60, remaining=1998)
+    replies = iter([bucket_resetting_in(60), stale, bucket_resetting_in(3660, remaining=9000)])
+    waits: list[float] = []
+    gh = FakeGh(budget=lambda fields: next(replies))
+    api = CENSUS.Api(run=gh, sleep=waits.append, now=lambda: THE_20TH, max_wait=1800)
+    for _ in range(3):
+        api.check_budget()
+    assert (waits, api.remaining, api.stopped) == ([60 + CENSUS.RESET_MARGIN_SECONDS], 9000, None)
+
+
 def two_pages_then_a_red_run(first_page: dict[str, Any]) -> FakeGh:
     newest = [run_node(1000 + at, f"{DAY}T23:{at % 60:02d}:00Z") for at in range(100)]
     red = (connection([check_run(41, notes=[failing()])]), connection([]))
@@ -1340,6 +1387,7 @@ def test_the_defaults_leave_most_of_a_shared_bucket_alone() -> None:
         ["--since", DAY, "--until", DAY, "--repo", REPO, "--out-dir", "out"]
     )
     assert (args.logs, args.reserve_points, args.max_points) == ("never", 2000, 1500)
+    assert args.wait_for_reset_seconds == 0
     text = CENSUS.build_parser().format_help()
     for said in ("--reserve-points", "--max-points", "2,786", "gh-rate-limit"):
         assert said in " ".join(text.split())

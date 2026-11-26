@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
-# Build the KAS bundle's Node for linux-x64 so it runs on Amazon Linux 2
-# (glibc 2.26).
+# Build the KAS bundle's Node for linux-x64 or linux-arm64 so it runs on
+# Amazon Linux 2 (glibc 2.26).
 #
 # The version is the -node<N> part of KAS_PIN_VERSION in
 # src/kiro_crew/acp/kas_pin.py, so the build always matches the pinned bundle.
 # Node is compiled inside a pinned amazonlinux:2 container with AL2's gcc10
-# package (GCC 10.5, binutils 2.35, enough for simdutf's AVX-512 `vpcompressb`)
+# package (GCC 10.5, binutils 2.35; on x64 enough for simdutf's AVX-512 `vpcompressb`)
 # and `./configure --partly-static`, which links libstdc++ and libgcc
 # statically. The glibc floor is the container's 2.26. SHASUMS256.txt is
 # signature-checked first in amazonlinux:2023, whose gpg reads EdDSA keys.
 #
 # Usage:
-#   build-node.sh build  [--work DIR] [--out DIR] [--jobs N]
-#   build-node.sh verify --out DIR
+#   build-node.sh build  [--arch x64|arm64] [--work DIR] [--out DIR] [--jobs N]
+#   build-node.sh verify [--arch x64|arm64] --out DIR
+#
+# --arch defaults to x64. The container runs as that architecture
+# (docker --platform), so build on a host of the same architecture; anything
+# else runs under emulation, if at all.
 #
 # `build` writes to --out:
-#   node-v<N>-linux-x64.tar.xz (+ .sha256)  laid out like nodejs.org's tarball,
-#     ready for scripts/kas_bundle_publish.py --node-linux-x64
+#   node-v<N>-linux-<arch>.tar.xz (+ .sha256)  laid out like nodejs.org's tarball,
+#     ready for scripts/kas_bundle_publish.py --node-linux-<arch>
 #   glibc-check.txt, provenance.txt, build.log
 # `verify` runs `env -i node --version` in amazonlinux:2 and amazonlinux:2023
 # and writes verify-node.txt. For the onnxruntime load and inference checks
@@ -46,6 +50,15 @@ PIN_FILE="$SCRIPT_DIR/../../src/kiro_crew/acp/kas_pin.py"
 die() { echo "ERROR: $*" >&2; exit 1; }
 log() { echo "==> $*"; }
 
+ARCH="${ARCH:-x64}"
+docker_platform() {
+  case "$ARCH" in
+    x64) echo linux/amd64 ;;
+    arm64) echo linux/arm64 ;;
+    *) die "unknown --arch: $ARCH (x64 or arm64)" ;;
+  esac
+}
+
 pinned_node_version() {
   local v
   v="$(sed -n 's/^KAS_PIN_VERSION = "[^"]*-node\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\(-al2\)\{0,1\}"$/\1/p' "$PIN_FILE")"
@@ -60,18 +73,22 @@ host_build() {
       --work) work="$2"; shift 2 ;;
       --out) out="$2"; shift 2 ;;
       --jobs) jobs="$2"; shift 2 ;;
+      --arch) ARCH="$2"; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
   done
-  [ -n "$work" ] || work="$PWD/kas-al2-node-work"
-  [ -n "$out" ] || out="$PWD/kas-al2-node-out"
+  docker_platform >/dev/null # refuse an unknown --arch before naming a directory after it
+  # Per architecture: the cached build-time Python in --work is a native binary.
+  [ -n "$work" ] || work="$PWD/kas-al2-node-work-$ARCH"
+  [ -n "$out" ] || out="$PWD/kas-al2-node-out-$ARCH"
   if [ -z "$jobs" ]; then jobs="$(nproc)"; fi
   [ "$jobs" -le 32 ] || jobs=32 # keep the host usable
   mkdir -p "$work" "$out"
   work="$(cd "$work" && pwd)"
   out="$(cd "$out" && pwd)"
   command -v docker >/dev/null || die "docker is required"
-  local version commit
+  local version commit platform
+  platform="$(docker_platform)"
   version="$(pinned_node_version)"
   commit="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
   if [ -n "$(git -C "$SCRIPT_DIR/../.." status --porcelain -- packaging/kas-al2 src/kiro_crew/acp/kas_pin.py 2>/dev/null)" ]; then
@@ -79,19 +96,19 @@ host_build() {
   fi
 
   log "checking SHASUMS256.txt for Node $version in $AL2023_IMAGE"
-  docker run --rm --platform linux/amd64 -v "$SCRIPT_DIR:/src:ro" -v "$work:/work" \
+  docker run --rm --platform "$platform" -v "$SCRIPT_DIR:/src:ro" -v "$work:/work" \
     -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -e NODE_VERSION="$version" \
     "$AL2023_IMAGE" bash /src/build-node.sh verify-sums 2>&1 | tee "$out/build.log"
   [ "${PIPESTATUS[0]}" -eq 0 ] || die "SHASUMS256.txt check failed; see $out/build.log"
-  log "building Node $version in $AL2_IMAGE (jobs=$jobs); log: $out/build.log"
+  log "building Node $version for linux-$ARCH in $AL2_IMAGE (jobs=$jobs); log: $out/build.log"
   # No fixed container name, so parallel builds never stop each other.
-  docker run --rm --platform linux/amd64 \
+  docker run --rm --platform "$platform" \
     -v "$SCRIPT_DIR:/src:ro" -v "$work:/work" -v "$out:/out" \
-    -e JOBS="$jobs" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+    -e JOBS="$jobs" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -e ARCH="$ARCH" \
     -e SCRIPT_COMMIT="$commit" -e NODE_VERSION="$version" \
     "$AL2_IMAGE" bash /src/build-node.sh in-container 2>&1 | tee -a "$out/build.log"
   [ "${PIPESTATUS[0]}" -eq 0 ] || die "container build failed; see $out/build.log"
-  log "done: $out/node-v$version-linux-x64.tar.xz"
+  log "done: $out/node-v$version-linux-$ARCH.tar.xz"
 }
 
 fetch() { # url sha256 dest
@@ -139,7 +156,8 @@ verify_sums() {
 
 in_container() {
   local jobs="${JOBS:-8}" v="${NODE_VERSION:?}"
-  local top="node-v$v-linux-x64" dist="https://nodejs.org/dist/v$v"
+  docker_platform >/dev/null
+  local top="node-v$v-linux-$ARCH" dist="https://nodejs.org/dist/v$v"
   # Hand every file back to the host user, even when the run dies on a signal.
   trap 'chown -R "${HOST_UID:-0}:${HOST_GID:-0}" /work /out 2>/dev/null || true' EXIT
   trap 'exit 130' INT TERM HUP PIPE
@@ -174,9 +192,11 @@ in_container() {
   ln -sf /usr/bin/gcc10-as "$tc/shim/as"
   ln -sf /usr/bin/gcc10-ld "$tc/shim/ld"
   export PATH="$tc/shim:$tc/py/bin:$PATH" CC=gcc10-gcc CXX=gcc10-g++
-  printf 'vpcompressb %%zmm1, %%zmm2{%%k1}\n' > /work/vbmi2.s
-  "$CC" -c /work/vbmi2.s -o /work/vbmi2.o || die "gcc10 toolchain cannot assemble vpcompressb"
-  rm -f /work/vbmi2.s /work/vbmi2.o
+  if [ "$ARCH" = x64 ]; then
+    printf 'vpcompressb %%zmm1, %%zmm2{%%k1}\n' > /work/vbmi2.s
+    "$CC" -c /work/vbmi2.s -o /work/vbmi2.o || die "gcc10 toolchain cannot assemble vpcompressb"
+    rm -f /work/vbmi2.s /work/vbmi2.o
+  fi
 
   log "configure + build Node $v (--partly-static)"
   rm -rf src-node && mkdir src-node
@@ -214,7 +234,7 @@ in_container() {
   [ "$fail" = 0 ] || die "glibc check failed"
 
   log "package"
-  local tarball="node-v$v-linux-x64.tar.xz"
+  local tarball="node-v$v-linux-$ARCH.tar.xz"
   # A fixed mtime: GNU tar reads it from the source release's own configure file.
   (cd "$stage" && tar --owner=0 --group=0 --numeric-owner --mtime=/work/src-node/configure -cJf "/out/$tarball" "$top")
   (cd /out && sha256sum "$tarball" > "$tarball.sha256")
@@ -222,6 +242,7 @@ in_container() {
   {
     echo "node $v from $dist/node-v$v.tar.xz sha256 $src_sha"
     echo "SHASUMS256.txt signed by $signer (verified against nodejs/release-keys at $RELEASE_KEYS_COMMIT)"
+    echo "target: linux-$ARCH ($(uname -m))"
     echo "configure: --prefix=/ --partly-static (no version suffix)"
     echo "compiler: $("$CC" --version | head -1); assembler: $(gcc10-as --version | head -1)"
     echo "packages: $(rpm -q gcc10 gcc10-c++ gcc10-binutils make | tr '\n' ' ')"
@@ -240,13 +261,15 @@ host_verify() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --out) out="$2"; shift 2 ;;
+      --arch) ARCH="$2"; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
   done
   [ -n "$out" ] || die "--out is required"
-  local v tarball
+  local v tarball platform
+  platform="$(docker_platform)"
   v="$(pinned_node_version)"
-  tarball="node-v$v-linux-x64.tar.xz"
+  tarball="node-v$v-linux-$ARCH.tar.xz"
   [ -f "$out/$tarball" ] || die "missing $out/$tarball; run build first"
   (cd "$out" && sha256sum -c --quiet "$tarball.sha256") || die "tarball sha256 mismatch"
   out="$(cd "$out" && pwd)"
@@ -257,8 +280,8 @@ host_verify() {
   local res="$out/verify-node.txt" image got
   : > "$res"
   for image in "$AL2_IMAGE" "$AL2023_IMAGE"; do
-    got="$(docker run --rm --platform linux/amd64 -v "$scratch:/n:ro" "$image" \
-      env -i "/n/node-v$v-linux-x64/bin/node" --version 2>&1)" || true
+    got="$(docker run --rm --platform "$platform" -v "$scratch:/n:ro" "$image" \
+      env -i "/n/node-v$v-linux-$ARCH/bin/node" --version 2>&1)" || true
     echo "== $image: env -i node --version -> $got" | tee -a "$res"
     [ "$got" = "v$v" ] || die "node does not run on $image"
   done
@@ -269,5 +292,5 @@ case "${1:-}" in
   verify) shift; host_verify "$@" ;;
   verify-sums) shift; verify_sums "$@" ;;
   in-container) shift; in_container "$@" ;;
-  *) sed -n '2,25p' "$0"; exit 2 ;;
+  *) sed -n '2,29p' "$0"; exit 2 ;;
 esac

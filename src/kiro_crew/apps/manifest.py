@@ -83,7 +83,6 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
     _MAX_LINK_OPEN_HOSTS,
-    _MAX_LINK_PREVIEW_HOSTS,
     _MAX_MESSAGE_ACTION_TITLE,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
@@ -200,9 +199,7 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _l10n_quoted,
     _sidebar_order,
     bot_grant_entries,
-    clamp_lifecycle_timeout,
     lifecycle_timeout_error,
-    lifecycle_timeout_seconds,
     logger,
 )
 from kiro_crew.apps.store_links import sanitize_links
@@ -682,9 +679,15 @@ class AppManifest:
                     refusal, f"contributes.messageActions entry {refusal}: {action.entry!r}"
                 )
         for link_open in self.contributes.linkOpen:
-            refusal = path_refusal(link_open.entry)
+            refusal = path_refusal(link_open.entry) if link_open.entry else ""
             if refusal:
                 report_path(refusal, f"contributes.linkOpen entry {refusal}: {link_open.entry!r}")
+            # The link opens on the app's own page, so there must be one (AppHost
+            # mounts ``ui.entry``; without it the page is a placeholder).
+            if link_open.page_param and not (self.ui.entry and self.ui.pages):
+                errors.append(
+                    f"contributes.linkOpen[{link_open.id}]: page needs ui.entry and ui.pages"
+                )
         # A composer-action entry is imported by the same frame bootstrap.
         for composer in self.contributes.composerActions:
             refusal = path_refusal(composer.entry)
@@ -1598,13 +1601,16 @@ def requirements_verdict(app_root: Path, req_file: Path) -> tuple[tuple[Path, Pa
     return (root_resolved, target), ""
 
 
-#: Cron helpers served as attributes of this module on first access, so
+#: Helpers served as attributes of this module on first access, so
 #: ``kiro_crew.apps.manifest.<name>`` is the object its home module holds. The
-#: cron service is heavy and the stdio MCP servers read manifests at start-up.
+#: cron service is heavy and the stdio MCP servers read manifests at start-up; the
+#: lifecycle-timeout bound runs only when a script is about to run.
 _LAZY_CRON_NAMES: dict[str, str] = {
     "is_valid_skip_date": "kiro_crew.cron",
     "is_valid_timezone": "kiro_crew.cron",
     "validate_create_timeouts": "kiro_crew.cron_service.fields",
+    "clamp_lifecycle_timeout": "kiro_crew.apps.manifest_lifecycle_timeouts",
+    "lifecycle_timeout_seconds": "kiro_crew.apps.manifest_lifecycle_timeouts",
 }
 
 

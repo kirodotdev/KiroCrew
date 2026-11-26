@@ -476,7 +476,8 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
             {!timePassed && <Btn
               onFocus={() => { applyFocused.current = true }}
               onBlur={e => { if (e.relatedTarget) applyFocused.current = false }}
-              primary className="min-h-11 px-4" onClick={() => void run('apply')} disabled={!canApply} data-testid="change-card-apply">
+              // A label naming a long server wraps inside the card, like the value chips.
+              primary className="min-h-11 max-w-full px-4 [overflow-wrap:anywhere]" onClick={() => void run('apply')} disabled={!canApply} data-testid="change-card-apply">
               {running === 'apply' && <LoaderCircle size={14} className="animate-spin" aria-hidden="true" />}
               {stranded ? i18nT('components.changeCards.continue_apply')
                 : card.status === 'failed' ? i18nT('components.changeCards.retry')

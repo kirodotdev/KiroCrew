@@ -20,6 +20,7 @@ from kiro_crew.hooks import (
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
     ScriptHook,
+    ScriptHookResult,
     ScriptHookStore,
     run_script_hook,
 )
@@ -973,6 +974,31 @@ class TestScriptHookStoreFire:
             HOOK_EVENT_USER_PROMPT_SUBMIT, "hi", extra_hooks=[spec], session_model=model
         )
         assert [r.stdout.strip() for r in results] == [expected, expected], results
+
+    @pytest.mark.parametrize("replay", [True, False])
+    @pytest.mark.asyncio
+    async def test_a_replayed_prompt_marks_every_hooks_stdin_only_when_asked(
+        self, hook_store: ScriptHookStore, monkeypatch, replay
+    ):
+        """The payload a stored hook and a spec hook are handed has ``"replay": true`` only on a replay."""
+        seen: list[dict] = []
+
+        async def fake_run(hook, context="", hook_event=None, **kwargs):
+            seen.append(dict(hook_event or {}))
+            return ScriptHookResult(
+                hook_id=hook.id, hook_name=hook.name, event=hook.event, exit_code=0
+            )
+
+        monkeypatch.setattr("kiro_crew.hooks.run_script_hook", fake_run)
+        hook_store.create(
+            {"name": "stored", "event": HOOK_EVENT_USER_PROMPT_SUBMIT, "command": "stored"}
+        )
+        spec = ScriptHook(id="spec:a1:x", event=HOOK_EVENT_USER_PROMPT_SUBMIT, command="spec")
+        await hook_store.fire(
+            HOOK_EVENT_USER_PROMPT_SUBMIT, "hi", extra_hooks=[spec], replay=replay
+        )
+        expected = [True, True] if replay else ["<absent>", "<absent>"]
+        assert [p.get("replay", "<absent>") for p in seen] == expected, seen
 
 
 class TestRunScriptHookSpawnForm:

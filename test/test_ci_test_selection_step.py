@@ -17,6 +17,7 @@ import copy
 import gzip
 import io
 import json
+import re
 import socketserver
 import subprocess
 import threading
@@ -109,7 +110,7 @@ def _bundle(repo: Path, age: timedelta = timedelta(hours=5), **changed: Any) -> 
         "schema": 1,
         "commit": RUN_SHA,
         "built_at": (windows.commit_time("HEAD", repo) - age).isoformat(),
-        "tests": {"test/metrics/test_schema.py": 3},
+        "tests": {"test/metrics/test_schema.py": 3, "test/test_other.py": 1},
         "files": {"src/kiro_crew/testing/wait.py": [0]},
         "cochange": {"src/kiro_crew/testing/wait.py": ["test/metrics/test_schema.py"]},
         "guard": ["test/test_gate.py"],
@@ -229,7 +230,7 @@ def _cases(repo: Path) -> dict[str, tuple[Any, str, int]]:
             "no trusted",
             1,
         ),
-        "runs not a listing": (runs((200, {}, [])), "no trusted", 1),
+        "runs not a listing": (runs((200, {}, [])), "did not return a list", 1),
         "rate limit": (runs(limited), "primary rate limit", 1),
         "server error": (runs((500, {}, b"")), "HTTP 500", 1),
         "not JSON": (runs((200, {}, b"<html>")), "JSONDecodeError", 1),
@@ -314,12 +315,15 @@ def test_no_request_is_made_without_a_repository_and_no_scoring_without_time(
         assert verdict["verdict"] == "full" and "GITHUB_REPOSITORY" in verdict["reason"]
     assert api.sent == []
     # The fetch used the step's time: what is left is below the scorer's least.
-    ticks = iter([0.0, step.BUDGET_SECS - step.MIN_SCORE_SECS + 1])
+    late = step.BUDGET_SECS - step.MIN_SCORE_SECS + 1
+    ticks = iter([0.0, late, late])
     verdict = _score(repo, tmp_path, api, clock=lambda: next(ticks))
     assert verdict["verdict"] == "full" and "were left to score in" in verdict["reason"]
+    # What the fetch took is in the verdict, and nothing else is: the diff was not scored.
+    assert verdict["timings"] == {"fetch": late}
     # The scorer gets what is left, never the whole budget again.
     seen: list[float] = []
-    ticks = iter([0.0, 20.0])
+    ticks = iter([0.0, 20.0, 20.0])
     real = cts.run
 
     def run(args: Any) -> dict[str, Any]:
@@ -327,8 +331,11 @@ def test_no_request_is_made_without_a_repository_and_no_scoring_without_time(
         return real(args)
 
     monkeypatch.setattr(step.selection, "run", run)
-    _score(repo, tmp_path, Api(_archive(_bundle(repo))), clock=lambda: next(ticks))
+    verdict = _score(repo, tmp_path, Api(_archive(_bundle(repo))), clock=lambda: next(ticks))
     assert seen == [step.BUDGET_SECS - 20.0]
+    # The step's fetch time leads the scorer's own timings, which are kept as the scorer wrote them.
+    assert set(verdict["timings"]) == {*step.TIMED, "modified_py"}
+    assert verdict["timings"]["fetch"] == 20.0
 
 
 def test_main_writes_what_the_ledger_reads_and_never_fails(
@@ -354,12 +361,21 @@ def test_main_writes_what_the_ledger_reads_and_never_fails(
     verdict = json.loads(written.read_text(encoding="utf-8"))
     for part in ("verdict `select`", "reason: None", "bundle 5.0 h old"):
         assert part in line
+    # The line ends with the verdict's own timings, in the order the step names them, and the count.
+    timings = verdict["timings"]
+    assert set(step.TIMED) | {"modified_py"} == set(timings)
+    took = ", ".join(f"{name} {timings[name]:.1f} s" for name in step.TIMED)
+    assert line.rstrip().endswith(f"Took: {took}; {timings['modified_py']} modified .py files.")
+    assert timings["modified_py"] == 1
     assert f"{verdict['would_run_share']:.1%}" in line
     # With no bundle the line says so, and the verdict is still the ledger's to read.
     api.runs = (500, {}, b"")
     assert step.main(env, repo, api) == 0
     assert "verdict `full`" in summary.read_text(encoding="utf-8").splitlines()[-1]
     assert "no bundle" in summary.read_text(encoding="utf-8").splitlines()[-1]
+    # A diff that was not scored names the fetch alone.
+    last = summary.read_text(encoding="utf-8").splitlines()[-1]
+    assert re.search(r"Took: fetch \d+\.\d s\.$", last), last
     # A long reason is cut in the line, never in the file.
     long = cts.unscored({}, "x" * (step.SUMMARY_REASON_CHARS + 50))
     assert "x" * step.SUMMARY_REASON_CHARS + "," in step.summary_line(long, None)
@@ -454,10 +470,12 @@ def test_the_shadow_steps_cannot_change_the_job_or_any_other() -> None:
     ci = _ci()
     changes = ci["jobs"]["changes"]
     steps, score, upload = _shadow_steps()
-    # Last, in order, on pull requests only, and unable to fail the job. A job's
-    # outputs are published when it ends, so the time these steps take is added
-    # to every job that waits on this one: the bounds below are that cost.
-    assert steps[-2:] == [score, upload]
+    # After every step that can set an output, in order, on pull requests only,
+    # and unable to fail the job. A job's outputs are published when it ends, so
+    # the time these steps take is added to every job that waits on this one:
+    # the bounds below are that cost.
+    last_with_an_id = max(i for i, s in enumerate(steps) if "id" in s)
+    assert last_with_an_id < steps.index(score) < steps.index(upload)
     for shadow in (score, upload):
         assert shadow["if"] == "github.event_name == 'pull_request'"
         assert shadow["continue-on-error"] is True
@@ -492,14 +510,15 @@ def test_the_shadow_steps_hold_a_read_token_and_upload_the_ledgers_artifact() ->
     assert upload["with"]["overwrite"] is True
     # The name the ledger asks a run for by default.
     assert f'default="{step.VERDICT_DIR}"' in Path(ledger.__file__).read_text(encoding="utf-8")
-    # The same pinned action every other upload in the workflow uses.
-    pins = {
+    # A pinned action, at a commit another upload in the workflow is pinned to.
+    others = {
         s["uses"]
         for job in _ci()["jobs"].values()
         for s in job.get("steps", [])
-        if str(s.get("uses", "")).startswith("actions/upload-artifact@")
+        if str(s.get("uses", "")).startswith("actions/upload-artifact@") and s != upload
     }
-    assert pins == {upload["uses"]}
+    assert re.fullmatch(r"actions/upload-artifact@[0-9a-f]{40}", upload["uses"])
+    assert upload["uses"] in others
 
 
 def test_the_nightly_workflow_publishes_the_bundle_the_step_asks_for() -> None:

@@ -225,6 +225,7 @@ export interface ProviderAdapter {
 
   /** The configured backend's model list, or `backend`'s own when a session runs another harness. */
   fetchAvailableModels(backend?: string): Promise<ModelInfo[]>
+  /** The model's context window in tokens, or 0 when no source knows it. */
   getContextWindow(model: string): number
   getDefaultModel(): string
   getPermissionModes(): PermissionMode[]

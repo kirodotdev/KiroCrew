@@ -80,9 +80,14 @@ def _make_id() -> str:
 # ``context._STRUCTURAL_MARKER_RES``: ``ContextBuilder.build_message`` neutralizes
 # the whole turn with that global set, so a global entry would strip the fences
 # added below and collapse the separation it is meant to create.
+#
+# A match starts only at the first dash of a run (``(?<!-)``). Any match that
+# starts inside a run is the tail of the one that starts at the run's first
+# dash, which the left-to-right scan takes first, so the scrubbed text is the same;
+# without the guard every start inside a long run rescans the rest of it.
 _CALLER_FENCE_RES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"[-]{3,}\s*CONTEXT\s*ENTRY\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
-    re.compile(r"[-]{3,}\s*USER\s*MESSAGE\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
+    re.compile(r"(?<!-)[-]{3,}\s*CONTEXT\s*ENTRY\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
+    re.compile(r"(?<!-)[-]{3,}\s*USER\s*MESSAGE\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
 )
 _FENCE_NEUTRALIZED = "[marker-removed]"
 
@@ -92,6 +97,14 @@ def _scrub_caller_fences(text: str) -> str:
     for pattern in _CALLER_FENCE_RES:
         text = pattern.sub(_FENCE_NEUTRALIZED, text)
     return text
+
+
+def _text_of_part(part: dict[str, Any]) -> str:
+    """The text of one ``text`` content part, coerced like a scalar ``content``."""
+    text = part.get("text", "")
+    if isinstance(text, str):
+        return text
+    return "" if text is None else str(text)
 
 
 def _flatten_messages(messages: list[dict[str, Any]]) -> str:
@@ -118,9 +131,7 @@ def _flatten_messages(messages: list[dict[str, Any]]) -> str:
         content = msg.get("content") or ""
         if isinstance(content, list):
             content = " ".join(
-                p.get("text", "")
-                for p in content
-                if isinstance(p, dict) and p.get("type") == "text"
+                _text_of_part(p) for p in content if isinstance(p, dict) and p.get("type") == "text"
             )
         elif not isinstance(content, str):
             # A scalar (or null) content is off-spec but must not 500: coerce
@@ -295,13 +306,15 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=400,
             )
-        # Reject unsupported roles loudly (tool/function)
+        # Reject unsupported roles loudly (tool/function). A list or object role
+        # is unsupported too; it cannot be looked up in the set below.
         role = msg.get("role", "user")
-        if role in _UNSUPPORTED_ROLES:
+        if isinstance(role, (list, dict)) or role in _UNSUPPORTED_ROLES:
+            shown = role if isinstance(role, str) else f"<{type(role).__name__}>"
             return web.json_response(
                 {
                     "error": {
-                        "message": f"role {role!r} not supported",
+                        "message": f"role {shown!r} not supported",
                         "type": "invalid_request_error",
                     }
                 },

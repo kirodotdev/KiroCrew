@@ -372,7 +372,7 @@ and are imported from their owner.
 | `kiro_crew.artifacts_disk` | How a store keeps artifacts on disk: the directory layout and slug claiming, the fenced file IO (`_read_text` / `_write_text` / `_read_bytes` / `_write_bytes`) and its pinned, durable primitives, the meta / version / image-asset writes, the lifecycle event append, version listing and pruning, the meta scan and the pinned `rmtree`. Also the caps (`MAX_VERSIONS`, `MAX_CONTENT_BYTES`, `MAX_COMMENTS_PER_ARTIFACT`, `MAX_EVENTS_PER_ARTIFACT`, `MAX_AUTO_WIDGET_ARTIFACTS`), the clock (`_now_iso`), the content token and the content check |
 | `kiro_crew.artifacts_source_link` | The live `source_path` pointer: its allowed roots, the descriptor-pinned read and the write-back, and `relocate` |
 | `kiro_crew.artifacts_writes` | Content writes: `create`, `create_image`, `update` and `settle_blank`, and the `kirocrew.artifact.created` counter |
-| `kiro_crew.artifacts_scans` | Lookups and sweeps over every `meta.json`: by upstream artifact id (one and the batch index), by source path, the kind migration and the auto-widget retention sweep |
+| `kiro_crew.artifacts_scans` | Lookups and sweeps over every `meta.json`: by upstream artifact id (one and the batch index), by source path, `kind_of` (one slug's `kind` from its meta.json alone, through the fenced reader, never the body and no write; None for a slug outside the store's shape by plain character checks, a meta path resolving outside the root, a missing or unreadable record; the history search uses it for slugs read from chat links), the kind migration and the auto-widget retention sweep |
 | `kiro_crew.artifacts_comments` | The `comments.json` sidecar: comment CRUD, the provider merge, the anchor rescan and the comment events |
 | `kiro_crew.artifact_store.model` | The error hierarchy, the `EXPECT_ABSENT` generation sentinel and the record dataclasses (`Artifact`, `ArtifactPublication`, `ForkMetadata`, `ArtifactComment`, `ImageMetadata`) |
 | `kiro_crew.artifact_store.rules` | Field limits and grammar (slug, tag, name, description, `source_path`), `slugify`, the kind policy (`_infer_kind`, `detect_editor_kind`, `USER_SELECTABLE_KINDS`), the theme-colour lint, the document-path test and session-scope matching |
@@ -1596,6 +1596,11 @@ does there. When the filter changed the page, a note in `verification.notes` say
 places and on which line of `view.html` the first is (`dashboard_verify.rewrite_note`),
 and never what was replaced. What the check returns crosses `member_dashboard._page_safe`,
 the redaction the tab's values cross, because a page chooses the text of its own errors.
+Each error message and the browser's last line when it exits (read from the last 2,000
+bytes of its stderr; `MAX_MESSAGE_CHARS`, 300), and each refused URL a note or a picture's
+reason lists (120), is redacted whole before it is cut, since a cut first can keep part of
+a secret. A refused URL is stored with its query cut and redacted, so requests that differ
+only in their query are listed once.
 
 It runs in a Chrome or Chromium an administrator installed on the gateway host, started
 by a system Python (each root-owned, not a link, not writable by the gateway's account: a
@@ -2084,7 +2089,14 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   and `window.open`, into a `kirocrew-dashboard:open` message, and
   `useFrameLinkBridge` opens an `http(s)` URL, or a dashboard path resolved
   against its origin, only on a real click in
-  that frame, once per click, with no dialog. The shim decides a click after
+  that frame, once per click, with no dialog. A page of this dashboard that
+  `utils/internalNav.ts` accepts (an explicit list of destinations, each with
+  the query parameters it may carry, on the dashboard's own origin or the exact
+  origin of `dashboard.url` or the tunnel) opens in place through the main
+  window's router and leave check (`openInternalLink`); anything else opens in a
+  new tab. A link in a window with no in-app navigator (a popout or embed) keeps
+  its previous behavior. The shim posts a middle or modified click with `tab: true`, and the host
+  then opens even a dashboard page in a new tab. The shim decides a click after
   the page's own handlers, so a click the page cancels posts nothing. The host
   opens at once only when it can tie the click to the asking frame
   (`tiedToFrame`): focus came into that frame straight from the dashboard (the
@@ -2093,12 +2105,18 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   between frames fires nothing, so the entry is checked whenever the dashboard
   hears anything and every 200 ms); the pointer is not over another frame, and no click or key in the dashboard or reported by another
   bridged frame (`kirocrew-dashboard:input`) is within an activation's lifespan
-  (5 s). Otherwise it does not open: an "Open <host>" button
+  (5 s). An in-place dashboard page (`openInternalLink`) is also tied
+  (`pointerTiedToFrame`) when that dashboard click or key came before the
+  pointer entered the asking frame and the pointer is still over it, so a page
+  link clicked just after opening the page or its tab opens on the first click;
+  a sibling frame's reported input still refuses it. Otherwise it does not open: an "Open <host>" button
   (`FrameLinkChip`), with the full URL as its title, appears at the frame's top
   right corner and takes focus, and the person's click on it opens the link.
   It has no timer, so a slow reader does not lose it. It goes on the next click
-  or key elsewhere, on a scroll or resize, or on Escape. So a page that focuses its own frame cannot open a link on a click
-  made in the dashboard or in another frame. Each web link gets its resolved URL
+  or key elsewhere, on a scroll or resize, or on Escape. So a page that focuses its own frame cannot open a web URL or a new tab on a click
+  made in the dashboard or in another frame. Under the pointer tie it can, right after a dashboard click and with no click in the
+  frame, move this window to a listed dashboard page, behind that page's leave check and within the activation's lifespan: the
+  residual `rfc-in-app-dashboard-links.md` §3.4 and §4 accept. Each web link gets its resolved URL
   as a hover title, so the URL shows before the click, as it does for a link in a
   session. A `<form>` in the page submits nowhere, whatever its `target`
   (`_blank` included): the frames grant no `allow-forms` and the policy sets
@@ -2192,20 +2210,28 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
     fixed-height frame scrolls itself and ignores the message. A
     `position: sticky` element inside the artifact still scrolls away here: it
     sticks to the frame's viewport, which is the whole document.
-- **A frame showing something that is not ours offers a retry.** The document URL
-  is single-use, so a navigation the ENGINE starts on its own (memory pressure, a
-  back/forward cache eviction) re-requests a spent URL and lands the frame on a
-  404 page — which fires `load` like any other navigation and leaves a silent
-  empty box, while the failure notice stays hidden because the mint itself
-  succeeded. Every document this surface builds carries the height reporter, so
-  silence past a grace window is the signal to surface the existing retry (which
-  re-mints; re-pointing at the spent URL recovers nothing). Deliberately not an
-  automatic re-mint: a second `load` also happens when a link inside an artifact
-  navigates the frame, and silently pulling the reader back would fight them.
-  The crewmate Dashboard tab differs and re-mints by itself
-  (`useFrameAliveRecovery`): its links go through the host's link bridge, so its
-  frame has no navigation of its own to fight, and a document that does not
-  answer the host's ping after a `load` is re-minted, at most three times in a row.
+- **A frame showing something that is not ours re-mints itself, and offers a
+  retry.** The document URL is single-use, so a navigation the ENGINE starts on
+  its own (memory pressure, a back/forward cache eviction, a gateway restart)
+  re-requests a spent URL and lands the frame on a 404 page — which fires `load`
+  like any other navigation and leaves a silent empty box, while the failure
+  notice stays hidden because the mint itself succeeded. Every visible frame
+  that runs script (this surface, the library thumbnail, a teammate's shared
+  artifact, a chat widget and the crewmate Dashboard tab) is built with
+  `buildSrcdoc({ aliveReply: true })`, and `useFrameAliveRecovery` re-mints a
+  document that does not answer the host's ping after a `load`, at most three
+  times in a row. Their web links go through the host's link bridge, a report's
+  links are inert and no click reaches a thumbnail, so little else moves them:
+  a `_self` or relative link, the page's own script, or a link in a
+  welcome-brief widget (it has no bridge) to a site the dashboard's `frame-src`
+  admits. Such a page cannot answer the
+  ping either, so it is re-minted back to the document, as on the crewmate
+  Dashboard tab. This surface also carries the height reporter, so silence past
+  a grace window longer than the ping's deadline surfaces the existing retry
+  (which re-mints; re-pointing at the spent URL recovers nothing), the reader's
+  way back once the automatic tries stop; while the re-mint is still in flight
+  it reads "Rendering…". The command-center session card frame grants no
+  script, so it cannot answer the ping and is not recovered.
   `/sandbox-doc/` is on the service worker's skip list for the same single-use
   reason, and because an iframe navigation has `mode === 'navigate'`, so the
   worker's offline fallback would otherwise serve the SPA shell INTO the widget
@@ -2913,6 +2939,13 @@ Mutating routes fall into two categories:
   even after an expiry has emptied the list.
 
 All mutating routes require an unrestricted (non-restricted) session.
+
+Every mutating route also answers a dashboard session that is neither the owner nor
+a Shared Crew teammate (a messaging allowlist link session) with 403 `owner_only`
+(`require_owner_for_dashboard_caller`, applied by `_owner_gated` where the route is
+registered, before the cloud-deployment gate). Withdrawal (recall, destroy,
+teardown) is owner-gated but not cloud-gated. An internal-secret caller keeps its
+`@_internal_denied` and allowlist judgement. The `GET` routes are unchanged.
 
 #### Deploy handler owners
 

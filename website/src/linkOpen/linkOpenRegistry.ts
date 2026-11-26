@@ -2,7 +2,8 @@
  * App-contributed link opening (`contributes.linkOpen`): discovery, matching and
  * the remembered choice.
  *
- * An app declares `{ id, entry, hosts, fullUrl? }`. The manifest is validated
+ * An app declares `{ id, entry, hosts, fullUrl? }`, or `page: { param }` instead of
+ * `entry` to open the link on its own dashboard page. The manifest is validated
  * server-side; this module re-checks only what it needs to match safely, and keeps
  * only hosts the owner approved (`linkOpenGrant`, from the gateway).
  *
@@ -12,6 +13,7 @@
  *
  * @module linkOpen/linkOpenRegistry
  */
+import { appNavTarget, type AppNavRecord } from '../appNav'
 import { appDisplayName } from '../components/appstore/appManifest'
 import { POINT_ID_RE } from '../appFrame/sandboxFrame'
 // The host rule every host-claiming point shares (`apps/app_hosts.py`).
@@ -49,20 +51,23 @@ export interface ResolvedLinkOpener extends HostClaims {
   /** The name the user knows the app by. */
   label: string
   id: string
-  /** ESM path relative to the app's `ui/` dir. */
+  /** ESM path relative to the app's `ui/` dir; empty for a page entry. */
   entry: string
+  /** A page entry: the app's own dashboard route and the query parameter that
+   *  carries the link (`appNavTarget`'s route, which is also its pop-out id). */
+  page?: { route: string; param: string }
   /** Hand the module the clicked URL whole; by default the query and fragment are dropped. */
   fullUrl: boolean
 }
 
-interface AppLike {
+interface AppLike extends Omit<AppNavRecord, 'name' | 'manifest'> {
   name?: string
   displayName?: string
   origin?: string
   enabled?: boolean
   /** What the owner approved (`apps/point_grants.py`). Absent: nothing to filter. */
   linkOpenGrant?: { hosts?: unknown; fullUrl?: unknown }
-  manifest?: { displayName?: string; contributes?: { linkOpen?: unknown } }
+  manifest?: AppNavRecord['manifest'] & { displayName?: string; contributes?: { linkOpen?: unknown } }
 }
 
 /** Resolve every enabled app's link-open entry, in app-list order. */
@@ -78,19 +83,30 @@ export function resolveLinkOpeners(apps: readonly AppLike[]): ResolvedLinkOpener
     if (!p || typeof p !== 'object') continue
     const id = typeof p.id === 'string' ? p.id : ''
     const entry = typeof p.entry === 'string' ? p.entry : ''
-    if (!POINT_ID_RE.test(id) || !entry || entry.includes('..') || entry.startsWith('/')) continue
+    if (!POINT_ID_RE.test(id)) continue
+    let page: ResolvedLinkOpener['page']
+    if (p.page !== undefined) {
+      const param = (p.page as { param?: unknown } | null)?.param
+      if (entry || typeof param !== 'string' || !POINT_ID_RE.test(param)) continue
+      // Where the rail opens the app; an orphaned app's is its migration page,
+      // which reads no link.
+      const target = appNavTarget({ ...app, name: app.name })
+      if (!target || target.orphaned) continue
+      page = { route: target.route, param }
+    } else if (!entry || entry.includes('..') || entry.startsWith('/')) continue
     // A row without a grant is an app list from before grants were reported: it
     // gets nothing, because a click hands the app a URL.
     const grant = app.linkOpenGrant
     if (!grant) continue
     const { exact, suffixes } = readHostClaims(p.hosts, MAX_HOSTS, grantedSet(grant.hosts) ?? new Set())
-    if (!exact.size && !suffixes.length) continue
+    if (!exact.size && !suffixes.size) continue
     out.push({
       key: `${app.name}:${id}`,
       appName: app.name,
       label: appDisplayName({ ...app, displayName: app.displayName || app.manifest?.displayName }) || app.name,
       id,
       entry: entry.replace(/^\.?\//, ''),
+      ...(page ? { page } : {}),
       exact,
       suffixes,
       fullUrl: p.fullUrl === true && grant.fullUrl === true,

@@ -779,9 +779,44 @@ def _backend_work_dir() -> Optional[str]:
     return None if default is None else str(default)
 
 
+def _target_spec(pool_key: PoolKey) -> str:
+    """The ``KIROCREW_MCP_TARGET_<SERVER>`` mapping for *pool_key*, or ``""`` when none is set."""
+    base = "KIROCREW_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
+    # Accept the legacy MC_MCP_TARGET_ prefix for overlays/daemons written by
+    # older versions that haven't been regenerated.
+    legacy_base = "MC_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
+    # Prefer the args-disambiguated entry (written by
+    # rewriter._collect_target_env) so two agents that share a server name but
+    # declare different --target-args each spawn their OWN backend command,
+    # instead of resolving to whichever agent sorted first alphabetically. Fall
+    # back to the bare server-name entry for older overlays predating the
+    # disambiguated keys.
+    return (
+        os.environ.get(base + "__" + pool_key.command_args_hash)
+        or os.environ.get(base)
+        or os.environ.get(legacy_base + "__" + pool_key.command_args_hash)
+        or os.environ.get(legacy_base)
+        or ""
+    )
+
+
+def _target_unknown_reason(pool_key: PoolKey) -> str:
+    """The ``_TargetUnknown`` text for a resolver that found no target for *pool_key*.
+
+    Both texts begin with ``stub_link.TARGET_UNKNOWN_REASON``, the frozen fragment a
+    stub matches, so either refusal stays fallback-eligible. A mapping that names a
+    command and still resolved to nothing was refused by the launch approval: that is
+    :func:`env_target_resolver`'s only ``None`` once such a mapping is found.
+    """
+    prefix = f"no target mapping for server {pool_key.server_name!r}"
+    if _target_spec(pool_key).strip():
+        return f"{prefix}: its launch is not an approved one; review it in MCP Servers > Sharing"
+    return f"{prefix}; set KIROCREW_MCP_TARGET_<SERVER> env var or pass a target_resolver"
+
+
 def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dict[str, str], str]]:
     """Look up ``KIROCREW_MCP_TARGET_<SERVER>`` in the process env and return the
-    spawn tuple, or ``None`` if no mapping is set.
+    spawn tuple, or ``None`` if no mapping is set or its launch is not approved.
 
     Wire format: ``KIROCREW_MCP_TARGET_SLACK_MCP="slack-mcp --stdio"``.
     The server name is upper-cased with ``-`` replaced by ``_``. Env is
@@ -793,22 +828,7 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     :func:`kiro_crew.mcp_gateway.manager._scrub_sensitive_env` so even if
     the gateway process somehow inherited credential vars, backends won't.
     """
-    base = "KIROCREW_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
-    # Accept the legacy MC_MCP_TARGET_ prefix for overlays/daemons written by
-    # older versions that haven't been regenerated.
-    legacy_base = "MC_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
-    # Prefer the args-disambiguated entry (written by
-    # rewriter._collect_target_env) so two agents that share a server name but
-    # declare different --target-args each spawn their OWN backend command,
-    # instead of resolving to whichever agent sorted first alphabetically. Fall
-    # back to the bare server-name entry for older overlays predating the
-    # disambiguated keys.
-    spec = (
-        os.environ.get(base + "__" + pool_key.command_args_hash)
-        or os.environ.get(base)
-        or os.environ.get(legacy_base + "__" + pool_key.command_args_hash)
-        or os.environ.get(legacy_base)
-    )
+    spec = _target_spec(pool_key)
     if not spec:
         return None
     parts = shlex.split(spec)

@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 from macos_lane_helpers import load_workflow
 
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 from scripts import ci_test_selection as cts
 from scripts import ci_test_selection_ledger as ledger
@@ -292,9 +293,7 @@ def _mapped(path: str) -> bool:
     return path.endswith(".py") and path.startswith(("src/", "test/"))
 
 
-def test_a_covered_path_is_a_prose_doc_outside_the_package_or_a_frontend_path(
-    rule: Any, tracked: list[str]
-) -> None:
+def test_a_covered_path_is_a_prose_doc_or_a_frontend_path(rule: Any, tracked: list[str]) -> None:
     globs = [win.glob_pattern(glob) for glob in _ci_frontend()]
     assert globs
 
@@ -302,11 +301,10 @@ def test_a_covered_path_is_a_prose_doc_outside_the_package_or_a_frontend_path(
         return any(glob.fullmatch(path) for glob in globs)
 
     docs = {p for p in tracked if rule.docs.is_prose_doc(p)}
-    shipped = {p for p in docs if p.startswith(readers.PACKAGE_TREE)}
     covered = {p for p in tracked if rule.covers(p)}
-    assert covered == (docs - shipped) | {p for p in tracked if frontend(p)}
-    # Each kind is in the tree, so none of the three statements above is empty.
-    assert shipped and docs - shipped and covered - docs and set(tracked) - covered - docs
+    assert covered == docs | {p for p in tracked if frontend(p)}
+    # Each kind is in the tree, so neither statement above is empty.
+    assert docs and covered - docs and set(tracked) - covered
 
 
 def test_every_uncovered_path_keeps_the_verdict_it_has_with_no_rule(
@@ -320,7 +318,7 @@ def test_every_uncovered_path_keeps_the_verdict_it_has_with_no_rule(
     # One path of each folder and suffix, every packaged doc, and every file
     # under a doc tree that is not prose.
     kinds = {(p.split("/")[0], Path(p).suffix): p for p in uncovered}
-    packaged = [p for p in uncovered if rule.docs.is_prose_doc(p)]
+    packaged = [p for p in uncovered if p.startswith("src/") and p.endswith(".md")]
     trees = tuple(tree for tree in rule.docs._DOC_TREES if not tree.startswith("website/"))
     not_prose = [p for p in uncovered if p.startswith(trees) and not rule.docs.is_prose_doc(p)]
     skills = [p for p in uncovered if p.startswith("src/") and p.endswith("/SKILL.md")]
@@ -391,6 +389,8 @@ TREE = {
     "test/test_a.py": "",
     "test/test_gate.py": "",
     "test/test_idle.py": "",
+    # In the tree and not in the bundle below: a test file newer than the map.
+    "test/test_newer_than_map.py": "",
     "test/test_reads_docs.py": 'GUIDE = "docs/guide.md"\n',
     "test/test_reads_ui.py": 'PAGE = "website/src/a.ts"\n',
 }
@@ -434,7 +434,12 @@ def _verdict(repo: Path, tmp_path: Path, edits: dict[str, str]) -> dict[str, Any
         "schema": 1,
         "commit": "c0ffee",
         "built_at": (NOW - timedelta(days=1)).isoformat(),
-        "tests": {"test/test_a.py": 1, "test/test_idle.py": 8},
+        "tests": {
+            "test/test_a.py": 1,
+            "test/test_idle.py": 8,
+            "test/test_reads_docs.py": 1,
+            "test/test_reads_ui.py": 1,
+        },
         "files": {"src/kiro_crew/a.py": [0]},
         "cochange": {"src/kiro_crew/a.py": ["test/test_a.py"]},
         "guard": ["test/test_gate.py"],
@@ -459,7 +464,11 @@ def test_a_doc_edit_beside_a_code_edit_runs_the_docs_readers_on_both_systems(
     assert verdict["tiers"]["A"] == ["test/test_gate.py", "test/test_reads_docs.py"]
     assert verdict["would_skip"] == ["test/test_idle.py", "test/test_reads_ui.py"]
     assert verdict["windows"]["verdict"] == "select"
-    assert verdict["windows"]["run"] == ["test/test_gate.py", "test/test_reads_docs.py"]
+    # The file the map has no entry for is held on Linux and runs on Windows.
+    newer = "test/test_newer_than_map.py"
+    assert newer in verdict["tiers"]["F"]
+    assert verdict["unknown"] == {"new": 2, "never_runs": 0, "held": 1}
+    assert verdict["windows"]["run"] == ["test/test_gate.py", newer, "test/test_reads_docs.py"]
 
 
 def test_a_frontend_edit_runs_the_cross_surface_list_of_its_own_tree_only(
@@ -484,7 +493,11 @@ def test_a_frontend_edit_runs_the_cross_surface_list_of_its_own_tree_only(
     assert verdict["verdict"] == "select" and verdict["covered"] == {"M": 1}
     assert verdict["tiers"]["A"] == ["test/test_gate.py", "test/test_reads_ui.py"]
     assert verdict["would_skip"] == ["test/test_idle.py", "test/test_reads_docs.py"]
-    assert verdict["windows"]["run"] == ["test/test_gate.py", "test/test_reads_ui.py"]
+    assert verdict["windows"]["run"] == [
+        "test/test_gate.py",
+        "test/test_newer_than_map.py",
+        "test/test_reads_ui.py",
+    ]
 
 
 def test_the_select_command_prints_the_readers_of_a_changed_doc(
@@ -512,3 +525,25 @@ def test_the_select_command_prints_the_readers_of_a_changed_doc(
     diff.write_text("A\tsrc/kiro_crew/docs/new.md\n", encoding="utf-8")
     assert ctm.main([*argv, "--name-status", str(diff)]) == ctm.FULL
     assert "full suite: A src/kiro_crew/docs/new.md: file set changed" in capsys.readouterr().err
+
+
+def test_the_rule_counts_the_time_its_scans_take(monkeypatch: pytest.MonkeyPatch) -> None:
+    rule = readers.DataRule(ROOT)
+    scans: list[list[str]] = []
+
+    def scan(docs: list[str], root: str) -> list[str]:
+        scans.append(docs)
+        return ["test/test_reads_docs.py"]
+
+    monkeypatch.setattr(rule.docs, "readers", scan)
+    # A clock that moves one second each time it is read.
+    ManualClock(monotonic_start=0.0, tick=1.0).install(monkeypatch, readers)
+    assert rule.seconds == 0.0
+    first = rule.tests(["docs/README.md"])
+    assert rule.seconds == 1.0 and len(scans) == 1
+    # The same docs again cost a second reading of the clock and no second scan.
+    assert rule.tests(["docs/README.md"]) == first
+    assert rule.seconds == 2.0 and len(scans) == 1
+    # A path with no readers here is not a scan, and is still counted as a call.
+    assert rule.tests(["src/kiro_crew/a.py"]) == set()
+    assert len(scans) == 1

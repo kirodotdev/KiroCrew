@@ -194,6 +194,34 @@ def test_a_non_extra_spec_is_quoted_for_the_platform(monkeypatch: pytest.MonkeyP
     assert windows.startswith("& '")
 
 
+@pytest.mark.parametrize("quote", ["'", "\u2018", "\u2019", "\u201a", "\u201b"])
+def test_every_pasted_powershell_command_doubles_each_single_quote(
+    monkeypatch: pytest.MonkeyPatch, quote: str
+) -> None:
+    """PowerShell ends a single-quoted string on U+2018..U+201B as well as on ASCII
+    ', so each command a user pastes doubles all five or stops at the path."""
+    from kiro_crew import kiro_cli_bundle, lts_sign_in
+    from kiro_crew.platform import update_layout
+
+    folder = f"/home/O{quote}Brien"
+    monkeypatch.setattr(extras.os, "name", "nt")
+    monkeypatch.setattr(extras.sys, "executable", f"{folder}/python.exe")
+    login, _sso, bundled = kiro_cli_bundle.login_commands(
+        f"{folder}/kiro-cli.exe", {kiro_cli_bundle.BUNDLED_KIRO_DIR_ENV: folder}, windows=True
+    )
+    commands = {
+        "pip install": extras.pip_install_command_for("faiss-cpu"),
+        "update": update_layout._running_interpreter_pip_prefix(),
+        "lts sign-in": lts_sign_in.render_command([f"{folder}/kirocrew.exe"], platform="win32"),
+        "kiro-cli sign-in": login,
+    }
+
+    assert bundled
+    literal = f"& '/home/O{quote * 2}Brien/"
+    for name, command in commands.items():
+        assert literal in command, f"{name}: {command}"
+
+
 # ── Install channel ──
 
 
@@ -344,3 +372,82 @@ def test_a_distribution_named_in_several_places_carries_one_specifier() -> None:
     assert shared, "no distribution is named in two places; the guard checks nothing"
     differing = {k: v for k, v in shared.items() if len(set(v.values())) > 1}
     assert not differing, f"one distribution, several specifiers: {differing}"
+
+
+# The note naming what a rebuilt managed-venv tree did not carry
+
+
+def _dist(site: Path, name: str, *requires: str, direct: bool = False) -> None:
+    """An installed distribution *name* in *site*, requiring *requires*."""
+    info = site / f"{name.replace('-', '_')}-1.0.dist-info"
+    info.mkdir(parents=True)
+    lines = "".join(f"Requires-Dist: {r}\n" for r in requires)
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n{lines}", encoding="utf-8"
+    )
+    if direct:
+        (info / "direct_url.json").write_text(
+            '{"url": "file:///src/app", "dir_info": {}}', encoding="utf-8"
+        )
+
+
+def _uncarried(previous: Path, new: Path) -> tuple[list[str], list[str]]:
+    assert hasattr(extras, "uncarried"), "kiro_crew.extras names no uncarried packages"
+    return extras.uncarried([previous], [new])
+
+
+def _note(previous: Path, new: Path, python: str) -> str:
+    assert hasattr(extras, "uncarried_note"), "kiro_crew.extras writes no uncarried note"
+    return extras.uncarried_note([previous], [new], python)
+
+
+def test_a_dependency_of_another_installed_package_is_not_named(tmp_path: Path) -> None:
+    old, new = tmp_path / "old", tmp_path / "new"
+    _dist(old, "faiss-cpu", "numpy>=1.25; python_version >= '3.10'")
+    _dist(old, "numpy")
+    new.mkdir()
+
+    from_index, direct = _uncarried(old, new)
+
+    assert from_index == ["faiss-cpu"]
+    assert direct == []
+
+
+def test_kiro_crew_and_the_packaging_tools_are_never_named(tmp_path: Path) -> None:
+    old, new = tmp_path / "old", tmp_path / "new"
+    for name in ("kirocrew", "kirocrew-lts", "pip", "setuptools", "wheel"):
+        _dist(old, name)
+    new.mkdir()
+
+    assert _uncarried(old, new) == ([], [])
+    assert _note(old, new, "/venv/bin/python") == ""
+
+
+def test_a_package_kiro_crew_requires_only_under_an_extra_is_named(tmp_path: Path) -> None:
+    """A base requirement is a dependency like any other; an ``extra`` one is not,
+    so a dropped extra's package is named when the new tree lacks it."""
+    old, new = tmp_path / "old", tmp_path / "new"
+    _dist(old, "kirocrew", "httpx>=0.27", 'lark-oapi<2,>=1.4; extra == "feishu"')
+    _dist(old, "httpx")
+    _dist(old, "lark-oapi")
+    _dist(new, "httpx")
+
+    note = _note(old, new, "/venv/bin/python")
+
+    assert _uncarried(old, new) == (["lark-oapi"], [])
+    assert note.startswith("Note: ")
+    command = extras.pip_install_command_for("lark-oapi", python="/venv/bin/python")
+    assert note.endswith(f"Add lark-oapi back with: {command}")
+
+
+def test_a_package_installed_from_a_path_is_named_without_a_command(tmp_path: Path) -> None:
+    old, new = tmp_path / "old", tmp_path / "new"
+    _dist(old, "my-app", direct=True)
+    new.mkdir()
+
+    note = _note(old, new, "/venv/bin/python")
+
+    assert _uncarried(old, new) == ([], ["my-app"])
+    assert "my-app" in note
+    assert "reinstall it from where it came from" in note
+    assert "pip install" not in note

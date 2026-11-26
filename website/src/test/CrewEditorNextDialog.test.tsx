@@ -1263,6 +1263,18 @@ describe('CrewEditorNextDialog — General edits, footer, danger', () => {
     )
   })
 
+  it('shows the stored triggers on General and saves changed ones', async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, { ...OTHER_CREW, triggers: 'incidents, outages' }] })
+    const dialog = await openNew()
+    const input = within(dialog).getByRole('textbox', { name: 'Triggers' })
+    await waitFor(() => expect(input).toHaveValue('incidents, outages'))
+    fireEvent.change(input, { target: { value: 'incidents, pager escalations' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() =>
+      expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', expect.objectContaining({ triggers: 'incidents, pager escalations' })),
+    )
+  })
+
   it('clears the stored session colour and saves the empty value', async () => {
     mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, { ...OTHER_CREW, session_color: '#ef4444' }] })
     const dialog = await openNew()
@@ -1315,6 +1327,21 @@ describe('CrewEditorNextDialog — General edits, footer, danger', () => {
     expect(pane).toHaveTextContent('memory and past chats are kept. A new bot can take that memory over')
     fireEvent.click(within(dialog).getByTestId('next-delete-crew'))
     expect(pane).toHaveTextContent('A new bot can start from its memory.')
+  })
+
+  it('gives the danger delete buttons a resting fill and a strong edge on its tint', async () => {
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-danger'))
+    const expectFilled = (button: HTMLElement) => {
+      expect(button).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(button).not.toHaveClass('bg-transparent')
+      expect(button).not.toHaveClass('border-border')
+    }
+    const del = await within(dialog).findByTestId('next-delete-crew')
+    expectFilled(del)
+    fireEvent.click(del)
+    expectFilled(await within(dialog).findByTestId('next-confirm-delete-crew'))
+    expectFilled(within(dialog).getByTestId('next-cancel-delete-crew'))
   })
 
   it('cancels the armed danger delete', async () => {

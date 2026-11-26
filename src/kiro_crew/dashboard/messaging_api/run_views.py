@@ -310,6 +310,11 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         data["result"] = view
         if view_meta:
             data["result_meta"] = view_meta
+        # Present only once the run has thought, so a run that never does
+        # answers as before; outside the result view, so a paged read has it.
+        thinking = _redact(getattr(info, "streaming_thinking", ""))
+        if thinking:
+            data["thinking"] = thinking
         # Same predicate, same present-only-while-true convention as
         # api_spawn_list. This endpoint is the one a blocking `kirocrew spawn
         # run` polls every 2s (cli_commands_gateway_api.py), so leaving it out would keep the

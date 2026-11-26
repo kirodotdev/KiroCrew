@@ -33,12 +33,28 @@ from kiro_crew.security.readonly_bash import _EXTGLOB_RE
 # read-command prefix.
 # A reference to a protected path: a path/quote/flag lead-in, the name itself in
 # a capturing group, then a separator/quote/end. The one search both detects the
-# match and reports WHICH name it hit (``match.group(1)``), so no second per-name
+# match and reports WHICH name it hit (``match.group("name")``), so no second per-name
 # pass is needed to name the path.
+# A lone backslash (one not next to another) also separates, but only in a Windows
+# path: after a drive letter (`C:\Users\u\.aws\credentials`) or after `%VAR%\`.
+# Any other backslash before the name (`\w`, `\S`, `(?:`, `}`) is a regex escape or
+# shell syntax and stays allowed, so r"\.aws\b" or r"~/\.ssh/\S+" scrubbers pass.
+# shortcut: a doubled backslash (a non-raw literal, or a regex scrubber) stays
+# allowed; the pinned benign scrubber bodies use it. Revisit with a separate ruling.
+# Bounded on purpose: an open-ended segment run made a body such as `a:\a:\a:\...`
+# quadratic. `:` stays out of a segment so a `x:\` run cannot chain. The drive letter
+# must not follow `?`, `\` or `-`, so an inline flag such as `(?i:\.aws\b)` is no drive.
+# A Windows segment may hold a space (`C:\Users\Jane Doe\`), never another whitespace,
+# and inside a Windows path a multi-component name such as `.kube/config` may use one
+# lone backslash for each `/` (`C:\Users\u\.kube\config`).
 _CRON_CRED_PATH_RE = re.compile(
-    r"(?:^|[\s'\"=@/~`]|\$\{?HOME\}?)"
-    r"(" + "|".join(re.escape(d) for d in _SENSITIVE_HOME_DIRS) + r")"
-    r"(?:/|\s|['\"]|$)",
+    r"(?:^|[\s'\"=@/~`]|\$\{?HOME\}?"
+    r"|(?P<win>(?<![\w?\\-])[A-Za-z]:\\(?:[^\t\n\r\f\v'\"\\:]{1,255}\\){0,32}"
+    r"|%[A-Za-z_][\w()]{0,255}%\\))"
+    r"(?P<name>"
+    + "|".join(re.escape(d).replace("/", r"(?(win)(?:/|\\(?!\\))|/)") for d in _SENSITIVE_HOME_DIRS)
+    + r")"
+    r"(?:/|\s|['\"]|$|(?(win)\\(?!\\)|(?!)))",
     re.IGNORECASE,
 )
 # The COMMAND form of the same matcher. A shell command line reaches the
@@ -47,7 +63,7 @@ _CRON_CRED_PATH_RE = re.compile(
 # Script bodies keep `_CRON_CRED_PATH_RE`: Python source gets no shell grammar.
 _CRON_CMD_CRED_PATH_RE = re.compile(
     r"(?:^|[\s'\"=@/~`<>|&;]|\$\{?HOME\}?)"
-    r"(" + "|".join(re.escape(d) for d in _SENSITIVE_HOME_DIRS) + r")"
+    r"(?P<name>" + "|".join(re.escape(d) for d in _SENSITIVE_HOME_DIRS) + r")"
     r"(?:[/\\\s'\";&|<>]|$)",
     re.IGNORECASE,
 )
@@ -59,11 +75,12 @@ _SENSITIVE_HOME_DIRS_BY_LOWER = {d.lower(): d for d in _SENSITIVE_HOME_DIRS}
 def _matched_sensitive_name(text: str, pattern: re.Pattern[str] = _CRON_CRED_PATH_RE) -> str | None:
     """Return the ``_SENSITIVE_HOME_DIRS`` entry a literal reference in *text*
     hits (canonical spelling), or ``None``. One ``_CRON_CRED_PATH_RE`` search
-    both detects the match and names it via its capturing group."""
+    both detects the match and names it via its ``name`` group."""
     m = pattern.search(text)
     if m is None:
         return None
-    return _SENSITIVE_HOME_DIRS_BY_LOWER.get(m.group(1).lower(), m.group(1))
+    name = m.group("name")
+    return _SENSITIVE_HOME_DIRS_BY_LOWER.get(name.replace("\\", "/").lower(), name)
 
 
 def _protected_path_refusal(surface: str, matched: str | None) -> str:

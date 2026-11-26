@@ -501,8 +501,8 @@ class TestDiscordDispatcherApplier:
 
     def test_the_render_toggles_follow_the_live_snapshot(self):
         d = self._dispatcher()
-        prime_live("discord", reactions_enabled=False, show_thinking=True)
-        assert d._render_config() == (False, True)
+        prime_live("discord", reactions_enabled=False, show_thinking=True, show_timing_footer=False)
+        assert d._render_config() == (False, True, False)
 
 
 # Webex

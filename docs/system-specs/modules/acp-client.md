@@ -4,6 +4,17 @@
 
 The primary ACP session transport path spans **five** entry modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for a registry-selected ACP harness, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. Protocol constants live in `acp/types.py`; the complete backend and host-capability matrix is in [agent-host-contract.md](agent-host-contract.md#column-meaning).
 
+The package itself (`acp/__init__.py`) imports none of these modules. Each name in its
+`__all__` is read from `acp/client.py`, `acp/runtime.py` or `acp/types.py` on first
+access, through a module `__getattr__`, and nothing is cached, so importing one ACP
+module loads only what that module imports. `test/test_package_import_ratchet.py` holds
+`import kiro_crew.acp` to the `kiro_crew` and `kiro_crew.acp` modules in a fresh
+interpreter, so an eager import put back fails. It also fails when a fresh
+`import kiro_crew.dashboard.state` loads `acp/client.py` or `acp/session_handle.py`: the
+agent SDK's vocabulary modules (`agent_sdk/drivers/acp_vocab.py`, `acp_turn_vocab.py`)
+read each name they re-export from the owner module that defines it, not through those
+two.
+
 Module-level code moved out of the two transports lives in the owner modules
 below: `acp/runtime_start.py` serves the runtime alone, the six host adapters
 serve the client alone, and the rest serve both.
@@ -80,7 +91,7 @@ permission deferral).
 | Client owner | Owns |
 |---|---|
 | `acp/client_timeouts.py` | every protocol timeout and turn budget of the direct client, the respawn backoff, and the resolution of a prompt's timeout from its ceiling or deadline |
-| `acp/client_spawn_env.py` | a spawn before the process exists: kiro-cli and codex-acp binary resolution, the child's environment repair (pod HOME remap, bundle swap, session identity), `finish_suspended_spawn` and the `_exit_origin` reading of how a child exited, the launch tools, and the workspace, `agent.env` and `--agent` argv staging |
+| `acp/client_spawn_env.py` | a spawn before the process exists: kiro-cli and codex-acp binary resolution, the child's environment repair (the `SSH_AUTH_SOCK` and `KRB5CCNAME` pointers through `_resolve_spawn_env`, pod HOME remap, bundle swap, session identity), `finish_suspended_spawn` and the `_exit_origin` reading of how a child exited, the launch tools, and the workspace, `agent.env` and `--agent` argv staging |
 | `acp/client_claude.py` | `ClaudeAcpClient`, the `AcpClient` subclass a claude-agent-acp session is built as (see above): its constructor fields, the three seed static methods, and the bindings of the claude owners below |
 | `acp/client_claude_turn.py` | what only a claude prompt turn reads, bound on `ClaudeAcpClient`: its compaction notices and native `compaction_update`, the `_session/steering` floor, a turn whose only unfinished calls are background agents', and the debug line for an unhandled session update |
 | `acp/client_claude_session.py` | the claude-agent-acp session contract `ClaudeAcpClient` binds: adapter version floors and the tested release with its install command, leaving a project-owned settings file out of the setting sources, the `_meta` envelope, Side Chat read-deny rules and the starting-mode pin |
@@ -124,12 +135,13 @@ the class's own code. The class keeps `is_process_alive` (the pid-reader ratchet
 its name). `ClaudeAcpClient` keeps the three seed static methods that read the `ClaudeAcpClient`
 global (`_settings_path_holds`, `_claim_pathname_if_ours`,
 `_restore_aside_without_clobber`). The class homes of `AcpRuntime` and `AcpSessionHandle` are below. `acp/client.py`
-keeps `_mise_which`, `_resolve_ssh_auth_sock` and `_resolve_spawn_env` (the spawn audit,
-the subprocess-encoding baseline and the cross-platform gate key them on this path) and
-the compatibility facade. The session start reads `_resolve_spawn_env` as a global of
-its own module, which `acp/client.py` fills in right after defining it, because an
-owner never imports the facade; a patch through `kiro_crew.acp.client` reaches it
-through the mirror.
+keeps `_mise_which` (the spawn audit keys it on this path) and the compatibility facade.
+`_resolve_ssh_auth_sock` and `_resolve_spawn_env` live in `acp/client_spawn_env.py`, and
+`acp/client.py` re-exports both. The session start imports `_resolve_spawn_env` from that
+owner, so it is bound in a process that never imports the facade, and an owner still
+never imports the facade; a patch through `kiro_crew.acp.client` reaches both readers
+through the mirror. No owner declares a name for the facade to fill, and the facade
+assigns no attribute of another module (`test_client_bindings.py` scans for both).
 
 `AcpSessionHandle`'s behaviour lives in `acp/session_handle_*.py` owner modules the
 same way, one responsibility each. A member's body is a module-level function there whose
@@ -165,7 +177,7 @@ inventory, the binding, the reach and the import inventory.
 | `acp/session_handle_kas.py` | what KAS speaks beyond ACP on a session: its hooks requests (list, session start, execute), the checkpoint rewind of an unanswered prompt (`discard_unanswered_prompt`), and its own session-update discriminants (mode, session info) |
 | `acp/session_handle_native_children.py` | harness-native child sessions (H16): the KAS sub-agent roster and child chunks, child-session bookkeeping, the resume refusal and the uncharged report |
 | `acp/session_handle_claude_children.py` | Claude Code's Agent-tool children on a shared-runtime session: the child frames the runtime's reader routes to the announcing session (`runtime_frame_accounting._note_announced_child`), read on the handle |
-| `acp/session_handle_model_selection.py` | the session's model: the advertised list and its parsers (`parse_advertised_models`, `models_from_config_options`, ...), its storage with the session config and read-path revalidation, mode, model and effort selection through the backend's own verbs, and the served-default backfill |
+| `acp/session_handle_model_selection.py` | the session's model: the advertised list and its parsers (`parse_advertised_models`, `models_from_config_options`, ...), its storage with the session config and read-path revalidation, mode, model and effort selection through the backend's own verbs, the served-default backfill, and `apply_configured_model`, the one function that puts a starting session on its configured model (a runtime's own first session and a sub-agent's session on its parent's runtime both call it) |
 | `acp/session_handle_steering.py` | steering a live turn: `steer`, the codex steering-request protocol, settling abandoned answers, and the injected, proven and denied steer bookkeeping the dispatch loop reads |
 | `acp/session_handle_lifecycle.py` | the session outside its turn loop: awaited control requests and slash commands, cancel, death attribution, `destroy` and transcript cleanup |
 | `acp/session_handle_compaction.py` | compaction on every backend (`compact`, the KAS compaction verb, codex and claude inline compaction, `wait_for_compaction`) and the usage and metadata frames it is measured by |
@@ -3308,7 +3320,8 @@ spec the same way kiro-cli v2 does where the wire allows it:
   a project checkout is untrusted, and its relative ref must stay inside that
   checkout's `.kiro/agents` (`acp.harness.kas.resolve_projected_spec`); a leading
   `$` counts as rooted there. A relative ref expands `$VAR` and `~` first
-  (`acp/kas_prompt.py` `prompt_file_path`), and `systemPrompt` is read when
+  (`acp/kas_prompt.py` `prompt_file_path`; on Windows a missing `HOME` is read
+  as `USERPROFILE`, `expand_ref_vars`), and `systemPrompt` is read when
   `prompt` is absent (`spec_prompt`), as on kiro-cli. A file that is missing,
   unreadable or empty (`KasPromptFileUnreadable`) is sent as `"prompt": ""` by
   `build_kas_custom_agents`, as kiro-cli runs it with no prompt, and the
@@ -3393,45 +3406,61 @@ spec the same way kiro-cli v2 does where the wire allows it:
   the chat-runtime-sharing preview off, because the sharing check
   `chat_runtime_sharing.spec_grants_native_subagents` reads the spec on disk and
   not this mount), the session agent's entry gains `invoke_sub_agent` in `tools`
-  and a `subagent` deny on every name but `kirocrew-helper`. Only in a person's own
-  dashboard chat on the default agent `kirocrew`, and the crew member named
-  `default`'s own chat on it (`engine_replaces_spawn`, read from the agent and the
-  key alone, so the batch and the contract renderer, which holds only those two,
-  agree), does that entry also get `@kirocrew-core/spawn_run` and
-  `@kirocrew-core/spawn_sub_agents` in `excludedTools`, and only there does the
-  mount register the person's own agents as children (`own_agents`); every other
-  mounted chat keeps both spawn tools, for the shipped flows that pin a model, a
-  backend or a folder for a run, and runs the shipped helper only, because an own
-  agent's MCP servers beyond the chat agent's are held by an `ask` alone, which an
-  auto-approving chat answers. The contract's sub-agent bullet follows the same
-  decision (`contract_engine_subagent_mode`): `replace` names the engine's tool
-  first and `spawn_run` / `spawn_sub_agents` only for a chat whose mount was
-  refused, `beside` keeps the `spawn_sub_agents` sentence and adds one that names
-  `kirocrew-helper` alone and sends every other agent to `spawn_run`, and a person's
-  own agent file, which the mount skips, reads the contract of before. Nothing is written to an agent file: the mount goes only into the batch
-  handed to KAS (`test_kas_engine_subagents_every_chat.py`). The in-memory helper entry (`acp/kas_engine_subagent_target.py`) is appended,
-  carrying every `deny` and `ask` rule of the default agent's entry (never an
-  allow) and withholding auto-approval for what that agent's own spec PreToolUse
-  hooks cover, as a registered target's entry does. The helper also holds the
-  default agent's MCP servers (`shared_servers`), never Kiro Crew's own: the engine
-  hands a sub-agent the session-level array and the servers its own entry
-  declares, never its parent's block, so the helper lists each server as the
-  parent's `tools` name it, repeats the parent's projected block entry unchanged
-  (the same declaration is the same running server, measured on engine 0.66.119)
-  and copies the parent's `excludedTools` entries for it
+  and a `subagent` deny on every name but `kirocrew-helper`, and
+  `@kirocrew-core/spawn_run` and `@kirocrew-core/spawn_sub_agents` join its
+  `excludedTools`: in every mounted chat the engine's tool replaces them, a
+  dispatched worker's and a Bot worker chat's included, and the mount registers the
+  person's own agents as children (`own_agents`). Outside the two chats that
+  registered them before (a person's own dashboard chat on the default agent, and
+  the crew member named `default`'s own chat on it:
+  `own_agents_keep_their_servers`), each child keeps only the MCP servers it
+  declares exactly as the session agent does, every other one dropped and excluded
+  whole and its `mcp.json` stamp not opted in (`_only_shared_servers`): in a cron
+  run on `auto`, a trusted channel or a dispatched worker, no person may answer the
+  ask that would otherwise hold such a server. In those same chats, under a
+  session agent, each child's tool selection is cut to the session agent's
+  (`_only_parents_builtins`): the built-ins it mounts, for a server it mounts only
+  in part its own per-tool refs in place of a whole-server ref, a server it
+  mounts none of excluded whole, and all of its `excludedTools`; a child that
+  selects tools by a wildcard, a pattern or an engine tag is not registered there. Every child, like the helper,
+  starts no sub-agent of its own (`deny_every_subagent` on each registered
+  entry). Built-in flows that pin a model,
+  a backend or a folder on a `spawn_run` (the local review lanes, llm-council) lose
+  that pin there: an engine sub-agent takes no per-run option. The contract's
+  sub-agent bullet follows the same decision (`contract_engine_subagent_mode`):
+  `replace` names the engine's tool first and `spawn_run` / `spawn_sub_agents` only
+  for a chat whose mount was refused, and a person's own agent file, which the mount
+  skips, reads the contract of before. Nothing is written to an agent file: the mount goes only into the batch
+  handed to KAS (`test_kas_engine_subagents_every_chat.py`). The in-memory helper entry (`acp/kas_engine_subagent_target.py`) is appended:
+  a copy of the session agent's projected entry, the agent an unnamed `spawn_run`
+  runs (its built-in tools, `allowedTools`, `permissions`, `excludedTools`, prompt
+  and resources), under the helper's id and description, with
+  `kas_engine_subagent_target.CHILD_NOTE` after the prompt saying it has no Kiro
+  Crew tool, cannot start sub-agents and takes no model, folder or turn limit. It
+  leaves out Kiro Crew's own records of the parent (`CREW_ONLY_ENTRY_KEYS`: the
+  gate stamps the parent's on its requests) and the sub-agent tool
+  (`invoke_sub_agent` excluded, every engine sub-agent denied), and withholds
+  auto-approval for what that agent's own spec PreToolUse hooks cover, as a
+  registered target's entry does. The helper holds the session agent's MCP servers
+  (`shared_servers`), never Kiro Crew's own: those are launched with the parent
+  session's key, and an engine sub-agent has no session of its own, so its call
+  there would be the parent's. The engine hands a sub-agent the session-level array
+  and the servers its own entry declares, never its parent's block, so the helper
+  keeps the parent's `tools` entry for each shared server, repeats the parent's
+  projected block entry unchanged (the same declaration is the same running server,
+  measured on engine 0.66.119), and keeps the parent's `excludedTools` entries for it
   ([security](security.md), KAS native sub-agent ceiling). The helper's ceiling is never
-  wider than its parent's: a default-agent spec carrying a restriction the helper
+  wider than its parent's: a session-agent spec carrying a restriction the helper
   cannot mirror (`kas_engine_subagents.unmirrored_restriction`: an unreadable spec,
   an `excludedTools` entry that withdraws a built-in or names no known MCP server,
   `toolsSettings` of any tool but the shell (`_only_held_tools_settings`: the
   shell's deny rules travel on every sub-agent's entry, and the gate stamps its
   allowlist, read-only flag and the denies only it refuses on every native
-  sub-agent's request, `test_kas_engine_child_parent_settings.py`), a `tools` or
-  `allowedTools` narrower than the helper's)
+  sub-agent's request, `test_kas_engine_child_parent_settings.py`))
   refuses the mount, and that chat keeps Kiro Crew's own sub-agents exactly as on
   main. A mount records one `kas_engine_subagent_mounted` security event (source
-  `kas_agent_projection`) naming the agent, how many of its rules the helper
-  carries and how many of its MCP servers it holds
+  `kas_agent_projection`) naming the agent and how many of its MCP servers the
+  helper holds
   (`kas_subagent_targets.audit_subagent_policy`). An accepted mount also
   registers the person's own agents: `KasHarness.session_extras` hands
   `native_batch` the same `project_subagent_targets` call with `every_agent=True`
@@ -4050,7 +4079,7 @@ When kiro-cli needs OAuth authentication for an MCP server, `AcpClient` surfaces
 
 **Rejected-banner dedupe** (`dashboard/mcp_banner_dedupe.py`): a rejected-URL banner (unsafe scheme, or a URL the credential gate refuses) is posted once per server per sign-in state in a chat, not on every user turn and auto-nudge cycle. `_emit_mcp_oauth_request` skips one whose text and error match the last rejected banner shown for that server in the same chat, in the same ACP session and the same sign-in round. It is shown again when the rejection changes, the ACP session changes (a new chat), the server signs in (a mid-turn event, or the session MCP report listing it as connected when the report is published) or gets an Authorize banner in between, or the user starts that server's sign-in from the MCP Servers page or a Connections card (`POST /api/connections/mint` bumps a process-wide round for the name and its kiro-safe alias). A gateway restart shows it once more: the record lives in memory only. No dedupe applies without a session id or to a name redaction rewrote. The per-chat record holds at most 64 servers and the round table 256 names, oldest evicted first, and keeps only digests of the session id and the banner text. Retry rounds come from one growing counter, so an evicted name never reads as an older round. Authorize banners are never suppressed, because each one carries a fresh link. The MCP Servers page's "Sign-in required" status is not affected.
 
-**Card-owned requests**: a request for a server that a rendered Connections card owns (`_connections_managed_mcp_names`) is tagged `card_owned` on both paths, the init drain and the mid-session `_on_mcp_oauth_request`. The tag rides through every later state of the banner (completed, failed, superseded, expired), and the chat hides tagged banners while `connections_ui` is on, because the card shows the same Authorize action. The KAS sign-in offer re-requests every unauthorized server at each turn start, so an untagged mid-session request would repeat the prompt on every turn of every session.
+**Card-owned requests**: a request for a server that a rendered Connections card owns (`_connections_managed_mcp_names`) is tagged `card_owned` on both paths, the init drain and the mid-session `_on_mcp_oauth_request` (`_card_owns_sign_in`). A KAS session reads Crew's grant vault, so its request is tagged only when `mint_kas.kas_sign_in_entry` also says that Connect signs in on KAS; otherwise the card's grant is one the chat cannot use, and the chat's banner is its only way to sign in. Any other session is tagged on membership alone. The tag rides through every later state of the banner (completed, failed, superseded, expired), and the chat hides tagged banners while `connections_ui` is on, because the card shows the same Authorize action. kiro-cli retries a signed-out server's sign-in on each turn, so an untagged mid-session request would repeat the prompt on every turn of every session.
 
 **URL validation**: `_is_safe_oauth_url()` rejects non-http(s) schemes before dedupe — an unsafe URL doesn't consume the dedupe slot.
 
@@ -4350,7 +4379,7 @@ A pager is advisory only (under the tool, stdout is a pipe, so a pager degrades
 to `cat` on its own); the other four classes are `INTERACTIVE_NARROWING_RISKS`.
 
 On Windows each segment's program word is read the way Windows runs it
-(`acp.program_name.windows_program_name`, the fold the batch write guard also
+(`program_name.windows_program_name`, the fold the batch write guard also
 applies): `git.exe`, `GIT.EXE`, `Git` and `C:\tools\vim.exe` classify as `git`
 and `vim`. POSIX keeps the exact, case-sensitive `/` basename. The oracle's
 `first_program` and process-row match keep that basename on every platform: the
@@ -5893,8 +5922,11 @@ Node key and why; nothing is published. There are two pins, one engine release:
 `KAS_PIN_AL2_VERSION` (`KAS_PIN_VERSION` plus `-al2`: the same engine and Node
 release republished with the Amazon Linux 2 builds from `packaging/kas-al2/` on
 linux-x64, floor 2.26). `kas_pin.host_pin_version()` picks the AL2 pin only on a
-linux-x64 host whose glibc reads below 2.28; every other host (arm64, macOS,
-Windows, linux-x64 at 2.28+ or with an unreadable glibc) gets `KAS_PIN_VERSION`.
+Linux host whose glibc reads below 2.28 and whose Node key the AL2 pin lists in
+`KAS_PIN_GLIBC_FLOORS` below 2.28 (today linux-x64 only; linux-arm64 joins in the
+commit that pins an AL2 release carrying arm64 builds); every other host (arm64
+until then, macOS, Windows, Linux at 2.28+ or with an unreadable glibc) gets
+`KAS_PIN_VERSION`.
 It is read on every call, so a host that moves to glibc 2.28+ installs the normal
 pin on its next install check, and one that stays at 2.28+ never picks the AL2 pin.
 `pinned_version()` is `KIROCREW_KAS_VERSION` when set, else that host pin, and every
@@ -5955,16 +5987,18 @@ stock macOS and Windows carry no `zstd` executable), official Node builds from
 nodejs.org verified against that release's `SHASUMS256.txt`, manifest out,
 `provenance.json` beside it (each engine tarball's upstream sha256, each Node
 build's source, any overlay; the installer never reads it), optional `aws s3 cp`.
-For an Amazon Linux 2 release two inputs, each pinned by a caller-given sha256,
-replace linux-x64 pieces only: `--node-linux-x64` publishes a local Node tarball
-under nodejs.org's name (refused unless its one top directory is
-`node-v<N>-linux-x64/`, it carries `bin/node`, and that binary prints exactly
-`v<N>`, checked on a linux-x64 publishing host), and `--onnx-overlay-linux-x64`
-re-packs the linux-x64 engine tarball after its upstream sha256 check with the
-overlay's files swapped in under `onnxruntime-node/bin/napi-v3/linux/x64/`
-(names, modes, owners and mtimes kept, a file stays a file and a symlink a
-symlink, every overlay name must replace something). That tarball is then no
-longer the same tar bytes as the build's; every other platform still is. The installer still accepts a `.tar.zst` manifest entry
+For an Amazon Linux 2 release, inputs per Linux architecture (`x64`, `arm64`),
+each pinned by a caller-given sha256, replace that architecture's pieces only:
+`--node-linux-<arch>` publishes a local Node tarball under nodejs.org's name
+(refused unless its one top directory is `node-v<N>-linux-<arch>/`, it carries
+`bin/node`, and that binary prints exactly `v<N>`, checked on a publishing host
+of that architecture), and `--onnx-overlay-linux-<arch>` re-packs that engine
+tarball after its upstream sha256 check with the overlay's files swapped in under
+`onnxruntime-node/bin/napi-v3/linux/<arch>/` (names, modes, owners and mtimes
+kept, a file stays a file and a symlink a symlink, every overlay name must
+replace something). The x64 overlay's sha256 flag is `--onnx-overlay-sha256`,
+the arm64 one's `--onnx-overlay-linux-arm64-sha256`. An overlaid tarball is then
+no longer the same tar bytes as the build's; every other platform still is. The installer still accepts a `.tar.zst` manifest entry
 (stdlib on 3.14+, the `zstandard` package, or a `zstd` executable) for a
 locally built bundle handed to `--from`. The harness reads the flag off the loop and, when
 on (or when the route below is chosen automatically), resolves
@@ -6339,13 +6373,15 @@ queue. The set is process-wide because every runtime reads the same directory an
 runtime starts for most sessions.
 
 **A session-start notice Crew does not read is not a drop.** kiro-cli sends
-`_kiro/powers/items_changed`, `_kiro/steering/documents_changed`,
-`_kiro/sessions/changed` and `_kiro/memory/syncStatus` at every `session/new` and
-`session/load`, and Crew reads none of them (`classify_notification` skips them).
-The two that name a session arrive before it is registered. The two that name none
-arrive while a fresh runtime has no registered session (measured on kiro-cli
-3.5.0). The reader drops such a frame without `_note_dropped_frame`, so
-`dropped_frames{method_class=other}` counts frames Crew lost, not session starts.
+`_kiro/governance/state`, `_kiro/powers/items_changed`,
+`_kiro/steering/documents_changed`, `_kiro/sessions/changed` and
+`_kiro/memory/syncStatus` at every `session/new` and `session/load`, and Crew reads
+none of them (`classify_notification` skips them; Crew acts on none of the feature
+flags in `_kiro/governance/state`). The three that name a session arrive before it
+is registered. The two that name none arrive while a fresh runtime has no
+registered session (measured on kiro-cli 3.5.0). The reader drops such a frame
+without `_note_dropped_frame`, so `dropped_frames{method_class=other}` counts
+frames Crew lost, not session starts.
 The set is `KAS_UNREAD_SESSION_START_NOTICES` in `acp/runtime_frame_accounting.py`.
 A registered session still receives these notices, and any other unroutable
 `_kiro/*` notice is still counted.
@@ -6922,8 +6958,8 @@ nothing and answers not done in these cases:
 
 A failed unlink, or a rollout that a second scan still finds, also answers not
 done. In each of these cases the prune keeps its retry record and `spawn_release`
-answers `not_disposed`. The cleanup removes no directory, and it never touches a
-persistent session's rollout.
+answers `not_disposed`. The cleanup removes no directory, and it never touches the
+rollout of a persistent session that can be resumed.
 
 Codex keeps text from the conversation in SQLite too, and this cleanup does not
 delete it. The thread's row in the state database (`state_5.sqlite`, with

@@ -702,12 +702,16 @@ def _state(folders: list[dict[str, Any]]) -> DashboardState:
 
 
 def _make_app(state: DashboardState) -> web.Application:
+    # The owner's own dashboard session: only the owner or a teammate may
+    # declare steering (a non-owner session is refused by the owner gate).
+    state.owner_id = "U0OWNER"
     app = web.Application()
     app["state"] = state
 
     @web.middleware
     async def _publish_app(request: web.Request, handler: Any) -> Any:
         request["app"] = ""
+        request["user"] = "U0OWNER"
         return await handler(request)
 
     app.middlewares.append(_publish_app)

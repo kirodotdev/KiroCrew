@@ -184,6 +184,15 @@ describe('LibraryPage — launchpad grid', () => {
   })
 })
 
+describe('LibraryPage — Discover apps header button', () => {
+  it('opens Discover at /apps from the page header', async () => {
+    renderLibrary()
+    await tile('secretary')
+    fireEvent.click(screen.getByRole('button', { name: 'Discover apps' }))
+    expect(await screen.findByTestId('route-probe')).toHaveAttribute('data-path', '/apps')
+  })
+})
+
 describe('LibraryPage — Enabled and Disabled sections', () => {
   const OFF = installedApp('weather', 'Weather', { enabled: false })
 

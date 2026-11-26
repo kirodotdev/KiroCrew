@@ -527,6 +527,20 @@ LIVE_CLASSIFY_READS = 50
 # runs could -- young enough to speak about the fleet now, old enough for a slow
 # start to show.
 LIVE_EVIDENCE_RESERVE = 10
+# Classify reads held, inside the same bound, for the runs only a person can recover:
+# a run of a workflow that is not declared heal-safe for its event, whose attempt
+# started at least ``orphan_after`` ago. The rest of the bound serves heal-eligible
+# runs first, and a saturated fleet fills it with those (46 and 52 past the threshold
+# measured in one hour), so without these a stuck run of an exempt workflow gets no
+# read, no verdict and no `needs a human`, and the tick exits 0 with it still queued.
+# Runs in status `queued` are taken first (no job of the attempt has started), then
+# the oldest attempt start. Five covers what was measured: at most two exempt orphans
+# a tick over seven days, seven once. No read is added: these displace reads of the
+# same bound.
+LIVE_EXEMPT_CLASSIFY_READS = 5
+# How many run ids the per-tick line about unjudged queued runs spells out before it
+# summarises the rest (``unjudged_line``).
+UNJUDGED_IDS_NAMED = 20
 # The bound above is spent on EVERY tick, orphan or not, so it is sized for the
 # common tick. It leaves the runs past it unread, and an unread run that is old
 # enough to hold a slow start holds every heal (``SKIPPED_PARTIAL_EVIDENCE``). On a
@@ -682,6 +696,13 @@ OUTCOME_RERUN_ATTEMPT_LEFT = "rerun-attempt-superseded-left-untouched"
 # passing scheduled run nobody watches would leave that incident's own shape --
 # a stuck run nobody is told about -- intact for the majority of the repo.
 OUTCOME_HUMAN_REQUIRED = "human-required-heal-exempt-workflow"
+# The same stuck run while the fleet is SATURATED: a CodeBuild start served after its
+# job queued waited ``saturation_wait`` or more, so the job may only be slow. Not a
+# failed outcome, because a saturated hour would otherwise name every exempt run past
+# the threshold (27 measured in one tick) and bury the ones that are lost. It is a
+# `::warning::`, counted per tick, and it ends at ``Policy.exempt_saturation_cap``: a
+# job queued that long is reported as `OUTCOME_HUMAN_REQUIRED` whatever the fleet does.
+OUTCOME_HUMAN_HELD_SATURATED = "human-held-heal-exempt-fleet-saturated"
 # The run's own revision could not be read, so its heal safety is UNKNOWN rather
 # than unsafe. A failed outcome, because a cancelled run near the end of its
 # recovery window would otherwise age out behind a green tick on the strength of
@@ -875,9 +896,12 @@ from runner_watchdog_parts.heal import (  # noqa: E402,F401
     _restore_successor,
     _status_or_unknown,
     _withdraw,
+    exempt_held_line,
     heal_runs,
+    report_exempt_orphans,
     resolve_hold,
     sample_completed_runs,
+    saturation_holding_exempt_orphan,
 )
 from runner_watchdog_parts.heal_safety import (  # noqa: E402,F401
     _mark_heal_exempt,
@@ -891,9 +915,11 @@ from runner_watchdog_parts.heal_safety import (  # noqa: E402,F401
     workflow_text_is_heal_safe,
 )
 from runner_watchdog_parts.listing import (  # noqa: E402,F401
+    _attempt_started,
     _can_carry_a_slow_start,
     _evidence_reserve,
     _heal_eligible_shape,
+    _human_only_shape,
     _is_watched,
     _iter_actionable_runs,
     _iter_repo_runs,
@@ -906,6 +932,8 @@ from runner_watchdog_parts.listing import (  # noqa: E402,F401
     list_runs,
     live_runs_within_read_bound,
     top_up_unread_evidence,
+    unjudged_line,
+    unjudged_queued_runs,
 )
 from runner_watchdog_parts.recovery import (  # noqa: E402,F401
     _flag_unclassified_near_expiry,
@@ -1070,6 +1098,17 @@ def run_watchdog(
             raise
 
     listing_truncated: list[str] = []
+    candidate_runs: list[dict[str, Any]] = []
+
+    def judge(run: dict[str, Any], jobs: list[dict[str, Any]]) -> None:
+        verdict = _mark_heal_exempt(classify_run(run, jobs, policy), exempt_workflows)
+        log(f"{_label(verdict)}: {verdict.verdict} -- {verdict.detail}")
+        for orphan in verdict.orphans:
+            log(
+                f"  queued {_fmt_delta(orphan.queued_for)} with no runner: {orphan.name} {list(orphan.labels)}"
+            )
+        verdicts.append(verdict)
+
     try:
         # The sweep lists only runs old enough to hold a slow start (and so every
         # orphan) in full, so a burst of younger runs cannot push an orphan past the
@@ -1098,13 +1137,7 @@ def run_watchdog(
                 return list_jobs(api, policy.repo, int(run["id"]))
 
             jobs = cheap_retry(read_jobs)
-            verdict = _mark_heal_exempt(classify_run(run, jobs, policy), exempt_workflows)
-            log(f"{_label(verdict)}: {verdict.verdict} -- {verdict.detail}")
-            for orphan in verdict.orphans:
-                log(
-                    f"  queued {_fmt_delta(orphan.queued_for)} with no runner: {orphan.name} {list(orphan.labels)}"
-                )
-            verdicts.append(verdict)
+            judge(run, jobs)
             evidence.absorb(jobs, policy)
 
         if listing_abort is not None:
@@ -1118,7 +1151,17 @@ def run_watchdog(
             def read_unread_jobs(run_id: int) -> list[dict[str, Any]]:
                 return cheap_retry(lambda: list_jobs(api, policy.repo, run_id))
 
-            top_up_unread_evidence(api, policy, evidence, log, read_jobs=read_unread_jobs)
+            # The top-up reads these runs' jobs for evidence; the same read judges
+            # the run, so a run read here is never left without a verdict.
+            listed = {int(run["id"]): run for run in candidate_runs}
+
+            def judge_unread(run_id: int, jobs: list[dict[str, Any]]) -> None:
+                if run_id in listed:
+                    judge(listed[run_id], jobs)
+
+            top_up_unread_evidence(
+                api, policy, evidence, log, read_jobs=read_unread_jobs, on_read=judge_unread
+            )
 
         # The hold is judged per run, relative to when its NEWEST orphaned job
         # queued: a start that postdates an older orphan may still predate a
@@ -1178,6 +1221,13 @@ def run_watchdog(
             f"::warning::the tick hit a GitHub rate limit while gathering ({exc}); it stops listing, "
             f"acts on the {len(verdicts)} run(s) already classified, and the next tick re-lists"
         )
+    # What the tick listed and did not judge, from rows already in hand. A log line and
+    # nothing else: it carries no outcome, so it cannot change the tick's exit code.
+    log(
+        unjudged_line(
+            unjudged_queued_runs(candidate_runs, {v.run_id for v in verdicts}, policy), policy
+        )
+    )
 
     # Recovery goes FIRST and takes the per-tick cap before live heals do. A
     # cancelled orphan has already lost its verdict and only a re-run brings it
@@ -1223,9 +1273,11 @@ def run_watchdog(
     # request's next push. Oldest first across both would spend a burst's cap on
     # pull-request runs and leave `main` held. When both kinds wait and at least
     # two slots are free, the last slot goes to the oldest other run, so push
-    # orphans that are left untouched every tick cannot starve the rest.
+    # orphans that are left untouched every tick cannot starve the rest. Age is in
+    # the key, not left to the order the verdicts arrived in: the top-up's verdicts
+    # follow the bound's, and the runs it reads are the older ones.
     orphaned = sorted(
-        (v for v in verdicts if v.verdict == ORPHANED), key=lambda v: v.event != "push"
+        (v for v in verdicts if v.verdict == ORPHANED), key=lambda v: (v.event != "push", -v.age)
     )
     oldest_other = next((v for v in orphaned if v.event != "push"), None)
     if oldest_other is not None and slots_left >= 2 and oldest_other not in orphaned[:slots_left]:
@@ -1344,20 +1396,7 @@ def run_watchdog(
             return None
         return None if hold is None else (*hold, None)
 
-    outcomes: dict[int, str] = {}
-    for verdict in verdicts:
-        if verdict.verdict != HEAL_EXEMPT:
-            continue
-        outcomes[verdict.run_id] = OUTCOME_HUMAN_REQUIRED
-        # A failed outcome, so the tick goes red: FAILED_OUTCOMES promises the log
-        # then names the run and the command to type. Without this line a red tick
-        # carries only the plain verdict line, and every tick stays red with no
-        # `::error::` saying which run a human has to recover.
-        log(
-            f"::error::{_label(verdict)} needs a human: {verdict.detail} Recover it by hand "
-            f"(`gh run cancel {verdict.run_id}`, then `gh run rerun {verdict.run_id}` if its "
-            f"verdict is still needed)."
-        )
+    outcomes = report_exempt_orphans(verdicts, evidence, policy, log)
     outcomes.update(
         heal_runs(
             api,
@@ -1553,6 +1592,23 @@ def stand_down(
     log("kicked tick: the self-cancel was accepted but has not stopped this step; exiting")
 
 
+def kick_failure_note(failed: list[str]) -> str:
+    """What a kicked tick that exits 1 says about itself, in its log and its summary.
+
+    The kick's step is ``continue-on-error``, so its job and its run read green
+    whatever the step did: a red kick would attach to the pull request whose Fast
+    Gate set it off. The exit code therefore reaches nobody, and the only place a
+    failed kick can say so is its own output.
+    """
+    return (
+        f"this kicked tick FAILED (exit 1, failed outcome(s): {', '.join(failed)}). Its job "
+        "shows green by design: the step is continue-on-error on a kick, so that a failed "
+        "kick cannot put a red check on the pull request whose Fast Gate set it off. The "
+        "runs to act on are named in this log and in the summary; a scheduled tick that "
+        "meets the same condition fails its run"
+    )
+
+
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
 
@@ -1610,6 +1666,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     verdicts, outcomes = run_watchdog(api, policy)
     summary = render_summary(verdicts, outcomes, policy)
+    failed = sorted(FAILED_OUTCOMES & set(outcomes.values()))
+    failed_kick = bool(failed) and os.environ.get("GITHUB_EVENT_NAME", "") == KICK_EVENT
+    if failed_kick:
+        summary += f"\n### Kicked tick failed\n\n{_md(kick_failure_note(failed))}.\n"
     # Its own footprint against the quota whose exhaustion started all this. Logged
     # rather than enforced: a cap here would silently stop healing, which is the
     # failure this script exists to end. Read these across a few scheduled ticks to
@@ -1646,7 +1706,9 @@ def main(argv: list[str] | None = None) -> int:
             "window up to REPO_LISTING_MAX_WINDOWS, so the remedy is more windows or a narrower "
             "split (branch or event) rather than paging deeper"
         )
-    return 1 if FAILED_OUTCOMES & set(outcomes.values()) else 0
+    if failed_kick:
+        print(f"::error::{kick_failure_note(failed)}")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

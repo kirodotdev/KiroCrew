@@ -3,6 +3,7 @@ import { cleanup, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { KiroAccountStatusLine } from '../pages/developer/KiroAccountStatusLine'
 import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
+import { SOURCES_QUERY_KEY } from '../pages/developer/KiroSignInSources'
 import { api, type KasLoginStatus } from '../api/client'
 
 vi.mock('../api/client', async importOriginal => {
@@ -38,6 +39,32 @@ describe('KiroAccountStatusLine', () => {
     renderWithProviders(<KiroAccountStatusLine />)
     await waitFor(() => expect(screen.getByTestId('kiro-account-status')).toHaveTextContent('Using your Kiro CLI sign-in'))
     expect(screen.queryByText('Not signed in')).toBeNull()
+  })
+
+  it.each([
+    [true, 'Using your Kiro CLI sign-in'],
+    [false, 'Not signed in'],
+  ])('on the Kiro CLI harness, says what Kiro Agent would run on (relay %s)', async (relay, expected) => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, authenticated: false, provider: '', identity: '' })
+    kasLoginSources.mockResolvedValue({
+      active: 'kiro_cli', kiro_cli_harness: true, relay_runs_on_kiro_cli: relay,
+      kiro_crew: { stored: false }, kiro_cli: { stored: true, usable: true },
+    } as unknown as Awaited<ReturnType<typeof api.kasLoginSources>>)
+    const { queryClient } = renderWithProviders(<KiroAccountStatusLine />)
+    // Before the sources answer the line already reads "Not signed in": wait for it.
+    await waitFor(() => expect(queryClient.getQueryData(SOURCES_QUERY_KEY)).toBeDefined())
+    await waitFor(() => expect(screen.getByTestId('kiro-account-status')).toHaveTextContent(expected))
+  })
+
+  it('on the Kiro CLI harness, follows the relay even when the kiro-cli login reads unknown', async () => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, authenticated: false, provider: '', identity: '' })
+    kasLoginSources.mockResolvedValue({
+      active: 'unknown', kiro_cli_harness: true, relay_runs_on_kiro_cli: true,
+      kiro_crew: { stored: false }, kiro_cli: { stored: true },
+    } as unknown as Awaited<ReturnType<typeof api.kasLoginSources>>)
+    const { queryClient } = renderWithProviders(<KiroAccountStatusLine />)
+    await waitFor(() => expect(queryClient.getQueryData(SOURCES_QUERY_KEY)).toBeDefined())
+    await waitFor(() => expect(screen.getByTestId('kiro-account-status')).toHaveTextContent('Using your Kiro CLI sign-in'))
   })
 
   it('says a sign-in store could not be read, instead of Not signed in', async () => {

@@ -446,7 +446,10 @@ class TestUpdateJob:
         job = await _finished(mgr, "box")
 
         assert waiting["state"] == "running"
-        assert waiting["waiting"] in ({"turns": 2, "background": 1}, {"turns": 0, "background": 1})
+        assert waiting["waiting"] in (
+            {"turns": 2, "background": 1, "holders": [], "holders_more": 0},
+            {"turns": 0, "background": 1, "holders": [], "holders_more": 0},
+        )
         assert job["state"] == "succeeded"
         # Every ask was the idle-gated restart; nothing restarted the crew while busy.
         assert [sub for sub, _ in runner.calls] == ["update", _WHEN_IDLE, _WHEN_IDLE, _WHEN_IDLE]
@@ -464,7 +467,7 @@ class TestUpdateJob:
 
         assert job["state"] == "failed" and job["code"] == "still_busy"
         assert job["phase"] == "waiting_for_idle"
-        assert job["waiting"] == {"turns": 1, "background": 3}
+        assert job["waiting"] == {"turns": 1, "background": 3, "holders": [], "holders_more": 0}
         assert [sub for sub, _ in runner.calls] == ["update", _WHEN_IDLE]
         await mgr.shutdown()
 
@@ -1242,6 +1245,20 @@ class TestUpdateRoutes:
         assert await _body(resp) == {"job": job}
         assert mgr.started == []
 
+    async def test_the_status_read_refuses_a_non_owner_and_an_unauthenticated_caller(
+        self, monkeypatch
+    ):
+        _enable_instances(monkeypatch)
+        mgr = _UpdateMgr(job={"state": "running", "waiting": {"holders": [_NIGHTLY]}})
+
+        other = await hi.api_instances_update_remote_status(
+            _request(_update_state(mgr), user="U-someone-else")
+        )
+        anon = await hi.api_instances_update_remote_status(_request(_update_state(mgr), user=""))
+
+        assert other.status == 403 and anon.status == 401
+        assert "nightly-sync" not in other.body.decode() + anon.body.decode()
+
     async def test_the_status_read_refuses_an_app_token(self, monkeypatch):
         _enable_instances(monkeypatch)
 
@@ -1396,3 +1413,157 @@ def test_any_other_force_body_is_malformed(body):
     from kiro_crew.instances.remote_update import read_force_flag
 
     assert read_force_flag(body) is None
+
+
+_NIGHTLY = {"kind": "script", "name": "nightly-sync", "since_secs": 21, "count": 1}
+# A made-up PEM header, split so the source holds no key marker.
+_PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
+
+
+def _named_busy_err(stdout: str, stderr: str = "") -> str:
+    """The runner's message for a busy exit whose stdout is *stdout*."""
+    from kiro_crew.instances.token_mint import _redacted_output_tail, _with_stdout_tail
+
+    return _with_stdout_tail(stderr, _redacted_output_tail(stdout))
+
+
+def _cli_stdout(holders, more=0, turns=0, background=1):
+    from kiro_crew import cli_restart_idle as cli
+
+    names = cli.holders_line(list(holders), more)
+    return f"❌ Not restarted: busy.\n{names}\n{cli.busy_marker(turns, background)}\n"
+
+
+class TestBusyHolders:
+    """The names before the busy marker are read best-effort and never change the outcome."""
+
+    def test_the_names_survive_the_runners_stdout_tail(self):
+        from kiro_crew.instances import remote_update as ru
+
+        err = _named_busy_err(_cli_stdout([_NIGHTLY], more=2), stderr="Authorized use only.")
+
+        assert ru.read_gate_answer(75, err) == ru.GateAnswer("busy", 0, 1, (_NIGHTLY,), 2)
+
+    @pytest.mark.parametrize(
+        "names",
+        [
+            "",
+            "kirocrew-restart-holders",
+            "kirocrew-restart-holders garbage",
+            'kirocrew-restart-holders {"holders":[]',
+            'kirocrew-restart-holders {"holders":[],"holders_more":0} trailing',
+            'kirocrew-restart-holders{"holders":[],"holders_more":0}',
+            'xkirocrew-restart-holders {"holders":[],"holders_more":0}',
+            'kirocrew-restart-holders ["nightly-sync"]',
+            'kirocrew-restart-holders {"holders":"nightly-sync","holders_more":0}',
+            'kirocrew-restart-holders {"holders":["nightly-sync"],"holders_more":0}',
+            'kirocrew-restart-holders {"holders":[{"name":"nightly-sync"}],"holders_more":0}',
+            'kirocrew-restart-holders {"holders":[{"kind":"script","name":"x","since_secs":"1",'
+            '"count":1}],"holders_more":0}',
+            'kirocrew-restart-holders {"holders":[{"kind":"script","name":"x","since_secs":1,'
+            '"count":true}],"holders_more":0}',
+            'kirocrew-restart-holders {"holders":[],"holders_more":-1}',
+            'kirocrew-restart-holders {"holders":[],"holders_more":1.5}',
+            'kirocrew-restart-holders {"holders":[],"holders_more":true}',
+            'kirocrew-restart-holders {"holders":[]}',
+            'kirocrew-restart-holders {"holders":[],"holders_more":0,"extra":1}',
+            # Clipped by the tail: the prefix is gone.
+            'restart-holders {"holders":[],"holders_more":0}',
+        ],
+    )
+    def test_an_unreadable_names_line_is_busy_with_the_counts_and_no_names(self, names):
+        from kiro_crew.instances import remote_update as ru
+
+        err = _with_tail(f'{names}\nkirocrew-restart-busy {{"turns":2,"background":1}}')
+
+        assert ru.read_gate_answer(75, err) == ru.GateAnswer("busy", 2, 1)
+
+    def test_a_names_line_clipped_or_redacted_by_the_tail_is_no_names(self):
+        from kiro_crew.instances import remote_update as ru
+
+        long = [{**_NIGHTLY, "name": "n" * 64} for _ in range(5)]
+        armour = [{**_NIGHTLY, "name": _PEM_BEGIN}]
+        for holders in (long, armour):
+            err = _named_busy_err(_cli_stdout(holders, background=5))
+            answer = ru.read_gate_answer(75, err)
+            assert answer.holders == () and answer.holders_more == 0
+            if holders is long:
+                assert answer == ru.GateAnswer("busy", 0, 5)
+
+    def test_a_names_shaped_line_in_stderr_is_never_read(self):
+        from kiro_crew import cli_restart_idle as cli
+        from kiro_crew.instances import remote_update as ru
+
+        banner = f"Welcome\n{cli.holders_line([_NIGHTLY], 0)}"
+        # Stdout carries the marker alone: the line before the join is stderr.
+        err = _named_busy_err(f"{cli.busy_marker(0, 1)}\n", stderr=banner)
+        assert ru.read_gate_answer(75, err) == ru.GateAnswer("busy", 0, 1)
+        # No stdout tail at all: every line is stderr.
+        err = f"{banner}\n{cli.busy_marker(0, 1)}"
+        assert ru.read_gate_answer(75, err) == ru.GateAnswer("busy", 0, 1)
+
+    def test_a_name_with_control_or_bidi_characters_is_cleaned_again(self):
+        from kiro_crew.instances import remote_update as ru
+
+        raw = {**_NIGHTLY, "kind": "scr\u202eipt", "name": "night\x1b[31mly\u202e-sync\x07"}
+        err = _with_tail(_cli_stdout([raw]).strip())
+
+        answer = ru.read_gate_answer(75, err)
+
+        assert [(h["kind"], h["name"]) for h in answer.holders] == [("script", "nightly-sync")]
+
+    def test_more_than_five_entries_are_capped_and_counted(self):
+        from kiro_crew.instances import remote_update as ru
+
+        holders = [{**_NIGHTLY, "name": f"j{i}"} for i in range(7)]
+        err = _with_tail(_cli_stdout(holders, more=1, background=8).strip())
+
+        answer = ru.read_gate_answer(75, err)
+
+        assert [h["name"] for h in answer.holders] == ["j0", "j1", "j2", "j3", "j4"]
+        assert answer.holders_more == 3
+
+    @pytest.mark.asyncio
+    async def test_the_waiting_job_carries_the_names_and_logs_none(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        reg, mgr = _manager(tmp_path)
+        mgr._remote_update_idle_wait_secs = 0.0
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        runner = _Runner((0, ""), (75, _named_busy_err(_cli_stdout([_NIGHTLY], more=2))))
+        _patch_runner(monkeypatch, runner)
+        monkeypatch.setattr(kiro_crew, "__version__", "0.15.0.dev3")
+
+        with caplog.at_level("DEBUG"):
+            await mgr.start_remote_update("box")
+            job = await _finished(mgr, "box")
+
+        assert job["phase"] == "waiting_for_idle" and job["code"] == "still_busy"
+        assert job["waiting"] == {
+            "turns": 0,
+            "background": 1,
+            "holders": [_NIGHTLY],
+            "holders_more": 2,
+        }
+        assert "nightly-sync" not in job["error"]
+        assert "nightly-sync" not in caplog.text
+        await mgr.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_the_restart_routes_busy_refusal_is_unchanged(self, tmp_path, monkeypatch):
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        runner = _Runner((75, _named_busy_err(_cli_stdout([_NIGHTLY]))))
+        _patch_runner(monkeypatch, runner)
+
+        result = await mgr.restart_remote("box")
+
+        assert result["code"] == "busy"
+        assert "nightly-sync" not in json.dumps(result)
+        await mgr.shutdown()
+
+
+def _with_tail(stdout_tail: str) -> str:
+    from kiro_crew.instances.token_mint import _with_stdout_tail
+
+    return _with_stdout_tail("banner", stdout_tail)

@@ -627,7 +627,9 @@ class TestCustomUpdate:
 
 @pytest.mark.asyncio
 class TestCustomGet:
-    async def test_returns_full_spec_including_env(self, sandbox, fake_sel):
+    async def test_returns_full_spec_with_env_names(self, sandbox, fake_sel):
+        from kiro_crew.mcp_discovery import MCP_REDACTED_HEADER_VALUE
+
         entry = dict(_STDIO, disabled=True)
         sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"weather": entry}}))
         client = await _client()
@@ -637,8 +639,136 @@ class TestCustomGet:
             body = await resp.json()
             assert body["name"] == "weather"
             assert body["enabled"] is False
-            assert body["spec"]["env"] == {"KEY": ""}  # env preserved for prefill
+            # env names stay for prefill; their values are preserve-only markers.
+            assert body["spec"]["env"] == {"KEY": MCP_REDACTED_HEADER_VALUE}
             assert "disabled" not in body["spec"]
+        finally:
+            await client.close()
+
+    async def test_env_values_are_redacted_on_read(self, sandbox, fake_sel):
+        """A read shows env names only: their values are often credentials."""
+        raw_env = {"API_TOKEN": "sk-live-env-secret", "REGION": "us-west-2"}
+        entry = {"command": "npx", "args": ["-y", "@acme/weather-mcp"], "env": raw_env}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"weather": entry}}))
+        client = await _client()
+        try:
+            resp = await client.get("/api/mcp/custom/weather")
+            assert resp.status == 200
+            text = await resp.text()
+            assert "sk-live-env-secret" not in text
+            assert "us-west-2" not in text
+            spec = json.loads(text)["spec"]
+            assert set(spec["env"]) == set(raw_env)
+            assert set(spec["env"].values()) == {"[REDACTED: credential]"}
+            assert spec["command"] == "npx" and spec["args"] == entry["args"]
+        finally:
+            await client.close()
+
+    async def test_redacted_env_round_trip_keeps_real_values(self, sandbox, fake_sel):
+        """Saving the read payload with another field edited keeps every env value."""
+        raw_env = {"API_TOKEN": "sk-live-env-secret", "REGION": "us-west-2"}
+        entry = {"command": "npx", "args": ["-y", "@acme/weather-mcp"], "env": raw_env}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"weather": entry}}))
+        client = await _client()
+        try:
+            spec = (await (await client.get("/api/mcp/custom/weather")).json())["spec"]
+            spec["args"] = ["-y", "@acme/weather-mcp@2"]
+            resp = await client.put("/api/mcp/custom/weather", json={"spec": spec})
+            assert resp.status == 200
+            assert "sk-live-env-secret" not in await resp.text()
+            written = _written(sandbox)["weather"]
+            assert written["env"] == raw_env
+            assert written["args"] == ["-y", "@acme/weather-mcp@2"]
+        finally:
+            await client.close()
+
+    async def test_env_edit_keeps_placeholders_replaces_adds_and_removes(self, sandbox, fake_sel):
+        """Env stays editable: a placeholder keeps its value, a typed value
+        replaces it, a new name is added and a dropped name is removed."""
+        raw_env = {"API_TOKEN": "old-secret", "KEEP": "kept-secret", "GONE": "gone-secret"}
+        entry = {"command": "npx", "env": raw_env}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"weather": entry}}))
+        client = await _client()
+        try:
+            spec = (await (await client.get("/api/mcp/custom/weather")).json())["spec"]
+            spec["env"]["API_TOKEN"] = "new-secret"
+            spec["env"]["ADDED"] = "added-value"
+            del spec["env"]["GONE"]
+            resp = await client.put("/api/mcp/custom/weather", json={"spec": spec})
+            assert resp.status == 200
+            assert _written(sandbox)["weather"]["env"] == {
+                "API_TOKEN": "new-secret",
+                "KEEP": "kept-secret",
+                "ADDED": "added-value",
+            }
+        finally:
+            await client.close()
+
+    @pytest.mark.parametrize(
+        ("mutate", "reason"),
+        [
+            pytest.param(
+                lambda e: e.__setitem__("OTHER", e.pop("API_TOKEN")),
+                "'OTHER' has no saved value",
+                id="placeholder-under-another-name",
+            ),
+            pytest.param(
+                lambda e: e.__setitem__("API_TOKEN", "x" + e["API_TOKEN"]),
+                "'API_TOKEN' mixes",
+                id="placeholder-inside-value",
+            ),
+        ],
+    )
+    async def test_env_placeholder_misuse_is_refused(self, sandbox, fake_sel, mutate, reason):
+        """A placeholder that cannot name one saved value is refused, nothing written."""
+        raw_env = {"API_TOKEN": "old-secret"}
+        entry = {"command": "npx", "env": raw_env}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"weather": entry}}))
+        client = await _client()
+        try:
+            spec = (await (await client.get("/api/mcp/custom/weather")).json())["spec"]
+            mutate(spec["env"])
+            resp = await client.put("/api/mcp/custom/weather", json={"spec": spec})
+            assert resp.status == 400
+            payload = await resp.json()
+            assert payload["code"] == "env_placeholder_refused"
+            assert reason in payload["error"]
+            assert "old-secret" not in json.dumps(payload)
+            assert _written(sandbox)["weather"]["env"] == raw_env
+        finally:
+            await client.close()
+
+    @pytest.mark.parametrize("stored_env", [None, {}], ids=["no-env", "empty-env"])
+    async def test_put_rejects_redaction_marker_as_fresh_env_value(
+        self, sandbox, fake_sel, stored_env
+    ):
+        """With no saved env to keep, the marker is a pasted read payload, not a value."""
+        from kiro_crew.mcp_discovery import MCP_REDACTED_HEADER_VALUE
+
+        entry: dict = {"command": "npx"}
+        if stored_env is not None:
+            entry["env"] = stored_env
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"weather": entry}}))
+        client = await _client()
+        try:
+            spec = {"command": "npx", "env": {"API_TOKEN": MCP_REDACTED_HEADER_VALUE}}
+            resp = await client.put("/api/mcp/custom/weather", json={"spec": spec})
+            assert resp.status == 400
+            assert "redacted" in (await resp.json())["error"]
+            assert not _written(sandbox)["weather"].get("env")
+        finally:
+            await client.close()
+
+    async def test_add_rejects_redaction_marker_as_env_value(self, sandbox, fake_sel):
+        from kiro_crew.mcp_discovery import MCP_REDACTED_HEADER_VALUE
+
+        client = await _client()
+        try:
+            spec = {"command": "npx", "env": {"API_TOKEN": MCP_REDACTED_HEADER_VALUE}}
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": spec}})
+            assert resp.status == 400
+            assert "redacted" in (await resp.json())["error"]
+            assert _written(sandbox) == {}
         finally:
             await client.close()
 

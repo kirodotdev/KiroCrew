@@ -3220,6 +3220,31 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.channels_enabled"
   },
   {
+    "id": "display.show-discover-in-the-sidebar",
+    "label": "Show Discover in the sidebar",
+    "labelKey": "pages.settings.displayPanel.show_discover",
+    "hint": "Off takes Discover off the left rail in this browser. Open it with Discover apps on the Library page or from Search Everywhere. While it’s off, the count of app updates shows on Library.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
+  },
+  {
+    "id": "display.show-linked-items-expanded-on-session-cards",
+    "label": "Show linked items expanded on session cards",
+    "labelKey": "pages.settings.displayPanel.expand_linked_items",
+    "hint": "Each session card starts with its linked pull requests and issues shown under it. Pressing the count on a card still folds or opens that card.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidebar"
+    },
+    "configKey": "dashboard.expand_linked_items"
+  },
+  {
     "id": "display.show-search-in-the-top-bar",
     "label": "Show search in the top bar",
     "labelKey": "pages.settings.displayPanel.show_topbar_search",

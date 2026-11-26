@@ -223,9 +223,8 @@ function persistFullscreen(fullscreen: boolean): void {
  *  build that still shared it is ignored. */
 function loadPersisted(open = loadOpen(), fullscreen = loadFullscreen()): BottomTerminalState {
   const base: BottomTerminalState = { open: false, fullscreen: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
-  if (typeof localStorage === 'undefined') return base
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = safeGetItem(STORAGE_KEY)
     if (!raw) return base
     // `splits` is read as a fallback for the pre-tab-model dev shape.
     const p = JSON.parse(raw) as (Partial<BottomTerminalState> & { splits?: TermTab[] }) | null

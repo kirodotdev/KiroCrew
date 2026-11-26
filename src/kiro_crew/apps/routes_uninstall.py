@@ -602,7 +602,7 @@ async def _run_uninstall(
         # uninstalled app's `backend.hooks` routes keep answering until the hook
         # reconciler's next tick. Reported, never an abort, for the same reason as
         # the port below.
-        in_process = await stop_app_hooks_for_uninstall(name)
+        in_process = await stop_app_hooks_for_uninstall(name, state=request.app.get("state"))
         for note in (*in_process.warnings, *in_process.failures):
             backend_warnings.append(note)
             uninstall_log.append(note)
@@ -682,7 +682,7 @@ async def _run_uninstall(
 
         # Step 5: Remove files. Off-loop: rmtree of a large installed tree is
         # blocking filesystem I/O. (uninstall_app shares the
-        # ``.{name}-data-tmp`` move-aside path with install/update — covered
+        # ``.{name}-data-tmp`` move-aside path with install — covered
         # by the lifecycle lock held above.)
         #
         # Held under the SHARED config lock because `uninstall_app` also runs

@@ -222,7 +222,12 @@ class IndexRow(NamedTuple):
 #: 5: a row's text includes the chat's size-rotated archive head. Rows written
 #: under 4 hold the live file only, and the live file's stat still vouches for
 #: them, so they must be rebuilt.
-_INDEX_VERSION = 5
+#:
+#: 6: a row's text is each message after ``redact``, the text the results show.
+#: Rows written under 5 hold the text before it, and the file's stat still
+#: vouches for them, so they must be rebuilt. The loaded rule digest is kept in
+#: ``index_meta`` beside it, and rows stored under other rules are rebuilt too.
+_INDEX_VERSION = 6
 
 #: Uncompressed characters a ``session_text`` chunk collects before it is closed.
 #: A message is never split, so one longer message forms its own chunk.
@@ -250,6 +255,29 @@ _WIDE_STAT_ID_PREFIX = "i:"
 #: Name of the index file, kept beside the session directory it describes so a
 #: pod or a test home gets its own rather than sharing the live one.
 INDEX_FILENAME = "session_index.db"
+
+
+def loaded_rules_marker() -> str:
+    """The loaded redaction rule digest, as hex, or ``unknown`` when it was not read.
+
+    Rows hold the text results show, redacted under these rules, so a change of
+    rules invalidates them the way a version bump does. The owner's redaction
+    switch is left out: the index worker process never sees it, and search does
+    not read it, so keying on it would make the two processes drop each other's rows.
+    """
+    from kiro_crew.dashboard import display_battery
+
+    digest = display_battery.LOADED_DIGEST
+    return digest.hex() if digest is not None else "unknown"
+
+
+def _stored_rules(conn: sqlite3.Connection) -> str | None:
+    """The rule marker the rows were written under; ``None`` for an index without one."""
+    try:
+        row = conn.execute("SELECT value FROM index_meta WHERE name = 'redaction_rules'").fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return row[0] if row else None
 
 
 def cjk_inventory(folded: str) -> str:
@@ -366,7 +394,8 @@ class SessionSearchIndex:
         any chance of mixing term representations inside one index.
         """
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version and version != _INDEX_VERSION:
+        rules = loaded_rules_marker()
+        if version and (version != _INDEX_VERSION or _stored_rules(conn) != rules):
             for table in ("session_fts", "session_cjk", "session_entry", "session_text"):
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
             version = 0
@@ -397,6 +426,13 @@ class SessionSearchIndex:
             " first_msg INTEGER NOT NULL,"
             " texts     BLOB    NOT NULL,"
             " PRIMARY KEY (fts_rowid, first_msg)) WITHOUT ROWID"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS index_meta(name TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO index_meta(name, value) VALUES ('redaction_rules', ?)",
+            (rules,),
         )
         if not version:
             conn.execute(f"PRAGMA user_version={_INDEX_VERSION}")

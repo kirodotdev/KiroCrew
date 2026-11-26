@@ -37,7 +37,10 @@ with nothing to observe) caps at **24** cycles by default; a gated loop that
 watches a subject has no cycle cap by default, because a quiet cycle costs no
 turn. The goal control's own field starts at `0`, so a loop you arm there is
 unlimited unless you set a number. Either way the cap is a runaway backstop, not a finish line —
-a loop that reaches its cap ran out of rope rather than completing. A cap of `0`
+a loop that reaches its cap ran out of rope rather than completing. A loop
+whose cycles are agent turns stops at its cap, and tells you, within two minutes
+after its last turn ends; a work-ledger
+watch whose items are still open is extended instead. A cap of `0`
 is unlimited, which is worth asking for only when you genuinely want an
 unbounded loop.
 
@@ -129,9 +132,12 @@ Loops survive a gateway restart.
 
 For a supported pull or merge request there is a cheaper path than a general
 loop: a structured watch that probes the provider directly and wakes the session
-**only when a new revision needs action**. An unchanged, pending, retrying, or
-finished probe costs no agent turn at all. Ask to watch the change until it is
-review-ready and you get this instead of a turn every interval. See
+**when a new revision needs action**, and once when a change that is still
+pending finishes its checks green outside draft or, on GitHub, gets a comment,
+or a review with text, from a person other than its author, a draft's included.
+An unchanged, retrying, or finished probe, or any other pending one, costs no
+agent turn at all. Ask to watch the change until it is review-ready and you get
+this instead of a turn every interval. See
 [Monitor a pull request](monitoring.md) for the provider and authentication
 matrix.
 

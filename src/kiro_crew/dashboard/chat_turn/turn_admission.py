@@ -19,6 +19,11 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     tighten_live_slot_memory_mode,
 )
+from kiro_crew.dashboard.effort_overlay_mark import (
+    effort_overlay_clear_kwargs,
+    settle_effort_overlay_clear,
+)
+from kiro_crew.dashboard.project_mcp_cards import offer_project_mcp_cards
 from kiro_crew.dashboard.slot_queue_repository import UNREADABLE_SOURCE_CHANNEL
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.llm_helpers import _billing_stats
@@ -84,6 +89,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.eager_spawn import _clear_eager_spawn_failures
     from kiro_crew.dashboard.chat_turn.mcp_session import (
         _drain_session_init_oauth_requests,
+        _notice_crew_left_out_mcp,
         _notice_unresolved_control_plane,
         _publish_session_mcp_report,
         _watch_session_mcp_report,
@@ -100,6 +106,7 @@ if TYPE_CHECKING:
         _expand_prompt_mention_off_loop,
         _prewarm_startup_query,
     )
+    from kiro_crew.dashboard.chat_turn.prompt_file_notice import _notice_unread_prompt_file
     from kiro_crew.dashboard.chat_turn.recipient import _deliver_linked_slack_message
     from kiro_crew.dashboard.chat_turn.regenerate_swap import rows_before_regenerate_target
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
@@ -1008,6 +1015,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # which decides whether to send it, and the crew log's `session/opened`,
     # which records the choice.
     _requested_model = slot.model or agent_model or ""
+    _overlay_mark = effort_overlay_clear_kwargs(slot)
     _allocation_kwargs: dict[str, Any] = dict(
         agent=kiro_agent or slot.agent or None,
         # Same canonical crew identity as the eager-spawn path — the two
@@ -1024,6 +1032,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         channel_id=_provider_channel_id or None,
         reasoning_effort_override=slot.reasoning_effort or None,
         start_priority=_turn_priority,
+        **_overlay_mark,
         **_app_allocation_kwargs(slot),
         **_slot_backend_allocation_kwargs(slot),
     )
@@ -1167,6 +1176,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             # claim consumed the one-shot resume, so every later exit owes it.
             turn._slim_resume_pending = bool(is_new and resumed)
             turn.client = client
+            settle_effort_overlay_clear(slot, _overlay_mark, is_new=is_new, provider=client)
             if is_new:
                 # A Bot chat that just started on a harness without its app tools
                 # gets its one notice here, where the slot is in hand.
@@ -1236,7 +1246,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # Held but not yet marked acquired: release it if this await is cancelled, like
     # the reprojection above.
     try:
-        _fallback = await _fallback_turn_project(_turn_project, getattr(client, "cwd", None))
+        _fallback = await _fallback_turn_project(
+            _turn_project,
+            getattr(client, "cwd", None),
+            session_key,
+            _allocation_kwargs.get("backend_override"),
+        )
     except BaseException:
         state.sessions.release(session_key)
         raise
@@ -1451,6 +1466,11 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         await deliver_kas_telemetry_note(state, client)
         await _notice_seed_declined(state, slot, client)
         await _notice_unresolved_control_plane(state, slot, client)
+        _notice_crew_left_out_mcp(state, slot, client)
+        await _notice_unread_prompt_file(state, slot, client, turn)
+        await offer_project_mcp_cards(
+            state, slot, client, session_key, kiro_agent or slot.agent or ""
+        )
     # A member DM's first turn carries the four-layer member section as
     # session-start context. Record that it is at stake HERE — the moment
     # the session client exists — not at the context build: every early
@@ -1798,7 +1818,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     turn._is_quick_prompt = _is_quick_prompt
     prompt_expanded = _is_quick_prompt
     turn.prompt_expanded = prompt_expanded
-    if message.startswith("@") and not is_slash and _prompt_depth < 1:
+    if message.startswith("@") and not is_slash and _prompt_depth < 1 and not turn._expansions_off:
         original = message
         # Off the loop, for the same reason the `$skill` expansion in _turn_dispatch_prep is:
         # this resolves and READS files — the project's prompt directory is

@@ -285,8 +285,7 @@ def test_inherit_narrowing_keeps_deny_and_ask_and_drops_allow() -> None:
     [
         None,
         _STALE_PERMISSIONS,
-        # Blocks KAS refuses whole on every session, so none of their rules ever applied.
-        {"rules": [_DENY_FETCH], "policies": ["dev-shell"]},
+        # A block KAS refuses whole on every session, so none of its rules ever applied.
         {"rules": [_DENY_FETCH, {"capability": "nope", "effect": "deny"}]},
         "deny everything",
     ],
@@ -299,6 +298,20 @@ def test_inherit_narrowing_carries_nothing_the_runtime_would_not_honour(inherite
         config, agent_filename="x.json", source="t", kas_policy="inherit_narrowing"
     )
     assert config["permissions"] == _derive(config)
+
+
+def test_inherit_narrowing_carries_the_deny_beside_a_bundle_and_not_the_allow() -> None:
+    allow = {"capability": "web_fetch", "effect": "allow"}
+    config: dict[str, Any] = {
+        "tools": ["fs_read"],
+        "allowedTools": ["fs_read"],
+        "permissions": {"rules": [_DENY_FETCH, allow], "policies": ["dev-shell"]},
+    }
+    auto_approve.govern_spec(
+        config, agent_filename="x.json", source="t", kas_policy="inherit_narrowing"
+    )
+    assert config["permissions"]["rules"] == [_DENY_FETCH, *_derive(config)["rules"]]
+    assert "policies" not in config["permissions"]
 
 
 def test_inherit_narrowing_is_idempotent() -> None:
@@ -419,7 +432,7 @@ def test_inherit_narrowing_audits_a_refused_inherited_block(
     config = {
         "tools": ["fs_read"],
         "allowedTools": ["fs_read"],
-        "permissions": {"rules": [_DENY_FETCH], "policies": ["dev-shell"]},
+        "permissions": {"rules": [_DENY_FETCH, {"capability": "nope", "effect": "deny"}]},
     }
     auto_approve.govern_spec(
         config, agent_filename="x.json", source="t", kas_policy="inherit_narrowing"

@@ -337,9 +337,11 @@ class TestTheDeclarationSourcesAreWriteFenced:
         (self.apps / "demo" / "app.json").write_text('{"name": "demo", "agentRe', encoding="utf-8")
         assert self._refused("demo/app.json")[0]
 
-    def test_a_manifest_declaring_nothing_and_its_neighbours_stay_writable(self):
+    def test_a_manifest_declaring_nothing_is_fenced_and_its_neighbours_stay_writable(self):
+        # Every installed manifest is write-fenced (``app_manifest_files``), declared
+        # fences or not; it stays readable.
         _install(self.apps.parent, "plain", [])
-        assert self._refused("plain/app.json") == (False, False)
+        assert self._refused("plain/app.json") == (True, False)
         assert self._refused("demo/ui/index.html") == (False, False)
         assert self._refused("demo/app.json.bak") == (False, False)
         assert self._refused(".plain-agent-readonly-dirs.json") == (False, False)

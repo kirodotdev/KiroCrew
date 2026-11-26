@@ -10,6 +10,7 @@ import { bindReadCover, bindSlotReadSender, emitSlotRead, flushSlotRead, newerTs
 import { queueRead } from '../../lib/readOutbox'
 import { bindComposeIntentSender } from '../../lib/composeIntent'
 import { getViewedThreadSlot } from '../../lib/viewedThread'
+import { isChatTranscriptMounted } from '../../lib/mountedChatTranscript'
 import { getMountedMemberThreadSlot, subscribeMountedMemberThread } from '../../lib/mountedMemberThread'
 // A change of the store's focused slot supersedes any split-view pane focus.
 import { storeFocusedSlot } from '../../lib/storeFocusedSlot'
@@ -91,15 +92,21 @@ const hideMayArmWarmBrief = (announced: string | null): boolean => {
   if (!announced || !isChatSurfaceVisible()) return false
   return store.getState().dashboard.slots.some(s => s.key === announced && s.crew_mode_root === true)
 }
+/** True when this window renders the active slot's transcript: a chat route,
+ *  or a ChatPage an app or the artifact companion mounted on another route.
+ *  On any other route the retained `chat.activeSlot` is not on screen. */
+const isActiveSlotRendered = (): boolean => isChatSurfaceVisible() || isChatTranscriptMounted()
+
 /** True when *slot* is the thread this window is displaying: the chat
- *  surfaces' `chat.activeSlot`, or the thread a non-chat surface (the Crew
- *  Members page) registered in `viewedThread`. The unread-marker's gate: a
- *  message landing in a thread the user is watching is not unread. Without
- *  the second source every message in an open member thread was flagged and
- *  then cleared by the page's read effect one render later -- a badge that
- *  lit and vanished on the parent dashboard's crew tab for each message. */
+ *  surfaces' `chat.activeSlot` while a transcript renders it, or the thread a
+ *  non-chat surface (the Crew Members page) registered in `viewedThread`. The
+ *  unread-marker's gate: a message landing in a thread the user is watching
+ *  is not unread. Without the second source every message in an open member
+ *  thread was flagged and then cleared by the page's read effect one render
+ *  later -- a badge that lit and vanished on the parent dashboard's crew tab
+ *  for each message. */
 export const isSlotOnScreen = (slot: string): boolean =>
-  !relayTabCovers() && (slot === store.getState().chat.activeSlot || slot === getViewedThreadSlot())
+  !relayTabCovers() && ((slot === store.getState().chat.activeSlot && isActiveSlotRendered()) || slot === getViewedThreadSlot())
 
 /** A relay Crew tab fills <main> with its native pane, so nothing local under it is on screen. */
 const relayTabCovers = (): boolean => store.getState().instances?.relayActive != null

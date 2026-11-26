@@ -562,6 +562,24 @@ describe('WindowsTitlebarMenu', () => {
     expect(screen.getByRole('menuitem', { name: /Unavailable/ })).toBeDisabled()
   })
 
+  it('announces a radio item as a radio carrying its own check state', async () => {
+    const api = installMenuAPI()
+    api.getAppMenuItems.mockResolvedValueOnce([
+      { type: 'radio', index: 0, label: 'Content Text Size: Medium', accelerator: '', enabled: true, gated: false, checked: true },
+      { type: 'radio', index: 1, label: 'Content Text Size: Large', accelerator: '', enabled: true, gated: false, checked: false },
+    ])
+    render(<header><WindowsTitlebarMenu /></header>)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+
+    const picked = await screen.findByRole('menuitemradio', { name: /Medium/ })
+    expect(picked).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('menuitemradio', { name: /Large/ })).toHaveAttribute('aria-checked', 'false')
+    // One of a mutually exclusive set, so it must not reach the reader as an
+    // independent checkbox.
+    expect(screen.queryAllByRole('menuitemcheckbox')).toHaveLength(0)
+  })
+
   // A row greyed by the per-action LOCAL_ONLY gate carries NO per-row
   // decoration: no keyboard glyph, no struck-out accelerator caption. Greying
   // states the row is inert from this window and the footer names the remedy,

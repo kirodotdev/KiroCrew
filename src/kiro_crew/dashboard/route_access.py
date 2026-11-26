@@ -60,18 +60,41 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("GET", "/api/apps/{name}/browser-sites"): RouteAccess("apps.browser_sites.read", UNSTABLE),
     # Owner dashboard only: 403 for an app token and an internal caller.
     ("POST", "/api/apps/{name}/browser-sites"): RouteAccess("apps.browser_sites.change", UNSTABLE),
+    # Owner dashboard only (apps/browser_recipes_routes.py); only narrows the approvals.
+    ("POST", "/api/browser/recipe-watch-off"): RouteAccess(
+        "apps.browser_recipes.watch_off", UNSTABLE
+    ),
     # Owner gate (handlers/connections_app_manifest.py); writes nothing.
     ("GET", "/api/connections/app-manifests"): RouteAccess(
         "connections.app_manifests.read", UNSTABLE
     ),
+    # Owner gate (handlers_instances_gate._guard); writes nothing.
+    ("GET", "/api/instances/bots"): RouteAccess("instances.bots.read", UNSTABLE),
+    # Owner dashboard only (handlers/mcp_project_file.py); adds one server to a chat
+    # folder's project MCP file, the Apply of an mcp.server card with target project.
+    ("POST", "/api/mcp/project-file"): RouteAccess("mcp.project_file.change", UNSTABLE),
     # Owner dashboard only (chat_api/slot_effort.py); restarts the slot's idle session.
     ("POST", "/api/chat/slots/{slot}/approve-for-me"): RouteAccess(
         "chat.approve_for_me.change", UNSTABLE
     ),
+    # Loopback or same-user socket plus X-Local-Secret (handlers/core.py); revokes one
+    # link's credential family for `kirocrew logout --link`.
+    ("POST", "/api/logout/link"): RouteAccess("auth.logout_link.revoke", UNSTABLE),
     # Dashboard user only (chat_folders._toggle_slot_user_flag): 403 for an app token
     # and an internal caller.
     ("PATCH", "/api/chat/slots/{slot}/source-links-off"): RouteAccess(
         "chat.source_links_off.change", UNSTABLE
+    ),
+    # Dashboard user, or the slot's owner app through the slot-ownership checkpoint
+    # (chat_history_search.py); bounded transcript reads, writes nothing.
+    ("GET", "/api/chat/slots/{slot}/history/search"): RouteAccess(
+        "chat.history_search.read", UNSTABLE
+    ),
+    ("GET", "/api/chat/slots/{slot}/history/around"): RouteAccess(
+        "chat.history_around.read", UNSTABLE
+    ),
+    ("GET", "/api/chat/slots/{slot}/history/counts"): RouteAccess(
+        "chat.history_counts.read", UNSTABLE
     ),
     # Owner gate, then the machine owner alone (crew_api_grant_requests). The Crew API
     # RFC marks the Owner tier experimental. Contract test: test_crew_api_grant_requests.py.
@@ -98,12 +121,32 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/tailnet/mobile/clear-overrides"): RouteAccess(
         "tailnet.mobile.clear_overrides", UNSTABLE
     ),
+    # Gateway auth middleware: 403 without a token (tips.api_tips_exploratory); reads only.
+    ("GET", "/api/tips/exploratory"): RouteAccess("tips.exploratory.read", UNSTABLE),
+    # Owner dashboard or Shared Crew teammate only: 404 for an app token, 403 for an
+    # internal caller (dashboard/handlers/member_held_limits.py).
+    ("GET", "/api/members/{slug}/held-limits"): RouteAccess("members.held_limits.read", UNSTABLE),
+    # Same callers as the read; ends every held limit the page showed.
+    ("POST", "/api/members/{slug}/held-limits/release"): RouteAccess(
+        "members.held_limits.release", UNSTABLE
+    ),
+    # Machine owner only (dashboard/handlers/yolo_ack.py); 403 for anyone else.
+    ("GET", "/api/chat/yolo-ack"): RouteAccess("chat.yolo_ack.read", UNSTABLE),
+    # Machine owner only; writes the owner's yolo_ack.json record.
+    ("PUT", "/api/chat/yolo-ack"): RouteAccess("chat.yolo_ack.set", UNSTABLE),
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
     ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),
     # Owner gate, then the machine owner alone (crew_api_responses).
     # Contract test: test_crew_api_responses.py.
     ("POST", "/v1/responses"): RouteAccess("crew_api.responses.create", PREVIEW),
+    # The same two checks (crew_api_response_reads): a turn is read back by its owner.
+    # Contract test: test_crew_api_response_reads.py.
+    # ``.resolve``: a read removes an expired record and moves a damaged file aside.
+    ("GET", "/v1/responses/{response_id}"): RouteAccess("crew_api.responses.resolve", PREVIEW),
+    ("GET", "/v1/responses/{response_id}/input_items"): RouteAccess(
+        "crew_api.responses.input_items.resolve", PREVIEW
+    ),
     # Connected computers, this computer's own side (feature preview). Owner dashboard
     # only (connected_computers/local_routes.py `_owner`); the action names are the
     # handlers' own audit operation names.
@@ -116,11 +159,26 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/connected-computers/local/off"): RouteAccess(
         "connected_computers.off", UNSTABLE
     ),
-    # Owner gate, then the machine owner alone; reads the model catalog, writes nothing.
+    # A verified app credential, or the owner gate and then the machine owner alone.
+    # The owner's answer reads the model catalog, an app's reads its grant; writes nothing.
     # Contract test: test_crew_api_instance.py.
     ("GET", "/v1/crew/capabilities"): RouteAccess("crew_api.capabilities.read", PREVIEW),
-    # Owner gate, then the machine owner alone. The first call on a data home makes
-    # and keeps the instance id (relay_client.lease.crew_instance_id), so the verb is
-    # not ``read``; it changes nothing after that.
+    # A verified app credential, or the owner gate and then the machine owner alone.
+    # The first call on a data home makes and keeps the instance id
+    # (relay_client.lease.crew_instance_id), so the verb is not ``read``; it changes
+    # nothing after that.
     ("GET", "/v1/crew/info"): RouteAccess("crew_api.info.resolve", PREVIEW),
+    # An app credential reads the grant it was issued for (crew_api_grant_self); a
+    # first-party session is answered 404. Reads only.
+    # Contract test: test_crew_api_grant_self.py.
+    ("GET", "/v1/crew/grant"): RouteAccess("crew_api.grant.read", PREVIEW),
+    # A verified app credential lists the Bots of its grant; otherwise the owner gate
+    # and then the machine owner alone, who lists every Bot. Reads only.
+    # Contract test: test_crew_api_bots.py.
+    ("GET", "/v1/crew/bots"): RouteAccess("crew_api.bots.list", PREVIEW),
+    # Owner dashboard only (handlers/project_mcp_approve.py); the mcp.project_server
+    # card's Apply. Records the approval and restarts open chats.
+    ("POST", "/api/mcp/project-servers/approve"): RouteAccess(
+        "mcp.project_servers.approve", UNSTABLE
+    ),
 }

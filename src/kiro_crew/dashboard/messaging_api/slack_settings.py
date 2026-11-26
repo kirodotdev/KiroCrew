@@ -63,6 +63,12 @@ async def _validate_slack_token(key: str, token: str) -> str | None:
 
 async def api_slack_config_get(request: web.Request) -> web.Response:
     """GET /api/slack/config — read Slack config + masked secret status."""
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "slack.config.read")
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_OWNER_ID,
         CRED_SLACK_APP_TOKEN,
@@ -618,6 +624,12 @@ async def api_slack_manifest_status(request: web.Request) -> web.Response:
     reinstall). Reads only: no config is written and the token is never echoed.
     Remote sessions may read it — it is the same status the read-only page shows.
     """
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "slack.manifest_status.read")
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew.config.loader import CRED_SLACK_BOT_TOKEN, KiroCrewConfig  # noqa: F811
     from kiro_crew.dashboard.slack_code_settings import manifest_status
 
@@ -638,6 +650,14 @@ async def api_slack_code_channel_agents(request: web.Request) -> web.Response:
     project can offer other agents. ``{"agents": null}`` when they cannot be
     listed. Reads only.
     """
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(
+        request, "slack.code_channel_agents.read"
+    )
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew.config.sections_slack import CODE_CHANNEL_DEFAULT_MAX
     from kiro_crew.dashboard.slack_code_settings import code_channel_agents
 

@@ -81,11 +81,12 @@ describe('AcpAdapter.fetchAvailableModels', () => {
     expect(models[0].name).toBe('auto')
   })
 
-  it('auto-only fallback carries a sensible context window', async () => {
+  it('auto-only fallback claims no window that nothing reported', async () => {
     ;(api.models as ModelsMock).mockRejectedValue(new Error('boom'))
     const models = await new AcpAdapter().fetchAvailableModels()
     expect(models[0].name).toBe('auto')
-    expect(models[0].contextWindow).toBeGreaterThan(0)
+    // No list ever reported auto's window here: the meter reads it as unknown.
+    expect(models[0].contextWindow).toBeUndefined()
   })
 
   it('persists a good live list to localStorage', async () => {

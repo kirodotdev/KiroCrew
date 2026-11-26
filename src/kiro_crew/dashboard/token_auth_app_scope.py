@@ -404,10 +404,16 @@ def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Re
         # owners, and this is not part of its surface.
         from kiro_crew.dashboard.crew_api_auth import OWNER_ONLY_PUBLIC_ROUTES
         from kiro_crew.dashboard.crew_api_errors import is_owner_path
+        from kiro_crew.dashboard.crew_api_scopes import route_key
 
         # Use the Public gate's own policy too, so a known caller's permission refusal
-        # is never labelled as an invalid credential.
-        code = "owner_only" if is_owner_path(path) or path in OWNER_ONLY_PUBLIC_ROUTES else ""
+        # is never labelled as an invalid credential. The map is keyed by route pattern,
+        # so a templated route is found by the pattern the path matched; a path that
+        # matched no route has the pattern "" and is judged by the path alone.
+        public_owner_only = (
+            path in OWNER_ONLY_PUBLIC_ROUTES or route_key(request)[1] in OWNER_ONLY_PUBLIC_ROUTES
+        )
+        code = "owner_only" if is_owner_path(path) or public_owner_only else ""
         return _deny(request, "app token not permitted for this endpoint", code)
     refusal = _scope_refusal(app_name, path)
     return web.json_response(

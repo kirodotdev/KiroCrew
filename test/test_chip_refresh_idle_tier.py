@@ -286,7 +286,10 @@ async def test_a_non_owner_open_drives_no_read_and_changes_no_tier(restored, mon
     monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
     async with TestClient(TestServer(_make_app(state))) as client:
         response = await client.get(f"/api/chat/slots/{_KEYS[2]}")
-        assert response.status == 200
+        # The local subject is neither the owner nor a teammate here, so the
+        # per-slot owner gate refuses the open before the handler (401: a session
+        # signed before the owner was configured).
+        assert response.status == 401
 
     refresh.assert_not_called()
     assert _pr(3) in state.idle_source_link_urls()

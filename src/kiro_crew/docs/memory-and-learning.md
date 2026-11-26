@@ -152,6 +152,13 @@ sessions neither read nor write it, whatever these keys say. The keys apply to
 every surface (dashboard, channels, cron, sub-agents) at once, where a memory
 mode is chosen per session.
 
+To withhold stored memory and lessons from one agent only, set
+`"includeCrossSessionContext": false` in that agent's spec: its sessions are
+built as if `memory.inject_memory` and `memory.inject_lessons` were both off.
+Nothing is written differently, and `memory_recall` still answers an agent
+whose tools include it
+([Agent Spec Field Reference](agent-spec-fields.md#session-context)).
+
 To see what the `"shadow"` (and `"propose"`) stages above have recorded, run
 `kirocrew memory shadow report`. Per stage it prints the flag, when its window
 started, the days and session starts seen against the bar (14 days and 200

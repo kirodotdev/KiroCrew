@@ -113,6 +113,10 @@ class _FakeRequest:
         self.headers: dict = {}
         self.remote = "127.0.0.1"
 
+    def get(self, _key, default=None):
+        # No app claim, as on the internal transport: the owner gate passes.
+        return default
+
 
 class TestStatusEndpoint:
     @pytest.mark.asyncio

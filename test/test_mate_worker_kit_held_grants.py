@@ -203,7 +203,7 @@ def test_nothing_is_left_out_when_the_template_is_refused_for_something_else(hom
     user, _ = home
     settings = {
         "web_fetch": {"trusted": TRUSTED},
-        "fs_write": {"fallbackAction": "deny"},
+        "fs_write": {"fallbackAction": "allow"},
     }
     _use(user, {**ATLAS, "toolsSettings": settings})
     detail = _refused("toolsSettings.web_fetch.trusted", alone=False)

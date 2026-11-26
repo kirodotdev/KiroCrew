@@ -50,12 +50,13 @@ import dataclasses
 import functools
 import logging
 import os
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, overload
 
-from kiro_crew import dep_sync
+from kiro_crew import dep_sync, extras
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform.wheel_engine_build_child import _redacted_detail, _spawn_build_child
 from kiro_crew.platform.wheel_engine_contract import ApplyCancel, WheelUpdateError, _BuildContext
@@ -222,7 +223,7 @@ def _apply_wheel(release: WheelRelease) -> Path:
         # interpreter the same way when it builds the tree.
         _install_engine(tree / "bin" / "python3", ctx)
 
-    return wheel_engine.apply_wheel_update(
+    tree = wheel_engine.apply_wheel_update(
         channel=release.channel,
         feed_base=release.feed_base,
         artifact_base=release.artifact_base,
@@ -236,6 +237,37 @@ def _apply_wheel(release: WheelRelease) -> Path:
         trusted_env=release.trusted_env,
         install_engine=_engine,
     )
+    _note_uncarried(release, tree)
+    return tree
+
+
+def _running_tree() -> Path:
+    """The tree this process runs from: the one the update replaced."""
+    return Path(sys.prefix)
+
+
+def _note_uncarried(release: WheelRelease, tree: Path) -> None:
+    """Name what the promoted *tree* did not carry over from the running one.
+
+    The update carries the declared extras only. Both the progress line and the log get
+    the note: the dashboard keeps only the latest step, and an automatic update has no
+    viewer. The add-back command names the stable link, which outlives the versioned tree.
+    The tree is already promoted, so nothing here may turn the update into a failure.
+    """
+    from kiro_crew.platform import wheel_engine
+
+    try:
+        text = extras.uncarried_note(
+            extras.site_packages(_running_tree()),
+            extras.site_packages(tree),
+            str(wheel_engine.managed_venv_layout().stable_link / "bin" / "python"),
+        )
+    except Exception:  # a note only: the update has already succeeded
+        logger.debug("Could not compare the updated tree's packages", exc_info=True)
+        return
+    if text:
+        release.progress(text)
+        logger.warning("%s", text)
 
 
 @overload

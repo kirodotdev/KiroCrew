@@ -154,8 +154,10 @@ Neither the gateway nor the user's AWS account keeps dictation audio, and
 picker, with the detail in its info tip (`pages/settings/SttRetentionNote.tsx`).
 
 - **Gateway.** The live socket never writes PCM to disk. The batch endpoint
-  streams an upload to a temp file that its `finally` unlinks on every exit path,
-  and a remuxed temp is unlinked the same way (`transcribe_aws._transcribe_aws`).
+  streams an upload to a temp file that its `finally` unlinks on every exit path.
+  The temp name takes the upload's suffix stripped to ASCII letters and digits,
+  or `.webm` when nothing is left (`messaging.attachments.safe_suffix`); on
+  Windows a colon there would name an NTFS stream that the unlink misses. A remuxed temp is unlinked the same way (`transcribe_aws._transcribe_aws`).
   A decoder temp the OS refuses to remove (on Windows, a scanner or indexer
   holding it) is left with a warning naming it, and the caller still gets its
   transcript, or None after a real failure (`transcribe_ffmpeg._unlink_if_exists`).
@@ -1541,6 +1543,12 @@ streamer (`stream_pinned_payload`) and so the same policy.
 A file already on disk is verified against the pin too, on every model LOAD. Not once
 per session, because `WhisperEngine.ensure_loaded` settles residency before asking the store. It is not memoised against size and mtime because
 `os.utime` is available to anything that can write the file.
+A file that fails the pin is deleted and downloaded again. When the delete fails (on
+Windows, a virus scanner, the search indexer or a second Kiro Crew process holding the
+file open; elsewhere, a folder the gateway cannot write), the load is refused instead, with a `failed` status flagged `refused` that
+names the file: the download could not replace that file either, so falling through
+would start one transfer per load that cannot land. Once the file can be removed, the
+next load deletes it and downloads once.
 
 The digest is the second line of defence, not the first. Verifying and then handing a
 PATH to a native loader leaves a window in which the bytes can be swapped, and

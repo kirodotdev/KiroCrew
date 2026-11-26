@@ -56,6 +56,8 @@ from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
@@ -65,6 +67,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
+    ACP_BACKENDS_MODEL_PER_SESSION,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_NATIVE_WORKFLOWS,
     ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD,
@@ -142,6 +145,16 @@ class SessionCapabilities:
     #: stored id against a differently-spelled advertised list manufactures false
     #: "model unavailable" withholds.
     resolves_model_from_advertised_list: bool
+
+    #: Whether one process can run each of its sessions on its own model
+    #: (:data:`ACP_BACKENDS_MODEL_PER_SESSION`).
+    #:
+    #: True where the model request names the session it is for. A sub-agent
+    #: started on a model of its own can then take a session on its parent's
+    #: process; False sends it to a process of its own, where the model is applied
+    #: at that process's start. Unknown and newly registered backends stay False
+    #: until they opt in.
+    takes_model_per_session: bool
 
     #: Whether a reasoning-effort change goes through
     #: ``session/set_config_option("effort", …)`` rather than the kiro-native
@@ -259,12 +272,14 @@ class SessionCapabilities:
     #: Whether a ``tool_call_update`` carries a call's real title after a first
     #: ``tool_call`` that named it before its input had streamed
     #: (:data:`ACP_BACKENDS_TOOL_TITLE_REFINEMENT`), so a Crew-spawned subagent's
-    #: Subagents card takes the refined title for that call's row.
+    #: Subagents card takes the refined title for that call's row, and a channel
+    #: turn's task card for that call (``messaging.driver``'s ``TOOL_TITLE``).
     #:
     #: True for claude, whose first frame of a call carries the tool's generic title
-    #: ("Terminal", "Read File"). False keeps the card on the titles of the call and
-    #: its permission request, which is right for kiro-cli: the update that ends its
-    #: failed call carries the bare tool name, a worse title than the first.
+    #: ("Terminal", "Read File"). False keeps each card on the titles its call (and,
+    #: on the Subagents card, its permission request) named, which is right for
+    #: kiro-cli: the update that ends its failed call carries the bare tool name, a
+    #: worse title than the first.
     refines_tool_call_titles: bool
 
     #: Whether a permission request raised while a native sub-agent's card is open
@@ -321,6 +336,60 @@ class SessionCapabilities:
     #: on a landed turn, so a wrong guess repeats it instead of losing it.
     keeps_prompt_on_unlanded_turn: bool
 
+    #: Whether the harness answers a rejected permission request by ending a
+    #: clean ``end_turn`` on the refusal itself, leaving it unanswered, so a
+    #: sub-agent turn that ends that way is read as ending on the refusal.
+    #:
+    #: True for opencode, whose ``reject_once`` ends the turn. False everywhere
+    #: else, an unknown backend included: there the harness goes on after a
+    #: reject, and a clean ending is not read as one.
+    ends_turn_on_permission_reject: bool
+
+    #: Whether the harness names a Crew tool in its tool calls only by a fused
+    #: ``<server>_<tool>`` name, so a sub-agent's tool dispatch reads that name as
+    #: Crew's only for a server the session handed the harness.
+    #:
+    #: True for pi and claude. False everywhere else, an unknown backend
+    #: included: there no handed server list is read at dispatch.
+    names_crew_tools_by_fused_name: bool
+
+    #: Whether an Auto pick moves a live session to ``auto`` in place even when
+    #: the slot already holds ``auto``: the harness advertises no model list,
+    #: runs ``auto`` on a new session, and can come back on a concrete model (a
+    #: reopened chat, a start that inherits kiro-cli's ``chat.defaultModel``), so
+    #: the Auto pick is sent as a live ``set_model`` rather than a reset.
+    #:
+    #: True for KAS. False everywhere else, an unknown backend included: there
+    #: Auto goes live only when the backend advertised it, and a slot already on
+    #: ``auto`` keeps the same-value shortcut.
+    model_auto_switches_in_place: bool
+
+    #: Whether the harness loads the session's agent itself (its persona,
+    #: steering, skills and resources), so ``kirocrew chat`` sends the typed text
+    #: as it is instead of building Crew's session context into the first message.
+    #:
+    #: True for kiro-cli and KAS. False everywhere else, an unknown backend
+    #: included: there the CLI builds that context itself.
+    harness_loads_agent_context: bool
+
+    #: Whether the session's MCP report names, in ``sign_in_suspected``, the remote
+    #: servers Crew's credential-free probe found asking for a sign-in, because the
+    #: harness sends no sign-in frame of its own. The dashboard shows one "may need
+    #: a sign-in" row per chat for that list.
+    #:
+    #: True for opencode. False everywhere else, an unknown backend included: there
+    #: no such list is read and no row is shown.
+    reports_mcp_sign_in_suspects: bool
+
+    #: Whether Crew folds the user's standalone ``~/.kiro/hooks/*.json`` files into
+    #: the hooks it fires for this harness's turns, and tells the chat when a
+    #: checkout's own hook files are withheld.
+    #:
+    #: True for KAS. False everywhere else, an unknown backend included: goose and
+    #: opencode have Crew fire their spec hooks but do not read a user's standalone
+    #: files, so none are added.
+    crew_merges_user_hook_files: bool
+
     #: Whether the harness keeps the same native session across its ``/compact``
     #: boundary, so Crew compacts in place: it waits for the turn permit, sends
     #: ``/compact`` and leaves the durable session mapping untouched.
@@ -343,6 +412,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         provider_seam=(PROVIDER_CLAUDE_CODE if is_claude_backend_name(backend) else PROVIDER_ACP),
         model_id_namespace=model_registry_namespace(backend),
         resolves_model_from_advertised_list=backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+        takes_model_per_session=backend in ACP_BACKENDS_MODEL_PER_SESSION,
         effort_via_config_option=backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
         # The two effort channels are disjoint sets, so a harness is told to use
         # at most one. KAS is in neither the command set nor this answer: it
@@ -366,6 +436,12 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         crew_sends_persona_prompt=is_claude_backend_name(backend),
         loads_steering_natively=backend == ACP_BACKEND_KAS,
         keeps_prompt_on_unlanded_turn=backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS),
+        ends_turn_on_permission_reject=backend == ACP_BACKEND_OPENCODE,
+        names_crew_tools_by_fused_name=backend == ACP_BACKEND_PI or is_claude_backend_name(backend),
+        model_auto_switches_in_place=backend == ACP_BACKEND_KAS,
+        harness_loads_agent_context=backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS),
+        reports_mcp_sign_in_suspects=backend == ACP_BACKEND_OPENCODE,
+        crew_merges_user_hook_files=backend == ACP_BACKEND_KAS,
         keeps_session_across_compaction=is_claude_backend_name(backend),
     )
 
@@ -388,6 +464,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     provider_seam=PROVIDER_ACP,
     model_id_namespace=MODEL_NAMESPACE_ACP,
     resolves_model_from_advertised_list=False,
+    takes_model_per_session=False,
     effort_via_config_option=False,
     effort_via_slash_command=False,
     compacts_inline=False,
@@ -407,6 +484,12 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     crew_sends_persona_prompt=False,
     loads_steering_natively=False,
     keeps_prompt_on_unlanded_turn=False,
+    ends_turn_on_permission_reject=False,
+    names_crew_tools_by_fused_name=False,
+    model_auto_switches_in_place=False,
+    harness_loads_agent_context=False,
+    reports_mcp_sign_in_suspects=False,
+    crew_merges_user_hook_files=False,
     keeps_session_across_compaction=False,
 )
 

@@ -5,11 +5,14 @@ and the builtin sync copies them into the skills directory. Once the app is
 adopted (``builtin_adoption.builtin_released``), the app's own repository ships
 those skills under ``skills/<app>/``, so the core copy must neither show next to
 them, nor stay after an uninstall, nor be rewritten by the sync into the
-directory the adopted app's namespace shares.
+directory the adopted app's namespace shares. Once core deletes its copy from
+``builtin_skills/``, a host's installed copy stays withheld (the recorded table
+still names its app) and a host that never had it gets none.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -273,3 +276,112 @@ def test_the_currency_report_skips_a_released_apps_copy(packaged, tmp_path, monk
     assert states() == [skills_mod.SKILL_INSTALL_BEHIND]
     _sync_released(monkeypatch, {APP})
     assert states() == []
+
+
+# --------------------------------------------------------------------------- #
+# A copy that has left the package
+# --------------------------------------------------------------------------- #
+
+LEFT = f"{NAME}-writing"
+
+
+def _record_skill_apps(monkeypatch, path: Path, text: str) -> None:
+    """Point the recorded table at a file holding *text*; the fixture clears the cache after."""
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(provenance_mod, "_SKILL_APPS_PATH", path)
+    provenance_mod._recorded_skill_apps.cache_clear()
+
+
+@pytest.fixture
+def recorded_table():
+    """Leave no fixture table cached for the next test, whichever way this one ends."""
+    yield
+    provenance_mod._recorded_skill_apps.cache_clear()
+
+
+@pytest.fixture
+def left_package(tmp_path, monkeypatch, recorded_table) -> Path:
+    """``builtin_skills/`` once the app's copy is deleted from it: it ships ``other`` only,
+    and the recorded table still names ``LEFT``'s app."""
+    root = tmp_path / "packaged"
+    _skill_md(root / "other", "other")
+    monkeypatch.setattr(skills_mod, "_BUILTIN_SKILLS_DIR", root)
+    monkeypatch.setattr(skills_mod, "_project_skills_dir", lambda: None)
+    monkeypatch.setattr(catalog_mod, "_disabled_app_names", lambda: frozenset())
+    _record_skill_apps(monkeypatch, tmp_path / "apps.json", json.dumps({"skills": {LEFT: NAME}}))
+    return root
+
+
+def test_an_adopted_apps_old_copy_stays_hidden_once_the_package_drops_it(
+    wheel, left_package, tmp_path
+):
+    """The copy a host installed before stays withheld: no packaged skill claims ``LEFT``
+    any more, and the recorded table still names its app."""
+    root = tmp_path / "skills"
+    _skill_md(root / LEFT, LEFT, app=NAME, body="core copy")
+    _skill_md(root / NAME / LEFT, LEFT, body="repository copy")
+    write_builtin_record()
+    assert _keys(_loader(root)) == sorted([f"{NAME}/{LEFT}", LEFT])
+
+    _adopt()
+    loader = _loader(root)
+
+    assert _keys(loader) == [f"{NAME}/{LEFT}"]
+    assert loader.get_triggered_skills("fix my latex") == [f"{NAME}/{LEFT}"]
+    assert [e.key for e in loader._scoped_entries(None, ["*"])] == [f"{NAME}/{LEFT}"]
+
+
+@pytest.mark.parametrize("released", [set(), {NAME}], ids=["not-installed", "installed"])
+def test_a_fresh_host_gets_no_copy_of_an_app_whose_copy_left_the_package(
+    left_package, tmp_path, monkeypatch, released
+):
+    """Deleted rather than kept, the copy reaches no host that never had it: the sync
+    installs only what the package ships, whether or not the app is installed."""
+    _sync_released(monkeypatch, released)
+    monkeypatch.setattr(catalog_mod, "_released_app_names", lambda: frozenset(released))
+    base = tmp_path / "skills"
+
+    skills_mod._ensure_builtin_skills(base)
+
+    assert sorted(p.name for p in base.iterdir() if not p.name.startswith(".")) == ["other"]
+    assert _keys(_loader(base)) == ["other"]
+
+
+def test_every_packaged_skill_naming_an_app_is_recorded_with_that_app():
+    """A packaged copy can be deleted only once the table holds its app, so every one
+    the package ships is in it already."""
+    shipped = catalog_mod._packaged_app_claims(str(skills_mod._BUILTIN_SKILLS_DIR))
+    recorded = provenance_mod._recorded_skill_apps()
+
+    assert recorded
+    assert {key: recorded.get(key) for key in shipped} == shipped
+
+
+def test_every_recorded_app_has_a_pin_row():
+    """Only a pinned former built-in can be released, so a row for any other app is a mistake."""
+    pinned = pins_mod.parse_adoption_pins(
+        json.loads(pins_mod._PINS_PATH.read_text(encoding="utf-8"))
+    )
+
+    assert set(provenance_mod._recorded_skill_apps().values()) <= set(pinned)
+
+
+def test_the_recorded_table_ships_with_the_package():
+    setup = (Path(__file__).resolve().parents[1] / "setup.cfg").read_text(encoding="utf-8")
+    assert "data/packaged_skill_apps.json" in setup
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["not json", "[]", '{"skills": []}', '{"other": {}}'],
+    ids=["unparsable", "not-an-object", "skills-not-an-object", "no-skills"],
+)
+def test_an_unusable_table_records_nothing(tmp_path, monkeypatch, recorded_table, text):
+    _record_skill_apps(monkeypatch, tmp_path / "apps.json", text)
+    assert provenance_mod._recorded_skill_apps() == {}
+
+
+def test_a_malformed_row_is_dropped_and_the_rest_kept(tmp_path, monkeypatch, recorded_table):
+    rows = {"ok": "app", "a/b": "app", "nested": "a/b", "empty": "", "": "app", "n": 3, " k": "app"}
+    _record_skill_apps(monkeypatch, tmp_path / "apps.json", json.dumps({"skills": rows}))
+    assert provenance_mod._recorded_skill_apps() == {"ok": "app"}

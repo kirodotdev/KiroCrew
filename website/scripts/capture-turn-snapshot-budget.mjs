@@ -173,7 +173,7 @@ async function main() {
       viewport: { width: 1180, height: 900 },
       deviceScaleFactor: 2,
     })
-    const page = await context.newPage()
+    let page = null
 
     const extra = async (path, route) => {
       if (path === '/api/chat/slots') return json(route, slots), true
@@ -186,10 +186,6 @@ async function main() {
       if (path === '/api/recent-projects') return json(route, { dirs: [PROJECT] }), true
       return false
     }
-    // The boot route decides the palette, so the theme has to reach the STUB;
-    // localStorage alone is overwritten by what /api/theme/boot answers.
-    await stubDashboardApi(page, { slots, extra, theme })
-    logPageProblems(page)
 
     /* `target` is a locator, or a `{ clip }` rectangle for a frame spanning
      * several sibling elements. */
@@ -203,18 +199,24 @@ async function main() {
       wrote.push({ file, w, h, over: !!flag })
     }
 
+    /** A fresh page per chip style, stubbed once with its seed. The boot route
+     *  decides the palette, so the theme has to reach the STUB; localStorage
+     *  alone is overwritten by what /api/theme/boot answers. */
     async function open(fileChipStyle) {
-      await page.addInitScript(([key, t, style]) => {
-        localStorage.clear()
-        localStorage.setItem('mc-theme', t)
-        localStorage.setItem('mc-onboarded', '1')
-        localStorage.setItem('mc-active-slot-chat', key)
-        localStorage.setItem('mc-chat-config', JSON.stringify({
-          pinLastPrompt: false,
-          fileChipStyle: style,
-          streamMode: 'immediate',
-        }))
-      }, [SURFACE.key, theme, fileChipStyle])
+      await page?.close()
+      page = await context.newPage()
+      await stubDashboardApi(page, {
+        slots, extra, theme,
+        localStorageEntries: {
+          'mc-active-slot-chat': SURFACE.key,
+          'mc-chat-config': JSON.stringify({
+            pinLastPrompt: false,
+            fileChipStyle,
+            streamMode: 'immediate',
+          }),
+        },
+      })
+      logPageProblems(page)
 
       await page.goto(base + '/?sid=' + encodeURIComponent(SURFACE.key), { waitUntil: 'domcontentloaded' })
       await page.waitForTimeout(2600)

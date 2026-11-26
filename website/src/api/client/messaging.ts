@@ -246,8 +246,17 @@ export interface DiscordConfigData {
   reactions_enabled: boolean
   /** Surface the model's reasoning as a Discord subtext note. Default off. */
   show_thinking: boolean
+  /** The "Finished in … · ctx …%" line under each reply. Default on. */
+  show_timing_footer?: boolean
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
   session_folder?: string
+  /**
+   * The connected bot's invite links (OAuth authorize URLs): server threads, and
+   * DMs only. Empty while the bot is not connected, since the application id comes
+   * from the live connection.
+   */
+  install_url?: string
+  install_url_dm_only?: string
 }
 
 /** Telegram config as returned by GET /api/telegram/config (secret masked). */
@@ -286,6 +295,7 @@ export interface DiscordConfigSave {
   soft_threshold_pct: number
   reactions_enabled: boolean
   show_thinking: boolean
+  show_timing_footer?: boolean
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
   session_folder?: string
 }
@@ -627,7 +637,7 @@ export function createMessagingEndpoints({ get, post, put, del, j }: ClientTrans
     removeSlackSharedUser: (userId: string) => del('/api/slack/shared-access/users/' + encodeURIComponent(userId)).then(j) as Promise<{ ok: boolean }>,
     // Discord integration config
     getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,
-    saveDiscordConfig: (body: Partial<DiscordConfigSave>) => put('/api/discord/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+    saveDiscordConfig: (body: Partial<DiscordConfigSave>) => put('/api/discord/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string; reconnect_error?: string }>,
     // Telegram integration config
     getTelegramConfig: () => get('/api/telegram/config').then(j) as Promise<TelegramConfigData>,
     saveTelegramConfig: (body: Partial<TelegramConfigSave>) => put('/api/telegram/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,

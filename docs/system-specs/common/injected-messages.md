@@ -82,6 +82,12 @@ Head: <revision>. Changed: <allowlisted canonical facts>.
 Next action: <bounded instructions>.
 ```
 
+A wake for one of the other pull requests a watch lists in `also_wake_on` has
+one more line right after `[Monitor wake]`: `Also waiting on pull request
+<other>: it merged. The lines below describe the watched one.` (or `it was closed
+without merging`, `it could not be read and is no longer checked`). Every other
+line still describes the watched pull request.
+
 `MONITOR_WAKE_PREFIX = '[Monitor wake]'` is defined in `dashboard/state_parts/injected_turns.py`.
 The complete envelope is redacted before its 4,096-character cap and contains
 only canonical provider facts, never raw responses, logs, comments, diffs,
@@ -294,6 +300,19 @@ boundary:
 | `workflow` | The gateway's follow-up prompt after a workflow result lands | Collapsed one-line note |
 | `heartbeat` | A heartbeat task's prompt delivered with `deliver:prompt:dashboard:<slot>` | Collapsed one-line note |
 | `resource` | An MCP resource-subscription wake (the `[Webhook wake]` turn above) | Collapsed one-line note (also carries `resourceServer`) |
+
+A recovery turn that sends an earlier prompt again, unchanged (a `user_replay`
+row, for a person's message), after the prompt hooks already ran for an attempt
+of it that did not finish the turn (it failed, was refused, or stopped early)
+fires `UserPromptSubmit` again, and that fire's hook stdin carries
+`"replay": true`. `turn_dispatch_gates` sets it for a synthetic recovery turn
+whose payload is not a runner continuation and whose row carries the
+`promptHooksRan` stamp, which `_queue_recovery` writes when the attempt it
+requeues, or one before it, ran the fire. A re-send whose earlier attempts all
+died before the fire (a cold start or a session claim that failed) is the
+prompt's first fire and is not marked. A continuation Kiro Crew writes to resume
+a turn is never marked, even when re-sent, and an edit that changes a queued re-send's words
+drops the stamp: it is a new prompt. No other prompt carries the key.
 
 `resolveInjectCard` in `website/src/pages/chat/RecoveryCard.tsx` is the single
 decision point. The app-sdk default registry (`website/src/app-sdk/messageRenderers.tsx`)

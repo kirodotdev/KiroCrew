@@ -51,6 +51,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from kiro_crew.kiro_cli_bundle import powershell_single_quoted
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,10 +102,10 @@ _PS_BARE_RE = re.compile(r"^[A-Za-z0-9_\-./:=@]+$")
 
 
 def _ps_quote(arg: str) -> str:
-    """One PowerShell argument: bare when plain, else single-quoted with ``'`` doubled."""
+    """One PowerShell argument: bare when plain, else :func:`powershell_single_quoted`."""
     if arg and _PS_BARE_RE.fullmatch(arg):
         return arg
-    return "'" + arg.replace("'", "''") + "'"
+    return powershell_single_quoted(arg)
 
 
 def render_command(argv: "list[str] | tuple[str, ...]", *, platform: str | None = None) -> str:
@@ -111,7 +113,7 @@ def render_command(argv: "list[str] | tuple[str, ...]", *, platform: str | None 
 
     POSIX shells get :func:`shlex.join`. Windows gets the PowerShell form: the call
     operator ``&`` so a quoted launcher path runs, then each argument single-quoted
-    when it needs it, with any ``'`` doubled.
+    when it needs it, with every single-quote character doubled.
     """
     if (platform or sys.platform) == "win32":
         return "& " + " ".join(_ps_quote(arg) for arg in argv)

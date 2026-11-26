@@ -11,6 +11,9 @@ about it, plus the one filesystem check every component tree root goes through,
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -299,7 +302,79 @@ COMPONENTS: dict[str, ComponentSpec] = {
         help="members/ directory (each Bot's briefing and Dashboard tab)",
         trees=("members",),
     ),
+    # Named workspace folders. Their trees are not static: staging reads them from the
+    # `workspaces` entries in config.json and restore from the bundle's own top-level
+    # `workspace-<name>/` directories, both through :func:`component_trees`. Opt-in
+    # (`_OPT_IN_COMPONENTS`): one folder can be gigabytes, and a nightly backup that took
+    # them by default could cross the archive bound it is under today.
+    "named-workspaces": ComponentSpec(
+        # UNRESOLVED: a working folder holds whatever a Bot or the operator put there.
+        policy=SecretPolicy.UNRESOLVED,
+        help=(
+            "named workspace folders placed at workspace-<name>/ in the data home "
+            "(opt-in: only staged when --components names it)"
+        ),
+    ),
 }
+
+#: The component whose trees come from config.json at staging and from the bundle at restore.
+NAMED_WORKSPACES = "named-workspaces"
+
+#: Components a snapshot stages only when ``--components`` names them.
+_OPT_IN_COMPONENTS: tuple[str, ...] = (NAMED_WORKSPACES,)
+
+#: Every named workspace folder this component carries is a direct child of the data home
+#: whose name starts with this. No folder the product owns there does, so a bundle's tree of
+#: that shape can never replace one of them (`members/`, `crew-log/`, `apps/`).
+_NAMED_WORKSPACE_PREFIX = "workspace-"
+
+
+def is_named_workspace_tree(name: str) -> bool:
+    """Is *name* a top-level folder name the ``named-workspaces`` component may carry?
+
+    One path component named ``workspace-<rest>``: no separator, NUL, line break or colon
+    (a Windows drive prefix or an NTFS stream), and a ``<rest>`` that is not only dots and
+    spaces, which Windows trims away.
+    """
+    return (
+        name.startswith(_NAMED_WORKSPACE_PREFIX)
+        and bool(name[len(_NAMED_WORKSPACE_PREFIX) :].strip(". "))
+        and not any(c in name for c in "/\\:\x00\n\r")
+    )
+
+
+#: The ``named-workspaces`` trees the current snapshot or restore works on. Set by the
+#: command for one run (:func:`named_workspace_scope`); empty everywhere else, so a caller
+#: that never sets it (the dashboard import, a pre-v3 bundle) restores none.
+_NAMED_WORKSPACE_TREES: ContextVar[tuple[str, ...]] = ContextVar(
+    "named_workspace_trees", default=()
+)
+
+
+def component_trees(name: str) -> tuple[str, ...]:
+    """The trees component *name* carries in the current run."""
+    if name == NAMED_WORKSPACES:
+        return _NAMED_WORKSPACE_TREES.get()
+    return COMPONENTS[name].trees
+
+
+@contextmanager
+def named_workspace_scope(trees: tuple[str, ...] = ()) -> Iterator[None]:
+    """Hold *trees* as this run's ``named-workspaces`` trees, and clear them on exit.
+
+    :func:`set_named_workspace_trees` inside the block replaces the value; the exit still
+    restores what was there before the block.
+    """
+    token = _NAMED_WORKSPACE_TREES.set(tuple(trees))
+    try:
+        yield
+    finally:
+        _NAMED_WORKSPACE_TREES.reset(token)
+
+
+def set_named_workspace_trees(trees: tuple[str, ...]) -> None:
+    """Replace this run's ``named-workspaces`` trees (inside :func:`named_workspace_scope`)."""
+    _NAMED_WORKSPACE_TREES.set(tuple(sorted(t for t in trees if is_named_workspace_tree(t))))
 
 
 class ComponentRefused(Exception):
@@ -309,7 +384,8 @@ class ComponentRefused(Exception):
 def resolve_components(requested: list[str] | None, purpose: Purpose) -> list[str]:
     """Return the component names to stage, or raise :class:`ComponentRefused`.
 
-    ``None`` means every component. The two refusals are the seam's whole point:
+    ``None`` means every component except the opt-in ones (`_OPT_IN_COMPONENTS`), which
+    ride only when named. The two refusals are the seam's whole point:
     an unknown name never silently stages nothing, and an ``UNRESOLVED`` component
     never rides a ``SHARE`` bundle just because nobody wrote the policy down.
 
@@ -319,7 +395,11 @@ def resolve_components(requested: list[str] | None, purpose: Purpose) -> list[st
     than a snapshot. A repeated name is a typo, not a request to stage anything twice, so
     the honest reading is to collapse it rather than to refuse the run.
     """
-    names = list(COMPONENTS) if requested is None else list(dict.fromkeys(requested))
+    names = (
+        [c for c in COMPONENTS if c not in _OPT_IN_COMPONENTS]
+        if requested is None
+        else list(dict.fromkeys(requested))
+    )
     unknown = [c for c in names if c not in COMPONENTS]
     if unknown:
         raise ComponentRefused(
@@ -494,6 +574,7 @@ _WHOLE_TREE_COMPONENTS: tuple[str, ...] = (
     "artifacts",
     "uploads",
     "members",
+    NAMED_WORKSPACES,
 )
 
 

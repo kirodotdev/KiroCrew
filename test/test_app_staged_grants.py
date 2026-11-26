@@ -632,14 +632,14 @@ def test_the_set_stays_in_the_store_while_the_tree_moves(tmp_path, app_home, mon
     assert _widen(tmp_path).ok
     _edit_record(lambda data: data.pop("approvedGrantsStored", None))
     seen = []
-    real_copy = manager_mod._copy_app_tree
+    real_move_in = manager_mod._move_in_new_entries
 
-    def _probe_then_copy(source, dest):
+    def _probe_then_move_in(new, dest, moved_in):
         assert any("-update-old-" in p.name for p in app_dir(APP).parent.iterdir())
         seen.append(json.loads(_grants_path().read_text(encoding="utf-8"))["api"] == [OLD_API])
-        real_copy(source, dest)
+        real_move_in(new, dest, moved_in)
 
-    monkeypatch.setattr(manager_mod, "_copy_app_tree", _probe_then_copy)
+    monkeypatch.setattr(manager_mod, "_move_in_new_entries", _probe_then_move_in)
     assert _widen(tmp_path, "v3", "3.0.0").ok
     assert seen == [True]
     assert _allowlist() == (OLD_API,)
@@ -731,3 +731,29 @@ def test_the_allowlist_prime_skips_dashboard_tokens(monkeypatch):
     monkeypatch.setattr(token_auth, "_app_api_allowlist", lambda name: calls.append(name) or ())
     asyncio.run(token_auth._prime_app_api_allowlist(""))
     assert calls == []
+
+
+def _link_preview_source(tmp_path, sub, version, hosts):
+    src = _source(tmp_path, sub, version)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    manifest["contributes"] = {
+        "linkPreviews": [{"id": "cards", "entry": "dist/lp.mjs", "hosts": hosts}]
+    }
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+    return src
+
+
+def test_approving_part_of_a_long_host_list_keeps_order_and_holds_the_rest(tmp_path, app_home):
+    """No host cap: approving shown hosts stays exact over 20,000 declared hosts."""
+    hosts = [f"h{i}.example.com" for i in range(20_000)]
+    assert install_app(_link_preview_source(tmp_path, "v1", "1.0.0", hosts[:10_000])).ok
+    assert enable_app(APP).ok
+    assert update_app(_link_preview_source(tmp_path, "v2", "2.0.0", hosts)).ok
+
+    shown = hosts[10_000::2]
+    assert enable_app(APP, grants_consent={"linkPreviewHosts": shown}).ok
+
+    approved = hosts[:10_000] + shown
+    assert get_app(APP)["approvedGrants"]["linkPreviewHosts"] == approved
+    # Only those are granted: the hosts the owner was not shown stay held back.
+    assert staged_app_grants(APP, "linkPreviewHosts", lambda: hosts) == approved

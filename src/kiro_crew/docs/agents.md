@@ -217,8 +217,28 @@ from a messaging channel, gets one reply that links the MCP Servers page.
 
 The same holds for a project's own MCP files, `.kiro/settings/mcp.json` and
 `.mcp.json`, in any folder. The agent asks with `request_server` instead, and the
-card adds the server to Kiro Crew's own list. On Linux, the sandbox seals only a
-file that already exists when the chat starts.
+card adds the server to Kiro Crew's own list. To add it only to the chat's own
+folder, the card takes `target: "project"`, names the file and the command, and
+its button reads **Add** and the server's name **to this project**. Only a Kiro chat whose agent sets
+`includeMcpJson` gets that card (the default agent does not), and it writes
+`.kiro/settings/mcp.json`. In any other chat Kiro Crew cannot be sure the file
+loads, so the agent is told to use Kiro Crew's own list instead. On Linux, the sandbox seals only a file that already exists when the chat
+starts.
+
+A server in a folder's project MCP file starts only after you allow that
+launch in that folder. A server you have not allowed there, or whose launch
+changed, is held back when a chat starts, and the chat shows a card with the
+file, the launch and what changed. **Allow** the server **in this folder**
+records it and restarts the open chats; **Skip for this chat** keeps it held,
+and the next chat in that folder asks again. A server the project card above
+added is already allowed. A server name Kiro Crew cannot pass on to the agent
+stops the chat in that folder from starting: rename the server in the file,
+then start a new chat.
+
+An agent cannot write an installed app's `app.json` either
+(`~/.kiro/crew/apps/<name>/app.json`): its file tools refuse it and the
+sandbox holds it read-only. Only installing or updating the app changes it, and an
+agent that needs a server asks with `request_server`.
 
 If a server's tools are missing from sessions, check that tab first. A server
 whose program is not found on this computer is dropped from the spec at the

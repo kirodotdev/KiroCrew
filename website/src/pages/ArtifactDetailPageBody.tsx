@@ -343,6 +343,8 @@ export function ArtifactPublicationNotices({ artifact, editorRead, className = '
             onClick={reprobeNotice}
             disabled={reprobing}
             aria-label={i18nT('pages.artifactDetailPage.recheck_publication_notice')}
+            // Filled, with the strong edge: the plain edge vanishes on the tint.
+            className="border-border-strong bg-bg-elevated"
           >
             {reprobing
               ? i18nT('pages.artifactDetailPage.rechecking')

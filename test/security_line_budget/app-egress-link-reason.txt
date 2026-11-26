@@ -1,0 +1,2 @@
++16
+App egress's blocked-link placeholder names the rule that blocked the link: blocked_links.BLOCKED_LINK_REASONS, a fixed table of reason words keyed by rule id (never URL text), and the lookup that writes the reason after the unchanged tag in _replace_scoped, from the rule _blocked already yields there. No pattern, threshold or blocking decision changes, and nothing parses the reason back.

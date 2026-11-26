@@ -1,3 +1,4 @@
+import { i18nT } from '../i18n/t'
 import { isMac } from '../utils/platform'
 import { safeGetItem } from '../utils/safeStorage'
 import { chordLetter, CODE_TOKENS, keyCapGlyph, layoutReaches } from './shortcutRegistry'
@@ -260,6 +261,17 @@ export function formatQuickSearchKeys(config: QuickSearchConfig, mac: boolean = 
     default:
       return mac ? ['⇧', '⇧'] : ['Shift', 'Shift']
   }
+}
+
+/**
+ * A config's primary gesture as inline text for a sentence, such as the top-bar
+ * search trigger: ⌘K on macOS, Ctrl+K elsewhere, the recorded chord in `custom`.
+ * Double-Shift is spelled as its preset name, since its caps would read as a
+ * Shift+Shift chord.
+ */
+export function formatQuickSearchShortcut(config: QuickSearchConfig, mac: boolean = isMac): string {
+  if (config.mode === 'double-shift') return i18nT('pages.settings.shortcutsPanel.preset_double_shift')
+  return formatQuickSearchKeys(config, mac).join(mac ? '' : '+')
 }
 
 /** Human keycaps for a single chord, platform-aware (modifiers first, then key). */

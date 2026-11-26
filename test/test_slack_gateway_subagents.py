@@ -1127,8 +1127,9 @@ class TestSubagentFailureEvents:
         slot.note_pending_subagent_delivery.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_subagent_event_chunk(self):
-        """Subagent chunk event broadcasts to subscribers."""
+    @pytest.mark.parametrize("kind", ["subagent_chunk", "subagent_thinking"])
+    async def test_subagent_event_chunk(self, kind):
+        """A sub-agent's text or thinking goes to subscribers only."""
         orch, mock_sm = self._setup()
         on_event = mock_sm.call_args[1]["on_event"]
 
@@ -1136,11 +1137,12 @@ class TestSubagentFailureEvents:
         info.id = "agent-chunk"
         info.parent_session_key = "dashboard:slot1"
 
-        await on_event("subagent_chunk", info, {"text": "partial"})
+        await on_event(kind, info, {"text": "partial"})
         orch.dashboard_state.broadcast_ws_subagent_subscribers.assert_called_once()
         etype, payload = orch.dashboard_state.broadcast_ws_subagent_subscribers.call_args.args
-        assert etype == "subagent_chunk"
+        assert etype == kind
         assert payload["text"] == "partial"
+        orch.dashboard_state.broadcast_ws.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_subagent_event_status(self):

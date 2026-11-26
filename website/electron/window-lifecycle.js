@@ -59,6 +59,7 @@ const { DEFAULT_REMOTE_BIN, DEFAULT_REMOTE_PATH } = require("./remote-token");
 const { identityFamily } = require("./instance-guard");
 const { decideLinuxFrame, applyWindowControl } = require("./linux-frame");
 const { buildMenuTemplate } = require("./app-menu");
+const { TEXT_SIZE_TIERS } = require("./text-size");
 const { serializeMenuItems, executeMenuItem } = require("./windows-menu-model");
 const {
   SYMBOL_DARK: WINDOWS_TITLEBAR_SYMBOL_DARK,
@@ -256,6 +257,9 @@ function createWindowLifecycle(options) {
     getZoom,
     setZoom,
     stepZoom,
+    getFontSize,
+    setFontSize,
+    trackFontSizeChrome,
   } = createWindowChrome({
     BaseWindow,
     nativeTheme,
@@ -350,6 +354,10 @@ function createWindowLifecycle(options) {
         // Frameless Linux is a launch-time decision, not a platform constant.
         // The preload reads this argument to reserve caption-control space.
         additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
+        // Content text size, the durable half (chrome.js holds the why). Both
+        // keys: standard alone leaves monospace at Chromium's 13px.
+        defaultFontSize: getFontSize(),
+        defaultMonospaceFontSize: getFontSize(),
       },
     });
     // The preload asks this on every load, so a crew configured or cleared for
@@ -390,6 +398,9 @@ function createWindowLifecycle(options) {
       isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
       readNatural: () => readNaturalScrolling(systemPreferences),
     });
+    // A replaced renderer reads the font size captured in webPreferences above,
+    // which predates any pick the user has made since. Re-push it per load.
+    trackFontSizeChrome(view);
 
     // Teardown order is load-bearing: no embedded view may outlive the page it
     // is composited over. Close the dashboard WebContents only after releasing
@@ -420,8 +431,11 @@ function createWindowLifecycle(options) {
     // menu bar (a notched built-in display).
     const sendFullScreen = () => {
       if (win.isDestroyed() || view.webContents.isDestroyed()) return;
+      // `pageRaised`: a video raised this fullscreen and leaves it on Esc, so
+      // the renderer's "Press F11 to exit" hint stays out of its way.
       view.webContents.send("fullscreen-changed", win.isFullScreen(), {
         menuBarOverlap: menuBarCanOverlap(win, screen),
+        pageRaised: win._mcHtmlFullScreen?.raisedWindow() === true,
       });
     };
 
@@ -444,7 +458,12 @@ function createWindowLifecycle(options) {
     });
     win.on("enter-full-screen", () => {
       updateViewBounds();
-      sendFullScreen();
+      // Windows and Linux emit this before the page's `enter-html-full-screen`
+      // (html-fullscreen.js), so a video's claim, and with it `pageRaised`, is
+      // only readable on the next turn. macOS emits it after, and its layout
+      // wants the state at once.
+      if (IS_MAC) sendFullScreen();
+      else setImmediate(sendFullScreen);
       scheduleFullscreenSettle();
     });
     win.on("leave-full-screen", () => {
@@ -539,6 +558,7 @@ function createWindowLifecycle(options) {
       WebContentsView,
       shell,
       partition: BROWSER_PARTITION,
+      log: glog,
     });
 
     // The dashboard's own webContents, so the link block also gets the origin --
@@ -759,6 +779,8 @@ function createWindowLifecycle(options) {
       })),
       defaults: { width: 1280, height: 860 },
       minSize: { width: 550, height: 600 },
+      // Only macOS shows a way out of fullscreen (window-state.js explains).
+      restoreFullScreen: IS_MAC,
     });
 
     const opts = applyDashboardChrome({
@@ -1545,6 +1567,21 @@ function createWindowLifecycle(options) {
     };
   }
 
+  function pickFontSize(px) {
+    const chosen = setFontSize(px);
+    try {
+      const tier = TEXT_SIZE_TIERS.find((candidate) => candidate.px === chosen);
+      const menu = Menu.getApplicationMenu();
+      const item = tier && menu && menu.getMenuItemById(tier.id);
+      // Only the chosen item. Writing `checked = false` over the siblings
+      // fights Electron's own radio-group handling, and the symptom was the
+      // menu showing the last tier whatever the user picked.
+      if (item) item.checked = true;
+    } catch {
+      // Menu is mid-rebuild; the next build seeds checked from the store.
+    }
+  }
+
   function buildApplicationMenu() {
     appMenu = Menu.buildFromTemplate(buildMenuTemplate({
       isMac: IS_MAC,
@@ -1576,6 +1613,8 @@ function createWindowLifecycle(options) {
       zoomOut: zoomMenuItem((wc) => {
         wc.setZoomFactor(stepZoomFactor(wc.getZoomFactor(), -1));
       }),
+      currentFontSize: getFontSize(),
+      setFontSize: pickFontSize,
       alwaysOnTop: !!(store.get("windowState") || {}).alwaysOnTop,
       toggleAlwaysOnTop,
       toggleFocusMode: () => {

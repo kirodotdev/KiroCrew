@@ -306,6 +306,19 @@ describe('useAppUpdates — recorded-source routing (runUpdate)', () => {
     expect(setSuccess).not.toHaveBeenCalled()
     expect(announce).not.toHaveBeenCalled()
   })
+
+  it('names the app and the way forward when its new version fails validation', async () => {
+    apiUpdateApp.mockRejectedValueOnce(Object.assign(new Error('contributes.x: bad'), {
+      code: 'app_update_invalid',
+    }))
+    const { result, setError } = setup({ updatables: [] })
+
+    await act(async () => { await result.current.runUpdate('notes') })
+
+    expect(setError).toHaveBeenLastCalledWith(
+      'pages.appsPage.update_invalid_version {"name":"Notes"}\ncontributes.x: bad',
+    )
+  })
 })
 
 describe('useAppUpdates — Update All', () => {
@@ -410,6 +423,19 @@ describe('useAppUpdates — Update All', () => {
     // The app that updated cleanly still announced.
     expect(announce).toHaveBeenCalledTimes(1)
     expect(setSuccess).not.toHaveBeenCalled()
+  })
+
+  it('names an app whose new version fails validation instead of a bare failure', async () => {
+    apiUpdateApp
+      .mockRejectedValueOnce(Object.assign(new Error('contributes.x: bad'), { code: 'app_update_invalid' }))
+      .mockResolvedValueOnce(undefined)
+    const { result, setError } = setup()
+
+    await act(async () => { await result.current.updateAll() })
+
+    const notice = setError.mock.lastCall?.[0] as string
+    expect(notice).toContain('pages.appsPage.update_invalid_version {"name":"Notes"}\ncontributes.x: bad')
+    expect(notice).not.toContain('pages.appsPage.failed_to_update')
   })
 
   it('separates a trust block from a real failure in the same batch', async () => {

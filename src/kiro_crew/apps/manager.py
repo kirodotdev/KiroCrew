@@ -68,8 +68,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LEFTOVER_STEM_RE,
         _SWAP_LEFTOVER_RE,
         _leftover_owner_dead,
+        _recover_whole_tree_swap,
         _retired_trees,
         _sweep_dead_leftovers,
+        _tree_stem,
         adopt_builtin_record,
         logger,
         recover_interrupted_adoption,
@@ -170,6 +172,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         MEMBER_THREADS_CONSENT_KEY,
         SESSION_APPROVAL_PENDING_KEY,
         STAGED_GRANT_FAMILIES,
+        UPDATE_TREE_PHASES,
         AppResult,
         InstalledApp,
         InstalledRecordShapeError,
@@ -223,6 +226,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _update_in_progress,
         _update_marker_dir,
         _update_retired_tree_prefix,
+        _update_tree_prefix,
         _UpdateMarker,
         _write_approve_declared,
         _write_approved_grants,
@@ -249,10 +253,28 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _check_path_safety,
         _copy_app_tree,
         _is_generated_deps_artifact_name,
+        _list_pinned,
+        _lstat_pinned,
+        _min_version_refusal_code,
+        _move_entry,
+        _move_in_new_entries,
+        _move_into,
+        _move_out_old_entries,
+        _names_pinned,
+        _new_pinned_dir,
         _owned_data_dir,
+        _pin,
+        _pinned_app_dir,
         _remove_any_shape,
+        _remove_in,
+        _remove_tree,
+        _remove_unpinned_tree,
+        _rename_pinned,
         _reserved_name_code,
+        _restore_old_entries,
+        _swapped_root_entries,
         _temp_data_name_obstruction,
+        _update_trees,
         _validate_source_path,
         copy_app_tree_as_installed,
         gateway_data_dir_obstruction,
@@ -320,6 +342,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
 
     from kiro_crew import (  # noqa: F401
         member_records,
+        pinned_fs,
         platform_compat,
     )
     from kiro_crew.apps import (  # noqa: F401
@@ -397,7 +420,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
         worker_auto_approve_grant_row,
     )
-    from kiro_crew.atomic_write import atomic_write  # noqa: F401
+    from kiro_crew.atomic_write import atomic_write, replace_with_retry  # noqa: F401
     from kiro_crew.config.loader import (  # noqa: F401
         ConfigReadError,
         config_dir,

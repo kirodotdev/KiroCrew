@@ -125,10 +125,22 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   },
   'mcp.server': {
     icon: PackageOpen, label: () => i18nT('components.changeCards.kind_template_mcp_server'),
-    primary: () => i18nT('components.changeCards.primary_mcp_server'),
+    // A project add says what the press gets; the Folder and File rows say where.
+    primary: card => card?.params.target === 'project'
+      ? i18nT('components.changeCards.primary_mcp_server_project', { name: String(card.params.server ?? '') })
+      : i18nT('components.changeCards.primary_mcp_server'),
     decline: () => i18nT('components.changeCards.decline_mcp_server'),
     reasonLabel: () => i18nT('components.changeCards.reason_why'),
     Body: NoBody, Option: McpServerOptions,
+  },
+  'mcp.project_server': {
+    icon: PackageOpen, label: () => i18nT('components.changeCards.kind_template_mcp_server'),
+    primary: card => card?.params.server
+      ? i18nT('components.changeCards.primary_mcp_project_server_named', { server: String(card.params.server) })
+      : i18nT('components.changeCards.primary_mcp_project_server'),
+    decline: () => i18nT('components.changeCards.decline_mcp_project_server'),
+    reasonLabel: () => i18nT('components.changeCards.reason_why'),
+    Body: NoBody,
   },
   'connection.connect': {
     icon: Link2, label: () => i18nT('components.changeCards.kind_connection_connect'),

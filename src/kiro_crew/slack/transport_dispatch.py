@@ -1002,6 +1002,12 @@ async def handle_message_transport(
                 )
             if _logged_user_turn:
                 await _refresh_dashboard_tab(session_key)
+        if _logged_user_turn or not conversation_log or _is_slack_restricted(session_key):
+            # The question is on disk, or this turn keeps no transcript: a message
+            # steered in from here on is written after it (``slack/midturn.py``).
+            from kiro_crew.slack import midturn
+
+            midturn.open_transcript(session_key if _logged_user_turn else "")
 
         # ── Build message with context ──
         if context_builder:
@@ -1102,8 +1108,11 @@ async def handle_message_transport(
             # Per-session Trust (set via the Trust button) auto-approves all
             # subsequent tools for THIS session, mirroring native. Checked per
             # permission request so a mid-turn Trust click takes effect for the
-            # remaining tools in the same turn.
-            auto_approve_session=lambda: is_slack_session_trusted(session_key),
+            # remaining tools in the same turn. The grant is the owner's: a shared
+            # user's turn in a trusted thread still asks.
+            auto_approve_session=lambda: (
+                not is_shared_listed(user_id) and is_slack_session_trusted(session_key)
+            ),
             # PreToolUse deny/auto gate (runs before the ladder in TurnDriver;
             # a DENY is un-overridable by auto/trust/YOLO).
             tool_gate=_tool_gate,

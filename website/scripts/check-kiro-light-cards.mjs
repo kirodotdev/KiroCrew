@@ -107,7 +107,6 @@ const ROUTES = [
   { path: '/md-notebook', name: 'app-md-notebook', ready: 'Release checklist' },
   { path: '/mochi', name: 'app-mochi', ready: 'Write the release notes' },
   { path: '/spec-builder', name: 'app-spec-builder', ready: 'Plan your next feature with a spec' },
-  { path: '/personal-shopper', name: 'app-personal-shopper', ready: 'Your life-problem advisor' },
   { path: '/design-tweak', name: 'app-design-tweak', ready: 'Point, describe, and watch the code catch up' },
   { path: '/project-scaffolder', name: 'app-project-scaffolder', ready: 'Scan a project directory' },
 ]

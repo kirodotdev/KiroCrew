@@ -79,7 +79,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import mcp_cleanup  # noqa: F401
-from kiro_crew import _facade_mirror
+from kiro_crew import _facade_mirror, platform_compat
 from kiro_crew.acp import kas_engine_features as engine  # noqa: F401
 from kiro_crew.acp import kas_env_launch, session_label  # noqa: F401
 from kiro_crew.acp.kas_agents_mcp_servers import (  # noqa: F401 - re-exported
@@ -168,6 +168,7 @@ from kiro_crew.acp.kas_permissions import (
     withhold_answered_under_authored_rules,
     withhold_hook_gated_auto_approval,
 )
+from kiro_crew.acp.kas_policy_bundle import bundle_ids
 from kiro_crew.acp.kas_projection_reads import (  # noqa: F401
     _gated_off_managed_servers,
     _registry_governed,
@@ -205,6 +206,8 @@ from kiro_crew.acp.kas_unread_commands import name_unreadable_entries, trusted_o
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
     AmbiguousAgentSpecError,
+    declared_spec_claim,
+    held_spec_refusal,
     plain_markdown_document,
     read_agent_spec_strict,
     spec_by_declared_name,
@@ -363,6 +366,8 @@ def spec_keys_without_carrier(
     )
     if authored is not None and not projection_accepts(authored):
         lost.append("permissions")
+    elif bundle_ids(authored):
+        lost.append("permissions.policies")
     lost.extend(f"permissions.rules[{i}]" for i in projection_dropped_rules(authored))
     gate = may_skip_gate_for_session(session_key, governance_app)
     lost.extend(
@@ -1205,6 +1210,39 @@ def _declared_spec(agents_dir: Path, agent_id: str) -> dict[str, Any] | None:
             agents_dir, agent_id, operation="kas_agent_projection", source="unknown", pins=pins
         ),
     )
+
+
+def refuse_held_spec(agents_dir: Path, agent_id: str) -> None:
+    """Refuse a KAS session start while a spec file stays held open past the read retry.
+
+    Asked by the start only, before it resolves the spec, so every other reader of
+    :func:`load_agent_spec` keeps its answer. With a readable file declaring *agent_id*,
+    a file held and no pin, the held file may be a second, differing claimant, so the
+    start is refused as an adapter host's is (``agent_discovery.held_spec_refusal``). A
+    contest, a broken pin or an unreadable folder is left to the resolution, which
+    refuses them itself. Only Windows holds a file against a reader, so elsewhere this
+    reads nothing.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return
+    from kiro_crew import agent_spec_pins
+
+    pins = agent_spec_pins.spec_pins()
+    held: list[Path] = []
+    try:
+        claim = declared_spec_claim(
+            agents_dir,
+            agent_id,
+            operation="kas_agent_projection",
+            source="unknown",
+            pins=pins,
+            held=held,
+        )
+    except (AmbiguousAgentSpecError, OSError):
+        return
+    refusal = held_spec_refusal(agent_id, claim, held, pins)
+    if refusal is not None:
+        raise KasAgentTranslationError(str(refusal)) from refusal
 
 
 def agent_spec_absent(agents_dir: Path, agent_id: str) -> bool:

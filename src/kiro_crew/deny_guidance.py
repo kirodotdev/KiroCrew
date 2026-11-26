@@ -120,8 +120,10 @@ DENY_CLASS_S3_UNREAD_DOWNLOAD = "s3_unread_download"
 #: passes. This class keeps the upload answer and adds the forms that do pass.
 #: Chosen only for the exfil GATE's refusal, by the rule id on its own diagnostic
 #: line. The regex tier's row for the same id matches ``curl`` with a ``--data @``
-#: form and has no inert-line carve-out, so a line this prose says passes can still
-#: meet it; its refusal keeps the exfil-shape prose.
+#: form; it applies the SAME inert-line carve-out as the substring tier
+#: (``deny_gate._file_body_narrows``), so on POSIX an inert search this prose says
+#: passes passes both tiers. On Windows that narrower returns False, so the regex
+#: tier stays fail-closed there.
 DENY_CLASS_FILE_BODY_TEXT = "file_body_text"
 _FILE_BODY_RULE_ID = "data-exfil-curl-file-body"
 
@@ -212,7 +214,9 @@ _NAMED_PATTERN_ANCHORS: Mapping[str, tuple[str, ...]] = {
 }
 
 
-def _anchor_matcher(anchor: str, *, allow_plural: bool = False) -> re.Pattern[str]:
+def _anchor_matcher(
+    anchor: str, *, allow_plural: bool = False, edge: str = "[0-9a-z_]"
+) -> re.Pattern[str]:
     """An anchor matcher whose edges cannot land in the middle of a word.
 
     A bare substring test misfires on the short anchors: ``sso`` occurs inside
@@ -224,15 +228,20 @@ def _anchor_matcher(anchor: str, *, allow_plural: bool = False) -> re.Pattern[st
     ``.ssh``), where ``\\b`` would instead REQUIRE a word character before the
     dot and stop matching the paths those anchors are for.
 
-    ``allow_plural`` additionally accepts a trailing ``s``, and is opt-in because
-    the two callers want different things. A CLASS ANCHOR is matched against
-    refusal text produced by :mod:`kiro_crew.security`, whose wording is fixed, so
-    tolerating inflections there would only widen it for no gain. A SERVER KEYWORD
-    is matched against names a third party chose, and the idiomatic spelling is
-    the plural — ``aws-credentials``, "vends credentials" — so a singular-only
-    boundary silently drops exactly the servers the hint exists to find.
+    The two callers read different text, so ``allow_plural`` and *edge* are
+    theirs to set. A CLASS ANCHOR is matched against a refusal reason plus the
+    refused command, both carrying interpolated text (an operator's own deny
+    pattern, an MCP tool reference) where snake_case is the norm; there ``_``
+    stays a word character, because a separator would answer
+    ``@db/drop_sso_sessions`` with SSO-login prose. Its anchors are spelled as
+    the refusal wording is, so it takes no inflection either. A SERVER KEYWORD
+    is matched against an identifier a third party chose, where ``_`` separates
+    words as ``-`` does (``iam_role_helper``), so its caller passes an *edge*
+    without ``_``; and the idiomatic vendor spelling is the plural —
+    ``aws-credentials``, "vends credentials" — so it sets ``allow_plural``,
+    without which the boundary silently drops exactly the servers the hint
+    exists to find.
     """
-    edge = "[0-9a-z_]"
     prefix = f"(?<!{edge})" if re.match(edge, anchor[:1]) else ""
     suffix = f"(?!{edge})" if re.match(edge, anchor[-1:]) else ""
     plural = "s?" if allow_plural else ""
@@ -611,11 +620,11 @@ REMEDIATION: dict[str, str] = {
         "a literal epoch, once per epoch (a loop keeps a live `$` beside `-d @`, so "
         "it stays refused); Python's `datetime.fromtimestamp` for many epochs at "
         "once; and a search for the text with your file-search tool, or a line made "
-        "only of `grep`, `date`, `echo`, `cat`, `head`, `tail`, `wc` and read-only "
-        "`gh` search, view and list calls, with no `$`, no backtick and no redirect. "
-        "A line that names `curl` together with a `--data @` form is refused by a "
-        "second rule wherever that pair appears, so search for that pair with the "
-        "file-search tool."
+        "only of `grep`, `date`, `echo`, `cat`, `head`, `tail`, `wc` "
+        "and read-only `gh` search, view and list calls, with no `$`, no backtick "
+        "and no redirect. On POSIX such an inert search passes even when it names "
+        "`curl` next to a `--data @` form; on Windows, where the shell is not bash, "
+        "search for that pair with your file-search tool instead."
     ),
     DENY_CLASS_SELF_PROTECTION: (
         "This refusal is about what the action would DO — reach the product's own "
@@ -739,8 +748,15 @@ _CREDENTIAL_SERVER_KEYWORDS: tuple[str, ...] = (
 #: Fields of a capability-manager row consulted for the keyword match.
 _SERVER_TEXT_FIELDS: tuple[str, ...] = ("server_id", "name", "title", "description")
 
-#: Boundary-matched form of the keywords, sharing :func:`_anchor_matcher` with the
-#: class anchors so both places break words the same way. A bare substring test
+#: Word characters for a server keyword's boundary: :func:`_anchor_matcher`'s
+#: default without ``_``.
+_SERVER_KEYWORD_EDGE = "[0-9a-z]"
+
+#: Boundary-matched form of the keywords, through :func:`_anchor_matcher` with an
+#: edge that excludes ``_``: the text is a third party's identifier, where
+#: ``aws_credentials`` splits into words as ``aws-credentials`` does, unlike the
+#: class anchors, which keep ``_`` as a word character because they read a refusal
+#: reason plus the refused command (see :func:`_anchor_matcher`). A bare substring test
 #: named the wrong server: ``sts`` matches "posts messages" and ``iam`` matches a
 #: name like "williams", so an unrelated server was recommended as a credential
 #: vendor — advice the agent cannot act on, which is the failure the hint exists
@@ -750,7 +766,8 @@ _SERVER_TEXT_FIELDS: tuple[str, ...] = ("server_id", "name", "title", "descripti
 #: boundary-matched; the comment above about "auth" matching "author" is the same
 #: hazard one level down.
 _CREDENTIAL_SERVER_MATCHERS: tuple[re.Pattern[str], ...] = tuple(
-    _anchor_matcher(keyword, allow_plural=True) for keyword in _CREDENTIAL_SERVER_KEYWORDS
+    _anchor_matcher(keyword, allow_plural=True, edge=_SERVER_KEYWORD_EDGE)
+    for keyword in _CREDENTIAL_SERVER_KEYWORDS
 )
 
 #: TTL for the installed-server snapshot. The lookup shells out to the edition's

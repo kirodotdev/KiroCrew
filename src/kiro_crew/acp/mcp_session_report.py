@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -738,6 +739,11 @@ class McpSessionReport:
     #: failed bucket lists. Set by :meth:`record_pruned_omitted`; counted and said
     #: in the payload and the summary like :attr:`no_tools_omitted`.
     pruned_omitted: int = 0
+    #: The servers :meth:`record_pruned` recorded: the ones Crew left out of this
+    #: session before it was sent (an array prune, or a spec-writer drop). Read for
+    #: the session-start notice that names them; not part of :meth:`payload`, whose
+    #: failed bucket already lists each.
+    crew_left_out: tuple[str, ...] = ()
     #: Bumped by every :meth:`begin_session`, so a session-open mount check
     #: (:mod:`kiro_crew.acp.mcp_mount_check`) started for one attempt can tell
     #: that the report has moved on to another and write nothing.
@@ -837,6 +843,9 @@ class McpSessionReport:
     #: session that has reported nothing yet" — see ``payload``. Without it, the
     #: kiro-cli path (whose wire roster is empty by design) reads as no session.
     _started: bool = False
+    #: ``time.monotonic()`` when :meth:`begin_session` last ran: how long this
+    #: session's servers have had to start (:meth:`given_up`).
+    began_at: float = 0.0
 
     def begin_session(self, servers: Any) -> None:
         """Start a report for a new session attempt, discarding any prior one.
@@ -851,6 +860,7 @@ class McpSessionReport:
         is a session-establishment point, which is why the clear belongs here and
         not at any one of them.
         """
+        self.began_at = time.monotonic()
         self._cut.clear()
         self.configured, _ = self._keep("configured", _roster(servers))
         self.unresolved_refs = ()
@@ -861,6 +871,7 @@ class McpSessionReport:
         self.no_tools = ()
         self.no_tools_omitted = 0
         self.pruned_omitted = 0
+        self.crew_left_out = ()
         self.generation += 1
         self.declared = ()
         self.declared_omitted = 0
@@ -1078,6 +1089,28 @@ class McpSessionReport:
         settled = {*self.switched_off, *self._host_disabled, *self.registry_dropped}
         return tuple(n for n in self.unreported(tuple(names)) if n not in settled)
 
+    def given_up(self, after_secs: float) -> tuple[str, ...]:
+        """The servers this session's host is not bringing up, in report order.
+
+        For another session on the same host and config that is about to wait for
+        the same servers (a sub-agent of this session): waiting there for one of
+        these only spends its bound. Two kinds, read from :meth:`not_ready`:
+
+        * ``failed``: the host gave up on it, and does not try it again on its own
+          (:meth:`set_reattempting`).
+        * ``connecting``: still starting although this session began more than
+          *after_secs* ago, so it is hung, or queued behind hung ones. Not one
+          the host is re-attempting: that one is starting again now.
+
+        Nothing else: a server waiting for a sign-in has reported, so no wait
+        holds for it, and one switched off or dropped by a registry is never
+        waited for.
+        """
+        states = self.not_ready()
+        late = time.monotonic() - self.began_at > after_secs if self._started else False
+        given_up = (*states.get("failed", ()), *(states.get("connecting", ()) if late else ()))
+        return tuple(name for name in given_up if name not in self._reattempting)
+
     def note_turn_told(self, mark: str, named: Iterable[str]) -> None:
         """A block marked *mark* spells out the servers *named* as still starting."""
         self.turn_told = (mark, frozenset(named))
@@ -1177,9 +1210,12 @@ class McpSessionReport:
         clean = sanitize_sink_text(str(name or ""), _NAME_CAP)
         if not clean:
             return False
-        return self._record(
+        changed = self._record(
             _ACTION_INIT_FAILURE, clean, sanitize_sink_text(str(reason or ""), _ERROR_CAP)
         )
+        if clean in self._failed and clean not in self.crew_left_out:
+            self.crew_left_out = (*self.crew_left_out, clean)
+        return changed
 
     def has_reported(self, name: Any) -> bool:
         """True when *name* is in any bucket: it sent a frame of its own."""

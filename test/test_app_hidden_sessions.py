@@ -186,15 +186,18 @@ async def test_any_other_mode_is_refused(tmp_path, monkeypatch, caller_app, body
 
 @pytest.mark.asyncio
 async def test_a_non_owner_dashboard_caller_cannot_name_an_app_page(tmp_path, monkeypatch) -> None:
-    """Only the owner's own request may speak for an app page through ``embed_app``."""
+    """Only the owner's own request may speak for an app page through ``embed_app``.
+
+    A dashboard session that is neither the owner nor a teammate is refused every
+    chat create by the per-slot checkpoint, before the mode is read."""
     state = _state(tmp_path, monkeypatch)
     _may_hide(monkeypatch)
     async with _client(state, caller_app="", user="someone-else") as client:
         resp = await client.post(
             "/api/chat/slots", json={"name": "guest-1", "embed_app": APP, "mode": APP}
         )
-        assert resp.status == 400, await resp.text()
-        assert (await resp.json())["code"] == "invalid_mode"
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == "owner_only"
     assert state.get_slot("guest-1") is None
 
 

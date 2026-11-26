@@ -27,6 +27,12 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
     "xfce4-terminal",
 )
 
+# The values ``dashboard.default_approval_mode`` takes: the mode a plain chat the
+# owner starts from the dashboard opens on (``dashboard.chat_default_mode``).
+# ``trust`` is deliberately absent (rfc-default-approval-mode section 6), and
+# ``yolo`` is process-wide, never one chat's start mode.
+DEFAULT_APPROVAL_MODES: tuple[str, ...] = ("normal", "trust_reads")
+
 # The local editors the Markdown panel's "Open in <editor>" row can target
 # (``dashboard.remote_editor.editor``). Each id is the URL scheme of an editor
 # that keeps the ``vscode-remote`` authority, so the row's link is
@@ -249,13 +255,11 @@ class DashboardConfig:
             "forwarded by the proxy) and refuses Owner routes. "
             "The proxy must send a Host naming 127.0.0.1, [::1] or localhost; a "
             "request to a Crew API route with any other Host is refused with 400. "
-            "A computer with no IPv6 loopback serves 127.0.0.1 alone. Linux and "
-            "macOS only for now: on "
-            "Windows a non-zero value stops the start of the regular or headless "
-            "kirocrew gateway. An integer that is "
+            "A computer with no IPv6 loopback serves 127.0.0.1 alone. An integer that is "
             "neither 0 nor 1024 to 65535, or that equals the gateway's own port or "
-            "dashboard.shared_crew.ssm_port while the SSM listener is on, stops that "
-            "start too (EntryPortError), as does a port that cannot be bound. The "
+            "dashboard.shared_crew.ssm_port while the SSM listener is on, stops the "
+            "start of the regular or headless kirocrew gateway (EntryPortError), as "
+            "does a port that cannot be bound. The "
             "API-only server (--slack-only) does not check the value: it logs a "
             "warning and starts. "
             'Shared config validation replaces wrong-typed values (8443.5, "abc", '
@@ -592,6 +596,18 @@ class DashboardConfig:
             "'temporary' neither reads nor writes. Explicit per-session choices "
             "still win.",
             enum=["persistent", "incognito", "temporary"],
+        ),
+    )
+    default_approval_mode: str = field(
+        default="normal",
+        metadata=_meta(
+            "New chats start on",
+            "Approval mode a plain chat you start from the dashboard opens on: "
+            "'normal' asks before each tool; 'trust_reads' runs read-only tools "
+            "and read-only shell commands without asking. Crewmates, channels, "
+            "schedules and agents keep their own settings, and the approval-modes "
+            "policy can hold a chat on 'normal'.",
+            enum=list(DEFAULT_APPROVAL_MODES),
         ),
     )
     new_chat_crew_mode: bool = field(
@@ -1141,6 +1157,15 @@ class DashboardConfig:
             "Show the unread dot on a sidebar session card when the agent finished "
             "and you have not read the result. Folder and aggregate unread counts "
             "are not affected.",
+        ),
+    )
+    expand_linked_items: bool = field(
+        default=False,
+        metadata=_meta(
+            "Show Linked Items Expanded",
+            "Start each session card with its linked pull requests and issues "
+            "shown under it. Pressing the count on a card still folds or opens "
+            "that card.",
         ),
     )
     command_bar_enabled: bool = field(

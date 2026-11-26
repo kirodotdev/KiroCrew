@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, renderHook } from '@testing-library/react'
 import { api } from '../../api/client'
+import { useTranscriptAnnouncement } from '../../hooks/useTranscriptAnnouncement'
 import { sendCardReply } from './sendCardReply'
 
 const reply = (status: number, body: unknown) =>
@@ -18,6 +20,16 @@ describe('sendCardReply', () => {
     expect(args[5]).toBeUndefined() // never a steer
     expect(args[7]).toBeUndefined() // never a send-race
     expect(args[8]).toBe('dashboard_card')
+  })
+
+  it('speaks the reply in the transcript showing that thread, as a composer send is', async () => {
+    vi.spyOn(api, 'sendChat').mockResolvedValue(reply(200, { ok: true }))
+    const you = { speaker: 'You', own: true }
+    const thread = renderHook(() => useTranscriptAnnouncement(undefined, false, undefined, 'member-ada', undefined, 0, you, true))
+    const other = renderHook(() => useTranscriptAnnouncement(undefined, false, undefined, 'member-bo', undefined, 0, you, true))
+    await act(async () => { await sendCardReply('member-ada', 'Approve it') })
+    expect(thread.result.current.announcement).toBe('You: Approve it')
+    expect(other.result.current.announcement).toBe('')
   })
 
   it('reports the switch the person turned off as off, so the caller fills the composer without an error', async () => {

@@ -253,8 +253,9 @@ call rather than every call Claude asks about.
 
 A session that cannot run without the session options is refused below the floor:
 one that leaves the project tier out, a Side Chat, a zero-tool session such as the
-background session, or a worker with narrowed built-ins
-(`_claude_session_needs_options`). When the installed package's version is a known
+background session, a worker with narrowed built-ins, or a session that holds a
+project MCP server or runs with `strictMcpConfig` because its project MCP file could
+not be read (`_claude_session_needs_options`). When the installed package's version is a known
 version below the floor, `ClaudeLaunch.resolve_spawn` refuses it before any process
 starts (`_refuse_claude_session_below_floor_before_spawn`). A version that cannot be
 read, such as a wrapper or an override, leaves the decision to the handshake check in
@@ -430,7 +431,7 @@ and effort selection, the full `session/request_permission` flow) works. So
 - **`toolsSettings` shell and write allowlists are enforced at Crew's gate.**
   claude reads neither `shell.denyByDefault`/`allowedCommands` nor
   `fs_write.fallbackAction: "deny"`/`allowedPaths`, so for a backend in
-  `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude and opencode) the client reads
+  `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude, opencode and goose) the client reads
   them from the spec `_resolve_session_mcp_servers` projected (or reads the spec
   again when the array is withheld), through `acp/spec_tools_allowlists.py` and the
   KAS readers it wraps, and `_build_permission_event` stamps them on every request
@@ -494,7 +495,12 @@ own servers. Pinned by `test/test_claude_mcp_identity.py`.
 the primary spawn (not only on the model-substitution retry) with
 `permissions.defaultMode` when requested, `permissions.deny` rules derived from
 the spec's `disabledTools`, and the `permissions.ask` rules a `toolsSettings` shell
-or write allowlist needs (above). Once the provider-advertised model cache is warm it
+or write allowlist needs (above). Project-server holds belong only to the inline
+settings on `session/new`, `session/load` and `session/fork`, not this shared seed:
+`disabledMcpjsonServers` names each server of the folder's `.mcp.json` the person
+has not approved there (see the project MCP check in [security](security.md)).
+Claude Code reads those names as rejected regardless of the session's setting
+sources. Once the provider-advertised model cache is warm it
 writes `availableModels`, and only when another settings
 source (user `settings.json`, project `.claude/settings.json`, or the managed
 `managed-settings.json` and its `managed-settings.d/*.json` drop-ins) already defines
@@ -1548,8 +1554,12 @@ read in the gateway because the child inherits its environment. A session id tha
 is not a UUID, an empty cwd, a project name longer than the 200 characters the CLI
 keeps verbatim, or a symlinked `projects`, `file-history`, project directory or
 leaf deletes nothing and answers not done, so the prune keeps its retry record and
-`spawn_release` answers `not_disposed`. A persistent session's store is never
-touched, and nothing is sent over the wire to delete the adapter's session.
+`spawn_release` answers `not_disposed`. A path that does not exist counts as
+gone, so a session that left nothing behind answers done. When none of the three
+existed, the cleanup logs one INFO record naming no session id and no path,
+`claude transcript cleanup: nothing to delete`, which is how a reader tells a
+miss from a delete. A persistent session's store is never touched, and nothing
+is sent over the wire to delete the adapter's session.
 Those checks are one private gate (`_session_targets`), which
 `claude_session_paths` also goes through when the Storage report sizes a mapped
 Claude chat's three paths, read only

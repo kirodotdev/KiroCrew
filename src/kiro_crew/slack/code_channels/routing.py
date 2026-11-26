@@ -25,7 +25,6 @@ import contextlib
 import contextvars
 import enum
 import logging
-import os
 import re
 import time
 from collections import OrderedDict
@@ -60,6 +59,11 @@ from kiro_crew.slack.code_channels.creation import (
 from kiro_crew.slack.code_channels.models import ChannelInfo, CodeChannelApiError, CreateRequest
 from kiro_crew.slack.code_channels.recognition import ChannelKind
 from kiro_crew.slack.code_channels.route_gate import Admit, _route_to_slot, admitted
+from kiro_crew.slack.code_channels.routing_temps import (
+    _INBOUND_TEMPS,
+    _PENDING_TEMPS,
+    _unlink_all,
+)
 from kiro_crew.slack.code_channels.store import (
     ROUTE_CODE_CHANNEL,
     Binding,
@@ -653,28 +657,7 @@ async def _open_from_follow_up(
         return await maybe_open_code_channel(orch, event, clean_text, sender_id)
 
 
-# ── Attachment temp files ─────────────────────────────────────────────────
-#
-# A message routed to a bound session carries its attachments as temp-file
-# paths in the prompt. The files must outlive the routing call (the session's
-# turn reads them, perhaps after earlier queued turns) and must not outlive the
-# turns that read them. A path is adopted under the session when the message is
-# routed, and the session's files are deleted at the end of a turn that leaves
-# nothing queued behind it -- so a queued message's upload is never deleted by
-# the turn before it.
-
-_INBOUND_TEMPS: contextvars.ContextVar[list[str]] = contextvars.ContextVar(
-    "code_channel_inbound_temps", default=[]
-)
-_PENDING_TEMPS: dict[str, list[str]] = {}
-
-
-def _unlink_all(paths: Sequence[str]) -> None:
-    for path in paths:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+# ── Attachment temp files (held in :mod:`.routing_temps`) ─────────────────
 
 
 def _adopt_temps(session_key: str) -> None:

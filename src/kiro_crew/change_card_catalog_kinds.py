@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Any
 
 from kiro_crew import change_card_mcp_server as _mcp_server_kind
+from kiro_crew import change_card_project_mcp as _project_mcp_kind
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
 from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
@@ -57,6 +58,8 @@ KIND_MCP_TOGGLE = "mcp.toggle"
 #: Add, change or remove one server on the MCP page (:mod:`kiro_crew.change_card_mcp_server`),
 #: raised only by ``request_server``.
 KIND_MCP_SERVER = _mcp_server_kind.KIND_MCP_SERVER
+#: Start one server of a folder's own MCP file (:mod:`kiro_crew.change_card_project_mcp`).
+KIND_PROJECT_MCP_SERVER = _project_mcp_kind.KIND_PROJECT_MCP_SERVER
 KIND_CONNECTION_CONNECT = "connection.connect"
 KIND_SECRET_SAVE = "secret.save"
 KIND_TRUST_APP = "trust.app"
@@ -89,7 +92,10 @@ SELF_ONLY_KINDS = frozenset({KIND_CREWMATE_DASHBOARD_PAGE})
 #: for the same refusal: an agent asks to change an MCP registry only through
 #: ``request_server``, which raises ``mcp.server``; ``mcp.add_custom`` cards already
 #: raised still render and apply.
-GATEWAY_RESOLVED_KINDS = frozenset({KIND_TEMPLATE_MCP_SERVER, KIND_MCP_SERVER, KIND_MCP_ADD_CUSTOM})
+#: ``mcp.project_server`` is raised by the chat at session start, never by an agent.
+GATEWAY_RESOLVED_KINDS = frozenset(
+    {KIND_TEMPLATE_MCP_SERVER, KIND_MCP_SERVER, KIND_MCP_ADD_CUSTOM, KIND_PROJECT_MCP_SERVER}
+)
 #: Where a ``template.mcp_server`` entry came from (``mate_capability_catalog``'s sources).
 TEMPLATE_SERVER_SOURCES = ("gateway", "registry")
 #: The ``.crewmate`` ``formatVersion`` values this version reads. Any added
@@ -296,6 +302,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "dashboard.channels_enabled",
         "dashboard.crewmate_threads",
         "dashboard.dynamic_dashboard_cards",
+        "dashboard.expand_linked_items",
         # A feature preview only decides whether the dashboard OFFERS an
         # unreleased page or menu entry; the feature's own routes and checks
         # are the same either way.
@@ -427,6 +434,8 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         # Which vault secret the Strands harness is handed, and which provider
         # address (a LiteLLM proxy, an Ollama host) its conversation is sent to.
         "agent.strands_env",
+        # Which vault secret the DeepSeek Harness is handed as its provider key.
+        "agent.deepseek_env",
         # The provider and model a Strands session runs: where its conversation goes.
         "agent.strands_provider",
         "agent.strands_model",
@@ -728,6 +737,12 @@ KINDS: dict[str, KindDef] = {
             "request_server.",
             _mcp_server_kind.params_schema(),
             _mcp_server_kind.EDITABLE,
+        ),
+        KindDef(
+            KIND_PROJECT_MCP_SERVER,
+            "Start one server a folder's own MCP file names. Raised by the chat only.",
+            _project_mcp_kind.params_schema(),
+            (),
         ),
         KindDef(
             KIND_TEMPLATE_MCP_SERVER,
@@ -1718,6 +1733,8 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
         return {"servers": clean, "enable": enable}
     if kind == KIND_MCP_SERVER:
         return _mcp_server_kind.clean_params(p)
+    if kind == KIND_PROJECT_MCP_SERVER:
+        return _project_mcp_kind.clean_params(p)
     if kind == KIND_MCP_TOGGLE:
         _only(p, {"name", "server", "tool", "enabled"})
         enabled = _clean_bool(p, "enabled")

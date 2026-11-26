@@ -150,14 +150,7 @@ async def _build_off_loop(
             if future.cancelled():
                 raise
             cancelled = True
-        except Exception:  # noqa: BLE001 - only the pool fails it: settled below
-            break
-    # An empty box: the pool failed the call before it ran (no worker could start),
-    # so no child exists and the pool's error is the outcome.
-    if box:
-        ok, value = box.pop()
-    else:
-        ok, value = False, future.exception()
+    ok, value = box.pop()
     if ok:
         return value, cancelled
     try:

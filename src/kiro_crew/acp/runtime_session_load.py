@@ -12,7 +12,8 @@ Instance fields written: ``_load_replay_frames``, ``_parked_copies``, ``_session
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_agent_version``, ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``,
-``_fold_mcp_frame``, ``_host_sends_mcp_init``, ``_initialized``, ``_kas_host_auth``,
+``_fold_mcp_frame``, ``_hold_project_servers``, ``_host_sends_mcp_init``, ``_initialized``,
+``_kas_host_auth``,
 ``_kas_served_token_digest``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
 ``_mcp_switched_off``, ``_model``, ``_open_mcp_report``, ``_park_in_start_agent``, ``_pid``,
 ``_pool_lookup``, ``_record_keeping_sessions``, ``_record_tree_in_background``,
@@ -90,6 +91,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
+    ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_RESUME,
     METHOD_SET_MODE,
@@ -422,6 +424,9 @@ async def load_session(
     # a conversation that already had them.
     # Bound once, for the same consumers as session/new: see the note there.
     await self._write_remote_token()
+    # The project servers the person has not approved, as session/new holds them.
+    if self.acp_backend == ACP_BACKEND_KIRO:
+        mcp_servers = await self._hold_project_servers(mcp_servers, active_agent, session_work_dir)
     # The same prune session/new gets (``mcp_prune``), for the same hosts.
     pruned = None
     if self.acp_backend in ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP:
@@ -511,6 +516,9 @@ async def load_session(
         launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
         # Same as create_session: a worker stub the payload's spec read muted.
         mcp_servers = _drop_withdrawn_stubs(mcp_servers, kas_extras.withdrawn_stub_names)
+        mcp_servers = await self._hold_project_servers(
+            mcp_servers, active_agent, session_work_dir, kas_agents
+        )
         mcp_servers = without_excluded_stubs(mcp_servers, kas_agents)
         kas_agents, mcp_servers = hoist_servers_for_session(
             kas_agents,
@@ -590,6 +598,10 @@ async def load_session(
         )
         if meta is not None:
             load_params["_meta"] = {**(load_params.get("_meta") or {}), **meta}
+    if self.acp_backend in ACP_BACKENDS_SEED_LOCAL_SETTINGS:
+        from kiro_crew.agent_sdk.project_mcp_holds import hold_session_params
+
+        load_params = await hold_session_params(self.acp_backend, active_agent, load_params)
     budget = await self._session_start_budget()
     if parking is not None:
         await self._park_in_start_agent(resume_sid, parking, budget)
@@ -687,6 +699,7 @@ async def load_session(
         self._fold_mcp_frame(resume_sid, msg)
     if harness_state is not None:
         self._session_harness_states[resume_sid] = harness_state
+    if harness_state is not None or self._harness.checks_stateless_session_start:
         try:
             # A restored session carries the mode it was left in, so it is checked
             # again before its first prompt. A refusal ends only this session.
@@ -952,9 +965,9 @@ async def _park_in_start_agent(
     """Make the stored session *session_id* come back in the host's start agent.
 
     Up to three requests. For a session stored in its own agent none of them
-    starts an MCP server: ``session/load`` with
+    starts a project MCP server: ``session/load`` with
     *params* (``kas_start_agent.parking_load``: the session's own agent without
-    its servers, no session-level server), ``session/set_mode`` to the start
+    its servers, only project-server refusal stubs at session level), ``session/set_mode`` to the start
     agent, which is what the engine stores, and the release that frees the
     resident copy and keeps the record. The caller's own ``session/load`` then
     resumes in the start agent.
@@ -974,6 +987,9 @@ async def _park_in_start_agent(
     No session queue is registered for the id while this runs, so the turns the
     engine replays are dropped by the reader, as they are during any load.
     """
+    from kiro_crew.agent_sdk.project_mcp_holds import hold_session_params
+
+    params = await hold_session_params(self.acp_backend, self._agent, params)
     started = time.monotonic()
     parked = False
     # Held by the engine from the request below until its release is confirmed;

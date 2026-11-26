@@ -601,10 +601,13 @@ would freeze chat/heartbeat, so it takes the lock if free and otherwise fails
 immediately. **Off the loop** (cron, home migration, app backends) it polls up
 to a generous `_LOCK_TIMEOUT_SECS` ceiling — long enough to wait out a
 legitimately long holder such as a data-home migration, rather than racing it,
-yet bounded so a truly stuck/permission-denied fd still fails. Either way, if
-the lock cannot be taken the acquire **fails closed**: it raises rather than
-entering the critical section unserialized, since proceeding lock-less is the
-exact fail-open that loses writes. Non-blocking `try_acquire_lock` already used
+yet bounded so a truly stuck/permission-denied fd still fails. Only `EACCES`
+and `EDEADLOCK`, what a held byte reports, are retried; any other errno (a
+closed fd's `EBADF`, a pipe's `EINVAL`) is about the fd itself and raises at
+once with that errno. Either way, if the lock cannot be taken the acquire
+**fails closed**: it raises rather than entering the critical section
+unserialized, since proceeding lock-less is the exact fail-open that loses
+writes. Non-blocking `try_acquire_lock` already used
 `LK_NBLCK` and is unchanged.
 
 ### The ceiling is not Windows-only

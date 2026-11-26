@@ -1,8 +1,8 @@
 """The environment an agent process receives, and the policy that filters it.
 
 ``agent.env`` (its name policy -- grammar, denied names, prefixes and suffixes, the
-credential class -- and its load-time refusals and scrub), ``agent.child_env_defaults``
-and ``agent.deepseek_env``.
+credential class -- and its load-time refusals and scrub), ``agent.child_env_defaults``,
+``agent.deepseek_env`` and ``agent.strands_env``.
 
 An owner of the :mod:`kiro_crew.config.sections` facade; it never imports the facade.
 """
@@ -99,48 +99,102 @@ STRANDS_ENV_NAMES = frozenset(
     }
 )
 
+#: How to fix a literal value under ``agent.strands_env``, the tail of every refusal
+#: of one (the dashboard write, the publish floor, the harness's spawn check). It
+#: says outright that a URL, region or host needs a reference too, because the map
+#: holds more than keys, and it names the dashboard card that writes the reference.
+#: It names no key, vault name or value, so the refusals stay safe to log. The
+#: scheme is spelled out rather than built from ``SECRET_URI_PREFIX``: code scanning
+#: reads that name as a secret and would flag the log line this text reaches.
+STRANDS_ENV_LITERAL_GUIDANCE = (
+    "Every value in this mapping, including a URL, region or host, must be a "
+    "'secret://<vault name>' reference, so config.json never holds the value "
+    "itself. The Model provider card under Settings > Agent Harness saves each value "
+    "to Secrets and maps it for you. To map one by hand, save the value under "
+    "Settings > Secrets, then map it as 'secret://<vault name>'."
+)
 
-def validate_strands_env_patch(value: object) -> dict[str, str | None]:
-    """Validate an ``agent.strands_env`` CHANGE written through the dashboard.
+
+#: The one name a dashboard write may map under ``agent.deepseek_env``: the key the
+#: harness's default provider route reads (Settings > Agent Harness > DeepSeek
+#: Harness > Provider key). The map itself may hold more, for another provider
+#: route, but those are set in the config file and checked at spawn
+#: (``_validate_deepseek_env_mapping``).
+DEEPSEEK_ENV_NAMES = frozenset({"DEEPSEEK_API_KEY"})
+
+#: The env maps the dashboard writes as KEYED changes, each with the Settings > Agent
+#: Harness row that writes it: the PATCH merges a change into the saved map
+#: (:func:`merge_env_patch`), and a change card refuses to carry the whole map.
+DASHBOARD_KEYED_ENV_MAPS: dict[str, str] = {
+    "agent.strands_env": "Strands",
+    "agent.deepseek_env": "DeepSeek Harness",
+}
+
+
+def _validate_env_patch(
+    path: str, value: object, names: frozenset[str], unknown_name: str, literal: str
+) -> dict[str, str | None]:
+    """Validate a CHANGE to the env map at *path*, written through the dashboard.
 
     The value is a change, not the whole map: each key it names is set to its
     reference, or removed when the value is ``None``, and every key it does not
-    name is kept (:func:`merge_strands_env_patch`, applied under the config lock).
+    name is kept (:func:`merge_env_patch`, applied under the config lock).
     So two saves of different variables cannot each write back a map without the
     other's entry, whatever order they land in.
 
     Stricter than :func:`coerce_deepseek_env` on purpose: a dashboard write is
     refused, not repaired, so nothing a person did not see lands on disk. Every
-    key must be one of :data:`STRANDS_ENV_NAMES` and every value ``None`` or a
+    key must be one of *names* and every value ``None`` or a
     ``secret://<vault name>`` reference whose name can round-trip through the
     vault (non-empty, no surrounding whitespace). The publish floor refuses a
     plaintext value again at write time; this is the first line.
 
     Raises ``ValueError`` naming the offending KEY only, never a value or a vault
-    name, because the message is returned to the client and logged.
+    name, because the message is returned to the client and logged; *unknown_name*
+    and *literal* end the refusal of an unread name and of a literal value.
     """
     if not isinstance(value, dict):
-        raise ValueError("agent.strands_env must be an object")
+        raise ValueError(f"{path} must be an object")
     out: dict[str, str | None] = {}
     for key, ref in value.items():
-        if not isinstance(key, str) or key not in STRANDS_ENV_NAMES:
-            raise ValueError("agent.strands_env names a variable the Strands harness does not read")
+        if not isinstance(key, str) or key not in names:
+            raise ValueError(f"{path} {unknown_name}")
         if ref is None:
             out[key] = None
             continue
         if not isinstance(ref, str) or not ref.startswith(SECRET_URI_PREFIX):
-            raise ValueError(
-                f"agent.strands_env entry {key!r} must be a 'secret://<vault name>' reference"
-            )
+            raise ValueError(f"{path} entry {key!r} {literal}")
         name = ref[len(SECRET_URI_PREFIX) :]
         if not name or name != name.strip():
-            raise ValueError(f"agent.strands_env entry {key!r} names no usable vault entry")
+            raise ValueError(f"{path} entry {key!r} names no usable vault entry")
         out[key] = ref
     return out
 
 
-def merge_strands_env_patch(stored: object, change: dict[str, str | None]) -> dict[str, str]:
-    """``agent.strands_env`` as *stored*, with a validated *change* applied.
+def validate_strands_env_patch(value: object) -> dict[str, str | None]:
+    """An ``agent.strands_env`` change: names from :data:`STRANDS_ENV_NAMES`."""
+    return _validate_env_patch(
+        "agent.strands_env",
+        value,
+        STRANDS_ENV_NAMES,
+        "names a variable the Strands harness does not read",
+        "holds a literal value. " + STRANDS_ENV_LITERAL_GUIDANCE,
+    )
+
+
+def validate_deepseek_env_patch(value: object) -> dict[str, str | None]:
+    """An ``agent.deepseek_env`` change: :data:`DEEPSEEK_ENV_NAMES` only."""
+    return _validate_env_patch(
+        "agent.deepseek_env",
+        value,
+        DEEPSEEK_ENV_NAMES,
+        "accepts only DEEPSEEK_API_KEY from the dashboard",
+        "must be a 'secret://<vault name>' reference",
+    )
+
+
+def merge_env_patch(stored: object, change: dict[str, str | None]) -> dict[str, str]:
+    """An env map as *stored*, with a validated *change* applied.
 
     A key the change maps to ``None`` is removed, any other key it names is set,
     and every key it does not name is kept as stored. A stored value that is not

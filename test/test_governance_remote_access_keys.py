@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,7 @@ from kiro_crew.dashboard import tailnet, urls
 from kiro_crew.platform import governance_profiles
 from kiro_crew.platform.governance import SCOPE_CATALOG, compose_tier_ladder, parse_policy
 from kiro_crew.platform.governance_parts.tiers import TIER_CENTRAL, TIER_HOME
+from kiro_crew.testing.wait import await_until
 
 _SUFFIX = "tail1234.ts.net"
 _NAME = f"desk.{_SUFFIX}"
@@ -598,6 +600,329 @@ class TestDashboardOrigins:
         hook = "register_post_install_hook(lambda: withdraw_refused_origins(_app, _loop))"
         assert hook in src
         assert src.index(hook) < src.index("await asyncio.to_thread(start_refresher)")
+
+
+class TestBindRefresh:
+    """A live refresh that refuses the bound address restarts the gateway, failing closed."""
+
+    @pytest.fixture
+    def gateway(self, lts, install_policy, monkeypatch):
+        import kiro_crew.sel as sel_mod
+        from kiro_crew import quiescence
+        from kiro_crew.dashboard import bind_refresh
+        from kiro_crew.dashboard.handlers import updates
+
+        seen = SimpleNamespace(
+            audits=[],
+            restarts=[],
+            stops=[],
+            delays=[],
+            target=(None, "python", None),
+            census=quiescence.Quiescence(),
+        )
+        monkeypatch.setattr(
+            sel_mod,
+            "sel",
+            lambda: SimpleNamespace(log_governance_decision=lambda **kw: seen.audits.append(kw)),
+        )
+
+        async def _restart(state, **_kw):
+            seen.restarts.append(state)
+            return True
+
+        async def _target(*_a):
+            return seen.target
+
+        async def _sleep(delay: float) -> None:
+            seen.delays.append(delay)
+            await asyncio.sleep(0)
+
+        monkeypatch.setattr(updates, "_restart_gateway", _restart)
+        monkeypatch.setattr(updates, "_resolve_restart_target", _target)
+        monkeypatch.setattr(bind_refresh, "_sleep", _sleep)
+        monkeypatch.setattr(
+            bind_refresh,
+            "shutdown_event",
+            SimpleNamespace(is_set=lambda: bool(seen.stops), set=lambda: seen.stops.append(1)),
+        )
+        seen.state = SimpleNamespace(
+            _gateway_restart_in_progress=False,
+            _background_tasks=set(),
+            _bind_refused_stop=False,
+            _bind_asked="",
+            _listener_sidecars={},
+            _bind_restart_task=None,
+            _quiescence_probe=lambda *, quiet_window_secs: seen.census,
+        )
+
+        def poll(host: str = "0.0.0.0", bound: str = "", release=None) -> int:
+            """One confirming poll on this thread, then the loop's half; the count of
+            restarts it scheduled. *host* is what the bind asked, *bound* the primary
+            listener's sockname host when it differs. The second loopback listener is
+            never the one asked. *release*, queued on the loop behind the restart
+            task's first step, lets go of whatever owns the process."""
+            seen.state._bind_asked = host
+            seen.state._listener_sidecars = {
+                "secondary": (5476, "::1", "s"),
+                "primary": (5476, bound or host, "s"),
+            }
+            on_loop: list = []
+            loop = SimpleNamespace(call_soon_threadsafe=lambda fn, *a: on_loop.append((fn, a)))
+            bind_refresh.restart_if_bind_refused(seen.state, loop)
+
+            async def _run_on_loop() -> None:
+                for fn, args in on_loop:
+                    fn(*args)
+                if release is not None:
+                    asyncio.get_running_loop().call_soon(release)
+                pending = set(seen.state._background_tasks)
+                if pending:
+                    await await_until(asyncio.gather(*pending), what="the restart task")
+
+            asyncio.run(_run_on_loop())
+            return len(on_loop)
+
+        seen.poll = poll
+        return seen
+
+    def test_a_refused_bind_restarts_the_gateway(self, gateway, install_policy) -> None:
+        install_policy({"bind_address": _allow("0.0.0.0")})
+        assert gateway.poll() == 0
+        install_policy({"bind_address": _allow("10.0.0.5")})
+        assert gateway.poll() == 1
+        assert gateway.restarts == [gateway.state] and not gateway.stops
+        assert [(r["scope"], r["item"], r["outcome"]) for r in gateway.audits] == [
+            ("bind_address", "0.0.0.0", "denied")
+        ]
+
+    def test_a_permitted_scoped_address_is_not_refused(self, gateway, install_policy) -> None:
+        """The sockname host drops an IPv6 zone the policy names; the bind's ask is kept."""
+        install_policy({"bind_address": _allow("fe80::1%eth0")})
+        assert gateway.poll("fe80::1%eth0", bound="fe80::1") == 0
+        assert not gateway.audits and not gateway.restarts
+
+    def test_loopback_is_never_asked(self, gateway, install_policy, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "kiro_crew.edition_locks.policy_permits",
+            lambda *a, **k: pytest.fail("loopback must not be asked"),
+        )
+        assert gateway.poll("127.0.0.1") == 0
+
+    def test_a_refused_restart_stops_the_gateway(self, gateway, install_policy) -> None:
+        from kiro_crew.dashboard import bind_refresh
+
+        install_policy({})
+        gateway.target = (None, None, ("restart_interpreter_missing", "Cannot restart"))
+        assert bind_refresh.bind_refused_exit_code(gateway.state) == 0
+        gateway.poll()
+        assert gateway.stops == [1] and not gateway.restarts
+        assert bind_refresh.bind_refused_exit_code(gateway.state) == 77
+
+    def test_work_admitted_while_the_restart_target_resolves_is_not_cut(
+        self, gateway, install_policy, monkeypatch
+    ) -> None:
+        """The stop is committed on idle reads taken after the target's off-loop hops: a
+        turn admitted during them sends the refusal back to the backoff."""
+        from kiro_crew import quiescence
+        from kiro_crew.dashboard import bind_refresh
+        from kiro_crew.dashboard.handlers import updates
+
+        gateway.target = (None, None, ("restart_interpreter_missing", "Cannot restart"))
+        resolved: list = []
+
+        async def _admits_a_turn(*_a):
+            resolved.append(list(gateway.stops))
+            gateway.census = quiescence.Quiescence(turns=1 if len(resolved) == 1 else 0)
+            return gateway.target
+
+        def _probe(*, quiet_window_secs: float):
+            census = gateway.census
+            gateway.census = quiescence.Quiescence()
+            return census
+
+        monkeypatch.setattr(updates, "_resolve_restart_target", _admits_a_turn)
+        gateway.state._quiescence_probe = _probe
+        install_policy({})
+        assert gateway.poll() == 1
+        assert resolved == [[], []] and gateway.delays == [10.0]
+        assert gateway.stops == [1] and not gateway.restarts
+        assert bind_refresh.bind_refused_exit_code(gateway.state) == 77
+
+    def test_an_update_that_declined_to_restart_stops_the_gateway(
+        self, gateway, install_policy, monkeypatch
+    ) -> None:
+        from kiro_crew import update_ownership
+
+        monkeypatch.setattr(update_ownership, "_restart_refusal", "dependency sync failed")
+        install_policy({})
+        gateway.poll()
+        assert gateway.stops == [1] and not gateway.restarts
+
+    def test_an_update_or_a_restart_in_progress_defers_the_refusal(
+        self, gateway, install_policy, monkeypatch
+    ) -> None:
+        """The refusal waits for the owner to let go and is then applied with no
+        further poll: a ceiling that names no source is never polled again."""
+        import contextlib
+
+        from kiro_crew import update_ownership
+
+        install_policy({})
+        gateway.target = (None, None, ("restart_interpreter_missing", "Cannot restart"))
+        while_held: list = []
+
+        def _letting_go(let_go):
+            def _release() -> None:
+                while_held.append((list(gateway.stops), list(gateway.restarts)))
+                let_go()
+
+            return _release
+
+        with contextlib.ExitStack() as update:
+            update.enter_context(update_ownership.step(update_ownership.Step.GIT_AUTO_UPDATE))
+            assert gateway.poll(release=_letting_go(update.close)) == 1
+        assert gateway.stops == [1] and not gateway.restarts
+
+        def _restart_refused() -> None:
+            gateway.state._gateway_restart_in_progress = False
+
+        def _permitted_again() -> None:
+            _restart_refused()
+            install_policy({"bind_address": _allow("0.0.0.0")})
+
+        for let_go, stops in ((_restart_refused, [1]), (_permitted_again, [])):
+            gateway.stops.clear()
+            gateway.state._gateway_restart_in_progress = True
+            assert gateway.poll(release=_letting_go(let_go)) == 1
+            assert gateway.stops == stops and not gateway.restarts
+        assert while_held == [([], [])] * 3
+
+    @pytest.mark.parametrize("own_resolve_refused", [False, True], ids=["coalesced", "refused"])
+    def test_a_restart_that_lets_go_without_restarting_is_retried(
+        self, gateway, install_policy, monkeypatch, own_resolve_refused
+    ) -> None:
+        """A ``_restart_gateway`` that returns without exec sends the refusal back to the
+        owner wait, then it restarts or stops with no further poll."""
+        from kiro_crew.dashboard.handlers import updates
+
+        restart, calls = updates._restart_gateway, []
+
+        async def _lets_go_once(state, **kw):
+            calls.append(state)
+            if len(calls) > 1:
+                return await restart(state, **kw)
+            if own_resolve_refused:
+                gateway.target = (None, None, ("restart_interpreter_missing", "Cannot restart"))
+            else:
+                state._gateway_restart_in_progress = True
+                asyncio.get_running_loop().call_soon(
+                    setattr, state, "_gateway_restart_in_progress", False
+                )
+            return False
+
+        monkeypatch.setattr(updates, "_restart_gateway", _lets_go_once)
+        install_policy({})
+        assert gateway.poll() == 1
+        if own_resolve_refused:
+            assert len(calls) == 1 and gateway.stops == [1] and not gateway.restarts
+        else:
+            assert len(calls) == 2 and gateway.restarts == [gateway.state] and not gateway.stops
+
+    def test_the_gateway_registers_the_restart_and_its_exit_status(self) -> None:
+        """One hook for whichever server entry point started, registered before the
+        poller starts, and the self-stop exits non-zero."""
+        from pathlib import Path as _Path
+
+        from kiro_crew.slack.gateway_runtime import exit_path, service_boot
+
+        src = _Path(service_boot.__file__).read_text(encoding="utf-8")
+        hook = "register_post_install_hook(lambda: restart_if_bind_refused(_state, _loop))"
+        assert hook in src
+        assert src.index(hook) < src.index("await asyncio.to_thread(start_refresher)")
+        exit_src = _Path(exit_path.__file__).read_text(encoding="utf-8")
+        assert "or bind_refused_exit_code(self.dashboard_state)" in exit_src
+        # The API-only start wires the admission and the census the idle check reads.
+        api_src = inspect.getsource(service_boot._init_api_server)
+        assert "restart_admission.wire(self.dashboard_state, self)" in api_src
+
+    @pytest.mark.parametrize("case", ["restartable", "cannot_restart", "declines_once"])
+    def test_a_refused_bind_waits_for_idle_with_backoff(
+        self, gateway, install_policy, monkeypatch, case
+    ) -> None:
+        """While the census reads busy nothing restarts or stops, and each check waits
+        on the capped backoff; once idle it restarts, or stops when it cannot."""
+        from kiro_crew import quiescence
+        from kiro_crew.dashboard import bind_refresh
+        from kiro_crew.dashboard.handlers import updates
+
+        reads: list = []
+
+        def _probe(*, quiet_window_secs: float):
+            assert quiet_window_secs == quiescence.QUIET_WINDOW_SECS
+            reads.append((len(calls), list(gateway.stops)))
+            return quiescence.Quiescence(turns=1 if len(reads) <= 5 else 0)
+
+        restart, calls = updates._restart_gateway, []
+
+        async def _counted(state, **kw):
+            assert not kw.get("force")
+            calls.append(list(gateway.delays))
+            if case == "declines_once" and len(calls) == 1:
+                return False
+            return await restart(state, **kw)
+
+        monkeypatch.setattr(updates, "_restart_gateway", _counted)
+        gateway.state._quiescence_probe = _probe
+        if case == "cannot_restart":
+            gateway.target = (None, None, ("restart_interpreter_missing", "Cannot restart"))
+        install_policy({})
+        assert gateway.poll() == 1
+        assert reads[:5] == [(0, [])] * 5
+        backoff = [10.0, 20.0, 40.0, 60.0, 60.0]
+        if case == "cannot_restart":
+            assert gateway.delays == backoff and not calls and gateway.stops == [1]
+            assert bind_refresh.bind_refused_exit_code(gateway.state) == 77
+        elif case == "declines_once":
+            assert calls == [backoff, backoff + [60.0]] and gateway.delays == backoff + [60.0]
+            assert gateway.restarts == [gateway.state] and not gateway.stops
+        else:
+            assert calls == [backoff] and gateway.delays == backoff
+            assert gateway.restarts == [gateway.state] and not gateway.stops
+
+    def test_a_second_poll_does_not_start_a_second_wait(
+        self, gateway, install_policy, monkeypatch
+    ) -> None:
+        """A confirming poll while a wait is pending leaves the one task it started."""
+        from kiro_crew import quiescence
+        from kiro_crew.dashboard import bind_refresh
+
+        install_policy({})
+        state = gateway.state
+        state._bind_asked = "0.0.0.0"
+        state._listener_sidecars = {"primary": (5476, "0.0.0.0", "s")}
+        gateway.census = quiescence.Quiescence(turns=1)
+
+        async def _run() -> None:
+            sleeping, release = asyncio.Event(), asyncio.Event()
+
+            async def _held(delay: float) -> None:
+                sleeping.set()
+                await release.wait()
+
+            monkeypatch.setattr(bind_refresh, "_sleep", _held)
+            loop = asyncio.get_running_loop()
+            bind_refresh.restart_if_bind_refused(state, loop)
+            await await_until(sleeping, what="the first wait")
+            first = state._bind_restart_task
+            bind_refresh.restart_if_bind_refused(state, loop)
+            await asyncio.sleep(0)
+            assert state._bind_restart_task is first and state._background_tasks == {first}
+            gateway.census = quiescence.Quiescence()
+            release.set()
+            await await_until(first, what="the restart task")
+
+        asyncio.run(_run())
+        assert gateway.restarts == [state] and not gateway.stops
 
 
 class TestApprovedOriginSpelling:

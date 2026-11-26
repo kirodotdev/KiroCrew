@@ -26,7 +26,9 @@ from kiro_crew.config.sections_defaults import (
 # hand; it only bounds a hand-edited or hostile value.
 STAR_ORDER_MAX = 10_000
 
-# How many worker sessions one Bot may have open at once (``max_workers``). The
+# How many sessions that run as one Bot may be open at once (``max_workers``): its
+# workers and every session a session-control verb opened as the Bot, at any depth
+# (``bot_worker_cap``); sub-agent runs are not counted. The
 # owner sets it on the Bot's settings page; no Bot tool writes it. 0, the
 # default, sets no limit of the Bot's own: the bound on parallel work comes from
 # the host's resources unless the owner chooses a number
@@ -427,10 +429,12 @@ class KiroCrewAgentConfig:
         default=BOT_MAX_WORKERS_DEFAULT,
         metadata=_meta(
             "Workers at once",
-            "How many of this Bot's own worker sessions (on its worker template) "
-            "may be open at once. A session_create, session_revive or "
-            "session_fork past it is refused with bot_worker_cap_reached until "
-            "one of them is closed. Set by the owner on the Bot's settings page; "
+            "How many sessions that run as this Bot may be open at once: its "
+            "worker sessions and the sessions they open, on any template or as "
+            "the Bot, at any depth (not the Bot's own chat, a person's chats or "
+            "sub-agent runs). A session_create, session_revive or session_fork "
+            "past it is refused with bot_worker_cap_reached until one of them is "
+            "closed. Set by the owner on the Bot's settings page; "
             "the Bot cannot change it. 0 (the default) sets no limit while Workers "
             "can conduct is off; while it is on, 0 means at most 4. Otherwise 1 "
             "to 32, used as set.",

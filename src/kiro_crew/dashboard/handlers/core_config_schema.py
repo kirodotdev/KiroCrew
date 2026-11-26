@@ -70,6 +70,7 @@ from kiro_crew.config.sections import (
     SHARED_CREW_BOUNDS,
     STRANDS_PROVIDER_CHOICES,
     TITLE_REFRESH_EVERY_TURNS_MAX,
+    validate_deepseek_env_patch,
     validate_strands_env_patch,
 )
 from kiro_crew.config.service_sections import ON_BATTERY_MODES
@@ -140,6 +141,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Harness. Names are the CLI's own and values `secret://` references only; the
     # card stores each value in the vault and maps the reference here.
     "agent.strands_env": {"type": "normalized", "normalize": validate_strands_env_patch},
+    # The DeepSeek Harness's provider key, written by Settings > Agent Harness >
+    # DeepSeek Harness > Provider key the same way: DEEPSEEK_API_KEY only, its value
+    # a `secret://` reference to the vault entry the field saved.
+    "agent.deepseek_env": {"type": "normalized", "normalize": validate_deepseek_env_patch},
     # The CLI's provider ids, the one list the setting and the harness both read.
     "agent.strands_provider": {"type": "enum", "values": list(STRANDS_PROVIDER_CHOICES)},
     # A model id for that provider (its own '<provider>/' prefix is accepted once). Wider than
@@ -397,6 +402,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # The per-row unread dot on sidebar session cards (Settings → Display →
     # Sidebar). Default on; only a literal `false` hides it.
     "dashboard.show_unread_dot": {"type": "bool"},
+    # Session cards start with their linked pull requests and issues open
+    # (Settings → Display, Session Cards). Default off; only a literal `true` opens it.
+    "dashboard.expand_linked_items": {"type": "bool"},
     # The quick-search shortcut opens the Command Bar launcher (Settings ->
     # Display -> View). Default on; only a literal `false` opens the search
     # palette instead.

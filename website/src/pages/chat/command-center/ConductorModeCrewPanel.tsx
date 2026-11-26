@@ -20,8 +20,10 @@ import { artifactEntries } from '../../crewBoardRows'
 import { fmtList, fmtRelative } from '../../../i18n/format'
 import { fmtMinutes } from '../../../lib/crewWork'
 import ErrorNotice from '../../../components/ErrorNotice'
-import { isNotFoundError } from '../../../api/apiError'
+import TruncatedText from '../../../components/TruncatedText'
+import { isNotFoundError, isPermissionRefusal } from '../../../api/apiError'
 import { errMessage } from '../../../utils/thunkError'
+import { reportForError } from '../../../utils/errorReport'
 import { closeActivityPanel, pendingQuestionFor } from '../../../store/chatSlice'
 import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { useIsMobile } from '../../../hooks/useIsMobile'
@@ -1039,7 +1041,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
       {viewing && viewing !== root && <CrewPanelBack root={root} />}
       {/* A failed crew read, shown in both views; a gateway that does not serve
           the route is not a failure (the live rows stand in). */}
-      {listed.isError && !crewRouteNotServed(listed.error) && <div className="shrink-0 px-3 pt-3"><ErrorNotice variant="inline" message={i18nT(live.length ? 'commandCenter.workers_error_live' : 'commandCenter.workers_error')} askAgent /></div>}
+      {listed.isError && !crewRouteNotServed(listed.error) && <div className="shrink-0 px-3 pt-3"><ErrorNotice variant="inline" impact={live.length ? 'partial' : 'blocking'} message={i18nT(live.length ? 'commandCenter.workers_error_live' : 'commandCenter.workers_error')} askAgent /></div>}
       <div className="shrink-0 px-3 pt-3">
         <RadioChipGroup ariaLabel={i18nT('commandCenter.workers_view_label')} className="flex gap-1 rounded-lg border border-border bg-bg-hover/40 p-0.5" data-testid="conductor-mode-view-switch">
           {(['status', 'list'] as const).map(v => (
@@ -1078,7 +1080,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
               : i18nT(stuck || quiet ? 'components.crewMode.conductor_mode_needs_you_none_stuck' : 'components.crewMode.conductor_mode_needs_you_none')}</p>}
             {pendingQuestion?.questions?.length ? (
               <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-2.5 py-2" data-testid="conductor-mode-main-question">
-                <span className="flex-1 min-w-0 text-[13px] text-text truncate" title={pendingQuestion.questions[0].question}>{pendingQuestion.questions[0].question}</span>
+                <TruncatedText full={pendingQuestion.questions[0].question} className="flex-1 min-w-0 text-[13px] text-text" />
                 <button type="button" onClick={answerInChat} data-testid="conductor-mode-answer-in-chat"
                   className="shrink-0 inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium conductor-mode-accent hover:bg-bg-hover">
                   {i18nT('components.crewMode.conductor_mode_answer_in_chat')}<ArrowDown size={12} aria-hidden="true" />
@@ -1101,7 +1103,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
             </div>
             {/* A ledger the root never opened (404) is the empty state; any
                 other failure says so and offers the agent hand-off. */}
-            {board.isError && !isNotFoundError(board.error) && <div className="mt-1"><ErrorNotice variant="inline" message={errMessage(board.error) || i18nT('pages.crewBoard.error_title')} askAgent /></div>}
+            {board.isError && !isNotFoundError(board.error) && <div className="mt-1"><ErrorNotice variant="inline" message={isPermissionRefusal(board.error) ? errMessage(board.error) || i18nT('pages.crewBoard.error_title') : i18nT('components.crewMode.conductor_mode_milestones_error')} report={reportForError(board.error)} askAgent testId="conductor-mode-milestones-error" /></div>}
             {board.isError && !isNotFoundError(board.error) ? null : items.length === 0
               ? <p className="text-[12px] text-muted mt-1">{i18nT('components.crewMode.conductor_mode_milestones_none')}</p>
               : <>

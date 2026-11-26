@@ -104,7 +104,7 @@ def cron_session_cwd(job: CronJob, resolved_cwd: str | None) -> str | None:
         refusal = RuntimeError(
             f"Cron '{job.name}': project_path {job.project_path!r} can no longer be "
             f"used ({exc}), so the run did not start. Fix the directory, or clear it "
-            f"with `kirocrew cron update {job.id} --project-path ''`."
+            f"with `kirocrew cron update {job.id} --project-path=`."
         )
         # Not weather: the transient-retry ladder must count it a failure.
         refusal.transient = False  # type: ignore[attr-defined]

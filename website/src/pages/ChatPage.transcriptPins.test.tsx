@@ -120,6 +120,72 @@ describe('jumping to a loaded message', () => {
   })
 })
 
+describe('jumping from a selection quote in a sent message', () => {
+  const quoted = '> Run the CLI'
+  const line = (role: string, ts: string, content: string) =>
+    ({ role, content, ts, cls: '', meta: { mid: `m-${ts}` } }) as unknown as ChatMessage
+  const transcript = [
+    line('assistant', 't1', 'Run the CLI first.'),
+    line('assistant', 't2', 'Nothing to see'),
+    line('user', 't3', `${quoted}\n\nwhy?`),
+    line('assistant', 't4', 'Run the CLI, as you quoted'),
+  ]
+
+  it('lands on the earlier reply holding the words with the flash, and names the words to mark', () => {
+    const p = props({ messages: transcript })
+    const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
+    const jump = result.current.quoteJumpFor(quoted, 't3')
+    expect(jump).not.toBeNull()
+    act(() => { jump?.() })
+    expect(p.navToMessage).toHaveBeenCalledWith(transcript[0], { behavior: 'smooth', align: 'center' })
+    expect(p.markJump).toHaveBeenLastCalledWith('t1', false, 'm-t1')
+    expect(result.current.quoteMark).toEqual({ ts: 't1', mid: 'm-t1', quoted })
+  })
+
+  it('drops the marked words when another jump lands', () => {
+    const p = props({ messages: transcript })
+    const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
+    act(() => { result.current.quoteJumpFor(quoted, 't3')?.() })
+    act(() => { result.current.handleJumpToPin('t1', 'm-t1') })
+    expect(result.current.quoteMark).toBeNull()
+  })
+
+  it('replaces a pending jump when it lands at once: the page that arrives later neither moves the reader nor fills the composer', async () => {
+    const dispatch = pagingDispatch(async () => ({}))
+    const insertIntoComposer = vi.fn()
+    const navToMessage = vi.fn(() => true)
+    const base = { messages: transcript, slotHasMore: true, slotOldestIndex: 40, dispatch: dispatch as never, insertIntoComposer, navToMessage }
+    const { result, rerender } = renderHook((over: Partial<Props>) => useTranscriptPins(props({ ...base, ...over })), {
+      initialProps: {} as Partial<Props>, wrapper: withQueryClient(),
+    })
+    act(() => { result.current.handlePutPinInComposer('old', 'm-old') })
+    await waitFor(() => expect(dispatch.mock.calls.some(([a]) => typeof a === 'function')).toBe(true))
+    act(() => { result.current.quoteJumpFor(quoted, 't3')?.() })
+    expect(navToMessage).toHaveBeenLastCalledWith(transcript[0], expect.anything())
+    rerender({ messages: [line('user', 'old', 'an old prompt'), ...transcript] })
+    expect(navToMessage).toHaveBeenLastCalledWith(transcript[0], expect.anything())
+    expect(insertIntoComposer).not.toHaveBeenCalled()
+  })
+
+  it('offers no jump when only a later reply, or no reply, holds the words', () => {
+    const p = props({ messages: transcript })
+    const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
+    expect(result.current.quoteJumpFor('> as you quoted', 't3')).toBeNull()
+    expect(result.current.quoteJumpFor(quoted, 'not-loaded')).toBeNull()
+  })
+
+  it('reports the quote as unavailable when its reply left the transcript after the jump was offered', () => {
+    const p = props({ messages: transcript })
+    const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
+    const jump = result.current.quoteJumpFor(quoted, 't3')
+    p.messagesRef.current = transcript.slice(1)
+    act(() => { jump?.() })
+    expect(p.navToMessage).not.toHaveBeenCalled()
+    expect(result.current.pinStatus).toBe(i18nT('pages.chat.quoteCard.message_unavailable'))
+    expect(result.current.quoteMark).toBeNull()
+  })
+})
+
 describe('a target outside the loaded rows', () => {
   it('reports the pin as unavailable at once when there is no older history', () => {
     const p = props({ slotHasMore: false })

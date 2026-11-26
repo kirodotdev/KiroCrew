@@ -852,9 +852,13 @@ notice, translated, at most once per chat per gateway run (an in-memory flag on 
 slot, `_hidden_scratch_notice_shown`), and the turn describes the folder the session
 runs in (`chat_turn.turn_spec_hooks._fallback_turn_project`).
 With `agent.sandbox` off after the governance floor nothing is hidden and the cwd is
-kept, and so it is on native Windows, where a Kiro spawn is delegated to Kiro's own
+kept, unless the `agent.harness_sandbox` floor of the backend the provider factory selects
+for that session raises its tier (a floored harness starts sandboxed, so the cwd is judged masked);
+it is kept on native Windows, where a Kiro spawn is delegated to Kiro's own
 sandbox and no scratch-root mask is applied
-(`session_allocation_parts/get_or_create._stored_cwd_is_hidden_scratch`). The
+(`session_allocation_parts/get_or_create._stored_cwd_is_hidden_scratch`). A scratch
+cwd that no longer exists (the scratch sweep removed or quarantined its tree) is
+dropped as above on every platform, sandbox on or off, with the same notice. The
 cwd may name a different project than the one the capabilities were saved in
 (a folder's project directory, for example). Startup is refused with
 `project_identity_changed` only when that project resolves a different Parent:
@@ -2046,7 +2050,7 @@ against sweep completeness, and are torn down at `close_all`.
   normal Stop, user-follow-up, pending-steer, approval/refusal,
   and one-shot gates remain unchanged; trusted or global auto-approve sessions
   retain the existing notice-only downgrade.
-- **Compaction threshold precedence** (`SessionManager.effective_autocompact_pct`): the session's own override (the context popover slider, `set_autocompact_pct`), else the default the session's crew member declares (`agents.<name>.autocompact_pct`; 0 or a negative value inherits, a positive value is held to the global's 5–90 range at load), else the global `session.autocompact_pct`. The crew is the identity the allocation resolved (`_Session.capability_member`), read against the manager's live `_cfg`, so a config edit reaches running sessions on their next reading and a session with no crew follows the global. The value cannot live in the kiro agent JSON, which kiro-cli rejects on any unknown field. `GET/POST /api/chat/slots/{slot}/autocompact` report it as `agent_pct` with the crew's redacted name as `agent` (both null when none is declared; a slot with no live session answers for the crew its next session starts under) so the popover shows which default a cleared slider returns to. GET also reports `harness_managed`: the backend id when the session compacts on its own (a member of `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`, KAS), else null, read off the live provider's `harness_managed_compaction_backend` or, with no live session, from `select_provider_backend` for the session's next start. Only while the session follows the global (no override and no agent default, `harnessManagedNoteBackend`), the popover shows a note that the backend compacts on its own and that setting a threshold there compacts sooner, in place of the "Following global" line, and the threshold reads "Set by <backend>" rather than the global's number, because the turn-end gate declines Crew's `/compact` for such a backend at the global threshold and honours an explicit one (the global is not shown as if it applied). The `kirocrew chat` REPL compacts at the same number for the crew its run resolves to.
+- **Compaction threshold precedence** (`SessionManager.effective_autocompact_pct`): the session's own override (the context popover slider, `set_autocompact_pct`), else the default the session's crew member declares (`agents.<name>.autocompact_pct`; 0 or a negative value inherits, a positive value is held to the global's 5–90 range at load), else the global `session.autocompact_pct`. The crew is the identity the allocation resolved (`_Session.capability_member`), read against the manager's live `_cfg`, so a config edit reaches running sessions on their next reading and a session with no crew follows the global. The value cannot live in the kiro agent JSON, which kiro-cli rejects on any unknown field. `GET/POST /api/chat/slots/{slot}/autocompact` report it as `agent_pct` with the crew's redacted name as `agent` (both null when none is declared; a slot with no live session answers for the crew its next session starts under, resolved as that session's first turn resolves it (its execution record, else the namespace the slot was stamped in), so a template pick names no crew even when a crew shares its name) so the popover shows which default a cleared slider returns to. GET also reports `harness_managed`: the backend id when the session compacts on its own (a member of `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`, KAS), else null, read off the live provider's `harness_managed_compaction_backend` or, with no live session, from `select_provider_backend` for the session's next start. Only while the session follows the global (no override and no agent default, `harnessManagedNoteBackend`), the popover shows a note that the backend compacts on its own and that setting a threshold there compacts sooner, in place of the "Following global" line, and the threshold reads "Set by <backend>" rather than the global's number, because the turn-end gate declines Crew's `/compact` for such a backend at the global threshold and honours an explicit one (the global is not shown as if it applied). The `kirocrew chat` REPL compacts at the same number for the crew its run resolves to.
 - **Idle compaction before cache expiry** (`session.idle_compaction`, off by default; `session_idle_compaction.py::IdleCompaction`, held by the coordinator as `CompactionCoordinator.idle`, which owns the timer, the generation check, the live-signal probes and `compact_if_idle`): a dashboard chat that goes quiet is compacted once, a little before its backend's prompt cache expires, so the next turn does not re-send the whole history at the uncached rate. Each idle compaction is an extra model call and loses detail, which the setting's help says.
   - **Lifetime per backend** (`agent_sdk.backends_turns.PROMPT_CACHE_LIFETIMES`): kiro 300 s, codex 1800 s, claude 300 s or 3600 s only when `CLAUDE_CODE_PROMPT_CACHE_TTL` is `5m` or `1h` in the backend's launch environment (the gateway environment, then the client's `agent.env` snapshot, then the session's own variables), every other backend skipped. The timer fires at the lifetime minus 45 s for a lifetime of 600 s or less (255 s on kiro), else at 90% of it (27 minutes on codex, 54 on a one-hour claude cache), counted from the start of the turn's last model request, not from the turn end.
   - **Anchor** (`session_idle_compaction.provider_request_floor`, reading `EssentialDelivery.request_floor`): the provider's prompt delivery records the start of each stream before its send and keeps it only once the stream yields model output (a stream with none, such as `/context`, leaves the previous value, and a stream the caller marks `requests_model=False`, kiro's native `_kiro.dev/commands/execute` path, never moves it), and moves it to the moment a tool call ended once model output follows that end, so it is never later than the last request's start. `arm_after_turn` arms for `floor + fire time - now`; when that is not positive, or the provider has no floor, it arms nothing and logs it.
@@ -2942,10 +2946,14 @@ document validates. Otherwise it does three things, in order:
   re-derived warm pool is the only way to honour: `agent.model`,
   `agent.reasoning_effort`, `agent.acp_backend`, `agent.role_efforts`,
   `agent.tool_search{,_min_pct,_min_tokens}`, `agent.sandbox`,
-  `agent.sandbox_allow_no_isolation`, `agent.sandbox_allow_unsandboxed_exec`,
+  `agent.harness_sandbox`, `agent.sandbox_allow_no_isolation`,
+  `agent.sandbox_allow_unsandboxed_exec`,
   `agent.member_acp_backend`, `agent.default_agent`, `session.pool_size` /
   `pool_agent` / `pool_ttl_secs`, `workspaces` and `default_workspace` (the last
-  three because the warm pool captures its agent and cwd). `refresh_defaults` is the **live-session-preserving** path —
+  three because the warm pool captures its agent and cwd). A per-crew
+  `agents.<name>.acp_backend` or `agents.<name>.reasoning_effort` leaf takes
+  the same route, since the factory reads both pins from the config it was
+  built with. `refresh_defaults` is the **live-session-preserving** path —
   it rebuilds the factory, re-derives the pool and drains the warm pool, but
   never touches a registered session, so in-flight turns keep running and only
   NEW sessions see the new defaults. The one value that does reach a running
@@ -3668,6 +3676,12 @@ The `thread:` prefix (a reply thread on a Bot chat message,
 [history](history.md#reply-threads-on-bot-chat-messages-dashboardchat_threadspy))
 is included for the same reason: `build_thread_message` re-seeds the whole
 envelope on a cold session.
+A `hook:` webhook session is not stateless: it is mapped while its turn runs, and
+`_run_hook_agent` forgets the mapping (`forget_conversation`) after the turn's reset, so a
+call that reuses its `sessionKey` starts a fresh conversation, unless a sub-agent of the turn
+still owes it a report (see the `ends_conversation` callers below). A new hook session's first
+prompt carries no logged exchange of the key either (`build_message` with
+`compressed_history=""` and `conversation_reset=True`).
 
 **Lifecycle:**
 - `get_or_create()`: looks up mapping → if found and `.json` file exists,
@@ -4253,6 +4267,18 @@ those callers are:
 | `session_compaction.py` — critical reset after a failed compaction (`clear_conversation=True`) | the overflowed conversation is cleared, so it is over |
 
 `swap_conversation` is not a parent end: it keeps the conversation's key and its runs, so it calls neither `_cancel_parent_children` nor `release_subagent_runtime`.
+
+`dashboard/handlers/hooks.py` — `_run_hook_agent` is deliberately absent too. A hook turn must
+yield as soon as it spawns (`parent_work_supported`), so a sub-agent it starts outlives the
+turn and its report is injected into the hook conversation; the flag would stop that work. So
+the reset stays a recycle, and the turn forgets the resume sid only when no sub-agent of it
+still owes a report, read with the probes of `_parent_owes_child_work` and its `_now` half,
+less the teardown fence this path never opens (`has_unfinished_report_for`,
+`has_in_memory_pending_work_for`, `has_live_or_queued_children`, `has_pending_work_for_async`,
+and `has_pending_store_children` for a child only the task store holds); a read that fails
+keeps the sid. While one does, the conversation is kept for the report, and the
+next call that reuses the `sessionKey` continues it; that call's own teardown forgets it unless
+sub-agent work is still owed then.
 
 `api_channel_clear_context` is deliberately absent: it ends each member's conversation
 through `discard_conversation`, which cancels that key's children and releases its
@@ -4840,6 +4866,27 @@ closing slot, a relay archive, a slot that is not itself running the turn (a
 channel-driven turn on the resumed key), or attachments; an incognito or
 temporary session is taken like any other, since those modes keep their
 transcript and queue. See [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery).
+
+Slack reads the same mode (`slack/midturn.py`), with a `!queue` / `!steer` prefix
+overriding it per message. A busy thread session steers through its provider;
+a thread linked to a dashboard chat steers through `hand_to_resumed_slot`,
+whose own queue arm takes a steer that does not land. A refusal is posted in
+the thread, except `REFUSED_IDLE` (the chat's turn ended during the hand-off),
+after which the route starts the message's own turn. A linked turn a shared
+user opened (`turn_requester`) takes no steer; the message is queued. A steer
+that lands in a thread session is written to the turn's transcript as its own
+`user` row, under the key the turn registered once its question row was on disk
+(`open_transcript`, from `handle_message_transport`); a turn with no such entry
+(the native handler writes question and reply together at its end) takes no
+steer. A message with files, from a shared user or a trusted bot, or
+replayed from the queue is always queued; so is one the turn's start
+answers itself (a `!` command, a privacy modifier, a keyword command, a hook
+reply), one sent while a `!stop` settles, one in a `review` channel, one behind
+an already queued entry, one in a thread a dashboard chat owns, one whose
+running turn a shared user's message opened or the router did not start (that
+turn's tool prompts answer to its opener, `router_task_opener`), and, in a
+single-session DM, one sent in a thread or at the root other than where the
+running turn posts, so it is still answered where it was sent.
 
 WeCom always steers regardless of `queue_mode`: its replies are bound to the
 inbound request, so a queued-then-drained reply can't be delivered later (see

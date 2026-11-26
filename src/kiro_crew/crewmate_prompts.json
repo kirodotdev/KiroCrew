@@ -126,6 +126,9 @@
     "worker_report.missing_capability": "dashboard/mate_thread_wakes.py:report_prompt, under a report naming a missing capability. {missing} what it named.",
     "worker_report.missing_capability_manual": "dashboard/mate_thread_wakes.py:report_prompt, in place of worker_report.missing_capability while Dynamic capabilities is off (no find_capabilities). {missing} what it named.",
     "worker_report.no_reply": "dashboard/mate_thread_wakes.py:report_prompt. No placeholders.",
+    "worker_report.sign_in": "mate_capability_catalog.py:sign_in_line, under a [Worker report] (dashboard/mate_thread_wakes.py:report_prompt) once per Bot thread and server while a worker session with a chat on this gateway reports a mounted server as waiting for authorization. {servers} the names (plain, whole), {first} the first one, {where} the worker's dashboard chat: a link with no click token, or its session key.",
+    "worker_report.sign_in_key": "dashboard/mate_thread_wakes.py:_sign_in_where, the {where} of worker_report.sign_in when no dashboard origin is configured. {key} the worker session key.",
+    "worker_report.sign_in_link": "dashboard/mate_thread_wakes.py:_sign_in_where, the {where} of worker_report.sign_in. {url} the worker chat's dashboard link, never with a click token.",
     "worker_report.session": "dashboard/mate_thread_wakes.py:report_prompt, one per report. {title}, {key} the worker session, {ended} worker_report.ended_*."
   },
   "conductor.assignment_empty": "(empty — write your first briefing there when you have priorities worth remembering)",
@@ -302,7 +305,7 @@
     "got stuck or was dropped, a pull request merged, the person must act or decide,",
     "or you decided something on their behalf (a trust boundary, scope, product",
     "shape). A finished task is always reported in full, in that same turn, before",
-    "you close its item or call `autonudge_stop`. Anything else is not news: a wait",
+    "you close its item. Anything else is not news: a wait",
     "you already reported, \"still running\", \"on track\", \"checked, nothing changed\".",
     "Then write no text at all and end with `nothing_to_do`. After it, write only",
     "the end token its result gives you.",
@@ -500,5 +503,8 @@
   "worker_report.missing_capability": "This worker reports a missing capability: {missing}. Look for it with find_capabilities. When this gateway already runs it, raise the card with request_capabilities now. When only the MCP registry has it, request_capabilities works only on a turn the user sends: tell the user here what you lack, and on their next message raise the card so they can add it for you.",
   "worker_report.missing_capability_manual": "This worker reports a missing capability: {missing}. request_capabilities only works on a turn the user sends, so tell the user here what you lack, and on their next message ask for it with request_capabilities.",
   "worker_report.no_reply": "It ended with no reply text.",
+  "worker_report.sign_in": "A person has to sign in before your worker can use these MCP servers: {servers}. You cannot sign in for them, and the user cannot do it in this thread. Tell the user in this turn's reply, in a sentence or two: the owner of this Crew opens {where}, and if it shows no sign-in button, sends that chat a message naming the server, such as \"Sign in to {first}\". Give the link exactly as written here. Never ask anyone to paste a password, code or token into this thread.",
+  "worker_report.sign_in_key": "the worker's chat ({key}) in the Kiro Crew dashboard",
+  "worker_report.sign_in_link": "the worker's chat in the Kiro Crew dashboard at {url}",
   "worker_report.session": "Your worker session \"{title}\" ({key}) {ended}."
 }

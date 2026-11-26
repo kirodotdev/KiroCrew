@@ -1265,12 +1265,19 @@ class ClickRequest:
 
     ``point`` is in TOP-LEFT screen coordinates, the convention the whole package
     uses. The bottom-left flip AppKit needs happens only in ``overlay_proc``.
+
+    ``requested_method`` is the ``click_method`` the CALLER passed (``auto`` when it
+    was omitted), kept only so a refusal can name the method the model chose rather
+    than the one it was resolved to (the Windows driver refuses ``auto`` + coordinates
+    in its own words). ``method`` stays what every gate, audit and delivery reads.
+    Empty for a hand-built request.
     """
 
     method: str = CLICK_METHOD_ACCESSIBILITY
     point: "tuple[float, float] | None" = None
     button: str = DEFAULT_MOUSE_BUTTON
     count: int = DEFAULT_CLICK_COUNT
+    requested_method: str = ""
 
     @property
     def moves_pointer(self) -> bool:

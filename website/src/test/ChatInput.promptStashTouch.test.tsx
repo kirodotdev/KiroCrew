@@ -24,8 +24,8 @@ import { PROMPT_STASH_MAX, addStashEntry, loadPromptStash, makeStashEntry } from
 import { renderWithProviders } from './helpers'
 
 function Host({
-  slotId = 'chat-1', initial = '', withUpload = true, collapsible = false, promptStash = true,
-}: { slotId?: string; initial?: string; withUpload?: boolean; collapsible?: boolean; promptStash?: boolean }) {
+  slotId = 'chat-1', initial = '', withUpload = true, collapsible = false, promptStash = true, promptOptimizer = true,
+}: { slotId?: string; initial?: string; withUpload?: boolean; collapsible?: boolean; promptStash?: boolean; promptOptimizer?: boolean }) {
   const [value, setValue] = useState(initial)
   return (
     <SlotProvider slotId={slotId || null}>
@@ -36,6 +36,7 @@ function Host({
         onUploadFiles={withUpload ? vi.fn() : undefined}
         collapsible={collapsible}
         promptStash={promptStash}
+        promptOptimizer={promptOptimizer}
       />
     </SlotProvider>
   )
@@ -70,8 +71,9 @@ describe('ChatInput prompt stash on touch', () => {
     await openPlus()
     const stash = screen.getByTestId('prompt-stash-menu-stash')
     expect(stash).not.toBeDisabled()
-    expect(stash).toHaveTextContent('Set the text aside and clear the message input.')
-    expect(stash.textContent).not.toMatch(/Ctrl\+S|⌘S/)
+    // One line, and no shortcut tooltip on touch.
+    expect(stash).toHaveTextContent(/^Stash draft$/)
+    expect(stash).not.toHaveAttribute('title')
     fireEvent.click(stash)
     expect(screen.getByRole('textbox')).toHaveValue('')
     expect(loadPromptStash('chat-1').map(e => e.text)).toEqual(['park me'])
@@ -99,8 +101,8 @@ describe('ChatInput prompt stash on touch', () => {
     expect(screen.getByTestId('prompt-stash-menu-stash')).toHaveAttribute('data-disabled')
     const restore = screen.getByTestId('prompt-stash-menu-restore')
     expect(restore).not.toHaveAttribute('data-disabled')
-    expect(restore).toHaveTextContent('2 drafts stashed. Restores the latest from this menu.')
-    expect(restore.textContent).not.toMatch(/Ctrl\+S|⌘S/)
+    expect(restore).toHaveTextContent(/^Restore stashed draft$/)
+    expect(restore).not.toHaveAttribute('title')
     pick(restore)
     expect(screen.getByRole('textbox')).toHaveValue('newer')
     expect(loadPromptStash('chat-1').map(e => e.text)).toEqual(['older', 'newer'])
@@ -115,7 +117,8 @@ describe('ChatInput prompt stash on touch', () => {
   })
 
   it('has a host without onUploadFiles (the side chat), holding only the stash rows', async () => {
-    renderWithProviders(<Host initial="draft" withUpload={false} />)
+    // promptOptimizer off: with it on, Optimize is a row in this menu too (#41795).
+    renderWithProviders(<Host initial="draft" withUpload={false} promptOptimizer={false} />)
     expect(screen.queryByTitle('Attach files')).toBeNull()
     await openOverflow()
     expect(screen.queryByTitle('Sketch')).toBeNull()
@@ -128,7 +131,7 @@ describe('ChatInput prompt stash on touch', () => {
   })
 
   it('does not create a touch overflow host when the stash is opted out', () => {
-    renderWithProviders(<Host initial="off-record draft" withUpload={false} promptStash={false} />)
+    renderWithProviders(<Host initial="off-record draft" withUpload={false} promptStash={false} promptOptimizer={false} />)
     expect(screen.queryByTestId('composer-more-trigger')).toBeNull()
     expect(screen.queryByTestId('prompt-stash-menu')).toBeNull()
     expect(screen.queryByTestId('prompt-stash-count')).toBeNull()
@@ -230,7 +233,7 @@ describe('ChatInput prompt stash on touch', () => {
     addStashEntry('chat-1', makeStashEntry('kept', []))
     renderWithProviders(<Host />)
     const count = await screen.findByTestId('prompt-stash-count')
-    expect(count).toHaveAttribute('title', 'Stashed drafts for this chat. Ctrl+S in an empty message input restores the latest.')
+    expect(count).toHaveAttribute('title', 'Stashed drafts for this chat. Ctrl+S in an empty message input brings one back.')
     expect(count.getAttribute('title')).not.toContain('⋯')
   })
 })

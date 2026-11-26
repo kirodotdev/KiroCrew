@@ -142,9 +142,11 @@ class TestOffByDefault:
                 "n_ubatch",
                 "n_threads",
                 "n_threads_batch",
+                "n_seq_max",
                 "verbose",
             }
             assert llm.kwargs["model_path"] == str(tmp_path / "model.gguf")
+            assert llm.kwargs["n_seq_max"] == embeddings_mod._MAX_EMBED_BATCH_TEXTS
         finally:
             emb.retire()
         assert not [t for t in threading.enumerate() if t.name.startswith("kc-embed-child")]

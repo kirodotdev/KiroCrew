@@ -80,7 +80,7 @@ def test_the_documented_table_names_it():
         encoding="utf-8"
     )
     assert "| members |" in doc, doc
-    assert "Named workspace folders do not ride" in doc, "the gap must be documented"
+    assert "Named workspace folders ride only when you ask" in doc, "the opt-in must be documented"
 
 
 def test_a_full_snapshot_carries_each_bots_folder(tmp_path, monkeypatch):
@@ -278,8 +278,8 @@ def test_a_merge_of_only_the_bots_folders_is_refused(tmp_path, monkeypatch, caps
 
 
 def test_the_snapshot_names_each_named_workspace_it_leaves_out(tmp_path, monkeypatch, capsys):
-    """A named workspace's folder is config-driven, so no component carries it
-    yet. The snapshot has to say so, with the path to copy, rather than restore a
+    """A default snapshot does not carry a named workspace's folder (the component is
+    opt-in). The snapshot has to say so, with the path to copy, rather than restore a
     Bot whose working files silently stayed behind."""
     home = _home(tmp_path, monkeypatch)
     outside = tmp_path / "elsewhere"

@@ -16,14 +16,14 @@ platform could support it.
 | Edits a message it already sent | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | Adds emoji reactions | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | Accepts a file you send | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| Sends a file back to you | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Sends a file back to you | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Sends an image the reply references | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
 | Native widget (card, inline keyboard) | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Threads a conversation | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Renders markdown tables natively | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
 | Reply length before splitting | 3900 chars | 1900 chars | 4000 chars | 16000 chars | 1750 chars (7000 bytes) | 5120 chars (20480 bytes) | 4000 chars | 4000 chars | 4096 chars | 4000 chars |
 | Tappable choices per prompt | 10 | 25 | 25 | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
-| Approval prompt waits | 600s (config) | 300s | 300s | 300s | 300s | — | — | — | 300s | — |
+| Approval prompt waits | 600s (config) | 600s (config) | 300s | 300s | 300s | — | — | — | 300s | — |
 | Agent can message you first | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Dashboard link is two-way | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Answers a send with a message id | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
@@ -38,11 +38,13 @@ An ASCII-only reply on those channels fits far more than the character figure
 suggests.
 
 **Sends a file back to you** is what you receive from `file_send`. Slack has its
-own upload leg; Telegram, Discord and WeCom deliver through their `send_document`.
+own upload leg; Telegram, Discord, WeCom and Feishu deliver through their
+`send_document`.
 On every other channel `file_send` does not post into that chat: the file reaches
 the dashboard card and, when Slack is connected, the Slack leg too (the session's
 linked Slack thread, else your Slack DM with the bot). On WeCom the file arrives
-as native media.
+as native media. On Feishu `file_send` in a direct message sends an image as an
+image message and any other file as a file message; a group chat gets no file.
 
 **Sends an image the reply references** is the inline path: when a reply names a
 local image, the renderer uploads it and sends the picture instead of printing the
@@ -115,9 +117,9 @@ Only six channels ask you at all. Slack, Discord, Telegram, Teams, Webex and
 WhatsApp install an approval decider, so a tool that needs permission produces a
 prompt and waits:
 
-- **Slack: `agent.tool_approval_timeout_secs`** (default 600 seconds), read
-  through the same resolver the dashboard uses.
-- **Discord, Telegram, Teams, Webex, WhatsApp: 300 seconds.**
+- **Slack and Discord: `agent.tool_approval_timeout_secs`** (default 600
+  seconds), read through the same resolver the dashboard uses.
+- **Telegram, Teams, Webex, WhatsApp: 300 seconds.**
 
 An unanswered prompt is **denied**, never approved — the timeout never means yes.
 
@@ -129,7 +131,7 @@ channels, set the approval mode to `auto` or `trust` — see the channel's own
 guide.
 
 `agent.tool_approval_timeout_secs` (default 600) governs the dashboard chat
-path and Slack only. Changing it will not lengthen or shorten the window on any
+path, Slack and Discord only. Changing it will not lengthen or shorten the window on any
 other messaging channel.
 
 ## Owner DM targets

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { i18nT } from '../i18n/t'
 import { ApiError } from '../api/apiError'
-import { asWorkInFlight, WorkConfirmDeclined, workInFlightNotice } from './workInFlight'
+import { asWorkHolders, asWorkInFlight, runningNowLine, WorkConfirmDeclined, workInFlightNotice } from './workInFlight'
 
 describe('asWorkInFlight', () => {
   it('reads an update deferral', () => {
@@ -90,6 +90,16 @@ describe('workInFlightNotice', () => {
       .toBe(i18nT('components.updateFoundModal.work_running_quiet', { minutes: 2 }))
     expect(workInFlightNotice({ busy: 0, quietRemainingSecs: 0, holders: [], holdersMore: 0 }))
       .toBe(i18nT('components.updateFoundModal.work_running_quiet', { minutes: 1 }))
+  })
+})
+
+describe('runningNowLine', () => {
+  it('is the dialog\'s own holder line, and empty with no holders', () => {
+    const holders = asWorkHolders([{ kind: 'script', name: 'nightly-sync', since_secs: 21, count: 1 }, 'junk'])
+    expect(runningNowLine(holders, 2)).toBe('Running now: nightly-sync (scheduled job, 21s) and 2 more.')
+    expect(workInFlightNotice({ busy: 1, quietRemainingSecs: 0, holders, holdersMore: 2 }).split('\n')[1])
+      .toBe(runningNowLine(holders, 2))
+    expect(runningNowLine(asWorkHolders(undefined), 4)).toBe('')
   })
 })
 

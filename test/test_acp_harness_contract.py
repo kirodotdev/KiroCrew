@@ -346,11 +346,11 @@ async def test_a_missing_binary_aborts_the_spawn(monkeypatch, tmp_path, backend)
 
     monkeypatch.setattr(claude_harness, "_resolve_claude_acp_bin", lambda: (None, "/nowhere"))
     monkeypatch.setattr(claude_harness, "_claude_acp_argv_cache", launch_mod._UNRESOLVED)
-    # goose resolves through the shared self-served ladder and its per-backend
-    # cache; emptied too, so a developer machine with goose installed still sees
-    # the refusal instead of a plan.
+    # goose's self-served ladder and cache are emptied too (an installed goose must
+    # still be refused), and the floor passes: DeepSeek checks it before its lookup.
     monkeypatch.setattr(launch_mod, "_resolve_self_served_bin", lambda b: (None, "/nowhere"))
     monkeypatch.setattr(launch_mod, "_self_served_bin_caches", {})
+    monkeypatch.setattr(launch_mod, "_sandbox_preflight", lambda backend, mode: ())
     with pytest.raises(AcpRuntimeError, match="not found") as raised:
         await harness_for(backend).resolve_spawn(_ctx(tmp_path))
     # The two kiro-cli hosts tag the refusal so the chat row can offer the

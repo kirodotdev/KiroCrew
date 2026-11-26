@@ -49,7 +49,7 @@ tags:
 - name: bots
   description: Bot roster (Owner view)
 - name: approvals
-  description: Tool approvals without a dashboard (proposed amendment, 2026-11-20)
+  description: Tool approvals without a dashboard (amendment, 2026-11-20)
 - name: connectors
   description: connector
 - name: consent
@@ -157,7 +157,9 @@ paths:
       x-crew-coverage: done
       description: revoked grants are not listed by default. Served for grants made through local authorization
         (amendment, 2026-11-24), oldest first. Such a grant is active or gone, so any other `status` lists
-        nothing; each row carries `kind`, `namespace`, `client_id`, `app`, `scopes`, `status`, `created_at`
+        nothing. A grant that has expired, or whose refresh token has run out unused and so can mint no token
+        again, is gone too. Last use and usage are not kept for such a grant, so despite this operation's summary a
+        row carries neither. `created_at` is when the app redeemed its code and the grant began. Each row carries `kind`, `namespace`, `client_id`, `app`, `scopes`, `bots`, `status`, `created_at`
         and `expires_at`.
   /v1/crew/owner/grants/{grant_id}:
     patch:
@@ -647,6 +649,8 @@ paths:
           $ref: ./components.yaml#/components/responses/OwnerForbidden
         '500':
           $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
       x-crew-tier: owner
       x-crew-scope: approvals:answer
       x-crew-phase: 1a
@@ -655,12 +659,18 @@ paths:
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers/sessions_parts/live_turn.py (GET /api/approvals), state only
       x-crew-coverage: done
-      description: Proposed amendment, waiting for a maintainer's sign-off. Lists tool approvals in one state, oldest first,
+      description: Lists tool approvals in one state, oldest first,
         across every session on this Kiro Crew. It covers both places the gateway keeps an approval, a background
         request (a cron job's, a subagent's) and a chat turn's own tool prompt. The gateway gives a request its apr_ id
-        the first time one of these routes sees it and keeps the id in memory for the life of the gateway process.
-        Ids do not survive a gateway restart; an old id is 404. Keeping ids across a restart is left to a later change.
+        the first time one of these routes sees it and keeps the id on disk with its state, its times, why it expired and its session.
+        An id survives a gateway restart. A request that was pending when the gateway process ended, or whose ending
+        was not yet written when the process ended, reads expired with expired_reason gateway_restart afterwards, and
+        is not in the pending list.
         Requests that open and end between calls get no id; this list is not an audit trail. The security event log is.
+        A record file whose content is not valid is moved aside and the list goes on from an empty record.
+        A record file that cannot be read is left in place and the list answers 503 instance_unavailable.
+        503 instance_unavailable also when a file whose content is not valid cannot be moved aside, or the record
+        cannot be written before the answer.
         The host owner's credential is required; authenticated remote access is allowed. Shared Crew teammates,
         app tokens and loopback internal callers receive 403 owner_only.
   /v1/crew/owner/approvals/{approval_id}:
@@ -701,6 +711,8 @@ paths:
           $ref: ./components.yaml#/components/responses/NotFoundNoQuota
         '500':
           $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
       x-crew-tier: owner
       x-crew-scope: approvals:answer
       x-crew-phase: 1a
@@ -709,9 +721,13 @@ paths:
       x-crew-reuses:
       - none, new
       x-crew-coverage: done
-      description: Proposed amendment, waiting for a maintainer's sign-off. Returns one approval by its apr_ id, in whatever
-        state it is, during this gateway process. Ids do not survive a gateway restart; an old id is 404.
-        Keeping ids across a restart is left to a later change.
+      description: Returns one approval by its apr_ id, in whatever
+        state it is. An id survives a gateway restart. An id from before a restart reads with an empty tool, reason and
+        arguments; one that was pending when the gateway process ended, or whose ending was not yet written then, reads
+        expired with expired_reason gateway_restart. An id the gateway never gave, or one lost with a record file whose content was not valid, is 404.
+        A record file that cannot be read is left in place and the route answers 503 instance_unavailable.
+        503 instance_unavailable also when a file whose content is not valid cannot be moved aside, or the record
+        cannot be written before the answer.
         The host owner's credential is required; authenticated remote access is allowed. Shared Crew teammates,
         app tokens and loopback internal callers receive 403 owner_only.
   /v1/crew/owner/approvals/{approval_id}/decision:
@@ -781,6 +797,8 @@ paths:
                       request_id: req_01JBXQ4K7Y2M
         '500':
           $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
       x-crew-tier: owner
       x-crew-scope: approvals:answer
       x-crew-phase: 1a
@@ -789,12 +807,16 @@ paths:
       x-crew-reuses:
       - the resolvers behind POST /api/approvals/{id}/{action} and POST /api/chat/slots/{slot}/approve
       x-crew-coverage: done
-      description: 'Proposed amendment, waiting for a maintainer''s sign-off. Answers one pending approval with allow or deny.
+      description: 'Answers one pending approval with allow or deny.
         The answer goes to the request the id was given to and never to a later request under the same caller id. The
         first answer wins: any later one, and an answer to an approval that has expired, gets 409
         approval_already_resolved. deny refuses that one call and the turn goes on. A security-rule override card takes
         deny here; allow is 403 approval_requires_dashboard, because only the dashboard shows the rule being overridden.
-        Ids do not survive a gateway restart; an old id is 404. Keeping ids across a restart is left to a later change.
+        An id from before a gateway restart is still known, and it is never pending, so an answer to it gets 409
+        approval_already_resolved; an id lost with a record file whose content was not valid is 404.
+        A record file that cannot be read is left in place and the route answers 503 instance_unavailable.
+        503 instance_unavailable also when a file whose content is not valid cannot be moved aside.
+        A failed record write after the answer reaches the waiting tool is logged and the response stays 200.
         The route writes an SEL row for each answer and for its 403 approval_requires_dashboard and 409
         approval_already_resolved refusals. An audit failure does not change the response.
         Not in this amendment: allow_always, and an answer from a Shared Crew teammate. The host owner''s credential is required; authenticated remote access is allowed. Shared Crew teammates,
@@ -1289,7 +1311,8 @@ components:
         id:
           type: string
           pattern: ^apr_[0-9a-f]{32}$
-          description: apr_ and 128 random bits, held in memory for this gateway process. After a restart an old id is 404.
+          description: apr_ and 128 random bits. Kept on disk with its state, its times, why it expired and its
+            session, so after a restart an old id is still readable.
         object:
           const: approval
         namespace:
@@ -1306,7 +1329,8 @@ components:
           type:
           - string
           - 'null'
-          description: The app that owns that session; null for the owner's own.
+          description: The app that owns that session; null for the owner's own, and null on every record from before
+            a gateway restart, whoever owned the session (the owner is not kept on disk).
         tool:
           type: string
           maxLength: 200
@@ -1335,14 +1359,18 @@ components:
         expired_reason:
           enum:
           - timeout
+          - gateway_restart
           - null
-          description: 'Only with state expired. Nobody answered, the turn was cancelled, or the request stopped waiting.'
+          description: 'Only with state expired. timeout: nobody answered, the turn was cancelled, or the request stopped
+            waiting. gateway_restart: after a restart, a row still pending on disk reads expired whether its request
+            was still waiting or had ended without its ending being written.'
         decided_by:
           type:
           - object
           - 'null'
-          description: Who answered through this API, never a token. Null while pending and for an ending made elsewhere
-            (the dashboard, a Stop); state still says whether the tool ran.
+          description: Who answered through this API, never a token. Null while pending, for an ending made elsewhere
+            (the dashboard, a Stop), and on every record from before a gateway restart (it is not kept on disk). State
+            reflects the saved ending, with a saved pending row reading expired after a restart.
           properties:
             kind:
               type: string
@@ -1522,7 +1550,8 @@ components:
           description: Stored on every record of local authorization; one fixed value, `default`, today.
         expires_at:
           type: integer
-          description: 'A local grant only: when the grant ends by itself, in Unix seconds.'
+          description: 'A local grant only: the latest the grant can last, in Unix seconds. It ends, and leaves the
+            list, earlier when its refresh token runs out unused.'
     GrantBots:
       type: object
       required:

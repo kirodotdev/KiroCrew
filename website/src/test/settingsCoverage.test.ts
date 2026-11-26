@@ -494,7 +494,7 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
     reason: 'Coder, Sprites, boxd and Kiro Cloud per-profile CRUD fields, the Coder per-profile template field (picker or free text) and the per-profile stop switch depend on configured rows and cannot be global deep links; the Session Environments page owns them behind its provider choice',
   },
   'BotChannelPanel.tsx': {
-    count: 16,
+    count: 17,
     reason:
       'labels arrive through BotChannelSpec props (per-channel copy decided by the ' +
       'mounting wrapper); the static-label primitives in the same file fan out per channel',

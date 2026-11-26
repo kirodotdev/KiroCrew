@@ -252,7 +252,21 @@ gateway's automatic update) build each new version as its own tree beside it,
 tree, the previous one (a recovery target), and any tree a running `kirocrew`
 process still uses; older ones are removed. A direct installer run still
 rebuilds the fixed `crew-venv` in place (and a pipx install reinstalls into its
-own venv), so a gateway that is running during the re-run keeps the old version
+own venv). A systemd service installed from the fixed `crew-venv` names that
+tree's launcher in `ExecStart`, so after an update it keeps starting the version
+the installer put there. `kirocrew service status` and `kirocrew doctor` then
+print one line that names the loaded program and the fix: for the system unit,
+run the `crew-venv-current/bin/kirocrew service install` it names (without
+`sudo`; it asks for sudo itself); for the per-user unit, point `ExecStart=` in
+the unit file at that path and run `systemctl --user daemon-reload`. A re-run and an update both install the new version with every
+optional extra the install being replaced has, and a re-run whose carried extra
+cannot be installed fails and keeps the previous install. Neither carries a
+package that is not a declared extra (such as `faiss-cpu`): each names, once,
+the packages the previous install had that the new one does not, with the
+`pip install` command that adds them back (a package installed from a local
+path or a URL is named without one: reinstall it from where it came from). The
+update that ships this note is still built by the older running version, so
+that first update prints none. A gateway that is running during the re-run keeps the old version
 loaded while it reads the new files. The installer never restarts it: when it
 finds one running (an active `kirocrew` systemd unit, the
 `dev.kirocrew.gateway` launchd agent, or a `kirocrew gateway` process holding
@@ -319,9 +333,9 @@ or — on a host that does have a toolchain and the headers — opt back into
 compiling with `KIROCREW_ALLOW_SOURCE_BUILDS=1`. The same policy applies to
 `install.sh`'s editable install (the dependency set only; the local kirocrew
 tree is still built) and to the update engine that builds the shadow venv on a
-managed-venv install, where an extra the update carries with no wheel for the
-host also fails the update; uninstall the package that has no wheel from the
-running install to stop carrying that extra.
+managed-venv install, where an extra an update or an installer re-run carries
+with no wheel for the host also fails it; uninstall the package that has no
+wheel from the existing install to stop carrying that extra.
 The opt-in is not remembered. To compile a dependency
 during an update, run `KIROCREW_ALLOW_SOURCE_BUILDS=1 kirocrew update` from a
 shell where the toolchain is on `PATH`: that command builds with the shell's own
@@ -547,8 +561,9 @@ would fetch the unrelated PyPI project of that name — install an extra's own
 distributions into the environment that runs the gateway instead (e.g. `pip install "boto3>=1.34,<2"
 "amazon-transcribe>=0.6.3,<1" "pywhispercpp>=1.5,<2"` for `voice`). The dashboard
 prints the exact command, already pointed at the right interpreter. On a
-`cli.sh` managed-venv install, an update keeps every extra the running install
-has.
+`cli.sh` managed-venv install, an update and an installer re-run keep every
+extra the existing install has, and name any other package they did not carry,
+with the command that adds it back.
 
 | Extra | Adds | For |
 |-------|------|-----|
@@ -918,7 +933,11 @@ On a Linux host that systemd did not boot (no `/run/systemd/system`, as in a
 container whose PID 1 is something else, or WSL without systemd),
 `service install` refuses before anything is written, because no system unit
 could start there. Run `kirocrew gateway` under that host's own supervisor or
-boot script instead.
+boot script instead. On Linux and macOS, `kirocrew restart` keeps that gateway
+under its supervisor when the supervisor runs it inside its own process group
+with no terminal on stdin, as a supervisor script or loop does: the gateway
+restarts itself in place, with the same pid. Any other gateway is stopped and
+started again detached, as before.
 
 The gateway runs untrusted agent tools, so it must run as a **non-root** user:
 the installer sets `User=` to the account behind `sudo` (`$SUDO_USER`, else
@@ -1283,7 +1302,8 @@ sandbox probe names the failing step so you can tell them apart:
 | Symptom | Mechanism | Remedy |
 |---|---|---|
 | `unshare(CLONE_NEWNS)` fails `EPERM`, sysctl is `1` | Ubuntu >= 23.10 AppArmor userns restriction | `kirocrew service install`, or `kirocrew sandbox install-profile` for the AppImage (this page) |
-| `unshare(CLONE_NEWUSER)` fails `ENOSPC` / `EUSERS` | `user.max_user_namespaces=0` (CIS-hardened host) | Raise that sysctl |
+| `unshare(CLONE_NEWUSER)` fails `ENOSPC` / `EUSERS` and `/proc/sys/user/max_user_namespaces` reads `0` (token `userns_cap_zero`) | User namespaces are disabled: `user.max_user_namespaces=0`, a deliberate hardening setting on CIS-hardened and IT-managed hosts | Check with whoever manages the host, then raise it (`sudo sysctl -w user.max_user_namespaces=15000`) and persist it in a file under `/etc/sysctl.d/`. On ENOSPC the result is not cached, so no restart is needed once the value is raised. On EUSERS the result is cached for the life of the gateway, so restart the gateway after raising the value. |
+| `unshare(CLONE_NEWUSER)` fails `ENOSPC` / `EUSERS` and that file reads non-zero or cannot be read (token `max_user_namespaces`) | The per-user cap was reached, or (`ENOSPC` only) momentary resource pressure | Retry; if it keeps happening, raise that sysctl |
 | `unshare` fails and `kernel.unprivileged_userns_clone=0` | Debian-family legacy knob (defaults to 1 since Debian 11) | Set it to 1 |
 | `unshare` fails `EINVAL` / `ENOSYS` | Kernel built without `CONFIG_USER_NS` | None short of a different kernel |
 | Fails inside Docker/Podman | The container's seccomp filter denies `unshare` | Container run flags, **not** host config |
@@ -1301,8 +1321,9 @@ sb.reset_backend(); print(sb.detect_backend(), sb._last_unshare_failure)"
 `kirocrew doctor` reports the same verdict without the one-liner, and the
 dashboard's **Sandbox unavailable** screen names the mechanism and the command
 for it directly — the probe classifies the failing step into one of
-`apparmor_userns`, `max_user_namespaces`, `userns_denied`, `no_user_ns` or
-`mount_denied`, which is the row of the table above that applies to you.
+`apparmor_userns`, `userns_cap_zero`, `max_user_namespaces`, `userns_denied`,
+`no_user_ns` or `mount_denied`, which is the row of the table above that applies
+to you.
 
 ## Troubleshooting
 

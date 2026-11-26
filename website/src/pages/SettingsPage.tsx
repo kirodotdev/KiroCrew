@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Code, Cpu, Fingerprint, Globe, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, UserRound, Users, Webhook } from 'lucide-react'
+import { Bell, Code, Cpu, Fingerprint, Globe, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
+import { KiroGhostMark } from '../components/KiroGhostMark'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
@@ -110,7 +111,8 @@ function buildTabs() {
     // Kiro sign-in, on its own tab: the agent harness is one of several things
     // that run as this account (Team Crews and Shared Crews do too), so it is
     // reachable whichever harness is selected.
-    { key: 'kiro-account', tile: 'var(--tile-blue)', label: i18nT('settings.tabs.kiroAccount.label'), icon: <UserRound size={16} />, description: i18nT('settings.tabs.kiroAccount.description'), ownHeader: true },
+    // The account is a Kiro account, so its mark is the Kiro ghost on Kiro purple.
+    { key: 'kiro-account', tile: 'var(--tile-purple)', label: i18nT('settings.tabs.kiroAccount.label'), icon: <KiroGhostMark size={16} />, description: i18nT('settings.tabs.kiroAccount.description'), ownHeader: true },
     { key: 'imports', tile: 'var(--tile-blue)', label: i18nT('settings.tabs.imports.label'), icon: <Import size={16} />, description: i18nT('settings.tabs.imports.description') },
     // The coding-agent switch used to be a
     // Developer-page tab, which the sidebar only shows in Developer Mode. First-run

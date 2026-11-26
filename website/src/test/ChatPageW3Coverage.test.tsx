@@ -149,7 +149,6 @@ vi.mock('../components/ModelDropdownList', () => ({ default: () => null }))
 vi.mock('../components/InfoTip', () => ({ default: () => null }))
 vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
 vi.mock('../components/WelcomeView', () => ({ default: () => null }))
-vi.mock('../components/SearchResultsList', () => ({ default: () => null }))
 interface SidebarProps {
   onDropSessionRef?: (ref: { key: string; title: string }) => void
 }

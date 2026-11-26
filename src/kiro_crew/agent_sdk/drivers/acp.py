@@ -59,6 +59,7 @@ __all__ = [
     "crew_loads_spec_steering",
     "projected_session_mcp_servers",
     "spec_with_default_crew_servers",
+    "spec_withholds_server_whole",
     "default_crew_servers_pass",
     "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
@@ -200,6 +201,22 @@ def resolve_usable_model(preferred: str, advertised: object, *, backend: str = "
     return _impl(preferred, advertised, backend=backend)  # type: ignore[arg-type]
 
 
+async def apply_configured_model(handle: object, configured_model: str, *, backend: str) -> None:
+    """Put a session that has just started on its configured model.
+
+    Thin delegation to
+    :func:`kiro_crew.acp.session_handle_model_selection.apply_configured_model`, the
+    function a process's own first session goes through, so a sub-agent's session on
+    its parent's process (``subagent_parts/model_choice.py``) reaches it through the
+    SDK surface instead of importing the ACP layer. *handle* is the session the
+    caller already holds; *backend* stays a plain string. Function-local import for
+    the same reason as :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.acp.session_handle_model_selection import apply_configured_model as _impl
+
+    await _impl(handle, configured_model, backend=backend)  # type: ignore[arg-type]
+
+
 def build_acp_provider(
     *,
     work_dir: "str | Path | None" = None,
@@ -230,6 +247,7 @@ def build_acp_provider(
     disposable_work_dir: bool = False,
     side_read_only: bool = False,
     include_memory: bool = True,
+    clear_effort_overlay: bool = False,
 ) -> "AcpProvider":
     """Construct an ``AcpProvider`` from already-resolved session parameters.
 
@@ -288,6 +306,7 @@ def build_acp_provider(
         disposable_work_dir=disposable_work_dir,
         side_read_only=side_read_only,
         include_memory=include_memory,
+        clear_effort_overlay=clear_effort_overlay,
     )
 
 
@@ -520,9 +539,10 @@ def narrowed_agent_permissions(
     """*derived* with the ``deny`` and ``ask`` rules of the authored block *inherited* first.
 
     *inherited* is read with the parser KAS's projection uses
-    (``parse_user_permissions``), so a block it refuses whole on every session -- a
-    named policy bundle, an unknown key, a capability KAS does not define -- yields
-    no rule: none of its rules ever applied. Duplicates are dropped, so a writer
+    (``parse_user_permissions``), so a block it refuses whole on every session -- an
+    unknown key, a capability KAS does not define -- yields no rule: none of its
+    rules ever applied. A named policy bundle is left out with the ``allow`` rules
+    beside it, so its ``deny`` and ``ask`` rules are carried. Duplicates are dropped, so a writer
     that runs over its own output does not grow the list.
 
     The block returned is one that same projection accepts, because a refused block
@@ -728,6 +748,13 @@ def default_crew_servers_pass() -> AbstractContextManager[None]:
     from kiro_crew.acp.default_crew_servers import one_pass
 
     return one_pass()
+
+
+def spec_withholds_server_whole(spec: Any, server: str) -> bool:
+    """Whether *spec* excludes *server* whole; see :func:`kiro_crew.acp.default_crew_servers.withheld_whole`."""
+    from kiro_crew.acp.default_crew_servers import withheld_whole
+
+    return bool(withheld_whole(spec, [server]))
 
 
 def kiro_cli_resolves() -> bool:

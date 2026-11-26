@@ -652,6 +652,7 @@ class SessionManager:
     is_busy = _claims.is_busy
     touch = _claims.touch
     enqueue = _claims.enqueue
+    has_queued = _claims.has_queued
     dequeue = _claims.dequeue
     cancel_queued = _claims.cancel_queued
     is_cancelled = _claims.is_cancelled

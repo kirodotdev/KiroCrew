@@ -368,7 +368,14 @@ Three structural facts explain most of the rest:
   and not at all when the reset is further away than that. A 403 that names no
   rate limit is a permission error and is not retried. The `Main-red skip:` line
   of the step says which of these happened. `test/test_ci_main_red_skip.py`
-  pins each case.
+  pins each case. So that `Coverage Gate` still reads what those tests cover,
+  shard 1 of a full-suite run on the CodeBuild fleet runs them once more after
+  its own tests, serially, with the same coverage targets and at most 5
+  minutes, outcome ignored (`scripts/ci_main_red_skip.py measure`). What they
+  cover is added only when that pytest run exits 0, since a failing test can
+  reach lines a passing one does not; a failure, a timeout or an id that no
+  longer exists adds nothing, and a file only they reach then reads as low as
+  before. A run off the fleet has no budget for the pass and skips it.
 - **Do not merge a feature PR past a non-green `PR Readiness`.** The ruleset's
   bypass actors can, and a `pending` readiness is not a judgement about a red
   lane: it skips lanes that have not reported yet. #11947 merged 14 s after its
@@ -694,7 +701,7 @@ limits to it:
 
 | Limit | Rule | On 10,000 points | What it bounds |
 |---|---|---|---|
-| reserve (`--reserve-points`) | half the bucket, plus 120 | 5,120 | The census stops, and says Partial, before a call that would start with less: other workflows keep half of every hour's bucket |
+| reserve (`--reserve-points`) | half the bucket, plus 120 | 5,120 | Before a call that would start with less, the census waits for the bucket's reset if it comes within the 30 minutes a run may wait in all (`--wait-for-reset-seconds 1800`), and otherwise stops and says Partial: other workflows keep half of every hour's bucket |
 | most (`--max-points`) | two fifths of the bucket, less 120 | 3,880 | The most one run spends. A weekday is about 3,000 |
 
 The 120 points are one call for each of the 4 workers at about 30 points, the
@@ -711,8 +718,13 @@ wrapper may sleep inside it on a spent limit and 300 for the call itself: the
 wrapper charges a sleep before it starts, so a call ended mid-sleep would have
 spent the wait budget and read nothing.
 
-The census never waits for a bucket: a job that sleeps holds a
-runner. A `schedule` event carries no inputs and no `repository` object, so
+The census waits for a bucket only at the reserve, and only for a reset that
+is near: it starts late in the bucket's hour while the rest of CI draws on the
+same bucket, and both weekday reads before the wait (2026-11-23 and
+2026-11-24) stopped Partial minutes before the reset (#39700). A reset further
+away than the time left of the 30 minutes still ends the census Partial, and
+the day job's 90-minute limit holds the wait. A `schedule` event carries no
+inputs and no `repository` object, so
 an empty `day` means yesterday and the default branch falls back to
 `github.ref_name`; a test evaluates every step's `env:` under both events.
 
@@ -754,6 +766,52 @@ what the census writes as a missing day.
 budget against the bucket, each deadline against the wait inside it and each
 step's handling of every exit code; `test/test_ci_red_census_week.py` holds the
 sum to what one census of all seven days gives.
+
+### Scheduled workflows: the test-selection miss ledger
+
+`test-selection-ledger.yml` keeps the miss ledger of diff-based test selection:
+what each pull request's shadow verdict (`test-selection-verdict`, from the
+`changes` job) would have skipped, joined with what its run really failed. It is
+shadow only. One job on a standard hosted runner, `read` permissions only
+(`contents`, `actions`, `checks`, `issues`), in this repository only; it opens
+no issue and posts no comment. A verdict is uploaded by the pull request's own
+run, so the ledger's numbers are evidence for a person: nothing may turn
+selection on, make a tier skippable or pass the enforcement gate on them alone.
+Turning selection off on them is safe.
+
+- **Five passes a night, 05:11 to 08:11 UTC.** Each runs
+  `scripts/ci_test_selection_ledger_night.py`: restore the ledger, read at most
+  700 REST requests' worth of the last two days' pull-request runs with
+  `scripts/ci_test_selection_ledger.py`, report on the whole ledger, and upload
+  `ledger.jsonl`, `rates.json` and `summary.md` as the artifact
+  `test-selection-ledger`, kept 90 days. The summary goes to the job summary.
+- **A pass keeps out of a low pool.** It reads nothing unless the hour's pool
+  holds 7,500 requests beyond what it may spend. Under that it uploads nothing
+  and ends green with a notice; it never waits for a reset, and a later pass
+  reads the rest.
+- **The history is the artifact chain.** Verdicts are kept a week, so the days
+  of data live only in this workflow's own artifacts. A pass restores the
+  ledger from the newest successful `schedule` or `workflow_dispatch` run of
+  this workflow on the default branch of this repository that holds one,
+  looking back through at most 20 runs: any run can upload an artifact of the
+  same name. It starts an empty ledger unasked only when every successful run
+  of the workflow was looked at and none lists the artifact at all, live or
+  expired; the summary's first line then says so. In every other case where no
+  ledger is found, and when a read fails or the restored file is not a ledger,
+  the pass fails and uploads nothing. Rows older than 90 days are dropped at
+  restore.
+- **A red pass is filed.** A pass that fails (a read that failed, a restored
+  file that is not a ledger, no ledger found where one was kept, a script
+  error, the job's timeout) is a red scheduled run, and
+  `scheduled-failure-watch.yml` opens or bumps one issue for the workflow. A
+  pass that kept out of a low pool is green and files nothing: it is the
+  intended outcome, several times on a busy night.
+
+A dispatch takes `since` (the first UTC day of runs to list; verdicts older
+than a week are gone), `restore_run` (restore from that run of this workflow,
+held to the same rule) and `start_empty` (start an empty ledger on purpose).
+The summary's first line records either. `test/test_ci_test_selection_ledger_night.py`
+pins each rule.
 
 ### A red that is not your diff: external, or self-inflicted?
 
@@ -1024,9 +1082,11 @@ pushes whose red jobs included a lint job.
 
 A pull request whose every changed path is a prose doc skips the expensive lanes
 and still gets a green `PR Readiness`. Prose docs are exactly `docs/**/*.md`,
-`src/kiro_crew/docs/**/*.md`, `website/docs/**/*.md`, the root `README.md` and
+`website/docs/**/*.md`, the root `README.md` and
 the root `CONTRIBUTING.md`. Anything else, a script or an image under `docs/`
-included, runs everything. A rename counts both paths. One script,
+included, runs everything. Markdown under `src/` is package data, not prose: the
+user docs in `src/kiro_crew/docs/` ship in the wheel and product code reads them
+at run time, so a change there runs everything too. A rename counts both paths. One script,
 `.github/scripts/docs_only.py`, decides it for every workflow below.
 
 | What | On a docs-only pull request |
@@ -1076,7 +1136,7 @@ yet decided: install from a committed constraints file, or set
 | `ai-block-hold` | "AI Review Hold". Skipped unless the repository variable `CI_AI_BLOCK_HOLD` is `shadow` or `enforce`, and only on a same-repository pull request. After the lint jobs pass it reads, once, the `Opus 5.5 Review` and `GPT 6.1 Review` check-runs already published for the head; in `enforce` it fails with the `hold` output when one of them is a BLOCK, and `lint-gate` skips. It holds `checks: read` and `contents: read`. See [AI review hold](#ai-review-hold) |
 | `cancel-superseded-run` | "Cancel Superseded Run". Runs only on a push to `main` (and not on a queue-landed push, like the barrier), beside `await-fast-gate` rather than behind it. It runs the barrier's script as a probe and, only when that proves this commit's Fast Gate run was evicted before it started, makes the workflow's one write: `POST /actions/runs/{run_id}/cancel` on its own run, so the run concludes `cancelled` instead of `failure`. Any other outcome cancels nothing and exits 0, leaving the verdict to the barrier. It is the only job in `ci.yml` with `actions: write`; pull requests and merge groups never start it. Nothing needs it, so it cannot release the matrix, and a cancelled run is never a green one |
 | `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink; on a PR it runs only on the changed `src/` and `test/` Python files (a baseline edit that only deletes entries adds those paths), and an edit to `pyproject.toml` or an added baseline entry forces the whole tree, as does `main-ratchet-audit.yml`. Black here and the four scope-resolving gates in `backend-ratchets` read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics. `flake8` and `mypy` run side by side in one step, "Lint and type check (flake8 and mypy, side by side)", after the mypy cache restore: both are started together, each exit status is read from its own PID, and the step fails when either is non-zero, a tool killed by a signal included. Each tool writes to its own file under `$RUNNER_TEMP/backend-lint`, printed after both finish as a `flake8` log group then a `mypy` one, each titled with how many seconds into the step that tool finished (the step lasts only as long as the slower one), followed by an error line titled `Lint (flake8)` or `Type check (mypy)` for each tool that failed; a step interrupted by the job timeout or a cancellation prints what each had written so far. The main-only mypy cache save is the next step, so it runs only when both passed |
-| `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, an explicit xdist worker count within each (`-n "$WORKERS"`: one per 2 GiB after 2 GiB for the host, capped at the core count, so 6 on the 15 GiB fleet runner; the memory budget behind `-n auto` reserves 5 GiB a worker for a full-suite collection (it granted a file shard 4 when it reserved 3); the job logs its peak memory); 60-minute job budget on CodeBuild, 70 off the fleet where the shards run four-wide, both including coverage upload, with the 120-second per-test timeout retained. The full-suite run passes `--cov-report=`, so a shard writes its coverage data file and prints no terminal coverage table (the table cost 227-326 s a shard after the last test); the report is `coverage-combine`'s. A test still running 30 seconds past its own pytest-timeout has every thread's stack dumped to the log (`scripts/ci_faulthandler_budget.py`, `--faulthandler-grace=30`), so a hang that timeout's `SIGALRM` could not end names its frame. The dump never fires inside a test's budget: faulthandler walks threads without the GIL, and a walk of a thread still running Python can segfault the worker. Large CodeBuild compute with the non-root boundary for eligible actors; hosted fallback. Installs the `voice`, `desktop` and `otlp` extras, as `backend-test-windows` and `platform-tests.yml` do, so the `requires_otlp` wire tests run instead of skipping |
+| `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, an explicit xdist worker count within each (`-n "$WORKERS"`: one per 2 GiB after 2 GiB for the host, capped at the core count, so 6 on the 15 GiB fleet runner; the memory budget behind `-n auto` reserves 5 GiB a worker for a full-suite collection (it granted a file shard 4 when it reserved 3); the job logs its peak memory); 65-minute job budget on CodeBuild (5 of them for shard 1's measure step, in the main-red skip bullet above), 70 off the fleet where the shards run four-wide, both including coverage upload, with the 120-second per-test timeout retained. The full-suite run passes `--cov-report=`, so a shard writes its coverage data file and prints no terminal coverage table (the table cost 227-326 s a shard after the last test); the report is `coverage-combine`'s. A test still running 30 seconds past its own pytest-timeout has every thread's stack dumped to the log (`scripts/ci_faulthandler_budget.py`, `--faulthandler-grace=30`), so a hang that timeout's `SIGALRM` could not end names its frame. The dump never fires inside a test's budget: faulthandler walks threads without the GIL, and a walk of a thread still running Python can segfault the worker. Large CodeBuild compute with the non-root boundary for eligible actors; hosted fallback. Installs the `voice`, `desktop` and `otlp` extras, as `backend-test-windows` and `platform-tests.yml` do, so the `requires_otlp` wire tests run instead of skipping |
 | `backend-test-windows` | All 8 whole-file shards use large CodeBuild compute for eligible actors, windows-latest otherwise; an explicit xdist worker count within each (`-n "$WORKERS"`: one per 1.5 GiB after 2 GiB for the host, capped at the core count, so 8 on the 16 GiB fleet runner and 4 on a 4-core hosted runner; the shards are CPU-bound: on an 8 vCPU / 16 GiB host, shard 7 took a median 846 s at 8 workers against 921 s at 6, peaking at 12,109 MiB; the job logs its peak memory); `--no-cov`, 180s per-test timeout. On a fork pull request it runs only when the `changes` job finds a Windows path (including `.github/actions/setup-windows-tests/**`, `**/*.ps1`, `**/conftest.py` and the platform shims), an added or removed `*.py` line that branches on Windows, the `ci:windows` label or `ci-full-run` (the label takes effect on the next push); main's own CI always runs it. See the migration contract below |
 | `backend-test-ipv6` | Five native IPv6 cases on hosted Linux and Windows; fail-closed report check, Linux full-run coverage merged with the ordinary shards |
 | `backend-test-kernel-lock-owner` | Runs the two strict live-holder/orphan flock cases on an uncontainerized hosted VM (the `kirocrew-runners` group here, `ubuntu-latest` in a fork) with `KIROCREW_LOCK_OWNER_STRICT=1`; full-scope coverage is merged with the shard and IPv6 artifacts. **Skipped on a frontend-only diff** (`only_frontend`); Coverage Gate accepts `skipped` in that case |
@@ -2588,6 +2648,9 @@ Details worth knowing:
     run carries the triggering run's head, so the kick's step runs with
     `continue-on-error` and never reds an unrelated pull request's checks; its
     verdict is in the step log and summary, and the scheduled ticks stay loud.
+    A kicked tick that exits 1 therefore shows a green job, so it says so itself:
+    one `::error::` line and a "Kicked tick failed" section of the step summary
+    name the failed outcomes and state that the green is by design.
     It lists the queued and in-progress runs
     REPO-WIDE — one paginated `GET /repos/{repo}/actions/runs?status=…` per
     status returns runs of every workflow at once — and keeps only those whose
@@ -2753,7 +2816,20 @@ Details worth knowing:
     FAILED outcome: most of the watched set is exempt, so reporting a stuck run
     there as a warning inside a passing scheduled run would leave the shape of the
     incident this watchdog exists for — a stuck run nobody is told about — intact
-    for the majority of the repository. The
+    for the majority of the repository. One case is a warning instead: while
+    CodeBuild is dispatching slowly (a start served after the orphaned job queued
+    waited the saturation line or more, judged on the orphan's own queue first), the
+    queued job may only be slow, so the run is reported with
+    `human-held-heal-exempt-fleet-saturated`, which does not fail the tick, and the
+    tick prints how many runs it held that way. That ends once a job of the run has
+    queued 60 minutes: from then on it is `human-required-heal-exempt-workflow`
+    whatever the fleet does, so saturation cannot hide a run that has waited for
+    hours. So that such a run is judged at all, 5 of the per-tick classify reads are
+    held for runs of a workflow that is not heal-safe for their event and whose
+    attempt started past the orphan threshold (`queued` runs first, then the oldest
+    attempt); the rest of the bound goes to heal-eligible runs first, and on a
+    saturated fleet those alone fill it. The held reads displace reads of the same
+    bound and add none. The
     watchdog never cancels or fully re-runs them. Immediately before a live
     orphan is cancelled, the watchdog reads the workflow file from that run's
     `head_sha` through the repository contents API and re-derives heal-safety.
@@ -2806,7 +2882,14 @@ Details worth knowing:
     unread run that could hold such a start, up to 200 more reads (all or nothing:
     a partial read cannot lift the hold, so a larger set is not read at all), so the
     hold is reached only past that top-up bound; a tick with no orphan spends none
-    of those reads, which is why they are not folded into the per-tick bound.
+    of those reads, which is why they are not folded into the per-tick bound. A run
+    read by the top-up is classified from that same read, so it gets a verdict like
+    a run inside the bound. Every tick also prints one line counting, and naming up
+    to 20 of, the listed runs in status `queued` whose attempt started past the
+    orphan threshold and that got no verdict. It is read from the listing rows, costs
+    no call, and carries no outcome: the row cannot say whether the waiting job is
+    CodeBuild-routed or lost rather than slow, so the line means "not judged", and it
+    is there to be read across ticks before any rule is hung on it.
     The unread runs are retained
     with their creation times and re-judged on age at each cancel, not counted once:
     the cancel phase re-reads the listing once and then judges several cancels
@@ -3683,7 +3766,7 @@ ref; see app-kit-platform.md § Former built-in adoption). The same step holds a
 that adds or changes a pin row to a `Wheel-copy base: <name>@<sha>` line per changed
 row, naming the core commit the pinned app-repo commit was ported from, and fails it
 while that app's non-test wheel copy at the base tip differs from the one at the
-base. The base tip is the one at the PR's last event: nothing re-runs the check when
+base; a row whose app ships no wheel copy at the base tip needs no line. The base tip is the one at the PR's last event: nothing re-runs the check when
 main moves, so whoever approves a pin PR edits its body (or pushes) right before
 approving, which re-runs it against the current tip. Last, a
   `fix`/`revert` PR is checked for a `## Sibling sweep` section listing the other

@@ -391,9 +391,9 @@ def is_sensitive_resolved_path(resolved: str) -> bool:
     such an input is the same string back, since a canonical path has no link
     left to follow. Handing this an unresolved spelling is a link bypass, and
     calling it from the event loop forfeits the bound the pool exists to give
-    that loop -- so it is for exactly one shape of caller: a bulk WALK on a
-    worker thread that already resolves every entry to detect symlink loops and
-    prove containment, and only then asks whether the entry is fenced.
+    that loop. Its callers are bulk WALKs that pass only paths they resolved, readers that
+    just canonicalised, and two callers that must not resolve (they follow no link and expand
+    no 8.3 name, and a miss cannot admit); every shape: ``docs/system-specs/modules/security.md``.
 
     Why a separate entry point rather than "just call the pool anyway": the pool
     is sized for the event loop (two workers by default --
@@ -529,14 +529,21 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
             matched = under(rule_rows)
         matched = matched or _native_store_write(path_str, base_dir)
         matched = matched or _install_root_write(path_str, base_dir)
-        # Call-time import: keeps the module off the MCP servers' import budget.
+        # Call-time imports: keep the modules off the MCP servers' import budget.
+        from kiro_crew.app_manifest_files import app_manifest_write
         from kiro_crew.project_mcp_files import project_mcp_write
 
-        project_mcp = project_mcp_write(path_str, base_dir)
+        project_mcp = project_mcp_write(path_str, base_dir) or app_manifest_write(
+            path_str, candidates, roots
+        )
         remedy = project_mcp or (
             matched and _path_in_home_dirs(path_str, _MCP_REGISTRY_ROWS, base_dir, strict=True)
         )
         matched = matched or project_mcp
+        if not matched:  # call-time import: kept off the MCP listing path's budget
+            from kiro_crew.sandbox_git_control import git_control_write
+
+            matched = git_control_write(path_str, base_dir)
     except PathResolutionStalled as exc:
         return _stall_refusal(exc, path_str)
     if not matched:
@@ -994,6 +1001,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _run_resolution_bounded,
         _running_event_loop,
         _stall_prefix,
+        _trim_windows_name_ends,
         bounded_judgment,
     )
     from kiro_crew.security.paths_targets import (  # noqa: F401

@@ -23,6 +23,7 @@ from kiro_crew.agent import (
     AGENT_FILENAME,
     SharedAgentHomeRefused,
     _atomic_json_write,
+    _declares_server,
     _declined_foreign_spec_write,
     entry_as_enabled,
     gateway_routed_names,
@@ -118,6 +119,7 @@ from kiro_crew.mcp_gateway import hazards, is_gateway_supported, launch_resolve
 from kiro_crew.mcp_gateway.hashing import hash_command
 from kiro_crew.mcp_gateway.launch_approval import (
     approve,
+    check_store_rewritable,
     display_launches,
     load_approvals,
     refused_servers,
@@ -1206,7 +1208,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sync_mcp_to_agent_unlocked,
     )
     from kiro_crew.dashboard.handlers.mcp_config_entries import (  # noqa: F401
+        _another_scope_declares,
         _get_kirocrew_entry,
+        _muted_raw_keys,
         _remove_from_agent_file,
         _replace_kirocrew_spec,
         _rmw_remove_entry,
@@ -1279,6 +1283,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _evaluate_shareability,
         _invalid_flag_reason,
         _kirocrew_mcp_servers,
+        _live_backend_of_slot,
         _mcp_probe_cache,
         _mcp_probe_in_progress,
         _mcp_probe_task,

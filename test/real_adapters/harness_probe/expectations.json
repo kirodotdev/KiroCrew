@@ -11,7 +11,7 @@
     "claude": {
       "literal": "Y",
       "expansion": {"p-dollar": "Y", "p-envprefix": "Y"},
-      "ambient": ["claude-project", "claude-user"],
+      "ambient": ["claude-user"],
       "crew_tool_bytes_ceiling": 155000,
       "note": "claude-agent-acp 0.94.0 (agent SDK 0.3.303) sends Crew's tool specs in full to the loopback model, about 127 KB; 0.100.0 (agent SDK 0.3.316) deferred them behind ToolSearch in the same setup. Re-measure on the bump."
     },
@@ -31,7 +31,7 @@
     "goose": {
       "literal": "Y",
       "expansion": {"p-dollar": "L", "p-envprefix": "L"},
-      "ambient": ["goose-user"],
+      "ambient": [],
       "crew_tool_bytes_ceiling": 160000
     },
     "pi": {

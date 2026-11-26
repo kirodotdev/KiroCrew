@@ -27,7 +27,12 @@ from __future__ import annotations
 
 import ast
 import inspect
+import io
 import json
+import ntpath
+import os
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -198,6 +203,96 @@ class TestParseCalls:
         )
         calls = cu_cli._parse_calls(["--calls", raw])
         assert [name for name, _ in calls] == [TOOL_GET_STATE, TOOL_END_TURN]
+
+
+class TestCallsFile:
+    """``--calls-file`` reads the ``--calls`` array from a file or standard input."""
+
+    def test_a_file_batch_reaches_tool_validation(self, enabled, tmp_path, capsys):
+        batch = tmp_path / "calls.json"
+        batch.write_text('[{"tool": "x"}]', encoding="utf-8")
+        with pytest.raises(SystemExit) as excinfo:
+            cu_cli.run_computer(["call", "--calls-file", str(batch)])
+        assert excinfo.value.code == cu_cli._EXIT_PROBLEM
+        assert "unknown computer-use tool 'x'" in capsys.readouterr().out
+
+    def test_dash_reads_standard_input_bytes_as_utf8(self, monkeypatch):
+        """The byte buffer is read, not the cp1252 text layer over it."""
+        raw = json.dumps(
+            [{"tool": TOOL_END_TURN, "args": {"text": "héllo 你好"}}], ensure_ascii=False
+        )
+        stdin = io.TextIOWrapper(io.BytesIO(raw.encode("utf-8")), encoding="cp1252")
+        monkeypatch.setattr(sys, "stdin", stdin)
+        assert cu_cli._parse_calls(["--calls-file", "-"]) == [
+            (TOOL_END_TURN, {"text": "héllo 你好"})
+        ]
+
+    def test_a_leading_utf8_bom_is_dropped(self, tmp_path):
+        batch = tmp_path / "calls.json"
+        batch.write_bytes(b"\xef\xbb\xbf" + f'[{{"tool": "{TOOL_END_TURN}"}}]'.encode("utf-8"))
+        assert cu_cli._parse_calls(["--calls-file", str(batch)]) == [(TOOL_END_TURN, {})]
+
+    def test_an_untrusted_unc_path_is_refused_before_anything_resolves_it(self, monkeypatch):
+        """On Windows ``realpath`` on a UNC path is itself the outbound SMB probe."""
+        from kiro_crew import hooks
+
+        def _resolved(_path):  # pragma: no cover
+            raise AssertionError("the UNC path was resolved before the screen refused it")
+
+        # Windows for the hooks gates only: a global os.name would make pathlib
+        # dispatch WindowsPath on a POSIX host.
+        monkeypatch.setattr(
+            hooks,
+            "os",
+            types.SimpleNamespace(
+                name="nt",
+                sep=ntpath.sep,
+                environ=os.environ,
+                path=types.SimpleNamespace(
+                    normcase=ntpath.normcase,
+                    normpath=ntpath.normpath,
+                    expanduser=ntpath.expanduser,
+                    realpath=_resolved,
+                ),
+            ),
+        )
+        with pytest.raises(ValueError, match="cannot read --calls-file"):
+            cu_cli._parse_calls(["--calls-file", r"\\attacker\share\calls.json"])
+
+    @pytest.mark.parametrize(
+        "body, fragment",
+        [
+            ('[{"tool": "x"}]'.encode("utf-16"), "--calls-file must be UTF-8 text"),
+            (b"not json", "--calls-file is not valid JSON"),
+        ],
+        ids=["utf-16", "not-json"],
+    )
+    def test_an_unreadable_body_is_a_usage_error(self, home, tmp_path, capsys, body, fragment):
+        batch = tmp_path / "calls.json"
+        batch.write_bytes(body)
+        with pytest.raises(SystemExit) as excinfo:
+            cu_cli.run_computer(["call", "--calls-file", str(batch)])
+        assert excinfo.value.code == cu_cli._EXIT_PROBLEM
+        err = capsys.readouterr().err
+        assert f"Error: {fragment}" in err
+        assert "Commands:" in err
+
+    @pytest.mark.parametrize(
+        "argv, fragment",
+        [
+            (["--calls-file"], "--calls-file needs a file path"),
+            (["--calls-file", "a.json", "b.json"], "--calls-file takes exactly one file path"),
+            (
+                ["--calls-file", "a.json", "--calls", "[]"],
+                "--calls-file takes exactly one file path",
+            ),
+            ([TOOL_CLICK, "--calls-file", "a.json"], "unknown flag '--calls-file'"),
+        ],
+    )
+    def test_a_malformed_calls_file_argv_is_refused(self, argv, fragment):
+        with pytest.raises(ValueError) as excinfo:
+            cu_cli._parse_calls(argv)
+        assert fragment in str(excinfo.value)
 
 
 # ──────────────────────────────────────────────────────────────────────────

@@ -179,7 +179,8 @@ def _install_dashboard_middlewares(
     # refresh on e.g. /apps/code-review-sage which has no server-side route.
     # It also answers a save refused because the file has a pending outside
     # change, for every handler without its own catch: one 409 with the code the
-    # frontend translates, instead of a generic 500.
+    # frontend translates, instead of a generic 500. And it answers a method a
+    # routed Crew API path does not serve with that API's own 405.
     @web.middleware  # type: ignore[misc]
     async def spa_fallback(
         request: web.Request,
@@ -193,6 +194,19 @@ def _install_dashboard_middlewares(
             if not request.app.get(HEADLESS_KEY, False) and _is_spa_shell_request(request):
                 return await handlers.index(request)
             raise
+        except web.HTTPMethodNotAllowed as exc:
+            # A method a routed Crew API path does not serve is answered in the Crew
+            # API's own error body. The router raises the 405 only after every
+            # middleware has passed the request on, so every check that refuses a
+            # caller has already run. Any other path keeps the router's answer.
+            from kiro_crew.dashboard.crew_api_errors import (
+                is_crew_api_path,
+                method_not_supported,
+            )
+
+            if not is_crew_api_path(request.path):
+                raise
+            return method_not_supported(request, exc.headers.get("Allow", ""))
         except PendingEditBlocksSave as exc:
             logger.info("save refused: %s has a pending change (%s)", exc.leaf, request.path)
             return web.json_response({"error": str(exc), "code": exc.code}, status=409)

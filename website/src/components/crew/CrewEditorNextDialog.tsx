@@ -23,7 +23,7 @@ import CrewAvatar from '../CrewAvatar'
 import CrewAvatarBuilder from '../CrewAvatarBuilder'
 import CrewAvatarButton from './CrewAvatarButton'
 import { retiredCueFrom, motionsFrom, soundsFrom } from '../../lib/crewAvatarState'
-import { DisplayNameField, Field, WorkspaceField, WorkspaceModal, ModelField, EffortField, SessionColorField, memberMemoryState } from './crewFields'
+import { DisplayNameField, Field, WorkspaceField, WorkspaceModal, ModelField, EffortField, SessionColorField, TriggersField, memberMemoryState } from './crewFields'
 import ErrorNotice from '../ErrorNotice'
 import { useDialogConfirm } from './useDialogConfirm'
 import { effortLabel } from '../../lib/effort'
@@ -453,7 +453,7 @@ export default function CrewEditorNextDialog({
   }
 
   const {
-    editing, editingAgent, displayName, setDisplayName, sessionColor, setSessionColor,
+    editing, editingAgent, displayName, setDisplayName, sessionColor, setSessionColor, triggers, setTriggers,
     kiroAgent, kiroAgentOptions, templateFieldLabel, persistTemplateSwitch, templateSwitchError,
     templateProvenance, capabilityDirty, capabilityBusy, capabilityLoading, capabilityReadFailed,
     editAvatar, openAvatarBuilder, avatarBuilderOpen, applyAvatar, closeAvatarBuilder, onAvatarImageError,
@@ -694,6 +694,7 @@ export default function CrewEditorNextDialog({
                       wrappers wrapping components that already carry their own
                       label/hint. This is the layout these fields are built for. */}
                   <DisplayNameField value={displayName} onChange={setDisplayName} fallback={editing} />
+                  <TriggersField value={triggers} onChange={setTriggers} subject="member" />
                   <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" />
 
                   {ownsFile ? (
@@ -1145,18 +1146,19 @@ export default function CrewEditorNextDialog({
                         </span>
                       )}
                     </div>
+                    {/* Filled, with the strong edge: the plain edge vanishes on the tint. */}
                     <div ref={confirmRef} className="flex items-center gap-2">
                       {confirmDelete ? (
                         <>
-                          <Btn onClick={() => setConfirmDelete(false)} data-testid="next-cancel-delete-crew">
+                          <Btn className="border-border-strong bg-bg-elevated" onClick={() => setConfirmDelete(false)} data-testid="next-cancel-delete-crew">
                             {i18nT('pages.kiroCrewAgentsPage.cancel')}
                           </Btn>
-                          <Btn danger onClick={deleteCrew} disabled={sheetBusy} data-testid="next-confirm-delete-crew">
+                          <Btn danger className="border-border-strong bg-bg-elevated" onClick={deleteCrew} disabled={sheetBusy} data-testid="next-confirm-delete-crew">
                             {i18nT('pages.kiroCrewAgentsPage.yes_delete_it')}
                           </Btn>
                         </>
                       ) : (
-                        <Btn danger onClick={() => setConfirmDelete(true)} disabled={sheetBusy} data-testid="next-delete-crew" {...uiLocation('agents.delete')}>
+                        <Btn danger className="border-border-strong bg-bg-elevated" onClick={() => setConfirmDelete(true)} disabled={sheetBusy} data-testid="next-delete-crew" {...uiLocation('agents.delete')}>
                           {i18nT('pages.kiroCrewAgentsPage.delete_crew')}
                         </Btn>
                       )}

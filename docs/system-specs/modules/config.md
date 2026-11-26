@@ -51,7 +51,7 @@ the loader therefore reaches `config set`, an undo restores it, and a patch of
 | `config/fields.py` | `_meta` field metadata, the `_safe_*` value coercers every section shares, and `field_default`, the one reader of a DTO field's declared default (`SectionReader` reads through it). An integer coercer keeps a legacy numeric string or integral float already in a config file (`"5"` -> 5, `5.0` -> 5) and rejects booleans and non-integral, malformed or non-finite values in favour of the default. A leaf: it imports nothing from `kiro_crew`. |
 | `config/sections.py` | The facade other specs and tests name for the section DTOs below and for the three domain owners after them: it re-exports every name they define as the same object, and defines nothing of its own. |
 | `config/sections_defaults.py` | `SectionReader`, which resolves a builder's omitted key and coercer fallback to the DTO field's declared default, and the named defaults a DTO field and a load fallback share (`DEFAULT_MODEL`, `DEFAULT_POOL_SIZE`, ...). |
-| `config/sections_agent_env.py` | The environment an agent process receives: the `agent.env` name policy and its refusals, `agent.child_env_defaults` and `agent.deepseek_env`. |
+| `config/sections_agent_env.py` | The environment an agent process receives: the `agent.env` name policy and its refusals, `agent.child_env_defaults` and `agent.deepseek_env`, and the keyed dashboard writes of `agent.strands_env` and `agent.deepseek_env` (`DASHBOARD_KEYED_ENV_MAPS`: one validator per map over a shared body, one merge). |
 | `config/sections_agent_fields.py` | Field coercion for `agent` and the crew records: model pins, role maps, effort, the context-token map, approval modes, the avatar record and bot-name filter, the jail, ACP-backend, YOLO-duration and completion-keep readers, and the KAS bundle url. |
 | `config/sections_agent.py` | `AgentConfig`, and the readers that resolve against its declared defaults. |
 | `config/sections_session.py` | `session`, the crew record `KiroCrewAgentConfig`, `workspaces`, `session_environments` (its DTOs; validation lives in `config/session_environments.py`) and a session's `ResolvedBindings`. |
@@ -315,7 +315,8 @@ Profile card and read per request. A config that still holds an old
 read. Owned by [crew-mode](crew-mode.md#dynamic-capabilities).
 
 `agents.<name>.worker_conducts` (default false) is the same shape: a per-Bot
-bool the owner sets through `PUT /api/agents/{name}` (a non-bool is refused
+bool the owner sets on the Bot's Profile card (**Workers can conduct**) or
+through `PUT /api/agents/{name}` (a non-bool is refused
 with `invalid_worker_conducts`; a non-bool in the file reads as false), shipped
 on `GET /api/members`, and read from the Bot's record at each worker's session
 start, never cached on the worker; a save that changes it reloads the Bot's
@@ -630,11 +631,17 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
   gateway reads these files unsandboxed on the folder's behalf, and an app that
   could point its own folder at an arbitrary readable Markdown tree would have
   that read laundered into its own model session with no tool grant and no
-  signal. Clearing to `[]` stays allowed for every principal (it only removes
-  reads). The person may still declare steering on a folder an app or member
+  signal. Clearing to `[]` stays allowed for an app or member principal (it
+  only removes reads). The person may still declare steering on a folder an app or member
   owns; delivery then routes it to that principal's chats as described below.
   A call on the internal credential every MCP tool call carries
   (`request["internal_auth"]`) is refused the same way, at both write sites.
+- **Owner gate** (`require_owner_for_dashboard_caller`) runs next: "the
+  person" is the owner or an admitted teammate. A dashboard session that is
+  neither (a channel allowlist link) carries the person's empty principal, so
+  the principal gate admits it; the owner gate refuses it `403` `owner_only`
+  on a create with a non-empty list and on any update that sends
+  `steering_dirs`, clearing included, since the folder is the owner's.
 - **Agent surface** is a `folder.steering` change card
   (`change_card_catalog.py`): `propose_change(kind="folder.steering",
   params={folder, steering_dirs})` resolves each directory the way the route
@@ -1677,6 +1684,11 @@ Contract:
   and enable full auto-approval — and the reason is that this file sits in the
   agent-writable data home, so a restorable ack is an ack an agent can forge for
   the user's next fresh origin. Convenience does not outrank a human gate.
+  The machine owner's ack is also kept on the gateway in the owner-only
+  `yolo_ack.json` keystone (written only by `PUT /api/chat/yolo-ack`), which the
+  picker reads beside the browser copy; `PUT /api/chat/yolo-ack
+  {"acknowledged": false}` re-arms the confirmation in any browser that does not
+  hold its own `mc-yolo-ack` copy.
 
 ## Settings import (dashboard Merge)
 
@@ -3301,8 +3313,11 @@ channels whose descriptor names that key in its `credentials` tuple OR its
 `restart_credentials` tuple (`registry.changed_credential_keys`, the credential
 twin of `changed_boot_keys`) and restarts each one through `restart_channel`,
 which re-reads `cfg.load_credentials()` on the way back up — so a rotated
-Telegram/Discord/WeCom/… token reconnects that channel with the new value,
-exactly as a changed `config.json` connection parameter does. The two tuples are
+Telegram/WeCom/… token reconnects that channel with the new value,
+exactly as a changed `config.json` connection parameter does. A channel whose
+descriptor declares `reconnect` (Discord) is offered a credential-only change in
+place first, and is restarted only when that reconnect declines or raises (see
+[messaging](messaging.md) § Connection fields restart ONE channel). The two tuples are
 disjoint by intent: `credentials` names what the channel needs ALL of to connect
 (so `channel_readiness` reports a missing one), while `restart_credentials` names
 a key that is restart-relevant but not required — Teams' `MICROSOFT_APP_TENANT_ID`
@@ -3517,7 +3532,10 @@ dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
 ones whose holder is `DashboardState`, that must rebuild agent artifacts, or that set
 process-wide registry state
-live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `agent.provider`,
+live in `dashboard/server_runtime/config_watch.py::_register_config_watch` —
+`agents` (→ `dashboard/bot_chat_follow.py::follow_config_change`: a Bot's changed `model` or
+`reasoning_effort` clears its own chat's pick, after the session manager's applier),
+`agent.provider`,
 `agent.model`, `agent.role_models.background`, `agent.log_level`
 (→ `handlers/updates_streams.py::apply_log_level_from_config`),
 `dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`),
@@ -3568,6 +3586,14 @@ dashboard notification (`_apply_background_model`).
 A failed heartbeat spec install is held like a conductor spec, so the hourly maintenance
 wake (`retry_held_conductor_specs`) re-runs the rebuild until the heartbeat spec carries
 the new model.
+The guard writes an `agent_home_write` denied row on every rebuild it refuses, and a
+refusal can last the whole process (a linked worktree, a data home beside another
+install's specs). So both appliers rebuild through `_rebuild_specs`: a retry of a value
+whose rebuild was refused first asks `_decline_shared_agent_home(audit=False)` and skips
+the rebuild while the guard still declines, which is one denied row per saved value
+rather than one per watcher tick. The retry itself still runs every tick, so a refusal
+that clears (an unreadable spec that reads again, foreign specs removed) is applied on
+the next one, and a newly saved value is rebuilt and audited at once.
 The `wrote=False` refusal is one case of a general ownership guard: every write through
 the shared-spec primitive (`agent_parts/spec_files.py` `_atomic_json_write`) is refused with
 `SharedAgentHomeRefused` when the data home does not own the shared agents directory. The
@@ -3979,6 +4005,7 @@ class DashboardConfig:
     url: str = ""                  # public URL for the dashboard (used in Slack links); restart=True
     # ... restore_sessions / bot_name / avatar / widget_density / auto_open_browser / etc.
     default_memory_mode: str = "persistent"  # persistent | incognito | temporary; default for user-created dashboard chats only
+    default_approval_mode: str = "normal"  # normal | trust_reads (DEFAULT_APPROVAL_MODES); the approval mode the machine owner's plain New chat opens on. Any other value, a wrong type or an absent key builds "normal". Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum, `invalid_default_approval_mode`). `POST /api/chat/slots` seeds it once, before the new slot's first frame, through `slot_approval_seed.seed_slot_approval` under the SEL caller `chat_default_mode` (`dashboard/chat_default_mode.py`): clamped to the `approval_modes` policy (a refused Reads answers `default_mode_refused: "policy"` and the chat stays on Normal), never ending a YOLO grant. Only a create that asks for it (`start_mode_default: true`, which the browser sends from the person's own New chat entry points: those that pass `crewModeDefault`, plus New Incognito / Temporary, the first message on an empty chat page, a template's Chat button, a milestone's chat, and split view's and a scene's New session, through `createSlot`'s `startModeDefault` or `api.createChatSlot`'s last argument; `website/src/store/chat/newChatStartModeCallsites.test.ts` pins every create site to one kind or the other), unnamed, by the machine owner's own browser session and not a crewmate's chat (`crewmate_approval.crewmate_name_for`), an app's, a cron's, an ephemeral helper's, a work item's or an app page's gets it; a Shared Crew teammate, session_create / session_fork, channels and subagents keep how they start (rfc-default-approval-mode section 3.2). `trust` is not a value: rfc section 6
     verbosity: str = "answer_only" # "default" | "concise" | "answer_only" (retired "ultra" is read as "answer_only"); anything but "default" injects a [RESPONSE PREFERENCES] block into SESSION CONTEXT for every agent (see "Response verbosity reaches every agent" below). Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). A fresh install starts at "answer_only"; an existing config keeps the level it already stores, since every full save writes the key. An unrecognized value injects nothing.
     preferred_language: str = ""  # "" (auto: reply in the user's language) | one of PREFERRED_LANGUAGES' codes, the dashboard's UI languages ("en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"). A set code adds a "## Reply language" section to the same [RESPONSE PREFERENCES] block, at every verbosity level including "default". The language name in that section comes from the fixed PREFERRED_LANGUAGES table, never from the stored value, so an unrecognized value injects nothing. Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). Independent of `language`, which sets only the dashboard UI.
     theme_mode: str = ""           # "dark" | "light" | "system" | "schedule"; empty = unset (frontend falls back to localStorage or "system")
@@ -3989,6 +4016,7 @@ class DashboardConfig:
     translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     show_unread_dot: bool = True   # the per-row unread dot on sidebar session cards (Settings → Display → Sidebar); only a literal false hides it. Folder and aggregate unread counts are unaffected. PATCH-able via /api/config/kirocrew
+    expand_linked_items: bool = False  # session cards start with their linked pull requests and issues open (Settings → Display, Session Cards section); only a literal true opens it, and pressing a card's count still folds that card. PATCH-able via /api/config/kirocrew
     command_bar_enabled: bool = True  # what the quick-search shortcut opens (Settings → Display → View): the Command Bar launcher, or with a literal false the search palette. Replaced the former `command-bar` app's enabled state; the boot cleanup carries a record's opt-out here (apps/builtin_fold.py). PATCH-able via /api/config/kirocrew
     channels_enabled: bool = False  # whether Channels (/channels) has a sidebar row and a Search Everywhere result; only a literal true shows them. Replaced the former hidden `channels` app's enabled state; the boot cleanup carries a record's opt-in here (apps/builtin_fold.py), and `kirocrew app enable/disable channels` writes it. The page and /api/channels are served either way. PATCH-able via /api/config/kirocrew
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
@@ -5285,12 +5313,11 @@ Returns the effective config for a channel:
 
 `dashboard.entry_port` (default `0`, off; restart) is a second port for a reverse
 proxy on this machine, bound on both loopback addresses (127.0.0.1 and ::1); the
-bind address is not configurable. It is for Linux and macOS only for now: on
-Windows a non-zero value stops the start of the regular or the headless
-`kirocrew gateway`. An integer that is neither `0` nor 1024 to 65535, or that
+bind address is not configurable. On Windows each entry listener has a listener
+guard. An integer that is neither `0` nor 1024 to 65535, or that
 equals the gateway's own port, or that equals `dashboard.shared_crew.ssm_port`
-while the SSM listener is configured to run, stops that start too
-(`EntryPortError`). The API-only server (`--slack-only`) neither checks the value
+while the SSM listener is configured to run, stops the start of the regular or
+the headless `kirocrew gateway` (`EntryPortError`). The API-only server (`--slack-only`) neither checks the value
 nor opens the port: it logs a warning and starts.
 The shared config validation replaces a wrong-typed value (for example `8443.5`,
 `"abc"`, `true`, or `null`) with the default `0`, so the entry port stays off. It

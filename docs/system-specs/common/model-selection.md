@@ -440,6 +440,37 @@ decides first whether the pin applies to the session at all.
 Its labels read `<provider>/<model> (<variant>)`; the picker shows them without
 `<provider>/` unless two rows would then read alike (`mimocode_model_rows`).
 
+### One function applies a starting session's model
+
+A session on an `AcpRuntime` is put on its configured model by ONE function,
+`apply_configured_model(handle, configured_model, backend=...)` in
+`acp/session_handle_model_selection.py`. Two starts call it: the runtime's own
+first session (`_start_kiro_runtime_impl` in `providers/acp_runtime_start.py`,
+which records the write as its `set_model` phase) and a sub-agent's session on
+its parent's runtime (`_apply_shared_start_model` in
+`subagent_parts/model_choice.py`, reached from `subagent_manager/run_start.py`,
+through the SDK's thin delegation in `agent_sdk/drivers/acp.py`). So the steps
+cannot differ between a dedicated process and a shared one:
+
+1. `""` or `auto` sends nothing: the harness picks.
+2. A pin another harness's catalog owns (`model_scope.pin_applies`, judged with
+   the session's own advertised list) is not sent, logs at INFO, and is no refusal.
+3. A pin the session did not advertise is folded onto the advertised spelling
+   (`resolve_pin_spelling_on`). One the fold cannot place earns ONE forced
+   revalidation (`refresh_available_models(force=True)`) before it is withheld; a
+   withheld pin logs a warning and is recorded in `model_pin_refused`.
+4. Anything else goes to `AcpSessionHandle.set_model`. A write that fails is
+   logged and never fails the start.
+
+Whether a model-pinned sub-agent takes the shared runtime at all is a separate,
+earlier question, answered by a named capability and not by which harness it is:
+`SessionCapabilities.takes_model_per_session` (`ACP_BACKENDS_MODEL_PER_SESSION`),
+true where the model request names the session it is for. The rule and its other
+terms are in [subagent](../modules/subagent.md#session-sharing-shared-acpruntime).
+What the shared session is handed is the model the dedicated start would hand the
+provider factory, after the same `acp_effective_model` selection, so the role and
+routed tiers resolve identically on both.
+
 ### Scoping is a read, and every tier takes it
 
 Nothing on disk is rewritten. The stored pin stays as the user picked it and is
@@ -599,8 +630,8 @@ model rather than the registry's versioned id. With a cold cache, or a backend t
 advertises only versioned ids, the registry fold applies.
 
 Three more sites apply the same rule on the wire, and one on the picker:
-`AcpClient._apply_startup_model`, the shared-runtime cold start in
-`providers/acp_runtime_start.py`, the warm-pool post-claim switch in `session_allocation.py`
+`AcpClient._apply_startup_model`, `apply_configured_model` for a session on a
+shared runtime (above), the warm-pool post-claim switch in `session_allocation.py`
 (through the injected `model_pin_applies` dep), and `_scoped_default` behind
 `GET /api/models`. A harness-scope refusal logs at INFO on wire paths and at
 DEBUG on display paths, and MUST NOT take the entitlement warning path: harness
@@ -722,6 +753,21 @@ its own once the cache refreshes with a list that carries it.
   the dashboard resets the session so a cold start runs the inherited level or none.
   The dashboard's clear passes `every_model=True`, so a live clear also drops the
   levels stored for models the session ran before, as the reset would.
+- A Default the dashboard records without that live clear still reaches kiro-cli,
+  which reads its level from the workspace `cli.json` at spawn. Mid-turn, the
+  route defers the push but runs `forget_effort` at once: the stored levels and
+  the model's `cli.json` entry go, with no RPC under the turn, and the session's
+  recorded override drops. With no live session (or a live clear that raised, a
+  model that takes no effort, a rebind), it sets `slot._effort_overlay_clear`,
+  persisted beside the effort as `effort_overlay_clear`. The slot's next dashboard
+  spawn (`dashboard/effort_overlay_mark.py`) passes it as `clear_effort_overlay`,
+  bypasses the warm pool, and the provider's start removes that model's entry
+  before it reads the file back (`_clear_default_overlay_entry`); the mark drops
+  once that clear lands. A Bot chat's follow clear marks a chat that held a level
+  the same way.
+  An unpinned (`auto`) session is not covered: it has no model id until kiro-cli
+  names one at spawn. A chat that never picked a level is unmarked and still
+  mirrors the file.
 - The chat composer reads `GET /api/chat/slots/{slot}/selection-capabilities` for
   the active ACP session's backend, effort support, and ordered effort levels. A
   missing session answers `known: false`. Where the level rides the model
@@ -735,7 +781,9 @@ its own once the cache refreshes with a list that carries it.
   30 seconds, and a model or agent switch invalidates it immediately. Where the
   harness carries a session option (goose, pi) or a model pair (codex), a live
   session on that harness runs a model of its own, and its levels can follow that
-  model. It reports a definite `false` only when its build advertises no effort
+  model. The session read is the crew's own (a slot that picked that crew, never a
+  template slot of the same name), else the newest on that harness; a template
+  slot reads the newest. It reports a definite `false` only when its build advertises no effort
   option. An option offering `off` alone, or no level, reports `null` with no
   levels: that is the other session's model speaking (goose does this per model).
   A pair-id harness with the option reports `effort_supported: null` and keeps
@@ -911,10 +959,18 @@ its own once the cache refreshes with a list that carries it.
   inherits a model reaches its session through the session manager's own
   config, which that rebuild replaces); the Bot editor sends
   both fields on every save, renaming included, and the Bot's `set_model` card
-  goes through the same route. That route is the only caller: a change of a
-  Bot's model or effort from `kirocrew agent update --model` or a hand edit of
-  `config.json` does not clear the chat's own value yet (#36614), and a fix must
-  not let a dashboard save clear twice through the config watcher. A
+  goes through the same route. A change of `agents.<name>.model` or
+  `agents.<name>.reasoning_effort` from any other writer (`kirocrew agent update
+  --model`, `kirocrew config set`, a hand edit of `config.json`) clears it through
+  the config watcher's `bot_chat.follow` applier, which runs after the session
+  manager's applier has rebuilt the factory for a changed Bot effort, and defers
+  with it while a section that applier reads is degraded for one load
+  (`agents`, `workspaces`), but not for one the loader keeps degraded until a
+  restart, since the restarted watcher never replays the edit. Each Bot
+  value is followed once: every follow records the value it applied, the watcher
+  skips a value already recorded, and a save skips a field already followed to
+  the same value after the save began, so a dashboard save never clears twice
+  and a `/model` pick made between the two is kept. A
   cleared value that differed from the Bot's, or a save of the Bot's model while
   a throttle or refusal fallback serves the chat (whether or not the chat keeps a
   model of its own), queues the reset a model pick queues, so a
@@ -993,8 +1049,8 @@ its own once the cache refreshes with a list that carries it.
   so the dashboard pick answers 4xx instead of resetting. No reply within the wait
   is read as accepted and the model is recorded.
   A startup pin that a kiro session withholds because the account does not serve
-  it (`AcpClient._apply_startup_model` on the dedicated runtime, the kiro start in
-  `providers/acp_runtime_start.py` on the shared one) is recorded in `model_pin_refused` the same
+  it (`AcpClient._apply_startup_model` on the dedicated runtime,
+  `apply_configured_model` on the shared one) is recorded in `model_pin_refused` the same
   way, so the cron acquire step in `slack/gateway_runtime/cron_fire.py` annotates the result and
   blanks the pinned model on the usage row instead of billing a model that never ran.
   Both refusals carry `advertised_but_refused` from the same verdict, which selects

@@ -923,11 +923,13 @@ def harness_pin_rejected(value: object, config: Any) -> str | None:
     allowed = crewmate_harnesses(config)
     if stored not in allowed:
         return "acp_backend must be one of: " + ", ".join(["(empty)", *allowed])
-    from kiro_crew import sandbox
-    from kiro_crew.agent_sdk.tool_gate import sandbox_floor_refusal
+    from kiro_crew.agent_sdk.tool_gate import (
+        configured_harness_sandbox_mode,
+        sandbox_floor_refusal,
+    )
 
     backend = str(_backends.backend_from_stored(stored))
-    return sandbox_floor_refusal(backend, sandbox.configured_sandbox_mode()) or None
+    return sandbox_floor_refusal(backend, configured_harness_sandbox_mode(backend)) or None
 
 
 def pinned_entitlement_backend(

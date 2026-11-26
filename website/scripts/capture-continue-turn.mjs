@@ -124,8 +124,6 @@ const superseded = {
   ],
 }
 
-const scene = { detail: silent, theme: 'dark' }
-
 async function main() {
   const browser = await chromium.launch()
   const context = await browser.newContext({
@@ -133,40 +131,33 @@ async function main() {
     // Dense 12–13px type; a 1x shot renders it soft on GitHub.
     deviceScaleFactor: 2,
   })
-  const page = await context.newPage()
+  let page = null
 
-  await page.routeWebSocket(/\/api\/ws/, () => {})
-
-  await stubDashboardApi(page, {
-    slots,
-    theme: scene.theme,
-    // Slot detail carries the whole scenario, and `theme` is read at boot, so
-    // both are served from `scene` rather than captured at setup time.
-    extra: async (path, route) => {
-      if (path.startsWith('/api/chat/slots/')) { json(route, scene.detail); return true }
-      if (path === '/api/theme/boot') { json(route, { mode: scene.theme, theme: '' }); return true }
-      if (path === '/api/recent-projects') { json(route, { dirs: [PROJECT] }); return true }
-      if (path === '/api/chat/nav/resolve-links') { json(route, { summaries: [] }); return true }
-      return false
-    },
-  })
-
-  page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 300)))
-  page.on('console', msg => {
-    if (msg.type() === 'error') console.log('CONSOLE:', msg.text().slice(0, 300))
-  })
-
+  /**
+   * A fresh page per scenario, stubbed once. The stub's own init script clears
+   * storage before it seeds it, and the composer persists drafts, so that wipe
+   * keeps one scenario's typed text from bleeding into the next and misreading
+   * as that scenario's state.
+   */
   async function load(detail, theme = 'dark') {
-    scene.detail = detail
-    scene.theme = theme
-    await page.addInitScript(t => {
-      // The composer persists drafts, so a wipe keeps one scenario's typed text
-      // from bleeding into the next and misreading as that scenario's state.
-      localStorage.clear()
-      localStorage.setItem('mc-theme', t)
-      localStorage.setItem('mc-onboarded', '1')
-      localStorage.setItem('mc-active-slot', 'chat-continue')
-    }, theme)
+    await page?.close()
+    page = await context.newPage()
+    await page.routeWebSocket(/\/api\/ws/, () => {})
+    await stubDashboardApi(page, {
+      slots,
+      theme,
+      localStorageEntries: { 'mc-active-slot': 'chat-continue' },
+      extra: async (path, route) => {
+        if (path.startsWith('/api/chat/slots/')) { json(route, detail); return true }
+        if (path === '/api/recent-projects') { json(route, { dirs: [PROJECT] }); return true }
+        if (path === '/api/chat/nav/resolve-links') { json(route, { summaries: [] }); return true }
+        return false
+      },
+    })
+    page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 300)))
+    page.on('console', msg => {
+      if (msg.type() === 'error') console.log('CONSOLE:', msg.text().slice(0, 300))
+    })
     await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
   }

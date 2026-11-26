@@ -362,7 +362,8 @@ def test_a_hook_store_error_does_not_break_the_turn(monkeypatch):
     assert provider.messages == ["[built prompt] hello"]
 
 
-def test_a_failed_hook_with_an_empty_stderr_logs_one_warning(caplog):
+def test_a_failed_hook_is_not_warned_again_by_the_turn(caplog):
+    """``fire`` logs a failed hook's one WARNING; the turn that reads the result adds none."""
     from kiro_crew.hooks import ScriptHookResult
 
     failed = ScriptHookResult(
@@ -370,9 +371,7 @@ def test_a_failed_hook_with_an_empty_stderr_logs_one_warning(caplog):
     )
     with caplog.at_level("WARNING", logger=script_hooks.logger.name):
         assert script_hooks._hook_context([failed]) == []
-    assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == [
-        "Hook h (UserPromptSubmit) failed: exited with code 3"
-    ]
+    assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == []
 
 
 def test_a_replay_of_the_same_message_does_not_rerun_prompt_submit(store):

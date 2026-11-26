@@ -765,7 +765,7 @@ match falls through to it.
 ### Owner-Only Bang Commands
 
 These `!`-prefixed commands are restricted to `KIROCREW_OWNER_ID`. Most of them
-are deprecated in favour of `/kirocrew` sub-commands: `!yolo`, `!stop`, `!voice`,
+are deprecated in favour of `/kirocrew` sub-commands: `!yolo`, `!stop`,
 `!agent`, `!ta`, `!dashboard`, `!channel`, `!link-to-dashboard` and `!restart`
 still run, and the reply carries a deprecation notice naming the slash command
 to use instead.
@@ -776,11 +776,11 @@ to use instead.
 | `!yolo on` / `!yolo off` | Toggle auto-approve all tool calls |
 | `!agent <name>` / `!agent off` | Switch the active agent |
 | `!ta <agent>` / `!ta off` | Override agent for current thread only |
-| `!bot` / `!bot <name>` / `!bot off` | List Crew Bots, run this thread as one (its mode, memory identity and workspace, as a channel pinned with `slack.channels.<id>.agent` does), or go back. The thread's Bot beats the channel's pin. A Bot with its own memory store also binds that store to the thread, so send `!bot <name>` as the thread's first message: a thread that already has history, or is bound to another Bot, refuses (and `!bot off`, `!ta <agent>` and `!ta off` refuse on a bound thread). Slack runs no slash command inside a thread, so `/kirocrew bot` only lists the Bots |
+| `!bot` / `!bot <name>` / `!bot off` | List Crew Bots, run this thread as one (its mode, memory identity and workspace, as a channel pinned with `slack.channels.<id>.agent` does), or go back. When that Bot's own chat is open on the dashboard, the thread joins it, as Discord's `!bot` does: your messages and its replies, and any helper agents it starts, show in that chat, and the replies come back to the thread. Only the owner's `!bot <name>` joins, and only the owner takes a joined thread out, with `!bot off`: another Bot's name is refused until then, and `!bot off` there only leaves the chat; another allowed user's `!bot <name>` runs the Bot on the thread's own session. One thread at a time can join a Bot's chat: a second thread is refused until the first sends `!bot off`. A direct message with `slack.dm_single_session` on, a `review` channel and a `!temporary` or `!incognito` thread do not join: there the Bot runs on the thread's own session, as it does with no Bot chat open. A thread that leaves a Bot chat set to `!temporary` or `!incognito` keeps that mode. The thread's Bot beats the channel's pin. A Bot with its own memory store also binds that store to the thread, so send `!bot <name>` as the thread's first message: a thread that already has history, or is bound to another Bot, refuses (and `!bot off`, `!ta <agent>` and `!ta off` refuse on a bound thread). Slack runs no slash command inside a thread, so `/kirocrew bot` only lists the Bots |
 | `!link-to-dashboard` | Import the current Slack thread into a dashboard session |
 | `!project <path>` / `!project off` | Scope which project-local `.kiro` agents `!ta` can find (does not change the working directory) |
 | `!title <text>` | Set the thread title |
-| `!voice` | Configure TTS voice settings |
+| `!voice …` | TTS voice settings; `!voice global on` / `!voice global off` voice replies in every thread (saved), bare `!voice global` toggles; while it is off, `!voice on` / `!voice off` this thread |
 | `!channel` | Configure the current channel |
 | `!stop` | Interrupt the running turn |
 | `!compact` | Compact the current thread's session context in place |

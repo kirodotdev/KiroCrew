@@ -348,6 +348,7 @@ from kiro_crew.slack.handler_runtime.commands import (  # noqa: F401
     _bang_stop,
     _bang_thread_agent,
     _bang_title,
+    _bang_trust,
     _bang_voice,
     _bang_yolo,
     _handle_compact_command,
@@ -432,6 +433,7 @@ from kiro_crew.slack.handler_runtime.stream import (  # noqa: F401
     _comment_hold_is_protocol,
     _could_open_marker_line,
     _filter_options_brackets,
+    _final_update_landed,
     _resolve_comment_hold,
     _resolve_options_hold,
     _safe_final_update,
@@ -469,6 +471,13 @@ from kiro_crew.slack.sessions_view import (  # noqa: F401 - read by the owners
 from kiro_crew.slack.shared_access import (  # noqa: F401 - read by the owners
     SHARED_OWNER_ONLY_TEXT,
     shared_command_refused,
+)
+from kiro_crew.slack.stream_window import (  # noqa: F401 - read by the owners
+    CONTINUES_BELOW,
+    message_landed_since,
+    messages_noted,
+    stream_clock,
+    stream_due_for_renewal,
 )
 from kiro_crew.slack.thread_parent import (  # noqa: F401 - read by the owners
     fetch_thread_parent,
@@ -519,14 +528,17 @@ def _display_redactor(text: str) -> str:
 
 # Bang commands with no slash equivalent that the native router still answers in a thread
 # linked to a dashboard chat, so they are never delivered to it as a chat message: the
-# words that change what a thread is (``!bot``, ``!conductor``), one set for both.
-_NATIVE_BANG_COMMANDS: frozenset[str] = THREAD_SWITCH_COMMANDS
+# words that change what a thread is (``!bot``, ``!conductor``) and ``!trust``, which
+# changes its session's approval mode.
+_NATIVE_BANG_COMMANDS: frozenset[str] = THREAD_SWITCH_COMMANDS | {"!trust"}
 
-# Mapping of bang commands to their /kirocrew slash equivalents.
-_BANG_TO_SLASH: dict[str, str] = {
+# Mapping of bang commands to their /kirocrew slash equivalents. None: not
+# deprecated, so no notice: the bang acts on the thread it is typed in (`!voice on`),
+# which a slash command cannot name.
+_BANG_TO_SLASH: dict[str, str | None] = {
     "!yolo": "/kirocrew yolo",
     "!stop": "/kirocrew stop",
-    "!voice": "/kirocrew voice",
+    "!voice": None,
     "!agent": "/kirocrew agent",
     "!dashboard": "/kirocrew dashboard",
     "!ta": "/kirocrew agent",

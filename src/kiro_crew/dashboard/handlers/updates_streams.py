@@ -322,6 +322,13 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
         if refused is not None:
             return refused
     else:
+        # The gateway's log is the owner's: a dashboard session that is neither
+        # the owner nor a teammate is refused before the stream opens.
+        from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+        denied = await require_owner_for_dashboard_caller(request, "logs.read")
+        if denied is not None:
+            return denied
         # The replay bypasses every chokepoint, so its grant is recorded here,
         # as ``subscribe_logs`` records it for a dashboard user's socket.
         _audit_allow_quietly(DASHBOARD_USER_AUDITEE, "log")
