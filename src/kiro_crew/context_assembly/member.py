@@ -637,7 +637,8 @@ def build_v2_essentials(
     withholds only the desk protocol and briefing.
 
     ``provider_type`` names the harness serving the session. Only kiro-cli
-    (:data:`PROVIDER_ACP`) honours ``chat.disableInheritingDefaultResources``,
+    (``SessionCapabilities.inherits_kiro_default_resources``) honours
+    ``chat.disableInheritingDefaultResources``,
     so its verdict is read once here, where the harness is known, and handed
     to every consumer; no consumer reads the setting itself. ``None`` means
     the harness is not known to be kiro-cli, so the opt-out is not read and
@@ -689,7 +690,11 @@ def build_v2_essentials(
     # the project group applies, and pass the verdict to the snapshot and the
     # folder-steering dedup below so the two cannot disagree.
     inherits_default_resources = True
-    if profile_overrides is None and include_project and provider_type == ctx.PROVIDER_ACP:
+    if (
+        profile_overrides is None
+        and include_project
+        and ctx.label_inherits_kiro_defaults(provider_type)
+    ):
         inherits_default_resources = ctx.member_inherits_default_resources(project)
     # The member's CORE (persona prompt, SOUL.md, context settings, the
     # profile anchors and recall note appended below) is never left out; every

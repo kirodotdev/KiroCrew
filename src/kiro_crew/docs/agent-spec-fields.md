@@ -1047,7 +1047,8 @@ The inherited trees are what kiro-cli gives a custom agent by default:
 (`agent_discovery.inherited_skill_globs`). Crew turns kiro-cli's own inheritance
 off on native launches to bound the startup catalog, so it supplies these trees
 itself, and the native view gets `skill_search` to load them. The rule is
-keyed on the harness label a turn is built with (`provider_type == PROVIDER_ACP`).
+keyed on the harness label a turn is built with: the backend carrying that label
+must have `SessionCapabilities.inherits_kiro_default_resources`, which only kiro-cli has.
 A chat or member session is built with its served harness's label, and KAS's is
 `kas`, not `acp`, so there an unmapped custom agent on KAS, Claude Code or any
 other harness gets no skill directory and an empty `skill_search` scope; map its
