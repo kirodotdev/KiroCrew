@@ -219,6 +219,40 @@ describe('useTranscriptAnnouncement approvals', () => {
     expect(result.current).toBe('')
   })
 
+  // A host that reads loaded on an empty page (the main chat, a split pane, the
+  // embed): the first rows into it are new, approvals included.
+  const renderLoaded = (rows: Row[], key = 's1') => renderHook(
+    ({ rows, key }) => useAnnouncement(rows[rows.length - 1], false, undefined, key, pendingApprovalsOf(rows), rows.length, YOU, true).announcement,
+    { initialProps: { rows, key } },
+  )
+
+  it('speaks an approval that arrives with the first row of a chat that loaded empty', () => {
+    const { result, rerender } = renderLoaded([])
+    expect(result.current).toBe('')
+    const rows = [{ role: 'user', content: 'ship it', meta: { mid: 'u1' } }, perm('a1', 'npm publish', now())]
+    rerender({ rows, key: 's1' })
+    expect(result.current).toBe('Kiro Crew is waiting for your approval: npm publish')
+    act(() => { vi.advanceTimersByTime(ANNOUNCEMENT_HOLD_MS) })
+    rerender({ rows: [...rows, { role: 'tool', content: 'x', meta: { mid: 't1' } }], key: 's1' })
+    expect(result.current).toBe('')
+  })
+
+  it('speaks a re-requested approval after the first one in a chat that loaded empty is resolved', () => {
+    const user = { role: 'user', content: 'ship it', meta: { mid: 'u1' } }
+    const { result, rerender } = renderLoaded([])
+    rerender({ rows: [user, perm('a1', 'npm publish', now())], key: 's1' })
+    act(() => { vi.advanceTimersByTime(ANNOUNCEMENT_HOLD_MS) })
+    rerender({ rows: [user, perm('a1', 'npm publish', now(), 'approved')], key: 's1' })
+    expect(result.current).toBe('')
+    rerender({ rows: [user, perm('a1', 'npm publish', now(), 'approved'), perm('a2', 'npm publish', now())], key: 's1' })
+    expect(result.current).toBe('Kiro Crew is waiting for your approval: npm publish')
+  })
+
+  it('stays silent for an approval in the first page of a chat that loads with rows', () => {
+    const { result } = renderLoaded([{ role: 'user', content: 'ship it', meta: { mid: 'u1' } }, perm('old', 'rm -rf build', now())])
+    expect(result.current).toBe('')
+  })
+
   it('stays silent for a waiting approval in a session switched to', () => {
     const { result, rerender } = render([{ role: 'assistant', content: 'hi' }], 'a')
     rerender({ rows: [perm('b1', 'deploy', now())], key: 'b' })
