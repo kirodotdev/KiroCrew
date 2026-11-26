@@ -1,0 +1,2 @@
++13
+One lexical Windows candidate in the sensitive-path spellings: a spelling with each name's trailing dots and spaces dropped, then folded, added only when a name ends so. A nine-line helper beside the namespace fold, one import and two lines in _candidate_forms, and one facade manifest line; no target, row or matcher is added.
