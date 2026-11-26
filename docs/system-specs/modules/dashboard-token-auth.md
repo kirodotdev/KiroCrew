@@ -1583,6 +1583,41 @@ byte-identical to the pre-token scheme. The senders are `mcp_core`'s own
 `_send` family, `mcp_tools/browser.py`'s panel command, and
 `mcp_computer.py`'s tool invoke.
 
+#### Session-less internal calls from a sandboxed process
+
+An internal-secret call that names no session (no `X-Session-Key`, or the UI's
+`dashboard:ui`) is attributed to the person: `derive_caller_app` answers `""`.
+That fits the callers that run on the host (the gateway's own calls, the CLI,
+the desktop app). Most Kiro Crew in-sandbox components name the session they act
+for; the ones that do not yet (the KAS Connection bridge's non-capability branch,
+some CLI commands from an agent shell) are what log mode surfaces. So
+`token_auth_sessionless.sessionless_internal_call_refused` checks the rest
+right after the internal grant and before the handler: a call that names no
+session, did not arrive on an agent-socket capability, and comes from a process
+`member_memory_auth.local_owner_bootstrap_provenance` cannot place on the host
+(the owner-token mint's evidence: the connection's peer pid over the unix socket
+or loopback TCP, then the Linux namespaces or the macOS sandbox state). Windows
+has no OS sandbox and is not checked. The blocking peer read runs on
+`local_auth_executor`.
+
+`dashboard.sessionless_internal_calls` decides the outcome. `"log"`, the default,
+admits the call and runs the host check on every such call, including repeated
+caller and path pairs. Only the `internal_auth.sessionless_caller` row with outcome
+`would_deny` is rate-limited: a pair not placed on the host writes at most one row
+every `LOG_WINDOW_SECS` (600 s). The caller in the row and its counter/timestamp
+bucket is `X-Internal-Caller` only when it belongs to `KNOWN_INTERNAL_CALLERS`;
+every other value, including a missing header, becomes `other`. `"enforce"` looks
+at every such call, refuses one not placed on the host with 403
+`session_required`, and writes a `denied` row each time. A host caller the kernel
+check cannot place (a gateway service with a private mount namespace, a CLI that
+reaches a containerized gateway through a mounted socket, an unreadable peer) is
+counted as sandboxed, the same limit the owner-token mint has. The setting is read from the live config on each
+call, and the Settings Advanced page shows it read-only. This is step 2 of the
+staged plan in #42971, inside
+[rfc-sandbox-ipc-capability.md](../../request-for-change/rfc-sandbox-ipc-capability.md)
+goal 1; the default moves to `"enforce"` in a later change once the log shows no
+Kiro Crew caller of this shape.
+
 ### 6. `gateway.py` Integration
 
 `_init_dashboard()` (in `slack/gateway_runtime/service_boot.py`) resolves config and passes to `start_dashboard()` (abbreviated):
@@ -1850,6 +1885,7 @@ already names where to sign in.
 | Request denied | `dashboard.token_auth` | `denied` | rejection reason |
 | `?token=` refused, session cookie beside it authenticated instead | `dashboard.token_auth` | `query_token_rejected` | the link's refusal reason (`token expired`, `invalid signature`, `token superseded`, ...); the token itself is never logged. The request proceeds on the cookie, which grants nothing a cookie-only request would not: no exchange, no new cookie, and no `on_token_consumed` call, so a Slack challenge link refused this way opens no window. Written by the main flow and by both internal-path cookie branches (`_log_query_token_refused`); `_extract_and_validate_token` only returns the refusal reason, so each caller names the caller through `_audit_uid`, the verified peer login when a tailnet peer resolved, like the request's other rows. The request's own row follows it: `ok`, or `denied` when the cookie's peer pin does not match. |
 | Internal-route request granted (loopback `X-Internal-Secret`, or an agent-socket capability) | `internal_auth`, `source=token_auth` | `granted` | request path; caller is the peer address (empty on a unix socket, the dashboard's or the agent socket), or the verified tailnet login; `error` is `agent socket capability` for an agent-socket grant. The grant branch writes no `dashboard.token_auth` row with caller `internal` beside it, because that row would carry no fact this one lacks. An agent-socket request also carries the agent-socket gate's own `dashboard.token_auth` `granted` row (caller `agent-ipc`), which the same middleware writes earlier. The internal arm's secret refusals (no secret configured, a wrong or empty secret, a delegated caller whose record is gone) each write both an `internal_auth` and a `dashboard.token_auth` `denied` row. |
+| Internal call that names no session, from a caller not placed on the host | `internal_auth.sessionless_caller`, `source=token_auth` | `would_deny` (log mode, at most one per caller and path per 600 s) / `denied` (enforce mode, every refusal) | request path; caller is `X-Internal-Caller` when in `KNOWN_INTERNAL_CALLERS`, otherwise `other` (including when absent). Enforce mode also writes a `dashboard.token_auth` `denied` row. |
 | SPA shell served on cold-start nav | `dashboard.token_auth` | `shell_unauth` (no token) / `shell_unauth_invalid_token` (expired/forged token) | request path. **These replace `denied`/403 for non-API `GET`/`HEAD` navigations** — any volume-based scanning/brute-force alert keyed on `denied` or 403 counts for nav paths MUST also watch these two outcomes, or credential-less probing of a remote-exposed dashboard goes invisible. A forged token on a nav serves the secret-free shell but keeps the distinct `shell_unauth_invalid_token` signal (not `ok`). |
 
 ## Security Properties

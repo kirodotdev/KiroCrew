@@ -682,6 +682,21 @@ def _fresh_update_ownership(_floor_monkeypatch):
 
 
 @per_test_guard
+def _cold_sessionless_log_window(_floor_monkeypatch):
+    """Give each test fresh session-less log counts and last-emission timestamps.
+
+    A row one test wrote must not suppress a later test's first row or count toward
+    its total. Patched only when the module is already imported.
+    """
+    from collections import Counter
+
+    module = sys.modules.get("kiro_crew.dashboard.token_auth_sessionless")
+    if module is not None:
+        _floor_monkeypatch.setattr(module, "_SESSIONLESS_COUNTS", Counter())
+        _floor_monkeypatch.setattr(module, "_sessionless_log_last", {})
+
+
+@per_test_guard
 def _krb5_keyring_check_done(_floor_monkeypatch):
     """Mark the once-per-process KEYRING ccache check as already run, for every test.
 

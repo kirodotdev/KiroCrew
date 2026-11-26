@@ -91,6 +91,7 @@ from kiro_crew.dashboard.token_auth_paths import (
     _log_auth,
     _log_query_token_refused,
 )
+from kiro_crew.dashboard.token_auth_sessionless import sessionless_internal_call_refused
 from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401  # re-export through this facade
     ANCESTORS_CLAIM,
     APP_IAT_CLAIM,
@@ -753,6 +754,14 @@ def token_auth_middleware(
                         # Log only: records a TCP caller whose declared key nothing
                         # attests, and the request goes on exactly as before.
                         await _note_unattested_tcp_session_key(request)
+                    # A call that names NO session reads as the person, which a
+                    # sandboxed process is not: logged, or refused when enforced. The
+                    # note above covers a DECLARED key; this covers the absent one.
+                    if await sessionless_internal_call_refused(
+                        request, path, capability_granted=_ipc_granted
+                    ):
+                        _log_auth(request, "internal", "denied", "sessionless sandboxed caller")
+                        return _deny(request, "Forbidden", "session_required")
                     await publish_actor(
                         request, trust=tailnet_trust, serve_peer=None, internal=True
                     )
@@ -1684,6 +1693,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_csrf_exempt,
         register_app_window_paths,
     )
+    from kiro_crew.dashboard.token_auth_sessionless import (  # noqa: F401
+        _MAX_TRACKED,
+        _NO_SESSION_KEYS,
+        _SESSIONLESS_COUNTS,
+        LOG_WINDOW_SECS,
+        SESSIONLESS_INTERNAL_CALL_MODES,
+        _caller_on_host,
+        _names_no_session,
+        _platform_has_sandbox,
+        _sessionless_log_last,
+        sessionless_internal_call_mode,
+    )
     from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401
         _FAMILY_KEY_PREFIX,
         _FAMILY_RECORD_MARGIN_SECS,
@@ -1735,31 +1756,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
-    from kiro_crew import (  # noqa: F401
-        platform_compat,
-    )
-    from kiro_crew.atomic_write import (  # noqa: F401
-        retry_read_sharing_window,
-    )
+    from kiro_crew import platform_compat  # noqa: F401
+    from kiro_crew.atomic_write import retry_read_sharing_window  # noqa: F401
     from kiro_crew.dashboard.app_scope_refusal import (  # noqa: F401
         GrantFacts,
         ScopeRefusal,
         app_label,
         scope_refusal,
     )
-    from kiro_crew.dashboard.boot_id import (  # noqa: F401
-        current_boot_id,
-    )
-    from kiro_crew.dashboard.origin import (  # noqa: F401
-        request_is_unix_socket,
-    )
+    from kiro_crew.dashboard.boot_id import current_boot_id  # noqa: F401
+    from kiro_crew.dashboard.origin import request_is_unix_socket  # noqa: F401
     from kiro_crew.dashboard.revocation_gen import (  # noqa: F401
         persist_next_revocation_gen,
         publish_revocation_gen,
     )
-    from kiro_crew.executors import (  # noqa: F401
-        subprocess_executor,
-    )
+    from kiro_crew.executors import local_auth_executor, subprocess_executor  # noqa: F401
     from kiro_crew.mcp_gateway.socketsec import (  # noqa: F401
         PeerCredResult,
         check_peer_is_self,
@@ -1791,12 +1802,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
 #   ``token_auth_tokens`` -- minting, validating, pinning and revoking session tokens
 #   ``token_auth_app_scope`` -- what an app token may reach
 #   ``token_auth_callers`` -- Unix-socket peer verification and request attribution
+#   ``token_auth_sessionless`` -- session-less internal calls from a sandboxed process
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.dashboard.token_auth_paths",
     "kiro_crew.dashboard.token_auth_tokens",
     "kiro_crew.dashboard.token_auth_app_scope",
     "kiro_crew.dashboard.token_auth_callers",
+    "kiro_crew.dashboard.token_auth_sessionless",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
