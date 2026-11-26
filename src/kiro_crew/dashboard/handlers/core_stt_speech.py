@@ -13,7 +13,6 @@ import asyncio
 import difflib
 import logging
 import os
-import re
 import unicodedata
 from pathlib import Path
 
@@ -58,13 +57,6 @@ _POLISH_MAX_RATIO = 1.8
 #: aiohttp does not cancel a handler when its client leaves, so without this check
 #: an aborted upload kept the recogniser busy until the whole clip was decoded.
 _CLIENT_GONE_POLL_SECS = 0.5
-
-#: The shape of an upload suffix the temp path may carry. The suffix is the only
-#: part of the client's filename that reaches the temp path, so it is kept only
-#: as plain letters and digits; any other (``.webm:x`` names an NTFS stream on
-#: Windows) becomes ``.webm``. An unknown but plain suffix (``.3gp``) is kept,
-#: so the decoder still detects its container from the content.
-_UPLOAD_SUFFIX_RE = re.compile(r"\.[a-z0-9]{1,8}")
 
 
 class _ClientGone(Exception):
@@ -470,11 +462,14 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
             {"error": "missing audio field", "code": _CODE_STT_MISSING_AUDIO}, status=400
         )
 
-    # Use uploaded filename extension (recording.webm / .mp4 / .ogg)
+    from kiro_crew.messaging.attachments import safe_suffix
+
+    # Use uploaded filename extension (recording.webm / .mp4 / .ogg), stripped to
+    # letters and digits: the client's text must not shape the temp path (a
+    # colon names an NTFS stream on Windows). An unknown suffix is kept, so the
+    # decoder still detects its container from the content.
     fname = getattr(field, "filename", None) or "recording.webm"
-    ext = os.path.splitext(fname)[1].lower()
-    if not _UPLOAD_SUFFIX_RE.fullmatch(ext):
-        ext = ".webm"
+    ext = safe_suffix(os.path.splitext(fname)[1][1:], default="webm")
     # A fresh unpublished path: stream_part_to_file writes to a sibling temp
     # off the event loop and publishes here atomically, so no exit path (413,
     # backend failure, cancellation) can leave a partial file at this name.
