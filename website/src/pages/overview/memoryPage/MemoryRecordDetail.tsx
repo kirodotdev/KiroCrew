@@ -12,9 +12,13 @@ import type { MemoryRecord } from '../../../types/memoryEditing'
 import { MEMORY_RECORD_LABELS, RecordHistory, RecordProvenance, memoryRecordBody } from '../memoryRecordParts'
 import { SCOPE_UNUSABLE, facetLabel, lessonFacts, recordTags, sourceGroup } from './memoryListView'
 import { FilterChip, fmtScore, type ChipFilter } from './MemoryListParts'
+import { StrengthDetail } from './MemoryStrength'
 
-export function MemoryRecordDetail({ store, row, phone, chip, onClose, onEdit, onForget, onRestore, onKeepCurrent, onProposal }: {
+export function MemoryRecordDetail({ store, row, phone, chip, fadeLine, onSaveAsLesson, onClose, onEdit, onForget, onRestore, onKeepCurrent, onProposal }: {
   store: string; row: MemoryRecord; phone: boolean
+  /** The store's fade line (`memory_decay.FADE_LINE`); a store that does not fade has none. */
+  fadeLine?: number
+  onSaveAsLesson?: () => void
   /** Tags filter the list, as they do in its rows. */
   chip?: ChipFilter
   onClose: () => void; onEdit: () => void; onForget: () => void
@@ -43,6 +47,7 @@ export function MemoryRecordDetail({ store, row, phone, chip, onClose, onEdit, o
     <dl className="m-0 grid gap-x-3 gap-y-2.5 text-[13px] leading-5" style={{ gridTemplateColumns: '96px minmax(0,1fr)' }}>
       {fields.map(([label, value]) => [<dt key={`${label}:k`} className="text-muted">{label}</dt>, <dd key={label} className="m-0 min-w-0 text-text">{value}</dd>])}
     </dl>
+    {row.decay && fadeLine !== undefined && <StrengthDetail decay={row.decay} fadeLine={fadeLine} written={row.created_at} onSaveAsLesson={onSaveAsLesson} />}
     <RecordProvenance row={row} source={false} />
     <RecordHistory store={store} row={row} onRestore={onRestore} onKeepCurrent={onKeepCurrent} onProposal={onProposal} />
   </div>

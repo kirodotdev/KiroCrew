@@ -8,7 +8,8 @@ while only that page is assembled.
 A facet is something the page can filter on: the lesson fields (category, applies,
 repo scope), the write origin (source), the channel (surface) and crew a row came
 from, and an experience's tags. Surface and crew are stamped on the crew lineage
-only; a Global V1 row has neither, so it counts toward no value of them. Confidence is a
+only; a Global V1 row has neither, so it counts toward no value of them. Strength
+(``memory_decay``) is a V1 experience's band: strong, fading or faded. Confidence is a
 range, not a facet: facts and lessons carry it, experiences do not.
 """
 
@@ -28,8 +29,8 @@ from kiro_crew.validation_parts.input_bounds import normalize_lesson_category
 # never holds ":" (project_scope.scope_is_admissible), so no real scope can equal it.
 SCOPE_UNUSABLE = ":unusable"
 SOURCE_UNKNOWN = "unknown"
-FACET_GROUPS = ("category", "applies", "scope", "source", "surface", "crew", "tag")
-SORTS = ("updated", "created", "confidence", "importance", "key", "match")
+FACET_GROUPS = ("category", "applies", "scope", "source", "surface", "crew", "tag", "strength")
+SORTS = ("updated", "created", "confidence", "importance", "strength", "key", "match")
 # A date range filters on one of these times: the list's sort field, updated unless sorted by created.
 DATE_FIELDS = ("updated", "created")
 _MAX_VALUES = 50
@@ -119,6 +120,7 @@ def summary_facets(
     *,
     surface: str | None = None,
     crew: str | None = None,
+    strength: str | None = None,
 ) -> dict[str, Any]:
     """The facet values one row carries; ``None`` is no value for that group."""
     facets: dict[str, Any] = {
@@ -129,6 +131,8 @@ def summary_facets(
         "surface": surface,
         "crew": crew,
         "tag": episode_tags(tags_json) if kind == "episode" else [],
+        # A V1 experience's band (memory_decay.STATES); nothing on other rows.
+        "strength": strength,
     }
     if kind == "directive":
         facets.update(lesson_facets(value_json))
@@ -286,7 +290,7 @@ def count_facets(
 def order(summaries: list[dict[str, Any]], sort: str, descending: bool) -> list[dict[str, Any]]:
     """Sort *summaries* in place by *sort*, ties broken by kind and id.
 
-    Confidence and importance each belong to some kinds only. Rows with no value
+    Confidence, importance and strength each belong to some rows only. Rows with no value
     always go after the rows that have one, newest first, whichever way the sort
     runs, so reversing the order does not put every experience on top.
     """
@@ -295,7 +299,7 @@ def order(summaries: list[dict[str, Any]], sort: str, descending: bool) -> list[
     field = {"updated": "updated_at", "created": "created_at"}.get(sort, sort)
     # A legacy row can have a NULL id; it sorts with the empty one.
     summaries.sort(key=lambda s: (s["kind"], s["id"] or ""))
-    if sort in ("confidence", "importance"):
+    if sort in ("confidence", "importance", "strength"):
         scored = [s for s in summaries if s[field] is not None]
         unscored = [s for s in summaries if s[field] is None]
         unscored.sort(key=lambda s: s["updated_at"] or "", reverse=True)

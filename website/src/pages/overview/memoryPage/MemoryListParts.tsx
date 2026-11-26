@@ -16,23 +16,28 @@ import { useIsMobile } from '../../../hooks/useIsMobile'
 import { useScrollEdges } from '../../../hooks/useScrollEdges'
 import { kindTip, sourceTip } from './memoryTypeTips'
 import type { DateRange } from './memoryDateRanges'
-import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, effectiveSort, facetLabel, sourceGroup, lessonFacts, recordTags, recordTitle, type KindTab, type ListView, type SearchMode } from './memoryListView'
+import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, STRENGTH_STATES, effectiveSort, facetLabel, fmtScore, sourceGroup, lessonFacts, recordTags, recordTitle, type KindTab, type ListView, type SearchMode } from './memoryListView'
+import type { MemoryStoreDecay } from '../../../types/memoryEditing'
+import { StoreFadeChart, StrengthChip } from './MemoryStrength'
 
 const KINDS: [KindTab, string][] = [['all', 'memoryV2.filter_all'], ['fact', 'memoryV2.facts_label'], ['directive', 'memoryV2.rules_label'], ['episode', 'memoryV2.experiences_label']]
-const SORT_KEYS: Record<MemoryRecordSort, string> = { updated: 'memoryPage.field_updated', created: 'memoryPage.field_created', confidence: 'memoryPage.facet_confidence', importance: 'memoryPage.facet_importance', key: 'memoryPage.sort_key', match: 'memoryPage.sort_match' }
+const SORT_KEYS: Record<MemoryRecordSort, string> = { updated: 'memoryPage.field_updated', created: 'memoryPage.field_created', confidence: 'memoryPage.facet_confidence', importance: 'memoryPage.facet_importance', strength: 'memoryPage.strength', key: 'memoryPage.sort_key', match: 'memoryPage.sort_match' }
 // The sort button's label: one sentence per field, so the field and its direction translate together.
-const SORT_LABEL_KEYS: Record<Exclude<MemoryRecordSort, 'match'>, string> = { updated: 'memoryPage.sort_by_updated', created: 'memoryPage.sort_by_created', confidence: 'memoryPage.sort_by_confidence', importance: 'memoryPage.sort_by_importance', key: 'memoryPage.sort_by_key' }
+const SORT_LABEL_KEYS: Record<Exclude<MemoryRecordSort, 'match'>, string> = { updated: 'memoryPage.sort_by_updated', created: 'memoryPage.sort_by_created', confidence: 'memoryPage.sort_by_confidence', importance: 'memoryPage.sort_by_importance', strength: 'memoryPage.sort_by_strength', key: 'memoryPage.sort_by_key' }
 const ORDER_KEYS: Record<MemoryRecordSort, [string, string]> = {
   updated: ['memoryPage.order_newest', 'memoryPage.order_oldest'], created: ['memoryPage.order_newest', 'memoryPage.order_oldest'],
   confidence: ['memoryPage.order_highest', 'memoryPage.order_lowest'], importance: ['memoryPage.order_highest', 'memoryPage.order_lowest'],
+  strength: ['memoryPage.order_highest', 'memoryPage.order_lowest'],
   key: ['memoryPage.order_z_a', 'memoryPage.order_a_z'], match: ['memoryPage.order_highest', 'memoryPage.order_lowest'],
 }
 const GROUP_KEYS: Record<MemoryRecordFacetGroup, string> = {
   category: 'pages.overview.memoryTab.category', applies: 'memoryPage.facet_applies', scope: 'pages.overview.memoryTab.scope', tag: 'memoryPage.facet_tags', source: 'pages.overview.memoryTab.source',
-  surface: 'memoryV2.group_surface', crew: 'memoryV2.group_crew',
+  surface: 'memoryV2.group_surface', crew: 'memoryV2.group_crew', strength: 'memoryPage.strength',
 }
 // A group heading names the kind it filters while the All pill shows every kind.
-const GROUP_KIND_KEYS: Partial<Record<MemoryRecordFacetGroup, string>> = { category: 'memoryPage.for_lessons', applies: 'memoryPage.for_lessons', scope: 'memoryPage.for_lessons', tag: 'memoryPage.for_experiences' }
+const GROUP_KIND_KEYS: Partial<Record<MemoryRecordFacetGroup, string>> = { category: 'memoryPage.for_lessons', applies: 'memoryPage.for_lessons', scope: 'memoryPage.for_lessons', tag: 'memoryPage.for_experiences', strength: 'memoryPage.for_experiences' }
+// What a strength band means; Strong needs no tip.
+const STRENGTH_TIPS: Record<string, string> = { fading: 'memoryPage.strength_tip_fading', faded: 'memoryPage.strength_tip_faded' }
 // The picked kind pill: filled with the text colour on both themes (mock S2).
 export const PILL_ON = 'border-text bg-text font-medium text-bg'
 // Each kind's icon colour, so facts, lessons and experiences read apart at a glance.
@@ -44,8 +49,7 @@ export const ROW_SAVED = 'bg-[color-mix(in_srgb,var(--ok-subtle)_55%,transparent
 const CHIP = 'inline-flex h-[22px] max-w-full items-center gap-1 whitespace-nowrap rounded-full text-[12px] leading-none'
 // Red only below the review line; every other score is a plain number.
 const REVIEW_LINE = 0.5
-/** A 0–1 score with two decimals, in the reader's locale. */
-export const fmtScore = (value: number) => fmtNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+export { fmtScore }
 const SCORE_KEYS = { confidence: 'memoryPage.confidence_value', importance: 'memoryPage.importance_value', match: 'memoryPage.match_value' } as const
 
 /** The kind pills, one row with live counts; a phone scrolls the row sideways. */
@@ -74,7 +78,9 @@ export function KindPills({ kind, counts, onChange, disabled, wrap = false, bot 
 }
 
 /** The sort menu with its direction, and a one-press Reverse beside it. */
-export function SortControl({ view, onChange }: { view: ListView; onChange: (sort: MemoryRecordSort, order: 'asc' | 'desc') => void }) {
+export function SortControl({ view, onChange, decays = false }: { view: ListView; onChange: (sort: MemoryRecordSort, order: 'asc' | 'desc') => void
+  /** The store fades experiences, so Strength is a sort. */
+  decays?: boolean }) {
   const { t } = useTranslation()
   const sort = effectiveSort(view)
   const sorts: [MemoryRecordSort, string?][] = [
@@ -82,6 +88,7 @@ export function SortControl({ view, onChange }: { view: ListView; onChange: (sor
     ['updated'], ['created'],
     ...(view.kind !== 'episode' ? [['confidence', view.kind === 'all' ? 'memoryPage.sort_hint_confidence' : undefined] as [MemoryRecordSort, string?]] : []),
     ...(view.kind === 'all' || view.kind === 'episode' ? [['importance', view.kind === 'all' ? 'memoryPage.sort_hint_importance' : undefined] as [MemoryRecordSort, string?]] : []),
+    ...(decays && (view.kind === 'all' || view.kind === 'episode') ? [['strength', view.kind === 'all' ? 'memoryPage.sort_hint_importance' : undefined] as [MemoryRecordSort, string?]] : []),
     ['key'],
   ]
   const [desc, asc] = ORDER_KEYS[sort]
@@ -165,8 +172,10 @@ function SettledSlider({ value, onSettle, ...rest }: Omit<ComponentProps<typeof 
 
 /** The filter groups with live counts from `facets=1`, and the confidence range.
  *  A box at the top narrows every group's values by label. */
-export function FilterPanel({ view, facets, trailing, capped = false, bot, onToggle, onRange }: {
+export function FilterPanel({ view, facets, decay, trailing, capped = false, bot, onToggle, onRange }: {
   view: ListView; facets?: MemoryRecordFacets
+  /** The store's fade rates, drawn above the Strength values; a store that does not fade has none. */
+  decay?: MemoryStoreDecay
   /** The bot this store belongs to, named in the (?) tips. */
   bot?: string
   /** A control at the end of the search row (the wide rail's hide button). */
@@ -188,7 +197,10 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
     // A ticked value stays listed even when the other filters leave it no rows.
     const values = [...new Set([...Object.keys(counts).filter(value => counts[value] > 0), ...ticked])]
       .filter(value => !needle || facetLabel(group, value).toLocaleLowerCase().includes(needle))
-      .sort((a, b) => Number(ticked.includes(b)) - Number(ticked.includes(a)) || (counts[b] || 0) - (counts[a] || 0) || compareText(a, b))
+      .sort(group === 'strength'
+        // Bands keep their own order, strongest first.
+        ? (a, b) => STRENGTH_STATES.indexOf(a as never) - STRENGTH_STATES.indexOf(b as never)
+        : (a, b) => Number(ticked.includes(b)) - Number(ticked.includes(a)) || (counts[b] || 0) - (counts[a] || 0) || compareText(a, b))
     return { group, counts, ticked, values }
   }).filter(item => item.values.length)
   return <div className="space-y-5">
@@ -211,8 +223,9 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
       const heading = view.kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
       return <section key={group} aria-label={heading}>
         <PanelSectionHeader label={heading} />
+        {group === 'strength' && decay && <StoreFadeChart decay={decay} />}
         <GroupScroll capped={capped}>
-          {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} hint={group === 'source' ? sourceTip(value, bot) : undefined} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={() => onToggle(group, value)} />)}
+          {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} hint={group === 'source' ? sourceTip(value, bot) : group === 'strength' && STRENGTH_TIPS[value] ? t(STRENGTH_TIPS[value]) : undefined} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={() => onToggle(group, value)} />)}
         </GroupScroll>
       </section>
     })}
@@ -282,6 +295,7 @@ export function RecordMeta({ row, sort, chip, meaning = false, end }: { row: Mem
     {typeof row.match === 'number' && <span className={`${CHIP} px-2 ${meaning ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`} title={t(meaning ? 'memoryPage.meaning_match_hint' : 'memoryPage.match_hint')}><span className="tabular-nums">{t('memoryPage.match_value', { value: fmtScore(row.match) })}</span></span>}
     {row.kind === 'episode' && recordTags(row).map(tag => <FilterChip key={tag} group="tag" value={tag} tone="bg-bg-hover px-2 text-muted" chip={chip}>#{tag}</FilterChip>)}
     {score !== null && <ScoreChip value={score} label={row.kind === 'episode' ? 'importance' : 'confidence'} />}
+    {row.decay && <StrengthChip decay={row.decay} />}
     {/* The facet counts spell a blank source as `unknown` (memory_record_facets.SOURCE_UNKNOWN). */}
     {/* The title names the full origin only when the chip shows just its group. An unknown source shows as its raw tag. */}
     <FilterChip group="source" value={source} tone="px-1 text-muted" chip={chip}><span className="min-w-0 truncate" title={row.source && row.source !== source ? row.source : undefined} data-i18n-opaque={sourceText === source || undefined}>{sourceText}</span></FilterChip>

@@ -24,7 +24,9 @@ import { uiLocation } from '../../../uiLocations/uiLocation'
 export type MemoryPageTab = 'memories' | 'graph' | 'profile' | 'recovery' | 'failures' | 'audit' | 'settings'
 export type MemoryListControls = { selecting: boolean; setSelecting: (on: boolean) => void; openTab: (tab: MemoryPageTab) => void
   /** The Graph tab's last hand-off to the list. */
-  jump: MemoryJump | null }
+  jump: MemoryJump | null
+  /** Open New memory on a lesson with this rule typed in; only where the page can create. */
+  newLesson?: (rule: string) => void }
 const TABS: [MemoryPageTab, string][] = [
   ['memories', 'memoryV2.tab_memories'], ['graph', 'memoryPage.tab_graph'], ['profile', 'memoryV2.tab_profile'], ['recovery', 'memoryV2.tab_recovery'],
   ['failures', 'memoryPage.tab_failures'], ['audit', 'memoryPage.tab_audit'], ['settings', 'memoryPage.tab_settings'],
@@ -72,7 +74,8 @@ export default function MemoryPageShell({ id, label, botName, switcher, notices,
   const [visited, setVisited] = useState<Set<MemoryPageTab>>(() => new Set([initialTab]))
   const [selecting, setSelecting] = useState(false)
   const [recallOpen, setRecallOpen] = useState(false)
-  const [creating, setCreating] = useState(false)
+  // Open, with the lesson rule it starts with ('' for a blank form).
+  const [creating, setCreating] = useState<false | { rule: string }>(false)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [saved, setSaved] = useState('')
   const open = (next: MemoryPageTab) => { setTab(next); setVisited(old => new Set([...old, next])) }
@@ -113,7 +116,7 @@ export default function MemoryPageShell({ id, label, botName, switcher, notices,
       <div className="flex min-w-0 items-center justify-between gap-1.5 sm:gap-2">
         <div className="min-w-0">{switcher}</div>
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-          {canCreate && <Btn primary className="min-h-11 sm:min-h-9" onClick={() => setCreating(true)}><Plus className="lucide-inline" />{t('memoryPage.new_memory')}</Btn>}
+          {canCreate && <Btn primary className="min-h-11 sm:min-h-9" onClick={() => setCreating({ rule: '' })}><Plus className="lucide-inline" />{t('memoryPage.new_memory')}</Btn>}
           {more && (phone
             ? <IconButton aria-label={t('memoryPage.more_actions')} aria-haspopup="dialog" className={moreButtonClass} onClick={() => setSheetOpen(true)}><MoreHorizontal className="lucide-inline" aria-hidden="true" /></IconButton>
             : <DropdownMenu>
@@ -147,7 +150,7 @@ export default function MemoryPageShell({ id, label, botName, switcher, notices,
       {phone && tabEdges.left && <div aria-hidden="true" className="pointer-events-none absolute bottom-px left-0 top-0 w-8 bg-gradient-to-r from-bg to-transparent" />}
       {phone && tabEdges.right && <div aria-hidden="true" className="pointer-events-none absolute bottom-px right-0 top-0 w-8 bg-gradient-to-l from-bg to-transparent" />}
       </div>
-      {panel('memories', memories({ selecting, setSelecting, openTab: open, jump }))}
+      {panel('memories', memories({ selecting, setSelecting, openTab: open, jump, newLesson: canCreate ? rule => setCreating({ rule }) : undefined }))}
       {panel('graph', panels.graph)}
       {!hidden('profile') && panel('profile', panels.profile)}
       {panel('recovery', panels.recovery)}
@@ -159,6 +162,6 @@ export default function MemoryPageShell({ id, label, botName, switcher, notices,
     </MemoryJumpContext.Provider>
     {recallOpen && <MemoryRecallDialog store={id} onClose={() => setRecallOpen(false)} />}
     {sheetOpen && <MemoryActionSheet title={label} groups={[listActions, createActions]} onClose={() => setSheetOpen(false)} />}
-    {creating && <NewMemoryDialog onDirtyChange={onDraftChange} onClose={() => setCreating(false)} onSaved={key => created(t('memoryPage.saved_key', { key }))} onLessonSaved={() => created(t('pages.overview.memoryFailuresCard.lesson_saved'))} />}
+    {creating && <NewMemoryDialog initialRule={creating.rule} onDirtyChange={onDraftChange} onClose={() => setCreating(false)} onSaved={key => created(t('memoryPage.saved_key', { key }))} onLessonSaved={() => created(t('pages.overview.memoryFailuresCard.lesson_saved'))} />}
   </div>
 }
