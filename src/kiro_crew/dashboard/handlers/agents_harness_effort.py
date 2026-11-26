@@ -45,6 +45,9 @@ def _live_on(state: Any, backend: str, crew: str) -> Any:
     per model), and the crew's own session is the likeliest to run the crew's. Newest first, as
     ``core._advertised_evidence_provider`` reads: an older session still holds what its
     build said at its own ``session/new``.
+
+    A slot stamped as a template runs that template even when a crew shares its name, so
+    its session is not the crew's.
     """
     sessions = getattr(state, "sessions", None)
     if sessions is None:
@@ -57,7 +60,7 @@ def _live_on(state: Any, backend: str, crew: str) -> Any:
     mine = {
         id(sessions.get_provider(effective_session_key(s)))
         for s in getattr(state, "_slots", {}).values()
-        if crew and s.agent == crew
+        if crew and s.agent == crew and s.agent_kind != "template"
     }
     return next((p for p in on if id(p) in mine), next(iter(on), None))
 
