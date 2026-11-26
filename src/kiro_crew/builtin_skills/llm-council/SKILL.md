@@ -223,11 +223,10 @@ member PROMPT; keep that clause in. `allowed_tools` itself IS honored on the ACP
 backend — `kas_permissions.allowed_tools_to_permissions` converts it into a KAS
 inline policy that is then ceiling-clamped, and shipped in-process callers pass it —
 it is simply not reachable from `spawn_run`. To narrow what members load, spawn them
-on a named agent whose spec lists only read-only MCP servers, sets
-`includeMcpJson: false`, leaves `includePowers` unset or `false`, defines no hooks,
-and grants no write or exec tools. Without `includeMcpJson: false`
-the agent still starts every server in the user-level `mcp.json`. Members still inherit
-the session's trust, so keep the prompt clause.
+on a named agent whose spec lists only read-only MCP servers, leaves
+`includeMcpJson` and `includePowers` unset or `false`, defines no hooks, and grants
+no write or exec tools. Members still inherit the session's trust, so keep the
+prompt clause.
 
 ## Presenting to the user
 
