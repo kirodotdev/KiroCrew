@@ -8,6 +8,7 @@ bug track may add tests.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from kiro_crew.apps.builtins.auto_improvement.tests.dogfood_learnings_helpers import (  # noqa: F401
@@ -126,6 +127,7 @@ class TestReproTestDirIsRepoAware:
             Candidate,
         )
 
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, capture_output=True)
         (tmp_path / "tests").mkdir()
         (tmp_path / "tests" / "test_a.py").write_text("def test_a(): pass\n")
         seen: dict = {}
