@@ -15,14 +15,14 @@ describe('queued wait on a host memory read that did not answer', () => {
   it('says the reading did not answer, never a shortage, for each wait-bound tail', () => {
     const base = { reason: 'low_memory' as const, cause: UNANSWERED as typeof UNANSWERED, required_gb: 8.3 }
     const cases: Array<[number | undefined, RegExp]> = [
-      [undefined, /it will be tried again$/],
+      [undefined, /it will run again$/],
       [0, /they wait with no time limit$/],
-      [1800, /they never start if no reading answers for 30\sminutes$/],
+      [1800, /they never start if no check answers for 30\sminutes$/],
     ]
     for (const [max_wait_secs, tail] of cases) {
       const text = queuedWaitText({ ...base, ...(max_wait_secs === undefined ? {} : { max_wait_secs }) })
-      expect(text).toContain('the memory reading did not answer in time')
-      expect(text).toContain('it will be tried again')
+      expect(text).toContain('the free-memory check did not answer in time')
+      expect(text).toContain('it will run again')
       expect(text).toMatch(tail)
       expect(text).not.toMatch(SHORTAGE)
     }
@@ -30,7 +30,7 @@ describe('queued wait on a host memory read that did not answer', () => {
 
   it('lets the cause win over a figure the frame also carries', () => {
     const text = queuedWaitText({ reason: 'low_memory', cause: UNANSWERED, available_gb: 0, required_gb: 8.3 })
-    expect(text).toContain('the memory reading did not answer in time')
+    expect(text).toContain('the free-memory check did not answer in time')
     expect(text).not.toMatch(SHORTAGE)
   })
 

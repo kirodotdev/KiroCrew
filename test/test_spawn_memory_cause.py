@@ -24,6 +24,9 @@ import kiro_crew.subagent as sa
 GIB = 1024**3
 ROOT = PurePosixPath("/sys/fs/cgroup")
 
+# Every manager a test here builds opens the task store; close it at teardown.
+pytestmark = pytest.mark.usefixtures("close_subagent_managers")
+
 
 @pytest.fixture
 def kernel(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:

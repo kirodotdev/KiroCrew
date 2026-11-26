@@ -1481,7 +1481,7 @@ made; no gate reads it back. Two consumers:
   contributes is not an amount), and the chip says free memory is unknown.
   A low-memory wait on a host read that did not answer carries
   `cause: host_read_unanswered` and no `available_gb` (nothing was read),
-  and the chip says the memory reading did not answer and will be tried
+  and the chip says the free-memory check did not answer and will run
   again, never that memory is short. A wait the lane share holds carries no
   cause, and the chip keeps the figure-less sentence.
   Both memory kinds also carry `max_wait_secs`, the live

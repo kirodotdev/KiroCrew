@@ -13,7 +13,7 @@
  *   - the unreadable-usage frame renders the unknown-headroom sentence with no
  *     "free now" figure,
  *   - a frame whose host read did not answer (`cause: host_read_unanswered`)
- *     says the memory reading did not answer and names no shortage, and
+ *     says the free-memory check did not answer and names no shortage, and
  *   - a measured low-memory frame still renders its figures.
  *
  * Usage: node scripts/capture-15956-memory-headroom-unknown.mjs [outDir]
@@ -65,7 +65,7 @@ const SCENES = [
     // #42633: a host read that did not answer measured nothing either.
     name: 'unanswered-read',
     frame: { reason: 'low_memory', required_gb: 8.3, cause: 'host_read_unanswered', max_wait_secs: 1800 },
-    expect: text => /memory reading did not answer/.test(text) && !/not enough free memory|free now/.test(text),
+    expect: text => /free-memory check did not answer/.test(text) && !/not enough free memory|free now/.test(text),
   },
   {
     name: 'measured-low-memory',
