@@ -117,6 +117,7 @@ def pinned_tree_refusal(
     *,
     shipped_manifest: Any = None,
     record_version: str = "",
+    frozen_servers: Any = None,
 ) -> str | None:
     """E7, E8 and E10 against a verified copy of the pinned tree, or None.
 
@@ -124,7 +125,8 @@ def pinned_tree_refusal(
     wheel built-in's (its version must equal the pin's, which keeps a one-release
     downgrade data-safe, and its ``mcpServers`` are the ceiling of the stdio servers
     the tree may carry, :mod:`kiro_crew.apps.builtin_adoption_mcp`); *record_version*
-    the installed record's.
+    the installed record's; *frozen_servers* that ceiling once the wheel copy is gone,
+    as the pin row froze it from the deleted copy.
     """
     if manifest is None or getattr(manifest, "name", None) != pin.name:
         return "manifest_identity_mismatch"
@@ -137,7 +139,9 @@ def pinned_tree_refusal(
     raw = _raw_manifest(tree_root)
     if manifest.ui.overlays or raw.get("defaultEnabled") is True:
         return "pinned_feature_unsupported"
-    refusal = adopted_mcp_servers_refusal(manifest, tree_root, shipped_manifest)
+    refusal = adopted_mcp_servers_refusal(
+        manifest, tree_root, shipped_manifest, frozen_servers=frozen_servers
+    )
     if refusal is not None:
         return refusal
     try:

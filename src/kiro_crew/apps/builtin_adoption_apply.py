@@ -34,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.apps.builtin_adoption_baseline import no_copy_baseline
+from kiro_crew.apps.builtin_adoption_baseline import no_copy_baseline, no_copy_limit_input
 from kiro_crew.apps.builtin_adoption_checks import (
     NEVER_RETRIED_CODES,
     RECHECKED_CODES,
@@ -162,6 +162,7 @@ def _tree_checks(pin: AdoptionPin, tree: Path) -> str | None:
         tree,
         shipped_manifest=_shipped_manifest(pin.name),
         record_version=record.version if record is not None else "",
+        frozen_servers=no_copy_limit_input(pin, "mcpServers"),
     )
 
 

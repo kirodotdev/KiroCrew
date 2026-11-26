@@ -271,12 +271,12 @@ def drop_wheel_copy(world: World, *, freeze: bool = True) -> None:
     if freeze:
         from kiro_crew.apps.builtin_adoption_baseline import freeze_deleted_copy
 
-        copy = json.loads((world.wheel / "app.json").read_text(encoding="utf-8"))
+        frozen = freeze_deleted_copy(world.wheel)
         table = pins_mod._PINS_PATH
         document = json.loads(table.read_text(encoding="utf-8"))
         for row in document["pins"]:
             if row["name"] == NAME:
-                row[pins_mod.DELETED_COPY_KEY] = freeze_deleted_copy(copy)
+                row[pins_mod.DELETED_COPY_KEY] = frozen
         table.write_text(json.dumps(document), encoding="utf-8")
         pins_mod.load_adoption_pins.cache_clear()
     shutil.rmtree(world.wheel)
