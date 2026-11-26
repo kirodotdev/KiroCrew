@@ -474,3 +474,211 @@ def test_a_local_install_is_not_counted_and_is_private(tmp_path, labels, install
     assert installed_counts == []
     fu.record_app_installed("weather-app", "store")
     assert installed_counts == [("private", "store")]
+
+
+# -- registries an edition names -------------------------------------------------
+
+REGISTRY_REPO = "https://forge.example.com/org/app-registry.git"
+
+
+def _edition(rows, listed: "tuple[str, ...]" = ("weather-app", "notes-app"), url=STORE_URL):
+    """Run with an edition whose ``AppsLoader.default_registries()`` returns *rows*.
+
+    Each pinned registry's index cache then lists *listed* at clone target *url*.
+    """
+    import dataclasses
+
+    from kiro_crew.apps.registry_pipeline.caches import (
+        _external_registry_cache_identity,
+        _write_external_registry_cache,
+    )
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform import context as ctx_mod
+    from kiro_crew.platform.bootstrap import build_default_context
+    from kiro_crew.platform.defaults import DefaultAppsLoader
+
+    class _Loader(DefaultAppsLoader):
+        def default_registries(self):
+            if isinstance(rows, Exception):
+                raise rows
+            return rows
+
+    base = build_default_context(KiroCrewConfig())
+    ctx_mod.set_context(dataclasses.replace(base, apps_loader=_Loader()))
+    if isinstance(rows, Exception):
+        return
+    for reg in registry._pinned_registries():
+        _write_external_registry_cache(
+            _external_registry_cache_identity(reg),
+            [{"name": name, "gitUrl": url} for name in listed],
+        )
+
+
+def _row(name: str = "acme-index", namespace: object = "acme", repo: str = REGISTRY_REPO) -> dict:
+    return {
+        "name": name,
+        "repo": repo,
+        "branch": "main",
+        "trust": "owner",
+        "appNamespace": namespace,
+    }
+
+
+def test_an_app_from_a_registry_the_edition_named_gets_the_namespace(tmp_path, labels, monkeypatch):
+    _edition([_row()])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    _install(tmp_path, "notes-app", registry_id="other-index")
+    ids = labels()
+    assert fu.app_public_id("weather-app") == "acme.weather-app"
+    assert fu.app_public_version("weather-app") == "1.0.0"
+    assert fu.app_public_id("notes-app") == "private"
+    assert ids is not None and ids.names == {"weather-app": "acme.weather-app"}
+
+
+def test_the_registry_id_matches_like_the_build_pins_it(tmp_path, labels, monkeypatch):
+    """The comparison key is the registry identity key, so case does not split one registry."""
+    _edition([_row(name="Acme-Index")])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert fu.app_public_id("weather-app") == "acme.weather-app"
+
+
+@pytest.mark.parametrize(
+    "namespace",
+    ["Acme", "acme!", "", 7, None, "a" * 60],
+    ids=["upper case", "bad char", "empty", "not a string", "missing", "id over 64"],
+)
+def test_a_namespaced_id_a_sink_would_refuse_stays_private(
+    tmp_path, labels, monkeypatch, namespace
+):
+    _edition([_row(namespace=namespace)])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert fu.app_public_id("weather-app") == "private"
+    assert fu.app_public_version("weather-app") == "private"
+
+
+def test_a_row_the_build_could_not_pin_names_nothing(tmp_path, labels, monkeypatch):
+    """A plaintext repo is not pinned (``_pinned_registries``), so its namespace is ignored."""
+    _edition([_row(repo="http://forge.example.com/org/app-registry.git")])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert fu.app_public_id("weather-app") == "private"
+
+
+def test_a_dev_mode_app_from_a_named_registry_is_private(tmp_path, labels, monkeypatch):
+    from dataclasses import replace
+
+    from kiro_crew.apps.manager_records import _read_installed, _write_installed
+
+    _edition([_row()])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    meta = _read_installed("weather-app")
+    assert meta is not None
+    _write_installed("weather-app", replace(meta, dev=True))
+    labels()
+    assert fu.app_public_id("weather-app") == "private"
+
+
+@pytest.mark.parametrize("broken", ["rows", "pinned list"])
+def test_a_raising_edition_leaves_every_other_id_as_it_was(tmp_path, labels, monkeypatch, broken):
+    if broken == "rows":
+        _edition(RuntimeError("edition down"))
+    else:
+        _edition([_row()])
+        monkeypatch.setattr(
+            "kiro_crew.apps.registry._pinned_registries",
+            lambda: (_ for _ in ()).throw(RuntimeError("pinned list down")),
+        )
+    _install(tmp_path, "weather-app", registry_id="")
+    _install(tmp_path, "notes-app", registry_id="acme-index")
+    ids = labels()
+    assert ids is not None
+    assert fu.app_public_id("weather-app") == "weather-app"
+    assert fu.app_public_id("notes-app") == "private"
+    assert "auto-improvement" in ids
+
+
+def test_with_no_record_naming_a_registry_the_edition_is_never_asked(tmp_path, labels, monkeypatch):
+    """The default build: the scan is today's, and its names are empty."""
+
+    def _never():
+        raise AssertionError("no record names a registry; the edition must not be read")
+
+    monkeypatch.setattr(store_origin, "_registry_namespaces", _never)
+    _install(tmp_path, "weather-app", registry_id="")
+    _install(tmp_path, "notes-app", registry_id=None)
+    ids = labels()
+    assert ids is not None and ids.names == {}
+    assert fu.app_public_id("weather-app") == "weather-app"
+    assert fu.app_public_id("notes-app") == "private"
+
+
+def test_an_uninstall_counts_the_namespaced_id(tmp_path, labels, lifecycle_counts, monkeypatch):
+    _edition([_row()])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert manager.uninstall_app("weather-app").ok
+    assert lifecycle_counts == [
+        (
+            fu.APP_UNINSTALLED,
+            {"app": "acme.weather-app", "entity_version": "1.0.0", "keep_data": "true"},
+        )
+    ]
+
+
+def test_a_name_an_operator_registry_also_claims_stays_private(tmp_path, labels, monkeypatch):
+    """The operator's own ``acme-index`` predates the pin: neither is served, nothing named."""
+    from kiro_crew.config.integration_sections import ExternalRegistryConfig
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    real_load = KiroCrewConfig.load
+
+    def _load(cls, *a, **k):
+        cfg = real_load(*a, **k)
+        cfg.registries = [
+            ExternalRegistryConfig(name="acme-index", repo="https://forge.example.com/me/mine.git")
+        ]
+        return cfg
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_load))
+    _edition([_row()])
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert fu.app_public_id("weather-app") == "private"
+    assert fu.app_public_version("weather-app") == "private"
+
+
+@pytest.mark.parametrize(
+    ("listed", "url"),
+    [((), STORE_URL), (("weather-app",), "https://forge.example.com/me/other.git")],
+    ids=["app not listed", "listed at another repository"],
+)
+def test_an_app_the_pinned_index_does_not_list_at_its_source_stays_private(
+    tmp_path, labels, listed, url
+):
+    """A record left from an earlier registry of that name names another repository."""
+    _edition([_row()], listed=listed, url=url)
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert fu.app_public_id("weather-app") == "private"
+
+
+def test_a_row_the_build_rejected_cannot_lend_its_namespace(tmp_path, labels):
+    """A same-named plaintext row is dropped by the pipeline, and so is its namespace."""
+    _edition(
+        [_row(), _row(namespace="other", repo="http://forge.example.com/org/app-registry.git")]
+    )
+    _install(tmp_path, "weather-app", registry_id="acme-index")
+    labels()
+    assert fu.app_public_id("weather-app") == "acme.weather-app"
+
+
+def test_a_repo_only_row_names_its_apps(tmp_path, labels):
+    """A row with no ``name`` is identified by its repo, as the pipeline does."""
+    row = _row()
+    del row["name"]
+    _edition([row])
+    _install(tmp_path, "weather-app", registry_id=REGISTRY_REPO)
+    labels()
+    assert fu.app_public_id("weather-app") == "acme.weather-app"

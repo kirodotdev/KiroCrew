@@ -18,6 +18,7 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
   let row = line
   let wrapped = false
   let hasSel = false
+  let clears = 0
   /** Cell widths, sparse: anything unset is an ordinary single-width cell. */
   const widths = new Map<number, number>()
   /** Cell strings, sparse: anything unset is one code unit wide. */
@@ -82,15 +83,27 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
     input: (data: string) => { inputs.push(data); dataCbs.forEach(cb => cb(data)) },
     hasSelection: () => hasSel,
     clearSelection: () => { hasSel = false },
+    clear: () => {
+      clears += 1
+      buf.baseY = 0
+      buf.cursorY = 0
+    },
   }
   return {
     term: term as unknown as Terminal,
+    /** How many times `term.clear()` (Terminal: Clear) has run. */
+    clears: () => clears,
     /** Give (or clear) an active selection, the way a mouse drag does for real. */
     setSelection: (v: boolean) => { hasSel = v },
     /** Rewrite the cursor's screen row (what the shell's echo does for real). */
     setLine: (next: string) => { row = next },
     /** Move the fake cursor (the shell's own echo does this for real). */
     setCursor: (x: number) => { buf.cursorX = x },
+    /** Place the cursor on an absolute scrollback row. */
+    setBufferPosition: (baseY: number, cursorY: number) => {
+      buf.baseY = baseY
+      buf.cursorY = cursorY
+    },
     /** Switch screens the way vim/less/htop do on start-up. */
     setBufferType: (t: 'normal' | 'alternate') => { buf.type = t },
     /** Mark the cursor row as the continuation of a longer logical line. */
@@ -122,6 +135,13 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
       // xterm cancels Enter, Tab and Escape (and a scroll key) after the handler, sent or not.
       if (handled && xtermCancels) e.preventDefault()
       return { passedThrough: handled, prevented: e.defaultPrevented }
+    },
+    /** `key`, also reporting whether propagation was stopped (`cancelBubble`
+     *  reads the DOM's stop-propagation flag). */
+    keyStopped: (init: KeyboardEventInit) => {
+      const e = new KeyboardEvent('keydown', { cancelable: true, ...init })
+      keyHandler(e)
+      return e.cancelBubble
     },
     osc,
   }
@@ -1487,5 +1507,129 @@ describe('TerminalCompletion — find/fullscreen chords, non-macOS (#10176/#9906
     expect(h.key({ key: 'f', code: 'KeyF', metaKey: true, ctrlKey: true }).passedThrough).toBe(true)
     expect(onOpenSearch).not.toHaveBeenCalled()
     expect(onToggleFullscreen).not.toHaveBeenCalled()
+  })
+})
+
+/* The user's "Clear terminal" chord (Settings → Shortcuts). It is answered by
+ * this handler alone, so these tests pin the three things that make sharing ⌘K
+ * with Search Everywhere work: the terminal clears, the keystroke stops here
+ * (no shell byte, no bubbling to the window-level palette listener), and an
+ * unbound or disabled chord is left exactly as before. */
+describe('TerminalCompletion — Clear terminal chord', () => {
+  const bindClear = (chord: Record<string, unknown> | null) =>
+    localStorage.setItem('mc-panel-toggle-shortcuts', JSON.stringify({ 'terminal-clear': chord }))
+
+  beforeEach(() => { platformMock.isMac = true })
+  afterEach(() => {
+    platformMock.isMac = false
+    localStorage.clear()
+  })
+
+  it('leaves ⌘K alone while Clear terminal is unbound (the default)', () => {
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    const r = h.key({ key: 'k', code: 'KeyK', metaKey: true })
+    expect(h.clears()).toBe(0)
+    expect(r.passedThrough).toBe(true)
+    expect(r.prevented).toBe(false)
+  })
+
+  it('clears on the bound chord and stops the keystroke at the terminal', () => {
+    bindClear({ key: 'k', mod: true })
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    const r = h.key({ key: 'k', code: 'KeyK', metaKey: true })
+    expect(h.clears()).toBe(1)
+    // Not sent to the shell, and not bubbled to the window-level Search
+    // Everywhere listener that also answers ⌘K.
+    expect(r.passedThrough).toBe(false)
+    expect(r.prevented).toBe(true)
+    expect(h.keyStopped({ key: 'k', code: 'KeyK', metaKey: true })).toBe(true)
+    expect(h.clears()).toBe(2)
+  })
+
+  it('does not reopen completion when a pending listing resolves after clear', async () => {
+    bindClear({ key: 'k', mod: true })
+    let release!: () => void
+    const fetchMock = vi.fn(() => new Promise(resolve => {
+      release = () => resolve({
+        ok: true,
+        json: async () => ({
+          entries: [{ name: 'docs', dir: true }],
+          prefix: 'doc',
+          dir: '/work',
+          truncated: false,
+        }),
+      })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const line = `${PROMPT}cd doc`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+
+    await act(async () => { h.moveCursor(); await vi.advanceTimersByTimeAsync(100) })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await act(async () => { h.key({ key: 'k', code: 'KeyK', metaKey: true }) })
+    await act(async () => {
+      release()
+      for (let i = 0; i < 3; i += 1) await vi.advanceTimersByTimeAsync(1)
+    })
+
+    expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
+    expect(h.key({ key: 'ArrowDown' })).toEqual({ passedThrough: true, prevented: false })
+    expect(h.key({ key: 'Tab' })).toEqual({ passedThrough: true, prevented: false })
+  })
+
+  it('keeps the OSC prompt boundary after clearing a high scrollback row', async () => {
+    bindClear({ key: 'k', mod: true })
+    const exotic = 'diwm@host ~/work ⟩⟩ '
+    const h = makeTerm(exotic, exotic.length)
+    h.setBufferPosition(70, 3)
+    const fetchMock = mockComplete([{ name: 'docs', dir: true }], 'doc')
+    vi.stubGlobal('fetch', fetchMock)
+    renderCompletion(h.term)
+    expect(h.osc[133]('B')).toBe(true)
+
+    h.key({ key: 'k', code: 'KeyK', metaKey: true })
+    expect(h.term.buffer.active.baseY).toBe(0)
+    expect(h.term.buffer.active.cursorY).toBe(0)
+    const line = `${exotic}cd doc`
+    h.setLine(line)
+    h.setCursor(line.length)
+    await trigger(h)
+
+    expect(screen.getByTestId('terminal-completion')).toHaveAttribute('data-mode', 'path')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      session_id: 's1', token: 'doc', folders_only: true,
+    })
+  })
+
+  it('does not clear on the opposite primary modifier (Ctrl+K on a Mac is the shell\'s kill-line)', () => {
+    bindClear({ key: 'k', mod: true })
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    const r = h.key({ key: 'k', code: 'KeyK', ctrlKey: true })
+    expect(h.clears()).toBe(0)
+    expect(r.passedThrough).toBe(true)
+  })
+
+  it('honours the global "Enable shortcuts" toggle', () => {
+    bindClear({ key: 'k', mod: true })
+    localStorage.setItem('mc-keyboard-shortcuts', '0')
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    const r = h.key({ key: 'k', code: 'KeyK', metaKey: true })
+    expect(h.clears()).toBe(0)
+    expect(r.passedThrough).toBe(true)
+  })
+
+  it('picks up a binding recorded after mount, with no remount', () => {
+    const h = makeTerm(`${PROMPT}ls`, (`${PROMPT}ls`).length)
+    renderCompletion(h.term)
+    expect(h.key({ key: 'p', code: 'KeyP', metaKey: true, shiftKey: true }).passedThrough).toBe(true)
+    bindClear({ key: 'p', mod: true, shift: true })
+    const r = h.key({ key: 'p', code: 'KeyP', metaKey: true, shiftKey: true })
+    expect(h.clears()).toBe(1)
+    expect(r.prevented).toBe(true)
   })
 })

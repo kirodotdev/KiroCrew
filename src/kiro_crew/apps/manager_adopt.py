@@ -23,6 +23,7 @@ import re
 import shutil
 from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from kiro_crew.apps.execution import APP_NAME_RE
 from kiro_crew.apps.manager_builtins import _builtin_owns_install
@@ -51,16 +52,28 @@ from kiro_crew.apps.manager_tree import (
 )
 from kiro_crew.platform_compat import is_link_or_junction, pid_exists
 
+if TYPE_CHECKING:
+    from kiro_crew.apps.builtin_adoption_baseline import GrantBaseline
+
 logger = logging.getLogger("kiro_crew.apps.manager")
 
 
 @holds_app_record_locks
-def adopt_builtin_record(name: str, source: Path, *, repository: str, commit: str) -> AppResult:
+def adopt_builtin_record(
+    name: str,
+    source: Path,
+    *,
+    repository: str,
+    commit: str,
+    baseline: GrantBaseline | None = None,
+) -> AppResult:
     """Swap *name*'s builtin-owned record to the verified tree at *source*. Blocking.
 
     Refuses (``not_builtin_owned``) a record a user installed under the name, and
     (``adoption_would_widen``, from ``update_app``) a tree whose manifest would hold
     back a grant or add ``sessionApproval``. Nothing is mutated on a refusal.
+    *baseline* is the pin row's frozen copy once the wheel copy is gone, compared
+    and carried in place of the record's copy and approved set, as E9 compared it.
     """
     hold_app_record_lock(name)
     existing = _read_installed(name)
@@ -75,7 +88,7 @@ def adopt_builtin_record(name: str, source: Path, *, repository: str, commit: st
         source,
         expected_name=name,
         source_repository=repository,
-        _adoption=AdoptionProvenance(repository=repository, commit=commit),
+        _adoption=AdoptionProvenance(repository=repository, commit=commit, baseline=baseline),
     )
 
 

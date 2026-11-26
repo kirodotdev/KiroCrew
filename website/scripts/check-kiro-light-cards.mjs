@@ -108,7 +108,6 @@ const ROUTES = [
   { path: '/mochi', name: 'app-mochi', ready: 'Write the release notes' },
   { path: '/spec-builder', name: 'app-spec-builder', ready: 'Plan your next feature with a spec' },
   { path: '/design-tweak', name: 'app-design-tweak', ready: 'Point, describe, and watch the code catch up' },
-  { path: '/project-scaffolder', name: 'app-project-scaffolder', ready: 'Scan a project directory' },
 ]
 
 /**

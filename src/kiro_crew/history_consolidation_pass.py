@@ -1033,6 +1033,22 @@ async def _consolidate(
                 lambda prompt: self._call_llm(prompt, session_key=key, **label_kw),
             )
 
+        # The lesson quotes: under the tier policy's enforce the answer's quotes are
+        # checked and scored here, before the write-boundary check below, as the
+        # kind labels are; under shadow they come from the quote call after the
+        # writes.
+        lesson_rows = _prompt_rows(chunk)
+        embed = vector_store.embed_lesson if vector_store is not None else None
+        quote_run = None
+        if include_history and _tier_policy.quotes_in_answer(tier_mode):
+            quote_run = await _tier_policy.gather_quotes(
+                result,
+                lesson_rows,
+                ask=None,
+                embed=embed,
+                offload=_run_in_memory_background_pool,
+            )
+
         # A pending model result cannot authorize writes from a deleted or
         # edited transcript, or outrank a newer user turn. Appended assistant
         # replies may remain unconsolidated without invalidating the original
@@ -1049,9 +1065,7 @@ async def _consolidate(
         from kiro_crew.memory_origin_gate import configured_mode as _origin_mode
         from kiro_crew.memory_origin_gate import gate_consolidation_lessons
 
-        origin = gate_consolidation_lessons(
-            result, _prompt_rows(chunk), _origin_mode(), session_key=key
-        )
+        origin = gate_consolidation_lessons(result, lesson_rows, _origin_mode(), session_key=key)
         result = origin.result
         # The fact origin gate: pref.* / user.* facts and the preferences file, over
         # the same rows, on the same shared result.
@@ -1062,9 +1076,10 @@ async def _consolidate(
         )
         result = fact_origin.result
         # The lesson tier policy, on the answer the origin gate returned, over the
-        # same rows.
+        # same rows. Shadow's re-run below reads this same answer.
+        tier_input = result
         tier = _tier_policy.apply_tier_policy(
-            result, _prompt_rows(chunk), tier_mode, session_key=key
+            tier_input, lesson_rows, tier_mode, session_key=key, quotes=quote_run
         )
         result = tier.result
 
@@ -1307,6 +1322,29 @@ async def _consolidate(
                 facets=facets,
                 key=key,
                 commit_state=commit_state,
+            )
+
+        # Shadow's quotes: the consolidation prompt asked for none, so once the
+        # writes are done one separate quote call asks for them. Its answer only
+        # re-reads the lessons for the tier log below; nothing is written from it.
+        if (
+            quote_run is None
+            and include_history
+            and tier.loggable
+            and tier.mode == _tier_policy.MODE_SHADOW
+            and vector_store is not None
+            and not _lesson_extraction_disabled()
+        ):
+            quote_kw = {"memory_store": store_name} if member_memory else {}
+            quote_run = await _tier_policy.gather_quotes(
+                tier_input,
+                lesson_rows,
+                ask=lambda prompt: self._call_llm(prompt, session_key=key, **quote_kw),
+                embed=embed,
+                offload=_run_in_memory_background_pool,
+            )
+            tier = _tier_policy.apply_tier_policy(
+                tier_input, lesson_rows, tier.mode, session_key=key, quotes=quote_run
             )
 
         # The origin gate's log, once the lessons it read reached a writer, under

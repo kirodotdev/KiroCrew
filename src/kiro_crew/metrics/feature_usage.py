@@ -315,14 +315,19 @@ def refresh_public_app_ids() -> dict[str, str] | None:
 def app_public_id(app: object, ids: dict[str, str] | None = None) -> str:
     """*app*'s public id: a shipped built-in's or a store install's name, else ``private``.
 
-    Not a string is ``other``. Whether an install came from the store is read from
-    its install record, so an app the store later delists keeps its id. Reads only
-    memory. *ids* is a map :func:`refresh_public_app_ids` returned; default the last
-    one filled.
+    An app from a registry the edition named has ``<namespace>.<name>`` instead
+    (``store_origin.PublicAppIds.names``). Not a string is ``other``. Whether an
+    install came from the store is read from its install record, so an app the
+    store later delists keeps its id. Reads only memory. *ids* is a map
+    :func:`refresh_public_app_ids` returned; default the last one filled.
     """
     if not isinstance(app, str):
         return OTHER
-    return app if app in (_public_app_ids if ids is None else ids) else APP_PRIVATE
+    known = _public_app_ids if ids is None else ids
+    if app not in known:
+        return APP_PRIVATE
+    names = getattr(known, "names", None)
+    return names.get(app, app) if isinstance(names, dict) else app
 
 
 #: A version an app with a public id sends as itself: three dot-separated numbers.

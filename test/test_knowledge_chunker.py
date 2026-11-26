@@ -390,3 +390,35 @@ def test_chunk_lists_of_fixed_documents_are_unchanged(name):
     chunks = HeadingAwareChunker(target_size=target).chunk_markdown(text)
     got = [(c["section_title"], c["line_start"], c["line_end"], len(c["content"])) for c in chunks]
     assert (len(got), got[:3], got[-3:]) == _FIXED_EXPECTED[name]
+
+
+_PREAMBLE_DOC = "\n\n\nintro line one\nintro line two\n# Heading\nbody a b c d e f g\n"
+
+
+def test_opening_text_after_blank_lines_cites_the_line_it_is_on():
+    chunks = HeadingAwareChunker().chunk_markdown(_PREAMBLE_DOC)
+    assert chunks[0]["content"].startswith("intro line one")
+    assert chunks[0]["line_start"] == _source_line_of(_PREAMBLE_DOC, "intro line one") == 4
+    assert chunks[0]["line_end"] == _source_line_of(_PREAMBLE_DOC, "body a b")
+
+
+def test_opening_text_alone_in_a_chunk_cites_its_own_lines():
+    chunks = HeadingAwareChunker(target_size=5).chunk_markdown(_PREAMBLE_DOC)
+    assert [(c["section_title"], c["line_start"]) for c in chunks][:1] == [(None, 4)]
+
+
+def test_opening_text_that_is_a_chunk_by_itself_ends_on_its_own_last_line():
+    chunks = HeadingAwareChunker(target_size=10).chunk_markdown(_PREAMBLE_DOC)
+    assert [(c["section_title"], c["line_start"], c["line_end"]) for c in chunks][:1] == [
+        (None, 4, 5)
+    ]
+
+
+def test_opening_text_with_no_blank_lines_before_it_starts_on_line_one():
+    chunks = HeadingAwareChunker().chunk_markdown("intro line one\n# Heading\nbody\n")
+    assert chunks[0]["line_start"] == 1
+
+
+def test_a_markdown_file_with_no_opening_text_starts_on_its_first_heading():
+    chunks = HeadingAwareChunker().chunk_markdown("\n\n# Heading\nbody a b c\n")
+    assert chunks[0]["line_start"] == 3

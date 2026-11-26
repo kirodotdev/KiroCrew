@@ -58,6 +58,7 @@ __all__ = [
     "context_provider_of",
     "crew_loads_spec_steering",
     "projected_session_mcp_servers",
+    "kas_session_spec",
     "spec_with_default_crew_servers",
     "spec_withholds_server_whole",
     "default_crew_servers_pass",
@@ -741,6 +742,19 @@ def _with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, An
 def spec_with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, Any]:
     """*spec* with Crew's default servers added, for a read-only check; see :func:`_with_default_crew_servers`."""
     return _with_default_crew_servers(agent, spec)
+
+
+def kas_session_spec(agent: str, spec: dict[str, Any]) -> dict[str, Any]:
+    """*agent*'s user-level *spec* as a KAS spawn hands it to the session.
+
+    For a read-only check that must agree with the KAS spawn, such as whether the
+    session lists any tool. Never raises: see
+    :func:`kiro_crew.acp.default_crew_servers.session_spec_on`.
+    """
+    from kiro_crew.acp.default_crew_servers import session_spec_on
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+
+    return session_spec_on(ACP_BACKEND_KAS, agent, spec)
 
 
 def default_crew_servers_pass() -> AbstractContextManager[None]:

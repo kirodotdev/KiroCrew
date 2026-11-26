@@ -1235,6 +1235,7 @@ def _reset_live_execution_records():
             ("kiro_crew.execution_context", "_LIVE_EXECUTIONS"),
             ("kiro_crew.execution_context", "_VOUCHED_EXECUTIONS"),
             ("kiro_crew.subagent_persistence", "_LIVE_RUN_STATES"),
+            ("kiro_crew.dashboard.running_bot_turns", "_RUNNING"),
         ):
             module = sys.modules.get(name)
             if module is not None:

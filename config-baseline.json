@@ -3813,7 +3813,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Lesson Origin Gate",
-      "help": "Whether a lesson learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run) may become a standing rule. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the gate would demote. 'enforce' stores such a lesson as an on_topic finding instead, and gives an agent-triggered learn_add its own source. Stored lessons are never changed.",
+      "help": "Whether a lesson learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run) may become a standing rule. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the gate would demote. 'enforce' stores such a lesson as an on_topic finding instead, and gives an agent-triggered learn_add its own source. A span with a message from you keeps its tiers; judging each lesson by your own words is memory.lesson_tier_policy. Stored lessons are never changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
@@ -3849,7 +3849,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Lesson Tier Policy",
-      "help": "Which tier a new lesson from consolidation gets. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, which new lessons the policy would store as on_topic findings, and how often you later teach one of them again. 'enforce' asks the model for your own words behind each 'always' lesson and stores a lesson as an on_topic finding unless those words are found in one of your messages. Your own learn_add and dashboard writes, and stored lessons, are never changed.",
+      "help": "Which tier a new lesson from consolidation gets. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before, asks the model for your own words behind each 'always' lesson in one extra small call after the writes, and only counts, within fixed size caps, which new lessons the policy would store as on_topic findings, and how often you later teach one of them again. 'enforce' asks for those words in the consolidation prompt and stores a lesson as an on_topic finding unless they are in one of your messages and say what the rule says (with no embedding model, no lesson stays standing). Your own learn_add and dashboard writes, and stored lessons, are never changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
@@ -10979,6 +10979,7 @@
           "allowed_logins": [],
           "pin_scope": "node",
           "bind_refresh_chains": true,
+          "https_port": 443,
           "keep_awake": true
         },
         "shared_crew": {
@@ -11147,6 +11148,7 @@
         "allowed_logins": [],
         "pin_scope": "node",
         "bind_refresh_chains": true,
+        "https_port": 443,
         "keep_awake": true
       }
     },
@@ -11237,6 +11239,21 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.tailscale.https_port",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tailscale HTTPS Port",
+      "help": "The HTTPS port `tailscale serve` fronts the dashboard on. The trusted tailnet origin carries it when it is not 443 (https://<name>:<port>). Run `kirocrew tailnet down` before changing it: Kiro Crew manages only the port it is set to. A value outside 1-65535 reads as 443. Takes effect at the next gateway start.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 443,
       "requiresRestart": true
     },
     {

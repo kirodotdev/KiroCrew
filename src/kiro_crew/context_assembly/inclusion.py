@@ -213,7 +213,7 @@ def _folder_steering_delivery_snapshot(
     skip_delivered_roots = ctx._project_steering_delivered(
         provider_type, native_steering, project, agent=agent
     )
-    if skip_delivered_roots or provider_type != ctx.PROVIDER_ACP:
+    if skip_delivered_roots or not ctx.label_inherits_kiro_defaults(provider_type):
         return skip_delivered_roots, ()
     return skip_delivered_roots, native_launch_sources
 

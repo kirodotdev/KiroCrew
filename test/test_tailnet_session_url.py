@@ -43,7 +43,7 @@ def _stub_serve_state(monkeypatch, *, published: bool | None, detail: str = "ser
     monkeypatch.setattr(
         cli_server.tailnet_serve,
         "serve_state",
-        lambda _port: ServeState(published, True, detail),
+        lambda _port, **_k: ServeState(published, True, detail),
     )
 
 
@@ -52,7 +52,7 @@ def _run(monkeypatch, capsys, *, name: str | None, published: bool | None = True
     from kiro_crew import cli_server
 
     monkeypatch.setattr(
-        cli_server, "tailnet_origin", lambda: (f"https://{name}" if name else None)
+        cli_server, "tailnet_origin", lambda *_: (f"https://{name}" if name else None)
     )
     _stub_serve_state(monkeypatch, published=published)
     monkeypatch.setattr(cli_server, "resolve_dashboard_host", lambda **_k: "localhost")
@@ -81,7 +81,7 @@ class TestTheTailnetUrlIsPrinted:
 
         called: list[int] = []
         monkeypatch.setattr(
-            cli_server, "tailnet_origin", lambda: called.append(1) or "https://x.ts.net"
+            cli_server, "tailnet_origin", lambda *_: called.append(1) or "https://x.ts.net"
         )
         monkeypatch.setattr(cli_server, "resolve_dashboard_host", lambda **_k: "localhost")
         _write_cfg(home, enabled=False)
@@ -159,7 +159,7 @@ class TestTheGovernanceCeilingIsHonoured:
             return False
 
         monkeypatch.setattr(cli_server, "is_governance_pinned_off", _probe)
-        monkeypatch.setattr(cli_server, "tailnet_origin", lambda: "https://b.ts.net")
+        monkeypatch.setattr(cli_server, "tailnet_origin", lambda *_: "https://b.ts.net")
         _stub_serve_state(monkeypatch, published=True)
         monkeypatch.setattr(cli_server, "resolve_dashboard_host", lambda **_k: "localhost")
         cli_server._emit_session_urls(5476, SESSION)  # type: ignore[attr-defined]
@@ -207,3 +207,45 @@ class TestTheTokenIsNotHandedToAForeignService:
         _write_cfg(home, enabled=True)
         out = _run(monkeypatch, capsys, name="box.example-tailnet.ts.net", published=True)
         assert f"https://box.example-tailnet.ts.net/?token={SESSION}" in out.out
+
+
+class TestTheTailnetUrlCarriesTheConfiguredPort:
+    """``dashboard.tailscale.https_port`` 5479: the session line names ``:5479`` and is
+    printed only when serve's handler on 5479 is this dashboard."""
+
+    _NAME = "box.example-tailnet.ts.net"
+
+    def _run(self, home, monkeypatch, capsys, *, ours: set[int]):
+        from kiro_crew import cli_server
+        from kiro_crew.dashboard.tailnet_serve import ServeState
+
+        cfg = json.loads((home / "config.json").read_text())
+        cfg["dashboard"]["tailscale"]["https_port"] = 5479
+        (home / "config.json").write_text(json.dumps(cfg))
+        asked: list[object] = []
+
+        def fake_state(_port, **kw):
+            asked.append(kw.get("https_port", 443))
+            return ServeState(kw.get("https_port", 443) in ours, True, "serving")
+
+        monkeypatch.setattr(cli_server.tailnet_serve, "serve_state", fake_state)
+        monkeypatch.setattr(cli_server, "resolve_dashboard_host", lambda **_k: "localhost")
+        monkeypatch.setattr(cli_server, "_probe_dashboard_health", lambda *_a, **_k: None)
+        from kiro_crew.dashboard import tailnet
+
+        monkeypatch.setattr(tailnet, "self_dns_name", lambda: self._NAME)
+        cli_server._emit_session_urls(5476, SESSION)  # type: ignore[attr-defined]
+        return capsys.readouterr(), asked
+
+    def test_the_line_carries_the_port_when_its_handler_is_ours(self, home, monkeypatch, capsys):
+        _write_cfg(home, enabled=True)
+        out, asked = self._run(home, monkeypatch, capsys, ours={5479})
+        assert f"https://{self._NAME}:5479/" in out.out
+        assert SESSION in out.out
+        assert asked == [5479]
+
+    def test_no_line_when_only_443_is_ours(self, home, monkeypatch, capsys):
+        _write_cfg(home, enabled=True)
+        out, _asked = self._run(home, monkeypatch, capsys, ours={443})
+        assert "ts.net" not in out.out
+        assert "Not printing a tailnet URL" in out.err

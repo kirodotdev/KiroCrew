@@ -264,10 +264,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``data/state/`` and empties the PAT here; the registry and settings copies it keeps
     # for a rollback, and the marker that closes the copy, stay behind this mask.
     _MD_NOTEBOOK_STAGING_LEAF,
-    # Browser session material an earlier version's browser CLI wrote: a storage
-    # state (cookies), its extension token and three retired markers. No reader is
-    # left in the tree, and nothing creates them any more; they stay masked because
-    # a file left on disk from that version still holds the owner's sessions. The
+    # Browser session material from an earlier version's browser integration: a
+    # cookie jar, the storage state built from it, the extension token and two
+    # retired markers. No reader is left in the tree, and nothing creates them any
+    # more; they stay masked because a file left on disk from that version still
+    # holds the owner's sessions. The
     # live browser paths are the Harness leaves below; ``browser-snapshots`` (the
     # agent's own screenshots) is deliberately visible.
     "browser-cookies.txt",

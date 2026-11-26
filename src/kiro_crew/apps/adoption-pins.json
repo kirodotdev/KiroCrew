@@ -12,6 +12,22 @@
       "legacyNav": {
         "route": "/personal-shopper",
         "icon": "ShoppingBag"
+      },
+      "deletedCopy": {
+        "permissions": {
+          "api": [
+            "/api/apps/personal-shopper",
+            "/api/apps/personal-shopper/*"
+          ],
+          "storage": true,
+          "network": true
+        },
+        "grants": {
+          "api": [
+            "/api/apps/personal-shopper",
+            "/api/apps/personal-shopper/*"
+          ]
+        }
       }
     },
     {
@@ -181,6 +197,24 @@
       "legacyNav": {
         "route": "/project-scaffolder",
         "icon": "FolderPlus"
+      },
+      "deletedCopy": {
+        "permissions": {
+          "api": [
+            "/api/project-scaffold",
+            "/api/browse-dirs",
+            "/api/recent-projects",
+            "/api/favorite-projects"
+          ]
+        },
+        "grants": {
+          "api": [
+            "/api/project-scaffold",
+            "/api/browse-dirs",
+            "/api/recent-projects",
+            "/api/favorite-projects"
+          ]
+        }
       }
     },
     {

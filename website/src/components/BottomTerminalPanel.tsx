@@ -10,7 +10,7 @@ import { TAB_ID_ATTR, useRevealActiveTab } from '../hooks/useRevealActiveTab'
 import { useKeyboardLift } from '../hooks/useKeyboardLift'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { beginPanelSlide } from '../utils/panelSlide'
-import { isTerminalFullscreenAllowed, findKeycap, fullscreenKeycap } from '../utils/terminalFullscreen'
+import { isTerminalFullscreenAllowed, findKeycap, fullscreenKeycap, fullscreenAriaKeyshortcuts, terminalChord } from '../utils/terminalFullscreen'
 import { TerminalSquare, Plus, X, XSquare, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom, Loader2, Maximize2, Minimize2, Search } from 'lucide-react'
 import { DropdownMenuItem } from './ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
@@ -381,6 +381,15 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
   useEffect(() => {
     if (!fullscreenAllowed && fullscreen) setTerminalFullscreen(false)
   }, [fullscreenAllowed, fullscreen])
+  const fullscreenToggleLabel = fullscreen
+    ? i18nT('components.bottomTerminalPanel.exit_fullscreen')
+    : i18nT('components.bottomTerminalPanel.fullscreen')
+  const fullscreenShortcut = fullscreenKeycap(isMac)
+  const fullscreenToggleTitle = !fullscreenShortcut
+    ? fullscreenToggleLabel
+    : fullscreen
+      ? i18nT('components.bottomTerminalPanel.exit_fullscreen_shortcut', { shortcut: fullscreenShortcut })
+      : i18nT('components.bottomTerminalPanel.fullscreen_shortcut', { shortcut: fullscreenShortcut })
   // Tabs restored from storage are unverified until the backend has said which
   // shells still exist. Nothing is drawn for them before that ruling — a
   // mounted CliPanel would reconnect and spawn a shell for a tab the probe is
@@ -665,50 +674,39 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
                   {position === 'bottom' ? <PanelRight size={13} className="shrink-0" /> : <PanelBottom size={13} className="shrink-0" />}
                   {position === 'bottom' ? i18nT('components.bottomTerminalPanel.move_panel_to_right') : i18nT('components.bottomTerminalPanel.move_panel_to_bottom')}
                 </DropdownMenuItem>
-                {fullscreenAllowed && (
-                <DropdownMenuItem onSelect={toggleTerminalFullscreen} data-testid="terminal-menu-fullscreen">
-                  {fullscreen ? <Minimize2 size={13} className="shrink-0" /> : <Maximize2 size={13} className="shrink-0" />}
-                  {fullscreen ? i18nT('components.bottomTerminalPanel.exit_fullscreen') : i18nT('components.bottomTerminalPanel.fullscreen')}
-                  {/* The chord a sighted user can otherwise never discover, same
-                      muted-trailing-span shape as the F2 rename hint. macOS only
-                      (fullscreenKeycap): Linux/Windows have no fullscreen chord,
-                      since Ctrl+Shift+F is find there, so no keycap shows. The
-                      glyph is keycap data, not copy, so it is i18n-opaque. */}
-                  {fullscreenKeycap(isMac) && (
-                  <span aria-hidden="true" data-i18n-opaque="" data-testid="terminal-fullscreen-shortcut" className="ml-auto pl-4 text-[11px] leading-none text-muted">
-                    {fullscreenKeycap(isMac)}
-                  </span>
-                  )}
-                </DropdownMenuItem>
-                )}
                 <DropdownMenuItem onSelect={popOut}>
                   <PictureInPicture2 size={13} className="shrink-0" />
                   {i18nT('components.bottomTerminalPanel.pop_out_to_window')}
                 </DropdownMenuItem>
-                {/* While fullscreen, the header's second slot is Exit
-                    fullscreen, so Hide moves in here (the row keeps two
+                {/* Where fullscreen is allowed, the header's second slot is the
+                    Fullscreen toggle, so Hide lives here (the row keeps two
                     buttons). */}
-                {fullscreen && fullscreenAllowed && (
+                {fullscreenAllowed && (
                 <DropdownMenuItem onSelect={() => closeBottomTerminal()} data-testid="terminal-menu-hide">
                   {position === 'bottom' ? <ChevronDown size={13} className="shrink-0" /> : <ChevronRight size={13} className="shrink-0" />}
                   {i18nT('components.bottomTerminalPanel.hide_terminal_panel')}
                 </DropdownMenuItem>
                 )}
             </AllTabsMenu>
-            {/* While fullscreen covers the content area (and the resize grip is
-                gone), the header's second slot is a visible Exit fullscreen
-                button in place of Hide: on Linux/Windows there is no fullscreen
-                chord, so without it the only exit would be hidden inside the
-                overflow menu. */}
-            {fullscreen && fullscreenAllowed ? (
+            {/* One toggle for both states, so focus stays on it. The macOS
+                chord is shown in its tooltip; Linux/Windows have no fullscreen
+                chord (Ctrl+Shift+F is find there). */}
+            {fullscreenAllowed ? (
             <button
               className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
-              onClick={() => setTerminalFullscreen(false)}
-              title={i18nT('components.bottomTerminalPanel.exit_fullscreen')}
-              aria-label={i18nT('components.bottomTerminalPanel.exit_fullscreen')}
-              data-testid="terminal-exit-fullscreen"
+              onClick={toggleTerminalFullscreen}
+              // Claim the advertised chord so the global ⇧⌘F binding skips it.
+              onKeyDown={e => {
+                if (terminalChord(e, isMac) !== 'fullscreen') return
+                e.preventDefault()
+                toggleTerminalFullscreen()
+              }}
+              title={fullscreenToggleTitle}
+              aria-label={fullscreenToggleLabel}
+              aria-keyshortcuts={fullscreenAriaKeyshortcuts(isMac)}
+              data-testid="terminal-fullscreen-toggle"
             >
-              <Minimize2 size={14} />
+              {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             </button>
             ) : (
             <button

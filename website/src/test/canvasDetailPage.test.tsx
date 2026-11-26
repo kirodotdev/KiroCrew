@@ -198,6 +198,26 @@ describe('canvas detail page', () => {
     expect(screen.getByTitle(/Push your local version up/i)).toBeInTheDocument()
   })
 
+  it('opens the publish column from an expired publication\'s Publish, in place of the chat, and keeps it open', async () => {
+    vi.mocked(api).createChatSlot = vi.fn().mockResolvedValue({ key: 'chat-new' })
+    vi.mocked(api).publishProviders = vi.fn().mockResolvedValue({ providers: [] })
+    vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({
+      providers: [{ name: 'companion', display_name: 'Companion' }], kind: 'canvas',
+    })
+    vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({})
+    await renderPage({ ...canvas, publication: { ...publication, expires_at: '2026-11-20T12:00:00+00:00', expired: true } })
+    const publish = () => within(screen.getByTestId('publication-banner')).getByRole('button', { name: 'Publish' })
+    await screen.findByText(/Publication on Companion expired on/, undefined, BOARD_READY)
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle agent chat' }))
+    await screen.findByTestId('canvas-page-chat-panel')
+    fireEvent.click(publish())
+    expect(await screen.findByTestId('canvas-page-publish')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('canvas-page-chat-panel')).toBeNull())
+    // A second press keeps it open: the button opens the column, never toggles it.
+    fireEvent.click(publish())
+    expect(screen.getByTestId('canvas-page-publish')).toBeInTheDocument()
+  })
+
   it.each([
     { action: 'pull', title: /Pull the latest remote content/i, call: 'pullLatest', ahead: true },
     { action: 'overwrite', title: /Push your local version up/i, call: 'overwriteRemote', ahead: true },

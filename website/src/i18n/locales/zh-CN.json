@@ -4899,65 +4899,6 @@
         "preview_unavailable": "预览不可用"
       }
     },
-    "projectScaffolder": {
-      "manifest": {
-        "display_name": "从项目创建文件夹",
-        "description": "指定一个项目目录，它会找出其中包含哪些子项目，然后为每个子项目创建一个对应的侧边栏文件夹。扫描是只读的，因此在创建任何内容之前，你可以看到完整列表并勾选需要的项。子项目会按照磁盘上的层级嵌套在其父项之下，已经设置好的内容会显示出来，但绝不会重复创建。",
-        "page_label": "创建文件夹",
-        "highlight_1": "先以只读方式扫描，在你确认所选内容之前不会创建任何东西",
-        "highlight_2": "以行列出顶层包，更深层的发现收拢在一个可折叠分组中，可全选或全不选",
-        "highlight_3": "高置信度的匹配默认勾选；较弱的匹配供你自行选择",
-        "highlight_4": "显示每个匹配背后的依据，让你了解某个目录为何被选中",
-        "highlight_5": "已有的文件夹会列出但会被跳过，绝不重复创建",
-        "highlight_6": "准确报告创建了哪些、跳过了哪些，以及哪些失败及原因",
-        "use_case_1": "把单体仓库或存放同级仓库的目录转换为每个包一个侧边栏文件夹，这样按包生效的引导无需手工搭建目录树即可加载。",
-        "configuration_1": "打开“创建文件夹”，浏览到项目目录，查看预览并勾选需要的包，然后确认以创建这些文件夹。"
-      },
-      "projectScaffolderPage": {
-        "absolute_path_to_a_project_directory": "项目目录的绝对路径",
-        "already_set_up": "已设置",
-        "browse": "选择目录",
-        "create_folders": "创建侧边栏文件夹",
-        "create_folders_from_project": "从项目创建文件夹",
-        "create_the_root_folder_only": "仅创建根文件夹",
-        "creating": "正在创建",
-        "directly_under_the_root": "直接位于根目录下",
-        "inside_name": "位于 {{name}} 内",
-        "n_already_set_up": "{{n}} 个已设置",
-        "n_created": "已创建 {{n}} 个",
-        "n_failed": "{{n}} 个失败",
-        "n_possible_sub_folders_inside_packages_above_other": "上方软件包内有 {{n}} 个可能的子文件夹",
-        "n_selected": "根文件夹 + 已选择 {{n}} 个",
-        "n_selected_root_exists": "已选择 {{n}} 个",
-        "n_selected_inside": "内部已选择 {{n}} 个",
-        "no_folders_were_created": "未创建任何文件夹",
-        "no_sub_projects_found": "未找到子项目",
-        "nothing_under_this_directory_looked_like_a_proje": "此目录下没有任何内容看起来像一个项目。你仍然可以为该目录本身创建一个文件夹。",
-        "preview": "预览",
-        "project_directory": "项目目录",
-        "re_scan": "重新扫描",
-        "results": "结果",
-        "root_already_exists_nothing_to_create": "该目录已有对应的侧边栏文件夹，没有可创建的内容。",
-        "root_changed_scan_before_creating": "上方目录已更改 — 创建文件夹前请先扫描。",
-        "scan": "扫描",
-        "scan_a_project_directory_then_create_a_sidebar": "扫描一个项目目录，然后为你选择的每个子项目创建一个侧边栏文件夹。",
-        "scanning": "正在扫描",
-        "select_all": "全选",
-        "select_all_inside": "全选内部",
-        "select_none": "全不选",
-        "select_none_inside": "全不选内部",
-        "showing_the_preview_from_the_last_successful_scan": "正在显示上次成功扫描的预览。",
-        "signal_git": "git 仓库",
-        "signal_kiro": "Kiro 文件夹 (.kiro)",
-        "signal_manifest": "发现 {{name}}",
-        "signal_member": "工作区成员",
-        "signals": "匹配原因",
-        "this_preview_no_longer_matches_the_directory_on": "此预览已与磁盘上的目录不一致。请先重新扫描再创建文件夹。",
-        "tier_confident": "高置信度",
-        "tier_offered": "可能匹配",
-        "warnings": "警告"
-      }
-    },
     "specBuilder": {
       "api": {
         "phase_building": "构建中",
@@ -6679,6 +6620,8 @@
       "closing_terminal": "正在关闭终端…",
       "fullscreen": "全屏",
       "exit_fullscreen": "退出全屏",
+      "fullscreen_shortcut": "全屏 ({{shortcut}})",
+      "exit_fullscreen_shortcut": "退出全屏 ({{shortcut}})",
       "find": "查找"
     },
     "tabCloseMenu": {
@@ -8789,6 +8732,7 @@
       "expiry": "到期",
       "expiry_after_days_other": "{{count}} 天后",
       "expiry_never": "永不",
+      "previous_link_expired": "之前的链接已于 {{date}} 到期。再次发布会创建新链接。",
       "public_exposure_warning": "任何拥有已发布链接的人都可以查看此内容。它通过公共互联网提供，且没有任何身份验证。"
     },
     "pullRequestPanel": {
@@ -9281,6 +9225,7 @@
       "desktop_app_only": "仅桌面应用",
       "panel_toggles": "面板开关",
       "unset": "未设置",
+      "terminal_focus_only": "仅在获得焦点的终端中",
       "save_refused": "未保存：浏览器存储空间已满。请释放一些空间后重试。"
     },
     "sidePanelLayout": {
@@ -10301,7 +10246,7 @@
       "trust_off_title": "允许通过这台电脑的网络名称访问",
       "trust_off_body": "仪表板会拒绝来自它不认识的地址的请求。允许它自己的专用网络名称，手机才能访问。这不会向互联网开放任何端口，也不会改变你的登录方式。",
       "restart_gateway_title": "重启 {{productName}} 以完成设置",
-      "restart_gateway_body": "现在已经能取到网络名称，但本服务启动时还没取到，所以该名称尚未被信任。重启 {{productName}} 一次，最后一步就绪。",
+      "restart_gateway_body": "本服务需要重启才能使用当前的 tailnet 地址。重启 {{productName}} 一次，最后一步就绪。",
       "occupied_title": "该地址已被其他服务占用",
       "occupied_body": "Tailscale 已在这个地址上提供其他服务。发布会覆盖它，因此本次未做任何改动。",
       "occupied_replace": "如果确认可以覆盖，请运行 <cmd/>",
@@ -11837,6 +11782,7 @@
       "toggle_side_terminal": "切换侧边面板终端",
       "previous_terminal": "上一个终端",
       "next_terminal": "下一个终端",
+      "clear_terminal": "清空终端",
       "toggle_dictation_mute": "切换听写静音"
     },
     "useNativeNotification": {
@@ -12564,6 +12510,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "已发布到 {{provider}}",
+      "publication_expires_on": "将于 {{date}} 到期",
+      "publication_expires_soon_on": "即将于 {{date}} 到期",
+      "published_to_provider_expired": "在 {{provider}} 上的发布已于 {{date}} 到期",
       "open_published_page": "打开已发布的页面",
       "a_newer_version_is_available_in_the_remote_copy": "· 远端副本中有更新的版本",
       "activity": "动态",
@@ -13625,7 +13574,9 @@
         "chip_stalled_other": "{{count}} 个代理可能已停滞",
         "more_running_normally_count_other": "另有 {{count}} 个正常运行中…",
         "engine_stops_with_answer": "在对话内运行的子代理，会在你停止回答时一并停止。",
-        "stop_all_and_answer": "全部停止并停止回答"
+        "stop_all_and_answer": "全部停止并停止回答",
+        "older_runs_not_shown_other": "另有 {{count}} 个较早的未显示",
+        "some_finished_runs_not_shown": "部分已完成的运行未显示"
       },
       "subagentQueued": {
         "low_memory": "等待开始 — 需要 {{required}} 可用内存，当前可用 {{available}}；请释放内存以继续",
@@ -18816,7 +18767,13 @@
         "strict_off": "允许少量随机延迟",
         "strict_off_hint": "稍晚一点开始，以分散负载",
         "strict_on": "按准确时间运行",
-        "strict_on_hint": "严格按计划时间开始"
+        "strict_on_hint": "严格按计划时间开始",
+        "send_to_telegram": "设置 Telegram 目标",
+        "telegram_failed": "{{name}}（失败）",
+        "telegram_failed_reason": "{{name}}（失败：{{reason}}）",
+        "telegram_failed_heading": "部分勾选的任务未能更新，仍保持选中。",
+        "telegram_kept_slack_heading": "这些勾选的任务保留其 Slack 频道，未更新，仍保持选中。",
+        "telegram_updated_other": "{{count}} 个任务的目标现已设为 {{destination}}。"
       },
       "cronFolders": {
         "batch_move_failed_other": "{{total}} 个任务中有 {{count}} 个无法移动",
@@ -21059,7 +21016,8 @@
         "clear_shortcut": "清除",
         "panel_toggles": "面板开关",
         "skips_shell_hint": "在终端内也会生效，因此 shell 将不再收到该按键——请不要选择 Ctrl+C 或 Ctrl+R。",
-        "skips_shell_hint_mac": "在终端内也会生效，因此 shell 将不再收到该按键——请不要选择 ⌃C (Ctrl+C) 或 ⌃R (Ctrl+R)。"
+        "skips_shell_hint_mac": "在终端内也会生效，因此 shell 将不再收到该按键——请不要选择 ⌃C (Ctrl+C) 或 ⌃R (Ctrl+R)。",
+        "terminal_focus_hint": "仅在终端获得焦点时生效，因此可以与全局搜索共用同一按键。shell 将不再收到该按键。"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "分析每个已完成会话，当该会话展示出会复现的流程（即未来会话在处理不同目标时仍会再次执行的流程）时起草可复用 SKILL.md。默认关闭。草稿会暂存到“自定义 → 技能”的待审队列中供审阅 — 未经你批准不会生效（见下文）。",

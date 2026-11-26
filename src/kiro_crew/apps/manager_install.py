@@ -89,6 +89,7 @@ from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
     from kiro_crew.apps.backend_runtime.provisioning import _PinnedDir
+    from kiro_crew.apps.builtin_adoption_baseline import GrantBaseline
 
 logger = logging.getLogger("kiro_crew.apps.manager")
 
@@ -618,10 +619,16 @@ def install_app(
 
 @dataclass(frozen=True)
 class AdoptionProvenance:
-    """The registry coordinate a former built-in record is adopted onto (``manager_adopt``)."""
+    """The registry coordinate a former built-in record is adopted onto (``manager_adopt``).
+
+    ``baseline`` is set once the app's wheel copy is gone: the pin row's frozen copy,
+    which the swap compares with and carries in place of the record's ``app.json``
+    copy and approved set (``builtin_adoption_baseline``).
+    """
 
     repository: str
     commit: str
+    baseline: GrantBaseline | None = None
 
 
 @holds_app_record_locks
@@ -750,17 +757,26 @@ def update_app(
 
     old_version = existing.version
     requested_session_approval = bool(manifest.permissions.sessionApproval)
-    session_control_widening = _session_control_widening(
-        old_manifest.permissions if old_manifest else None, manifest.permissions
+    # An adoption whose wheel copy is gone compares with the pin row's frozen copy:
+    # without a copy, nothing rewrites the record's copy and approved set.
+    baseline = _adoption.baseline if _adoption is not None else None
+    old_permissions = (
+        baseline.permissions
+        if baseline is not None
+        else old_manifest.permissions if old_manifest else None
     )
+    session_control_widening = _session_control_widening(old_permissions, manifest.permissions)
     widened_session_approval = session_control_widening is not None
     # ``permissions.api`` / ``permissions.events`` are read live too. An added
     # entry is held back instead of disabling the app: it keeps running on the
     # set the owner approved until they approve the new one.
-    existing_approved = _effective_approved_grants(name, existing)
     approved_grants = _approved_grants_after_manifest_change(
-        existing_approved=existing_approved,
-        old_permissions=grant_source(old_manifest),
+        existing_approved=(
+            baseline.approved
+            if baseline is not None
+            else _effective_approved_grants(name, existing)
+        ),
+        old_permissions=baseline.grants if baseline is not None else grant_source(old_manifest),
         new_permissions=grant_source(manifest),
     )
     widened_grants = any(_held_back_entries(approved_grants, grant_source(manifest)).values())

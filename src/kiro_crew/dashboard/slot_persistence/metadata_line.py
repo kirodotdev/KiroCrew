@@ -16,6 +16,7 @@ slot-owned fields belong in ``metadata_codec``.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import threading
@@ -485,8 +486,12 @@ def merge_empty_window(
     autocompact_override: tuple[float | None] | None = None,
     after_commit_on_transcript: Callable[[], None] | None = None,
     routed_binding: TranscriptBinding,
+    unless_unchanged: bool = False,
 ) -> str | None:
     """Commit a forced or closing save of a message-less slot as a metadata merge.
+
+    ``unless_unchanged`` skips the write when every merged field already holds
+    its value on disk (see ``_save_slot_to_history``).
 
     ``refusal_under_lock`` is evaluated against the line read under the
     cross-process lock, after the existence check. A non-``None`` reason skips
@@ -625,6 +630,11 @@ def merge_empty_window(
             # A merge never deletes a key, so dropping it keeps the on-disk
             # queue, and the witness below then has nothing to credit.
             merged_fields.pop("queued_prompts", None)
+        if unless_unchanged and not slot._dirty:
+            # Compared as written, so a tuple and the list it is stored as match.
+            merged = json.loads(json.dumps(merged_fields))
+            if all(meta.get(k) == v for k, v in merged.items()):
+                return False
         return True
 
     def _after_commit_under_lock() -> None:

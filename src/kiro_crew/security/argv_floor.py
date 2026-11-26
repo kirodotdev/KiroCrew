@@ -236,6 +236,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OWN_HOST_RESOLVE_NEXT_TRY,
         _OWN_HOST_RESOLVE_STAMP,
         _fcntl,
+        _glob_matches,
         _host_is_self,
         _host_verdict_wait_left,
         _hosts_file_key,

@@ -17,6 +17,7 @@ listening. So the ORDERING is the contract these tests defend:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 
 import pytest
@@ -462,7 +463,8 @@ class TestACorruptConfigStopsEveryAction:
         with pytest.raises(SystemExit):
             _tailnet(_args("down"))
         err = capsys.readouterr().err
-        assert "tailscale serve --https 443 --set-path=/ off" in err
+        assert "tailscale serve --https <port> --set-path=/ off" in err
+        assert "<port> is dashboard.tailscale.https_port (443 unless set)" in err
 
     def test_the_key_path_is_real(self) -> None:
         """The writer sets a literal path, so a rename must fail here, not silently.
@@ -754,3 +756,62 @@ class TestTheOverlayIsGuardedToo:
         assert not (cfg_file.parent / "config.local.json").exists()
         _stub_serve(monkeypatch)
         _tailnet(_args("status"))
+
+
+class TestTheConfiguredHttpsPort:
+    """``dashboard.tailscale.https_port`` reaches every serve call, and ``status``
+    prints the value it read so a fallback to 443 is visible."""
+
+    @staticmethod
+    def _set_port(cfg_file, value: object) -> None:
+        data = json.loads(cfg_file.read_text())
+        data["dashboard"]["tailscale"]["https_port"] = value
+        cfg_file.write_text(json.dumps(data))
+
+    @staticmethod
+    def _spy(monkeypatch) -> list[tuple[str, object]]:
+        from kiro_crew.dashboard import tailnet_serve
+
+        seen: list[tuple[str, object]] = []
+        for name, result in (
+            ("serve_state", ServeState(True, True, "serving")),
+            ("publish", ServeResult(True, "ok", "published")),
+            ("unpublish", ServeResult(True, "ok", "withdrawn")),
+        ):
+            monkeypatch.setattr(
+                tailnet_serve,
+                name,
+                lambda *a, _n=name, _r=result, **k: seen.append((_n, k.get("https_port"))) or _r,
+            )
+        return seen
+
+    def test_status_prints_the_port_and_the_url_carries_it(self, cfg_file, monkeypatch, capsys):
+        from kiro_crew.cli_commands import _tailnet
+
+        self._set_port(cfg_file, 5479)
+        _stub_serve(monkeypatch)
+        seen = self._spy(monkeypatch)
+        _tailnet(_args("status"))
+        out = capsys.readouterr().out
+        assert "Port:       5479 (dashboard.tailscale.https_port)" in out
+        assert "URL:        https://d.t.ts.net:5479" in out
+        assert seen == [("serve_state", 5479)]
+
+    def test_a_bad_value_is_shown_as_443(self, cfg_file, monkeypatch, capsys):
+        from kiro_crew.cli_commands import _tailnet
+
+        self._set_port(cfg_file, 70000)
+        _stub_serve(monkeypatch)
+        _tailnet(_args("status"))
+        assert "Port:       443 (dashboard.tailscale.https_port)" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("action", ["up", "down"])
+    def test_up_and_down_use_the_port(self, action, cfg_file, monkeypatch):
+        from kiro_crew.cli_commands import _tailnet
+
+        self._set_port(cfg_file, 5479)
+        _stub_serve(monkeypatch)
+        seen = self._spy(monkeypatch)
+        with contextlib.suppress(SystemExit):
+            _tailnet(_args(action))
+        assert seen == [("publish" if action == "up" else "unpublish", 5479)]

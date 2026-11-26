@@ -90,7 +90,11 @@ async def api_tailnet_status(request: web.Request) -> web.Response:
             "enabled": enabled,
             "governance_pinned": pinned,
             "host": host,
-            "origin": f"https://{host}" if host else "",
+            "origin": (
+                tailnet.tailnet_https_origin(host, tailnet.running_tailnet_https_port(request.app))
+                if host
+                else ""
+            ),
             "resolved_at": resolved_at,
             "state": _derive_state(pinned=pinned, enabled=enabled, host=host),
         }

@@ -506,6 +506,8 @@ export const subagentReducers = {
     // only when non-empty, so an idle reconnect keeps both maps' identity.
     if (Object.keys(state.subagentQueued ?? {}).length) state.subagentQueued = {}
     if (Object.keys(state.subagentQueuedReason ?? {}).length) state.subagentQueuedReason = {}
+    // The replay this subscription starts says again what it cuts.
+    if (Object.keys(state.subagentReplayCut ?? {}).length) state.subagentReplayCut = {}
   },
   /** The gateway's `subagent_replay_done`: drop every card the replay did not
    *  name (see `clearSubagentsForSnapshot`). A marker with no replay in
@@ -521,6 +523,22 @@ export const subagentReducers = {
     }
     sweep(state.subagents)
     for (const activity of Object.values(state.slotActivity)) sweep(activity.subagents)
+  },
+  /** The gateway's `subagent_replay_truncated`: per slot, how many finished
+   *  runs the replay left out. Each slot named is SET from its own entry; a
+   *  slot the frame does not name keeps what it had. */
+  subagentReplayTruncated(state: ChatState, action: PayloadAction<{ slots?: unknown }>) {
+    const slots = action.payload?.slots
+    if (!slots || typeof slots !== 'object') return
+    state.subagentReplayCut ??= {}
+    for (const [slot, entry] of Object.entries(slots as Record<string, unknown>)) {
+      if (isUnsafeKey(slot) || !entry || typeof entry !== 'object') continue
+      const { n, at_least: atLeast } = entry as { n?: unknown; at_least?: unknown }
+      if (typeof n !== 'number' || !Number.isInteger(n) || n < 0) continue
+      const key = safeKey(slot)
+      if (n === 0 && atLeast !== true) delete state.subagentReplayCut[key]
+      else state.subagentReplayCut[key] = { n, atLeast: atLeast === true }
+    }
   },
   /** Aggregate "waiting to start" count for a slot. Agents queued behind the
    *  concurrency cap / stagger gate have no individual card; this count lets
@@ -847,6 +865,9 @@ export const subagentReducers = {
   clearTerminalSubagents(state: ChatState, action: PayloadAction<{ slot: string }>) {
     const slot = action.payload.slot
     if (isUnsafeKey(slot)) return
+    // The note counts finished runs too. The older ones it did not dismiss come
+    // back as cards on the next reload, whose replay states its own cut.
+    if (state.subagentReplayCut?.[safeKey(slot)]) delete state.subagentReplayCut[safeKey(slot)]
     const subs = slot !== state.activeSlot
       ? state.slotActivity[safeKey(slot)]?.subagents
       : state.subagents

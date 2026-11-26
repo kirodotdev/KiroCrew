@@ -4981,65 +4981,6 @@
         "preview_unavailable": "プレビューは利用できません"
       }
     },
-    "projectScaffolder": {
-      "manifest": {
-        "display_name": "プロジェクトからフォルダーを作成",
-        "description": "プロジェクトのディレクトリを指定すると、その中にどのサブプロジェクトがあるかを判別し、それぞれに対応するサイドバーのフォルダーを作成します。スキャンは読み取り専用なので、何かが作成される前に一覧全体を確認し、必要なものにチェックを入れられます。サブプロジェクトはディスク上と同じように親の下に入れ子になり、すでに設定済みのものは表示されますが二重に作成されることはありません。",
-        "page_label": "フォルダーを作成",
-        "highlight_1": "まず読み取り専用でスキャンするため、選択を確定するまで何も作成されません",
-        "highlight_2": "トップレベルのパッケージを行として一覧表示し、より深い検出結果は 1 つの折りたたみグループにまとめて全選択・全解除できます",
-        "highlight_3": "確度の高い一致は最初からチェック済み、弱い一致は任意で選べます",
-        "highlight_4": "一致の根拠となった手がかりを示すので、そのディレクトリが選ばれた理由が分かります",
-        "highlight_5": "すでにあるフォルダーは一覧に出ますがスキップされ、重複して作られません",
-        "highlight_6": "何が作成され、何がスキップされ、何が失敗してその理由は何かを正確に報告します",
-        "use_case_1": "モノレポや隣接リポジトリのディレクトリを、パッケージごとに 1 つのサイドバーフォルダーへ変換し、ツリーを手作業で組まずにパッケージ単位のステアリングを読み込めるようにします。",
-        "configuration_1": "「フォルダーを作成」を開き、プロジェクトディレクトリを選び、プレビューを確認して必要なパッケージにチェックを入れ、確定してフォルダーを作成します。"
-      },
-      "projectScaffolderPage": {
-        "absolute_path_to_a_project_directory": "プロジェクトディレクトリの絶対パス",
-        "already_set_up": "設定済み",
-        "browse": "ディレクトリを選択",
-        "create_folders": "サイドバーフォルダーを作成",
-        "create_folders_from_project": "プロジェクトからフォルダーを作成",
-        "create_the_root_folder_only": "ルートフォルダーのみ作成",
-        "creating": "作成中",
-        "directly_under_the_root": "ルートの直下",
-        "inside_name": "{{name}} 内",
-        "n_already_set_up": "{{n}} 件は設定済み",
-        "n_created": "{{n}} 件作成",
-        "n_failed": "{{n}} 件失敗",
-        "n_possible_sub_folders_inside_packages_above_other": "上のパッケージ内にあるサブフォルダー候補 {{n}} 件",
-        "n_selected": "ルートフォルダー + {{n}} 件選択中",
-        "n_selected_root_exists": "{{n}} 件選択",
-        "n_selected_inside": "内部で {{n}} 件選択中",
-        "no_folders_were_created": "フォルダーは作成されませんでした",
-        "no_sub_projects_found": "サブプロジェクトが見つかりません",
-        "nothing_under_this_directory_looked_like_a_proje": "このディレクトリの中にプロジェクトらしいものはありませんでした。このディレクトリ自身のフォルダーは作成できます。",
-        "preview": "プレビュー",
-        "project_directory": "プロジェクトディレクトリ",
-        "re_scan": "再スキャン",
-        "results": "結果",
-        "root_already_exists_nothing_to_create": "このディレクトリには既にサイドバーのフォルダーがあるため、作成するものはありません。",
-        "root_changed_scan_before_creating": "上のディレクトリが変更されました。フォルダーを作成する前にスキャンしてください。",
-        "scan": "スキャン",
-        "scan_a_project_directory_then_create_a_sidebar": "プロジェクトのディレクトリをスキャンし、選んだサブプロジェクトごとにサイドバーのフォルダーを作成します。",
-        "scanning": "スキャン中",
-        "select_all": "すべて選択",
-        "select_all_inside": "内側をすべて選択",
-        "select_none": "すべて解除",
-        "select_none_inside": "内側をすべて解除",
-        "showing_the_preview_from_the_last_successful_scan": "最後に成功したスキャンのプレビューを表示しています。",
-        "signal_git": "git リポジトリ",
-        "signal_kiro": "Kiro フォルダー (.kiro)",
-        "signal_manifest": "{{name}} あり",
-        "signal_member": "ワークスペースメンバー",
-        "signals": "一致した理由",
-        "this_preview_no_longer_matches_the_directory_on": "このプレビューはディスク上のディレクトリと一致しなくなりました。フォルダーを作成する前に再スキャンしてください。",
-        "tier_confident": "確度高",
-        "tier_offered": "候補",
-        "warnings": "警告"
-      }
-    },
     "specBuilder": {
       "api": {
         "phase_building": "構築中",
@@ -6679,6 +6620,8 @@
       "closing_terminal": "ターミナルを閉じています…",
       "fullscreen": "全画面",
       "exit_fullscreen": "全画面を終了",
+      "fullscreen_shortcut": "全画面 ({{shortcut}})",
+      "exit_fullscreen_shortcut": "全画面を終了 ({{shortcut}})",
       "find": "検索"
     },
     "tabCloseMenu": {
@@ -8789,6 +8732,7 @@
       "expiry": "有効期限",
       "expiry_after_days_other": "{{count}}日後",
       "expiry_never": "なし",
+      "previous_link_expired": "以前のリンクは {{date}} に期限切れになりました。もう一度公開すると新しいリンクが作成されます。",
       "public_exposure_warning": "公開されたリンクを知っている人は誰でもこのコンテンツを閲覧できます。認証なしで公開インターネット上に配信されます。"
     },
     "pullRequestPanel": {
@@ -9281,6 +9225,7 @@
       "desktop_app_only": "デスクトップアプリのみ",
       "panel_toggles": "パネルの表示切り替え",
       "unset": "未設定",
+      "terminal_focus_only": "フォーカス中のターミナルでのみ",
       "save_refused": "保存されませんでした。ブラウザーのストレージがいっぱいです。空き容量を作ってからもう一度お試しください。"
     },
     "sidePanelLayout": {
@@ -10301,7 +10246,7 @@
       "trust_off_title": "このコンピューターのネットワーク名によるアクセスを許可する",
       "trust_off_body": "ダッシュボードは認識できないアドレスからのリクエストを拒否します。スマートフォンからアクセスできるよう、このコンピューター自身のプライベートネットワーク名を許可してください。これによりインターネットへのポートは開かれず、サインイン方法も変わりません。",
       "restart_gateway_title": "完了するには {{productName}} を再起動してください",
-      "restart_gateway_body": "ネットワーク名は利用可能になりましたが、このサーバーは起動時に名前を解決できなかったため、その名前はまだ信頼されていません。{{productName}} を一度再起動すると、最後のステップの準備が整います。",
+      "restart_gateway_body": "このサーバーが現在の tailnet アドレスを使うには再起動が必要です。{{productName}} を一度再起動すると、最後のステップの準備が整います。",
       "occupied_title": "ここでは既に別のものが提供されています",
       "occupied_body": "Tailscale はこのアドレスで既に別のものを提供しています。公開するとそれが置き換えられるため、何も変更していません。",
       "occupied_replace": "置き換えても安全な場合は、<cmd/> を実行してください",
@@ -11837,6 +11782,7 @@
       "toggle_side_terminal": "サイドパネルのターミナルの表示を切り替え",
       "previous_terminal": "前のターミナル",
       "next_terminal": "次のターミナル",
+      "clear_terminal": "ターミナルをクリア",
       "toggle_dictation_mute": "音声入力のミュートを切り替え"
     },
     "useNativeNotification": {
@@ -12564,6 +12510,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "{{provider}} に公開済み",
+      "publication_expires_on": "{{date}} に期限切れになります",
+      "publication_expires_soon_on": "まもなく {{date}} に期限切れになります",
+      "published_to_provider_expired": "{{provider}} での公開は {{date}} に期限切れになりました",
       "open_published_page": "公開済みのページを開く",
       "a_newer_version_is_available_in_the_remote_copy": "· リモートコピーでより新しいバージョンが利用可能です",
       "activity": "アクティビティ",
@@ -13625,7 +13574,9 @@
         "chip_stalled_other": "{{count}} 個のエージェントが停滞している可能性",
         "more_running_normally_count_other": "ほか {{count}} 件は正常に実行中…",
         "engine_stops_with_answer": "チャット内で動くサブエージェントは、応答を停止すると一緒に停止します。",
-        "stop_all_and_answer": "すべてと応答を停止"
+        "stop_all_and_answer": "すべてと応答を停止",
+        "older_runs_not_shown_other": "+{{count}} 件の古い実行は非表示",
+        "some_finished_runs_not_shown": "完了した実行の一部は非表示"
       },
       "subagentQueued": {
         "low_memory": "開始待ち — {{required}} の空きメモリが必要です（現在の空き {{available}}）。続行するにはメモリを空けてください",
@@ -18816,7 +18767,13 @@
         "strict_off": "わずかなランダム遅延を許可",
         "strict_off_hint": "負荷を分散するため少し遅れて開始",
         "strict_on": "正確な時刻に実行",
-        "strict_on_hint": "スケジュールどおりに正確に開始"
+        "strict_on_hint": "スケジュールどおりに正確に開始",
+        "send_to_telegram": "Telegram の送信先を設定",
+        "telegram_failed": "{{name}}（失敗）",
+        "telegram_failed_reason": "{{name}}（失敗：{{reason}}）",
+        "telegram_failed_heading": "チェックしたジョブの一部を更新できませんでした。選択されたままです。",
+        "telegram_kept_slack_heading": "これらのチェックしたジョブは Slack チャネルを維持するため、更新されていません。選択されたままです。",
+        "telegram_updated_other": "{{count}} 件のジョブの送信先が {{destination}} になりました。"
       },
       "cronFolders": {
         "batch_move_failed_other": "{{total}}件中{{count}}件のジョブを移動できませんでした",
@@ -21059,7 +21016,8 @@
         "clear_shortcut": "クリア",
         "panel_toggles": "パネルの表示切り替え",
         "skips_shell_hint": "ターミナル内でも動作するため、シェルはこのキーを受け取らなくなります。Ctrl+C や Ctrl+R は選ばないでください。",
-        "skips_shell_hint_mac": "ターミナル内でも動作するため、シェルはこのキーを受け取らなくなります。⌃C (Ctrl+C) や ⌃R (Ctrl+R) は選ばないでください。"
+        "skips_shell_hint_mac": "ターミナル内でも動作するため、シェルはこのキーを受け取らなくなります。⌃C (Ctrl+C) や ⌃R (Ctrl+R) は選ばないでください。",
+        "terminal_focus_hint": "ターミナルにフォーカスがあるときだけ動作するため、「すべてを検索」と同じキーを共有できます。シェルはこのキーを受け取らなくなります。"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "完了したセッションを分析し、繰り返し使われる手順 — 将来のセッションが別の対象に対して再び実行するような手順 — が示されたときに再利用可能な SKILL.md を作成します。デフォルトではオフです。ドラフトは「カスタマイズ → スキル」の保留キューにステージされます。レビュー用です。何もライブにはなりません（以下を参照してください）。",

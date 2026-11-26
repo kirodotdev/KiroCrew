@@ -1762,7 +1762,12 @@ off revokes the approval first, and restores it when the config write does not
 commit. The approval also stores the redacted, bounded display of the approved
 launch, so a `changed_needs_reapproval` refusal carries `approved_commands` and
 `approved_envs` beside the new `commands` and `envs`; an approval recorded
-without a display omits both fields. The refusal record carries each command argv
+without a display omits both fields. Beside each display it keeps a keyed digest
+of each env value that display names (HMAC-SHA256 under a key derived from
+`token_signing.key`, which the sandbox cannot read; each value hashed as the env
+fingerprint reads it), so the refusal also carries `changed_env_keys`: the keys
+both sides set whose digests differ, names only. An approval recorded without
+digests, or under another signing key, omits it. The refusal record carries each command argv
 with its redacted declared environment, scrubbed and bounded before they enter it,
 and the row's **Details** and the Review dialog display them. A refusal whose
 display was cut is stored `complete: false` with no `expected_launch`, so its
@@ -1869,7 +1874,10 @@ paired, so list order cannot change it. When a launch of a command both sides ru
 **Show full command**. An env key set on both sides with a new value is said
 there too: for a value the gateway shows in clear (PATH, `LD_*`, a `${VAR}`
 reference) the list entries added and removed, and otherwise only its key
-(`envValueChanges`). When both sides run the same commands, the summary is per
+(`envValueChanges`). A key in the refusal's `changed_env_keys` is named the same
+way, so a value the gateway hid, redacted or cut cannot hide a change; in the
+per-launch summary below, such a key that no launch's lines name is said once
+above the launches. When both sides run the same commands, the summary is per
 launch (`mcpLaunchDiff.launchChanges`): each new launch is paired with the
 approved launch it most likely replaced (same command, then fewest changed
 keys) and diffed against that launch only, so two launches swapping values
@@ -3315,7 +3323,8 @@ controls in `change_card_catalog.DASHBOARD_SETTINGS` (Response Verbosity and the
 other Chat toggles) write `PUT /api/dashboard/config` with a one-key partial
 body, a registry `configKey` the config route accepts writes
 `PATCH /api/config/kirocrew`, and anything else is refused `no_write_path` with a
-pointer to the `settings.show` guide. The value must be one of the control's
+pointer to the `settings.show` guide; so is a `str_list` key such as
+`skills.extra_paths`, since a card carries no list value. The value must be one of the control's
 own options. A string-list setting (`change_card_catalog.DASHBOARD_LIST_SETTINGS`:
 Selectable Models' hidden models) takes `op` (`add`/`remove`) and one `item`
 instead of `value`, and writes the Settings page's own one-item delta key
@@ -4511,7 +4520,24 @@ The inputs:
   the panel sources and the manual/route/type modules are digested too;
 - registered controls: a `{...uiLocation('<id>')}` marker at the render site plus
   one entry in its area file, `src/uiLocations/areas/<area>.ts`, aggregated by
-  `src/uiLocations/descriptors.ts` (see below).
+  `src/uiLocations/descriptors.ts` (see below);
+- pages from packaged app manifests: every `ui.pages[]` entry of each
+  `src/kiro_crew/apps/builtins/*/app.json`, read by `scripts/lib/ui-index-apps.mjs`
+  (data only: no app is named in generator or index code). Each becomes a
+  generated page `apppage.<manifest name>.<route slug>`. Its label is the catalog
+  key the rail renders for a built-in app's page (`APP_MANIFEST_KEY`'s
+  `apps.<camelCaseId>.manifest.page_label`, first page only) when the English
+  catalog holds the manifest's own words there, else a `literal:` label; the
+  app's `displayName` is `app` on the record (and, through its `display_name`
+  key the same way, an alias when it differs from the page label), and a rail
+  entry that requires `app_enabled`. A page whose route a core page
+  already has is left to that page. Its route must not match a core route: it is
+  served by the `/:builtinApp/*` arm. These are packaged files read at BUILD time,
+  so find_ui still reads only the generated index. Apps a user installs at
+  runtime are not packaged and so not indexed (a follow-up). A manifest edit that
+  changes an indexed page leaves the committed index stale, which `--check`
+  reports; `test/test_find_ui_app_pages.py` also compares the committed index
+  against the manifests, so a backend-only PR catches it too.
 
 Every emitted route is checked against the router itself: the `<Route path>`
 table in `src/App.tsx`, read by a bounded AST adapter (`collectRouteTable`) that
@@ -4520,7 +4546,8 @@ records each route's pattern, its catch-alls (`*`, a leading parameter such as
 directly, or a same-file component that renders nothing else), the static target.
 A route must match a non-catch-all, non-redirect route (most static segments
 win, as the router ranks them), or be an `appOnly` surface served by the
-built-in-app arm; anything else, including an empty route, is an error. A
+built-in-app arm (as an `appOnly` surface or a packaged app manifest's page);
+anything else, including an empty route, is an error. A
 Search Everywhere extra page whose route only redirects (`/mc-agents`, `/tasks`,
 `/instances`) is never returned as a destination: `LEGACY_PAGE_CANONICAL` in
 `descriptors.ts` names the location the redirect lands on, by explicit tab where
@@ -6070,11 +6097,10 @@ for channel agents at the prompt and at dispatch.
 **Assignment is still not authorization.** Being unreferenced by default keeps a
 capability cheap and deliberate; it does not prove the user consented to reach the
 agent does not otherwise have. For that, `config.json` is the WRONG home —
-`security.py` spells out why, and the keystone leaves (`computer_use.json`,
-`browser-mode-enabled`, the Ops Mission Control mode) exist because each grants
-something outside Kiro Crew (desktop input synthesis, the operator's logged-in
-browser, writes against production incident tooling) or is the security floor
-itself.
+`security.py` spells out why, and the keystone leaves (`computer_use.json`, the
+Ops Mission Control mode) exist because each grants something outside Kiro Crew
+(desktop input synthesis, writes against production incident tooling) or is the
+security floor itself.
 
 The test is blast radius, not wording: ask what the agent gains that it did not
 already have. Folder tools grant no new read (`list_sessions` already returns every

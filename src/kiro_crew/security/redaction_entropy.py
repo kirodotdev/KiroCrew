@@ -28,6 +28,8 @@ import urllib.parse
 from collections import Counter
 from collections.abc import Iterator
 
+from kiro_crew.default_ignorable import DEFAULT_IGNORABLE_RUN_RE
+
 from .redaction_patterns import (
     _PREFILTER_MIN_LEN,
     _contains_credential_pattern,
@@ -597,9 +599,16 @@ def _contains_fixed_credential(text: str) -> bool:
 
     Deliberately excludes the bare 40-character entropy heuristic. OAuth
     front-channel state and PKCE values are high-entropy by design, while the
-    canonical signatures and decoded credentials remain unambiguous.
+    canonical signatures and decoded credentials remain unambiguous. A text
+    holding a default-ignorable character is also read with those removed, as the
+    credential plan reads it: the credential still reads as written without them.
     """
-    return bool(_contains_credential_pattern(text) or _decode_b64_safe(text))
+    if _contains_credential_pattern(text) or _decode_b64_safe(text):
+        return True
+    if text.isascii() or not DEFAULT_IGNORABLE_RUN_RE.search(text):
+        return False
+    view = DEFAULT_IGNORABLE_RUN_RE.sub("", text)
+    return bool(_contains_credential_pattern(view) or _decode_b64_safe(view))
 
 
 def _text_contains_bare_secret(text: str) -> bool:

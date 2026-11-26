@@ -19,8 +19,9 @@ Each row is the contract's ``Bot`` and nothing else, built by the function that
 builds the installed apps' rows (``handlers.members_app``): the free text leaves
 through the roster mask, ``avatar_url`` is null because the gateway has no image
 address for a Bot, and ``status`` is ``busy`` while a turn runs in the Bot's own
-thread (``_list_bots`` says why only there). ``id`` is the Bot's name, the
-value ``model`` takes, where an installed app is given the slug.
+thread or a dashboard turn runs as the Bot (``_list_bots`` says which turns those
+are). ``id`` is the Bot's name, the value ``model`` takes, where an installed app is
+given the slug.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from kiro_crew import member_goals
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
-from kiro_crew.dashboard import local_authorization
+from kiro_crew.dashboard import local_authorization, running_bot_turns
 from kiro_crew.dashboard.crew_api_auth import OWNER_ONLY_PUBLIC_ROUTES
 from kiro_crew.dashboard.crew_api_errors import contract_error, request_id_for
 from kiro_crew.dashboard.crew_api_grant_requests import _host_owner_refusal
@@ -100,8 +101,9 @@ def _bot_identities(cfg: KiroCrewConfig) -> dict[str, str | None]:
     return local_authorization.bot_identities(cfg)
 
 
-def _row(cfg: KiroCrewConfig, name: str) -> tuple[dict[str, Any], str]:
-    """One ``Bot`` (status still idle) and its thread key. Reads that Bot's files.
+def _row(cfg: KiroCrewConfig, name: str, member_id: str | None) -> tuple[dict[str, Any], str, str]:
+    """One ``Bot`` (status still idle), its thread key and its member id (empty when it
+    has none). Reads that Bot's files.
 
     The row is the installed apps' own (``members_app._bot_row``) with the Bot's name
     as its ``id``."""
@@ -117,13 +119,14 @@ def _row(cfg: KiroCrewConfig, name: str) -> tuple[dict[str, Any], str]:
         except member_goals.GoalsUnreadable:
             has_goal = False
         thread_key = _thread_key(slug, name)
-    return _bot_row(slug, name, agent_cfg, has_goal, bot_id=name), thread_key
+    return _bot_row(slug, name, agent_cfg, has_goal, bot_id=name), thread_key, member_id or ""
 
 
 def _read(
     grant_id: str | None, after: str | None, limit: int
-) -> tuple[list[tuple[dict[str, Any], str]], bool]:
-    """The page's rows with their thread keys, and whether more follow. File IO.
+) -> tuple[list[tuple[dict[str, Any], str, str]], bool]:
+    """The page's rows with their thread keys and member ids, and whether more follow.
+    File IO.
 
     *grant_id* is the verified app credential's grant, or ``None`` for the machine
     owner. Only the Bots on the page are read from disk.
@@ -137,7 +140,7 @@ def _read(
         # revoked or run out between token auth's check and this read has no Bot.
         ids = local_authorization.gateway_local_authorization().bots_in_range(grant_id, now_is)
     page, has_more = _page(ids, after, limit)
-    return [_row(cfg, name) for name in page], has_more
+    return [_row(cfg, name, now_is.get(name)) for name in page], has_more
 
 
 async def _list_bots(request: web.Request) -> web.Response:
@@ -161,22 +164,23 @@ async def _list_bots(request: web.Request) -> web.Response:
             503, "instance_unavailable", "the Bot roster is unavailable", request_id
         )
     state = request.app.get("state")
-    # Live slot state is read on the loop, as the owner's roster reads it. A Bot is
-    # busy only where the turn is known to run on this Bot; a turn that cannot be
-    # tied to it is not counted, so one Bot's work is never shown as another's.
-    # One turn is known: a turn in the Bot's own thread, found by the thread's
-    # binding, as the installed apps' list reads it.
-    # shortcut: every other turn on a Bot reads idle (a ``POST /v1/responses`` or
-    # ``/v1/chat/completions`` turn, a dashboard chat, a channel or scheduled turn, a
-    # task review, a turn with no slot): a slot's ``agent`` is the label it was picked
-    # under, and a name looked up before the turn starts is not the Bot it is admitted
-    # on. Counting them needs the session's execution record, which holds a typed
-    # member id.
+    # Live state is read on the loop, as the owner's roster reads it. A Bot is busy
+    # only where the turn is known to run as this Bot; a turn that cannot be tied to
+    # it is not counted, so one Bot's work is never shown as another's. Two turns
+    # are known: one in the Bot's own thread, found by the thread's binding as the
+    # installed apps' list reads it, and a dashboard turn whose admission settled on
+    # this Bot's member id (``running_bot_turns``): a chat, a ``POST /v1/responses``
+    # or ``/v1/chat/completions`` turn, a task review.
+    # shortcut: a turn that does not pass that admission reads idle (a channel, a
+    # scheduled or a webhook turn), and so does a helper that carries the Bot's
+    # member id (a subagent, a workflow or task step, a Bot's worker session);
+    # counting the first three needs the same note where those turns start.
     slots = state._slots if state is not None else {}
+    running = running_bot_turns.running_member_ids()
     data: list[dict[str, Any]] = []
-    for row, thread_key in rows:
+    for row, thread_key, member_id in rows:
         slot = slots.get(thread_key) if thread_key else None
-        if slot is not None and slot.running:
+        if (slot is not None and slot.running) or (member_id and member_id in running):
             row["status"] = STATUS_BUSY
         data.append(row)
     return web.json_response(

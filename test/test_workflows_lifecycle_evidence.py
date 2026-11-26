@@ -550,6 +550,28 @@ def test_mcp_result_exposes_redacted_finished_agent_outputs(monkeypatch, aggrega
     assert payload["result"] == aggregate
 
 
+def test_mcp_result_leaves_out_a_running_calls_progress(monkeypatch) -> None:
+    import json
+
+    from kiro_crew import mcp_core
+    from kiro_crew.mcp_tools import workflows
+    from kiro_crew.workflows.events import EventStream
+
+    stream = EventStream("wf_prog")
+    handle = RunHandle(run_id="wf_prog", name="example", status=STATUS_FINISHED)
+    handle.events = [
+        stream.agent_started("t", agent_id="a0", label="L", phase="", call_index=0),
+        stream.agent_progress("t", agent_id="a0", turns=1, last_tool="Read a.txt", elapsed_s=0.1),
+        stream.agent_finished("t", agent_id="a0", result_summary="ok", ok=True),
+    ]
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "wf-worker:wf_prog:r")
+    monkeypatch.setattr(mcp_core, "_get", lambda path, *, session_key: handle.snapshot())
+    monkeypatch.setattr(workflows, "_wf_return", lambda tool, text, **kw: text)
+
+    payload = json.loads(workflows.workflow_result("workflow_result", {"run_id": "wf_prog"}))
+    assert [e["type"] for e in payload["events"]] == ["agent_started", "agent_finished"]
+
+
 def test_completion_summary_distinguishes_calls_from_verified_artifacts() -> None:
     from kiro_crew.dashboard.workflow_inject import _summarize
 

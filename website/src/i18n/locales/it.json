@@ -5201,67 +5201,6 @@
         "preview_unavailable": "Anteprima non disponibile"
       }
     },
-    "projectScaffolder": {
-      "manifest": {
-        "display_name": "Crea cartelle da un progetto",
-        "description": "Indicagli una directory di progetto e capirà quali sottoprogetti contiene, creando poi una cartella della barra laterale per ciascuno. La scansione è in sola lettura, quindi vedi tutto l’elenco e spunti ciò che vuoi prima che venga creato qualcosa. I sottoprogetti si annidano sotto la directory superiore come sul disco, e ciò che hai già configurato viene mostrato ma mai creato due volte.",
-        "page_label": "Crea cartelle",
-        "highlight_1": "Prima esegue una scansione in sola lettura, quindi nulla viene creato finché non confermi una selezione",
-        "highlight_2": "Elenca i pacchetti di primo livello come righe, con i risultati più profondi in un unico gruppo richiuso da selezionare tutto o niente",
-        "highlight_3": "Le corrispondenze affidabili sono già spuntate; quelle più deboli sono proposte a te",
-        "highlight_4": "Mostra gli indizi dietro ogni corrispondenza, così vedi perché una directory è stata scelta",
-        "highlight_5": "Le cartelle che hai già compaiono nell’elenco ma vengono ignorate, mai duplicate",
-        "highlight_6": "Riporta esattamente cosa è stato creato, cosa ignorato, e cosa è fallito e perché",
-        "use_case_1": "Trasforma un monorepo o una directory di repository affiancati in una cartella della barra laterale per pacchetto, così la guida per pacchetto si carica senza costruire l'albero a mano.",
-        "configuration_1": "Apri Crea cartelle, vai a una directory di progetto, controlla l'anteprima e seleziona i pacchetti desiderati, poi conferma per creare le cartelle."
-      },
-      "projectScaffolderPage": {
-        "absolute_path_to_a_project_directory": "Percorso assoluto di una directory di progetto",
-        "already_set_up": "Già configurato",
-        "browse": "Scegli directory",
-        "create_folders": "Crea cartelle della barra laterale",
-        "create_folders_from_project": "Crea cartelle da un progetto",
-        "create_the_root_folder_only": "Crea solo la cartella radice",
-        "creating": "Creazione in corso",
-        "directly_under_the_root": "Direttamente sotto la radice",
-        "inside_name": "In {{name}}",
-        "n_already_set_up": "{{n}} già configurate",
-        "n_created": "{{n}} create",
-        "n_failed": "{{n}} non riuscite",
-        "n_possible_sub_folders_inside_packages_above_many": "{{n}} possibili sottocartelle nei pacchetti sopra",
-        "n_possible_sub_folders_inside_packages_above_one": "{{n}} possibile sottocartella nei pacchetti sopra",
-        "n_possible_sub_folders_inside_packages_above_other": "{{n}} possibili sottocartelle nei pacchetti sopra",
-        "n_selected": "Cartella radice + {{n}} selezionate",
-        "n_selected_root_exists": "{{n}} selezionati",
-        "n_selected_inside": "{{n}} selezionate all'interno",
-        "no_folders_were_created": "Nessuna cartella creata",
-        "no_sub_projects_found": "Nessun sottoprogetto trovato",
-        "nothing_under_this_directory_looked_like_a_proje": "Nulla in questa directory sembrava un progetto. Puoi comunque creare una cartella per la directory stessa.",
-        "preview": "Anteprima",
-        "project_directory": "Directory del progetto",
-        "re_scan": "Ripeti la scansione",
-        "results": "Risultati",
-        "root_already_exists_nothing_to_create": "Questa directory ha già la sua cartella della barra laterale, quindi non resta nulla da creare.",
-        "root_changed_scan_before_creating": "La directory sopra è cambiata: scansionala prima di creare le cartelle.",
-        "scan": "Scansiona",
-        "scan_a_project_directory_then_create_a_sidebar": "Scansiona una directory di progetto e crea una cartella della barra laterale per ogni sottoprogetto scelto.",
-        "scanning": "Scansione in corso",
-        "select_all": "Seleziona tutto",
-        "select_all_inside": "Seleziona tutto all'interno",
-        "select_none": "Deseleziona tutto",
-        "select_none_inside": "Deseleziona tutto all'interno",
-        "showing_the_preview_from_the_last_successful_scan": "Anteprima dell'ultima scansione riuscita.",
-        "signal_git": "repository git",
-        "signal_kiro": "cartella Kiro (.kiro)",
-        "signal_manifest": "{{name}} trovato",
-        "signal_member": "membro del workspace",
-        "signals": "Perché corrisponde",
-        "this_preview_no_longer_matches_the_directory_on": "Questa anteprima non corrisponde più alla directory su disco. Ripeti la scansione prima di creare le cartelle.",
-        "tier_confident": "Affidabile",
-        "tier_offered": "Possibile corrispondenza",
-        "warnings": "Avvisi"
-      }
-    },
     "specBuilder": {
       "api": {
         "phase_building": "in costruzione",
@@ -7047,6 +6986,8 @@
       "closing_terminal": "Chiusura del terminale…",
       "fullscreen": "Schermo intero",
       "exit_fullscreen": "Esci da schermo intero",
+      "fullscreen_shortcut": "Schermo intero ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Esci da schermo intero ({{shortcut}})",
       "find": "Trova"
     },
     "tabCloseMenu": {
@@ -9235,6 +9176,7 @@
       "expiry_after_days_one": "Dopo {{count}} giorno",
       "expiry_after_days_other": "Dopo {{count}} giorni",
       "expiry_never": "Mai",
+      "previous_link_expired": "Il link precedente è scaduto il {{date}}. Pubblicando di nuovo si crea un nuovo link.",
       "public_exposure_warning": "Chiunque abbia il link pubblicato può visualizzare questo contenuto. Viene servito su Internet pubblico senza autenticazione."
     },
     "pullRequestPanel": {
@@ -9749,6 +9691,7 @@
       "desktop_app_only": "Solo app desktop",
       "panel_toggles": "Attiva/disattiva pannelli",
       "unset": "Non impostato",
+      "terminal_focus_only": "Solo in un terminale con il focus",
       "save_refused": "Non salvato: lo spazio di archiviazione del browser è pieno. Libera spazio e riprova."
     },
     "sidePanelLayout": {
@@ -10787,7 +10730,7 @@
       "trust_off_title": "Consenti l'accesso tramite il nome di rete di questo computer",
       "trust_off_body": "La dashboard rifiuta le richieste da indirizzi che non riconosce. Consenti il suo nome di rete privata affinché un telefono possa raggiungerla. Questo non apre alcuna porta su Internet e non cambia il modo in cui accedi.",
       "restart_gateway_title": "Riavvia {{productName}} per completare",
-      "restart_gateway_body": "Ora è disponibile un nome di rete, ma questo server non ne ha risolto nessuno all'avvio, quindi il nome non è ancora attendibile. Riavvia {{productName}} una volta e l'ultimo passaggio sarà pronto.",
+      "restart_gateway_body": "Questo server deve riavviarsi per usare il suo indirizzo tailnet attuale. Riavvia {{productName}} una volta e l'ultimo passaggio sarà pronto.",
       "occupied_title": "Qui viene già servito qualcos'altro",
       "occupied_body": "Tailscale sta già servendo qualcos'altro a questo indirizzo. La pubblicazione lo sostituirebbe, quindi non è stato modificato nulla.",
       "occupied_replace": "Se sostituirlo è sicuro, esegui <cmd/>",
@@ -12385,6 +12328,7 @@
       "toggle_side_terminal": "Attiva/disattiva il terminale del pannello laterale",
       "previous_terminal": "Terminale precedente",
       "next_terminal": "Terminale successivo",
+      "clear_terminal": "Pulisci il terminale",
       "toggle_dictation_mute": "Disattiva o riattiva il microfono della dettatura"
     },
     "useNativeNotification": {
@@ -13152,6 +13096,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "Pubblicato su {{provider}}",
+      "publication_expires_on": "Scade il {{date}}",
+      "publication_expires_soon_on": "Scade presto, il {{date}}",
+      "published_to_provider_expired": "La pubblicazione su {{provider}} è scaduta il {{date}}",
       "open_published_page": "Apri la pagina pubblicata",
       "a_newer_version_is_available_in_the_remote_copy": "· è disponibile una versione più recente nella copia remota",
       "activity": "Attività",
@@ -14277,7 +14224,11 @@
         "more_running_normally_count_many": "altri {{count}} in esecuzione normale…",
         "more_running_normally_count_other": "altri {{count}} in esecuzione normale…",
         "engine_stops_with_answer": "I sub-agent che girano nella chat si fermano quando fermi la risposta.",
-        "stop_all_and_answer": "Arresta tutti e la risposta"
+        "stop_all_and_answer": "Arresta tutti e la risposta",
+        "older_runs_not_shown_one": "+{{count}} precedente non mostrato",
+        "older_runs_not_shown_many": "+{{count}} precedenti non mostrati",
+        "older_runs_not_shown_other": "+{{count}} precedenti non mostrati",
+        "some_finished_runs_not_shown": "Alcune esecuzioni completate non mostrate"
       },
       "subagentQueued": {
         "low_memory": "in attesa di avvio — richiede {{required}} di memoria libera, ora {{available}} liberi; libera memoria per continuare",
@@ -19858,7 +19809,15 @@
         "strict_off": "Consenti un piccolo ritardo casuale",
         "strict_off_hint": "Parte un po’ in ritardo per distribuire il carico",
         "strict_on": "Esegui all’ora esatta",
-        "strict_on_hint": "Parte esattamente all’ora pianificata"
+        "strict_on_hint": "Parte esattamente all’ora pianificata",
+        "send_to_telegram": "Imposta destinazione Telegram",
+        "telegram_failed": "{{name}} (non riuscito)",
+        "telegram_failed_reason": "{{name}} (non riuscito: {{reason}})",
+        "telegram_failed_heading": "Non è stato possibile aggiornare alcuni processi selezionati. Restano selezionati.",
+        "telegram_kept_slack_heading": "Questi processi selezionati mantengono il loro canale Slack e non sono stati aggiornati. Restano selezionati.",
+        "telegram_updated_many": "{{count}} processi ora consegnano i risultati a {{destination}}.",
+        "telegram_updated_one": "{{count}} processo ora consegna i risultati a {{destination}}.",
+        "telegram_updated_other": "{{count}} processi ora consegnano i risultati a {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_many": "Impossibile spostare {{count}} processi su {{total}}",
@@ -22197,7 +22156,8 @@
         "clear_shortcut": "Cancella",
         "panel_toggles": "Attiva/disattiva pannelli",
         "skips_shell_hint": "Funziona anche nel terminale, quindi la tua shell non riceve più questo tasto: non scegliere Ctrl+C o Ctrl+R.",
-        "skips_shell_hint_mac": "Funziona anche nel terminale, quindi la tua shell non riceve più questo tasto: non scegliere ⌃C (Ctrl+C) o ⌃R (Ctrl+R)."
+        "skips_shell_hint_mac": "Funziona anche nel terminale, quindi la tua shell non riceve più questo tasto: non scegliere ⌃C (Ctrl+C) o ⌃R (Ctrl+R).",
+        "terminal_focus_hint": "Funziona solo quando un terminale ha il focus, quindi può condividere un tasto con Cerca in tutto. La tua shell non riceve più questo tasto."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analizza ogni sessione completata e redigi una SKILL.md riutilizzabile quando la sessione dimostra una procedura ricorrente — una che una sessione futura, lavorando su un obiettivo diverso, eseguirebbe di nuovo. Disattivato per impostazione predefinita. Le bozze vengono messe in coda in Personalizza → Competenze per la revisione — nulla va in produzione senza la tua approvazione (vedi sotto).",

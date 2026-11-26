@@ -1,0 +1,7 @@
++10
+The ssh-to-self floor matches a glob word against the ssh-family names and this
+host's names through one helper, argv_floor_hosts._glob_matches, instead of calling
+fnmatch at three sites. fnmatch scans the rest of a pattern for a ] at every [ that
+never closes, so a long run of [ made the floor quadratic. Such a [ is a literal, so
+the helper answers False without fnmatch when the name holds no [; every answer is
+unchanged. The lines are the helper and its facade name, less two fnmatch imports.

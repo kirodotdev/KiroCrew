@@ -130,6 +130,13 @@ def _refuse_locked(path: str) -> None:
 
 def _kirocrew_target(path: str, label: str, spec: dict[str, Any]) -> dict[str, Any]:
     _refuse_locked(path)
+    if spec.get("type") == "str_list":
+        # A card carries no config-list value (see ``_CANNOT_WIDEN_SETTINGS``).
+        raise catalog.CardCatalogError(
+            "no_write_path",
+            f"'{label}' is a list a card cannot change; offer the guide's settings.show "
+            "action so the user changes it on the Settings page",
+        )
     target: dict[str, Any] = {"store": catalog.STORE_KIROCREW, "key": path, "label": label}
     allowed = spec_allowed_values(spec)
     if allowed is not None:
@@ -144,8 +151,9 @@ def resolve_setting(params: dict[str, Any]) -> dict[str, Any]:
     A registry id resolves from data: a dashboard-config control the Settings page
     writes through ``PUT /api/dashboard/config``
     (``change_card_catalog.DASHBOARD_SETTINGS``), else its ``configKey`` when the
-    config route accepts that key. Anything else has no write path a card may
-    use. Raises :class:`kiro_crew.change_card_catalog.CardCatalogError`.
+    config route accepts that key, except a ``str_list`` key, which a card cannot
+    carry. Anything else has no write path a card may use. Raises
+    :class:`kiro_crew.change_card_catalog.CardCatalogError`.
     """
     editable = _editable_config()
     err = catalog.CardCatalogError

@@ -1509,12 +1509,6 @@
         "font_specimen": "Aa"
       }
     },
-    "projectScaffolder": {
-      "projectScaffolderPage": {
-        "n_already_set_up": "{{n}} already set up",
-        "root_already_exists_nothing_to_create": "This directory already has its sidebar folder, so there is nothing left to create."
-      }
-    },
     "designCritique": {
       "askLayer": {
         "answer_failed_ask_again_below": "Answer failed — ask again below",
@@ -3540,6 +3534,7 @@
       "expiry_after_days_one": "After {{count}} day",
       "expiry_after_days_other": "After {{count}} days",
       "expiry_never": "Never",
+      "previous_link_expired": "The previous link expired on {{date}}. Publishing again creates a new link.",
       "public_exposure_warning": "Anyone with the published link can view this content. It is served on the public internet with no authentication."
     },
     "pullRequestPanel": {
@@ -4294,7 +4289,8 @@
       "browser_reserved_hint": "In a browser tab the browser takes these shortcuts before the page sees them — the alternatives work everywhere; the desktop app honours both.",
       "desktop_app_only": "Desktop app only",
       "panel_toggles": "Panel toggles",
-      "unset": "Not set"
+      "unset": "Not set",
+      "terminal_focus_only": "Only in a focused terminal"
     },
     "sessionTabStrip": {
       "close_tab_hint": "Close this tab. The session stays in the sidebar.",
@@ -5483,6 +5479,7 @@
       "toggle_side_terminal": "Toggle side-panel terminal",
       "previous_terminal": "Previous terminal",
       "next_terminal": "Next terminal",
+      "clear_terminal": "Clear terminal",
       "toggle_dictation_mute": "Mute or unmute dictation"
     },
     "useNativeNotification": {
@@ -5873,6 +5870,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "Published to {{provider}}",
+      "publication_expires_on": "Expires on {{date}}",
+      "publication_expires_soon_on": "Expires soon, on {{date}}",
+      "published_to_provider_expired": "Publication on {{provider}} expired on {{date}}",
       "open_published_page": "Open published page",
       "agent_chat": "Agent chat",
       "artifact_name": "Artifact name",
@@ -9316,7 +9316,14 @@
         "strict_off": "Allow small random delay",
         "strict_off_hint": "Start a little late to spread the load",
         "strict_on": "Run at exact time",
-        "strict_on_hint": "Start exactly on schedule"
+        "strict_on_hint": "Start exactly on schedule",
+        "send_to_telegram": "Set Telegram destination",
+        "telegram_failed": "{{name}} (failed)",
+        "telegram_failed_reason": "{{name}} (failed: {{reason}})",
+        "telegram_failed_heading": "Some checked jobs could not be updated. They stay selected.",
+        "telegram_kept_slack_heading": "These checked jobs keep their Slack channel and were not updated. They stay selected.",
+        "telegram_updated_one": "{{count}} job now reports to {{destination}}.",
+        "telegram_updated_other": "{{count}} jobs now report to {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_one": "{{count}} of {{total}} job could not be moved",
@@ -11168,7 +11175,8 @@
         "clear_shortcut": "Clear",
         "panel_toggles": "Panel toggles",
         "skips_shell_hint": "Works inside the terminal too, so your shell stops receiving this key — do not pick Ctrl+C or Ctrl+R.",
-        "skips_shell_hint_mac": "Works inside the terminal too, so your shell stops receiving this key — do not pick ⌃C (Ctrl+C) or ⌃R (Ctrl+R)."
+        "skips_shell_hint_mac": "Works inside the terminal too, so your shell stops receiving this key — do not pick ⌃C (Ctrl+C) or ⌃R (Ctrl+R).",
+        "terminal_focus_hint": "Works only while a terminal has focus, so it can share a key with Search Everywhere. Your shell stops receiving this key."
       },
       "reportProblemCard": {
         "support": "Support",

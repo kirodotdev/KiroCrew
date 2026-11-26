@@ -2,7 +2,7 @@
 
 An **app** is a feature that ships as its own unit: it brings its own pages in the
 dashboard, and it may also bring agents, skills, MCP tools, scheduled jobs and a
-backend process. Twenty apps ship inside the Kiro Crew package (Meetings,
+backend process. Nineteen apps ship inside the Kiro Crew package (Meetings,
 Papyrus, Mochi, Dev Fleet, Notes and the rest), and almost all of them are **off
 until you turn them on**. The App Store is where you turn them on, and where you
 install apps that did not ship with your build.
@@ -73,7 +73,6 @@ Each line below is drawn from the app's own manifest description.
 | **Spec Builder** (`spec-builder`) | Spec-driven development in-app: a feature idea becomes Requirements → Design → Tasks, then an execution session. |
 | **Design Tweak** (`design-tweak`) | Select elements in your live app preview and turn them into scoped, source-mapped edit requests for the agent. |
 | **Design Critique** (`design-critique`) | A design critique you can run before you ask a colleague, from a screenshot, a flow, a Figma file, a repo or a live URL. |
-| **Create Folders From Project** (`project-scaffolder`) | Reads a project directory, works out which sub-projects live inside, and makes a matching sidebar folder for each. |
 
 ### Write, present and record
 
@@ -188,7 +187,8 @@ and the start after that makes it.
 After the switch the app updates and uninstalls like any App Store app, and once
 uninstalled it stays uninstalled.
 
-A later release stops shipping the built-in copy; Personal Shopper is the first.
+A later release stops shipping the built-in copy; Personal Shopper and Create
+Folders From Project no longer ship one.
 On that release a machine that already switched keeps running the app from its
 own copy, as before. A machine that has not switched yet keeps the app's data, but
 there is no built-in left to run, so the app is missing until the switch: Kiro

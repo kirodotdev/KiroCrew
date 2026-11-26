@@ -319,6 +319,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         register_embedding_backend,
         reset_shared_embedder,
         store_embedding_space_is_stale,
+        wait_for_cold_shared_embedder,
         warm_embedder_for_person,
         warm_embedder_for_person_soon,
     )

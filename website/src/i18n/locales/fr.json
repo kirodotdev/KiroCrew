@@ -5285,67 +5285,6 @@
         "preview_unavailable": "Aperçu indisponible"
       }
     },
-    "projectScaffolder": {
-      "manifest": {
-        "display_name": "Créer des dossiers depuis un projet",
-        "description": "Indiquez-lui un répertoire de projet et il détermine quels sous-projets s'y trouvent, puis crée un dossier de barre latérale correspondant à chacun. L'analyse est en lecture seule : vous voyez donc toute la liste et cochez ce que vous voulez avant que quoi que ce soit soit créé. Les sous-projets s'imbriquent sous leur parent comme sur le disque, et ce que vous avez déjà configuré est affiché mais jamais créé deux fois.",
-        "page_label": "Créer des dossiers",
-        "highlight_1": "Analyse d'abord en lecture seule, donc rien n'est créé avant que vous confirmiez une sélection",
-        "highlight_2": "Liste les paquets de premier niveau, les trouvailles plus profondes étant réunies dans un seul groupe replié que vous pouvez tout sélectionner ou tout désélectionner",
-        "highlight_3": "Les correspondances sûres sont cochées ; les plus faibles vous sont proposées",
-        "highlight_4": "Affiche les indices derrière chaque correspondance, pour voir pourquoi un répertoire a été retenu",
-        "highlight_5": "Les dossiers que vous avez déjà sont listés mais ignorés, jamais dupliqués",
-        "highlight_6": "Indique exactement ce qui a été créé, ignoré, et ce qui a échoué et pourquoi",
-        "use_case_1": "Transforme un monorepo ou un répertoire de dépôts voisins en un dossier de barre latérale par paquet, pour que le pilotage par paquet se charge sans construire l'arborescence à la main.",
-        "configuration_1": "Ouvre Créer des dossiers, navigue vers un répertoire de projet, examine l'aperçu et coche les paquets voulus, puis confirme pour créer les dossiers."
-      },
-      "projectScaffolderPage": {
-        "absolute_path_to_a_project_directory": "Chemin absolu vers un répertoire de projet",
-        "already_set_up": "Déjà configuré",
-        "browse": "Choisir un répertoire",
-        "create_folders": "Créer les dossiers de la barre latérale",
-        "create_folders_from_project": "Créer des dossiers depuis un projet",
-        "create_the_root_folder_only": "Créer seulement le dossier racine",
-        "creating": "Création",
-        "directly_under_the_root": "Directement sous la racine",
-        "inside_name": "Dans {{name}}",
-        "n_already_set_up": "{{n}} déjà configurés",
-        "n_created": "{{n}} créés",
-        "n_failed": "{{n}} en échec",
-        "n_possible_sub_folders_inside_packages_above_many": "{{n}} sous-dossiers possibles dans les paquets ci-dessus",
-        "n_possible_sub_folders_inside_packages_above_one": "{{n}} sous-dossier possible dans les paquets ci-dessus",
-        "n_possible_sub_folders_inside_packages_above_other": "{{n}} sous-dossiers possibles dans les paquets ci-dessus",
-        "n_selected": "Dossier racine + {{n}} sélectionnés",
-        "n_selected_root_exists": "{{n}} sélectionnés",
-        "n_selected_inside": "{{n}} sélectionnés à l'intérieur",
-        "no_folders_were_created": "Aucun dossier n'a été créé",
-        "no_sub_projects_found": "Aucun sous-projet trouvé",
-        "nothing_under_this_directory_looked_like_a_proje": "Rien dans ce répertoire ne ressemblait à un projet. Tu peux tout de même créer un dossier pour le répertoire lui-même.",
-        "preview": "Aperçu",
-        "project_directory": "Répertoire du projet",
-        "re_scan": "Relancer l’analyse",
-        "results": "Résultats",
-        "root_already_exists_nothing_to_create": "Ce répertoire a déjà son dossier de barre latérale, il n'y a donc rien à créer.",
-        "root_changed_scan_before_creating": "Le répertoire ci-dessus a changé — analysez-le avant de créer des dossiers.",
-        "scan": "Analyser",
-        "scan_a_project_directory_then_create_a_sidebar": "Analysez un répertoire de projet, puis créez un dossier de barre latérale pour chaque sous-projet retenu.",
-        "scanning": "Analyse en cours",
-        "select_all": "Tout sélectionner",
-        "select_all_inside": "Tout sélectionner à l'intérieur",
-        "select_none": "Tout désélectionner",
-        "select_none_inside": "Ne rien sélectionner à l'intérieur",
-        "showing_the_preview_from_the_last_successful_scan": "Aperçu de la dernière analyse réussie.",
-        "signal_git": "dépôt git",
-        "signal_kiro": "dossier Kiro (.kiro)",
-        "signal_manifest": "{{name}} trouvé",
-        "signal_member": "membre du workspace",
-        "signals": "Pourquoi ça correspond",
-        "this_preview_no_longer_matches_the_directory_on": "Cet aperçu ne correspond plus au répertoire sur le disque. Relancez l’analyse avant de créer les dossiers.",
-        "tier_confident": "Sûr",
-        "tier_offered": "Correspondance possible",
-        "warnings": "Avertissements"
-      }
-    },
     "specBuilder": {
       "api": {
         "phase_building": "en construction",
@@ -7047,6 +6986,8 @@
       "closing_terminal": "Fermeture du terminal…",
       "fullscreen": "Plein écran",
       "exit_fullscreen": "Quitter le plein écran",
+      "fullscreen_shortcut": "Plein écran ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Quitter le plein écran ({{shortcut}})",
       "find": "Rechercher"
     },
     "tabCloseMenu": {
@@ -9235,6 +9176,7 @@
       "expiry_after_days_one": "Après {{count}} jour",
       "expiry_after_days_other": "Après {{count}} jours",
       "expiry_never": "Jamais",
+      "previous_link_expired": "Le lien précédent a expiré le {{date}}. Publier à nouveau crée un nouveau lien.",
       "public_exposure_warning": "Toute personne disposant du lien publié peut voir ce contenu. Il est servi sur l'Internet public sans authentification."
     },
     "pullRequestPanel": {
@@ -9749,6 +9691,7 @@
       "desktop_app_only": "Application de bureau uniquement",
       "panel_toggles": "Affichage des panneaux",
       "unset": "Non défini",
+      "terminal_focus_only": "Uniquement dans un terminal qui a le focus",
       "save_refused": "Non enregistré : le stockage du navigateur est plein. Libère de l’espace et réessaie."
     },
     "sidePanelLayout": {
@@ -10787,7 +10730,7 @@
       "trust_off_title": "Autoriser l'accès par le nom réseau de cet ordinateur",
       "trust_off_body": "Le tableau de bord refuse les requêtes provenant d'adresses qu'il ne reconnaît pas. Autorisez son propre nom de réseau privé pour qu'un téléphone puisse l'atteindre. Cela n'ouvre aucun port vers Internet et ne modifie pas votre façon de vous connecter.",
       "restart_gateway_title": "Redémarrer {{productName}} pour terminer",
-      "restart_gateway_body": "Un nom de réseau est désormais disponible, mais ce serveur n'en a résolu aucun à son démarrage ; le nom n'est donc pas encore approuvé. Redémarrez {{productName}} une fois et la dernière étape sera prête.",
+      "restart_gateway_body": "Ce serveur doit redémarrer pour utiliser son adresse tailnet actuelle. Redémarre {{productName}} une fois et la dernière étape sera prête.",
       "occupied_title": "Quelque chose d'autre est déjà servi ici",
       "occupied_body": "Tailscale sert déjà autre chose à cette adresse. La publication le remplacerait, donc rien n'a été modifié.",
       "occupied_replace": "Si le remplacement est sans risque, exécute <cmd/>",
@@ -12385,6 +12328,7 @@
       "toggle_side_terminal": "Afficher/masquer le terminal du panneau latéral",
       "previous_terminal": "Terminal précédent",
       "next_terminal": "Terminal suivant",
+      "clear_terminal": "Effacer le terminal",
       "toggle_dictation_mute": "Couper ou réactiver le micro de la dictée"
     },
     "useNativeNotification": {
@@ -13152,6 +13096,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "Publié sur {{provider}}",
+      "publication_expires_on": "Expire le {{date}}",
+      "publication_expires_soon_on": "Expire bientôt, le {{date}}",
+      "published_to_provider_expired": "La publication sur {{provider}} a expiré le {{date}}",
       "open_published_page": "Ouvrir la page publiée",
       "a_newer_version_is_available_in_the_remote_copy": "· une version plus récente est disponible dans la copie distante",
       "activity": "Activité",
@@ -14277,7 +14224,11 @@
         "more_running_normally_count_many": "{{count}} autres en cours normalement…",
         "more_running_normally_count_other": "{{count}} autres en cours normalement…",
         "engine_stops_with_answer": "Les sous-agents qui tournent dans le chat s'arrêtent quand tu arrêtes la réponse.",
-        "stop_all_and_answer": "Tout arrêter, réponse comprise"
+        "stop_all_and_answer": "Tout arrêter, réponse comprise",
+        "older_runs_not_shown_one": "+{{count}} plus ancien non affiché",
+        "older_runs_not_shown_many": "+{{count}} plus anciens non affichés",
+        "older_runs_not_shown_other": "+{{count}} plus anciens non affichés",
+        "some_finished_runs_not_shown": "Certaines exécutions terminées ne sont pas affichées"
       },
       "subagentQueued": {
         "low_memory": "en attente de démarrage — nécessite {{required}} de mémoire libre, {{available}} libres actuellement ; libère de la mémoire pour continuer",
@@ -19858,7 +19809,15 @@
         "strict_off": "Autoriser un léger délai aléatoire",
         "strict_off_hint": "Démarre un peu en retard pour répartir la charge",
         "strict_on": "Exécuter à l’heure exacte",
-        "strict_on_hint": "Démarre exactement à l’heure prévue"
+        "strict_on_hint": "Démarre exactement à l’heure prévue",
+        "send_to_telegram": "Définir la destination Telegram",
+        "telegram_failed": "{{name}} (échec)",
+        "telegram_failed_reason": "{{name}} (échec : {{reason}})",
+        "telegram_failed_heading": "Certaines tâches cochées n’ont pas pu être mises à jour. Elles restent cochées.",
+        "telegram_kept_slack_heading": "Ces tâches cochées gardent leur canal Slack et n’ont pas été mises à jour. Elles restent cochées.",
+        "telegram_updated_many": "{{count}} tâches transmettent désormais leurs résultats à {{destination}}.",
+        "telegram_updated_one": "{{count}} tâche transmet désormais ses résultats à {{destination}}.",
+        "telegram_updated_other": "{{count}} tâches transmettent désormais leurs résultats à {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_many": "{{count}} tâches sur {{total}} n'ont pas pu être déplacées",
@@ -22197,7 +22156,8 @@
         "clear_shortcut": "Effacer",
         "panel_toggles": "Affichage des panneaux",
         "skips_shell_hint": "Fonctionne aussi dans le terminal, donc votre shell ne reçoit plus cette touche — ne choisissez pas Ctrl+C ni Ctrl+R.",
-        "skips_shell_hint_mac": "Fonctionne aussi dans le terminal, donc votre shell ne reçoit plus cette touche — ne choisissez pas ⌃C (Ctrl+C) ni ⌃R (Ctrl+R)."
+        "skips_shell_hint_mac": "Fonctionne aussi dans le terminal, donc votre shell ne reçoit plus cette touche — ne choisissez pas ⌃C (Ctrl+C) ni ⌃R (Ctrl+R).",
+        "terminal_focus_hint": "Ne fonctionne que lorsqu’un terminal a le focus, et peut donc partager une touche avec Rechercher partout. Ton shell ne reçoit plus cette touche."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analyser chaque session terminée et rédiger un SKILL.md réutilisable lorsqu'elle démontre une procédure récurrente — une procédure qu'une session future, travaillant sur une autre cible, exécuterait à nouveau. Désactivé par défaut. Les brouillons sont placés dans la file d'attente de Personnaliser → Compétences pour relecture — rien n'est activé sans ton approbation (voir ci-dessous).",

@@ -43,6 +43,10 @@ RECEIPT_RESETTING_COMMANDS = frozenset({"/compact", "/clear"})
 ESSENTIALS_SLOT = "essentials"
 #: The slot of the reply-format rules block, which any interactive turn carries.
 RULES_SLOT = "reply-format-rules"
+#: The slot of a follow-up's ``[RUNTIME]`` line, which names the turn's surface.
+RUNTIME_SLOT = "runtime"
+#: The slot of the ``[PROJECT]`` line, which names the turn's project.
+PROJECT_SLOT = "project"
 
 
 @asynccontextmanager
@@ -79,10 +83,11 @@ class EssentialDelivery:
     """One provider's current candidates and last acknowledged conversation state.
 
     Each candidate sits in its own slot (:data:`ESSENTIALS_SLOT`,
-    :data:`RULES_SLOT`), with its own acknowledgment, so a member turn can carry
-    both its essentials and the reply-format rules and the conversation is sent
-    each once. A forced bind drops only its own slot's acknowledgment; anything
-    that can drop what the conversation holds drops every slot's.
+    :data:`RULES_SLOT`, :data:`RUNTIME_SLOT`, :data:`PROJECT_SLOT`), with its own
+    acknowledgment, so a member turn can carry its essentials, the reply-format
+    rules and the context lines and the conversation is sent each once. A forced
+    bind drops only its own slot's acknowledgment; anything that can drop what
+    the conversation holds drops every slot's.
 
     It also records :attr:`request_floor`, the latest monotonic moment of the
     last stream that made a model request, known to be no later than the start of
@@ -139,6 +144,15 @@ class EssentialDelivery:
             self._pending[slot] = EssentialReceipt(
                 envelope, digest, native_envelope or envelope, incarnation, self._epoch
             )
+
+    def withdraw(self, *slots: str) -> None:
+        """Take back *slots*' candidates, so a message built without binding them goes out whole.
+
+        Their acknowledgments stay: they describe the conversation, not the build.
+        """
+        with self._lock:
+            for slot in slots:
+                self._pending.pop(slot, None)
 
     def invalidate(self) -> None:
         """Compaction, clear or replacement makes prior delivery evidence unusable."""

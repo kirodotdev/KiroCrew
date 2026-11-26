@@ -146,6 +146,9 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   const queued = useAppSelector(s => s.chat.subagentQueued?.[slot ?? ''] ?? 0)
   // Why they wait, when the gateway said; undefined keeps the concurrency text.
   const queuedReason = useAppSelector(s => s.chat.subagentQueuedReason?.[slot ?? ''])
+  // Finished runs the reload's replay left out: an exact count, or a floor with
+  // no number when the log's own retain limit hid some of the newest.
+  const replayCut = useAppSelector(s => s.chat.subagentReplayCut?.[slot ?? ''])
   // null for the ordinary capacity wait and for a count with no reason.
   const waitText = queuedWaitText(queuedReason)
   // Only top-level (managed) subagents belong in the chip — its count must
@@ -381,6 +384,9 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             {unresolved > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-unresolved-count" title={i18nT('pages.chat.subagentProgressBar.checking_whether_it_started')}><CircleDashed size={12} /> <HistogramCount n={unresolved} label={i18nT('pages.chat.subagentProgressBar.chip_unresolved', { count: unresolved })} /></span>}
             {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title={waitText ?? i18nT('pages.chat.subagentProgressBar.waiting_to_start_queued_behind_the_concurrency_l')}><Clock size={12} /> <HistogramCount n={queued} label={i18nT('pages.chat.subagentProgressBar.chip_queued', { count: queued })} /></span>}
             {counts.done > 0 && <span className="inline-flex items-center gap-1 text-ok" data-testid="subagent-done-count"><CheckCircle size={12} /> <HistogramCount n={counts.done} label={i18nT('pages.chat.subagentProgressBar.chip_done', { count: counts.done })} /></span>}
+            {replayCut?.atLeast
+              ? <span className="text-muted font-normal" data-testid="subagent-replay-cut">{i18nT('pages.chat.subagentProgressBar.some_finished_runs_not_shown')}</span>
+              : replayCut && replayCut.n > 0 && <span className="text-muted font-normal" data-testid="subagent-replay-cut">{i18nT('pages.chat.subagentProgressBar.older_runs_not_shown', { count: replayCut.n })}</span>}
             {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger" data-testid="subagent-failed-count"><AlertCircle size={12} /> <HistogramCount n={counts.failed} label={i18nT('pages.chat.subagentProgressBar.chip_failed', { count: counts.failed })} /></span>}
             {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-stopped-count"><Square size={12} /> <HistogramCount n={counts.stopped} label={i18nT('pages.chat.subagentProgressBar.chip_stopped', { count: counts.stopped })} /></span>}
             {counts.stalled > 0 && <span className="inline-flex items-center gap-1 text-warn" data-testid="subagent-stalled-count" title={i18nT('pages.chat.subagentProgressBar.no_activity_possibly_stalled')}><AlertTriangle size={12} /> <HistogramCount n={counts.stalled} label={i18nT('pages.chat.subagentProgressBar.chip_stalled', { count: counts.stalled })} /></span>}

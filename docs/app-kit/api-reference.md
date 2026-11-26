@@ -3292,6 +3292,18 @@ for the other two codes. A route can also refuse an app token for its own reason
 after this check passes, for example `403 owner_only`; a `permissions.api` entry
 does not change those.
 
+A few host routes exist only for an app's page, and they answer only while an
+enabled app holds an approved `permissions.api` entry inside their namespace:
+`POST /api/project-scaffold/scan` and `POST /api/project-scaffold/create`, in
+`/api/project-scaffold`. Enabled means the owner turned the app on, the same rule your
+app token follows; a record that only reads enabled is not enough. Until then they
+answer every caller, the dashboard owner included, `403 app_not_enabled`. When the
+app reads enabled but the host has no record of the owner's enable, which an app
+enabled before version 0.12.1 can have, the `error` says so: turning the app off and on
+again fixes it. Declare the namespace itself, or an exact `=` entry per route: a broad
+entry such as `/api` or `/api/*` lets your token call the path, but it does not turn
+the routes on.
+
 ---
 
 ## Gateway REST API Endpoints

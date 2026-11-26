@@ -44,6 +44,14 @@ walks every dashboard symbol and pins each direct or shared-helper reader by
 `(module, symbol)` to the predicate it uses; the same census enumerates every
 non-null `slot.task` publisher so a new unguarded admission site fails the test.
 
+A dashboard turn also says which Bot it runs as. Once `_turn_admit` has settled the
+turn's execution (after the memory mode is tightened), it calls
+`running_bot_turns.begin(turn, execution)`, and the `finally` of `_run_chat` calls
+`running_bot_turns.end(turn)` as its first statement, so every way out of an
+admitted turn clears the note. Neither call raises. `GET /v1/crew/bots` reads the
+table to report a Bot `busy`
+([learn-cron-dashboard.md](learn-cron-dashboard.md)).
+
 Continue and Project requests retain the slot object they originally authorized.
 They reject a same-name replacement after lock acquisition and each pre-commit
 suspension: Continue's child probe, and Project's body read, workspace validation
@@ -2308,6 +2316,20 @@ against sweep completeness, and are torn down at `close_all`.
   (`dashboard:{slot_key}`) idle-expire like any other session. A Bot's worker
   session is one of them: its process is released, its conversation resumes on
   the next send, and `session_status` reports it as `process: released`.
+  After a reset on the idle clock (not an orphan reap) the sweep calls the
+  owner's `on_idle_expired(key)` seam. The dashboard
+  (`session_events._on_idle_expired`) logs the expiry at ERROR and appends the
+  "failed before it started" error row (without `meta.turn_failed`) only when the open
+  tab's runner is admitting a turn onto `key` itself (`_active_turn_session_key`,
+  published once a turn is past fair admission and the background-turn permit,
+  cleared when it ends) and its newest row is an unanswered turn opener whose
+  `ts` is more than a minute old (`_STALLED_TURN_SECS`): that turn has not taken
+  its session in all that time. A queued placeholder and assistant system
+  notices are looked through; any other row, the empty-response `notice`
+  included, answers the opener. A queued turn, a turn on another session, or a
+  younger or unparseable opener gets nothing. No waiting turn is cancelled, so
+  a stalled turn that recovers later still replies, under the row, and an
+  OpenAI-compatible reader of that turn reports the reply, not the row.
   `session.automated_idle_timeout_secs` (default 0, off) is the timeout for a
   session whose last turn automation started: `release(key)` stamps
   `_Session.last_turn_automated` from `session_idle_clock.turn_was_automated()`,
@@ -4159,7 +4181,12 @@ Three properties the route holds, each of which fails silently if broken:
   turn ended, and another alias slot of the same session whose first turn is
   still starting (its provider is not registered yet, and this slot's
   `running` is False). `_switch_target_busy` is the predicate the slot-switch
-  handlers refuse that window with; it runs LAST, after the children probe,
+  handlers refuse that window with. It also reads a replay gap on the key
+  (`has_open_replay_gap`) as a turn in flight: a cron or channel turn that
+  re-projects its KAS batch pops its session and starts a successor while it
+  holds the key, so no provider is registered and no slot runs it. A switch let
+  through there would commit a value the successor never receives and reset a
+  session that is not there. It runs LAST, after the children probe,
   because that probe is an await a turn can begin in. The reload route reads
   the same predicate as its last check before the reset.
   The five probes above are best-effort fast paths; the authoritative guard is

@@ -96,7 +96,7 @@ def test_a_rewrite_copies_the_prefix_and_writes_what_the_full_path_writes(
     assert outputs[0] == outputs[1]
 
 
-def test_a_prefix_changed_under_the_slot_takes_the_whole_file_path(
+def test_a_prefix_changed_under_the_slot_is_read_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state, slot, path = _primed(tmp_path, monkeypatch, WINDOW)
@@ -108,11 +108,9 @@ def test_a_prefix_changed_under_the_slot_takes_the_whole_file_path(
     path.write_bytes(head + b"\n" + json.dumps(edited).encode() + b"\n" + rest)
     slot.messages.append(_row(10_000, role="assistant"))
     slot._dirty = True
-    reads = _whole_reads(monkeypatch, path)
-
     assert chat_persistence._save_slot_to_history(state, slot) is True
 
-    assert reads  # the whole-file path ran
+    # The cached range does not match the edited file, so the prefix is read again.
     assert b"changed by someone else" in path.read_bytes()
     assert json.loads(path.read_bytes().splitlines()[-1])["meta"]["mid"] == "m-10000"
 
@@ -120,7 +118,7 @@ def test_a_prefix_changed_under_the_slot_takes_the_whole_file_path(
 @pytest.mark.skipif(
     not transcript_merge.streaming_supported(), reason="Prefix streaming is unsupported"
 )
-def test_a_file_change_in_the_window_after_metadata_rewrite_reads_the_whole_file(
+def test_a_file_change_in_the_window_after_metadata_rewrite_keeps_its_copies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state, slot, path = _primed(tmp_path, monkeypatch, WINDOW)
@@ -131,11 +129,9 @@ def test_a_file_change_in_the_window_after_metadata_rewrite_reads_the_whole_file
     slot.messages.append(row)
     _meta_rewrite(state, slot, path)
     slot._dirty = True
-    reads = _whole_reads(monkeypatch, path)
-
     assert chat_persistence._save_slot_to_history(state, slot) is True
 
-    assert reads  # the whole-file path applies the file-change retention bound
+    # The prefix is read again, under the bound; the window's own row keeps its copies.
     written = json.loads(path.read_bytes().splitlines()[-1])
     assert written["meta"]["file_changes"] == row["meta"]["file_changes"]
 

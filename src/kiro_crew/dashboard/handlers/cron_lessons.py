@@ -824,6 +824,14 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     if winner:
         response["winner"] = winner
         response["winner_repo_scope"] = winner_repo_scope
+    # ``swept`` names what an EARLIER save's background sweep deleted after that save
+    # had answered: no other response can carry it. Stored text, redacted like
+    # ``superseded``.
+    from kiro_crew.dashboard.handlers.cron_lesson_supersede import _take_contradiction_notices
+
+    swept = _take_contradiction_notices(request, sk)
+    if swept:
+        response.update(_redact_memory_field(swept))
     return web.json_response(response)
 
 
@@ -1292,8 +1300,9 @@ async def api_lessons(request: web.Request) -> web.Response:
     ``LESSON_LIST_LIMIT_MAX``) and ``offset`` (rows skipped from the NEWEST
     end, default 0). Body: ``lessons`` (the window), ``total`` (every live
     lesson in the store this caller is bound to), ``truncated`` (``True`` when
-    the body does not carry every one of them), and the effective ``limit`` /
-    ``offset``. The counts exist because this is the only lesson surface that
+    the body does not carry every one of them), the effective ``limit`` /
+    ``offset``, and ``swept`` / ``swept_dropped`` for the internal caller while a
+    contradiction-sweep notice is pending. The counts exist because this is the only lesson surface that
     ever omits rows without a reader that could notice: injection reports its
     omissions inline, the memory graph reads the population, the CLI is
     unbounded -- and ``learn_list`` renders this body verbatim, so a store past
@@ -1320,7 +1329,7 @@ async def api_lessons(request: web.Request) -> web.Response:
         return page
     limit, offset = page
 
-    def _page_body(data: list[dict], total: int, **extra: str) -> web.Response:
+    def _page_body(data: list[dict], total: int, **extra: Any) -> web.Response:
         return web.json_response(
             {
                 "lessons": data,
@@ -1596,7 +1605,10 @@ async def api_lessons(request: web.Request) -> web.Response:
             )
             for le, tier in tiered[max(0, end - limit) : end]
         ]
-    return _page_body(data, total)
+    from kiro_crew.dashboard.handlers.cron_lesson_supersede import _take_contradiction_notices
+
+    swept = _take_contradiction_notices(request, list_key)
+    return _page_body(data, total, **(_redact_memory_field(swept) if swept else {}))
 
 
 # Every other api_* handler in this module is an owner surface, so a private

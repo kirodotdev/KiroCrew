@@ -413,6 +413,9 @@ from conftest_resets_relay_client import (  # noqa: E402,F401 -- bound for pytes
 from conftest_resets_search import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_search_shown_text_memo,
 )
+from conftest_resets_shared_crew import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_ssm_invite_store,
+)
 from conftest_resets_token_auth import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_would_refuse_session_key_log,
 )

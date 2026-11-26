@@ -361,11 +361,12 @@ def _move_cases() -> list:
                 (tailscale, "allowed_logins", ["owner@example.com"]),
                 (tailscale, "pin_scope", "login"),
                 (tailscale, "bind_refresh_chains", False),
+                (tailscale, "https_port", 8443),
                 (tailscale, "keep_awake", False),
             ],
             {"dashboard": {"tailscale": {}}},
             lambda c: dataclasses.astuple(c.dashboard.tailscale),
-            (True, True, ["owner@example.com"], "login", False, False),
+            (True, True, ["owner@example.com"], "login", False, 8443, False),
         ),
         _case(
             "dashboard.tailscale.keep_awake-malformed",

@@ -17,11 +17,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { act, screen, within } from '@testing-library/react'
 
 import { ShortcutsPanel } from '../pages/settings/ShortcutsPanel'
-import { PANEL_TOGGLES_SKIPPING_SHELL, PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
+import { PANEL_TOGGLES_SKIPPING_SHELL, PANEL_TOGGLE_SHORTCUTS_KEY, TERMINAL_FOCUS_PANEL_TOGGLE_IDS } from '../lib/panelToggleShortcuts'
 import { setTerminalEnabledFlag } from '../utils/terminalRegistry'
 import { renderWithProviders } from './helpers'
 
 const HINT = /your shell stops receiving this key/i
+/** Every row whose chord the shell loses: the skip-shell ids, plus the
+ *  terminal-focus ids, which are matched inside the shell they act on. */
+const SHELL_COST_ROWS = PANEL_TOGGLES_SKIPPING_SHELL.size + TERMINAL_FOCUS_PANEL_TOGGLE_IDS.size
 
 describe('Settings → Shortcuts: skip-shell disclosure', () => {
   beforeEach(() => {
@@ -35,7 +38,13 @@ describe('Settings → Shortcuts: skip-shell disclosure', () => {
 
   it('warns on exactly the rows whose chord is taken from the PTY', () => {
     renderWithProviders(<ShortcutsPanel />)
-    expect(screen.getAllByText(HINT)).toHaveLength(PANEL_TOGGLES_SKIPPING_SHELL.size)
+    expect(screen.getAllByText(HINT)).toHaveLength(SHELL_COST_ROWS)
+  })
+
+  it('tells the Clear terminal row it acts only inside a terminal', () => {
+    renderWithProviders(<ShortcutsPanel />)
+    const block = screen.getByText('Clear terminal').parentElement!.parentElement!
+    expect(within(block).getByText(/works only while a terminal has focus/i)).toBeTruthy()
   })
 
   it('does not warn on the ordinary panel toggles', () => {
@@ -55,7 +64,7 @@ describe('Settings → Shortcuts: skip-shell disclosure', () => {
     // The disclosure has to precede the choice: shown while the row is still
     // unbound, not only after the user has already spent a shell keystroke.
     expect(localStorage.getItem(PANEL_TOGGLE_SHORTCUTS_KEY)).toBeNull()
-    expect(screen.getAllByText(HINT)).toHaveLength(PANEL_TOGGLES_SKIPPING_SHELL.size)
+    expect(screen.getAllByText(HINT)).toHaveLength(SHELL_COST_ROWS)
   })
 
   it('drops the warning with the row when the terminal is disabled', () => {

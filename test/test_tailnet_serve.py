@@ -130,11 +130,10 @@ class TestArgv:
         assert "0.0.0.0" not in target
 
     def test_https_port_matches_the_derived_origin(self) -> None:
-        """443 is load-bearing, not cosmetic.
+        """443 is the default ``dashboard.tailscale.https_port``.
 
         A browser omits ``:443`` from ``Origin``, which is why the derived origin
-        is a bare ``https://<name>``. Serving on any other port would produce an
-        Origin that the allowlist does not contain.
+        at the default is a bare ``https://<name>``; any other port is carried in it.
         """
         assert tailnet_serve.SERVE_HTTPS_PORT == 443
 
@@ -979,3 +978,98 @@ class TestPublishedDetection:
         ) as probe:
             assert tailnet_serve.serve_state(_PORT).published is False
         probe.assert_not_called()
+
+
+class TestAConfiguredHttpsPort:
+    """``https_port`` (``dashboard.tailscale.https_port``) is the port every read and
+    write names, and it is never confused with the gateway port the handler proxies to."""
+
+    _NAME = "desk.tail1a2b3c.ts.net"
+
+    def _two_port_doc(self, *, on_443: str, on_5479: str) -> str:
+        return json.dumps(
+            {
+                "TCP": {"443": {"HTTPS": True}, "5479": {"HTTPS": True}},
+                "Web": {
+                    f"{self._NAME}:443": {"Handlers": {"/": {"Proxy": on_443}}},
+                    f"{self._NAME}:5479": {"Handlers": {"/": {"Proxy": on_5479}}},
+                },
+            }
+        )
+
+    def _run_with_status(self, status: str):
+        """The CLI answers ``serve status`` with *status*; every write succeeds."""
+        writes: list[list[str]] = []
+
+        def _dispatch(argv, *_a, **_k):
+            if argv[1:3] == ["serve", "status"]:
+                return _proc(stdout=status)
+            writes.append(argv[1:])
+            return _proc()
+
+        return (
+            patch.object(tailnet_serve, "_cli_path", return_value=_CLI),
+            patch.object(tailnet_serve.subprocess, "run", side_effect=_dispatch),
+            patch.object(tailnet_serve, "is_governance_pinned_off", return_value=False),
+            writes,
+        )
+
+    def test_ours_on_the_configured_port_is_published_beside_a_foreign_443(self) -> None:
+        doc = self._two_port_doc(
+            on_443="http://127.0.0.1:8080", on_5479=f"http://127.0.0.1:{_PORT}"
+        )
+        cli, run, gov, _writes = self._run_with_status(doc)
+        with cli, run, gov:
+            state = tailnet_serve.serve_state(_PORT, https_port=5479)
+        assert state.published is True
+        assert "5479/" in state.detail
+
+    def test_publish_names_the_https_port_and_proxies_to_the_gateway(self) -> None:
+        cli, run, gov, writes = self._run_with_status("")
+        with cli, run, gov:
+            result = tailnet_serve.publish(_PORT, https_port=5479)
+        assert result.ok
+        assert writes == [["serve", "--bg", "--https=5479", f"http://127.0.0.1:{_PORT}"]]
+
+    @pytest.mark.parametrize("action", ["publish", "unpublish"])
+    def test_a_foreign_handler_on_the_configured_port_refuses(self, action: str) -> None:
+        doc = self._two_port_doc(
+            on_443=f"http://127.0.0.1:{_PORT}", on_5479="http://127.0.0.1:8080"
+        )
+        cli, run, gov, writes = self._run_with_status(doc)
+        with cli, run, gov:
+            result = getattr(tailnet_serve, action)(_PORT, https_port=5479)
+        assert (result.ok, result.code) == (False, "not_ours")
+        assert "5479/" in result.detail
+        assert writes == []
+
+    def test_unpublish_names_the_https_port(self) -> None:
+        doc = self._two_port_doc(
+            on_443="http://127.0.0.1:8080", on_5479=f"http://127.0.0.1:{_PORT}"
+        )
+        cli, run, gov, writes = self._run_with_status(doc)
+        with cli, run, gov:
+            assert tailnet_serve.unpublish(_PORT, https_port=5479).ok
+        assert writes == [["serve", "--https", "5479", "--set-path=/", "off"]]
+
+    def test_the_gateway_port_and_the_https_port_are_not_confused(self) -> None:
+        """Gateway on 5479, serve on 8443: ownership is read on ``8443/`` and the
+        write fronts 8443 with the gateway's loopback port."""
+        doc = json.dumps(
+            {
+                "TCP": {"5479": {"HTTPS": True}},
+                "Web": {
+                    f"{self._NAME}:5479": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:5479"}}}
+                },
+            }
+        )
+        cli, run, gov, writes = self._run_with_status(doc)
+        with cli, run, gov:
+            state = tailnet_serve.serve_state(5479, https_port=8443)
+            result = tailnet_serve.publish(5479, https_port=8443)
+        assert (state.published, state.port_free) == (False, True)
+        assert result.ok
+        assert writes == [["serve", "--bg", "--https=8443", "http://127.0.0.1:5479"]]
+        assert tailnet_serve.manual_publish_command(5479, https_port=8443) == (
+            "tailscale serve --bg --https=8443 http://127.0.0.1:5479"
+        )

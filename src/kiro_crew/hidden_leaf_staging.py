@@ -38,9 +38,8 @@ logger = logging.getLogger("kiro_crew.dashboard.token_secret")
 #:
 #: Every other gateway-written hidden FILE leaf in the data-home root that is published
 #: with ``atomic_write`` stages here too, through
-#: :func:`publish_through_auth_store_staging`: the browser extension token and
-#: the Ops Mission Control secret store and policy ceiling, and the data home's ``.env``
-#: (through :func:`publish_env`).
+#: :func:`publish_through_auth_store_staging`: the Ops Mission Control secret store and
+#: policy ceiling, and the data home's ``.env`` (through :func:`publish_env`).
 #:
 #: Staging beside either leaf is what this exists to avoid. Both are masked in an agent
 #: sandbox as individual FILES, and a mask covers a PATH rather than an inode, so a temp

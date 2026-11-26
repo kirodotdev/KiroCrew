@@ -5201,67 +5201,6 @@
         "preview_unavailable": "Pré-visualização não disponível"
       }
     },
-    "projectScaffolder": {
-      "manifest": {
-        "display_name": "Criar pastas a partir de um projeto",
-        "description": "Aponte-o para um diretório de projeto e ele descobre quais subprojetos existem dentro, criando depois uma pasta da barra lateral para cada um. A análise é somente de leitura, por isso você vê a lista completa e marca o que quiser antes de qualquer coisa ser criada. Os subprojetos ficam aninhados sob o diretório superior tal como no disco, e o que você já configurou é mostrado mas nunca criado duas vezes.",
-        "page_label": "Criar pastas",
-        "highlight_1": "Analisa primeiro em modo somente leitura, então nada é criado até você confirmar uma seleção",
-        "highlight_2": "Lista os pacotes de nível superior como linhas, com os achados mais profundos em um único grupo recolhido que você pode selecionar por inteiro ou deixar vazio",
-        "highlight_3": "As correspondências confiáveis vêm marcadas; as mais fracas ficam para você escolher",
-        "highlight_4": "Mostra os sinais por trás de cada correspondência, para você ver por que um diretório foi escolhido",
-        "highlight_5": "As pastas que você já tem aparecem na lista mas são ignoradas, nunca duplicadas",
-        "highlight_6": "Informa exatamente o que foi criado, o que foi ignorado, e o que falhou e por quê",
-        "use_case_1": "Transforma um monorepo ou um diretório de repositórios vizinhos em uma pasta da barra lateral por pacote, para que a orientação por pacote carregue sem montar a árvore à mão.",
-        "configuration_1": "Abra Criar pastas, navegue até um diretório de projeto, revise a prévia e marque os pacotes desejados, depois confirme para criar as pastas."
-      },
-      "projectScaffolderPage": {
-        "absolute_path_to_a_project_directory": "Caminho absoluto para um diretório de projeto",
-        "already_set_up": "Já configurado",
-        "browse": "Escolher diretório",
-        "create_folders": "Criar pastas da barra lateral",
-        "create_folders_from_project": "Criar pastas a partir de um projeto",
-        "create_the_root_folder_only": "Criar apenas a pasta raiz",
-        "creating": "Criando",
-        "directly_under_the_root": "Diretamente sob a raiz",
-        "inside_name": "Dentro de {{name}}",
-        "n_already_set_up": "{{n}} já configuradas",
-        "n_created": "{{n}} criadas",
-        "n_failed": "{{n}} com falha",
-        "n_possible_sub_folders_inside_packages_above_many": "{{n}} subpastas possíveis nos pacotes acima",
-        "n_possible_sub_folders_inside_packages_above_one": "{{n}} subpasta possível nos pacotes acima",
-        "n_possible_sub_folders_inside_packages_above_other": "{{n}} subpastas possíveis nos pacotes acima",
-        "n_selected": "Pasta raiz + {{n}} selecionadas",
-        "n_selected_root_exists": "{{n}} selecionados",
-        "n_selected_inside": "{{n}} selecionadas dentro",
-        "no_folders_were_created": "Nenhuma pasta foi criada",
-        "no_sub_projects_found": "Nenhum subprojeto encontrado",
-        "nothing_under_this_directory_looked_like_a_proje": "Nada dentro deste diretório parecia um projeto. Você ainda pode criar uma pasta para o próprio diretório.",
-        "preview": "Pré-visualização",
-        "project_directory": "Diretório do projeto",
-        "re_scan": "Analisar de novo",
-        "results": "Resultados",
-        "root_already_exists_nothing_to_create": "Este diretório já tem a sua pasta da barra lateral, portanto não resta nada para criar.",
-        "root_changed_scan_before_creating": "O diretório acima mudou — escaneie-o antes de criar pastas.",
-        "scan": "Analisar",
-        "scan_a_project_directory_then_create_a_sidebar": "Analise um diretório de projeto e crie uma pasta da barra lateral para cada subprojeto que escolher.",
-        "scanning": "Analisando",
-        "select_all": "Selecionar tudo",
-        "select_all_inside": "Selecionar tudo dentro",
-        "select_none": "Limpar seleção",
-        "select_none_inside": "Não selecionar nada dentro",
-        "showing_the_preview_from_the_last_successful_scan": "Mostrando a prévia do último escaneamento bem-sucedido.",
-        "signal_git": "repositório git",
-        "signal_kiro": "pasta Kiro (.kiro)",
-        "signal_manifest": "{{name}} encontrado",
-        "signal_member": "membro do workspace",
-        "signals": "Por que correspondeu",
-        "this_preview_no_longer_matches_the_directory_on": "Esta pré-visualização já não corresponde ao diretório em disco. Analise de novo antes de criar pastas.",
-        "tier_confident": "Confiável",
-        "tier_offered": "Possível correspondência",
-        "warnings": "Avisos"
-      }
-    },
     "specBuilder": {
       "api": {
         "phase_building": "construindo",
@@ -7047,6 +6986,8 @@
       "closing_terminal": "Fechando terminal…",
       "fullscreen": "Tela cheia",
       "exit_fullscreen": "Sair da tela cheia",
+      "fullscreen_shortcut": "Tela cheia ({{shortcut}})",
+      "exit_fullscreen_shortcut": "Sair da tela cheia ({{shortcut}})",
       "find": "Localizar"
     },
     "tabCloseMenu": {
@@ -9235,6 +9176,7 @@
       "expiry_after_days_one": "Após {{count}} dia",
       "expiry_after_days_other": "Após {{count}} dias",
       "expiry_never": "Nunca",
+      "previous_link_expired": "O link anterior expirou em {{date}}. Publicar novamente cria um novo link.",
       "public_exposure_warning": "Qualquer pessoa com o link publicado pode ver este conteúdo. Ele é servido na internet pública sem autenticação."
     },
     "pullRequestPanel": {
@@ -9749,6 +9691,7 @@
       "desktop_app_only": "Somente aplicativo desktop",
       "panel_toggles": "Alternar painéis",
       "unset": "Não definido",
+      "terminal_focus_only": "Somente em um terminal com foco",
       "save_refused": "Não foi salvo: o armazenamento do navegador está cheio. Libere espaço e tente novamente."
     },
     "sidePanelLayout": {
@@ -10787,7 +10730,7 @@
       "trust_off_title": "Permitir acesso pelo nome de rede deste computador",
       "trust_off_body": "O painel recusa solicitações de endereços que não reconhece. Permita o seu próprio nome de rede privada para que um telefone possa alcançá-lo. Isso não abre nenhuma porta para a internet e não altera a forma como você faz login.",
       "restart_gateway_title": "Reinicie o {{productName}} para concluir",
-      "restart_gateway_body": "Um nome de rede já está disponível, mas este servidor não resolveu nenhum ao iniciar, então o nome ainda não é confiável. Reinicie o {{productName}} uma vez e a última etapa estará pronta.",
+      "restart_gateway_body": "Este servidor precisa reiniciar para usar o endereço atual da tailnet. Reinicie o {{productName}} uma vez e a última etapa estará pronta.",
       "occupied_title": "Já existe outra coisa servida aqui",
       "occupied_body": "O Tailscale já está servindo outra coisa neste endereço. Publicar iria substituí-la, então nada foi alterado.",
       "occupied_replace": "Se for seguro substituir, execute <cmd/>",
@@ -12385,6 +12328,7 @@
       "toggle_side_terminal": "Alternar terminal do painel lateral",
       "previous_terminal": "Terminal anterior",
       "next_terminal": "Próximo terminal",
+      "clear_terminal": "Limpar o terminal",
       "toggle_dictation_mute": "Silenciar ou ativar o ditado"
     },
     "useNativeNotification": {
@@ -13152,6 +13096,9 @@
     },
     "artifactDetailPage": {
       "published_to_provider": "Publicado em {{provider}}",
+      "publication_expires_on": "Expira em {{date}}",
+      "publication_expires_soon_on": "Expira em breve, em {{date}}",
+      "published_to_provider_expired": "A publicação em {{provider}} expirou em {{date}}",
       "open_published_page": "Abrir a página publicada",
       "a_newer_version_is_available_in_the_remote_copy": "· uma versão mais recente está disponível na cópia remota",
       "activity": "Atividade",
@@ -14277,7 +14224,11 @@
         "more_running_normally_count_many": "mais {{count}} em execução normal…",
         "more_running_normally_count_other": "mais {{count}} em execução normal…",
         "engine_stops_with_answer": "Os subagentes que rodam dentro do chat param quando você para a resposta.",
-        "stop_all_and_answer": "Parar todos e a resposta"
+        "stop_all_and_answer": "Parar todos e a resposta",
+        "older_runs_not_shown_one": "+{{count}} mais antigo não exibido",
+        "older_runs_not_shown_many": "+{{count}} mais antigos não exibidos",
+        "older_runs_not_shown_other": "+{{count}} mais antigos não exibidos",
+        "some_finished_runs_not_shown": "Algumas execuções concluídas não são exibidas"
       },
       "subagentQueued": {
         "low_memory": "aguardando para iniciar — precisa de {{required}} de memória livre, {{available}} livres agora; libere memória para continuar",
@@ -19858,7 +19809,15 @@
         "strict_off": "Permitir um pequeno atraso aleatório",
         "strict_off_hint": "Começa um pouco depois para distribuir a carga",
         "strict_on": "Executar no horário exato",
-        "strict_on_hint": "Começa exatamente no horário agendado"
+        "strict_on_hint": "Começa exatamente no horário agendado",
+        "send_to_telegram": "Definir destino no Telegram",
+        "telegram_failed": "{{name}} (falha)",
+        "telegram_failed_reason": "{{name}} (falha: {{reason}})",
+        "telegram_failed_heading": "Algumas tarefas marcadas não puderam ser atualizadas. Elas continuam selecionadas.",
+        "telegram_kept_slack_heading": "Estas tarefas marcadas mantêm o canal do Slack e não foram atualizadas. Elas continuam selecionadas.",
+        "telegram_updated_many": "{{count}} tarefas agora reportam para {{destination}}.",
+        "telegram_updated_one": "{{count}} tarefa agora reporta para {{destination}}.",
+        "telegram_updated_other": "{{count}} tarefas agora reportam para {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_many": "Não foi possível mover {{count}} de {{total}} tarefas",
@@ -22197,7 +22156,8 @@
         "clear_shortcut": "Limpar",
         "panel_toggles": "Alternar painéis",
         "skips_shell_hint": "Também funciona dentro do terminal, por isso o seu shell deixa de receber esta tecla — não escolha Ctrl+C nem Ctrl+R.",
-        "skips_shell_hint_mac": "Também funciona dentro do terminal, por isso o seu shell deixa de receber esta tecla — não escolha ⌃C (Ctrl+C) nem ⌃R (Ctrl+R)."
+        "skips_shell_hint_mac": "Também funciona dentro do terminal, por isso o seu shell deixa de receber esta tecla — não escolha ⌃C (Ctrl+C) nem ⌃R (Ctrl+R).",
+        "terminal_focus_hint": "Só funciona enquanto um terminal tem o foco, por isso pode partilhar uma tecla com Pesquisar em tudo. O seu shell deixa de receber esta tecla."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analisa cada sessão concluída e cria um rascunho de SKILL.md reutilizável quando ela demonstra um procedimento recorrente — um que uma sessão futura, trabalhando em um alvo diferente, executaria novamente. Desativado por padrão. Os rascunhos vão para a fila de pendentes em Personalizar → Habilidades para revisão — nada entra em vigor sem a sua aprovação (veja abaixo).",
