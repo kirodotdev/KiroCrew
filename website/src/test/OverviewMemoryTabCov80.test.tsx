@@ -54,9 +54,6 @@ vi.mock('react-router-dom', async () => {
 })
 // Both cards own their own queries and their own tests; here they are seams that
 // report the vector/migration state this tab branches on.
-vi.mock('../pages/overview/VectorMemoryCard', () => ({
-  default: ({ diagnosticsOnly }: { diagnosticsOnly?: boolean }) => <div data-testid="vector-card" data-diagnostics-only={diagnosticsOnly ? 'true' : 'false'} />,
-}))
 vi.mock('../pages/overview/EmbeddingModelCard', () => ({ default: () => <div data-testid="embed-card" /> }))
 vi.mock('../pages/overview/memoryPage/MemoryList', () => ({ default: () => <div data-testid="memory-list" /> }))
 vi.mock('../pages/overview/MemoryFailuresCard', () => ({
@@ -150,14 +147,14 @@ function lessonRows(): HTMLTableRowElement[] {
 describe('MemoryTab — settings', () => {
   it('puts each card on its tab: list and lessons, profile, recovery, failures, settings', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
-    // Memories opens first: the record list, and the lessons card while vector memory is off.
-    expect(await screen.findByTestId('memory-list')).toBeVisible()
-    expect(screen.getByRole('heading', { name: /^Lessons\b/i })).toBeVisible()
+    // Memories opens first. With vector memory off the store has no records to
+    // list, so the tab shows the lessons card alone once the status has answered.
+    expect(await screen.findByRole('heading', { name: /^Lessons\b/i })).toBeVisible()
+    await waitFor(() => expect(screen.queryByTestId('memory-list')).toBeNull())
     expect(screen.queryByRole('heading', { name: /^Memory Settings\s*$/i })).toBeNull()
 
     openTab('Profile')
     expect(await screen.findByRole('heading', { name: /^Preferences\b/i })).toBeVisible()
-    expect(screen.getByTestId('memory-list')).not.toBeVisible()
 
     openTab('Failures')
     expect(screen.getByTestId('failures-card')).toBeVisible()
@@ -168,12 +165,10 @@ describe('MemoryTab — settings', () => {
       // aria-label, so it adds nothing to the heading's accessible name.
       screen.getByRole('heading', { name: /^Memory Settings\s*$/i }),
       screen.getByTestId('embed-card'),
-      screen.getByTestId('vector-card'),
     ]
     for (let index = 0; index < ordered.length - 1; index += 1) {
       expect(ordered[index].compareDocumentPosition(ordered[index + 1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     }
-    expect(screen.getByTestId('vector-card')).toHaveAttribute('data-diagnostics-only', 'false')
     // The graph is its own tab now, not a link to Developer.
     expect(screen.queryByRole('button', { name: /Memory graph and internals/i })).toBeNull()
     expect(screen.getByRole('tab', { name: 'Graph' })).toBeVisible()

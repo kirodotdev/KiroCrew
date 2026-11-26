@@ -74,7 +74,15 @@ def _normalized(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold()
 
 
-_FILTER_KEYS = {*memory_record_facets.FACET_GROUPS, "ref", "conf_min", "conf_max"}
+_FILTER_KEYS = {
+    *memory_record_facets.FACET_GROUPS,
+    "ref",
+    "conf_min",
+    "conf_max",
+    "since",
+    "until",
+    "date_field",
+}
 
 
 def _query(raw: Any) -> dict:

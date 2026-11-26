@@ -151,3 +151,10 @@ export function RecordHistory({ store, row, onProposal, onKeepCurrent, onRestore
     {history.hasNextPage && !history.error && <Btn className="min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={history.isFetching || undefined} onClick={() => { if (!history.isFetching) void history.fetchNextPage() }}>{history.isFetchingNextPage ? t('pages.overview.memoryTab.loading') : t('memoryV2.show_more')}</Btn>}
   </div>
 }
+
+/** A semantic value as text: a JSON string parsed, an object pretty-printed, a scalar as is. */
+export function semanticValueText(e: { value_json?: unknown }): string {
+  let val: unknown = e?.value_json
+  if (typeof val === 'string') { try { val = JSON.parse(val) } catch { /* a raw string stays as it is */ } }
+  return typeof val === 'object' && val !== null ? JSON.stringify(val, null, 2) : String(val ?? '')
+}

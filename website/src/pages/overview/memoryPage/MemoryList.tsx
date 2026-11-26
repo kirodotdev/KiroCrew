@@ -18,6 +18,9 @@ import { safeGetItem } from '../../../utils/safeStorage'
 import ErrorNotice from '../../../components/ErrorNotice'
 import type { MemoryJump } from './memoryJump'
 import { FilterRail, RAIL_MAX, RAIL_MIN } from './MemoryRail'
+import { DateRangeButton } from './MemoryDateRange'
+import { uiLocation } from '../../../uiLocations/uiLocation'
+import { rangeBounds, type DateRange } from './memoryDateRange'
 import { MemoryDetailSlide } from './MemoryDetailSlide'
 import Modal from '../../../components/Modal'
 import { useIsMobile } from '../../../hooks/useIsMobile'
@@ -49,8 +52,10 @@ export const SWITCH_INLINE_MIN = 512
 const clampRail = (width: number) => Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(width)))
 const SELECT_ALL_LIMIT = 10000
 
-export default function MemoryList({ jump, store, privateMemory, focusKey, focusLessons = false, selecting, onSelectingChange, recallOpen, onRecallOpenChange, onDirtyChange, onRecovery, emptyActions, storeName }: {
+export default function MemoryList({ jump, store, privateMemory, canRecall = privateMemory, focusKey, focusLessons = false, selecting, onSelectingChange, recallOpen, onRecallOpenChange, onDirtyChange, onRecovery, emptyActions, storeName }: {
   store: string; privateMemory: boolean
+  /** Test recall in the toolbar: a bot's store, and the global one. */
+  canRecall?: boolean
   /** A saved lesson landing (`?lesson=`), searched by key without replacing the saved view. */
   focusKey?: string
   /** `?focus=lessons`: open on the Lessons pill. */
@@ -115,10 +120,13 @@ export default function MemoryList({ jump, store, privateMemory, focusKey, focus
   // Rows under the meaning cut-off stay counted, not listed, until "Show them".
   const [weak, setWeak] = useState(false)
   const topics = useMemoryTopics()
+  // The range filters on the time the list is sorted by: created under that sort, else updated.
+  const dateField = view.sort === 'created' ? 'created' : 'updated'
   const query = useMemo<MemoryRecordQuery>(() => {
-    const filters = filtersForKind(view.filters, view.kind)
-    return activeFilterCount(filters) ? { q: view.q, kind: view.kind, filters } : { q: view.q, kind: view.kind }
-  }, [view.q, view.kind, view.filters])
+    const bounds = rangeBounds(view.range)
+    const filters = { ...filtersForKind(view.filters, view.kind), ...(bounds ? { ...bounds, ...(dateField === 'created' ? { date_field: 'created' as const } : {}) } : {}) }
+    return activeFilterCount(filters) || bounds ? { q: view.q, kind: view.kind, filters } : { q: view.q, kind: view.kind }
+  }, [view.q, view.kind, view.filters, view.range, dateField])
   const records = useInfiniteQuery({
     queryKey: ['memory-records', store, query, sort, view.order, meaning, meaning && weak],
     initialPageParam: 0,
@@ -203,13 +211,14 @@ export default function MemoryList({ jump, store, privateMemory, focusKey, focus
   const change = (next: Partial<ListView>) => { if (locked) return; setView(old => ({ ...old, ...next })) }
   const onToggleFilter = (group: MemoryRecordFacetGroup, value: string) => change({ filters: toggleFilter(view.filters, group, value) })
   const onRange = (bound: 'conf_min' | 'conf_max', value: number | undefined) => setView(old => { if (locked) return old; const filters = { ...old.filters }; if (value === undefined) delete filters[bound]; else filters[bound] = value; return { ...old, filters } })
-  const clearFilters = () => change({ filters: {} })
+  const clearFilters = () => change({ filters: {}, range: undefined })
+  const setRange = (range?: DateRange) => change({ range })
   const clearSearch = () => { setInput(''); change({ q: '', sort: view.sort === 'match' ? 'updated' : view.sort }) }
   const setMode = (mode: SearchMode) => change({ mode })
   // A saved topic runs at once, as a search by meaning.
   const runTopic = (topic: string) => { setInput(topic); change({ q: topic, mode: 'meaning' }) }
   const meaningUnavailable = (records.error as { status?: number } | null)?.status === 409
-  const narrowed = !!view.q || view.kind !== 'all' || activeFilterCount(view.filters) > 0
+  const narrowed = !!view.q || view.kind !== 'all' || activeFilterCount(view.filters) > 0 || !!view.range
   const filterCount = activeFilterCount(filtersForKind(view.filters, view.kind))
   const filterPanel = <FilterPanel view={view} facets={facets} onToggle={onToggleFilter} onRange={onRange} />
 
@@ -252,13 +261,14 @@ export default function MemoryList({ jump, store, privateMemory, focusKey, focus
       {/* A phone opens the filter sheet; a wide screen with the rail hidden shows it again. */}
       {(sheet || !railOpen) && <Btn aria-label={t('memoryPage.filters')} aria-expanded={sheet ? undefined : false} className="relative min-h-11 min-w-11 shrink-0 justify-center sm:min-h-10 sm:min-w-10" onClick={() => sheet ? setFiltersOpen(true) : setRailOpen(true)}><SlidersHorizontal className="lucide-inline" aria-hidden="true" />{filterCount > 0 && <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 text-[11px] text-accent-fg">{fmtNumber(filterCount)}</span>}</Btn>}
       {/* Picking another order leaves the search by meaning, which only ranks by match. */}
+      <DateRangeButton range={view.range} onChange={setRange} />
       <SortControl view={view} onChange={(next: MemoryRecordSort, order) => change({ sort: next, order, ...(meaning && next !== 'match' ? { mode: 'words' as const } : {}) })} />
       {!phone && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={() => onSelectingChange(true)}><ListChecks className="lucide-inline" />{t('memoryPage.select')}</Btn>}
-      {!phone && privateMemory && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={() => onRecallOpenChange(true)}><Sparkles className="lucide-inline" />{t('memoryPage.test_recall')}</Btn>}
+      {!phone && canRecall && <Btn className="min-h-10 shrink-0 whitespace-nowrap" {...uiLocation('memory.test-recall')} onClick={() => onRecallOpenChange(true)}><Sparkles className="lucide-inline" />{t('memoryPage.test_recall')}</Btn>}
     </div></div>}
     {!selecting && <SavedTopics topics={topics.topics} query={view.q} canSave={meaning} onRun={runTopic} onRemove={topics.remove} onSave={() => topics.save(view.q)} />}
     <KindPills wrap={!phone} kind={view.kind} counts={facets?.kind} disabled={locked} onChange={(kind: KindTab) => change({ kind })} />
-    <ActiveFilters filters={filtersForKind(view.filters, view.kind)} onToggle={onToggleFilter} onRange={onRange} onClear={clearFilters} onClearRefs={() => { setJumpFocus(null); change({ filters: Object.fromEntries(Object.entries(view.filters).filter(([key]) => key !== 'ref')) }) }} />
+    <ActiveFilters range={view.range} rangeField={dateField} onClearRange={() => setRange(undefined)} filters={filtersForKind(view.filters, view.kind)} onToggle={onToggleFilter} onRange={onRange} onClear={clearFilters} onClearRefs={() => { setJumpFocus(null); change({ filters: Object.fromEntries(Object.entries(view.filters).filter(([key]) => key !== 'ref')) }) }} />
   </div>
 
   const list = <div className="space-y-3">
@@ -270,7 +280,7 @@ export default function MemoryList({ jump, store, privateMemory, focusKey, focus
     {searching && !records.error && <ul role="status" aria-label={t('pages.overview.memoryTab.loading')} className="m-0 list-none divide-y divide-border rounded-2xl border border-border bg-card p-0">{[0, 1, 2].map(index => <li key={index} className="space-y-2 px-4 py-4"><Skeleton className="h-3.5 w-4/5 motion-reduce:animate-none" /><Skeleton className="h-4 w-1/2 motion-reduce:animate-none" /></li>)}</ul>}
     {!searching && !records.error && !rows.length && !weaker && <Card className="mb-0 py-6">
       <EmptyState icon={<Search className="lucide-inline" />} title={narrowed ? t('memoryV2.no_matches') : t(privateMemory ? 'memoryV2.empty_title' : 'memoryV2.store_empty_title')} subtitle={narrowed ? t('memoryV2.no_matches_hint') : t(privateMemory ? 'memoryV2.empty_body' : 'memoryV2.store_empty_body')} />
-      <div className="mt-3 flex flex-wrap justify-center gap-2">{narrowed ? <>{view.q && <Btn className="min-h-11" onClick={clearSearch}>{t('memoryV2.clear_search')}</Btn>}{activeFilterCount(view.filters) > 0 && <Btn className="min-h-11" onClick={clearFilters}>{t('memoryPage.clear_all')}</Btn>}</> : emptyActions}</div>
+      <div className="mt-3 flex flex-wrap justify-center gap-2">{narrowed ? <>{view.q && <Btn className="min-h-11" onClick={clearSearch}>{t('memoryV2.clear_search')}</Btn>}{(activeFilterCount(view.filters) > 0 || !!view.range) && <Btn className="min-h-11" onClick={clearFilters}>{t('memoryPage.clear_all')}</Btn>}</> : emptyActions}</div>
     </Card>}
     {(rows.length > 0 || weaker > 0) && <ul className="m-0 list-none overflow-hidden rounded-2xl border border-border bg-card p-0" aria-live="polite" aria-label={t('memoryV2.tab_memories')}>
       {rows.map((row, index) => [

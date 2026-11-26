@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from kiro_crew.lesson_validation import LESSON_APPLIES_UNSTATED, LESSON_APPLIES_VALUES
@@ -29,6 +30,8 @@ SCOPE_UNUSABLE = ":unusable"
 SOURCE_UNKNOWN = "unknown"
 FACET_GROUPS = ("category", "applies", "scope", "source", "surface", "crew", "tag")
 SORTS = ("updated", "created", "confidence", "importance", "key", "match")
+# A date range filters on one of these times: the list's sort field, updated unless sorted by created.
+DATE_FIELDS = ("updated", "created")
 _MAX_VALUES = 50
 # A graph selection: at most this many record refs (the graph draws at most 400 records).
 _MAX_REFS = 500
@@ -182,7 +185,54 @@ def parse_filters(raw: dict[str, Any]) -> dict[str, Any]:
         filters["conf_min"] = low
     if high is not None:
         filters["conf_max"] = high
+    since = _instant(raw["since"], "since") if raw.get("since") else None
+    until = _instant(raw["until"], "until") if raw.get("until") else None
+    if since and until and since >= until:
+        raise FacetError("since must be before until.")
+    if since:
+        filters["since"] = since.isoformat()
+    if until:
+        filters["until"] = until.isoformat()
+    date_field = raw.get("date_field", "updated")
+    if date_field not in DATE_FIELDS:
+        raise FacetError("date_field must be updated or created.")
+    if (since or until) and date_field != "updated":
+        filters["date_field"] = date_field
     return filters
+
+
+def _instant(raw: Any, name: str) -> datetime:
+    if not isinstance(raw, str):
+        raise FacetError(f"{name} must be an ISO date or time.")
+    parsed = utc_time(raw)
+    if parsed is None:
+        raise FacetError(f"{name} must be an ISO date or time.")
+    return parsed
+
+
+def utc_time(raw: Any) -> datetime | None:
+    """A stored or sent ISO time as an aware UTC datetime; a naive one is UTC."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (
+        parsed.replace(tzinfo=timezone.utc)
+        if parsed.tzinfo is None
+        else parsed.astimezone(timezone.utc)
+    )
+
+
+def _in_range(summary: dict[str, Any], filters: dict[str, Any]) -> bool:
+    field = "created_at" if filters.get("date_field") == "created" else "updated_at"
+    when = utc_time(summary.get(field))
+    if when is None:
+        return False
+    if "since" in filters and when < datetime.fromisoformat(filters["since"]):
+        return False
+    return not ("until" in filters and when >= datetime.fromisoformat(filters["until"]))
 
 
 def matches(summary: dict[str, Any], filters: dict[str, Any], *, skip: str | None = None) -> bool:
@@ -205,6 +255,8 @@ def matches(summary: dict[str, Any], filters: dict[str, Any], *, skip: str | Non
             return False
         if confidence < filters.get("conf_min", 0) or confidence > filters.get("conf_max", 1):
             return False
+    if ("since" in filters or "until" in filters) and not _in_range(summary, filters):
+        return False
     return True
 
 

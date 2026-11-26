@@ -10,7 +10,7 @@ import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
 import { findReport, parseErrorCode, parseErrorField } from '../../utils/errorReport'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
-import VectorMemoryCard from './VectorMemoryCard'
+import { useVectorMemoryState } from './useVectorMemoryState'
 import EmbeddingModelCard from './EmbeddingModelCard'
 import {
   MEMORY_QUERY_PREFIXES,
@@ -296,7 +296,6 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
   const navigate = useNavigate()
   const leave = useGuardedLeave()
   const [recordDirty, setRecordDirty] = useState(false)
-  const [vectorDirty, setVectorDirty] = useState(false)
   const [embedDirty, setEmbedDirty] = useState(false)
   const [docDirty, setDocDirty] = useState<Record<string, boolean>>({})
   const onNewDraft = useCallback((d: boolean) => setDocDirty(old => old.newDraft === d ? old : { ...old, newDraft: d }), [])
@@ -347,20 +346,22 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
   const [settingsUnsaved, setSettingsUnsaved] = useState(false)
   // Typed but not yet added or saved: leaving drops these too, and so does an
   // open lesson edit.
-  const dirty = recordDirty || vectorDirty || embedDirty || Object.values(docDirty).some(Boolean) || rule.trim() !== '' || settingsUnsaved || editing !== null
+  const dirty = recordDirty || embedDirty || Object.values(docDirty).some(Boolean) || rule.trim() !== '' || settingsUnsaved || editing !== null
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
   const [lessonRequestError, setLessonRequestError] = useState<string | null>(null)
   // The lessons list itself could not be read: on open and refresh (`load`),
   // or right after an Add that was stored (`add`). Without it a failed read
   // left the table on "No lessons yet" with nothing saying why.
   const [lessonsLoadError, setLessonsLoadError] = useState<{ step: 'load' | 'add'; message: string } | null>(null)
-  const [migrated, setMigrated] = useState(false)
-  const [vectorActive, setVectorActive] = useState(false)
-  // `vectorActive` reads false until the vector card's status answers, so the
-  // lessons landing spot is chosen only once it has: before that the Lessons
-  // card can render and then vanish under a store that keeps lessons as
-  // `lesson.*` rows in the Semantic browser instead.
-  const [vectorSettled, setVectorSettled] = useState(false)
+  // `vectorActive` reads false until both status reads answer, so the lessons
+  // landing spot is chosen only once they have: before that the Lessons card
+  // can render and then vanish under a store that keeps lessons as `lesson.*`
+  // records in the Memories list instead.
+  const vector = useVectorMemoryState()
+  const { active: vectorActive, settled: vectorSettled } = vector
+  // Either read may say so first: the memory settings or the store's own stats.
+  const [settingsMigrated, setMigrated] = useState(false)
+  const migrated = settingsMigrated || vector.migrated
   const lessonsFocused = useRef(false)
   useEffect(() => {
     if (!focusLessons || !vectorSettled || lessonsFocused.current) return
@@ -760,10 +761,10 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
   }
   const globalLabel = i18nT('pages.kiroCrewAgentsPage.global_memory_v1')
   return (<>
-    <MemoryPageShell id="default" label={globalLabel} onDraftChange={onNewDraft} switcher={switcher} notices={notices} embedded={<MemoryEmbeddedLine store="" />} mountAll initialTab={focusFailures ? 'failures' : focusGraph ? 'graph' : 'memories'} canCreate canRecall={false} onCreated={() => { void showLessons('load') }}
+    <MemoryPageShell id="default" label={globalLabel} onDraftChange={onNewDraft} switcher={switcher} notices={notices} embedded={<MemoryEmbeddedLine store="" />} mountAll initialTab={focusFailures ? 'failures' : focusGraph ? 'graph' : 'memories'} canCreate canRecall onCreated={() => { void showLessons('load') }}
       memories={controls => <>
         {/* With vector memory off the store has no records to list; its lessons are the card below. */}
-        {!(vectorSettled && !vectorActive) && <MemoryList jump={controls.jump} store="default" storeName={globalLabel} privateMemory={false} focusKey={focusLessons ? focusLessonKey : undefined} focusLessons={focusLessons}
+        {!(vectorSettled && !vectorActive) && <MemoryList jump={controls.jump} store="default" storeName={globalLabel} privateMemory={false} canRecall focusKey={focusLessons ? focusLessonKey : undefined} focusLessons={focusLessons}
           selecting={controls.selecting} onSelectingChange={controls.setSelecting} recallOpen={controls.recallOpen} onRecallOpenChange={controls.setRecallOpen}
           onDirtyChange={setRecordDirty} onRecovery={() => controls.openTab('recovery')} />}
         {!vectorActive && (
@@ -1037,14 +1038,6 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
           </div>
         </Card>
         <EmbeddingModelCard onDirtyChange={setEmbedDirty} />
-        <VectorMemoryCard
-          onActiveChange={setVectorActive}
-          onMigratedChange={setMigrated}
-          onSettledChange={setVectorSettled}
-          onDirtyChange={setVectorDirty}
-          initialSemanticFilter={focusLessons ? 'lesson.' : undefined}
-          focusKey={focusLessons ? focusLessonKey : undefined}
-        />
         </>,
       }} />
     {confirmDialog}

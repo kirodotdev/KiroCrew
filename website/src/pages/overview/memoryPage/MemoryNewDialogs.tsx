@@ -3,7 +3,7 @@
  * picked at the top of the one form the memory page's header opens. Both write the
  * global store only, as their routes do: `PUT /api/memory/semantic` and `POST /api/lessons`.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { api } from '../../../api/client'
@@ -14,6 +14,15 @@ import SegmentedControl from '../../../components/SegmentedControl'
 import { semanticWriteErrorMessage } from '../embeddingStatusText'
 import { errorText } from '../memoryRecordParts'
 import { facetLabel } from './memoryListView'
+
+// Keys a fact can take (`vector_memory._BUILTIN_PREFIXES` is pref.*, project.*, user.*),
+// offered as suggestions on the key field; the store refuses any other prefix.
+const KEY_HINTS = [
+  'pref.frontend.', 'pref.backend.', 'pref.streaming.', 'pref.editor.', 'pref.os', 'pref.shell',
+  'pref.style.', 'pref.communication.', 'pref.testing.', 'pref.deployment.',
+  'project.name', 'project.repo', 'project.stack', 'project.storage', 'project.description',
+  'user.name', 'user.timezone', 'user.team', 'user.role',
+]
 
 /** Report an unsaved draft to the page's leave guard while the dialog is open; cleared when it closes. */
 function useDraftDirty(dirty: boolean, onDirtyChange?: (dirty: boolean) => void) {
@@ -29,6 +38,8 @@ export function NewMemoryDialog({ onClose, onSaved, onLessonSaved, onDirtyChange
   const { t } = useTranslation()
   const [kind, setKind] = useState<NewKind>('fact')
   const [key, setKey] = useState('')
+  // A selector-safe id: `list` is resolved by id, and the generated one carries colons.
+  const hintsId = `memory-key-hints${useId().replace(/:/g, '')}`
   const [value, setValue] = useState('')
   const [rule, setRule] = useState('')
   const [category, setCategory] = useState<(typeof CATEGORIES)[number]>('knowledge')
@@ -57,7 +68,8 @@ export function NewMemoryDialog({ onClose, onSaved, onLessonSaved, onDirtyChange
         <SegmentedControl collapse={false} layoutId="memory-new-kind" value={kind} onChange={next => { if (!pending) setKind(next) }} segments={KINDS.map(k => ({ key: k, label: t(k === 'fact' ? 'memoryV2.fact' : 'memoryV2.directive') }))} /></div>
       {kind === 'fact' ? <>
         <label className="block space-y-1.5"><span className="block text-[12px] font-medium text-muted">{t('memoryV2.memory_key')}</span>
-          <Input className="min-h-11 w-full font-mono" value={key} placeholder={t('pages.overview.vectorMemoryCard.key_e_g_pref_backend_framework')} disabled={pending} onChange={event => { setKey(event.target.value); saveFact.reset() }} /></label>
+          <Input className="min-h-11 w-full font-mono" list={hintsId} value={key} placeholder={t('pages.overview.vectorMemoryCard.key_e_g_pref_backend_framework')} disabled={pending} onChange={event => { setKey(event.target.value); saveFact.reset() }} /></label>
+        <datalist id={hintsId}>{KEY_HINTS.map(hint => <option key={hint} value={hint} />)}</datalist>
         <label className="block space-y-1.5"><span className="block text-[12px] font-medium text-muted">{t('pages.overview.vectorMemoryCard.value')}</span>
           <Input className="min-h-11 w-full" value={value} disabled={pending} onChange={event => { setValue(event.target.value); saveFact.reset() }} /></label>
         <p className="text-[12px] text-muted">{t('memoryPage.new_memory_hint')}</p>

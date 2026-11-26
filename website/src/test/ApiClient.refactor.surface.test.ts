@@ -35,7 +35,7 @@ const NO_SESSION_KEY = [
   'memoryHistory', 'memorySettings', 'memoryStores', 'memoryRetired',
   'memoryBackups', 'memoryCarve', 'memoryRecall', 'memoryRecords',
   'memoryRecordHistory', 'memberMemoryPage', 'vectorSemantic', 'vectorEpisodic',
-  'vectorEpisodicSearch', 'vectorStats', 'vectorEvents', 'vectorEmbeddingStatus',
+  'vectorEpisodicSearch', 'vectorStats', 'memoryEvents', 'vectorEmbeddingStatus',
   'vectorContextPreview', 'memoryGraph', 'sessionsMemory', 'sessionsUsage',
   'providerUsage', 'mcpProbeCache', 'agentsInstalled', 'agentTemplates',
   'agentTemplateDelete', 'agentDetail', 'agentPatch', 'agentFork',

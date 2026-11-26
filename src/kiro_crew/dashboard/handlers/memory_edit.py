@@ -47,6 +47,9 @@ _RECORD_PARAMS = {
     "ref",
     "conf_min",
     "conf_max",
+    "since",
+    "until",
+    "date_field",
     "mode",
     "weak",
     *memory_record_facets.FACET_GROUPS,
@@ -88,7 +91,7 @@ async def api_memory_records(request: web.Request) -> web.Response:
         }
         if "ref" in request.query:
             filters["ref"] = request.query.getall("ref")
-        for bound in ("conf_min", "conf_max"):
+        for bound in ("conf_min", "conf_max", "since", "until", "date_field"):
             if bound in request.query:
                 filters[bound] = request.query[bound]
         query: dict = {key: request.query[key] for key in ("q", "kind") if key in request.query}

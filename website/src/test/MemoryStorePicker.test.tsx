@@ -60,10 +60,6 @@ const { api } = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api }))
 // Both cards own their own queries, their own store scope and their own tests.
 // Here they are only the seams whose vector/migration state this tab branches on.
-vi.mock('../pages/overview/VectorMemoryCard', async importOriginal => ({
-  ...await importOriginal<typeof import('../pages/overview/VectorMemoryCard')>(),
-  default: () => <div data-testid="vector-card" />,
-}))
 vi.mock('../pages/overview/EmbeddingModelCard', () => ({
   default: () => <div data-testid="embed-card" />,
 }))
@@ -248,7 +244,6 @@ describe('memory store picker — the listing', () => {
     expect(api.memoryHistory).not.toHaveBeenCalled()
     expect(api.memorySettings).not.toHaveBeenCalled()
     expect(api.lessons).not.toHaveBeenCalled()
-    expect(screen.queryByTestId('vector-card')).toBeNull()
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Recovery' }), { button: 0, ctrlKey: false })
     await waitFor(() => expect(api.memoryRetired).toHaveBeenCalledWith(CREW_STORE, expect.any(Number)))
     expect(api.memoryBackups).toHaveBeenCalledWith(CREW_STORE)

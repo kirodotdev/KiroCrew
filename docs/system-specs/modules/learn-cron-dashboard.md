@@ -400,9 +400,9 @@ earlier gives another. The row carries the rule after `chat_cards._clean`
 (redacted, single-line, at most 300 characters) and the outcome. The dashboard draws
 it as "Lesson saved" or "Lesson updated", with a link to
 `/settings/memory?focus=lessons` (Settings > Memory). That focus lands the global Memory
-view on its lessons once the vector card's status has answered: the Lessons card
-when vector memory is off, or the Semantic browser pre-filtered to `lesson.` when
-the store keeps lessons as `lesson.*` rows. Before that answer it scrolls nowhere,
+view on its lessons once the vector memory status has answered
+(`useVectorMemoryState`): the Lessons card when vector memory is off, or the
+Memories list on its Lessons pill when the store keeps lessons as `lesson.*` rows. Before that answer it scrolls nowhere,
 because the Lessons card renders until the status hides it. Drawing is best effort: a failure is logged and
 the route's response is unchanged.
 

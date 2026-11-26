@@ -2,7 +2,7 @@
  * The memory page's frame for one store: one header row (the store switcher at
  * left; Copy memories, New memory and ⋯ at right), the embedded count under it,
  * the underline tabs and their panels. The global page and a bot's page each fill
- * the panels with their own cards.
+ * the panels with their own cards; the Audit tab is the same on both.
  */
 import { useState, type ReactNode } from 'react'
 import { MemoryJumpContext, type MemoryJump } from './memoryJump'
@@ -16,14 +16,16 @@ import { useIsMobile } from '../../../hooks/useIsMobile'
 import { MEMORY_QUERY_PREFIXES } from '../MemoryStoreCard'
 import { NewMemoryDialog } from './MemoryNewDialogs'
 import { MemoryActionSheet, type SheetAction } from './MemoryActionSheet'
+import MemoryAudit from './MemoryAudit'
+import { uiLocation } from '../../../uiLocations/uiLocation'
 
-export type MemoryPageTab = 'memories' | 'graph' | 'profile' | 'recovery' | 'failures' | 'settings'
+export type MemoryPageTab = 'memories' | 'graph' | 'profile' | 'recovery' | 'failures' | 'audit' | 'settings'
 export type MemoryListControls = { selecting: boolean; setSelecting: (on: boolean) => void; recallOpen: boolean; setRecallOpen: (open: boolean) => void; openTab: (tab: MemoryPageTab) => void
   /** The Graph tab's last hand-off to the list. */
   jump: MemoryJump | null }
 const TABS: [MemoryPageTab, string][] = [
   ['memories', 'memoryV2.tab_memories'], ['graph', 'memoryPage.tab_graph'], ['profile', 'memoryV2.tab_profile'], ['recovery', 'memoryV2.tab_recovery'],
-  ['failures', 'memoryPage.tab_failures'], ['settings', 'memoryPage.tab_settings'],
+  ['failures', 'memoryPage.tab_failures'], ['audit', 'memoryPage.tab_audit'], ['settings', 'memoryPage.tab_settings'],
 ]
 
 export default function MemoryPageShell({ id, label, switcher, notices, embedded, initialTab = 'memories', mountAll = false, canCreate, canRecall, onCopy, copyDisabled, onCreated, onDraftChange, memories, panels }: {
@@ -44,7 +46,7 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
   mountAll?: boolean
   /** New memory and New lesson write the global store only. */
   canCreate: boolean
-  /** Test recall reads a bot's own memory. */
+  /** Test recall: what a bot gets from this store. */
   canRecall: boolean
   onCopy?: () => void
   copyDisabled?: boolean
@@ -52,7 +54,8 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
   /** A New memory or New lesson draft is open and unsaved: feeds the page's leave guard. Pass a stable callback. */
   onDraftChange?: (dirty: boolean) => void
   memories: (controls: MemoryListControls) => ReactNode
-  panels: Record<Exclude<MemoryPageTab, 'memories'>, ReactNode>
+  /** Every tab's panel but Memories and Audit, which this frame fills for the store itself. */
+  panels: Record<Exclude<MemoryPageTab, 'memories' | 'audit'>, ReactNode>
 }) {
   const { t } = useTranslation()
   const client = useQueryClient()
@@ -84,7 +87,7 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
   ]
   const more = listActions.length + createActions.length > 0
   const moreButtonClass = 'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border sm:h-9 sm:w-9'
-  const panel = (key: MemoryPageTab, content: ReactNode) => <TabsContent key={key} value={key} forceMount hidden={tab !== key} className="space-y-4">{((mountAll && key !== 'graph') || visited.has(key)) && content}</TabsContent>
+  const panel = (key: MemoryPageTab, content: ReactNode) => <TabsContent key={key} value={key} forceMount hidden={tab !== key} className="space-y-4">{((mountAll && key !== 'graph' && key !== 'audit') || visited.has(key)) && content}</TabsContent>
   return <div className="min-w-0 space-y-4">
     <header className="space-y-3">
       <div className="flex min-w-0 items-center justify-between gap-1.5 sm:gap-2">
@@ -112,6 +115,7 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
         {TABS.map(([key, text]) => {
           // A phone shows four text tabs and a gear for Settings at the end of the rule.
           const gear = phone && key === 'settings'
+          if (key === 'audit') return <TabsTrigger key={key} value={key} className={phone ? 'shrink-0 px-2.5' : undefined}><span {...uiLocation('memory.audit-tab')}>{t('memoryPage.tab_audit')}</span></TabsTrigger>
           return <TabsTrigger key={key} value={key} aria-label={gear ? t(text) : undefined} className={gear ? 'ml-auto w-11 shrink-0 px-0' : phone ? 'shrink-0 px-2.5' : undefined}>
             {gear ? <Settings className="lucide-inline" aria-hidden="true" /> : t(text)}
           </TabsTrigger>
@@ -122,6 +126,7 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
       {panel('profile', panels.profile)}
       {panel('recovery', panels.recovery)}
       {panel('failures', panels.failures)}
+      {panel('audit', <MemoryAudit store={id} />)}
       {panel('settings', panels.settings)}
     </Tabs>
     </MemoryJumpContext.Provider>

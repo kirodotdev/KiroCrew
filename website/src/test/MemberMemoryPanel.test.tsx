@@ -19,7 +19,7 @@ async function openCopy() {
 import type { MemoryStoreSummary } from '../types'
 
 const { api } = vi.hoisted(() => ({ api: {
-  memoryStores: vi.fn(), memoryRecords: vi.fn(), memoryEditPreview: vi.fn(), memoryEditPreviewPage: vi.fn(), memoryEditApply: vi.fn(), memoryRecordsRefresh: vi.fn(), memoryRecordHistory: vi.fn(), memberMemoryPage: vi.fn(), memorySeed: vi.fn(), memoryRecall: vi.fn(),
+  memoryStores: vi.fn(), memoryRecords: vi.fn(), memoryEditPreview: vi.fn(), memoryEditPreviewPage: vi.fn(), memoryEditApply: vi.fn(), memoryRecordsRefresh: vi.fn(), memoryRecordHistory: vi.fn(), memberMemoryPage: vi.fn(), memorySeed: vi.fn(), memoryRecall: vi.fn(), vectorContextPreview: vi.fn(),
   vectorSemanticWrite: vi.fn(), vectorSemanticDelete: vi.fn(), vectorEpisodicDelete: vi.fn(),
   memoryPreferences: vi.fn(), memoryProjects: vi.fn(), memoryHistory: vi.fn(),
   saveMemoryPreferences: vi.fn(), saveMemoryProjects: vi.fn(),
@@ -29,10 +29,6 @@ const { api } = vi.hoisted(() => ({ api: {
   vectorEmbeddingStatus: vi.fn(), vectorStats: vi.fn(),
 } }))
 vi.mock('../api/client', () => ({ api }))
-vi.mock('../pages/overview/VectorMemoryCard', async importOriginal => ({
-  ...await importOriginal<typeof import('../pages/overview/VectorMemoryCard')>(),
-  default: () => <div data-testid="global-vector-card" />,
-}))
 vi.mock('../pages/overview/EmbeddingModelCard', () => ({ default: () => <div data-testid="global-embedding-card" /> }))
 
 const MEMBER_STORE = 'member-reviewer-abc'
@@ -110,6 +106,7 @@ beforeEach(() => {
   api.saveMemoryProjects.mockResolvedValue({ ok: true })
   api.memorySeed.mockResolvedValue({ results: [{ id: 'global.selected', outcome: 'existing', reason: 'Existing target item preserved' }] })
   api.memoryRecall.mockResolvedValue({ semantic_context: '[memory:key:preference.review] Selected member evidence', episodic_context: '', lessons_context: '', retrieval: { facts: [{ id: 'key:preference.review', key: FACT.key, snippet: 'Selected member evidence', source: FACT.source, derived_from: JSON.parse(FACT.derived_from), retrieval: { matched_terms: ['review'] } }], episodes: [] } })
+  api.vectorContextPreview.mockResolvedValue({ semantic_context: '', episodic_context: '' })
   api.themes.mockResolvedValue({ themes: [] })
   api.themeDetail.mockResolvedValue({ slug: 'test-theme' })
   api.themeBoot.mockResolvedValue({})
@@ -585,7 +582,6 @@ describe('private member memory lifecycle', () => {
     expect(api.memorySettings).not.toHaveBeenCalled()
     expect(api.lessons).not.toHaveBeenCalled()
     expect(api.memoryHistory).not.toHaveBeenCalled()
-    expect(screen.queryByTestId('global-vector-card')).toBeNull()
     expect(screen.queryByTestId('global-embedding-card')).toBeNull()
     expect(screen.queryByRole('button', { name: /New store/ })).toBeNull()
   })
@@ -770,7 +766,6 @@ describe('private member memory lifecycle', () => {
     expect(api.memberMemoryPage.mock.calls.every(([store]) => store === MEMBER_STORE)).toBe(true)
     expect(api.memoryHistory).not.toHaveBeenCalled()
     expect(api.memorySettings).not.toHaveBeenCalled()
-    expect(screen.queryByTestId('global-vector-card')).toBeNull()
   })
 
   it('shows recall evidence from only the selected member', async () => {
@@ -780,12 +775,11 @@ describe('private member memory lifecycle', () => {
     // Test recall takes the search box's words as the task and recalls at once.
     fireEvent.click(screen.getByRole('button', { name: 'Test recall' }))
     const dialog = screen.getByRole('dialog', { name: 'Test recall' })
-    expect(within(dialog).getByRole('textbox', { name: 'Task' })).toHaveValue('review')
-    expect(await within(dialog).findByText('Selected member evidence')).toBeVisible()
+    expect(within(dialog).getByRole('textbox', { name: 'Task (optional)' })).toHaveValue('review')
+    expect(await within(within(dialog).getByTestId('recall-with-message')).findByText('Selected member evidence')).toBeVisible()
     expect(api.memoryRecall).toHaveBeenCalledWith('review', MEMBER_STORE)
-    expect(within(dialog).getByText(/Matching terms: review/)).not.toBeVisible()
-    fireEvent.click(within(dialog).getByText('Source and retrieval details'))
-    expect(within(dialog).getByText(/Matching terms: review/)).toBeVisible()
+    expect(api.vectorContextPreview).toHaveBeenCalledWith(undefined, MEMBER_STORE)
+    expect(api.memoryRecall.mock.calls.every(([, store]) => store === MEMBER_STORE)).toBe(true)
     fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' }).at(-1)!)
     expect(screen.queryByText('Selected member evidence')).toBeNull()
   })

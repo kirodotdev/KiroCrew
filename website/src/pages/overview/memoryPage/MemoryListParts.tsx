@@ -10,6 +10,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioG
 import { compareText, fmtDateTimeNumeric, fmtNumber, fmtDate } from '../../../i18n/format'
 import type { MemoryRecord, MemoryRecordFacetGroup, MemoryRecordFacets, MemoryRecordFilters, MemoryRecordSort } from '../../../types/memoryEditing'
 import { MEMORY_RECORD_ICONS, MEMORY_RECORD_LABELS, memoryRecordBody } from '../memoryRecordParts'
+import { rangeLabel } from './MemoryDateRange'
+import type { DateRange } from './memoryDateRange'
 import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, effectiveSort, facetLabel, sourceGroup, lessonFacts, recordTags, recordTitle, type KindTab, type ListView, type SearchMode } from './memoryListView'
 
 const KINDS: [KindTab, string][] = [['all', 'memoryV2.filter_all'], ['fact', 'memoryV2.facts_label'], ['directive', 'memoryV2.rules_label'], ['episode', 'memoryV2.experiences_label']]
@@ -89,7 +91,7 @@ export function SortControl({ view, onChange }: { view: ListView; onChange: (sor
   </div>
 }
 
-function FacetCheck({ label, count, on, warn, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; onToggle: () => void }) {
+export function FacetCheck({ label, count, on, warn, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; onToggle: () => void }) {
   return <label className="grid min-h-11 cursor-pointer items-center gap-2 text-[13px] text-text sm:min-h-8" style={{ gridTemplateColumns: '16px minmax(0,1fr) 48px' }}>
     <input type="checkbox" aria-label={label} className="h-4 w-4 accent-accent" checked={on} onChange={onToggle} />
     <span className={`truncate ${warn ? 'text-warn-text' : ''}`} title={label}>{label}</span>
@@ -99,7 +101,7 @@ function FacetCheck({ label, count, on, warn, onToggle }: { label: string; count
 
 /** A rail group's values, at most 16 rows high; past that the group scrolls, with a
  *  fade and a hint at its foot until the last row is in view. */
-function GroupScroll({ capped, children }: { capped: boolean; children: ReactNode }) {
+export function GroupScroll({ capped, children }: { capped: boolean; children: ReactNode }) {
   const { t } = useTranslation()
   const ref = useRef<HTMLDivElement>(null)
   const [more, setMore] = useState(false)
@@ -175,11 +177,14 @@ export function FilterPanel({ view, facets, trailing, capped = false, onToggle, 
 }
 
 /** One removable chip per ticked filter value, and Clear all. */
-export function ActiveFilters({ filters, onToggle, onRange, onClear, onClearRefs }: { filters: MemoryRecordFilters; onClearRefs?: () => void; onToggle: (group: MemoryRecordFacetGroup, value: string) => void; onRange: (bound: 'conf_min' | 'conf_max', value: undefined) => void; onClear: () => void }) {
+export function ActiveFilters({ filters, range, rangeField, onClearRange, onToggle, onRange, onClear, onClearRefs }: { filters: MemoryRecordFilters; onClearRefs?: () => void; onToggle: (group: MemoryRecordFacetGroup, value: string) => void; onRange: (bound: 'conf_min' | 'conf_max', value: undefined) => void; onClear: () => void
+  /** The date range, and the time it filters on. */
+  range?: DateRange; rangeField?: 'updated' | 'created'; onClearRange?: () => void }) {
   const { t } = useTranslation()
   const chips = FACET_GROUPS.flatMap(group => (filters[group] || []).map(value => ({ key: `${group}:${value}`, label: facetLabel(group, value), remove: () => onToggle(group, value) })))
   // A graph selection is one chip: removing it brings the whole list back.
   if (filters.ref?.length && onClearRefs) chips.unshift({ key: 'ref', label: t('memoryPage.graph_selected', { count: filters.ref.length, formatted: fmtNumber(filters.ref.length) }), remove: onClearRefs })
+  if (range && onClearRange) chips.unshift({ key: 'range', label: t('memoryPage.range_on_field', { field: t(rangeField === 'created' ? 'memoryPage.field_created' : 'memoryPage.field_updated'), range: rangeLabel(range) }), remove: onClearRange })
   if (filters.conf_min !== undefined || filters.conf_max !== undefined) chips.push({ key: 'conf', label: t('memoryPage.confidence_range', { low: fmtScore(filters.conf_min ?? 0), high: fmtScore(filters.conf_max ?? 1) }), remove: () => { onRange('conf_min', undefined); onRange('conf_max', undefined) } })
   if (!chips.length) return null
   return <div className="flex flex-wrap items-center gap-x-1 gap-y-0">

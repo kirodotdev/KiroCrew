@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Cpu, CheckCircle, Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, Input, Badge } from '../../components/ui'
+import EmbeddingSetupStatus from './EmbeddingSetupStatus'
 import Modal from '../../components/Modal'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
@@ -301,6 +302,7 @@ export default function EmbeddingModelCard({ onDirtyChange }: { onDirtyChange?: 
       <Card data-testid="embed-model-card">
         <CardTitle><Cpu className="lucide-inline" /> {i18nT('pages.overview.embedModel.title')}</CardTitle>
         <div className="text-[13px] text-muted mb-3">{i18nT('pages.overview.embedModel.subtitle')}</div>
+        <EmbeddingSetupStatus />
 
         {/* Active model */}
         <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-bg-elevated border border-border rounded mb-3">

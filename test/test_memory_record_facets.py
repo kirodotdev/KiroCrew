@@ -101,9 +101,58 @@ def test_paging_a_sorted_list_never_skips_or_repeats(store):  # noqa: F811
     assert pages == whole
 
 
+def _stamp(store, key, created, updated):  # noqa: F811
+    """Set one fact's created and updated times wherever this lineage keeps them."""
+    with store._db_lock:
+        if store.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'memory_items' AND type = 'table'"
+        ).fetchone():
+            store.db.execute(
+                "UPDATE memory_items SET created_at = ?, updated_at = ? WHERE id = ?",
+                (created, updated, "key:" + key),
+            )
+        else:
+            store.db.execute(
+                "UPDATE semantic_memory SET created_at = ?, updated_at = ? WHERE key = ?",
+                (created, updated, key),
+            )
+        store.db.commit()
+
+
+def test_a_date_range_narrows_the_list_and_every_count_on_the_sort_field(store):  # noqa: F811
+    _seed(store)
+    for key in ("user.timezone", "project.flaky", "lesson.a", "lesson.b", "lesson.c"):
+        _stamp(store, key, "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00")
+    _stamp(store, "lesson.a", "2026-01-01T00:00:00+00:00", "2026-03-10T08:00:00+00:00")
+    _stamp(store, "user.timezone", "2026-03-05T00:00:00+00:00", "2026-03-05T00:00:00+00:00")
+    march = {"since": "2026-03-01T00:00:00Z", "until": "2026-04-01T00:00:00Z"}
+    by_updated = memory_edit.list_records(store, {"filters": march}, facets=True)
+    assert sorted(_ids(by_updated)) == ["lesson.a", "user.timezone"]
+    assert by_updated["total"] == 2
+    assert by_updated["facets"]["kind"] == {"directive": 1, "fact": 1}
+    by_created = memory_edit.list_records(
+        store, {"filters": {**march, "date_field": "created"}}, facets=True
+    )
+    assert _ids(by_created) == ["user.timezone"]
+    assert by_created["facets"]["kind"] == {"fact": 1}
+    # The bounds are half-open: an event at `until` is outside.
+    edge = {"since": "2026-03-05T00:00:00+00:00", "until": "2026-03-10T08:00:00+00:00"}
+    assert _ids(memory_edit.list_records(store, {"filters": edge})) == ["user.timezone"]
+    # Clearing the range restores every row.
+    assert memory_edit.list_records(store, {}, facets=True)["total"] == 6
+
+
 @pytest.mark.parametrize(
     "filters",
-    [{"applies": ["sometimes"]}, {"conf_min": 2}, {"conf_min": 0.9, "conf_max": 0.1}, {"x": ["y"]}],
+    [
+        {"applies": ["sometimes"]},
+        {"conf_min": 2},
+        {"conf_min": 0.9, "conf_max": 0.1},
+        {"x": ["y"]},
+        {"since": "yesterday"},
+        {"since": "2026-02-01", "until": "2026-01-01"},
+        {"since": "2026-02-01", "date_field": "deleted"},
+    ],
 )
 def test_bad_filters_are_a_client_error(store, filters):  # noqa: F811
     with pytest.raises(memory_edit.MemoryEditError):

@@ -9,7 +9,7 @@
  */
 
 import type { MemoryCarveEntry, MemoryStoreSummary, RetiredMemory, MemoryBackup } from '../../types'
-import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRef, MemoryRecordRevision, MemoryRecordFacets, MemoryRecordSort } from '../../types/memoryEditing'
+import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRef, MemoryRecordRevision, MemoryRecordFacets, MemoryRecordSort, MemoryAuditQuery, MemoryAuditPage } from '../../types/memoryEditing'
 import type { ClientTransport } from './transport'
 
 /** How the memory page orders a record list and whether it asks for facet counts. */
@@ -30,6 +30,21 @@ export function memoryRecordParams(store: string, query: MemoryRecordQuery, offs
   for (const ref of filters.ref || []) params.append('ref', ref)
   if (filters.conf_min !== undefined) params.set('conf_min', String(filters.conf_min))
   if (filters.conf_max !== undefined) params.set('conf_max', String(filters.conf_max))
+  if (filters.since) params.set('since', filters.since)
+  if (filters.until) params.set('until', filters.until)
+  if ((filters.since || filters.until) && filters.date_field === 'created') params.set('date_field', 'created')
+  return params
+}
+
+/** The Audit tab's query string. The global store sends no `store=` (see memoryStoreQuery). */
+export function memoryAuditParams(store: string, query?: Partial<MemoryAuditQuery>, offset = 0, limit = 50): URLSearchParams {
+  const params = new URLSearchParams({ offset: String(offset), limit: String(limit), order: query?.order === 'asc' ? 'asc' : 'desc' })
+  if (store && store !== 'default') params.set('store', store)
+  if (!query) return params
+  if (query.q) params.set('q', query.q)
+  for (const group of ['event', 'kind', 'source'] as const) for (const value of query.filters?.[group] || []) params.append(group, value)
+  if (query.since) params.set('since', query.since)
+  if (query.until) params.set('until', query.until)
   return params
 }
 
@@ -231,7 +246,9 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
     vectorEpisodicSearch: (q: string, tags?: string, store?: string) => fetch('/api/memory/episodic/search?q=' + encodeURIComponent(q) + (tags ? '&tags=' + encodeURIComponent(tags) : '') + memoryStoreQuery(store, '&')).then(j),
     vectorEpisodicDelete: (id: string, store?: string) => del('/api/memory/episodic/' + encodeURIComponent(id) + memoryStoreQuery(store)),
     vectorStats: (store?: string) => fetch('/api/memory/stats' + memoryStoreQuery(store)).then(j),
-    vectorEvents: (limit = 50, offset = 0, store?: string) => fetch('/api/memory/events?limit=' + limit + '&offset=' + offset + memoryStoreQuery(store, '&')).then(j),
+    /** One page of the store's write log, with exact counts per value (`memory_audit.list_events`). */
+    memoryEvents: (store = '', query?: MemoryAuditQuery, offset = 0, limit = 50) =>
+      fetch('/api/memory/events?' + memoryAuditParams(store, query, offset, limit)).then(j) as Promise<MemoryAuditPage>,
     vectorEmbeddingStatus: () => fetch('/api/memory/embedding-status').then(j),
     vectorEnableEmbeddings: () => post('/api/memory/enable-embeddings').then(j),
     vectorValidateEmbedModel: (path: string) =>
@@ -240,7 +257,8 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
       post('/api/memory/embedding-model', { path }).then(j),
     vectorDisableEmbeddings: () => post('/api/memory/disable-embeddings').then(j),
     vectorImport: (data: object) => post('/api/memory/import', data).then(j),
-    vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
+    /** What a session starts with from this store; `query` also asks for the experiences a message would add. */
+    vectorContextPreview: (query?: string, store?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) + memoryStoreQuery(store, '&') : memoryStoreQuery(store))).then(j),
     memoryGraph: (store?: string) => fetch('/api/memory/graph' + memoryStoreQuery(store)).then(j),
     consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),
   }

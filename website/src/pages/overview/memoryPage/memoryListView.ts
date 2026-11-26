@@ -5,6 +5,7 @@
  */
 import { i18nT } from '../../../i18n/t'
 import { safeGetSessionItem, safeSetSessionItem } from '../../../utils/safeStorage'
+import { parseRange, type DateRange } from './memoryDateRange'
 import type { MemoryRecord, MemoryRecordFacetGroup, MemoryRecordFilters, MemoryRecordKind, MemoryRecordQuery, MemoryRecordSort } from '../../../types/memoryEditing'
 import { decodedRecordValue } from '../memoryRecordParts'
 
@@ -19,6 +20,8 @@ export type ListView = {
   filters: MemoryRecordFilters
   /** How the search words are read: as words, or as a topic ranked by meaning. */
   mode: SearchMode
+  /** Only rows whose sort time (updated, or created under that sort) falls in it. */
+  range?: DateRange
 }
 export type SearchMode = 'words' | 'meaning'
 export const DEFAULT_VIEW: ListView = { q: '', kind: 'all', sort: 'updated', order: 'desc', filters: {}, mode: 'words' }
@@ -60,6 +63,7 @@ export function loadView(store: string): ListView {
       order: saved.order === 'asc' ? 'asc' : 'desc',
       filters,
       mode: saved.mode === 'meaning' ? 'meaning' : 'words',
+      range: parseRange(saved.range),
     }
   } catch { return DEFAULT_VIEW }
 }

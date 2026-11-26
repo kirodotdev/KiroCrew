@@ -1897,6 +1897,34 @@ counts per summary list, kind and filter set (`memory_edit._cached_facets`), so
 a repeated filter is not counted twice; a write builds a new summary list, which
 misses both caches. An off-screen row is neither laid out nor painted
 (`content-visibility: auto`), so a list scrolled deep stays smooth.
+A date range (Today, Last 7 days, Last 30 days, or a custom from–to pair of
+local days in the platform's date fields) filters on the time the list is
+sorted by: `updated`, or `created` under that sort. It is a server filter
+(`since` inclusive, `until` exclusive, UTC ISO; `date_field=created`, parsed by
+`memory_record_facets.parse_filters`), so every count agrees with the rows, and
+it shows as one removable chip that Clear all also removes. A quick range is
+kept by name, so "Last 7 days" moves with the calendar.
+
+The Audit tab, on the global page and every bot's, lists the store's
+`memory_events` newest first: what a write saved, changed, forgot, merged,
+skipped or refused, with Event, Kind and Source in the rail, search over the key
+and both values, newest or oldest first, and the same date range on the event
+time. `memory_audit.list_events` filters, counts and pages in SQL over the whole
+table; kind is derived as the list derives it (`episodic` is an experience, a
+`lesson.*` key a lesson, any other a fact) and source counts under its prefix.
+The rail folds every refusal code (`SemanticRejectCode`'s audited values but
+the unsafe-text block) into one Refused item whose count is their sum; a
+row's chip still names the exact refusal. The detail panel shows the key, kind,
+source, time, raw `event_type`, the value before and after, and for a refusal
+one sentence naming the rule (`memoryAuditLabels`). Nothing prunes the table.
+Test recall, on the global page too, shows two panes: At session start
+(`GET /api/memory/context-preview`, the prompt path, with no task) and, once a
+task is typed, With this message (`GET /api/memory/recall`), with the exact text
+of both behind one disclosure. The embedding download's progress, its setup
+errors with Retry and the model disclosure live in the Embedding Model card
+(`EmbeddingSetupStatus`); whether the global store runs as vector memory is read
+from the same status queries (`useVectorMemoryState`). The old Vector Memory card
+is gone.
 
 A wheel over the rail moves the innermost scroller under the pointer that can
 still move (a value group, then the rail, `MemoryRail.routeWheel`) and never the
@@ -3561,13 +3589,10 @@ code is never swallowed. `model_active` reports the serving loaded backend
 separately. A known model is shown as active or configured-but-inactive; the
 latter retains a neutral provenance badge. An unknown model identity shows the
 localized fallback without a bundled/custom badge, so provenance does not read
-as a claim that the model is known. The Vector Memory card's Embeddings stat tile
-agrees with that header: once `setup_step` is idle or done nothing is
-progressing, so `model_active` (or, for an older backend without it,
-`model_available` then `server_healthy`) reads `false` as a muted `not active`,
-an absent answer as a muted `unknown`, and only `true` as the success-coloured
-`active`; it never guesses "model loading". A progressing or failed
-`setup_step` keeps precedence and shows its localized step label. `repair` names its `open_stores` scope, pending invalidations,
+as a claim that the model is known. The setup status inside the same card
+(`EmbeddingSetupStatus`) shows a progressing or failed `setup_step` with its
+localized step label, the download's megabytes and percent, and Retry; it
+never guesses "model loading". `repair` names its `open_stores` scope, pending invalidations,
 remaining live NULL vectors, deferred closed/unavailable stores and unknown scope.
 It does not open closed stores or claim they are repaired. Public re-embed status
 is `deferred` rather than `done` while that scope is incomplete. Progress counts
@@ -3584,9 +3609,9 @@ joined through the `fmtList` seam (`Intl.ListFormat` for the UI language), so an
 omitted unit never leaves a `0 …` clause or a dangling separator, and each
 clause still selects its own localized plural form. The sentence names its
 scope (`across all memory stores`): the counts cover every active store (open
-ones inspected, closed ones deferred) while the Vector Memory card's stat tiles
-count only the store shown, so without the scope the two sets of numbers
-cannot be reconciled on the page. All three zero renders
+ones inspected, closed ones deferred) while the Memory page's counts cover
+only the store shown, so without the scope the two sets of numbers cannot be
+reconciled on the page. All three zero renders
 nothing; `unknown_scope` wins over any counts. `unknown_scope` copy names what actually happens (the
 check retries automatically while the page is open; a closed store is rebuilt
 when it next opens; persistent display means read the gateway log) rather than
@@ -3630,9 +3655,9 @@ First verification emits one WARNING about inherited vectors;
 embedding status keeps the same text in `setup_warning` until explicit apply.
 The warning is written for the operator, not in code vocabulary: the vectors
 predate the record of which model file produced them, and a changed file needs
-the model reapplied. The Memory tab's vector card renders it as a status notice
-with a link that moves focus to the Embedding Model card's path field, so the
-fix is reachable from the notice. When the same status also carries a
+the model reapplied. The Embedding Model card's setup status renders it as a
+status notice with a link that moves focus to the card's path field, so the fix
+is reachable from the notice. When the same status also carries a
 `model_path_*` error code (the configured file is missing, unreadable or not a
 file), the warning swaps its "reapply" clause for "fix the model path first, then
 apply" (`legacy_vectors_warning_path_error`). When the path field is mounted,
@@ -3640,8 +3665,7 @@ this warning owns the only settings link and suppresses the separate path-error
 pointer. Without the legacy warning the pointer remains: one sentence naming the
 fault and its cost (keyword search meanwhile), with the adjacent
 `Open embedding model settings` link as the only statement of where the fix
-lives, so the destination is not said twice. Without the field the
-Vector Memory card retains the complete error. Non-path errors remain complete.
+lives, so the destination is not said twice. Non-path errors remain complete.
 The Embedding Model card echoes
 the localized path error under its path field and keeps Apply disabled while the
 field still shows the configured path: submitting it would fail with the same
@@ -3845,7 +3869,7 @@ before reading transcript bodies, opening learned memory or billing a model.
 | GET | `/api/memory/semantic` | List all semantic entries |
 | PUT | `/api/memory/semantic` | Create/update (validates key, allowlist, injection; gated) |
 | DELETE | `/api/memory/semantic/{key}` | Tombstone + log event (gated). Optional JSON body for `kirocrew memory forget`: `expect_value_json` (compare-and-delete, 409 `value_changed`) and `superseded_by` (must be live and differ from the key: 409 `superseded_by_absent` / 400 `superseded_by_self`); other fields 400 `invalid_forget_body`. The dashboard sends no body |
-| GET | `/api/memory/events` | Recent audit trail |
+| GET | `/api/memory/events` | The write log, filtered by `event`/`kind`/`source`, `q`, `since`/`until` and `order`, one page with `total`, `has_more` and exact per-value `facets` (`memory_audit.list_events`) |
 | GET | `/api/memory/graph` | Memory as nodes and edges for the graph view: preferences, projects, recent history, at most 200 semantic rows (first by key, lessons excluded, read on the key index) and the 200 newest lessons; `partial` (`{"semantic": bool, "lessons": bool}`) says which capped population left rows out |
 | GET/PUT | `/api/memory/settings` | Consolidation settings; see the memory settings card above |
 | GET | `/api/memory/carve` | Filter or count one crew store by carve facet. Query: the five facet names, `kind`, `count_by`, `limit`, `offset`, plus the shared `?store=`. Absent, it reads the global store; present, it is owner-gated like every other store-scoped route. 409 `facets_unsupported` on the v1 lineage, 400 `unknown_facet`, 400 `invalid_pagination`, 503 `store_unavailable`. Every answer echoes the `store` it read. See [Who reads a facet](#who-reads-a-facet) |
