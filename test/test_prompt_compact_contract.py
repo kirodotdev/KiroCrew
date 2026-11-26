@@ -274,6 +274,21 @@ def test_agent_started_processes_end_with_the_runtime() -> None:
     assert next(f for f in CRON_ADD_SCHEMA.fields if f.name == "timeout").max_val == 3600
 
 
+def test_the_scratch_worktree_recipe_forbids_a_prune_in_a_shared_clone() -> None:
+    """A session's sandbox masks every other session's scratch, so its git reads
+    their live worktrees of a shared clone as prunable, and one
+    `git worktree prune` there deletes their metadata."""
+    _require(
+        _section(_read(), "## Rules"),
+        r"then `git -C <clone> worktree remove` it before you finish; "
+        r"remove only worktrees you created",
+        r"never run `git worktree prune` in a shared clone "
+        r"\(drop a stale entry of your own with `git worktree remove <path>`\)",
+        r"cannot see other sessions' scratch, so their live worktrees look prunable to your git",
+        r"never `git stash` there",
+    )
+
+
 def test_a_compaction_summary_cancel_is_carved_out_of_the_stop_rule() -> None:
     """A compaction's "cancelled" is not a Stop; every other cancelled turn still is.
 
