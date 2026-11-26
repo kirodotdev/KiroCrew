@@ -30,9 +30,11 @@ describe('make-your-own save routing', () => {
     // The other half lives in PackEditor's id expression. Assert its shape directly:
     // the mint must trigger on `!existingPack`, not on `asNew` alone (the old bug).
     const src = readFileSync('src/apps/crew-companion/PackEditor.tsx', 'utf8')
-    expect(src).toMatch(/asNew\s*\|\|\s*!existingPack\s*\?\s*crypto\.randomUUID\(\)/)
+    expect(src).toMatch(/asNew\s*\|\|\s*!existingPack\s*\?\s*secureRandomId\(\)/)
     // And the old broken form -- mint only on asNew -- must be gone.
-    expect(src).not.toMatch(/id:\s*asNew\s*\?\s*crypto\.randomUUID\(\)\s*:/)
+    expect(src).not.toMatch(/id:\s*asNew\s*\?\s*[\w.]+\(\)\s*:/)
+    // The mint also runs on a plain-HTTP dashboard, which has no randomUUID.
+    expect(src).not.toContain('crypto.randomUUID()')
   })
 
   it('draws the current avatar in the breathing exercise, not a hardcoded ghost', () => {

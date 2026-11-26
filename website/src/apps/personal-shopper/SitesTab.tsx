@@ -14,6 +14,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { secureRandomId } from '../../utils/secureId'
 // ── Types ──
 
 interface Site {
@@ -91,7 +92,7 @@ export function SitesTab() {
     // Opaque id, not a slug of the name: "Best Buy" and "Best-Buy" slug to the
     // same value, and removeSite filters by id -- so removing one would delete
     // both saved sites.
-    const id = crypto.randomUUID()
+    const id = secureRandomId()
     const url = newUrl.trim().startsWith('http') ? newUrl.trim() : `https://${newUrl.trim()}`
     const newSite: Site = {
       id,

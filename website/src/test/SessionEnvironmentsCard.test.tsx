@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { Provider } from 'react-redux'
 import { createTestStore } from './helpers'
+import { stubPlainHttpCrypto } from './plainHttpCrypto'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../integration/mocks/server'
 import { api } from '../api/client'
@@ -271,6 +272,14 @@ describe('Session Environments configuration preview', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Remove profile' })[2])
     expect(screen.getAllByLabelText('Profile ID')).toHaveLength(2)
     expect(writes).toEqual([])
+  })
+
+  it('adds a profile draft on a plain-HTTP dashboard, which has no crypto.randomUUID', async () => {
+    stubPlainHttpCrypto()
+    await mounted()
+    fireEvent.click(screen.getByRole('button', { name: 'Add Coder profile' }))
+    expandAll()
+    expect(screen.getAllByLabelText('Profile ID').map(input => (input as HTMLInputElement).value)).toEqual(['dev', 'profile-1'])
   })
 
   it('says which live chats a removed profile strands, before saving', async () => {

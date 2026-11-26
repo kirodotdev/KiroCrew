@@ -15,6 +15,7 @@ import { useAppDispatch, useAppSelector } from '../../store'
 import { isMemberThreadSlot, memberSlugOfSlot } from '../../hooks/unreadOnAttention'
 import { resumeFromHistory } from '../../store/chatSlice'
 import { reportForError } from '../../utils/errorReport'
+import { secureRandomId } from '../../utils/secureId'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { BoxdIcon, CoderIcon, FlyIcon } from '../../components/BrandIcon'
 import Clickable from '../../components/Clickable'
@@ -87,7 +88,7 @@ type EnvironmentDraft = Omit<EnvironmentSettings, 'profiles' | 'sprites_profiles
   kiro_cloud_profiles?: ProfileDraft<KiroCloudProfile>[]
 }
 function newProfileDraft<T>(profile: T): ProfileDraft<T> {
-  return { ...profile, [PROFILE_ROW_ID]: crypto.randomUUID() }
+  return { ...profile, [PROFILE_ROW_ID]: secureRandomId() }
 }
 /** Configuration responses carry fields, not editor identity. Match against
  * the submitted draft on save (ids are editable), or the last saved rows on

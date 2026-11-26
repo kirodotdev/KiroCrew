@@ -11,6 +11,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { petBridge } from '../apps/crew-companion/petBridge'
 import type { PackInput } from '../apps/crew-companion/petBridge'
+import { stubPlainHttpCrypto } from './plainHttpCrypto'
 
 interface SavePayload {
   id: string
@@ -307,5 +308,22 @@ describe('sprite-pack random clip filenames never collide', () => {
     // Each clip's own art survives under its own file.
     expect(payload.files[payload.manifest.random['look-away']]).toBe('QQ==')
     expect(payload.files[payload.manifest.random['look away']]).toBe('Qg==')
+  })
+})
+
+describe('sprite-pack id on a plain-HTTP dashboard', () => {
+  // No `crypto.randomUUID` there, and a new pack has no overwrite target to
+  // borrow an id from.
+  it('saves a new pack under an id of its own', async () => {
+    stubPlainHttpCrypto()
+    const { calls } = stubFetch({ body: { ok: true } })
+    await petBridge.gallerySaveSpritePack!({
+      name: 'P', author: '', description: '',
+      frameWidth: 32, frameHeight: 32, fps: 8, flipX: false, offsetY: 0,
+      assignments: { idle: 'data:image/png;base64,QQ==' },
+      randomAssignments: {},
+      rowAssignments: {},
+    })
+    expect((calls[0].body as SavePayload).id).toMatch(/^[0-9a-f-]{36}$/)
   })
 })
