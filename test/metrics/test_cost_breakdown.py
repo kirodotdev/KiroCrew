@@ -530,3 +530,60 @@ def test_one_claude_code_model_is_one_row_across_its_id_migration(store):
     store(rows)
     out = usage_mod.cost_breakdown(7)
     assert [(r.get("name"), r.get("credits")) for r in out.get("by_model", [])] == [(canon, 2.0)]
+
+
+class TestSpendByPurpose:
+    """The Spend tab's Purpose split: people's turns, helper calls, automation."""
+
+    def test_credits_split_into_turn_helper_automation(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=10.0),
+            _row(slot="chat-1-1700000000", credits=2.0, surface="bg:auto_title"),
+            _row(slot="_hb", credits=3.0, surface="heartbeat"),
+            _row(slot="", credits=1.0),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        by = {r["name"]: r["credits"] for r in out["by_purpose"]}
+        assert by == {"turn": 10.0, "helper": 2.0, "automation": 3.0, "unknown": 1.0}
+        assert sum(by.values()) == out["credits"]
+
+    def test_a_wrongly_stamped_historical_surface_cannot_move_a_row(self, store):
+        """Only the ``bg:`` prefix is read from ``surface``; the session key
+        decides everything else, as it does for the channel."""
+        store([
+            _row(slot="telegram_555", credits=4.0, surface="dashboard"),
+            _row(slot="cron:default:nightly", credits=5.0, surface="dashboard"),
+            _row(slot="chat-1-1700000000", credits=6.0, surface="cron"),
+        ])
+        by = {r["name"]: r["credits"] for r in usage_mod.cost_breakdown(7)["by_purpose"]}
+        assert by == {"turn": 10.0, "automation": 5.0}
+
+    def test_a_subagent_row_reaches_no_purpose(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=10.0),
+            _row(slot="subagent:0000abcd", credits=5.0, surface="bg:auto_title"),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert [r["name"] for r in out["by_purpose"]] == ["turn"]
+        assert sum(r["credits"] for r in out["by_purpose"]) == out["credits"]
+
+    def test_a_purpose_row_carries_the_period_delta(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=2.0, surface="bg:auto_title"),
+            _row(slot="chat-1-1700000000", credits=8.0, surface="bg:auto_title", age_days=9.0),
+            _row(slot="chat-1-1700000000", credits=5.0),
+        ])
+        by = {r["name"]: r for r in usage_mod.cost_breakdown(7)["by_purpose"]}
+        assert by["helper"]["delta_pct"] == -75.0
+        assert by["turn"]["delta_pct"] is None
+
+    def test_the_dollar_view_carries_by_purpose(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=12.5),
+            _dollar_row(slot="chat-2-1700000000", cost=0.5),
+            {**_dollar_row(slot="_hb", cost=0.25), "surface": "heartbeat"},
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert [r["name"] for r in out["by_purpose"]] == ["turn"]
+        usd = {r["name"]: r["credits"] for r in out["usd"]["by_purpose"]}
+        assert usd == {"turn": 0.5, "automation": 0.25}
