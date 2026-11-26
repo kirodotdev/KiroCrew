@@ -62,16 +62,23 @@ function LottieLoadFailed({ onError }: ComponentProps<typeof LottiePlayer>) {
 }
 
 // Loaded on demand, off the first load: the player's chunk is ~170 KB
-// minified, and only a pack
-// whose art is a Lottie clip draws with it.
-// shortcut: lazy() caches a failed load, so every Lottie avatar shows its
-// fallback until the page reloads; use lazyRetry-style re-loading if that bites.
-const LottieRenderer = lazy((): Promise<{ default: ComponentType<ComponentProps<typeof LottiePlayer>> }> =>
-  import('./LottieRenderer').then(
+// minified, and only a pack whose art is a Lottie clip draws with it.
+//
+// lazy() keeps whatever its loader resolved to, so a failed load is NOT left in
+// place: the attempt that failed draws `LottieLoadFailed`, and a fresh lazy()
+// replaces this one so the next mount imports again. A gateway blip therefore
+// costs one fallback face, and the art returns on the next read of the pack
+// (a refetch hands a new `detail`, which clears `refused` and remounts the player).
+function loadPlayer(): Promise<{ default: ComponentType<ComponentProps<typeof LottiePlayer>> }> {
+  return import('./LottieRenderer').then(
     (m) => ({ default: m.LottieRenderer }),
-    () => ({ default: LottieLoadFailed }),
-  ),
-)
+    () => {
+      LottieRenderer = lazy(loadPlayer)
+      return { default: LottieLoadFailed }
+    },
+  )
+}
+let LottieRenderer = lazy(loadPlayer)
 
 export interface PackAvatarProps {
   /** The pack id from the crew's `avatar` record — already validated by
