@@ -86,7 +86,10 @@ describe('useLocalGateway', () => {
     const { result } = renderHook(() => useLocalGateway())
     await waitFor(() => expect(result.current.localGatewayEnabled).toBe(true))
 
+    expect(result.current.localGatewayFailed).toBe(false)
     await act(async () => { result.current.setLocalGatewayEnabled(false) })
     await waitFor(() => expect(result.current.localGatewayEnabled).toBe(true))
+    // The panel shows its save-failed notice from this flag.
+    expect(result.current.localGatewayFailed).toBe(true)
   })
 })

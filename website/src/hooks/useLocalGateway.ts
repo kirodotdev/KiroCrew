@@ -25,6 +25,7 @@ export function useLocalGateway() {
     localGatewayEnabled: s.value,
     localGatewaySupported: s.supported,
     localGatewayPending: s.pending,
+    localGatewayFailed: s.failed,
     setLocalGatewayEnabled: s.set,
   }
 }

@@ -995,12 +995,8 @@ function createIpcRegistrar({
       app.setBadgeCount(clampBadgeCount(count));
     });
 
-    // This setting deliberately has next-launch semantics. Toggling it never
-    // starts or stops the gateway which owns the current session. It decides
-    // whether THIS machine runs a gateway, so only the main window's dashboard
-    // reads or writes it (assertMainWindowDashboard, below; called only after
-    // registration ends), like the close-action and tray rows: a connection
-    // window shares this preload and is pointed at another machine's gateway.
+    // Next-launch semantics: toggling never starts or stops the running gateway.
+    // Main window only: a connection window shares this preload but shows another machine.
     ipcMain.handle("local-gateway:get", async (event) => {
       assertMainWindowDashboard(event, "local-gateway:get");
       return isLocalGatewayEnabled(store);
