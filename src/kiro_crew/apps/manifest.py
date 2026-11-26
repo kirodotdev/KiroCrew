@@ -199,10 +199,19 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _l10n_quoted,
     _sidebar_order,
     bot_grant_entries,
-    clamp_lifecycle_timeout,
     lifecycle_timeout_error,
-    lifecycle_timeout_seconds,
     logger,
+)
+from kiro_crew.apps.manifest_session_create import (  # noqa: F401
+    _SESSION_CREATE_KEYS,
+    MAX_SESSION_CREATE_ENDPOINT,
+    MAX_SESSION_CREATE_ID,
+    MAX_SESSION_CREATE_ITEMS_PER_APP,
+    MAX_SESSION_CREATE_LABEL,
+    SESSION_CREATE_ID_RE,
+    SessionCreateItem,
+    SessionCreateItemsConfig,
+    _session_create_len,
 )
 from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import read_bytes_with_retry
@@ -220,6 +229,7 @@ from kiro_crew.user_json import loads_user_json
 #   ``manifest_containment`` -- app-root path containment and contributed-agent containment
 #   ``manifest_sections`` -- the typed ``app.json`` blocks other than ``contributes``
 #   ``manifest_contributes`` -- the ``contributes`` block and its caps
+#   ``manifest_session_create`` -- the ``contributes.sessionCreateItems`` rows
 
 
 # Expected JSON type per CronEntry field that from_dict type-gates; turns a
@@ -908,6 +918,15 @@ class AppManifest:
                     f"or /apps/{self.name}/api/ "
                     "(no traversal, no other app's namespace, no core route)"
                 )
+        # Same check for a Sessions New row, kept to the in-gateway namespace
+        # (`/api/apps/<app>/`), the one shape the row's contract documents.
+        for row in self.contributes.sessionCreateItems.items:
+            if not app_endpoint_allowed(self.name, row.endpoint):
+                errors.append(
+                    f"contributes.sessionCreateItems[{row.id}]: endpoint {row.endpoint!r} "
+                    f"must route under /api/apps/{self.name}/ "
+                    "(no traversal, no other app's namespace, no core route)"
+                )
 
         return errors
 
@@ -966,6 +985,8 @@ class AppManifest:
             or self.contributes.linkOpen
             or self.contributes.composerActions
             or self.contributes.selectionActions
+            # A Sessions New row's `endpoint` decides which project a new session opens on.
+            or self.contributes.sessionCreateItems.items
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
@@ -1603,13 +1624,16 @@ def requirements_verdict(app_root: Path, req_file: Path) -> tuple[tuple[Path, Pa
     return (root_resolved, target), ""
 
 
-#: Cron helpers served as attributes of this module on first access, so
+#: Helpers served as attributes of this module on first access, so
 #: ``kiro_crew.apps.manifest.<name>`` is the object its home module holds. The
-#: cron service is heavy and the stdio MCP servers read manifests at start-up.
+#: cron service is heavy and the stdio MCP servers read manifests at start-up; the
+#: lifecycle-timeout bound runs only when a script is about to run.
 _LAZY_CRON_NAMES: dict[str, str] = {
     "is_valid_skip_date": "kiro_crew.cron",
     "is_valid_timezone": "kiro_crew.cron",
     "validate_create_timeouts": "kiro_crew.cron_service.fields",
+    "clamp_lifecycle_timeout": "kiro_crew.apps.manifest_lifecycle_timeouts",
+    "lifecycle_timeout_seconds": "kiro_crew.apps.manifest_lifecycle_timeouts",
 }
 
 

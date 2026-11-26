@@ -59,13 +59,19 @@
 /* Japanese and Simplified Chinese share Han code points but not always glyph
    forms. A separate alias lets :lang(ja) select Japanese faces without
    changing the SC aliases used by :lang(zh-CN). Kana joins the Han ranges so
-   Japanese punctuation and syllabaries come from the same face. */
+   Japanese punctuation and syllabaries come from the same face. On Windows,
+   Meiryo leads Yu Gothic: Yu Gothic Regular draws thin and faint at body sizes,
+   so where it is the 400 face Japanese text is hard to read. Yu Gothic Medium
+   is the readable 400 when Meiryo is absent; Regular stays as the last
+   Windows source. The kana-only alias below uses the same order. */
 @font-face {
   font-family: 'KC Japanese Fallback';
   font-style: normal; font-weight: 400;
   src: local('Hiragino Sans W3'), local('HiraginoSans-W3'),
+       local('Hiragino Kaku Gothic ProN W3'), local('HiraKakuProN-W3'),
+       local('Meiryo'), local('Yu Gothic Medium'), local('YuGothic-Medium'),
+       local('Yu Gothic UI Regular'), local('YuGothicUI-Regular'),
        local('Yu Gothic Regular'), local('YuGothic-Regular'),
-       local('Yu Gothic UI Regular'), local('YuGothicUI-Regular'), local('Meiryo'),
        local('Noto Sans CJK JP'), local('NotoSansCJKjp-Regular'),
        local('Noto Sans JP'), local('NotoSansJP-Regular'),
        local('Source Han Sans JP'), local('SourceHanSansJP-Regular');
@@ -77,9 +83,10 @@
   font-family: 'KC Japanese Fallback';
   font-style: normal; font-weight: 700;
   src: local('Hiragino Sans W6'), local('HiraginoSans-W6'),
+       local('Hiragino Kaku Gothic ProN W6'), local('HiraKakuProN-W6'),
+       local('Meiryo Bold'), local('Meiryo-Bold'),
        local('Yu Gothic Bold'), local('YuGothic-Bold'),
-       local('Yu Gothic UI Bold'), local('YuGothicUI-Bold'), local('Meiryo Bold'),
-       local('Meiryo-Bold'), local('Noto Sans CJK JP Bold'),
+       local('Yu Gothic UI Bold'), local('YuGothicUI-Bold'), local('Noto Sans CJK JP Bold'),
        local('NotoSansCJKjp-Bold'), local('Noto Sans JP Bold'),
        local('NotoSansJP-Bold'), local('Source Han Sans JP Bold'),
        local('SourceHanSansJP-Bold');
@@ -203,8 +210,10 @@
   font-family: 'KC Kana Fallback';
   font-style: normal; font-weight: 400;
   src: local('Hiragino Sans W3'), local('HiraginoSans-W3'),
+       local('Hiragino Kaku Gothic ProN W3'), local('HiraKakuProN-W3'),
+       local('Meiryo'), local('Yu Gothic Medium'), local('YuGothic-Medium'),
+       local('Yu Gothic UI Regular'), local('YuGothicUI-Regular'),
        local('Yu Gothic Regular'), local('YuGothic-Regular'),
-       local('Yu Gothic UI Regular'), local('YuGothicUI-Regular'), local('Meiryo'),
        local('Noto Sans CJK JP'), local('NotoSansCJKjp-Regular'),
        local('Noto Sans JP'), local('NotoSansJP-Regular'),
        local('IPAexGothic'), local('IPAGothic'), local('TakaoPGothic'),
@@ -217,9 +226,10 @@
   font-family: 'KC Kana Fallback';
   font-style: normal; font-weight: 700;
   src: local('Hiragino Sans W6'), local('HiraginoSans-W6'),
+       local('Hiragino Kaku Gothic ProN W6'), local('HiraKakuProN-W6'),
+       local('Meiryo Bold'), local('Meiryo-Bold'),
        local('Yu Gothic Bold'), local('YuGothic-Bold'),
-       local('Yu Gothic UI Bold'), local('YuGothicUI-Bold'), local('Meiryo Bold'),
-       local('Meiryo-Bold'), local('Noto Sans CJK JP Bold'),
+       local('Yu Gothic UI Bold'), local('YuGothicUI-Bold'), local('Noto Sans CJK JP Bold'),
        local('NotoSansCJKjp-Bold'), local('Noto Sans JP Bold'),
        local('NotoSansJP-Bold'), local('IPAexGothic'), local('IPAGothic'),
        local('TakaoPGothic'), local('VL PGothic'),

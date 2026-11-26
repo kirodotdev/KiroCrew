@@ -22,7 +22,6 @@ type Counts = { startMode: number; other: number; reason?: string }
 
 const PINNED: Record<string, Counts> = {
   'src/apps/papyrus/PapyrusPage.tsx': { startMode: 0, other: 1, reason: 'app' },
-  'src/apps/personal-shopper/PersonalShopperPage.tsx': { startMode: 0, other: 1, reason: 'app' },
   'src/apps/pptx-maker/PptxMakerPage.tsx': { startMode: 0, other: 1, reason: 'app' },
   'src/app-sdk/hostSessions.ts': { startMode: 0, other: 1, reason: 'app SDK' },
   'src/components/AgentSwitchNoticeBanner.tsx': { startMode: 0, other: 1, reason: 'a chat on the agent a notice names' },
@@ -38,7 +37,7 @@ const PINNED: Record<string, Counts> = {
   'src/hooks/useSceneInteraction.tsx': { startMode: 1, other: 0 },
   'src/lib/createdChatView.ts': { startMode: 0, other: 1, reason: 'forwards its caller’s arguments' },
   'src/pages/SessionsPage.tsx': { startMode: 1, other: 0 },
-  'src/pages/chat-sidebar/create.ts': { startMode: 1, other: 1, reason: 'createLocalChat forwards its caller’s arguments' },
+  'src/pages/chat-sidebar/create.ts': { startMode: 1, other: 2, reason: 'createLocalChat forwards its caller’s arguments; an app-contributed New menu row' },
   'src/pages/chat/memoryModeSwitch.ts': { startMode: 0, other: 1, reason: 'recreate of an existing chat' },
   'src/pages/chat/page/ChatEmptyState.tsx': { startMode: 1, other: 0 },
   'src/pages/chat/page/composerSend.ts': { startMode: 1, other: 0 },

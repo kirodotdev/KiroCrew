@@ -114,11 +114,25 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: ``kiro_crew.enqueue_only_pool.EnqueueOnlyThreadPoolExecutor``, which the module imports
 #: at its top (it was imported inside ``configure_default_executor()`` alone); that
 #: stdlib-only module is the one file added, and nothing else loads.
+#: Raised by 1 for each server: the line-cap split of ``security.argv_floor_git_tar`` moved
+#: the git grammar it reads a git argv with into the owner ``security.argv_floor_git_grammar``,
+#: which the facade imports with the rest of its owners; the module count rose by that one
+#: file and nothing new loads.
+#: Raised by 1 for each server: the line-cap split of ``security.deny_gate`` moved its
+#: substitution-nesting cap into ``security.deny_gate_nesting``, which the deny gate imports
+#: when the security package loads; the module count rose by that one file and nothing new
+#: loads.
+#: Raised by 1 for each server: the manifest's ``contributes`` block reads its Sessions New
+#: rows from the new owner ``apps.manifest_session_create``, which ``manifest_contributes``
+#: imports; the module count rose by that one file and nothing new loads.
+#: Raised by 1 for ``mcp-mate`` (368 to 369): the memory-change card tools read their
+#: limits and kind names from ``kiro_crew.change_card_memory``, a ``typing``-only leaf;
+#: that one file is the whole rise.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 502,
-    "mcp-cron": 369,
-    "mcp-guide": 363,
-    "mcp-mate": 365,
+    "mcp-core": 505,
+    "mcp-cron": 372,
+    "mcp-guide": 366,
+    "mcp-mate": 369,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
@@ -289,15 +303,19 @@ def test_the_live_hint_readers_are_inside_cores_budget(
 
 #: command -> the most ``kiro_crew`` modules its HANDLER module may load. The listing
 #: bounds above stop at the list; these hold what loads right after it, in every chat,
-#: whether or not a tool of that server is ever called. The three small servers reach the
+#: whether or not a tool of that server is ever called. These small servers reach the
 #: gateway through ``mcp_core_parts`` and never load the core server: importing
-#: ``kiro_crew.mcp_core`` for its HTTP helpers took each of them to about 970 modules.
+#: ``kiro_crew.mcp_core`` for its HTTP helpers took each of them to 750-970 modules.
 #: Same rules as the listing ceiling: room for a platform's extras, lowered when a change
 #: brings a count down.
 HANDLER_MODULE_CEILING = {
     "mcp-cron": 500,
+    "mcp-crew-log": 320,
+    "mcp-debug": 320,
     "mcp-guide": 380,
     "mcp-mate": 380,
+    "mcp-panel": 400,
+    "mcp-work": 320,
 }
 
 _HANDLER_PROBE = f"""

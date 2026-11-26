@@ -142,6 +142,11 @@ export function envValueChanges(refusal: LaunchRefusal): EnvValueChange[] {
       removed: gone.length > 0 ? [...left].filter(e => !right.has(e)) : [],
     })
   }
+  // The gateway names a key whose real value changed (`changed_env_keys`),
+  // which a hidden, redacted or cut display can't show: name it too.
+  for (const name of refusal.changed_env_keys ?? []) {
+    if (before.has(name) && after.has(name) && !out.some(v => v.name === name)) out.push({ name, added: [], removed: [] })
+  }
   return out
 }
 

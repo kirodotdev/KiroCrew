@@ -479,6 +479,11 @@ class AcpClient:
         #: How many pruned servers the last array build had past
         #: ``MCP_REPORT_BUCKET_CAP``; counted on the report, never listed.
         self._mcp_pruned_omitted = 0
+        #: Servers the spec writer dropped from this session's spec because their
+        #: command was not found, read with the spec snapshot at spawn
+        #: (``mcp_prune.spec_dropped_servers``). Recorded as failed on every
+        #: attempt's report, beside the pruned ones.
+        self._mcp_spec_dropped: tuple[PrunedServer, ...] = ()
         #: The MCP array a harness was given at LAUNCH rather than on the wire, or
         #: ``None`` when the wire array is the whole set. Strands' Python-project
         #: mode refuses a non-empty ``session/new`` array, so its servers ride the
@@ -1380,6 +1385,7 @@ class AcpClient:
     reject_tool = _client_permissions.reject_tool
     _handle_permission = _client_permissions._handle_permission
     _refuse_identity_drift = _client_permissions._refuse_identity_drift
+    _refuse_reused_call_id = _client_permissions._refuse_reused_call_id
     _foreign_mcp_identity = _client_permissions._foreign_mcp_identity
     _unclassified_tool_call = _client_permissions._unclassified_tool_call
     _tripwire_spec_disabled_tool = _client_permissions._tripwire_spec_disabled_tool

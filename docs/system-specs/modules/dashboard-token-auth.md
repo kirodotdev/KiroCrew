@@ -628,7 +628,9 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
      (`crew_api_grant_self`), which answers an app credential with the grant it
      was issued for and no other, and `GET /v1/crew/info` and
      `GET /v1/crew/capabilities` (`crew_api_instance`), which answer it with the
-     instance and with what its grant can use. This is the one
+     instance and with what its grant can use, and `GET /v1/crew/bots`
+     (`crew_api_bots`), which lists the Bots of its grant to a credential that
+     holds `bots:read` or `bots:chat`. This is the one
      point where token auth lets an app credential through: it publishes the actor
      and calls the handler, and runs none of the later steps, which judge a session
      (the peer pin, the link exchange, the installed-app allowlist). A route joins
@@ -707,7 +709,7 @@ is re-pinned only to a verified peer and otherwise stays unbound, so it keeps
 roaming after a gateway restart empties the in-memory bindings
 (`test_local_session_cookie_first_use_stays_unbound`).
 
-A Public route served through the owner gate (`/v1/models`, `/v1/responses`, `/v1/responses/{response_id}`, `/v1/responses/{response_id}/input_items`, `/v1/crew/capabilities`, `/v1/crew/info`) registers through
+A Public route served through the owner gate (`/v1/models`, `/v1/responses`, `/v1/responses/{response_id}`, `/v1/responses/{response_id}/input_items`, `/v1/conversations`, `/v1/conversations/{conversation_id}`, `/v1/crew/capabilities`, `/v1/crew/info`) registers through
 `crew_api_owner.owner_route`, the gate the Owner tier uses. `crew_api_auth.OWNER_ONLY_PUBLIC_ROUTES`
 maps each such path to its audit operation; the route passes that
 operation to `owner_route`, and the app-scope refusal reads the same map. The map is keyed
@@ -727,6 +729,9 @@ caller, an installed app's token included, gets
 the path. Owner-tier paths under `/v1/crew/owner/` get the same refusal. These
 permission errors have the Crew API error shape and no `WWW-Authenticate` header;
 an invalid credential still gets `401 invalid_token` with the Bearer challenge.
+`GET /v1/crew/bots` passes `app_route` too, and is in `OWNER_ONLY_PUBLIC_ROUTES` under
+`crew_api.bots.list`; its handler asks for the machine owner only when the request
+carries no verified app credential.
 `GET /v1/crew/grant` is the one Public route not behind `owner_route`: its handler
 calls `crew_api_scopes.require_scope` with its own key, reads the grant named by the
 verified credential, and answers a first-party session `404 not_found`.
@@ -1543,6 +1548,33 @@ peers is explicitly out of scope (it would break warm-pool and cron callers).
 TCP requests never engage the branch — browser cookies, Windows, and remote
 `local_only=False` deployments are untouched.
 
+**TCP declarations are logged, not judged.** On an internal-secret grant over
+TCP loopback (not the Unix socket, not the agent socket), a non-blank
+`X-Session-Key` other than `dashboard:ui` is checked with
+`member_memory_auth.session_key_is_attested`. When nothing attests it, token auth
+writes one `would refuse:` WARNING naming the key's kind (a closed prefix set,
+else `other`), the `X-Internal-Caller` (from `KNOWN_INTERNAL_CALLERS`, else
+`other`), the route template and whether a token was sent, at most once per
+(kind, caller, route) every 600 s, and counts every such request in
+`token_auth_callers._WOULD_REFUSE_COUNTS`. The line never carries the key, the
+token, the secret or the query string.
+
+`dashboard.unattested_session_keys` decides what happens next, and
+`_note_unattested_tcp_session_key` returns whether the key was unattested so token
+auth can act on it. `"log"` (the default, today's behaviour) answers the request
+exactly as without the check. `"enforce"` (opt-in) refuses the unattested request
+with 403 `session_required` and a `dashboard.token_auth` `denied` row; the
+would-refuse WARNING still fires, so the log and the refusal name the same set. A
+blank key and `dashboard:ui` stay exempt, and a check that raises returns `False`,
+so an internal error never starts refusing. Flipping the default to `"enforce"` is
+a later change, once the log shows which callers it would refuse
+(`_note_unattested_tcp_session_key`, `unattested_session_key_mode`;
+`test_token_auth_would_refuse_log.py`). This mode and
+`dashboard.sessionless_internal_calls` are read by `live_dashboard_mode` through
+`config.live.current`, so before the config watcher is primed at boot the on-disk
+value applies, not the default; only a config that cannot be read at all yields
+`"log"`.
+
 Client side, `loopback_http.loopback_urlopen` accepts a `unix_socket_path`
 and `mcp_core` prefers the socket for every `_API` request when the file
 exists (`_api_urlopen`), falling back to TCP **only** when nothing answered
@@ -1564,6 +1596,41 @@ only). On a 1:1 pid the helper contributes no header and the request is
 byte-identical to the pre-token scheme. The senders are `mcp_core`'s own
 `_send` family, `mcp_tools/browser.py`'s panel command, and
 `mcp_computer.py`'s tool invoke.
+
+#### Session-less internal calls from a sandboxed process
+
+An internal-secret call that names no session (no `X-Session-Key`, or the UI's
+`dashboard:ui`) is attributed to the person: `derive_caller_app` answers `""`.
+That fits the callers that run on the host (the gateway's own calls, the CLI,
+the desktop app). Most Kiro Crew in-sandbox components name the session they act
+for; the ones that do not yet (the KAS Connection bridge's non-capability branch,
+some CLI commands from an agent shell) are what log mode surfaces. So
+`token_auth_sessionless.sessionless_internal_call_refused` checks the rest
+right after the internal grant and before the handler: a call that names no
+session, did not arrive on an agent-socket capability, and comes from a process
+`member_memory_auth.local_owner_bootstrap_provenance` cannot place on the host
+(the owner-token mint's evidence: the connection's peer pid over the unix socket
+or loopback TCP, then the Linux namespaces or the macOS sandbox state). Windows
+has no OS sandbox and is not checked. The blocking peer read runs on
+`local_auth_executor`.
+
+`dashboard.sessionless_internal_calls` decides the outcome. `"log"`, the default,
+admits the call and runs the host check on every such call, including repeated
+caller and path pairs. Only the `internal_auth.sessionless_caller` row with outcome
+`would_deny` is rate-limited: a pair not placed on the host writes at most one row
+every `LOG_WINDOW_SECS` (600 s). The caller in the row and its counter/timestamp
+bucket is `X-Internal-Caller` only when it belongs to `KNOWN_INTERNAL_CALLERS`;
+every other value, including a missing header, becomes `other`. `"enforce"` looks
+at every such call, refuses one not placed on the host with 403
+`session_required`, and writes a `denied` row each time. A host caller the kernel
+check cannot place (a gateway service with a private mount namespace, a CLI that
+reaches a containerized gateway through a mounted socket, an unreadable peer) is
+counted as sandboxed, the same limit the owner-token mint has. The setting is read from the live config on each
+call, and the Settings Advanced page shows it read-only. This is step 2 of the
+staged plan in #42971, inside
+[rfc-sandbox-ipc-capability.md](../../request-for-change/rfc-sandbox-ipc-capability.md)
+goal 1; the default moves to `"enforce"` in a later change once the log shows no
+Kiro Crew caller of this shape.
 
 ### 6. `gateway.py` Integration
 
@@ -1832,6 +1899,7 @@ already names where to sign in.
 | Request denied | `dashboard.token_auth` | `denied` | rejection reason |
 | `?token=` refused, session cookie beside it authenticated instead | `dashboard.token_auth` | `query_token_rejected` | the link's refusal reason (`token expired`, `invalid signature`, `token superseded`, ...); the token itself is never logged. The request proceeds on the cookie, which grants nothing a cookie-only request would not: no exchange, no new cookie, and no `on_token_consumed` call, so a Slack challenge link refused this way opens no window. Written by the main flow and by both internal-path cookie branches (`_log_query_token_refused`); `_extract_and_validate_token` only returns the refusal reason, so each caller names the caller through `_audit_uid`, the verified peer login when a tailnet peer resolved, like the request's other rows. The request's own row follows it: `ok`, or `denied` when the cookie's peer pin does not match. |
 | Internal-route request granted (loopback `X-Internal-Secret`, or an agent-socket capability) | `internal_auth`, `source=token_auth` | `granted` | request path; caller is the peer address (empty on a unix socket, the dashboard's or the agent socket), or the verified tailnet login; `error` is `agent socket capability` for an agent-socket grant. The grant branch writes no `dashboard.token_auth` row with caller `internal` beside it, because that row would carry no fact this one lacks. An agent-socket request also carries the agent-socket gate's own `dashboard.token_auth` `granted` row (caller `agent-ipc`), which the same middleware writes earlier. The internal arm's secret refusals (no secret configured, a wrong or empty secret, a delegated caller whose record is gone) each write both an `internal_auth` and a `dashboard.token_auth` `denied` row. |
+| Internal call that names no session, from a caller not placed on the host | `internal_auth.sessionless_caller`, `source=token_auth` | `would_deny` (log mode, at most one per caller and path per 600 s) / `denied` (enforce mode, every refusal) | request path; caller is `X-Internal-Caller` when in `KNOWN_INTERNAL_CALLERS`, otherwise `other` (including when absent). Enforce mode also writes a `dashboard.token_auth` `denied` row. |
 | SPA shell served on cold-start nav | `dashboard.token_auth` | `shell_unauth` (no token) / `shell_unauth_invalid_token` (expired/forged token) | request path. **These replace `denied`/403 for non-API `GET`/`HEAD` navigations** — any volume-based scanning/brute-force alert keyed on `denied` or 403 counts for nav paths MUST also watch these two outcomes, or credential-less probing of a remote-exposed dashboard goes invisible. A forged token on a nav serves the secret-free shell but keeps the distinct `shell_unauth_invalid_token` signal (not `ok`). |
 
 ## Security Properties

@@ -15,7 +15,7 @@ from kiro_crew.dashboard import chat, chat_voice, handlers, openai_compat
 from kiro_crew.dashboard.handlers import chat_elicitation
 from kiro_crew.dashboard.handlers import debug as debug_handlers
 from kiro_crew.dashboard.handlers import session_environments as session_environment_handlers
-from kiro_crew.dashboard.handlers import slot_question
+from kiro_crew.dashboard.handlers import slot_question, yolo_ack
 
 
 def register(app: web.Application) -> None:
@@ -86,6 +86,10 @@ def register(app: web.Application) -> None:
         "/api/chat/slots/{slot}/elicitation", chat_elicitation.api_chat_slot_elicitation
     )
     app.router.add_post("/api/chat/mode", chat.api_chat_mode)
+    # The owner's acknowledgement of the YOLO confirmation, kept on the gateway so a
+    # fresh browser profile still skips it. Machine owner only, on both verbs.
+    app.router.add_get("/api/chat/yolo-ack", yolo_ack.api_yolo_ack_get)
+    app.router.add_put("/api/chat/yolo-ack", yolo_ack.api_yolo_ack_put)
     app.router.add_post("/api/chat/nav/resolve-links", chat.api_chat_nav_resolve_links)
     app.router.add_post("/api/chat/slots/{slot}/generate-title", chat.api_chat_slot_generate_title)
     app.router.add_patch("/api/chat/slots/{slot}/title", chat.api_chat_slot_rename)
@@ -98,8 +102,9 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/folders", chat.api_chat_folder_create)
     # Deliberately OUTSIDE /api/chat: app API grants are prefix-matched, so a
     # pre-existing app permission for /api/chat/folders (folder CRUD) must not
-    # silently inherit host-filesystem enumeration. The scaffolder app is
-    # granted /api/project-scaffold and nothing else.
+    # silently inherit host-filesystem enumeration. An app that calls these
+    # declares /api/project-scaffold, and an approved entry inside that
+    # namespace is also what turns them on (chat_folder_scaffold).
     app.router.add_post("/api/project-scaffold/scan", chat.api_chat_folders_scan)
     app.router.add_post("/api/project-scaffold/create", chat.api_chat_folders_scaffold)
     app.router.add_patch("/api/chat/folders/{id}", chat.api_chat_folder_update)

@@ -734,6 +734,10 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
         # Two config objects in play (the handler global was never installed,
         # or was installed with another object): keep both current.
         slack_handler.copy_slack_fields(new, self._cfg)
+    if change.touched("slack.channels"):
+        from kiro_crew.slack.shared_channel_agent import retire_stale_marks_on_reload
+
+        await retire_stale_marks_on_reload()
     if change.touched("slack.reactions"):
         unknown = slack_handler.refresh_phase_emojis(new.slack.reactions)
         if unknown:

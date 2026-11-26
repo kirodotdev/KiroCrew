@@ -11,6 +11,7 @@ import pytest
 from conftest import forget_env_at_teardown
 from kiro_crew import _ssl_compat
 from kiro_crew._ssl_compat import _CA_CANDIDATES, _ensure_ssl_certs
+from kiro_crew.testing.module_table import patched_sys_modules
 
 # The provenance markers, one per exported variable. The names are a contract
 # (a successor reads them from an environment a predecessor wrote), so they
@@ -124,7 +125,7 @@ class TestEnsureSslCerts:
         with (
             patch("ssl.get_default_verify_paths", return_value=mock_paths),
             patch("kiro_crew._ssl_compat._CA_CANDIDATES", candidates),
-            patch.dict("sys.modules", {"certifi": None}),
+            patched_sys_modules({"certifi": None}),
         ):
             _ensure_ssl_certs()
 
@@ -148,7 +149,7 @@ class TestEnsureSslCerts:
         with (
             patch("ssl.get_default_verify_paths", return_value=mock_paths),
             patch("kiro_crew._ssl_compat._CA_CANDIDATES", candidates),
-            patch.dict("sys.modules", {"certifi": mock_certifi}),
+            patched_sys_modules({"certifi": mock_certifi}),
         ):
             _ensure_ssl_certs()
 
@@ -192,7 +193,7 @@ class TestEnsureSslCerts:
         with (
             patch("ssl.get_default_verify_paths", return_value=mock_paths),
             patch("kiro_crew._ssl_compat._CA_CANDIDATES", (str(existing_candidate),)),
-            patch.dict("sys.modules", {"certifi": mock_certifi}),
+            patched_sys_modules({"certifi": mock_certifi}),
         ):
             _ensure_ssl_certs()
 
@@ -338,7 +339,7 @@ class TestEnsureSslCerts:
 
         with (
             patch.object(_ssl_compat, "truststore", mock_truststore),
-            patch.dict(sys.modules, {"certifi": mock_certifi}),
+            patched_sys_modules({"certifi": mock_certifi}),
             patch("ssl.get_default_verify_paths", return_value=mock_paths),
             patch("kiro_crew._ssl_compat._CA_CANDIDATES", ("/nonexistent/a.pem",)),
         ):
@@ -511,7 +512,7 @@ class TestInheritedInstallPinnedBundle:
         with (
             no_cafile,
             no_candidates,
-            patch.dict("sys.modules", {"certifi": _certifi_at(old_bundle)}),
+            patched_sys_modules({"certifi": _certifi_at(old_bundle)}),
         ):
             _ensure_ssl_certs()
 
@@ -525,7 +526,7 @@ class TestInheritedInstallPinnedBundle:
         with (
             no_cafile,
             no_candidates,
-            patch.dict("sys.modules", {"certifi": _certifi_at(new_bundle)}),
+            patched_sys_modules({"certifi": _certifi_at(new_bundle)}),
             caplog.at_level("INFO", logger="kiro_crew._ssl_compat"),
         ):
             _ensure_ssl_certs()
@@ -562,7 +563,7 @@ class TestInheritedInstallPinnedBundle:
         with (
             no_cafile,
             no_candidates,
-            patch.dict("sys.modules", {"certifi": _certifi_at(new_bundle)}),
+            patched_sys_modules({"certifi": _certifi_at(new_bundle)}),
         ):
             _ensure_ssl_certs()
 
@@ -608,7 +609,7 @@ class TestInheritedInstallPinnedBundle:
         with (
             no_cafile,
             no_candidates,
-            patch.dict("sys.modules", {"certifi": _certifi_at(new_bundle)}),
+            patched_sys_modules({"certifi": _certifi_at(new_bundle)}),
             caplog.at_level("INFO", logger="kiro_crew._ssl_compat"),
         ):
             _ensure_ssl_certs()
@@ -721,7 +722,7 @@ class TestInheritedInstallPinnedBundle:
             patch.object(_ssl_compat, "truststore", mock_truststore),
             no_cafile,
             no_candidates,
-            patch.dict("sys.modules", {"certifi": _certifi_at(own_bundle)}),
+            patched_sys_modules({"certifi": _certifi_at(own_bundle)}),
             caplog.at_level("INFO", logger="kiro_crew._ssl_compat"),
         ):
             _ensure_ssl_certs()
@@ -754,7 +755,7 @@ class TestInheritedInstallPinnedBundle:
         with (
             no_cafile,
             no_candidates,
-            patch.dict("sys.modules", {"certifi": _certifi_at(new_bundle)}),
+            patched_sys_modules({"certifi": _certifi_at(new_bundle)}),
             caplog.at_level("INFO", logger="kiro_crew._ssl_compat"),
         ):
             _ensure_ssl_certs()
@@ -844,7 +845,7 @@ class TestInheritedInstallPinnedBundle:
         with (
             no_cafile,
             no_candidates,
-            patch.dict("sys.modules", {"certifi": _certifi_at(operators)}),
+            patched_sys_modules({"certifi": _certifi_at(operators)}),
         ):
             _ensure_ssl_certs()
 
@@ -858,7 +859,7 @@ class TestInheritedInstallPinnedBundle:
         with (
             no_cafile,
             no_candidates,
-            patch.dict("sys.modules", {"certifi": _certifi_at(new_bundle)}),
+            patched_sys_modules({"certifi": _certifi_at(new_bundle)}),
             caplog.at_level("INFO", logger="kiro_crew._ssl_compat"),
         ):
             _ensure_ssl_certs()
@@ -891,7 +892,7 @@ class TestInheritedInstallPinnedBundle:
         with (
             no_cafile,
             no_candidates,
-            patch.dict("sys.modules", {"certifi": _certifi_at(bundle)}),
+            patched_sys_modules({"certifi": _certifi_at(bundle)}),
             caplog.at_level("INFO", logger="kiro_crew._ssl_compat"),
         ):
             _ensure_ssl_certs()

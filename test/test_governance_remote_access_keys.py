@@ -589,6 +589,23 @@ class TestDashboardOrigins:
         on_loop[0]()
         assert app["allowed_origins"] == _FLOOR | {f"https://{_NAME}"}
 
+    def test_a_refresh_keeps_the_tailnet_origin_on_its_https_port(self, lts, install_policy):
+        """``https://<name>:<port>`` is the tailnet origin, which answers to
+        ``capabilities.tailnet_origin``, so a governing ``dashboard_origins`` keeps it."""
+        from kiro_crew.dashboard import tailnet
+        from kiro_crew.dashboard.origin import withdraw_refused_origins
+
+        state = tailnet.TailnetOriginState(host=_NAME)
+        state.https_port = 5479
+        origin = f"https://{_NAME}:5479"
+        app = {"allowed_origins": _FLOOR | {origin}, "port": 5476, "tailnet_origin_state": state}
+        on_loop: list = []
+        install_policy({"dashboard_origins": _allow("https://other.example.com")})
+        withdraw_refused_origins(app, SimpleNamespace(call_soon_threadsafe=on_loop.append))
+        for fn in on_loop:
+            fn()
+        assert app["allowed_origins"] == _FLOOR | {origin}
+
     def test_the_gateway_registers_the_withdrawal(self) -> None:
         """The wiring: one hook for whichever server entry point started, registered
         before the poller starts."""

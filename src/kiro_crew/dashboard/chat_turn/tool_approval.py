@@ -1495,9 +1495,27 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             else None
         )
         # A host grant: the op route checks the tab is still on that host. A note that
-        # cannot be kept leaves the call to the card instead.
-        if matched and not _browser_host_trust.note_host_approval(
-            session_key, _tp_command, event.raw_tool_params
+        # cannot be kept leaves the call to the card instead. A call that session trust
+        # or a live YOLO would approve anyway runs on any host, so it is not noted; a
+        # host grant is never timed, so this rung answers it and the trust rung never
+        # reads that trust a second time.
+        _tp_any_host = bool(
+            matched
+            and _browser_host_trust.is_host_key(_tp_command)
+            and (
+                _slot_is_trusted(slot)
+                or (
+                    state.is_yolo_active()
+                    and state.yolo_reaches(slot, channel_origin=turn._directive_channel_origin)
+                )
+            )
+        )
+        if (
+            matched
+            and not _tp_any_host
+            and not _browser_host_trust.note_host_approval(
+                session_key, _tp_command, event.raw_tool_params
+            )
         ):
             matched = None
         if matched:

@@ -151,7 +151,15 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
 
     mcpCustomUpdate: (name: string, spec: import('../../types').McpCustomSpec) =>
       put(`/api/mcp/custom/${encodeURIComponent(name)}`, { spec }).then(j) as Promise<{ ok: boolean; name: string; agent_spec_rewritten?: boolean }>,
-    mcpActive: (agent?: string) => fetch('/api/mcp/active' + (agent ? `?agent=${encodeURIComponent(agent)}` : '')).then(j),
+    /** `slot` names the chat whose live session's backend the server asks; the
+     *  backend is never sent from here. */
+    mcpActive: (agent?: string, slot?: string) => {
+      const params = new URLSearchParams()
+      if (agent) params.set('agent', agent)
+      if (slot) params.set('slot', slot)
+      const query = params.toString()
+      return fetch('/api/mcp/active' + (query ? `?${query}` : '')).then(j)
+    },
     mcpProbe: () => post('/api/mcp/probe').then(j),
     mcpProbeOne: (name: string) =>
       post(`/api/mcp/probe/${encodeURIComponent(name)}`).then(j) as Promise<McpServer>,
@@ -176,7 +184,7 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
 
   const gateway = {
     // MCP Gateway (shared pool)
-    mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; share_refused?: Record<string, string>; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval' | 'too_many_launches'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; complete?: boolean; expected_launch?: string; launch_cap?: number }> }>,
+    mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; share_refused?: Record<string, string>; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval' | 'too_many_launches'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; changed_env_keys?: string[]; complete?: boolean; expected_launch?: string; launch_cap?: number }> }>,
     mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean; restart_required?: boolean }>,
     /** What the open chats' MCP servers cost this host now, and with sharing
      *  (PSS read from /proc; null when not every process could be read), and

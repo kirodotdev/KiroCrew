@@ -19,7 +19,14 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     tighten_live_slot_memory_mode,
 )
-from kiro_crew.dashboard.project_mcp_cards import offer_project_mcp_cards
+from kiro_crew.dashboard.effort_overlay_mark import (
+    effort_overlay_clear_kwargs,
+    settle_effort_overlay_clear,
+)
+from kiro_crew.dashboard.project_mcp_cards import (
+    offer_cards_for_refused_start,
+    offer_project_mcp_cards,
+)
 from kiro_crew.dashboard.slot_queue_repository import UNREADABLE_SOURCE_CHANNEL
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.llm_helpers import _billing_stats
@@ -85,6 +92,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.eager_spawn import _clear_eager_spawn_failures
     from kiro_crew.dashboard.chat_turn.mcp_session import (
         _drain_session_init_oauth_requests,
+        _notice_crew_left_out_mcp,
         _notice_unresolved_control_plane,
         _publish_session_mcp_report,
         _watch_session_mcp_report,
@@ -829,6 +837,10 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             execution_context = tightened_execution
             turn.execution_context = execution_context
             bindings.execution_context = tightened_execution
+        # The member id is settled: the Bot list reads this turn as that Bot's.
+        from kiro_crew.dashboard import running_bot_turns
+
+        running_bot_turns.begin(turn, execution_context)
         # A crewmate's conductor chat and each of its workers take the
         # crewmate's Profile Permissions before the provider is claimed, so a
         # session restored after a restart (slot trust is in memory only) does
@@ -1010,6 +1022,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # which decides whether to send it, and the crew log's `session/opened`,
     # which records the choice.
     _requested_model = slot.model or agent_model or ""
+    _overlay_mark = effort_overlay_clear_kwargs(slot)
     _allocation_kwargs: dict[str, Any] = dict(
         agent=kiro_agent or slot.agent or None,
         # Same canonical crew identity as the eager-spawn path — the two
@@ -1026,6 +1039,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         channel_id=_provider_channel_id or None,
         reasoning_effort_override=slot.reasoning_effort or None,
         start_priority=_turn_priority,
+        **_overlay_mark,
         **_app_allocation_kwargs(slot),
         **_slot_backend_allocation_kwargs(slot),
     )
@@ -1169,6 +1183,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             # claim consumed the one-shot resume, so every later exit owes it.
             turn._slim_resume_pending = bool(is_new and resumed)
             turn.client = client
+            settle_effort_overlay_clear(slot, _overlay_mark, is_new=is_new, provider=client)
             if is_new:
                 # A Bot chat that just started on a harness without its app tools
                 # gets its one notice here, where the slot is in hand.
@@ -1182,9 +1197,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
                 raise
             _release_dispatch_lock(turn)
             _wait_if_busy = True
-        except BaseException:
+        except BaseException as exc:
             # A start that failed builds nothing: drop the memory read early for it.
             discard_memory_prefetch(slot.workspace or None, memory_store, message)
+            shown = await offer_cards_for_refused_start(state, slot, session_key, exc)
+            if shown is not None:
+                raise shown from exc
             raise
     # Registered: the switch handlers' busy scan sees this session from
     # here on, so the lock has done its job and the turn must not hold it.
@@ -1238,7 +1256,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # Held but not yet marked acquired: release it if this await is cancelled, like
     # the reprojection above.
     try:
-        _fallback = await _fallback_turn_project(_turn_project, getattr(client, "cwd", None))
+        _fallback = await _fallback_turn_project(
+            _turn_project,
+            getattr(client, "cwd", None),
+            session_key,
+            _allocation_kwargs.get("backend_override"),
+        )
     except BaseException:
         state.sessions.release(session_key)
         raise
@@ -1453,6 +1476,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         await deliver_kas_telemetry_note(state, client)
         await _notice_seed_declined(state, slot, client)
         await _notice_unresolved_control_plane(state, slot, client)
+        _notice_crew_left_out_mcp(state, slot, client)
         await _notice_unread_prompt_file(state, slot, client, turn)
         await offer_project_mcp_cards(
             state, slot, client, session_key, kiro_agent or slot.agent or ""

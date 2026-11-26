@@ -508,6 +508,26 @@ notice and refusal card, cron, heartbeat, the sub-agent run's outcome
 classification, and the channel turns. So none of them carries an engine check
 of its own.
 
+The refused model's text is cut by one rule, `acp/engine_fallback.py:RefusalHopText`,
+on the turn loops that collect a turn's text and hand it over whole:
+`llm_helpers.stream_and_collect` (cron sequential and isolated, heartbeat, and
+its other callers), the background one-liner (`run_bg_oneliner`), a
+team-channel agent's post (`channel._stream_task`), a webhook hook turn
+(`dashboard/handlers/hooks.py`), a task-runner step (`task_executor.execute_task`)
+and the task-runner refine turn. On a refusal hop (`cause: refused`, not a
+promotion) the text since the last tool call leaves what the loop collected;
+text before that call stays. When no model writes text after the hop and the
+turn ends `refusal`, the cut text is put back, so the reply is not empty. Text
+a loop already passed on as it streamed (`stream_and_collect`'s `on_chunk`) is
+not taken back, so `stream_and_collect`'s retries that replay only an attempt
+with no text still count it. Not cut yet (#42779): `kirocrew chat`
+(`cli_chat.py`) and `messaging/driver.TurnDriver`, which show text to the reader
+as it arrives; the title, prompt-optimizer and eval scenario turns
+(`messaging/auto_title.py`, `dashboard/handlers/optimizer.py`,
+`eval/runner.py`); and cron's post-token resume
+(`slack/gateway_runtime/cron_dispatch.py`), which keeps the partial from
+`on_chunk` ahead of the continuation's text after a transient error.
+
 The dashboard appends the line once from the turn's `finally`, as a persisted
 notice, whatever path ended the turn. The unattended surfaces (cron sequential
 and isolated, heartbeat, sub-agent runs) prefix it to the delivered result
@@ -524,7 +544,19 @@ seal to overwrite the live message and prefixes the line through
 `annotate_model_fallback`. When no later hop answered (a `refusal` terminal with
 no text), the refused text is put back under the line, so the reply is never
 empty. A throttle or capacity hop keeps its partial text and prints no line
-there. The standalone
+there. The dashboard turn and the sub-agent run drop the refused text on the
+same hop, from the text since the last tool call: the dashboard's open segment
+(`dashboard/chat_turn/session_events.py:_on_model_fallback`: the segment, its
+chunk rows and the live tail, so the flush saves the fallback's text alone and
+its `chat_message` overwrites the tab's streamed copy), and the sub-agent's
+final segment, from the prompt in flight only (`subagent_manager/run_turn.py`:
+the result, the live partial and `result.txt`; a partial an earlier prompt
+streamed, which a transient continue keeps, stays). Text before that tool call
+is an earlier model call's and stays,
+unless an open code block or marker deferred the dashboard's cut there; on the
+captured wire there is none. When no model writes text after the hop and the
+turn ends `refusal`, the refused text is put back (`_restore_refused_text` on
+the dashboard; the sub-agent's result and `result.txt`), as on Slack. The standalone
 channel transports (Telegram, WhatsApp, Discord, Webex, Slack transport mode,
 and the autonudge wake turn) run through `messaging/driver.TurnDriver`, which
 prints no fallback line, the engine's or Crew's own; the session's model state
@@ -602,6 +634,9 @@ as `agent.fallback_model`.
 
 `test/test_engine_fallback.py` covers the engine notice decoders, the tracker,
 the end-of-turn wording, and the handle, dispatcher and dashboard seams.
+`test/test_refusal_hop_text.py` covers the refusal hop's cut on each turn loop
+that uses `RefusalHopText`, and the put-back and the transient and
+rejected-model replay guards through `stream_and_collect`.
 
 `test/test_llm_helpers_fallback_chain.py` and
 `test/test_llm_helpers_fallback_restore.py` cover chain derivation, candidate

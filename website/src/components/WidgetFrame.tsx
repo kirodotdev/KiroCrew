@@ -12,6 +12,7 @@ import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
 import { useFrameSrc } from '../hooks/useFrameSrc'
+import { useFrameAliveRecovery } from '../hooks/useFrameAliveRecovery'
 import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
 import { blockedLinkFor, type BlockedLink } from './blockedLinkRecords'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
@@ -196,6 +197,8 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
       // passed in because the iframe cannot reach the parent's i18n catalog.
       showLoadingOverlay: complexity.needsProgressIndicator,
       loadingLabel: i18nT('components.widgetFrame.rendering'),
+      // Answers the host's ping, so a reload onto the spent url is re-minted.
+      aliveReply: true,
     }) : '',
     [html, themeVars, theme, visible, complexity.needsProgressIndicator, policy],
   )
@@ -209,6 +212,9 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
   )
   // Later documents replace the first in place (hooks/useFrameSrc.ts).
   const frameSrc = useFrameSrc(iframeRef, blobUrl)
+  // The browser can reload this frame by itself onto its spent url: re-mint when
+  // the document stops answering (AGENT_PAGE_SANDBOX grants scripts).
+  useFrameAliveRecovery(iframeRef, blobUrl, true, retryMint)
   const refuseLink = useCallback(
     (url: string) => linksPending || blockedLinkFor(url, blockedLinks) !== null,
     [linksPending, blockedLinks],

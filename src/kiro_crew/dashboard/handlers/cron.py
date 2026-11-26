@@ -96,11 +96,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.cron_lesson_supersede import (  # noqa: F401
         _CONTRADICTION_MODEL,
+        _CONTRADICTION_NOTICE_CAP,
+        _CONTRADICTION_NOTICES,
+        _CONTRADICTION_NOTICES_DROPPED,
         _CONTRADICTION_PROMPT,
         _CONTRADICTION_TIMEOUT,
         _classify_contradiction,
+        _record_contradiction_notice,
         _resolve_and_supersede,
         _resolve_contradictions,
+        _take_contradiction_notices,
     )
     from kiro_crew.dashboard.handlers.cron_lessons import (  # noqa: F401
         _LESSON_EMBED_DEADLINE_SECS,

@@ -27,6 +27,7 @@ import { toApiError } from '../api/apiError'
 import { deploySiteIdFor, findLiveSite, isPublicWebDeploy, publishNoticeKey, readPublishOutcome } from '../lib/publishHelpers'
 
 import { i18nT } from '../i18n/t'
+import { fmtDate } from '../i18n/format'
 import { apiTransport } from '../api/apiTransport'
 interface UnifiedProvider {
   id: string
@@ -337,7 +338,10 @@ export function PublishHub({
       ? (errMessage(sitesQuery.error) || i18nT('components.errorBoundary.something_went_wrong'))
       : listingErrors.join('; ')
 
-  const [selectedId, setSelectedId] = useState<string>('')
+  // An expired publication is published afresh, and only on its own destination
+  // (the route refuses a switch), so the panel opens on that destination.
+  const expiredPublication = artifact.publication?.expired ? artifact.publication : null
+  const [selectedId, setSelectedId] = useState<string>(expiredPublication?.provider ?? '')
   const [preview, setPreview] = useState<Record<string, unknown> | null>(null)
   const [contentDigest, setContentDigest] = useState<string>('')
   const [previewIdentity, setPreviewIdentity] = useState<{ profile: string; region: string }>({ profile: '', region: '' })
@@ -380,7 +384,8 @@ export function PublishHub({
   const ttlSelectable = ttlSelectableFor(selected)
   const selectedTtlHours = () => effectiveTtlHours(ttlHours, selected)
   const [visibilityChoice, setVisibilityChoice] = useState<PublishVisibility>('PUBLIC')
-  const existingVisibility = artifact.publication ? (artifact.publication.visibility ?? 'PUBLIC') : null
+  // An expired publication counts as not yet published: it gets a first publish's choices.
+  const existingVisibility = artifact.publication && !expiredPublication ? (artifact.publication.visibility ?? 'PUBLIC') : null
   const alreadyPublished = existingVisibility != null
   const visibilityOptions = visibilityOptionsFor(selected, alreadyPublished)
   const selectedVisibility = effectiveVisibility(visibilityChoice, selected, existingVisibility)
@@ -605,6 +610,12 @@ export function PublishHub({
         <span className="text-sm font-semibold text-text-strong">{i18nT('components.publishHub.publish')}</span>
         {onClose && <Btn onClick={onClose} aria-label={i18nT('components.publishHub.close_publish_panel')}><X size={12} /></Btn>}
       </div>
+
+      {expiredPublication && (
+        <p className="mb-3 text-[12px] text-warn-text">
+          {i18nT('components.publishHub.previous_link_expired', { date: fmtDate(expiredPublication.expires_at) })}
+        </p>
+      )}
 
       {/* Provider list */}
       {!selectedId && (

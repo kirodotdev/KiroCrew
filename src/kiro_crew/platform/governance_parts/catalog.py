@@ -236,7 +236,8 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # for each event of the user's kiro hooks before they are installed. An unnamed
     # ruleset permits every event. Inner ``hooks`` ruleset (``identifier``): which
     # hooks may run, by ``hook_event_governance.hook_policy_name`` -- an agent
-    # spec's hook as ``<agent>/<Event>/<n>``, a Hooks-page hook by its name.
+    # spec's hook as ``<agent>/<Event>/<n>``, a Hooks-page hook by its name -- and,
+    # for a spec hook document with a name of its own, ``hook_stable_name`` too.
     # Queried as ``hooks:<name>``; an unnamed ruleset permits every hook.
     "capabilities.script_hooks": ScopeSpec(
         CAPABILITY,
@@ -342,7 +343,8 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # Auto-deriving the dashboard's OWN tailnet origin (``dashboard/tailnet.py``,
     # RFC §4). When ``dashboard.tailscale.enabled`` is on, the gateway shells out
     # to the local ``tailscale`` daemon at startup and, on success, puts the
-    # resulting MagicDNS name into the CSRF origin allowlist and the
+    # resulting MagicDNS name into the CSRF origin allowlist (with
+    # ``dashboard.tailscale.https_port`` in the origin when it is not 443) and the
     # DNS-rebinding ``Host`` barrier. A managed fleet frequently may not do
     # either half: some hosts must not invoke the tailnet CLI at all, and — the
     # sharper case — an origin set that only a fleet-controlled ``dashboard.url``

@@ -10,7 +10,7 @@ List Bots and their status.
 
 | About | This endpoint |
 |---|---|
-| Status | Planned |
+| Status | Available now: owner and apps |
 | Tier | Public |
 | Stability | preview |
 | Callers the API defines | The owner, with the owner's own sign-in. An app, with a credential that holds the scope `bots:chat` or `bots:read`. |

@@ -280,7 +280,9 @@ of auto-approval, so anything denied by policy stays denied.
 - **`/dashboard` issues a login credential.** It mints a presigned dashboard
   session URL for the asking user (default 1 hour, capped at 20), and issuance is
   recorded in the security event log. Everyone on `allowed_emails` can do this, so
-  treat that list as the set of people you would hand a dashboard session to.
+  treat that list as the set of people you would hand a dashboard session to. Only
+  the identity in `teams.owner_id` gets your own session, chat included; anyone
+  else's link cannot chat in your sessions.
 - The App Password and all bearer tokens are treated as secrets: the
   `app_password` field is env-only and never logged, the `MICROSOFT_APP_*`
   variables are hidden from agent subprocesses, and a preview pod force-disables

@@ -99,6 +99,7 @@ from kiro_crew.agent_sdk.spec_hooks_reproject import (  # noqa: E402,F401
     reproject_claimed_session,
     reproject_unattended_claim,
 )
+from kiro_crew.hook_event_governance import with_stable_names
 from kiro_crew.hooks import (
     _HOOK_STREAM_CAP_BYTES,
     HOOK_EVENT_AGENT_SPAWN,
@@ -742,7 +743,7 @@ def _from_documents(
         )
     out: list[ScriptHook] = []
     index = -1
-    for doc in normalize_spec_hooks(hooks, matcher_ok=_matcher_ok):
+    for doc, spec_name in with_stable_names(normalize_spec_hooks(hooks, matcher_ok=_matcher_ok)):
         trigger = doc.get("trigger")
         raw_action = doc.get("action")
         action: dict = raw_action if isinstance(raw_action, dict) else {}
@@ -784,7 +785,7 @@ def _from_documents(
             # appended, so cap, break and kept list match ``_convert``'s no-counter path.
             if cap_overflow is not None and len(out) >= _MAX_SPEC_HOOKS:
                 cap_overflow.append(index)
-            out.append(hook)
+            out.append(dataclasses.replace(hook, spec_name=spec_name))
     return out
 
 
@@ -1020,21 +1021,19 @@ def merge_user_hook_files(provider: object, base_hooks: list[ScriptHook]) -> lis
     :func:`user_hook_files` into the hooks it fires, so a user's
     ``~/.kiro/hooks/*.json`` hook runs on each of them and the projection's
     auto-approve withhold (which also lists these files) always has a hook to fire.
-    Returns *base_hooks* unchanged off KAS: goose and opencode are in
-    ``crew_fires_spec_hooks`` too but do not read a user's standalone files.
+    Returns *base_hooks* unchanged where the harness lacks
+    ``SessionCapabilities.crew_merges_user_hook_files`` (KAS has it): goose and
+    opencode are in ``crew_fires_spec_hooks`` too but do not read a user's
+    standalone files.
 
     A user-file hook whose ``(event, command, matcher)`` already appears in
     *base_hooks* is dropped -- the spec / Hooks-page hook wins -- so a JSON file
     whose command is a ``*.sh`` script the autoimport already folded into the spec
     is not fired twice.
     """
-    # Deferred: ``backends`` imports modules that reach this one, so resolve the
-    # backend id at call time like :func:`spec_project_dir` does.
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
-
-    # Positive identity test (harness gate H5): name the one backend this folds in,
-    # so a harness added later does not inherit it by an inequality.
-    if capabilities_of(provider).backend == ACP_BACKEND_KAS:
+    # A capability, false by default, so a harness added later does not inherit
+    # the fold by an inequality (harness gate H5).
+    if capabilities_of(provider).crew_merges_user_hook_files:
         seen = {(h.event, h.command, h.matcher) for h in base_hooks}
         merged = list(base_hooks)
         for hook in user_hook_files():
@@ -1466,7 +1465,7 @@ def post_tool_matchers_no_builtin_meets(provider: object, hooks: Sequence[Script
     from kiro_crew.acp.harness_tool_names import CODEX_TOOL_IDS_BY_KIRO_TOOL
     from kiro_crew.acp_backends import ACP_BACKEND_CODEX
 
-    if capabilities_of(provider).backend == ACP_BACKEND_CODEX:
+    if capabilities_of(provider).backend == ACP_BACKEND_CODEX:  # harness-ok: codex tool-id table
         codex_names = {n for ids in CODEX_TOOL_IDS_BY_KIRO_TOOL.values() for n in ids}
         unmet = {
             name
@@ -1693,7 +1692,7 @@ async def turn_spec_hooks(
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
     from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth, sends_mcp_client_secret
 
-    on_kas = capabilities_of(provider).backend == ACP_BACKEND_KAS
+    on_kas = capabilities_of(provider).backend == ACP_BACKEND_KAS  # harness-ok: kas_engine flags
     try:
         hooks, lost, _unconfirmable = await asyncio.to_thread(
             functools.partial(

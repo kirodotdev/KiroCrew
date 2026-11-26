@@ -134,7 +134,7 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
             lines.append(f"\nAvailable agents: {', '.join(names)}")
         if restricted:
             lines.append(
-                "(restricted to this agent's toolsSettings.subagent.availableAgents; "
+                "(restricted to this agent's availableAgents; "
                 + ("other installed agents are" if names else "every installed agent is")
                 + " refused at spawn)"
             )

@@ -823,6 +823,10 @@ class TestInlinePayloadNamesTheMintSurface:
             "_materialize_signing_key_mask_target": (
                 "creates an absent key so the sandbox mask binds; returns its path, never the key"
             ),
+            "approve": (
+                "records MCP launch approvals; the key only keys their env digests under a"
+                " purpose-derived key; returns None"
+            ),
         }
         misses = []
         for mod in seeds:

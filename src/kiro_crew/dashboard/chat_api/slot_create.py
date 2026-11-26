@@ -60,6 +60,7 @@ if TYPE_CHECKING:
         members_mod,
         owner_start_priority,
         pin_private_agent_store,
+        probe_project_dir,
         read_bounded_json,
         redact_credentials,
         redact_exfiltration_urls,
@@ -70,12 +71,14 @@ if TYPE_CHECKING:
         restore_agent_selection,
         save_slot_off_loop,
         schedule_eager_spawn,
+        sel,
         selects_bot_identity,
         slot_history_key,
         slot_not_found,
         tags_write_lock,
         usable_default_project,
         validate_folder_tag_ids,
+        voice_runtime_workspace_conflict,
         wait_for_memory_preparation,
     )
     from kiro_crew.remote_dispatch_mailbox import MailboxRequest
@@ -224,6 +227,55 @@ async def _app_hides_own_mode(request: web.Request, body: dict[str, Any], mode: 
     from kiro_crew.apps.hidden_sessions import may_hide_sessions
 
     return await asyncio.to_thread(may_hide_sessions, mode)
+
+
+async def _birth_project(request: web.Request, raw: Any) -> tuple[str, web.Response | None]:
+    """A create's ``project``: the resolved directory, or the refusal the project route gives."""
+    from kiro_crew.hooks import is_unc_shape, unc_probe_allowed
+
+    if not isinstance(raw, str) or not raw.strip():
+        return "", web.json_response(
+            {"error": "Not a directory", "code": "not_a_directory"}, status=400
+        )
+    # The text can come from an app, so on Windows a share outside the gateway's own
+    # roots is refused before any probe: resolving it would open SMB to that host.
+    # Off the loop: the first call resolves and caches the trusted roots.
+    if (
+        os.name == "nt"
+        and is_unc_shape(raw.strip())
+        and not await asyncio.to_thread(unc_probe_allowed, raw.strip())
+    ):
+        return "", web.json_response(
+            {"error": "Not a directory", "code": "not_a_directory"}, status=400
+        )
+    probed = await asyncio.to_thread(probe_project_dir, raw.strip())
+    if probed is None or not probed[1]:
+        return "", web.json_response(
+            {"error": "Not a directory", "code": "not_a_directory"}, status=400
+        )
+    project, _is_dir, sensitive = probed
+    refusal = "sensitive path" if sensitive else ""
+    conflict = (
+        None if sensitive else await asyncio.to_thread(voice_runtime_workspace_conflict, project)
+    )
+    if conflict is not None:
+        refusal = "voice runtime overlap"
+    if refusal:
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="chat_slot_create",
+            outcome="denied",
+            resources=f"project={project}",
+            error=refusal,
+        )
+        if sensitive:
+            return "", web.json_response(
+                {"error": "Access denied", "code": "sensitive_path"}, status=403
+            )
+        return "", web.json_response(
+            {"error": conflict, "code": "workspace_overlaps_data_home"}, status=400
+        )
+    return project, None
 
 
 async def api_chat_slot_create(request: web.Request) -> web.Response:
@@ -460,6 +512,23 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             source_is_dir: bool = await asyncio.to_thread(os.path.isdir, source_project)
             if source_is_dir:
                 carried_project = source_project
+    # A project the person's dashboard asks the new chat to start on, judged the way
+    # the project route judges a pick and applied before the chat is first published,
+    # so a refused directory leaves no session behind (an app's Sessions New row).
+    birth_project = ""
+    # Only a fresh unnamed create from the person's own dashboard reads it. Any other
+    # create ignores it, as every create did before, and is never probed for it, so no
+    # other caller gets a filesystem oracle.
+    if (
+        "project" in body
+        and not name
+        and not request_app
+        and not carried_project
+        and is_owner_dashboard_request(request)
+    ):
+        birth_project, birth_refusal = await _birth_project(request, body.get("project"))
+        if birth_refusal is not None:
+            return birth_refusal
     # Binding resolution checks memory readiness. A fresh conversation gets
     # the same bounded recovery grace as its first turn, before any slot or
     # protected assignment is published.
@@ -524,7 +593,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 resolve_agent_bindings,
                 cfg,
                 agent,
-                project_dir=carried_project or None,
+                project_dir=carried_project or birth_project or None,
                 validate_memory_files=False,
                 selection_kind=agent_kind,
             )
@@ -542,7 +611,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     resolve_agent_bindings,
                     cfg,
                     agent,
-                    project_dir=carried_project or None,
+                    project_dir=carried_project or birth_project or None,
                     validate_memory_files=False,
                     selection_kind=agent_kind,
                 )
@@ -621,7 +690,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         and (not preflight_key or preflight_key not in state._slots)
     ):
         preflight_project = (
-            carried_project or folder_project or await _birth_default_project(cfg, workspace)
+            carried_project
+            or birth_project
+            or folder_project
+            or await _birth_default_project(cfg, workspace)
         )
         try:
             await _check_new_slot_assignment(cfg, agent, agent_kind, preflight_project, memory_mode)
@@ -993,6 +1065,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # it and continue to use the project endpoint for scope changes.
         if carried_project and is_new_slot and not slot.project:
             slot.project = carried_project
+        if birth_project and is_new_slot and not slot.project:
+            # The person picked the row that named it, so it counts as their pick.
+            slot.project = birth_project
+            slot._project_picked = True
         if folder_project and folder_applied and not slot.project:
             slot.project = folder_project
         # A fresh folder per new chat, when the owner turned it on. Only for a

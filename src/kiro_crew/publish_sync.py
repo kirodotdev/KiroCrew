@@ -37,7 +37,7 @@ import re
 import tempfile
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, AsyncIterator, Final
@@ -512,6 +512,8 @@ def _publication_summary(pub: ArtifactPublication) -> dict[str, object]:
         "last_error": pub.last_error,
         "notice": pub.notice,
         "notice_code": pub.notice_code,
+        "expires_at": pub.expires_at,
+        "expired": pub.is_expired(),
     }
 
 
@@ -607,8 +609,10 @@ async def publish(
 
     ``expires_in_days`` applies to a first publish only, and only to a destination
     whose sharing model declares expiry choices; a value it does not offer is refused
-    with ``ArtifactValidationError``, and any expiry on a re-publish with
-    ``PublishConflictError``, both before anything is uploaded.
+    with ``ArtifactValidationError``, and any expiry on a re-publish of a live
+    publication with ``PublishConflictError``, both before anything is uploaded. An
+    expired publication is the reverse: a publish must name an expiry (else
+    ``PublishConflictError``), and then withdraws the old copy and publishes afresh.
 
     Returns the publication summary dict. Raises ``PublishError`` subclasses on
     failure (the handler maps these to HTTP status codes). ``ArtifactNotFound``
@@ -619,8 +623,8 @@ async def publish(
     between "first publish" and "re-publish" is itself the thing being raced -- a guard
     around only the branch it selects would be read before the lock and act after it.
     Nothing reachable from here re-enters ``publish``, so a non-reentrant lock is safe:
-    ``push_version`` and ``update_sharing`` are the two functions this path calls and
-    neither publishes.
+    ``push_version``, ``update_sharing`` and ``unpublish`` (for an expired publication)
+    are the functions this path calls, and none of them publishes or takes the lock.
     """
     async with publication_guard(slug):
         return await _publish_unlocked(
@@ -677,6 +681,16 @@ async def _publish_unlocked(
     art = await asyncio.to_thread(store.get, slug)  # ArtifactNotFoundError -> 404
     shared_with = shared_with or []
 
+    # An expired publication is published again from scratch, on the same destination
+    # (the one the route gated). That needs a chosen expiry: a request naming none comes
+    # from a panel or caller that still saw the old publication as live.
+    expired = art.publication is not None and art.publication.is_expired()
+    if expired and expires_in_days == PROVIDER_DEFAULT_EXPIRY:
+        raise PublishConflictError(
+            "this artifact's publication has expired: reload, then publish it again "
+            "choosing an expiry, or unpublish it first"
+        )
+
     # Ensure the destination tooling is installed before either branch. For a
     # first publish this silently self-installs the provider's native MCP (and
     # migrates legacy users) so the publish completes with no manual setup;
@@ -688,12 +702,12 @@ async def _publish_unlocked(
     # cannot apply one. A request that still names an expiry comes from a panel that saw
     # the artifact unpublished (two first publishes racing): refuse it, before any
     # content moves, rather than report a lifetime that was never applied.
-    if art.publication is not None and expires_in_days != PROVIDER_DEFAULT_EXPIRY:
+    if art.publication is not None and not expired and expires_in_days != PROVIDER_DEFAULT_EXPIRY:
         raise PublishConflictError(
             "this artifact is already published, so its expiry can no longer be chosen"
         )
     expiry_kwargs: dict[str, Any] = {}
-    if art.publication is None:
+    if art.publication is None or expired:
         expiry_kwargs = _first_publish_expiry(provider, expires_in_days)
     if not await provider.ensure_ready():
         raise PublishUnavailableError(provider.install_hint)
@@ -701,7 +715,7 @@ async def _publish_unlocked(
     # Idempotency: an already-published artifact re-publishes as a version push
     # plus a sharing update, reusing the same destination id/URL — never a
     # second artifact. Use the artifact's existing provider.
-    if art.publication is not None:
+    if art.publication is not None and not expired:
         sharing = Capability.SHARING in provider.capabilities()
         # Order the two steps by direction. Widening pushes first, so the new content
         # lands while the link is still narrow; narrowing changes sharing first, so the
@@ -745,6 +759,11 @@ async def _publish_unlocked(
     text, content_type = await asyncio.to_thread(_render_content, art)
     path = await asyncio.to_thread(_write_tempfile, text, _ext_for(art))
     try:
+        if expired:
+            # The old record is the only handle to the old copy, so it goes only by the
+            # rule `unpublish` applies: a confirmed removal clears it, anything else
+            # raises and keeps it.
+            await unpublish(slug)
         res = await provider.publish(
             file_path=path,
             content_type=content_type,
@@ -758,6 +777,8 @@ async def _publish_unlocked(
     finally:
         await asyncio.to_thread(_safe_unlink, path)
 
+    published = datetime.now(timezone.utc)
+    days = expiry_kwargs.get("expires_in_days")
     pub = ArtifactPublication(
         provider=provider.name,
         artifact_id=res.external_id,
@@ -770,7 +791,10 @@ async def _publish_unlocked(
         last_synced_kirocrew_version=art.version,
         wrapper_revision=WRAPPER_REVISION if art.kind == "widget" else 0,
         version_map={str(art.version): res.version_number},
-        published_at=_now_iso(),
+        published_at=published.isoformat(timespec="seconds"),
+        expires_at=(
+            (published + timedelta(days=days)).isoformat(timespec="seconds") if days else ""
+        ),
         published_by=res.owner,
         last_error="",
         # Provider-controlled text, persisted and then served to the dashboard, so it
@@ -814,6 +838,9 @@ async def push_version(art: Artifact, *, force: bool = False) -> None:
     if art.publication is None or not art.publication.auto_sync:
         return
     pub = art.publication
+    # Auto-sync never pushes to a copy the destination has already deleted.
+    if not force and pub.is_expired():
+        return
     store = get_default_store()
     # Offload the ≤25 MiB current.html read off the event loop (no-blocking-call).
     fresh = await asyncio.to_thread(store.get, art.slug)
@@ -835,10 +862,7 @@ async def push_version(art: Artifact, *, force: bool = False) -> None:
     # locally-computed hash anyway.
     # Also re-push when the wrapper envelope has changed (CSP, CDN scripts) even
     # if the artifact content version hasn't moved.
-    wrapper_stale = (
-        fresh.kind == "widget"
-        and WRAPPER_REVISION > (pub.wrapper_revision or 0)
-    )
+    wrapper_stale = fresh.kind == "widget" and WRAPPER_REVISION > (pub.wrapper_revision or 0)
     if not force and fresh.version == pub.last_synced_kirocrew_version and not wrapper_stale:
         return
 
@@ -1007,6 +1031,9 @@ async def unpublish(slug: str) -> None:
     needs a positive absence probe, not a looser rule here.
 
     Raises ``NotPublishedError`` only when the artifact isn't published.
+
+    Never takes ``publication_guard``: ``publish`` calls it while holding that lock to
+    withdraw an expired publication, and the lock is not reentrant.
     """
     store = get_default_store()
     art = await asyncio.to_thread(store.get, slug)

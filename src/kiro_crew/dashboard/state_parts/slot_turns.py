@@ -840,6 +840,7 @@ def queue_append(
     directive_user_origin: bool = False,
     directive_channel_origin: bool = False,
     directive_owner_origin: bool = False,
+    source_channels: tuple[str, ...] = (),
 ) -> str:
     return self._queue_repository.queue_append(
         self,
@@ -849,6 +850,7 @@ def queue_append(
         directive_user_origin=directive_user_origin,
         directive_channel_origin=directive_channel_origin,
         directive_owner_origin=directive_owner_origin,
+        source_channels=source_channels,
     )
 
 
@@ -868,6 +870,7 @@ def queue_insert(
     directive_user_origin: bool = False,
     directive_channel_origin: bool = False,
     directive_owner_origin: bool = False,
+    source_channels: tuple[str, ...] = (),
 ) -> str:
     return self._queue_repository.queue_insert(
         self,
@@ -881,6 +884,7 @@ def queue_insert(
         directive_user_origin,
         directive_channel_origin,
         directive_owner_origin,
+        source_channels,
     )
 
 

@@ -729,7 +729,8 @@ _CREWMATE_PRUNE_GATE_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 #: pure read either: it calls ``MemberEventLogService.ensure`` for every row
 #: and ``reconcile_member_config`` appends to the member log. Every
 #: ``/api/members`` route (and its Crew API twin) reaches the same rows, so both wait.
-_CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members", "/v1/crew/owner/bots")
+#: ``/v1/crew/bots`` lists the same rows to an app and waits for the same reason.
+_CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members", "/v1/crew/owner/bots", "/v1/crew/bots")
 
 
 # Strong references to in-flight warm tasks, so the loop cannot collect one
@@ -1133,6 +1134,7 @@ async def start_dashboard(
         # validated.
         _ts_cfg = _cfg.dashboard.tailscale
         _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
+        _tailnet_https_port = _ts_cfg.https_port
         _tailnet_trust = await _resolve_tailnet_trust(_cfg)
         # Shared Crew: record the tailnet path. The middleware chain carries an
         # empty holder for the direct tailnet listener's gate (off by default);
@@ -1160,8 +1162,8 @@ async def start_dashboard(
                 )
         if _tailnet_host:
             logger.info(
-                "tailnet access enabled: trusting origin https://%s (bind and auth unchanged)",
-                _tailnet_host,
+                "tailnet access enabled: trusting origin %s (bind and auth unchanged)",
+                tailnet.tailnet_https_origin(_tailnet_host, _tailnet_https_port),
             )
         # Keep the initial snapshot on both startup surfaces for compatibility.
         # Runtime-aware handlers read the mutable state installed below, which can
@@ -1184,13 +1186,21 @@ async def start_dashboard(
             handle_email_domains=_cfg.tunnel.relay_handle_email_domains,
         )
         app["allowed_origins"] = build_allowed_origins(
-            port, local_only, configured_host, tailnet_host=_tailnet_host
+            port,
+            local_only,
+            configured_host,
+            tailnet_host=_tailnet_host,
+            tailnet_https_port=_tailnet_https_port,
         )
         if _served_port != port:
             # Added to the requested port's set, never in place of it, so nothing
             # the set admitted before is dropped.
             app["allowed_origins"] |= build_allowed_origins(
-                _served_port, local_only, configured_host, tailnet_host=_tailnet_host
+                _served_port,
+                local_only,
+                configured_host,
+                tailnet_host=_tailnet_host,
+                tailnet_https_port=_tailnet_https_port,
             )
         # Exposed to handlers (e.g. knowledge.pick_folder) that only make sense when
         # the browser and gateway are co-located on localhost.
@@ -1253,6 +1263,7 @@ async def start_dashboard(
             local_only=local_only,
             tailnet_trust=_tailnet_trust,
             tailnet_host=_tailnet_host,
+            tailnet_https_port=_tailnet_https_port,
             configured_host=configured_host,
             dashboard_url=dashboard_url,
             tailnet_direct=_direct,
@@ -1268,6 +1279,7 @@ async def start_dashboard(
             enabled=_ts_cfg.enabled,
             initial_host=_tailnet_host,
             load_enabled=_tailnet_origin_enabled,
+            https_port=_tailnet_https_port,
         )
 
         # ── Loop stall watchdog and diagnostic recorder shutdown ─────────────────

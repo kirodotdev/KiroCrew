@@ -54,6 +54,11 @@ async def api_stt_status(request: web.Request) -> web.Response:
     denied = _deny_app_token(request, "stt.status")
     if denied is not None:
         return denied
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "stt.status")
+    if owner_denied is not None:
+        return owner_denied
     cfg = KiroCrewConfig.load()
     # Off the loop: for `custom` this reads config to find the file and
     # digest, so a catalog lookup that would otherwise stay in memory performs file
@@ -237,6 +242,11 @@ async def api_stt_vocabularies(request: web.Request) -> web.Response:
     denied = _deny_app_token(request, "stt.vocabularies")
     if denied is not None:
         return denied
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "stt.vocabularies")
+    if owner_denied is not None:
+        return owner_denied
     cfg = KiroCrewConfig.load()
     profile, region = cfg.stt.transcribe_profile, cfg.stt.transcribe_region
     target = {"profile": profile, "region": region}

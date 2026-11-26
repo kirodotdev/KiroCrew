@@ -2180,6 +2180,8 @@ read the
 same `messaging.queue_mode` (`config/loader.py`, `"steer"` | `"queue"`, anything
 else normalized to `steer`) and all implement the same three primitives
 (`_handle_busy`, `_enqueue_with_receipt` + `_drain_queue`, `_handle_stop`).
+Slack reads the same `messaging.queue_mode` in `slack/midturn.py` and keeps its
+own queue and `!stop` (see [session](session.md)).
 
 The **channel-neutral half of the queue receipt is shared**, not duplicated:
 `messaging/queue_receipt.py` owns the receipt registry, the lock, the three
@@ -4640,8 +4642,15 @@ re-link carrying a refreshed admission is left in place.
   `connected` (true only after the Gateway handshake reached READY this
   session), `connect_error`, `configured` (token AND enabled AND non-empty
   allowlist — the transport fails closed on an empty list), `read_only`
-  (true unless the request is direct-local), and the two render toggles
-  `reactions_enabled` / `show_thinking`. Never returns a raw secret.
+  (true unless the request is direct-local), the three render toggles
+  `reactions_enabled` / `show_thinking` / `show_timing_footer`, and the bot's
+  invite links `install_url` (thread permissions) / `install_url_dm_only`, built
+  by `discord.install_url.build_install_url` from the `application_id` READY
+  gave the client of the Discord transport registered in
+  `DashboardState.channel_transports`. The channel lifecycle drops a closed or
+  superseded start's registration by identity, so the links name the running
+  bot. Both are empty with no registered transport, before READY, or when the
+  id is not a snowflake. Never returns a raw secret.
 - `PUT /api/discord/config` — requires a direct-local request (loopback peer
   AND no forwarding headers); remote gets 403. Validate-first/commit-last.
   New tokens must match the three-segment bot-token shape (an accidental
@@ -4651,8 +4660,8 @@ re-link carrying a refreshed admission is left in place.
   returns 400 and writes nothing, network failure saves with
   `verify_warning`. `bot_token_clear` must be a strict boolean.
   `allowed_user_ids`, `allowed_thread_ids`, and `allowed_channel_ids` accept
-  numeric snowflake strings only; `auto_thread`, `reactions_enabled` and
-  `show_thinking` are strict booleans. Secrets
+  numeric snowflake strings only; `auto_thread`, `reactions_enabled`,
+  `show_thinking` and `show_timing_footer` are strict booleans. Secrets
   land in `config_dir/.env` (atomic 0600) with `os.environ`
   synced; non-secrets go to
   `config.json` under `discord`. Every field applies live, so
@@ -7635,8 +7644,8 @@ SEL-audited (`source="feishu"`). The Feishu app needs
 `im:message:readonly` to download a
 message's files; enabling groups additionally needs
 `im:message.group_at_msg.include_bot:readonly`, and sending an answer's images
-needs `im:resource` (without it the upload is refused and the follow-up names
-the path). The broad `im:message` grant
+or a `file_send` file needs `im:resource` (without it the upload is refused: the
+answer's follow-up names the path, and `file_send` reports the refusal). The broad `im:message` grant
 alone does not activate p2p event delivery in the current Feishu console.
 Group-chat access is an explicit opt-in gated on BOTH `allow_group=True` AND
 the group's `chat_id` appearing in
@@ -7715,6 +7724,35 @@ answers those budgets for an allow-listed `open_id` and None for anything else,
 so a group mirror is never extracted and names its pictures instead; the verb
 re-checks the address at the send and answers False there too. See the session
 spec's cross-surface Delivery paragraph for the leg's own gates.
+
+**`file_send` delivers into an allow-listed DM** through
+`FeishuTransport.send_document`, and `"feishu"` is in
+`upload_destination.DOCUMENT_CHANNELS` (the oracle checks the restricted-session
+ceiling before it probes the verb). The verb re-decides the address against the
+live roster first, as `send_outbound_image` does: anything but an `open_id` on
+`allowed_open_ids` (a group, even an allowed one, or an id dropped since the link
+was written) raises before anything is uploaded. It re-decides again after the
+upload, raising before the message is created, and before the caption, which it
+skips with a warning (the file landed, so it still counts as delivered), as
+`WeComTransport.send_document` does: a live reload can revoke the DM during
+either await. A file whose name maps to an
+`image/` type and whose bytes `messaging.raster` sniffs as a raster image within
+`FEISHU_UPLOAD_LIMITS` goes through
+`LarkClient._sync_upload_image` and a NEW `msg_type=image` message; anything else
+(SVG, audio and video included, text whose first bytes happen to match a
+raster magic, and an image over the 10 MB image cap) through
+`im.v1.file.create` (`file_type=pdf` for a PDF, `stream` otherwise, the admitted
+basename as `file_name`, at most 30 MB) and a NEW `msg_type=file` message. The
+upload is `LarkClient.upload_new_file` and the message `LarkClient.send_uploaded_file`,
+so the verb can re-decide between them; the uploads run on the download workers
+through the client with the resource timeout, so a stalled upload never holds a
+reply worker. A refusal raises with Feishu's code and message, and
+`api_channel_upload_file` hands that (redacted) to the `file_send` result as
+`channel upload failed: …`; for code 99991672 on an upload whose message does not
+already name `im:resource`, the error names it. A non-empty caption follows the
+file as a text message to the same DM, best-effort. The verb
+returns the created message's id, or `"sent"` when the answer carried none,
+because the caller reads a falsy return as failure.
 
 **Session identity.** A p2p turn keys on `open_id` under the `DIRECT` chat
 type; a group turn keys on the group's `chat_id` under the non-direct

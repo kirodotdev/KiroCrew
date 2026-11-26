@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from kiro_crew import change_card_memory as _memory_kind
 from kiro_crew import member_goals as _goals
 from kiro_crew.constants import MAX_SHORT_STRING
 from kiro_crew.mcp_shared_listing import StdioServer
@@ -430,6 +431,87 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "text": {"type": "string", "maxLength": _goals.NOTES_MAX_CHARS},
                 },
                 "required": ["text"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "memory_list",
+            "description": (
+                "List your own memories, one kind at a time: kind fact (what you "
+                "learned) or episode (experiences). Each row has its id, its text as "
+                "the Memory page shows it, created_at, updated_at, confidence (facts) "
+                "or importance (experiences). An experience also has last_used, when "
+                "recall last returned it, only if your store records that; no "
+                "last_used means unknown, not unused. Pages of up to 50; pass next_offset as offset for the next page. "
+                "query keeps only rows containing those words. Lessons are not here; "
+                "learn_list lists them. Use it when the user asks you to review or "
+                "clean up your memory, then propose the cleanup with "
+                "propose_memory_changes."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": list(_memory_kind.MEMORY_KINDS)},
+                    "query": {"type": "string", "maxLength": 200},
+                    "sort": {"type": "string", "enum": list(_memory_kind.LIST_SORTS)},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                },
+                "required": ["kind"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "propose_memory_changes",
+            "description": (
+                "Ask the user to delete or edit some of your own facts and experiences, "
+                f"up to {_memory_kind.MAX_CHANGES} at once, on one card. Call it only "
+                "when the user has asked you to clean up or correct your memory, after "
+                "memory_list. Each change names the memory by kind and id from "
+                "memory_list, action delete (stale, wrong, duplicate) or edit, and a "
+                "one-line reason the user reads on the card. An edit of an episode "
+                "passes the whole new text; an edit of a fact passes the whole new "
+                "value. The user can untick rows before applying, and only ticked rows "
+                "change. The card shows the memory as it is when it is raised, and a "
+                "memory that changes before Apply is left as it is. It puts one card "
+                "in this chat. Reply with one short line saying how many changes you "
+                "put on the card for the user to review, then end your turn. The "
+                "outcome is given to you at the start of your next turn."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "changes": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": _memory_kind.MAX_CHANGES,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": {
+                                    "type": "string",
+                                    "enum": list(_memory_kind.MEMORY_KINDS),
+                                },
+                                "id": {"type": "string", "maxLength": _memory_kind.ID_MAX},
+                                "action": {
+                                    "type": "string",
+                                    "enum": list(_memory_kind.ACTIONS),
+                                },
+                                "text": {"type": "string", "maxLength": _memory_kind.TEXT_MAX},
+                                "value": {},
+                                "reason": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": _memory_kind.REASON_MAX,
+                                },
+                            },
+                            "required": ["kind", "id", "action", "reason"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "reason": {"type": "string", "maxLength": 500},
+                },
+                "required": ["changes"],
                 "additionalProperties": False,
             },
         },

@@ -595,7 +595,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             )
 
         if expected_entry is not None and not await asyncio.to_thread(
-            launch_resolve.matches_entry, expected_entry, launches.get(name, [])
+            launch_resolve.matches_entry, expected_entry, launches.get(name, []), server=name
         ):
             _log_stub_rejection("launch_differs_from_card")
             return web.json_response(

@@ -1023,6 +1023,8 @@ async def _persist_title(
             )
             if not persisted:
                 logger.debug("Failed to persist title for slot %s", slot.key)
+                # The title is live but not on disk: the next periodic flush owes it.
+                slot._dirty = True
                 await restore_replacement_if_handover_did_not_land(
                     state, slot.key, tightening, history_key
                 )
@@ -1031,6 +1033,7 @@ async def _persist_title(
             logger.debug("Persisted title %r for slot %s", slot.title, slot.key)
         except Exception:
             logger.debug("Failed to persist title for slot %s", slot.key)
+            slot._dirty = True
             await restore_replacement_if_handover_did_not_land(
                 state, slot.key, tightening, history_key
             )

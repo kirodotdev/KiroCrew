@@ -655,6 +655,12 @@ describe('mc-sidebar-width', () => {
   })
 
   describe('the board auto-widen', () => {
+    /** The toggle seeds only from a loaded column list, so wait for the read to land. */
+    async function clickBoardViewOnceColumnsLoad() {
+      const item = await screen.findByText('Switch to board view')
+      await waitFor(() => expect(item.closest('[role="menuitem"]')).not.toHaveAttribute('data-disabled'))
+      fireEvent.click(item)
+    }
     let innerWidth: PropertyDescriptor | undefined
     beforeEach(() => {
       innerWidth = Object.getOwnPropertyDescriptor(window, 'innerWidth')
@@ -680,7 +686,7 @@ describe('mc-sidebar-width', () => {
       const openHeaderMenu = () => fireEvent.keyDown(screen.getAllByLabelText('More options')[0], { key: 'Enter' })
 
       openHeaderMenu()
-      fireEvent.click(await screen.findByText('Switch to board view'))
+      await clickBoardViewOnceColumnsLoad()
       await waitFor(() => expect(localStorage.getItem('mc-sidebar-width')).toBe('920'))
       expect(localStorage.getItem('mc-sidebar-width-pre-board')).toBe('260')
       // The prior width is recorded BEFORE the widened one is persisted.
@@ -721,7 +727,7 @@ describe('mc-sidebar-width', () => {
       })
       renderSidebar({ slots: [{ key: 'k-a', title: 'A', messages: 1, running: false }], folders: [] })
       fireEvent.keyDown(screen.getAllByLabelText('More options')[0], { key: 'Enter' })
-      fireEvent.click(await screen.findByText('Switch to board view'))
+      await clickBoardViewOnceColumnsLoad()
       await waitFor(() => expect(seededReads).toBeGreaterThan(0))
       expect(localStorage.getItem('mc-sidebar-width')).toBe('2884')
       expect(localStorage.getItem('mc-sidebar-width-pre-board')).toBeNull()

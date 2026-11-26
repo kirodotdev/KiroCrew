@@ -113,6 +113,7 @@ from kiro_crew.agent_sdk.drivers.acp import (
     kas_engine_start_verdict,
     kas_engine_unsupported_reason,
     kas_engine_verdict,
+    kas_session_spec,
     kas_start_was_refused,
     spec_with_default_crew_servers,
     spec_withholds_server_whole,
@@ -267,6 +268,7 @@ class AgentTurnUsage(Protocol):
 
 __all__ = [
     "published_stderr_tail",
+    "kas_session_spec",
     "spec_with_default_crew_servers",
     "spec_withholds_server_whole",
     "CODEX_CLI_ADAPTER_MISSING",

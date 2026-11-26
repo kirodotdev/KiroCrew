@@ -2,11 +2,13 @@
 
 On Windows fnm, nvm-windows and Volta keep Node under ``%APPDATA%``,
 ``%LOCALAPPDATA%`` or ``%ProgramFiles%``, and fnm puts ``node.exe`` directly in
-``installation\\`` (no ``bin``). :mod:`kiro_crew.env` scans these only on
+``installation\\`` (no ``bin``); the nodejs.org installer puts it in
+``%ProgramFiles%\\nodejs``. :mod:`kiro_crew.env` scans these only on
 Windows, AFTER its POSIX and macOS lists. Each candidate is still probed (an
 executable ``node``, or ``is_dir`` for MCP-binary discovery), so an absent root
 drops out. Volta's dirs also go on ``env.augmented_path``: a shim dir appears in
-BOTH lists.
+BOTH lists. The installer folder goes there too, as its last extra, behind every
+version manager's dirs.
 """
 
 from __future__ import annotations
@@ -25,10 +27,12 @@ MANAGER_DIRS = (
     "{localappdata}/Volta/bin",
     "{programfiles}/Volta",
 )
+# The nodejs.org installer's machine-wide folder: ranked after every version manager.
+INSTALLER_DIRS = ("{programfiles}/nodejs",)
 
 
 def roots(home: str, pinned_home: str | None) -> dict[str, str]:
-    """The roots :data:`MANAGER_GLOBS` and :data:`MANAGER_DIRS` format against.
+    """The roots :data:`MANAGER_GLOBS`, :data:`MANAGER_DIRS` and :data:`INSTALLER_DIRS` use.
 
     ``APPDATA`` / ``LOCALAPPDATA`` name the account running this process, so a
     *pinned_home* for another account uses that home's ``AppData`` instead
@@ -61,8 +65,11 @@ def manager_globs(home: str, pinned_home: str | None = None) -> tuple[str, ...]:
     return tuple(g.format(**values).replace("{", "{{").replace("}", "}}") for g in MANAGER_GLOBS)
 
 
-def manager_dirs(home: str, pinned_home: str | None = None) -> list[str]:
-    """:data:`MANAGER_DIRS` formatted and normalized for this host; empty off Windows.
+def manager_dirs(
+    home: str, pinned_home: str | None = None, templates: tuple[str, ...] = MANAGER_DIRS
+) -> list[str]:
+    """*templates* (:data:`MANAGER_DIRS` by default) formatted and normalized for
+    this host; empty off Windows.
 
     Each entry is one absolute dir. A root carrying ``os.pathsep`` or NUL would
     smuggle extra entries onto every PATH built from it, so it is dropped (as
@@ -72,7 +79,7 @@ def manager_dirs(home: str, pinned_home: str | None = None) -> list[str]:
         return []
     values = roots(home, pinned_home)
     out: list[str] = []
-    for template in MANAGER_DIRS:
+    for template in templates:
         if any(not v and f"{{{k}}}" in template for k, v in values.items()):
             continue
         entry = os.path.normpath(template.format(**values))

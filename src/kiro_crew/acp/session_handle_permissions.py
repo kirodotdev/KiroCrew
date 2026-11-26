@@ -1,8 +1,8 @@
 """Permission requests and in-band refusals.
 
 The permission event, approve and reject, the zero-tool deny and its session-start
-notice, the spec-disabled deny and tripwire, the unidentifiable, unreadable and
-unretained MCP identity refusals, a host's own per-session refusals (a permission
+notice, the spec-disabled deny and tripwire, the reused call id refusal, the
+unidentifiable, unreadable and unretained MCP identity refusals, a host's own per-session refusals (a permission
 request its identity channel cannot vouch for, a session that left its required
 permission state), the reject audit, and session permission routing.
 
@@ -37,12 +37,14 @@ from kiro_crew import acp_tool_gate, mediated_request_capability, permission_flo
 from kiro_crew import sel as sel_module
 from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
+    REFUSAL_REUSED_CALL_ID,
     TOOL_CALL_CACHE_MAX_ENTRIES,
     TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
     asks_allow_always,
     build_permission_event,
     identified_mcp_call,
     is_mcp_tool_approval,
+    log_reused_call_id,
     offered_allow_id,
     redact_text,
     scope_overflowed,
@@ -76,6 +78,7 @@ from kiro_crew.agent_sdk.backends import (
 from kiro_crew.constants import (
     DENY_CAUSE_POLICY,
     DENY_CAUSE_PROVENANCE_UNRETAINED,
+    DENY_CAUSE_REUSED_CALL_ID,
     DENY_CAUSE_UNREADABLE_IDENTITY,
 )
 from kiro_crew.deny_notice import unreadable_identity_clause
@@ -614,6 +617,32 @@ async def _reject_with_host_notice(
 
     await _steer_host_deny(self, event, reason, cause=cause)
     await self.reject_tool(event.request_id)
+
+
+async def _refuse_reused_call_id(self: AcpSessionHandle, event: AcpEvent) -> bool:
+    """Refuse a request whose arguments contradict the cached ones for its id.
+
+    The mirrored counterpart of ``AcpClient._refuse_reused_call_id``: the id is the
+    model's, so neither the cached call nor the request's own arguments can be shown
+    to be what the harness will run (``AcpEvent.tool_call_id_reused``). Run before
+    every other refusal, so no consumer, card or rule sees the request; the
+    ``reused_call_id`` host notice is steered before the reject.
+    """
+    if not event.tool_call_id_reused:
+        return False
+    log_reused_call_id(logger, event, self._session_id)
+    self._audit_handle_reject(
+        event.request_id,
+        event.title or "",
+        REFUSAL_REUSED_CALL_ID,
+        sub_session_id=event.sub_session_id or "",
+    )
+    await self._reject_with_host_notice(
+        event,
+        "the call id was already used by an earlier call with different arguments",
+        cause=DENY_CAUSE_REUSED_CALL_ID,
+    )
+    return True
 
 
 async def _refuse_unretained_provenance(

@@ -13,6 +13,8 @@ import asyncio
 import logging
 from typing import Any
 
+from aiohttp import web
+
 from kiro_crew.dashboard.handlers.cron_shared import _sel
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.llm_helpers import run_bg_oneliner
@@ -32,6 +34,54 @@ _CONTRADICTION_MODEL = "auto"  # inherit the governed default; a hardcoded id 40
 # fire-and-forget after the lesson is already persisted, so this bounds a hung
 # model call rather than gating the write path.
 _CONTRADICTION_TIMEOUT = 60.0
+
+# What the sweep deleted, as ``(session key, {"removed", "cause"})``, kept in the
+# dashboard state's ``__dict__`` under this key: it ends after its save has answered, so
+# that session's next lesson save or list names the delete. In memory and capped: a
+# restart loses a notice, never a lesson, and one the cap evicts is still counted for
+# its session under ``_CONTRADICTION_NOTICES_DROPPED`` (session key -> count, same cap).
+_CONTRADICTION_NOTICES = "_lesson_contradiction_notices"
+_CONTRADICTION_NOTICES_DROPPED = "_lesson_contradiction_notices_dropped"
+_CONTRADICTION_NOTICE_CAP = 50
+
+
+def _record_contradiction_notice(state: DashboardState, sk: str, notice: dict[str, str]) -> None:
+    """Keep *notice* for *sk*; a notice the cap evicts is counted for its own session."""
+    pending = state.__dict__.setdefault(_CONTRADICTION_NOTICES, [])
+    pending.append((sk, notice))
+    if len(pending) <= _CONTRADICTION_NOTICE_CAP:
+        return
+    evicted, _ = pending.pop(0)
+    dropped = state.__dict__.setdefault(_CONTRADICTION_NOTICES_DROPPED, {})
+    dropped[evicted] = dropped.pop(evicted, 0) + 1
+    if len(dropped) > _CONTRADICTION_NOTICE_CAP:
+        oldest = next(iter(dropped))
+        logger.warning(
+            "Dropped %d contradiction-sweep notice(s) owed to session %s: too many sessions "
+            "had unread notices",
+            dropped.pop(oldest),
+            oldest,
+        )
+
+
+def _take_contradiction_notices(request: web.Request, sk: str) -> dict[str, Any]:
+    """The ``swept`` field of *sk*'s next lesson response, or nothing when none is pending.
+
+    Taken once, and only by the internal caller: ``learn_add`` / ``learn_list`` are the
+    one reader that prints it, so an app or the Memory tab reading with the same key
+    leaves it pending. The text is as stored; the response that carries it redacts it.
+    ``swept_dropped`` counts the notices the cap evicted before this session read them.
+    """
+    if request.get("internal_auth") is not True:
+        return {}
+    shelf = request.app["state"].__dict__
+    pending = shelf.get(_CONTRADICTION_NOTICES) or []
+    swept = [notice for key, notice in pending if key == sk]
+    dropped = (shelf.get(_CONTRADICTION_NOTICES_DROPPED) or {}).pop(sk, 0)
+    if not swept and not dropped:
+        return {}
+    pending[:] = [(key, notice) for key, notice in pending if key != sk]
+    return {"swept": swept, **({"swept_dropped": dropped} if dropped else {})}
 
 
 async def _classify_contradiction(state: DashboardState, prompt: str) -> str:
@@ -123,6 +173,7 @@ async def _resolve_and_supersede(
         # the failure — operators need the visibility.
         logger.warning("Background contradiction sweep failed", exc_info=True)
         return
+    rules = {candidate["key"]: candidate["rule"] for candidate in candidates}
     for key, expect_body in contradicted:
         try:
             # Audit the supersede DECISION *before* the destructive delete: a
@@ -161,6 +212,7 @@ async def _resolve_and_supersede(
                 # the next write touching the topic.
                 logger.info("Contradicted lesson %s changed while its verdict ran; kept", key)
                 continue
+            _record_contradiction_notice(state, sk, {"removed": rules[key], "cause": rule})
             logger.info("Deleted contradicted lesson: %s", key)
         except Exception:
             # per-key so one bad/already-deleted key doesn't abort the batch (a

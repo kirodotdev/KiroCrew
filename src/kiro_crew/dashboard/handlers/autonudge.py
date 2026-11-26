@@ -10,6 +10,12 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.apps.permissions import (
+    CHAT_SLOTS_NOT_DECLARED,
+    SESSION_APPROVAL_DISABLED,
+    SESSION_APPROVAL_UNAVAILABLE,
+    chat_slots_denial_cause,
+)
 from kiro_crew.autonudge import (
     NudgeAdmissionReason,
     NudgeAdmissionRefused,
@@ -43,6 +49,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
     stale_owner_session_response,
 )
+from kiro_crew.dashboard.slot_ownership import deny_app_slot_session_access, slot_not_found
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.monitoring.limits import runtime_ceiling_secs, validate_runtime_secs
 from kiro_crew.monitoring.models import (
@@ -508,6 +515,58 @@ async def _require_monitor_owner(
         _CODE_DASHBOARD_OWNER_REQUIRED,
         status=403,
     )
+
+
+#: Who clears each refusal of an app's goal-loop call, by its ``cause``.
+_APP_LOOP_REFUSALS = {
+    CHAT_SLOTS_NOT_DECLARED: "app goal loops need permissions.chatSlots in the app's manifest",
+    SESSION_APPROVAL_DISABLED: "app goal loops need the app enabled by the owner",
+    SESSION_APPROVAL_UNAVAILABLE: "app goal loops are unavailable: the app's grant could not be read",
+}
+
+
+def _request_app(request: web.Request) -> str:
+    app = request.get("app", "")
+    return app if isinstance(app, str) else ""
+
+
+async def _require_owner_or_own_app_slot(
+    request: web.Request, operation: str, slot_key: str
+) -> web.Response | None:
+    """The owner gate, or for an app token: ``chatSlots`` granted and *slot_key* its own slot.
+
+    A slot the app does not own reads as missing (``deny_app_slot_session_access``).
+    """
+    app = _request_app(request)
+    if not app:
+        return await _require_monitor_owner(request, operation)
+    cause = await asyncio.to_thread(chat_slots_denial_cause, app)
+    if cause:
+        await _audit_monitor_access(request, operation, "denied", error=f"app:{app} {cause}")
+        return web.json_response(
+            {
+                "error": _APP_LOOP_REFUSALS.get(
+                    cause, _APP_LOOP_REFUSALS[SESSION_APPROVAL_UNAVAILABLE]
+                ),
+                "code": _CODE_DASHBOARD_OWNER_REQUIRED,
+                "cause": cause,
+            },
+            status=403,
+        )
+    state: DashboardState = request.app["state"]
+    slot = state.get_slot(slot_key) if slot_key else None
+    denied = deny_app_slot_session_access(app, slot, slot_key, operation)
+    if denied is not None:
+        await _audit_monitor_access(request, operation, "denied", error=f"app:{app} not its slot")
+        return denied
+    await _audit_monitor_access(request, operation, "allowed")
+    return None
+
+
+def _loop_source(request: web.Request) -> str:
+    """The audit source of a goal-loop call: ``app:<name>`` for an app token."""
+    app = _request_app(request)
+    return f"app:{app}" if app else "dashboard"
 
 
 async def _require_monitor_internal(request: web.Request) -> web.Response | None:
@@ -1078,6 +1137,8 @@ _AUTONUDGE_START_FIELDS = frozenset(
         "judge",
     }
 )
+#: What an app token may send: ``gate`` and ``judge`` stay the owner's.
+_APP_AUTONUDGE_START_FIELDS = _AUTONUDGE_START_FIELDS - {"gate", "judge"}
 
 
 async def api_autonudge_start(request: web.Request) -> web.Response:
@@ -1098,10 +1159,13 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
     cycle. Omitting it keeps the row exactly as it has always been.
     """
     # Same owner gate as every ``api_monitor_*`` route: a loop's message becomes
-    # the owner session's next turn, so arming one is an owner decision.
-    denied = await _require_monitor_owner(request, "autonudge_start")
-    if denied is not None:
-        return denied
+    # the owner session's next turn, so arming one is an owner decision. An app
+    # token passes only for its own slot (``_require_owner_or_own_app_slot``).
+    app = _request_app(request)
+    if not app:
+        denied = await _require_monitor_owner(request, "autonudge_start")
+        if denied is not None:
+            return denied
     svc = _autonudge_get()
     if svc is None:
         return web.json_response(
@@ -1120,12 +1184,20 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
 
     if (not_object := body_not_object_error(body)) is not None:
         return not_object
+    if app:
+        slot_key = body.get("session_key") or body.get("slot_key") or ""
+        denied = await _require_owner_or_own_app_slot(
+            request, "autonudge_start", slot_key if isinstance(slot_key, str) else ""
+        )
+        if denied is not None:
+            return denied
     # An unknown key is REFUSED, as the monitor_start / monitor_watch tools refuse
     # it (``validate_tool_args``): the first one in body order is named in the same
     # ``<field>: unknown field ...`` shape. Ignoring it would arm a loop that looks
     # like it honoured a setting it never read.
+    allowed_fields = _APP_AUTONUDGE_START_FIELDS if app else _AUTONUDGE_START_FIELDS
     for _key in body:
-        if _key not in _AUTONUDGE_START_FIELDS:
+        if _key not in allowed_fields:
             return web.json_response(
                 {
                     "error": f"{_key}: unknown field for POST /api/autonudge",
@@ -1158,9 +1230,18 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
     # Bound-checked separately so an out-of-range integer is answered with the
     # range that refused it, not with the type message above.
     try:
-        max_runtime_secs = validate_runtime_secs(
-            body.get("max_runtime_secs", 0), allow_unbounded=True
-        )
+        if app:
+            # Every app loop ends: 1 up to the owner's ceiling, the ceiling when absent.
+            raw_runtime = body.get("max_runtime_secs")
+            max_runtime_secs = (
+                runtime_ceiling_secs()
+                if raw_runtime is None
+                else validate_runtime_secs(raw_runtime, allow_unbounded=False)
+            )
+        else:
+            max_runtime_secs = validate_runtime_secs(
+                body.get("max_runtime_secs", 0), allow_unbounded=True
+            )
     except ValueError as exc:
         return web.json_response({"error": str(exc), "code": "invalid_runtime_budget"}, status=400)
     # The gating opt-out has to exist HERE too, not only on the MCP tool: this is
@@ -1211,7 +1292,7 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         # than a silent str() here that would persist "None" as a banner.
         banner=body.get("banner"),
         judge=judge_spec,
-        source="dashboard",
+        source=_loop_source(request),
         caller=request.remote or "",
         gate=gate,
         replace_existing=False,
@@ -1234,9 +1315,11 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
     its docstring for why those live in the transport-agnostic module and not
     here.
     """
-    denied = await _require_monitor_owner(request, "autonudge_update")
-    if denied is not None:
-        return denied
+    app = _request_app(request)
+    if not app:
+        denied = await _require_monitor_owner(request, "autonudge_update")
+        if denied is not None:
+            return denied
     svc = _autonudge_get()
     if svc is None:
         return web.json_response(
@@ -1248,6 +1331,14 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         )
     loop_id = request.match_info["loop_id"]
     existing = svc.get_by_id(loop_id)
+    if app:
+        if existing is None:
+            return slot_not_found()
+        denied = await _require_owner_or_own_app_slot(
+            request, "autonudge_update", existing.slot_key
+        )
+        if denied is not None:
+            return denied
     if existing is not None and is_structured_monitor_loop(existing):
         return _monitor_error(
             "structured monitors must use the monitor update API",
@@ -1273,6 +1364,13 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
             {"error": "expect_fingerprint must be a string", "code": "not_a_string"},
             status=400,
         )
+    if app and body.get("max_runtime_secs") is not None:
+        try:
+            validate_runtime_secs(body["max_runtime_secs"], allow_unbounded=False)
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_runtime_budget"}, status=400
+            )
     loop, error, status = await authorize_and_update_nudge(
         svc=svc,
         loop_id=loop_id,
@@ -1291,7 +1389,7 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         max_runtime_secs=body.get("max_runtime_secs"),
         banner=body.get("banner"),
         expect_fingerprint=expect_fingerprint,
-        source="dashboard",
+        source=_loop_source(request),
         caller=request.remote or "",
     )
     if error is not None:
@@ -1359,7 +1457,7 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
                 status=409,
             )
         operation = "monitor_clear" if clearing else "monitor_stop"
-        denied = await _require_monitor_owner(request, operation)
+        denied = await _require_owner_or_own_app_slot(request, operation, existing.slot_key)
         if denied is not None:
             return denied
         if clearing:
@@ -1367,7 +1465,7 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
                 svc=svc,
                 loop_id=loop_id,
                 session_key=existing.slot_key,
-                source="dashboard",
+                source=_loop_source(request),
                 caller=request.remote or "",
             )
             if error is not None:
@@ -1377,14 +1475,18 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
             svc=svc,
             loop_id=loop_id,
             session_key=existing.slot_key,
-            source="dashboard",
+            source=_loop_source(request),
             caller=request.remote or "",
         )
         if error is not None:
             return _monitor_error(error, "monitor_stop_denied", status=status)
         return web.json_response({"ok": True})
     # The structured branch above gates itself; this is the legacy row's gate.
-    denied = await _require_monitor_owner(request, "autonudge_delete")
+    if _request_app(request) and existing is None:
+        return slot_not_found()
+    denied = await _require_owner_or_own_app_slot(
+        request, "autonudge_delete", existing.slot_key if existing else ""
+    )
     if denied is not None:
         return denied
 
@@ -1392,7 +1494,7 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
         try:
             sel().log_tool_invocation(
                 session_key=existing.slot_key if existing else "",
-                source="dashboard",
+                source=_loop_source(request),
                 tool_name="autonudge_delete",
                 outcome="denied",
                 error=error,
@@ -1412,7 +1514,7 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
         )
     sel().log_tool_invocation(
         session_key=existing.slot_key if existing else "",
-        source="dashboard",
+        source=_loop_source(request),
         tool_name="autonudge_delete",
         outcome="success" if existing else "noop",
         metadata={"loop_id": loop_id, "caller": request.remote or ""},
@@ -1491,9 +1593,11 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
     structural rather than a habit: a guard added later cannot silently skip the
     record, because there is no un-audited way out.
     """
-    denied = await _require_monitor_owner(request, "autonudge_fire")
-    if denied is not None:
-        return denied
+    app = _request_app(request)
+    if not app:
+        denied = await _require_monitor_owner(request, "autonudge_fire")
+        if denied is not None:
+            return denied
     # Read before the service check so the audit helpers can name the subject
     # even on the disabled path. Pure ``match_info`` read; no service needed.
     loop_id = request.match_info["loop_id"]
@@ -1516,7 +1620,7 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
             await asyncio.to_thread(
                 lambda: sel().log_tool_invocation(
                     session_key=session_key,
-                    source="dashboard",
+                    source=_loop_source(request),
                     tool_name="autonudge_fire",
                     outcome=outcome,
                     metadata={
@@ -1544,7 +1648,7 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
             await asyncio.to_thread(
                 lambda: sel().log_tool_invocation(
                     session_key=session_key,
-                    source="dashboard",
+                    source=_loop_source(request),
                     tool_name="autonudge_fire",
                     outcome="invoked",
                     critical=True,
@@ -1566,9 +1670,15 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
     existing = svc.get_by_id(loop_id)
     if existing is None:
         await _audit("denied", "", "autonudge_not_found")
+        if app:
+            return slot_not_found()
         return web.json_response(
             {"error": "loop not found", "code": "autonudge_not_found"}, status=404
         )
+    if app:
+        denied = await _require_owner_or_own_app_slot(request, "autonudge_fire", existing.slot_key)
+        if denied is not None:
+            return denied
     if is_structured_monitor_loop(existing):
         await _audit("denied", existing.slot_key, "structured_monitor_requires_monitor_api")
         return _monitor_error(

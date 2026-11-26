@@ -40,6 +40,7 @@ import {
   type ShortcutPlatform,
 } from '../lib/shortcutRegistry'
 import { i18nT } from '../i18n/t'
+import { safeGetItem } from '../utils/safeStorage'
 import { canGoBack, canGoForward } from '../lib/routeHistoryPosition'
 import { useGuardedHistoryStep, useGuardedLeave } from '../components/NavigationLeaveGuard'
 import { MOBILE_BREAKPOINT } from './useIsMobile'
@@ -81,7 +82,7 @@ export const IS_MAC = isMacPlatform()
 
 /** Whether Mac uses Ctrl+digit (true, default) or Alt+digit (false, legacy). */
 export function getCtrlDigitsEnabled(): boolean {
-  return IS_MAC && localStorage.getItem(MAC_CTRL_DIGITS_KEY) !== '0'
+  return IS_MAC && safeGetItem(MAC_CTRL_DIGITS_KEY) !== '0'
 }
 
 /**
@@ -785,7 +786,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
   guardedLeaveRef.current = guardedLeave
   const appStore = useAppStore()
   const mruIndexRef = useRef(-1)
-  const [enabled, setEnabled] = useState(() => localStorage.getItem(SHORTCUTS_ENABLED_KEY) !== '0')
+  const [enabled, setEnabled] = useState(() => safeGetItem(SHORTCUTS_ENABLED_KEY) !== '0')
   const [ctrlDigits, setCtrlDigits] = useState(() => getCtrlDigitsEnabled())
   // In state, not read per keystroke, to keep the hot keydown path off localStorage.
   const [panelBindings, setPanelBindings] = useState<PanelToggleOverrides>(() => loadPanelToggleOverrides())
@@ -849,6 +850,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     'terminal-prev': onPrevTerminalTab,
     'terminal-next': onNextTerminalTab,
     'side-terminal': onToggleSideTerminal,
+    // Handled by the focused terminal (TERMINAL_FOCUS_PANEL_TOGGLE_IDS), never here.
+    'terminal-clear': undefined,
   }), [onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal, onCloseTerminalTab, onPrevTerminalTab, onNextTerminalTab, onToggleSideTerminal])
 
   const handler = useCallback((e: KeyboardEvent) => {

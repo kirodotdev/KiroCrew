@@ -104,10 +104,15 @@ DURABLE_SOURCE_CHANNELS_KEY = "source_channels"
 UNREADABLE_SOURCE_CHANNEL = "<unreadable>"
 
 
+def _named_channels(channels: tuple[str, ...]) -> tuple[str, ...]:
+    """The channel ids in *channels* that name a channel."""
+    return tuple(ch for ch in channels if isinstance(ch, str) and ch)
+
+
 def stamp_source_channels(owner: Any, queue_id: str, channels: tuple[str, ...]) -> None:
     """Record *channels* on the queued entry *queue_id*. Called right after the
     append that returned the id, with nothing suspending between the two."""
-    clean = tuple(ch for ch in channels if isinstance(ch, str) and ch)
+    clean = _named_channels(channels)
     if not clean:
         return
     for item in getattr(owner, "_queue", None) or ():
@@ -736,6 +741,15 @@ def _delivery_key(content: str) -> str:
 ATTACHMENT_META_KEYS: tuple[str, ...] = ("files", "dirs")
 _ATTACHMENT_MARKERS: dict[str, str] = {"files": "attached_file", "dirs": "attached_dir"}
 
+#: Queue-entry meta key: an earlier attempt of this queued prompt already ran its
+#: ``UserPromptSubmit`` fire, so the next attempt's prompt hooks are told it is a
+#: replay (``"replay": true``). ``_queue_recovery`` writes it, and Resume's
+#: re-send (``turn_failures._unsent_resend``) carries it; the drain unions it
+#: into the row's meta, where the next attempt reads it, and an edit
+#: that changes the words drops it. Defined here for the same reason as the
+#: lists above.
+PROMPT_HOOKS_RAN_META = "promptHooksRan"
+
 
 def _marker_spans(content: str, marker: str, index: int, path: str) -> list[tuple[int, int]]:
     """Every span of the exact ``[<marker> <index>] <path>`` token in *content*.
@@ -892,8 +906,13 @@ class SlotQueueRepository:
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
         directive_owner_origin: bool = False,
+        source_channels: tuple[str, ...] = (),
     ) -> str:
-        """Append an entry and return its process-local queue ID."""
+        """Append an entry and return its process-local queue ID.
+
+        *source_channels* are on the entry before it joins the queue, so no write
+        of the queue can carry the entry without them.
+        """
         queue_id = self._id_provider()
         item: dict[str, Any] = {
             "id": queue_id,
@@ -910,6 +929,8 @@ class SlotQueueRepository:
             item["_directive_channel_origin"] = True
         if directive_owner_origin:
             item["_directive_owner_origin"] = True
+        if _named_channels(source_channels):
+            item[SOURCE_CHANNELS_KEY] = _named_channels(source_channels)
         owner._queue.append(item)
         owner._note_enqueue()
         # Its queue wait starts now, timed beside the entry for the reason note_enqueue gives.
@@ -935,8 +956,13 @@ class SlotQueueRepository:
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
         directive_owner_origin: bool = False,
+        source_channels: tuple[str, ...] = (),
     ) -> str:
-        """Insert one entry while preserving retry callbacks and provenance."""
+        """Insert one entry while preserving retry callbacks and provenance.
+
+        *source_channels* are on the entry before it joins the queue, as for
+        :meth:`queue_append`.
+        """
         queue_id = self._id_provider()
         item: dict[str, Any] = {
             "id": queue_id,
@@ -958,6 +984,8 @@ class SlotQueueRepository:
             item["_directive_channel_origin"] = True
         if directive_owner_origin:
             item["_directive_owner_origin"] = True
+        if _named_channels(source_channels):
+            item[SOURCE_CHANNELS_KEY] = _named_channels(source_channels)
         owner._queue.insert(index, item)
         owner._note_enqueue()
         return queue_id
@@ -1094,6 +1122,8 @@ class SlotQueueRepository:
                 item["meta"].pop("slack_sender", None)
                 # Nor are the editor's words in the linked thread, so they echo.
                 item["meta"].pop(PROMPT_ON_CHANNEL_META_KEY, None)
+                # Nor did any prompt hook see them: the edited entry is a new prompt.
+                item["meta"].pop(PROMPT_HOOKS_RAN_META, None)
                 # They are typed, too, so their mentions expand.
                 item["meta"].pop(EXPANSIONS_OFF_META_KEY, None)
             item["edit_rev"] = int(item.get("edit_rev") or 0) + 1

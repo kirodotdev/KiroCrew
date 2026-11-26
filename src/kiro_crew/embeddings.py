@@ -132,6 +132,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CUSTOM_LABEL,
         _POOLING_SUFFIX_SEPARATOR,
         LEGACY_EMBEDDING_WARNING,
+        QWEN3_QUERY_TASK,
         CustomModelSpec,
         _custom_model_id,
         _is_sensitive_model_path,
@@ -159,6 +160,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         model_file_present,
         model_pooling_type,
         models_dir,
+        query_instruction_applies,
+        query_instruction_text,
         resolve_custom_model,
         validate_custom_model_path,
     )
@@ -207,6 +210,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         resolve_ollama_settings,
     )
     from kiro_crew.embeddings_settings import (  # noqa: F401
+        _BACKLOG_BULK_DUTY,
         _CHILD_CALL_BASE_SECS,
         _CHILD_CALL_SECS_PER_TEXT,
         _CHILD_LOAD_TIMEOUT_SECS,
@@ -264,10 +268,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         PRIORITY_INTERACTIVE,
         PRIORITY_NORMAL,
         EmbeddingWork,
+        _backlog_boost,
+        _backlog_boost_allowed,
         _embed_threads,
         _read_memory_config,
         _small_host_cache,
         _work_for_priority,
+        bulk_backlog_boost,
         bulk_duty_cycle,
         bulk_embed_threads,
         bulk_pace_delay,
@@ -319,6 +326,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         register_embedding_backend,
         reset_shared_embedder,
         store_embedding_space_is_stale,
+        wait_for_cold_shared_embedder,
         warm_embedder_for_person,
         warm_embedder_for_person_soon,
     )

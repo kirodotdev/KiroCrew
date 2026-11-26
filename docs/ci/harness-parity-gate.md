@@ -22,9 +22,9 @@ matching reads as a green signal, which is worse than no gate, so each rule is
 exercised against a planted probe before the real check runs. `pytest` runs the
 same self-test, so a broken regex also fails a local test run.
 
-## The six rules
+## The seven rules
 
-Each names the invariant it closes. All six are line-shape rules on added lines;
+Each names the invariant it closes. All seven are line-shape rules on added lines;
 none of them needs to resolve an import. The scanner itself uses only the Python
 standard library; the workflow selects Python 3.12 with `setup-python` but performs
 no dependency install.
@@ -37,6 +37,7 @@ no dependency install.
 | `sandbox-delegation` | H7 | `is_kiro_cli=` derived from a negation. This flag makes `wrap_argv` SKIP Kiro Crew's seatbelt, so it fails OPEN |
 | `vocabulary-home` | H8 | an `ACP_BACKEND_*` identifier or `ACP_BACKENDS_*` set defined outside `agent_sdk/backends.py` and the owners `VOCABULARY_PATHS` lists beside it |
 | `non-kiro-default` | H1 | `default=ACP_BACKEND_KAS` and equivalents — a harness other than Kiro named as a default on an added line |
+| `backend-identity-read` | H6, H14 | `capabilities_of(p).backend == ACP_BACKEND_KAS` (either side) and `getattr(p, "is_kas_backend", False)` — a behaviour branched on which backend runs, instead of on a `SessionCapabilities` field or a named set. Membership (`capabilities_of(p).backend in ACP_BACKENDS_X`) is not matched |
 
 ## Why diff-scoped rather than whole-tree
 

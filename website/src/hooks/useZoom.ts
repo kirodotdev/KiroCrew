@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { OPENDYSLEXIC_BODY_STACK, OPENDYSLEXIC_MONO_STACK } from '../utils/fontFamilyOptions'
 import { resolveCustomFontFamily, CUSTOM_FONT_STORAGE_KEY, CUSTOM_FONT_LIGATURES_STORAGE_KEY } from '../utils/customFont'
 
@@ -47,8 +47,8 @@ const zoomAPI = (): ZoomAPI | undefined => window.zoomAPI
 const LEGACY_ZOOM_KEY = 'mc-zoom'
 const LEGACY_FONT_SCALE_KEY = 'mc-font-scale'
 function migrateLegacyScale(api: ZoomAPI | undefined) {
-  const zoomRaw = localStorage.getItem(LEGACY_ZOOM_KEY)
-  const fontRaw = localStorage.getItem(LEGACY_FONT_SCALE_KEY)
+  const zoomRaw = safeGetItem(LEGACY_ZOOM_KEY)
+  const fontRaw = safeGetItem(LEGACY_FONT_SCALE_KEY)
   if (zoomRaw === null && fontRaw === null) return
   localStorage.removeItem(LEGACY_ZOOM_KEY)
   localStorage.removeItem(LEGACY_FONT_SCALE_KEY)
@@ -68,18 +68,18 @@ export function useZoom() {
   const [zoom, setZoomPct] = useState(100)
   const zoomSupported = !!zoomAPI()
   const [family, setFamily] = useState<FontFamily>(
-    () => (localStorage.getItem('mc-font-family') as FontFamily) || 'sans'
+    () => (safeGetItem('mc-font-family') as FontFamily) || 'sans'
   )
   // The family named by the 'custom' option. Persisted separately so switching
   // Custom → Sans → Custom keeps the typed family, and applied to --font-body
   // only while `family === 'custom'`.
   const [customFontFamily, setCustom] = useState<string>(
-    () => localStorage.getItem(CUSTOM_FONT_STORAGE_KEY) || ''
+    () => safeGetItem(CUSTOM_FONT_STORAGE_KEY) || ''
   )
   // Whether the Custom font shows ligatures. Default on (only the explicit
   // string 'false' disables), so existing custom users keep today's behaviour.
   const [customFontLigatures, setLigatures] = useState<boolean>(
-    () => localStorage.getItem(CUSTOM_FONT_LIGATURES_STORAGE_KEY) !== 'false'
+    () => safeGetItem(CUSTOM_FONT_LIGATURES_STORAGE_KEY) !== 'false'
   )
 
   useEffect(() => {

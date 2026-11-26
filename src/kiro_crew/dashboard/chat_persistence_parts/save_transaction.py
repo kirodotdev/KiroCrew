@@ -74,12 +74,26 @@ def save_all_slots_to_history(state: DashboardState) -> None:
             slot = state._slots.get(key)
             if slot is None:
                 break
+            # A clean slot's rows are already on disk: ``_dirty`` stays True until
+            # a save confirms them, and a queued prompt shows as queue drift. Its
+            # metadata may not be: a model pick, for one, changes only the slot.
+            # So a clean slot builds its line as usual and is written only when
+            # that line differs from the one on disk. Rewriting the whole
+            # transcript to put the same bytes back used up the shutdown
+            # deadline before the slots that do owe a write got theirs.
+            clean = (
+                not getattr(slot, "_dirty", True)
+                and not getattr(slot, "queue_persist_pending", False)
+                and not getattr(slot, "_metadata_persist_inflight", 0)
+            )
             basis = SlotRegistry.open_takeover_basis(state, key)
             try:
                 if state._slots.get(key) is not slot:
                     continue
                 try:
-                    committed = _save_slot_to_history(state, slot, force=True, takeover_basis=basis)
+                    committed = _save_slot_to_history(
+                        state, slot, force=True, takeover_basis=basis, unless_unchanged=clean
+                    )
                 except Exception:
                     logger.error("Shutdown: failed to save slot %s", slot.key, exc_info=True)
                     break
@@ -174,8 +188,13 @@ def _save_slot_to_history(
     after_commit_on_transcript: Callable[[], None] | None = None,
     retired_rows: list[dict] | None = None,
     takeover_basis: TakeoverBasis | None = None,
+    unless_unchanged: bool = False,
 ) -> bool:
     """Persist slot messages to JSONL history (append-safe).
+
+    ``unless_unchanged`` is for a slot whose rows are already on disk (the
+    shutdown save of a clean slot): the line is built as usual, and nothing is
+    written when it equals the line on disk.
 
     The session file is a **frozen prefix** (the first ``slot._disk_older_count``
     lines, older than the in-memory window, copied verbatim and never rewritten,
@@ -391,6 +410,7 @@ def _save_slot_to_history(
                 autocompact_override=autocompact_override,
                 after_commit_on_transcript=after_commit_on_transcript,
                 routed_binding=routed_binding,
+                unless_unchanged=unless_unchanged,
             )
             if refusal is not None:
                 logger.warning("Slot %s empty-window save refused: %s", slot.key, refusal)
@@ -574,6 +594,16 @@ def _save_slot_to_history(
                 )
             )
             meta_str = json.dumps(meta_line) + "\n"
+            if (
+                unless_unchanged
+                and not retired_drop_ids
+                # Re-read under the lock: an in-place row edit can land while the
+                # save waits for it, and that slot owes a write after all.
+                and not slot._dirty
+                and not slot.queue_persist_pending
+                and json.loads(meta_str) == existing_meta
+            ):
+                return True
 
             # ── Commit gate ─────────────────────────────────────────────────
             # The single atomic decision that orders this truncating write

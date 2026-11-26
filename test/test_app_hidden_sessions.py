@@ -186,15 +186,18 @@ async def test_any_other_mode_is_refused(tmp_path, monkeypatch, caller_app, body
 
 @pytest.mark.asyncio
 async def test_a_non_owner_dashboard_caller_cannot_name_an_app_page(tmp_path, monkeypatch) -> None:
-    """Only the owner's own request may speak for an app page through ``embed_app``."""
+    """Only the owner's own request may speak for an app page through ``embed_app``.
+
+    A dashboard session that is neither the owner nor a teammate is refused every
+    chat create by the per-slot checkpoint, before the mode is read."""
     state = _state(tmp_path, monkeypatch)
     _may_hide(monkeypatch)
     async with _client(state, caller_app="", user="someone-else") as client:
         resp = await client.post(
             "/api/chat/slots", json={"name": "guest-1", "embed_app": APP, "mode": APP}
         )
-        assert resp.status == 400, await resp.text()
-        assert (await resp.json())["code"] == "invalid_mode"
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == "owner_only"
     assert state.get_slot("guest-1") is None
 
 
@@ -353,6 +356,92 @@ async def test_a_built_in_worker_mode_needs_no_declaration(tmp_path, monkeypatch
         resp = await client.post("/api/chat/slots", json={"name": "w-1", "mode": "builtin-worker"})
         assert resp.status == 200, await resp.text()
     assert state.get_slot("w-1").mode == "builtin-worker"
+    assert asked == []
+
+
+# ── a send that recreates a hidden chat (``POST /api/chat``) ─────────────────
+
+
+def _idle_turns(monkeypatch) -> None:
+    async def run_chat(_st, slot, _message, **_kwargs):
+        slot.append("done", "", "done", broadcast=False)
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat)
+
+
+async def _send(client: TestClient, state, key: str, fields: dict):
+    from kiro_crew.testing.wait import await_until
+
+    resp = await client.post("/api/chat?ws=1", json={"slot": key, "message": "hi", **fields})
+    assert resp.status == 200, await resp.text()
+    slot = state.get_slot(key)
+    if slot.task is not None:
+        await await_until(slot.task, what="the send's turn")
+    return slot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("caller_app", "fields", "taken"),
+    [
+        (None, {"embed_app": APP, "mode": APP}, True),
+        (APP, {"mode": APP}, True),
+        (None, {"embed_app": APP, "mode": OTHER}, False),
+        (None, {"mode": APP}, False),
+        (APP, {"mode": OTHER, "embed_app": OTHER}, False),
+        (None, {"embed_app": "idle-app", "mode": "idle-app"}, False),
+    ],
+    ids=[
+        "page-own-app",
+        "token-own-app",
+        "page-other-app",
+        "no-app",
+        "token-other-app",
+        "app-may-not-hide",
+    ],
+)
+async def test_a_send_that_recreates_a_chat_keeps_only_a_mode_the_create_route_takes(
+    tmp_path, monkeypatch, caller_app, fields, taken
+) -> None:
+    """A chat that lived only in memory is recreated by the app's next send after a
+    restart. The send keeps the mode exactly when ``POST /api/chat/slots`` takes it
+    from the same caller, and otherwise recreates a plain chat, which is listed."""
+    state = _state(tmp_path, monkeypatch)
+    # Both apps may hide their own chats: what decides is whose mode it is.
+    _may_hide(monkeypatch, allowed=(APP, OTHER))
+    _idle_turns(monkeypatch)
+    prefix = f"{caller_app}-" if caller_app else ""
+    async with _client(state, caller_app=caller_app) as client:
+        created = await client.post("/api/chat/slots", json={"name": f"{prefix}made", **fields})
+        assert (created.status == 200) is taken, await created.text()
+        slot = await _send(client, state, f"{prefix}sent", fields)
+    assert slot.mode == (fields["mode"] if taken else "")
+
+
+@pytest.mark.asyncio
+async def test_a_send_to_an_open_chat_keeps_its_mode_and_asks_no_app(tmp_path, monkeypatch) -> None:
+    """Naming an app's mode on a send cannot move an open chat out of the person's list."""
+    state = _state(tmp_path, monkeypatch)
+    asked = _may_hide(monkeypatch)
+    _idle_turns(monkeypatch)
+    state.get_or_create_slot("mine")
+    async with _client(state) as client:
+        slot = await _send(client, state, "mine", {"embed_app": APP, "mode": APP})
+    assert slot.mode == ""
+    assert asked == []
+
+
+@pytest.mark.asyncio
+async def test_a_send_keeps_a_built_in_worker_mode_without_asking(tmp_path, monkeypatch) -> None:
+    state = _state(tmp_path, monkeypatch)
+    asked = _may_hide(monkeypatch, allowed=())
+    _idle_turns(monkeypatch)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_handlers._CREATABLE_MODES", ("", "builtin-worker")
+    )
+    async with _client(state) as client:
+        slot = await _send(client, state, "w-2", {"mode": "builtin-worker"})
+    assert slot.mode == "builtin-worker"
     assert asked == []
 
 

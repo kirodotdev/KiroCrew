@@ -11,7 +11,6 @@ workspace.
 from __future__ import annotations
 
 import os
-import sys
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,6 +27,7 @@ from kiro_crew.slack import enterprise, team_ids
 from kiro_crew.slack.client import RealSlackClient
 from kiro_crew.slack.team_ids import SLACK_TEAM_ID_ENV
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
+from kiro_crew.testing.module_table import patched_sys_modules
 
 CHANNEL = "C0ABC123"
 TEAM = "T0HOME42"
@@ -223,7 +223,7 @@ class TestWriters:
             auth_test=lambda: {"team_id": "T0BOT999", "enterprise_id": "E0ORG777"}
         )
         with (
-            patch.dict(sys.modules, {"slack_sdk.web": web_mod}),
+            patched_sys_modules({"slack_sdk.web": web_mod}),
             patch.object(enterprise, "sel", return_value=MagicMock()),
         ):
             assert enterprise.validate_enterprise("xoxb-token") is True

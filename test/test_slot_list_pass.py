@@ -160,8 +160,8 @@ def tabs(_floor_monkeypatch, wide_window) -> SimpleNamespace:
 
     class _Request(dict):
         def __init__(self) -> None:
-            # A dashboard user who is not the owner, so no owner-only driver starts.
-            super().__init__({"user": "U_TAB", "app": "", "is_dashboard_user": True})
+            # The owner's tab: /api/ws refuses any other dashboard session.
+            super().__init__({"user": "U_OWNER", "app": "", "is_dashboard_user": True})
             self.app = {"state": state}
 
     def _open(**_kwargs) -> _Socket:

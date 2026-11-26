@@ -731,7 +731,11 @@ destinations:<provider>`, an alias in
 `publish_governance.publish_denied_reason` — the same decision the public-web
 deploy path uses, see `governance.md`) BEFORE dispatch — `overwrite-remote` on the resolved
 `publication.provider`, and `clone` on the routed provider (a clone sets
-`auto_sync=True`, arming every future snapshot push). The four remote comment
+`auto_sync=True`, arming every future snapshot push). The publish route gates the
+destination it reads for the request (the existing publication's, else the requested or
+default one) and passes that same destination to `publish_sync.publish`, so a publication
+cleared before the publish takes its lock cannot send the upload to another one. The four
+remote comment
 WRITE routes (post / reply / review / delete) are outbound egress too, so each
 goes through the same `_publish_governance_denied` gate BEFORE the provider call
 — a denial is an audited 403 and no bytes leave the box (there is no local
@@ -1090,12 +1094,51 @@ with a 400 before anything is uploaded, and passes the period to `PublishProvide
 as `expires_in_days`. It passes the keyword only to a destination that declares choices,
 so a provider that declares no choices keeps its signature; a request naming an expiry for such a
 destination is a 400. The destination fixes the lifetime when the publication is created,
-so a re-publish that names an expiry is a 409: it comes from a panel that saw the artifact
-unpublished, and reporting success would claim a lifetime that was never applied. The
+so a re-publish that names an expiry is a 409 (unless the publication has expired, below): it
+comes from a panel that saw the artifact unpublished, and reporting success would claim a
+lifetime that was never applied. The
 panel sends no expiry on a re-publish. A core row never shows the deploy surface's TTL
 control, because the core publish carries no `ttl_hours`. `supports_expiration` follows
 `expiration_choices_days` unless a provider sets it; an explicit `False` beside declared
 choices is refused.
+
+**A recorded expiry.** That first publish records `publication.expires_at` (ISO 8601,
+UTC): the time the provider's `publish()` returned plus the resolved period, or empty for
+"no expiry". Nothing else writes it, so a clone, a destination without choices and a record
+written before the field have none and behave as before. The gateway's clock decides
+whether it has passed (`ArtifactPublication.is_expired()`), and the serialized artifact and
+the publication summary a publish or sharing change returns carry `expires_at` and the answer
+as `expired`, computed on every read and never stored. An
+expired publication is no longer treated as live:
+
+- the auto-sync push skips it (no call to the destination, no `last_error`); a forced push
+  such as an overwrite still runs and reports its own outcome;
+- a publish that names an expiry is validated and rendered first, then, right before the
+  upload, withdraws the old copy by calling `unpublish` (it continues only on a confirmed
+  removal or a `DriveNotFound`, which clears the record, and otherwise fails and keeps the
+  record), then uploads on the same destination and records the new publication; if that
+  upload fails, the artifact is left unpublished and a retry is an ordinary first publish;
+- a publish that names no expiry is a 409, because it comes from a panel or caller that
+  still saw the old publication as live, and a first publish needs a chosen lifetime.
+
+A provider that declares expiry choices answers `unpublish` normally when the destination
+itself reports the id no longer exists (expired, or already removed, for example by an
+Unpublish from another panel); an unreachable, unauthorized or throttled reply still raises,
+and the stored date is never the evidence. So an expired record can be replaced, unpublished
+or deleted. The artifact page, a fork's included, shows "Expires on <date>", "Expires soon,
+on <date>" in a warning style in the last 7 days (by the browser's clock; a period of 7 days
+or less shows it throughout), and "Publication on <destination> expired on <date>" once the
+gateway says so, without offering the link as live or showing its stored sync error or
+notice; that expired line offers a Publish button that opens the Publish panel, on a page
+that has one. The dated line also shows on the fork or remote-ahead banner (on a fork it
+names the destination too), and the expired line with its Publish button replaces that
+banner, so the page offers no Pull or Overwrite to the deleted copy. The library
+table and gallery badges say "Expired" (label, tooltip and a muted tone, over any sync issue
+or notice), and the row or card shows no stored sync error. The Publish panel treats an expired publication as not yet published:
+it opens on that publication's own destination, says the previous link expired, and offers a
+first publish's visibility and expiry choices, so its request carries `expires_in_days`.
+The dashboard has no Unpublish control; `DELETE /api/artifacts/{slug}/publish` still
+withdraws an expired record.
 
 ## Widget auto-registration
 
@@ -1596,6 +1639,11 @@ does there. When the filter changed the page, a note in `verification.notes` say
 places and on which line of `view.html` the first is (`dashboard_verify.rewrite_note`),
 and never what was replaced. What the check returns crosses `member_dashboard._page_safe`,
 the redaction the tab's values cross, because a page chooses the text of its own errors.
+Each error message and the browser's last line when it exits (read from the last 2,000
+bytes of its stderr; `MAX_MESSAGE_CHARS`, 300), and each refused URL a note or a picture's
+reason lists (120), is redacted whole before it is cut, since a cut first can keep part of
+a secret. A refused URL is stored with its query cut and redacted, so requests that differ
+only in their query are listed once.
 
 It runs in a Chrome or Chromium an administrator installed on the gateway host, started
 by a system Python (each root-owned, not a link, not writable by the gateway's account: a
@@ -1951,6 +1999,13 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   right-aligns panels that would cross the right edge, clamping them at the left
   edge when needed; in a pane narrower than a panel it caps the panel's width so
   its rows wrap.
+- **The selection toolbar acts on one kind.** It shows for a single shape and for
+  a selection of several shapes of the same kind, centred over the whole group,
+  and every pick (colour, fill, outline, kind, text size, alignment, bold) applies
+  to all of them as one undo step; a value they do not share shows as mixed. A
+  selection that mixes kinds has no shared controls and gets no toolbar; it still
+  moves, deletes and copies as one. Resize handles and connect dots stay with a
+  single shape.
 - **Zoom is one menu.** Its trigger shows the zoom; zoom in, zoom out, 100% and
   fit are its items, as in FigJam's corner control.
 - **Read-only where a save could do harm.** A past version opens pan-and-zoom
@@ -2108,7 +2163,8 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
   (`FrameLinkChip`), with the full URL as its title, appears at the frame's top
   right corner and takes focus, and the person's click on it opens the link.
   It has no timer, so a slow reader does not lose it. It goes on the next click
-  or key elsewhere, on a scroll or resize, or on Escape. So a page that focuses its own frame cannot open a web URL or a new tab on a click
+  or key elsewhere, on a scroll that moves the frame (a chat transcript
+  scrolling beside it does not count), on a resize, or on Escape. So a page that focuses its own frame cannot open a web URL or a new tab on a click
   made in the dashboard or in another frame. Under the pointer tie it can, right after a dashboard click and with no click in the
   frame, move this window to a listed dashboard page, behind that page's leave check and within the activation's lifespan: the
   residual `rfc-in-app-dashboard-links.md` §3.4 and §4 accept. Each web link gets its resolved URL
@@ -2205,20 +2261,28 @@ two shapes by id. `jsonCanvas.ts` reads and writes the format:
     fixed-height frame scrolls itself and ignores the message. A
     `position: sticky` element inside the artifact still scrolls away here: it
     sticks to the frame's viewport, which is the whole document.
-- **A frame showing something that is not ours offers a retry.** The document URL
-  is single-use, so a navigation the ENGINE starts on its own (memory pressure, a
-  back/forward cache eviction) re-requests a spent URL and lands the frame on a
-  404 page — which fires `load` like any other navigation and leaves a silent
-  empty box, while the failure notice stays hidden because the mint itself
-  succeeded. Every document this surface builds carries the height reporter, so
-  silence past a grace window is the signal to surface the existing retry (which
-  re-mints; re-pointing at the spent URL recovers nothing). Deliberately not an
-  automatic re-mint: a second `load` also happens when a link inside an artifact
-  navigates the frame, and silently pulling the reader back would fight them.
-  The crewmate Dashboard tab differs and re-mints by itself
-  (`useFrameAliveRecovery`): its links go through the host's link bridge, so its
-  frame has no navigation of its own to fight, and a document that does not
-  answer the host's ping after a `load` is re-minted, at most three times in a row.
+- **A frame showing something that is not ours re-mints itself, and offers a
+  retry.** The document URL is single-use, so a navigation the ENGINE starts on
+  its own (memory pressure, a back/forward cache eviction, a gateway restart)
+  re-requests a spent URL and lands the frame on a 404 page — which fires `load`
+  like any other navigation and leaves a silent empty box, while the failure
+  notice stays hidden because the mint itself succeeded. Every visible frame
+  that runs script (this surface, the library thumbnail, a teammate's shared
+  artifact, a chat widget and the crewmate Dashboard tab) is built with
+  `buildSrcdoc({ aliveReply: true })`, and `useFrameAliveRecovery` re-mints a
+  document that does not answer the host's ping after a `load`, at most three
+  times in a row. Their web links go through the host's link bridge, a report's
+  links are inert and no click reaches a thumbnail, so little else moves them:
+  a `_self` or relative link, the page's own script, or a link in a
+  welcome-brief widget (it has no bridge) to a site the dashboard's `frame-src`
+  admits. Such a page cannot answer the
+  ping either, so it is re-minted back to the document, as on the crewmate
+  Dashboard tab. This surface also carries the height reporter, so silence past
+  a grace window longer than the ping's deadline surfaces the existing retry
+  (which re-mints; re-pointing at the spent URL recovers nothing), the reader's
+  way back once the automatic tries stop; while the re-mint is still in flight
+  it reads "Rendering…". The command-center session card frame grants no
+  script, so it cannot answer the ping and is not recovered.
   `/sandbox-doc/` is on the service worker's skip list for the same single-use
   reason, and because an iframe navigation has `mode === 'navigate'`, so the
   worker's offline fallback would otherwise serve the SPA shell INTO the widget
@@ -2926,6 +2990,13 @@ Mutating routes fall into two categories:
   even after an expiry has emptied the list.
 
 All mutating routes require an unrestricted (non-restricted) session.
+
+Every mutating route also answers a dashboard session that is neither the owner nor
+a Shared Crew teammate (a messaging allowlist link session) with 403 `owner_only`
+(`require_owner_for_dashboard_caller`, applied by `_owner_gated` where the route is
+registered, before the cloud-deployment gate). Withdrawal (recall, destroy,
+teardown) is owner-gated but not cloud-gated. An internal-secret caller keeps its
+`@_internal_denied` and allowlist judgement. The `GET` routes are unchanged.
 
 #### Deploy handler owners
 

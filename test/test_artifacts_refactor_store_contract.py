@@ -367,6 +367,7 @@ class TestResponseShape:
             "notice",
             "notice_code",
             "last_synced_remote_hash",
+            "expires_at",
         ]
         assert names(ForkMetadata) == [
             "upstream_artifact_id",

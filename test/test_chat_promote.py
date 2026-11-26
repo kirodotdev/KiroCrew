@@ -425,8 +425,10 @@ async def test_a_non_owner_dashboard_request_cannot_promote(tmp_path, monkeypatc
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/api/chat/slots/secret/promote", json={})
         status, body = resp.status, await resp.json()
+    # "someone-else" is neither the owner nor a teammate, so the per-slot owner
+    # gate refuses it before the handler's own promote check.
     assert status == 403
-    assert body["code"] == "promote_requires_dashboard_user"
+    assert body["code"] == "owner_only"
     assert set(state._slots) == {"secret"}
     assert state._slots["secret"].memory_mode == "incognito"
 

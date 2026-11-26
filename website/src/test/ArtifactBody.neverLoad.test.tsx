@@ -35,6 +35,13 @@ vi.mock('../lib/widgetSrcdoc', () => ({
   buildSrcdoc: (opts: { html: string }) => opts.html,
 }))
 
+// The automatic re-mint has its own tests (sandboxFrameSpentUrl.test.tsx); this
+// file pins the manual notice, so the hook stays out of the way.
+vi.mock('../hooks/useFrameAliveRecovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/useFrameAliveRecovery')>()),
+  useFrameAliveRecovery: () => {},
+}))
+
 const mintSpy = vi.fn()
 vi.mock('../api/client', () => ({
   api: { sandboxDocUrl: (html: string) => mintSpy(html) },
@@ -42,6 +49,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import { ArtifactBodyIframe } from '../components/ArtifactBody'
+import { FRAME_ALIVE_TIMEOUT_MS } from '../hooks/useFrameAliveRecovery'
 
 function makeArtifact(content: string): Artifact {
   return { slug: SLUG, name: 'Widget', kind: 'widget', content } as unknown as Artifact
@@ -103,7 +111,8 @@ describe('ArtifactBodyIframe surfaces a load that never fires', () => {
       source: frame.contentWindow as MessageEventSource,
     }))
 
-    await act(async () => { vi.advanceTimersByTime(4000) })
+    // Past both windows: the load watch's and the height report's.
+    await act(async () => { vi.advanceTimersByTime(FRAME_ALIVE_TIMEOUT_MS + 2000) })
 
     expect(screen.queryByText(/no longer showing/i)).toBeNull()
     expect(screen.queryByText(/couldn't render this artifact/i)).toBeNull()

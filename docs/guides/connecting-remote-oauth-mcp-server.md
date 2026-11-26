@@ -43,6 +43,11 @@ precedence (highest wins for a same-named server; different names are additive):
 | 2 | workspace `.kiro/settings/mcp.json` | you |
 | 3 (lowest) | global `~/.kiro/settings/mcp.json` | you |
 
+A server in the workspace `.kiro/settings/mcp.json` starts only after you allow
+it in that folder: the chat holds it back and shows an **Allow** card first
+(see [../architecture/mcp.md](../architecture/mcp.md), "A folder's own MCP
+servers wait for the person").
+
 At render time the gateway **merges the Kiro global into the agent file**, so
 the agent file is the superset kiro-cli actually loads — see
 [../architecture/mcp.md](../architecture/mcp.md) ("Config file hierarchy" and

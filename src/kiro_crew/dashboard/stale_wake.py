@@ -40,7 +40,7 @@ from typing import Any
 
 from kiro_crew import crewmate_prompts
 from kiro_crew import members as members_mod
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.paths import data_home
 
 logger = logging.getLogger(__name__)
@@ -190,12 +190,17 @@ def _book_path() -> Any:
     return data_home() / BOOK_NAME
 
 
-def read_book() -> dict[str, dict[str, Any]]:
-    """The book of past wakes, ``{}`` when absent or damaged. Blocking IO. TOTAL."""
+def read_book() -> dict[str, dict[str, Any]] | None:
+    """The book of past wakes, ``{}`` when absent or damaged, ``None`` when it is there
+    but cannot be read: a tick from an empty book would wake Bots inside
+    :data:`FLOOR_S` and save over every other row. Blocking IO. TOTAL."""
     try:
-        raw = _book_path().read_bytes()
-    except OSError:
+        raw = read_bytes_with_retry(_book_path())
+    except FileNotFoundError:
         return {}
+    except OSError:
+        logger.warning("dashboard stale wake: the book could not be read", exc_info=True)
+        return None
     if len(raw) > _BOOK_MAX_BYTES:
         return {}
     try:
@@ -371,9 +376,10 @@ async def fire(state: Any, crons: Any = None) -> str:
     listed = await asyncio.to_thread(bots)
     # Only Bots in the crew keep a row, so the book stays the crew's size.
     present = {slug for slug, _member, _slot in listed}
-    book = {
-        slug: row for slug, row in (await asyncio.to_thread(read_book)).items() if slug in present
-    }
+    stored = await asyncio.to_thread(read_book)
+    if stored is None:
+        return "skipped: the wake book could not be read"
+    book = {slug: row for slug, row in stored.items() if slug in present}
     woken = 0
     for slug, member, slot_key in listed:
         try:

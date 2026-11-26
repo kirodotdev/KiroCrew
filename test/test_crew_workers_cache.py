@@ -39,6 +39,8 @@ class _Tree:
     seeded_for_current_store = True
 
     def __init__(self, edges: dict[str, str | None]) -> None:
+        #: Slot -> its creation time; a slot not named has no creation record.
+        self.born: dict[str, int] = {}
         self.set(edges)
 
     def set(self, edges: dict[str, str | None]) -> None:
@@ -46,6 +48,13 @@ class _Tree:
 
     def nodes(self) -> dict[str, TreeNode]:
         return self._nodes
+
+    def created(self) -> dict[str, tuple[str, int]]:
+        return {
+            slot: (str(node.parent_slot), self.born[slot])
+            for slot, node in self._nodes.items()
+            if node.parent_slot and slot in self.born
+        }
 
 
 class _Log:
@@ -111,11 +120,13 @@ class _World:
             conversation_log=self.log,
         )
 
-    async def respond(self, headers: dict[str, str] | None = None) -> web.Response:
+    async def respond(
+        self, headers: dict[str, str] | None = None, path: str = "/x"
+    ) -> web.Response:
         app = web.Application()
         app["state"] = self._state()
         req = make_mocked_request(
-            "GET", "/x", headers=headers, app=app, match_info={"slot": "root"}
+            "GET", path, headers=headers, app=app, match_info={"slot": "root"}
         )
         return await crew_workers.api_crew_workers(req)
 
@@ -392,23 +403,108 @@ async def test_an_unchanged_poll_is_a_304_and_any_shown_change_is_not(world: _Wo
     assert (await world.respond({"If-None-Match": tag})).status == 200
 
 
+def _closed_crew(world: _World, monkeypatch: pytest.MonkeyPatch, n: int) -> list[str]:
+    """*n* closed workers at the sizes measured on a long-lived root (a 21-character key, a
+    53-character title, a 152-character task line on an accepted item), the last one
+    created newest. The handler's own ``_ledger_items`` reads the ledger facts off the
+    work items.
+    Hex text, so gzip cannot fold the rows into each other as it does repeated words."""
+    import hashlib
+
+    def text(seed: str, size: int) -> str:
+        out = ""
+        while len(out) < size:
+            out += hashlib.sha256((seed + out).encode()).hexdigest()
+        return out[:size]
+
+    keys = [f"chat-{1792540000 + i}-{i:05d}" for i in range(n)]
+    world.tree.set({"root": None, "w1": "root", **{key: "root" for key in keys}})
+    world.tree.born = {key: i for i, key in enumerate(keys)}
+    world.log.titles.update({key: text("t" + key, 53) for key in keys})
+    items = {
+        key: wl.WorkItem(
+            item_id=f"it_{i:05d}",
+            title=f"Task {i}",
+            summary=text("l" + key, 152),
+            state="accepted",
+            status="done",
+        )
+        for i, key in enumerate(keys)
+    }
+    monkeypatch.setattr(crew_workers, "_ledger_work_items", lambda root, remote=None: items)
+    lines = crew_workers._ledger_items("root")
+    monkeypatch.setattr(crew_workers, "_cached_crew_ledger_items", lambda *_a: lines)
+    return keys
+
+
 @pytest.mark.asyncio
-async def test_a_3000_closed_worker_list_is_gzipped_only_when_asked(world: _World) -> None:
+async def test_a_3000_closed_worker_list_sends_the_newest_page_and_counts_the_rest(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import gzip
 
-    edges: dict[str, str | None] = {"root": None, "w1": "root"}
-    edges.update({f"c{i}": "root" for i in range(3000)})
-    world.tree.set(edges)
-    world.log.titles.update({f"c{i}": f"Closed worker number {i}" for i in range(3000)})
+    def closed(resp: web.Response) -> tuple[list[str], Any]:
+        answer = json.loads(resp.body)
+        keys = [w["key"] for w in answer["workers"] if w["status"] == "closed"]
+        return keys, answer.get("closed_omitted")
+
+    keys = _closed_crew(world, monkeypatch, 3000)
+    newest = keys[::-1]
     plain = await world.respond()
     assert plain.status == 200 and "Content-Encoding" not in plain.headers
     zipped = await world.respond({"Accept-Encoding": "gzip, br"})
     assert zipped.headers["Content-Encoding"] == "gzip"
     assert zipped.headers["ETag"] == plain.headers["ETag"]
-    assert len(zipped.body) < 100_000 < len(plain.body)
+    assert len(zipped.body) < 100_000
     assert json.loads(gzip.decompress(zipped.body)) == json.loads(plain.body)
+    page = crew_workers.CLOSED_WORKERS_PAGE
+    assert closed(plain) == (newest[:page], 3000 - page)
     refused = await world.respond({"Accept-Encoding": "gzip;q=0"})
     assert "Content-Encoding" not in refused.headers
+    # Older closed workers come a page at a time, and an unchanged page is a 304.
+    older = await world.respond(path=f"/x?closed_limit={2 * page}")
+    assert closed(older) == (newest[: 2 * page], 3000 - 2 * page)
+    for path, resp in (("/x", plain), (f"/x?closed_limit={2 * page}", older)):
+        same = await world.respond({"If-None-Match": resp.headers["ETag"]}, path=path)
+        assert same.status == 304 and same.body is None
+    assert closed(await world.respond(path="/x?closed_limit=3000")) == (newest, None)
+    for bad in ("-1", "many"):
+        assert (await world.respond(path=f"/x?closed_limit={bad}")).status == 400
+    # Twice the closed workers, the same plain size: the answer does not grow with them.
+    _closed_crew(world, monkeypatch, 6000)
+    assert len((await world.respond()).body) == len(plain.body)
+
+
+@pytest.mark.asyncio
+async def test_a_closed_lead_and_an_open_item_stay_listed_however_old(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A live worker and the newest closed one each sit under a lead older than the
+    # page, and two old closed workers' ledger items are still open, one with a done
+    # report awaiting acceptance: a page of one lists all of them, and only the
+    # worker whose item was accepted is left out. The handler's own `_ledger_items`
+    # reads the facts off the work items, so the item's state is what decides.
+    world.rows[1]["created_by"] = "lead"
+    edges = {"root": None, "w1": "lead", "lead": "root", "old": "root", "told": "root"}
+    world.tree.set({**edges, "mid": "root", "top": "root", "new": "top"})
+    world.tree.born = {"lead": 1, "old": 2, "told": 3, "top": 4, "mid": 5, "new": 6}
+    items = {
+        "old": wl.WorkItem(item_id="it_old", title="Still open", state="open"),
+        "told": wl.WorkItem(
+            item_id="it_told", title="Told", summary="Reported done", status="done", state="open"
+        ),
+        "mid": wl.WorkItem(
+            item_id="it_mid", title="Mid", summary="Accepted", status="done", state="accepted"
+        ),
+    }
+    monkeypatch.setattr(crew_workers, "_ledger_work_items", lambda root, remote=None: items)
+    facts = crew_workers._ledger_items("root")
+    monkeypatch.setattr(crew_workers, "_cached_crew_ledger_items", lambda *_a: facts)
+    answer = json.loads((await world.respond(path="/x?closed_limit=1")).body)
+    rows = {w["key"]: w for w in answer["workers"]}
+    assert rows["w1"]["status"] != "closed" and rows["w1"]["dispatched_by"] == "lead"
+    closed = [k for k, w in rows.items() if w["status"] == "closed"]
+    assert closed == ["new", "top", "told", "old", "lead"] and answer["closed_omitted"] == 1
 
 
 @pytest.mark.parametrize(

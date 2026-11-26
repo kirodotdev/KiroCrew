@@ -236,19 +236,20 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
         {(status === 'failed' || status === 'cancelled') && errMsg && (
           <ErrorNotice variant="inline" message={errMsg} askAgent className="mt-1" testId="workflow-run-card-error" />
         )}
+        {/* Filled, with the strong edge: the plain edge vanishes on the tint. */}
         {status === 'finished' && (
           <div className="mt-2 pt-2 border-t border-accent/15 flex justify-end">
             {savedSlug ? (
               <Btn
                 onClick={() => navigate('/capabilities?tab=workflows')}
-                className="font-mono"
+                className="font-mono border-border-strong bg-bg-elevated"
               >
                 {i18nT('pages.chat.workflowRunCard.saved_as', {
                   command: `/workflow ${savedSlug}`,
                 })}
               </Btn>
             ) : (
-              <Btn onClick={beginSave} disabled={sourceLoading}>
+              <Btn className="border-border-strong bg-bg-elevated" onClick={beginSave} disabled={sourceLoading}>
                 {sourceLoading ? (
                   <Loader2 className="lucide-inline animate-spin" />
                 ) : (

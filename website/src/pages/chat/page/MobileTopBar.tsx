@@ -71,6 +71,8 @@ interface MobileTopBarProps {
   dispatch: AppDispatch
   /** Opens the chat's history search, a full-screen sheet on a phone. */
   onOpenSearch: () => void
+  /** The Sessions list's rows (`personChatPageSlots`). */
+  personSlots: ChatSlot[]
 }
 
 /**
@@ -110,9 +112,13 @@ export default function MobileTopBar({
   promoting,
   dispatch,
   onOpenSearch,
+  personSlots,
 }: MobileTopBarProps) {
   const explore = useExplorePreview()
   const slackLink = slackLinkTarget(currentSlot)
+  // A Bot's session the list leaves out, or a crew member under its listed
+  // conductor, has no row to reveal; the wide header offers no menu for those.
+  const listed = personSlots.some(s => s.key === activeSlot)
   return (
     <>
     {/* Phone: this page's share of the shell's single top bar. Leading cell:
@@ -147,13 +153,13 @@ export default function MobileTopBar({
               <ChatHeaderMenu
                 activeSlot={activeSlot}
                 agent={currentSlot?.agent}
-                onReveal={() => {
+                onReveal={listed ? () => {
                   // Same as the inline row's reveal: the phone drives its own
                   // drawer, and the store carries the request (#912).
                   sidebarAutoHidden.current = null
                   openSidebar()
                   dispatch(requestSlotReveal(activeSlot))
-                }}
+                } : undefined}
                 onRename={() => setEditingTitleSlot(activeSlot)}
                 // The phone bar does not render the title row's hover-revealed
                 // Auto-title button (an opacity-0 control has no touch home), so

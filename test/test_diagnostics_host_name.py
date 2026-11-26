@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import socket
 import zipfile
+from pathlib import Path
 
 import pytest
 from test_diagnostics import _isolate
@@ -20,6 +21,8 @@ from kiro_crew.dashboard import crash_dump_store
 def _host(monkeypatch, name: str) -> None:
     monkeypatch.setattr(socket, "gethostname", lambda: name)
     monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: f"{name}/pid:[1]")
+    # The scrub also replaces the login, the home's last segment: pin one no case uses.
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: Path("/srv/q9login")))
 
 
 def _scrubbed(text: str) -> str:

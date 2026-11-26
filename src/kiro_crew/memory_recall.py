@@ -49,12 +49,16 @@ def recall_terms(text: str) -> frozenset[str]:
     return memory_v2.terms(text)
 
 
-def v2_operating_point(recorded_signature: str | None, *, embed_fn: object = None) -> dict:
+def v2_operating_point(
+    recorded_signature: str | None, *, embed_fn: object = None, instructed: bool = False
+) -> dict:
     """Qualify the provisional Qwen operating points without changing recall.
 
     The reference is pinned to the experiment's declared id/width, independently
     of future default model changes. A matching signature is not calibration or
     proof of identical weights. No model is constructed or inspected here.
+    *instructed* reports the floors for a query embedded with the model's query
+    instruction, the ones the gate applied.
     """
     reference = embeddings.embedding_space_signature("qwen3-embedding:0.6b", 1024)
     active, source = embeddings.peek_shared_embedding_identity()
@@ -76,8 +80,12 @@ def v2_operating_point(recorded_signature: str | None, *, embed_fn: object = Non
     return {
         "status": "provisional",
         "qualification": qualification,
-        "short_cosine_floor": memory_v2.SHORT_COSINE_FLOOR,
-        "long_cosine_floor": memory_v2.LONG_COSINE_FLOOR,
+        "short_cosine_floor": (
+            memory_v2.INSTRUCTED_SHORT_COSINE_FLOOR if instructed else memory_v2.SHORT_COSINE_FLOOR
+        ),
+        "long_cosine_floor": (
+            memory_v2.INSTRUCTED_LONG_COSINE_FLOOR if instructed else memory_v2.LONG_COSINE_FLOOR
+        ),
         "long_text_chars": memory_v2.LONG_TEXT_CHARS,
         "reference_signature": reference,
         "active_signature": active,

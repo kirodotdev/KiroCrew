@@ -631,11 +631,17 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
   gateway reads these files unsandboxed on the folder's behalf, and an app that
   could point its own folder at an arbitrary readable Markdown tree would have
   that read laundered into its own model session with no tool grant and no
-  signal. Clearing to `[]` stays allowed for every principal (it only removes
-  reads). The person may still declare steering on a folder an app or member
+  signal. Clearing to `[]` stays allowed for an app or member principal (it
+  only removes reads). The person may still declare steering on a folder an app or member
   owns; delivery then routes it to that principal's chats as described below.
   A call on the internal credential every MCP tool call carries
   (`request["internal_auth"]`) is refused the same way, at both write sites.
+- **Owner gate** (`require_owner_for_dashboard_caller`) runs next: "the
+  person" is the owner or an admitted teammate. A dashboard session that is
+  neither (a channel allowlist link) carries the person's empty principal, so
+  the principal gate admits it; the owner gate refuses it `403` `owner_only`
+  on a create with a non-empty list and on any update that sends
+  `steering_dirs`, clearing included, since the folder is the owner's.
 - **Agent surface** is a `folder.steering` change card
   (`change_card_catalog.py`): `propose_change(kind="folder.steering",
   params={folder, steering_dirs})` resolves each directory the way the route
@@ -1678,6 +1684,11 @@ Contract:
   and enable full auto-approval — and the reason is that this file sits in the
   agent-writable data home, so a restorable ack is an ack an agent can forge for
   the user's next fresh origin. Convenience does not outrank a human gate.
+  The machine owner's ack is also kept on the gateway in the owner-only
+  `yolo_ack.json` keystone (written only by `PUT /api/chat/yolo-ack`), which the
+  picker reads beside the browser copy; `PUT /api/chat/yolo-ack
+  {"acknowledged": false}` re-arms the confirmation in any browser that does not
+  hold its own `mc-yolo-ack` copy.
 
 ## Settings import (dashboard Merge)
 
@@ -2171,7 +2182,9 @@ a present value the reader cannot use takes the reader's value:
   `dashboard.tailscale.bind_refresh_chains`, `false` for a non-boolean
   `slack.show_in_session_list` (a malformed value reads as the default, which
   keeps Slack conversations out of the list), `node` for an unrecognised
-  `dashboard.tailscale.pin_scope`, `auto` for an unknown `agent.jail`, `false` for
+  `dashboard.tailscale.pin_scope`, `443` for a `dashboard.tailscale.https_port`
+  that is not an integer from 1 to 65535 (with one logged warning, never clamped),
+  `auto` for an unknown `agent.jail`, `false` for
   a present non-boolean `agent.dangerously_skip_permissions` (never a grant),
   `per-channel-peer` for an unknown `messaging.dm_scope` (never one session for
   two people's DMs).
@@ -3893,9 +3906,9 @@ class MemoryConfig:
     lesson_extraction_enabled: bool = True  # off = consolidation (default and member stores) and the task runner save no extracted lessons; other writes and learn_add continue
     kind_routing: str = "enforce"    # off | enforce (default enforce since 2026-11-20): whether consolidation tags each project.* write with a kind (fact/event/state) in one separate label call and what it does with it; the consolidation prompt is the same under every mode; off makes no label call and writes every item, enforce labels them before the writes and skips state items; unknown values, including the removed shadow, read as enforce (memory_kind_routing.py)
     extraction_instructions: str = ""  # free text the consolidation prompt carries as one fenced block after the fixed rules (what to keep, what never to store); empty keeps today's prompt byte for byte; non-text reads as empty, control characters are dropped, text past 2000 characters is cut (memory_sections.extraction_instructions_from, history_consolidation_span._extraction_guidance_block)
-    lesson_origin_gate: str = "off"  # off | shadow | enforce: whether a lesson from a consolidation span with no person-sent turn, or a learn_add an agent or automatic turn triggered, may be a standing rule; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log, enforce stores it on_topic; unknown values read as off (memory_origin_gate.py)
+    lesson_origin_gate: str = "off"  # off | shadow | enforce: whether a lesson from a consolidation span with no person-sent turn, or a learn_add an agent or automatic turn triggered, may be a standing rule; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log, enforce stores it on_topic; a span with a person-sent turn keeps its tiers (the per-lesson check is lesson_tier_policy); unknown values read as off (memory_origin_gate.py)
     fact_origin_gate: str = "off"  # off | shadow | enforce: whether a pref.* / user.* semantic item (write or delete) or a preferences_update from a consolidation span with no person-sent turn is applied; enforce drops them, project.* and episodic items are never gated; off keeps today's prompt and writes, shadow writes as before and keeps capped counts and keys (memory_fact_origin_log:); unknown values read as off
-    lesson_tier_policy: str = "off"  # off | shadow | enforce: which tier a new consolidation lesson gets; enforce stores an untagged lesson, and an always lesson whose user_quote is not found in a person's unrelayed turn, as on_topic, and only enforce asks the prompt for user_quote; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log plus a learn_add re-teach count; unknown values read as off (memory_tier_policy.py)
+    lesson_tier_policy: str = "off"  # off | shadow | enforce: which tier a new consolidation lesson gets; enforce stores an untagged lesson, and an always lesson whose user_quote is not found in a person's unrelayed turn or does not state the rule (embedding cosine below 0.6), as on_topic, and only its enforce asks the prompt for user_quote; off keeps today's prompt and writes, shadow writes as before, measures quotes with one bounded call after the writes and keeps a bounded log plus a learn_add re-teach count; unknown values read as off (memory_tier_policy.py)
     lesson_fold: str = "enforce"  # off | enforce (default enforce since 2026-11-20): whether the session-start rule block leaves out near-duplicate rules (memory_item_identity.same_item, visited user-taught first then newest first, each row compared only with kept leaders); off keeps every copy, enforce leaves folded rows out, prints a fold line and records the (leader, folded) id pairs in the injection receipt; a folded row is not a budget omission; user_explicit rows are never folded; a row with a NOT-clause its leader lacks stays; unknown values, including the removed shadow, read as enforce (memory_lesson_fold.py)
     rule_authority_order: str = "enforce"  # off | enforce (default enforce since 2026-11-20): how the session-start rule block orders its rules; off keeps the relevance order, enforce lists user_explicit rules first then the rest, the authored-before-untagged order and request relevance holding inside each group; an agent-triggered learn_add is user_explicit unless lesson_origin_gate is enforce; cap and omission line unchanged; unknown values, including the removed shadow, read as enforce (memory_rule_authority.py)
     member_lesson_dedup: str = "off"  # off | shadow | enforce: whether a private store folds a consolidation lesson into a live copy of the same rule (memory_item_identity.same_item); off keeps today's writes, shadow writes as before and keeps a bounded log, enforce skips a textual copy and retires a new near-copy with a revision before a dashboard turn receipt names it, and off restores those rows on the next backfill sweep; user_explicit rows are never folded; unknown values read as off (memory_lesson_dedup.py)
@@ -5410,8 +5423,9 @@ writer, and the `SkillsLoader` watcher applies it live (no restart): the loader'
 screening (expansion, resolution, sensitive-path exclusion, existence) stays the only judge of
 a path. Settings → Skills trims each line and drops blank ones before it sends the list; the
 same list is what `kirocrew config set skills.extra_paths --value-base64=…` stores.
-`dashboard.change_cards.check_setting_value` calls the same `_str_list_problem`, so a card is held
-to the same bounds and item pattern and fails up front rather than falling through (no card can carry the list; see crew-mode).
+`dashboard.change_cards.check_setting_value` calls the same `_str_list_problem`, for a card that
+could carry the list; none can today: `resolve_setting` refuses a `str_list` key `no_write_path`
+before any value is read (see crew-mode).
 
 ### Default context discovery
 

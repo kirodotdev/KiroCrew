@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
 import { useAppSelector } from '../store'
 import { SHORTCUTS_ENABLED_EVENT, SHORTCUTS_ENABLED_KEY } from './useKeyboardShortcuts'
+import { safeGetItem } from '../utils/safeStorage'
 import {
   chordMatchesEvent,
   hasCustomChord,
@@ -69,7 +70,7 @@ import {
 export const DOUBLE_SHIFT_WINDOW_MS = 250
 
 /** Live read of the global shortcuts toggle (default on; '0' means disabled). */
-const shortcutsEnabled = () => localStorage.getItem(SHORTCUTS_ENABLED_KEY) !== '0'
+const shortcutsEnabled = () => safeGetItem(SHORTCUTS_ENABLED_KEY) !== '0'
 
 function subscribePaletteShortcuts(onChange: () => void): () => void {
   // `key === null` is a `localStorage.clear()` in another tab.

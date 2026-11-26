@@ -247,7 +247,7 @@ async def _prepare_spec_hooks(
         # Whose hooks apply is unknown, so PreToolUse fails closed.
         logger.warning("no agent is known for this KAS session; tool calls are blocked")
         return [], True, work_dir
-    on_kas = capabilities_of(client).backend == ACP_BACKEND_KAS
+    on_kas = capabilities_of(client).backend == ACP_BACKEND_KAS  # harness-ok: kas_engine flags
     try:
         # A crewmate's worker fires its session's merged spec: the
         # session this turn holds, set at admission.
@@ -295,8 +295,9 @@ async def _prepare_spec_hooks(
     # so a read/parse failure degrades to fewer hooks rather than failing the turn,
     # a JSON hook whose command is an autoimported *.sh is not fired twice, and the
     # auto-approve withhold always has a hook to fire. Returns the spec hooks
-    # unchanged off KAS (goose and opencode do not read a user's standalone files).
-    is_kas = capabilities_of(client).backend == ACP_BACKEND_KAS
+    # unchanged on a harness without ``crew_merges_user_hook_files`` (goose and
+    # opencode do not read a user's standalone files).
+    is_kas = capabilities_of(client).backend == ACP_BACKEND_KAS  # harness-ok: KAS-only notices
     try:
         hooks = await asyncio.to_thread(merge_user_hook_files, client, hooks)
     except Exception:  # noqa: BLE001 - a hook-file read must never fail a turn
@@ -345,10 +346,11 @@ async def _prepare_spec_hooks(
         )
         # Standalone <project>/.kiro/hooks/*.json files are not run either, on the
         # same trust verdict Crew cannot read for a checkout. Say so when
-        # such files exist, so they are never withheld silently. KAS only, to match
-        # where the user files now run.
-        if is_kas:
+        # such files exist, so they are never withheld silently. Only where the
+        # user's own files are folded in (``crew_merges_user_hook_files``), to match.
+        if capabilities_of(client).crew_merges_user_hook_files:
             await _surface_withheld_project_hook_files(state, slot, client)
+        if is_kas:
             await _surface_kas_project_hooks(state, slot, client, agent)
             # The user's own agent file that lists no tools runs with none on KAS;
             # the chat says so once, with a link to where its tools are chosen.
@@ -984,6 +986,7 @@ async def _fire(
     tool_id: str | None = None,
     tool_identity: str = "",
     mcp_server: str = "",
+    replay: bool = False,
 ) -> list[str]:
     """Fire script hooks. Returns stdout texts from exit-0 hooks (for context injection).
 
@@ -1046,6 +1049,7 @@ async def _fire(
             tool_match_names=_match_names,
             acp_session_id=_acp_sid if isinstance(_acp_sid, str) and _acp_sid else None,
             session_model=_model,
+            replay=replay,
         )
         for r in results:
             # Anchoring rule for the bounded hook excerpts below: text the
@@ -1071,7 +1075,7 @@ async def _fire(
                 # which runs these hooks on its own backend, warns and lets the
                 # tool run; so does Crew, so one broken hook in an agent package
                 # cannot stop every tool call.
-                logger.warning(
+                logger.info(
                     "Spec hook %s failed (%s); tool allowed",
                     r.hook_name,
                     r.failure_detail,
@@ -1164,9 +1168,6 @@ async def _fire(
                             "text": f"Hook {r.hook_name} BLOCKED (no verdict): {detail[:100]}",
                         },
                     )
-                else:
-                    # Non-zero, non-block on a non-gating event: warn only.
-                    logger.warning("Hook %s (%s) failed: %s", r.hook_name, event, detail)
     except Exception as exc:
         if event == HOOK_EVENT_PRE_TOOL_USE:
             logger.warning("Hook fire error during blocking event %s: %s", event, exc)
@@ -1552,12 +1553,15 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
         await _deliver_cross_surface_reply(state, session_key, _xs_reply, slot=slot)
 
 
-async def _fallback_turn_project(turn_project: str, session_cwd: Any) -> str:
+async def _fallback_turn_project(
+    turn_project: str, session_cwd: Any, session_key: str, backend_override: str | None
+) -> str:
     """The folder a turn runs in when its start fell back from a hidden scratch folder.
 
     The chat keeps storing the earlier run's scratch folder, so the turn's own project
     still names it while the session runs in the default folder. Returns that folder,
-    or ``""`` when the turn's project is the one the session runs in.
+    or ``""`` when the turn's project is the one the session runs in. *session_key*
+    and *backend_override* are the ones the turn's claim started the session with.
     """
     if not turn_project or not isinstance(session_cwd, str) or not session_cwd:
         return ""
@@ -1565,7 +1569,9 @@ async def _fallback_turn_project(turn_project: str, session_cwd: Any) -> str:
         return ""
     from kiro_crew.session_allocation_parts.get_or_create import _stored_cwd_is_hidden_scratch
 
-    if await asyncio.to_thread(_stored_cwd_is_hidden_scratch, turn_project, None):
+    if await asyncio.to_thread(
+        _stored_cwd_is_hidden_scratch, turn_project, None, session_key, backend_override
+    ):
         return session_cwd
     return ""
 

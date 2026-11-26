@@ -507,7 +507,12 @@ the configured tier it sets each `GET /api/acp-backends` row's `sandbox_refusal`
 leaves the one it has off), which disables **Use** on Settings → Agent Harness
 and shows first-run setup's sentence for that cause; and it refuses
 `PATCH agent.acp_backend` (409 `acp_backend_sandbox_refused`) and a crewmate's
-`agents.<name>.acp_backend` pin with the launch's own sentence.
+`agents.<name>.acp_backend` pin with the launch's own sentence. The tier each of
+them judges is the one a session of that harness starts at: `agent.sandbox`
+raised to the harness's `agent.harness_sandbox` floor
+(`tool_gate.configured_harness_sandbox_mode`), so an operator who keeps the
+sandbox off can still run one enforced harness sandboxed, with its mask, and
+first-run setup's `sandbox_blocked_backends` leaves that harness out.
 
 **A provider must declare:** whether it self-sandboxes and how that is detected,
 its nesting compatibility, its delegation predicate, and any additional paths its
@@ -940,7 +945,14 @@ edit.
   names, when `extra_mcp_servers()` supplies it, on kiro-cli and KAS (the mirrors in
   `ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY` get none, as they get no app server),
   without its `autoApprove`, loader or not,
-  under the same wildcard and conductor rules. It is not counted in
+  under the same wildcard and conductor rules, except on KAS: there a wildcard
+  does not keep it out. With a non-empty `allowedTools` list it mounts with an
+  `ask` rule for `<server>/*` appended to the spec's `permissions`, unless the
+  list names the server and no wildcard reaches it after trimming entries.
+  KAS picks the most restrictive rule, so a wildcard's `allow` cannot beat the
+  `ask`. A tool-less agent gets it alone, and a
+  `permissions` block that would not carry the rule keeps it out
+  (`with_default_crew_servers(edition_ask_rules=True)`). It is not counted in
   `crew_added_servers`, so on KAS its tools follow the author's own servers' rule.
   A read-only check that judges a spec as its session runs it judges
   `default_crew_servers.session_spec_on(backend, agent, spec)`, as the doctor's

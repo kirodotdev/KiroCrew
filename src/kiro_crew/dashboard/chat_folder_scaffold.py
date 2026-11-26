@@ -44,7 +44,7 @@ from typing import Any, Iterable
 
 from aiohttp import web
 
-from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.apps.core_route_grants import RouteGrant, core_route_grant
 from kiro_crew.dashboard.chat_folders import (
     FolderCreateError,
     FolderOwnershipError,
@@ -178,22 +178,48 @@ def _bad_request_response(exc: _BadRequest) -> web.Response:
     return web.json_response({"error": str(exc), "code": exc.code}, status=400)
 
 
-APP_NAME = "project-scaffolder"
+#: The namespace of the two endpoints below. They exist for an app's page, so they
+#: answer only while an enabled app holds an approved ``permissions.api`` entry
+#: inside it (:func:`~kiro_crew.apps.core_route_grants.core_route_grant`); core
+#: never names that app.
+SCAFFOLD_API_NAMESPACE = "/api/project-scaffold"
 
 
-async def _refuse_when_app_disabled(request: web.Request, resource: str) -> web.Response | None:
-    """403 when the scaffolder app is not enabled, else None.
+def _not_enabled_error(grant: RouteGrant) -> str:
+    """The advisory prose of the refusal: the app to turn on, when one declares it.
+
+    An app whose record reads enabled without the owner-enable marker comes first: it
+    looks on to the person, and turning it off and on again records the enable.
+    """
+
+    if grant.unrecorded_declarers:
+        return (
+            f"app {grant.unrecorded_declarers[0]!r} reads enabled, but its enable was not "
+            "recorded; turn it off and on again"
+        )
+    if grant.disabled_declarers:
+        return f"app {grant.disabled_declarers[0]!r} is not enabled"
+    return "no enabled app is approved to use this route"
+
+
+async def _refuse_without_app_grant(request: web.Request, resource: str) -> web.Response | None:
+    """403 unless an enabled app holds an approved grant for *resource*, else None.
 
     These two endpoints are registered as plain dashboard routes, not behind
     the app-backend proxy, so the proxy's enablement gate never sees them — and
     a dashboard-user token bypasses ``_enforce_app_scope`` entirely. The app
-    ships ``defaultEnabled: false``; without this check its scan (a read of any
-    directory tree the caller names) and create endpoints answer for a person
-    who never turned it on. Same shape as the proxy's gate: an authorization
+    whose page calls them ships ``defaultEnabled: false``; without this check
+    the scan (a read of any directory tree the caller names) and the create
+    answer for a person who never turned such an app on. The grant is the
+    app's own declaration, read through the same approval and the same sealed
+    owner-enable marker the token check honours, so an app gains these routes
+    only by declaring them and having the owner enable it, never by a record
+    written from the sandbox. Same shape as the proxy's gate: an authorization
     decision, audited as denied, answered with 403 and a machine-readable code.
     """
 
-    if await asyncio.to_thread(is_app_enabled, APP_NAME):
+    grant = await asyncio.to_thread(core_route_grant, resource, SCAFFOLD_API_NAMESPACE)
+    if grant.holder:
         return None
     sel().log_api_access(
         caller=request.get("user", "dashboard"),
@@ -204,7 +230,7 @@ async def _refuse_when_app_disabled(request: web.Request, resource: str) -> web.
         error="app is not enabled",
     )
     return web.json_response(
-        {"code": "app_not_enabled", "error": f"app {APP_NAME!r} is not enabled"},
+        {"code": "app_not_enabled", "error": _not_enabled_error(grant)},
         status=403,
     )
 
@@ -358,7 +384,7 @@ async def api_chat_folders_scan(request: web.Request) -> web.Response:
 
     state: DashboardState = request.app["state"]
     if (
-        refusal := await _refuse_when_app_disabled(request, "/api/project-scaffold/scan")
+        refusal := await _refuse_without_app_grant(request, "/api/project-scaffold/scan")
     ) is not None:
         return refusal
     try:
@@ -672,7 +698,7 @@ async def api_chat_folders_scaffold(request: web.Request) -> web.Response:
     # Enablement first: a disabled app's write endpoint must not even consume
     # the caller's rate budget or leave an attribution refusal in the log.
     if (
-        refusal := await _refuse_when_app_disabled(request, "/api/project-scaffold/create")
+        refusal := await _refuse_without_app_grant(request, "/api/project-scaffold/create")
     ) is not None:
         return refusal
     # A write to the shared folder tree: the same two guards the folder-create

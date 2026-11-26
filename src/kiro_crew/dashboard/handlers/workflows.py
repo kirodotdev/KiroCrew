@@ -293,6 +293,14 @@ async def _run_scope_refusal(
     refusal = await _private_memory_refusal(request, "workflow.access")
     if refusal is not None:
         return refusal
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    # ``authorize_run`` below takes a dashboard session as the owner, and a run
+    # snapshot carries its script source, so the session must be the owner's or a
+    # teammate's first. Internal callers stay under their run binding.
+    owner_denied = await require_owner_for_dashboard_caller(request, "workflow.access")
+    if owner_denied is not None:
+        return owner_denied
     svc = _svc(request)
     registry = getattr(svc, "registry", None)
     handle = registry.get(run_id) if registry is not None else None
@@ -959,6 +967,12 @@ async def api_workflow_runs(request: web.Request) -> web.Response:
     refusal = await _private_memory_refusal(request, "workflow.list")
     if refusal is not None:
         return refusal
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    # Refused once here rather than once per run in the scope check below.
+    owner_denied = await require_owner_for_dashboard_caller(request, "workflow.list")
+    if owner_denied is not None:
+        return owner_denied
     runs = []
     for snapshot in svc.list_runs():
         if await _run_scope_refusal(request, snapshot["run_id"]) is None:

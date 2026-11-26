@@ -856,9 +856,9 @@ function serializeBucket(b: Bucket): string {
 }
 
 function loadPersisted(): BySlot {
-  if (typeof localStorage === 'undefined') return {}
   const out: BySlot = {}
   try {
+    if (typeof localStorage === 'undefined') return out
     // Load every per-slot bucket (mc-panel-tabs:<slot>). Tolerate shape drift:
     // keep only well-formed buckets.
     for (let i = 0; i < localStorage.length; i++) {

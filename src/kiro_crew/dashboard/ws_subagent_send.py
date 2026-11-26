@@ -1,7 +1,8 @@
 """How the ``subscribe_subagents`` reconnect replay reaches one socket.
 
 ``ws.py`` builds the replay frames; this module filters them through the owner
-and per-slot scope gates, packages them, and sends the end-of-replay marker.
+and per-slot scope gates, packages them, and sends the end-of-replay marker and
+the per-slot note of what the durable fold's cap cut.
 ``ws.py`` re-exports every name here, so callers keep importing from it.
 """
 
@@ -109,4 +110,31 @@ async def send_subagent_replay_done(ws: Any, ws_app: str | None) -> None:
         await ws.send_json({"type": "subagent_replay_done", "data": {}})
     except Exception:
         # A failed send of the end marker is dropped; nothing after it depends on it.
+        pass
+
+
+async def send_subagent_replay_truncated(
+    ws: Any, state: Any, cut: dict[str, dict], owners: dict[str, str]
+) -> None:
+    """Tell a dashboard socket, per slot, how many finished runs the fold's cap cut.
+
+    *cut* is what ``read_fold_subagent_records`` tallied and *owners* the slot owners
+    the cap was sized under. A slot that closed, or that another app owns now, is
+    left out: the count describes runs of an owner the slot does not have now.
+    """
+    slots = {}
+    for slot_key, entry in cut.items():
+        slot = state.get_slot(slot_key)
+        if slot is None or str(getattr(slot, "_app", "") or "") != owners.get(slot_key):
+            continue
+        if entry["n"] > 0 or entry["at_least"]:
+            slots[slot_key] = {"n": entry["n"], "at_least": entry["at_least"]}
+    if not slots:
+        return
+    try:
+        await _send_frame(
+            ws, state, {"type": "subagent_replay_truncated", "data": {"slots": slots}}
+        )
+    except Exception:
+        # A failed send loses only the note; the cards already went out.
         pass

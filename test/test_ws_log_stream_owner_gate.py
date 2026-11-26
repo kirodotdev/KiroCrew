@@ -96,7 +96,8 @@ class TestLiveLogStream:
         assert deny.call_args.args[1:] == ("log", "owner_only")
 
     def test_other_frames_still_reach_a_non_owner_dashboard_socket(self) -> None:
-        """Only the log is withheld: the session's own frames keep flowing."""
+        """The hub's per-send check withholds only the log; ``/api/ws`` refuses this
+        session at connect, so in the gateway it never holds a socket at all."""
         ws = _Socket()
         with patch("kiro_crew.sel.sel"):
             assert _hub(set())._ws_client_allowed(ws, "slots", {}) is True  # type: ignore[arg-type]

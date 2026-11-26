@@ -43,6 +43,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.chat_handlers import write_sse_or_abort
 from kiro_crew.dashboard.crew_api_auth import OWNER_ONLY_PUBLIC_ROUTES
+from kiro_crew.dashboard.crew_api_conversations import CONVERSATIONS_KEY, OWNER, ConversationStore
 from kiro_crew.dashboard.crew_api_errors import (
     CREW_API_VERSION,
     REQUEST_ID_HEADER,
@@ -148,7 +149,10 @@ async def _find(
     """What *build* makes of the turn the path names, or ``None`` when it names none.
 
     The turn is its record, else the running turn. The record wins: a turn's record
-    is written before the turn stops being a running one. *build* receives the turn
+    is written before the turn stops being a running one. A record that names a
+    conversation is the turn's only once that conversation lists it
+    (``ConversationStore.kept_turn``); until then the turn reads as running, and a
+    record the gateway stopped before listing reads as absent. *build* receives the turn
     with its texts redacted (:func:`_redacted`) and returns the whole answer, so
     nothing about the record is read after this returns.
 
@@ -161,9 +165,10 @@ async def _find(
     # Read before the disk is: a turn that ends during the disk read has left the
     # running turns by the time it returns, and its record was not there yet.
     running = store.live.get(response_id)
+    conversations: ConversationStore = request.app[CONVERSATIONS_KEY]
 
     def served() -> _Built | None:
-        found = kept = store.load(response_id)
+        found = kept = conversations.kept_turn(store, response_id, OWNER)
         if found is None and running is not None:
             found = {**running, "stream": None, "running": True}
         if found is None:

@@ -133,6 +133,9 @@ async def _client(*, internal: bool = True):
         @web.middleware
         async def _internal(request, handler):
             request["internal_auth"] = True
+            # The Unix-socket peer attestation an internal caller arrives with; the
+            # panel publish routes refuse a declared key without one.
+            request["peer_verified"] = True
             return await handler(request)
 
         app.middlewares.append(_internal)

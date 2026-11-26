@@ -1340,6 +1340,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _FILE_BODY_PATTERN,
         _NC_FILE_REDIRECT_PATTERN,
         _NC_FILE_REDIRECT_RULE,
+        _POWERSHELL_SEARCH_VERB,
         _READ_ONLY_GH,
         _backslashes_are_quoted_literals,
         _data_at_carveout_allows,
@@ -1352,8 +1353,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.security.exfil_git_object import (  # noqa: F401
         _HEX_PAIR_RE,
+        _PASCAL_WORDS_RE,
         _QUERY_WORD_RE,
         _is_plus_joined_words,
+        _is_slash_joined_words,
         _word_list_run,
     )
     from kiro_crew.security.exfil_oauth import (  # noqa: F401
@@ -1416,6 +1419,7 @@ if TYPE_CHECKING:  # project names it serves from outside its owners, from their
         BUILTIN_DENIED_RULES,
         _exception_eligible,
     )
+    from kiro_crew.security.redaction_patterns import _CDK_WORDS  # noqa: F401
     from kiro_crew.security.shell_commands import pipelines as _pipelines  # noqa: F401
     from kiro_crew.security.shell_commands import read_commands as _read_commands  # noqa: F401
     from kiro_crew.sel import (  # noqa: F401

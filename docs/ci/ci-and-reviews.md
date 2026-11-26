@@ -667,8 +667,16 @@ both with `read` permissions only; it opens no issue and posts no comment.
   `scripts/ci_red_cause_census.py --last-days 1`, which gives every red job of
   yesterday (UTC) one cause, writes the day's summary and the script's call
   counts to the job summary, and uploads `red-jobs.csv`, `ci-pushes.csv`,
-  `summary.md`, `summary.json` and the printed output as the artifact
-  `ci-red-census-day`, kept 90 days.
+  `workflows.csv`, `summary.md`, `summary.json` and the printed output as the
+  artifact `ci-red-census-day`, kept 90 days. It lists `CI`'s runs, then the
+  runs of every other workflow, and then reads the check suites of `CI`'s
+  runs to their end before the workers start on any other workflow's suites,
+  in the same calls, so a night the
+  budget cuts short after that still has every `CI` row: the first and third
+  numbers are counted from those alone. A stop while the other workflows' runs
+  are still being listed leaves every check suite unread, `CI`'s included. A
+  partial summary says whether `CI` was read in full and how many workflows
+  were; `workflows.csv` names each one with `yes` or `no`.
 - **`week`, on Sunday after that night's read**: runs
   `scripts/ci_red_census_week.py`, which takes the day its own run has just
   read with `actions/download-artifact` and the six days before it from the

@@ -138,6 +138,28 @@ describe('useWebSocket reconnect unread suppression', () => {
     vi.useRealTimers()
   })
 
+  it('stores what the replay left out of a slot, and the next connection clears it', () => {
+    vi.useFakeTimers()
+    testStore = createTestStore({
+      chat: { ...chatReducer(undefined, { type: '@@INIT' }), activeSlot: 'chat-active' },
+    })
+    const first = renderHook(() => useWebSocket(), { wrapper })
+    const ws1 = WS_INSTANCES[0]
+    act(() => { ws1.simulateOpen() })
+    act(() => {
+      ws1.simulateMessage({ type: 'subagent_replay_truncated', data: { slots: { 'chat-active': { n: 14, at_least: false } } } })
+    })
+    expect(testStore.getState().chat.subagentReplayCut).toEqual({ 'chat-active': { n: 14, atLeast: false } })
+    first.unmount()
+
+    // A new connection subscribes again, and its replay says again what it cuts.
+    const second = renderHook(() => useWebSocket(), { wrapper })
+    act(() => { WS_INSTANCES[1].simulateOpen() })
+    expect(testStore.getState().chat.subagentReplayCut).toEqual({})
+    second.unmount()
+    vi.useRealTimers()
+  })
+
   it('preserves pending spawn-approval cards through the reconnect clear', () => {
     vi.useFakeTimers()
     testStore = createTestStore({

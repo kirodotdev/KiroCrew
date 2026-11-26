@@ -1139,6 +1139,13 @@ describe('index assembly, continued', () => {
     expect(build({ settingsTabs }).errors.some(e => /duplicate location id 'settings.tab.chat'/.test(e))).toBe(true)
   })
 
+  it('stores an interpolated alias without its placeholder, so find_ui never searches the placeholder name', () => {
+    const older = baseInputs().descriptors['chat.older']
+    const { index, errors } = build({ descriptors: { ...baseInputs().descriptors, 'chat.older': { ...older, aliasKeys: ['k.count'] } } })
+    expect(errors).toEqual([])
+    expect(index.labels.en['k.count']).toBe('items')
+  })
+
   it('serializes deterministically and changes when a label changes (the --check oracle)', () => {
     const a = serializeIndex(build().index)
     expect(serializeIndex(build().index)).toBe(a)
@@ -1550,7 +1557,11 @@ describe('the committed index', () => {
           continue
         }
         const hit = matchRoute(routes, p.route) as { redirect: string | null } | null
-        if (!hit) expect(appOnly.has(p.route.split('?')[0])).toBe(true)
+        if (loc.id.startsWith('apppage.')) {
+          // A packaged app's page is served by the built-in-app arm, never a core route.
+          expect(hit).toBeNull()
+          expect(routes.some((r) => r.path === '/:builtinApp/*')).toBe(true)
+        } else if (!hit) expect(appOnly.has(p.route.split('?')[0])).toBe(true)
         else expect(hit.redirect).toBeNull()
       }
     }

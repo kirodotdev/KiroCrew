@@ -122,6 +122,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "get_provider": ("function", False, "c66f77f7d253", "facade"),
     "get_subagent_runtime": ("function", True, "23c9947d4e41", "companions"),
     "has_allocation_reservation": ("function", False, "1eda252b53bd", "facade"),
+    "has_queued": ("function", False, "1eda252b53bd", "facade"),
     "has_session": ("function", False, "1eda252b53bd", "facade"),
     "inbound_callback_count": ("property", False, "fa6cfecd5574", "facade"),
     "is_busy": ("function", False, "1eda252b53bd", "facade"),

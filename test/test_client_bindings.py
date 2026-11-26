@@ -111,7 +111,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_discard_settings_seed": ("function", True, "b60c5fea256e", "client_class"),
     "_dispatch_events": ("function", "agen", "f222467c1516", "client_turn"),
     "_dispatch_prompt_events": ("function", "agen", "69109bbc58c2", "client_turn_control"),
-    "_drain_notifications": ("function", True, "23967cf3fb9c", "client_transport"),
+    "_drain_notifications": ("function", True, "cb5be0fb2dc6", "client_transport"),
     "_drain_post_compaction_metadata": ("function", True, "65fe4b4d1210", "client_usage"),
     "_drain_stderr": ("function", True, "550410b8da31", "client_lifecycle"),
     "_drop_superseded_config_frames": ("function", False, "b60c5fea256e", "client_permissions"),
@@ -232,6 +232,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_recover_copilot_mcp_identity": ("function", False, "14fbb2bb120a", "client_tool_events"),
     "_redact_native_child_events": ("function", False, "4ae22451457c", "client_turn"),
     "_refuse_identity_drift": ("function", True, "2dfacffa6279", "client_permissions"),
+    "_refuse_reused_call_id": ("function", True, "2dfacffa6279", "client_permissions"),
     "_refuse_session_config_drift": ("function", True, "b60c5fea256e", "client_permissions"),
     "_refuse_unverified_antigravity_version": (
         "function",
@@ -395,7 +396,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "touch_activity": ("function", False, "b60c5fea256e", "client_lifecycle"),
     "turn_finished_cleanly": ("function", False, "a6632a57e602", "client_turn_control"),
     "wait_for_compaction": ("function", True, "1d8ef804d52e", "client_usage"),
-    "wait_for_declared_mcp": ("function", True, "921c3727b83c", "client_mcp_array"),
+    "wait_for_declared_mcp": ("function", True, "e0719edb9cf3", "client_mcp_array"),
     "wait_turn_done": ("function", True, "48da118c69ff", "client_turn_control"),
     "work_scratch_dir": ("property", False, "d921fd8d443d", "client_class"),
 }

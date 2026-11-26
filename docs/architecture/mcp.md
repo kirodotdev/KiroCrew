@@ -1300,8 +1300,15 @@ withholds that registry shows only its own featured rows.
 Each change is applied to the one raw config key its row stands for: the row's exact
 key, else the single raw key whose alias it is (`npm:@playwright/mcp` for the row
 `playwright-mcp`). A name that is the alias of several raw keys is refused with `409`
-and `"code": "mcp_server_name_ambiguous"` before any write, both by `POST /api/mcp/apply`
-(uninstalls included) and by `POST /api/mcp/toggle`.
+and `"code": "mcp_server_name_ambiguous"` before any write, by `POST /api/mcp/apply`
+(uninstalls included), by `POST /api/mcp/toggle` and by `POST /api/mcp/toggle-tool`.
+The last writes `disabledTools` onto that key in the Kiro global, so a session also
+reads a raw slash key's list under the alias it mounts as
+(`session_mcp_disabled_tools`), unless the same file holds the alias or a second raw key
+with it, or the Kiro Crew store or a provider global holds the alias as its own key.
+When the store or a provider global holds the row's name itself, that entry is the mount
+and the raw key mounts beside it as `playwright-mcp-2`, so the route writes the list
+under the row's name instead.
 
 Per-tool overrides edit that raw key only while it is the server mounted under the
 row's name. When the Kiro global or a provider global declares the alias itself
@@ -1396,6 +1403,8 @@ MCP Tools section. A `url` is cut to its scheme and host (`asset_downloader.reda
 where the record is stored (`mcp_dropped_servers._shown_command`), because both
 `GET /api/mcp` and doctor output, which gets pasted into bug reports, show it as
 stored. It changes no precedence.
+
+The same record reaches the session and `kirocrew doctor`. An `AcpClient` session on the default agent or `kirocrew-worker` (which mirrors its `mcpServers`) reads it with its spec snapshot at spawn (`acp.mcp_prune.spec_dropped_servers`) and records each dropped server as failed on every attempt's MCP report, with a reason that names the command and the fix, exactly as the array prune records the servers it leaves out. A new chat session then shows one warn notice naming every server Crew left out (these, the array prune's, and pi's registration refusals), each with its own reason (`dashboard/chat_turn/mcp_session._notice_crew_left_out_mcp`), and doctor prints one `mcp servers` row per recorded drop and counts it as an issue. Shortcut: sessions on the shared `AcpRuntime` do not read the record yet, so kiro, KAS and codex chats (`ACP_BACKENDS_ACP_RUNTIME`), and a claude chat that shares the runtime, get no failed row and no notice; doctor still names the drop (#38439).
 
 No scope metadata is persisted. Apply does one-shot edits and forgets; state is
 re-read from disk on the next page load, so external edits (`kiro-cli mcp
@@ -1705,7 +1714,10 @@ it. Security detail:
 An absent, empty, unreadable or undecodable store approves nothing, and a write
 refuses to replace a store whose bytes do not decode. A stub
 without a matching fingerprint stays on the session's unpooled, sandboxed launch
-path. A queued cold spawn reloads the store after admission and resolves the same
+path. gatewayd's refusal says why (`no target mapping for server '<name>': its
+launch is not an approved one; review it in MCP Servers > Sharing`), and the stub
+records that reason in `stub_fallback.jsonl`; a server with no target mapping at all
+keeps the text that names `KIROCREW_MCP_TARGET_<SERVER>`. A queued cold spawn reloads the store after admission and resolves the same
 command and environment identity again immediately before the fork, so revoking
 an approval while it waits prevents the process from starting. A stub with no
 recorded approval needs one in **MCP Servers** before it pools. Cached recommendation
@@ -1757,7 +1769,12 @@ off revokes the approval first, and restores it when the config write does not
 commit. The approval also stores the redacted, bounded display of the approved
 launch, so a `changed_needs_reapproval` refusal carries `approved_commands` and
 `approved_envs` beside the new `commands` and `envs`; an approval recorded
-without a display omits both fields. The refusal record carries each command argv
+without a display omits both fields. Beside each display it keeps a keyed digest
+of each env value that display names (HMAC-SHA256 under a key derived from
+`token_signing.key`, which the sandbox cannot read; each value hashed as the env
+fingerprint reads it), so the refusal also carries `changed_env_keys`: the keys
+both sides set whose digests differ, names only. An approval recorded without
+digests, or under another signing key, omits it. The refusal record carries each command argv
 with its redacted declared environment, scrubbed and bounded before they enter it,
 and the row's **Details** and the Review dialog display them. A refusal whose
 display was cut is stored `complete: false` with no `expected_launch`, so its
@@ -1864,7 +1881,10 @@ paired, so list order cannot change it. When a launch of a command both sides ru
 **Show full command**. An env key set on both sides with a new value is said
 there too: for a value the gateway shows in clear (PATH, `LD_*`, a `${VAR}`
 reference) the list entries added and removed, and otherwise only its key
-(`envValueChanges`). When both sides run the same commands, the summary is per
+(`envValueChanges`). A key in the refusal's `changed_env_keys` is named the same
+way, so a value the gateway hid, redacted or cut cannot hide a change; in the
+per-launch summary below, such a key that no launch's lines name is said once
+above the launches. When both sides run the same commands, the summary is per
 launch (`mcpLaunchDiff.launchChanges`): each new launch is paired with the
 approved launch it most likely replaced (same command, then fewest changed
 keys) and diffed against that launch only, so two launches swapping values
@@ -2538,9 +2558,10 @@ What the pass does with a Bot file is what it does with an agent spec: the
 same hardened reader, the same `_rewrite_single_spec`, the same launch approvals
 (an unapproved launch stays unwrapped), the same env-sidecar ledger and prune,
 and the same fingerprint and cache (the files sign as the `mate_sources` input,
-which an app overlay refresh, or the refresh a change card runs when it adds or
-changes a gateway-routed server on a Bot, may see change; a new target still
-makes the refresh wait for a restart, and the card then says so). It differs
+which an app overlay refresh, or the refresh a change card or Add abilities runs
+when it adds or changes a gateway-routed server on a Bot, may see change; a new
+target still makes the refresh wait for a restart, and the card or pane then
+says so). It differs
 in four places. The stub's `--agent` identity is `crewmate:<id>`, never the
 file's own `name`, so the sidecar
 (`env_sidecar_name(agent, server)`) and caller identity are the Bot's own. A
@@ -2662,7 +2683,9 @@ Bot's own.
 An edited Bot file can run on its older stub until the next pass. Overlays
 are written at gateway start, on an app overlay refresh, and on the refresh a
 `crewmate.capabilities` change card runs when its save adds or changes a
-gateway-routed server on a Bot that owns its file. Routed is the rewriter's own
+gateway-routed server on a Bot that owns its file, and on the same refresh an
+**Add abilities** apply (`PUT /api/agents/{name}/worker-kit`) runs when it copies
+one into that file. Routed is the rewriter's own
 rule: the name is in `mcp_gateway.stub_servers`, or, for a server whose env holds
 a `secret://` reference, its slash-free alias matches one there
 (`secret_uri.routed_for_secret_reference`). The save writes the file inside that
@@ -2672,8 +2695,9 @@ launch is a target the running daemon does not hold), or the running gateway
 does not route that server yet (a `mcp_gateway.stub_servers` change written
 outside the per-server share, `POST /api/mcp-gateway/servers/stub`, waits for
 the next gateway start), the overlay does not carry its stub and the
-applied card shows a line saying the Bot's worker gets the server through the
-gateway only after a gateway restart, and where to restart it. The worker's
+applied card, or the Add abilities pane's finished-add line, says the Bot's
+worker gets the server through the gateway only after a gateway restart, and
+where to restart it. The worker's
 governed spec is read at session start, and the lookup matches by server name.
 So after an edit (a changed command, args or env, a rotated token) the session
 subtracts the current entry and gets the stub, and the sidecar, of the launch
@@ -2969,7 +2993,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
 | `kirocrew-panel` | `kirocrew mcp-panel` (`mcp_panel.py`) | `panel_publish`, `panel_templates`, `dashboard_fields`, `dashboard_types`, `dashboard_write`, `dashboard_save`, `dashboard_templates`, `dashboard_preview`, `dashboard_apply`, `dashboard_rollback`, `dashboard_snapshot` |
 | `kirocrew-guide` | `kirocrew mcp-guide` (`mcp_guide.py`) | `guide_list_actions`, `guide_start`, `guide_status`, `guide_cancel`, `list_change_kinds`, `find_setting`, `get_member_capabilities`, `diagnose_settings`, `propose_change`, `get_change_status`, `search_docs`, `find_ui` |
-| `kirocrew-mate` | `kirocrew mcp-mate` (`mcp_mate.py`) | `update_self`, `set_model`, `set_approval_mode`, `find_capabilities`, `request_capabilities`, `goal_read`, `set_goal`, `set_key_results`, `set_check_ins`, `offer_dashboard_page`, `key_result_progress`, `save_goal_report`, `save_notes` |
+| `kirocrew-mate` | `kirocrew mcp-mate` (`mcp_mate.py`) | `update_self`, `set_model`, `set_approval_mode`, `find_capabilities`, `request_capabilities`, `goal_read`, `set_goal`, `set_key_results`, `set_check_ins`, `offer_dashboard_page`, `key_result_progress`, `save_goal_report`, `save_notes`, `memory_list`, `propose_memory_changes` |
 | `kirocrew-secrets` | `kirocrew mcp-secrets` (`mcp_secrets.py`) | `call_api_with_secret` |
 
 `kirocrew-guide` is a platform capability: it is always emitted (not `opt_in`),
@@ -3310,7 +3334,8 @@ controls in `change_card_catalog.DASHBOARD_SETTINGS` (Response Verbosity and the
 other Chat toggles) write `PUT /api/dashboard/config` with a one-key partial
 body, a registry `configKey` the config route accepts writes
 `PATCH /api/config/kirocrew`, and anything else is refused `no_write_path` with a
-pointer to the `settings.show` guide. The value must be one of the control's
+pointer to the `settings.show` guide; so is a `str_list` key such as
+`skills.extra_paths`, since a card carries no list value. The value must be one of the control's
 own options. A string-list setting (`change_card_catalog.DASHBOARD_LIST_SETTINGS`:
 Selectable Models' hidden models) takes `op` (`add`/`remove`) and one `item`
 instead of `value`, and writes the Settings page's own one-item delta key
@@ -4506,7 +4531,24 @@ The inputs:
   the panel sources and the manual/route/type modules are digested too;
 - registered controls: a `{...uiLocation('<id>')}` marker at the render site plus
   one entry in its area file, `src/uiLocations/areas/<area>.ts`, aggregated by
-  `src/uiLocations/descriptors.ts` (see below).
+  `src/uiLocations/descriptors.ts` (see below);
+- pages from packaged app manifests: every `ui.pages[]` entry of each
+  `src/kiro_crew/apps/builtins/*/app.json`, read by `scripts/lib/ui-index-apps.mjs`
+  (data only: no app is named in generator or index code). Each becomes a
+  generated page `apppage.<manifest name>.<route slug>`. Its label is the catalog
+  key the rail renders for a built-in app's page (`APP_MANIFEST_KEY`'s
+  `apps.<camelCaseId>.manifest.page_label`, first page only) when the English
+  catalog holds the manifest's own words there, else a `literal:` label; the
+  app's `displayName` is `app` on the record (and, through its `display_name`
+  key the same way, an alias when it differs from the page label), and a rail
+  entry that requires `app_enabled`. A page whose route a core page
+  already has is left to that page. Its route must not match a core route: it is
+  served by the `/:builtinApp/*` arm. These are packaged files read at BUILD time,
+  so find_ui still reads only the generated index. Apps a user installs at
+  runtime are not packaged and so not indexed (a follow-up). A manifest edit that
+  changes an indexed page leaves the committed index stale, which `--check`
+  reports; `test/test_find_ui_app_pages.py` also compares the committed index
+  against the manifests, so a backend-only PR catches it too.
 
 Every emitted route is checked against the router itself: the `<Route path>`
 table in `src/App.tsx`, read by a bounded AST adapter (`collectRouteTable`) that
@@ -4515,7 +4557,8 @@ records each route's pattern, its catch-alls (`*`, a leading parameter such as
 directly, or a same-file component that renders nothing else), the static target.
 A route must match a non-catch-all, non-redirect route (most static segments
 win, as the router ranks them), or be an `appOnly` surface served by the
-built-in-app arm; anything else, including an empty route, is an error. A
+built-in-app arm (as an `appOnly` surface or a packaged app manifest's page);
+anything else, including an empty route, is an error. A
 Search Everywhere extra page whose route only redirects (`/mc-agents`, `/tasks`,
 `/instances`) is never returned as a destination: `LEGACY_PAGE_CANONICAL` in
 `descriptors.ts` names the location the redirect lands on, by explicit tab where
@@ -4528,7 +4571,10 @@ mapping for a page that no longer redirects.
 
 Labels are the 12 shipped catalogs (no `en-XA`; English is `en.json` under
 `en.manual.json`), referenced keys only, deduplicated per locale; a product name
-such as a channel brand is stored as a `literal:` key. A location stores
+such as a channel brand is stored as a `literal:` key. A placeholder other than
+`{{productName}}` in an alias or caution value (the top-bar search button's
+`{{shortcut}}` alias) is stored without it, so find_ui searches the words around
+it; a location's own label that interpolates is still refused. A location stores
 `label_key`, never copy. Placements are alternatives, each with the full
 `parent_ids` chain, a canonical `route`, `entry_kind` and structured `requires`
 (`viewport`, `shown_by` another location, `preview_flag` with the Settings
@@ -6062,11 +6108,10 @@ for channel agents at the prompt and at dispatch.
 **Assignment is still not authorization.** Being unreferenced by default keeps a
 capability cheap and deliberate; it does not prove the user consented to reach the
 agent does not otherwise have. For that, `config.json` is the WRONG home —
-`security.py` spells out why, and the keystone leaves (`computer_use.json`,
-`browser-mode-enabled`, the Ops Mission Control mode) exist because each grants
-something outside Kiro Crew (desktop input synthesis, the operator's logged-in
-browser, writes against production incident tooling) or is the security floor
-itself.
+`security.py` spells out why, and the keystone leaves (`computer_use.json`, the
+Ops Mission Control mode) exist because each grants something outside Kiro Crew
+(desktop input synthesis, writes against production incident tooling) or is the
+security floor itself.
 
 The test is blast radius, not wording: ask what the agent gains that it did not
 already have. Folder tools grant no new read (`list_sessions` already returns every

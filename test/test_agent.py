@@ -22,6 +22,7 @@ from windows_sim import replace_sharing_violation
 
 from conftest import requires_symlinks
 from kiro_crew import atomic_write as aw
+from kiro_crew.testing.module_table import patched_sys_modules
 
 
 @pytest.fixture
@@ -386,7 +387,7 @@ class TestResolveKirocrewBin:
         try:
             agent_mod._KIROCREW_BIN = None
             with ExitStack() as stack:
-                stack.enter_context(patch.dict("sys.modules", {"kiro_crew": mock_mc}))
+                stack.enter_context(patched_sys_modules({"kiro_crew": mock_mc}))
                 stack.enter_context(
                     patch("kiro_crew.agent._launcher_works", side_effect=_scoped_works)
                 )
@@ -426,7 +427,7 @@ class TestResolveKirocrewBin:
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
-            with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
+            with patched_sys_modules({"kiro_crew": mock_mc}):
                 result = _resolve_kirocrew_bin()
             assert result == str(kirocrew_bin)
         finally:
@@ -459,7 +460,7 @@ class TestResolveKirocrewBin:
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
-            with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
+            with patched_sys_modules({"kiro_crew": mock_mc}):
                 with patch("os.path.isfile", side_effect=_fake_isfile):
                     # Skip brazil-path branch
                     def _which(cmd: str) -> str | None:
@@ -488,7 +489,7 @@ class TestResolveKirocrewBin:
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
-            with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
+            with patched_sys_modules({"kiro_crew": mock_mc}):
                 # Blanket isfile=False blocks walk, brazil-path, and which fallback
                 with patch("os.path.isfile", return_value=False):
                     with patch("shutil.which", return_value=None):
@@ -522,7 +523,7 @@ class TestResolveKirocrewBin:
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
-            with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
+            with patched_sys_modules({"kiro_crew": mock_mc}):
                 # Blanket isfile=False — the stale path must not pass validation
                 with patch("os.path.isfile", return_value=False):
                     with patch("shutil.which", side_effect=_which):
@@ -558,7 +559,7 @@ class TestResolveKirocrewBin:
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
-            with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
+            with patched_sys_modules({"kiro_crew": mock_mc}):
                 # Make the walk find nothing reachable from the package dir.
                 _real_isfile = os.path.isfile
 
@@ -592,7 +593,7 @@ class TestResolveKirocrewBin:
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
-            with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
+            with patched_sys_modules({"kiro_crew": mock_mc}):
                 with patch("os.path.isfile", return_value=False):
                     with patch("shutil.which", side_effect=_which):
                         with patch(
@@ -696,7 +697,7 @@ class TestResolveKirocrewBin:
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
-            with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
+            with patched_sys_modules({"kiro_crew": mock_mc}):
                 with patch("shutil.which") as mock_which:
                     mock_which.side_effect = lambda cmd, **kw: (
                         str(fallback_bin) if cmd == "kirocrew" else None
@@ -735,7 +736,7 @@ class TestResolveKirocrewBin:
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
-            with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
+            with patched_sys_modules({"kiro_crew": mock_mc}):
                 result = _resolve_kirocrew_bin()
             assert result == str(kirocrew_bin)
         finally:
@@ -772,7 +773,7 @@ class TestResolveKirocrewBin:
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
-            with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
+            with patched_sys_modules({"kiro_crew": mock_mc}):
                 with patch("shutil.which") as mock_which:
                     mock_which.side_effect = lambda cmd, **kw: (
                         str(fallback_bin) if cmd == "kirocrew" else None
@@ -829,7 +830,7 @@ class TestResolveKirocrewBin:
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
-            with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
+            with patched_sys_modules({"kiro_crew": mock_mc}):
                 result = _resolve_kirocrew_bin()
             assert result == str(venv_bin)
         finally:
@@ -859,7 +860,7 @@ class TestResolveKirocrewBin:
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
-            with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
+            with patched_sys_modules({"kiro_crew": mock_mc}):
                 result = _resolve_kirocrew_bin()
             # Step 0 breaks at pyvenv.cfg; step 1 finds bin/kirocrew
             assert result == str(venv_bin)
@@ -964,7 +965,7 @@ class TestKirocrewBinSubpath:
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
-            with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
+            with patched_sys_modules({"kiro_crew": mock_mc}):
                 result = _resolve_kirocrew_bin()
             assert result == str(cmd_shim)
         finally:

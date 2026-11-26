@@ -115,6 +115,33 @@ rules:
       category: correctness
       subcategory: test-determinism
 
+  - id: kirocrew.test-sys-modules-patch-dict
+    # `$P` is `patch`, `mock.patch` or any alias of it. `monkeypatch.setitem(
+    # sys.modules, name, mod)` and `patched_sys_modules({...})` restore key by
+    # key and stay unmatched.
+    pattern-either:
+      - pattern: $P.dict(sys.modules, ...)
+      - pattern: $P.dict("sys.modules", ...)
+      - pattern: sys.modules.clear()
+    paths:
+      include:
+        - test/**
+        - src/kiro_crew/apps/builtins/**/tests/**
+        - src/kiro_crew/apps/builtins/**/*_tests/**
+        - conftest.py
+    message: >
+      patch.dict on sys.modules restores with clear() then update(), so the
+      module table is empty for an instant. A thread that imports in that
+      instant registers a second copy of a package, and every later string
+      patch on that worker fails at setup. Fake the entries with
+      patched_sys_modules({...}) from kiro_crew.testing.module_table, or with
+      monkeypatch.setitem(sys.modules, name, mod) (D11).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: test-determinism
+
   - id: kirocrew.test-stdlib-clock-rebound
     # `$MOD.time` is the time module reached through another module's binding
     # (`subject.time`, `"pkg.mod.time.monotonic"`): the same object, so the same

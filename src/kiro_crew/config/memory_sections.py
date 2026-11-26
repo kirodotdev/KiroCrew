@@ -550,7 +550,9 @@ class MemoryConfig:
             "every lesson as before and only counts, within fixed size caps, what "
             "the gate would demote. 'enforce' stores such a lesson as an on_topic "
             "finding instead, and gives an agent-triggered learn_add its own source. "
-            "Stored lessons are never changed.",
+            "A span with a message from you keeps its tiers; judging each lesson by "
+            "your own words is memory.lesson_tier_policy. Stored lessons are never "
+            "changed.",
             enum=list(LESSON_ORIGIN_GATE_MODES),
         ),
     )
@@ -574,13 +576,16 @@ class MemoryConfig:
         metadata=_meta(
             "Lesson Tier Policy",
             "Which tier a new lesson from consolidation gets. 'off' (default) keeps "
-            "today's prompt and writes. 'shadow' writes every lesson as before and only "
-            "counts, within fixed size caps, which new lessons the policy would store "
-            "as on_topic findings, and how often you later teach one of them again. "
-            "'enforce' asks the model for your own words behind each 'always' lesson "
-            "and stores a lesson as an on_topic finding unless those words are found "
-            "in one of your messages. Your own learn_add and dashboard writes, and "
-            "stored lessons, are never changed.",
+            "today's prompt and writes. 'shadow' writes every lesson as before, asks "
+            "the model for your own words behind each 'always' lesson in one extra "
+            "small call after the writes, and only counts, within fixed size caps, "
+            "which new lessons the policy would store as on_topic findings, and how "
+            "often you later teach one of them again. 'enforce' asks for those words "
+            "in the consolidation prompt and stores a lesson as an on_topic finding "
+            "unless they are in one of your messages and say what the rule says "
+            "(with no embedding model, no lesson stays standing). "
+            "Your own learn_add and dashboard writes, and stored lessons, are never "
+            "changed.",
             enum=list(LESSON_TIER_POLICY_MODES),
         ),
     )

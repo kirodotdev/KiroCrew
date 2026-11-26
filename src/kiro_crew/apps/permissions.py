@@ -307,6 +307,36 @@ def session_approval_denial_cause(app_name: str, *, manifest: AppManifest | None
         return SESSION_APPROVAL_UNAVAILABLE
 
 
+#: The ``chatSlots`` grant is not in the app's live manifest.
+CHAT_SLOTS_NOT_DECLARED = "chat_slots_not_declared"
+
+
+def chat_slots_denial_cause(app_name: str) -> str:
+    """Why *app_name* may not run goal loops on its own chat slots, ``""`` when it may.
+
+    Read live on every call, manifest first and then the installed record, in the
+    order :func:`session_approval_denial_cause` uses, so a disable or a manifest
+    edit takes effect on the next request.
+    """
+    if not app_name:
+        return SESSION_APPROVAL_UNAVAILABLE
+    try:
+        manifest = get_app_manifest(app_name)
+        if manifest is None:
+            return SESSION_APPROVAL_UNAVAILABLE
+        if not manifest.permissions.chatSlots:
+            return CHAT_SLOTS_NOT_DECLARED
+        meta = _read_installed(app_name, manifest=manifest)
+        if meta is None:
+            return SESSION_APPROVAL_UNAVAILABLE
+        if not meta.enabled:
+            return SESSION_APPROVAL_DISABLED
+        return "" if is_app_enabled(app_name) else SESSION_APPROVAL_UNAVAILABLE
+    except Exception:
+        logger.warning("Could not resolve the chatSlots grant for app %s", app_name, exc_info=True)
+        return SESSION_APPROVAL_UNAVAILABLE
+
+
 def app_can_manage_session_approvals(app_name: str, *, manifest: AppManifest | None = None) -> bool:
     """Return whether an enabled app holds the user-session control grant.
 

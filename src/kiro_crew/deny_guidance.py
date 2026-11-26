@@ -622,7 +622,8 @@ REMEDIATION: dict[str, str] = {
         "once; and a search for the text with your file-search tool, or a line made "
         "only of `grep`, `date`, `echo`, `cat`, `head`, `tail`, `wc` "
         "and read-only `gh` search, view and list calls, with no `$`, no backtick "
-        "and no redirect. On POSIX such an inert search passes even when it names "
+        "and no redirect; in PowerShell, one plain `Select-String` command alone on "
+        "its line. On POSIX such an inert search passes even when it names "
         "`curl` next to a `--data @` form; on Windows, where the shell is not bash, "
         "search for that pair with your file-search tool instead."
     ),

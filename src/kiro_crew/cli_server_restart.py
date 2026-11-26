@@ -972,6 +972,29 @@ _RESTART_AUDIT_KIND = {
 }
 
 
+_now = time.time
+
+
+def _print_resume_hint(started: float, cli_port: int | None, port: int) -> None:
+    """Name ``kirocrew resume`` when this restart's stop recorded cut chats. Never resumes them.
+
+    Only a record written at or after *started* is this restart's: a crash, or a
+    restart with no gateway running, runs no graceful stop, and an older record
+    names another stop's chats. On a coarse-mtime filesystem that can drop a
+    real hint; on a local filesystem it cannot print a wrong one.
+    """
+    from kiro_crew.dashboard.restart_resume import last_stop_record
+
+    try:
+        record = last_stop_record()
+    except OSError:
+        return
+    if record is None or record[0] < started or not record[1]:
+        return
+    command = "kirocrew resume" if cli_port is None else f"kirocrew resume --port {port}"
+    print(f"   {len(record[1])} chat(s) were cut by the stop. To resume them, run: {command}")
+
+
 def _restart(cli_port: int | None = None) -> None:
     """Restart a running Kiro Crew gateway.
 
@@ -1012,12 +1035,18 @@ def _restart(cli_port: int | None = None) -> None:
     When ``cli_port is not None`` (user passed ``--port N``), branch (1) is
     bypassed: the systemd unit name is not bound to a specific port, so
     short-circuiting through it would target the wrong gateway.
+
+    After either path succeeds it names ``kirocrew resume`` when the
+    gateway's stop during this restart recorded cut chats (:func:`_print_resume_hint`).
+    It resumes nothing itself: a stop may have been the way to end those
+    turns, so resuming them is the operator's call.
     """
     from kiro_crew.cli_restart_headless import live_gateway_headless
     from kiro_crew.cli_restart_in_place import restart_in_place
     from kiro_crew.dashboard.headless import print_client_access
 
     port = resolve_client_port(cli_port)
+    started = _now()
     # Before either path signals or refuses anything: both stop the gateway's cron
     # runs, and the line stays true when a refusal below follows it.
     _print_running_cron_runs()
@@ -1041,6 +1070,7 @@ def _restart(cli_port: int | None = None) -> None:
                 print_client_access(port)
             else:
                 _print_token_url(port)
+            _print_resume_hint(started, cli_port, port)
             return
         if report.attempted or service_controller.is_service_active():
             # A managed unit was there and the restart did not take. An ATTEMPTED
@@ -1401,3 +1431,4 @@ def _restart(cli_port: int | None = None) -> None:
         print_client_access(port)
     else:
         _print_token_url(port)
+    _print_resume_hint(started, cli_port, port)

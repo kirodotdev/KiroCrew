@@ -124,7 +124,7 @@ from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard import engine_fallback as _engine_fallback
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
 from kiro_crew.dashboard import run_clock as _run_clock
-from kiro_crew.dashboard import trace_binding
+from kiro_crew.dashboard import running_bot_turns, trace_binding
 from kiro_crew.dashboard.chat_delivery import COMMANDS_OFF_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import START_BACKGROUND_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
@@ -209,6 +209,7 @@ from kiro_crew.dashboard.chat_turn.queue_cycle import (
     _note_failed_before_the_try,
     _turn_record_outcome,
     _TurnExit,
+    note_message_failed_before_start,
 )
 from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
     _RESTORED_DRAIN_IDS,
@@ -252,7 +253,9 @@ from kiro_crew.dashboard.chat_turn.session_events import (
     _on_clear_status,
     _on_compaction_status,
     _on_harness_notice,
+    _on_model_fallback,
     _on_todo_update,
+    _restore_refused_text,
 )
 from kiro_crew.dashboard.chat_turn.session_reset import (
     _arm_pending_reset_retry,
@@ -331,6 +334,7 @@ from kiro_crew.dashboard.chat_turn.turn_marker import (  # noqa: F401
     _clear_local_turn_marker,
     _gateway_shutdown_requested,
     register_turn_observer,
+    unanswered_turn_opener,
 )
 from kiro_crew.dashboard.chat_turn.turn_reply_seams import _flush_thinking_stream, _notify_turn_died
 from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _turn_stop_hook
@@ -1357,13 +1361,7 @@ async def _run_chat(
             elif event.kind == EVENT_HARNESS_NOTICE:
                 _on_harness_notice(turn, event)
             elif event.kind == EVENT_MODEL_FALLBACK:
-                # kiro-cli moved this turn onto another model, or could not. The
-                # handle already moved the resolved model; the slot follows a
-                # promotion, and the finally ends the walk with one notice.
-                if event.model_fallback is not None:
-                    _engine_fallback.record_engine_fallback(
-                        state, slot, client, turn._engine_fallback_walk, event.model_fallback
-                    )
+                _on_model_fallback(turn, event)
             elif event.kind == EVENT_SUBAGENT_LIST:
                 await _on_subagent_list(turn, event)
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
@@ -1383,6 +1381,7 @@ async def _run_chat(
 
         await _turn_compact_command(turn)
 
+        _restore_refused_text(turn)
         await _turn_settle_answer(turn)
         # After the reply's last segment and before the turn is saved.
         _finish_harness_notices(turn)
@@ -1530,6 +1529,7 @@ async def _run_chat(
     except Exception as exc:
         await _on_error(turn, exc)
     finally:
+        running_bot_turns.end(turn)  # first, so nothing below can skip it; never raises
         trace_turns.release_turn_root(_trace_root)
         state.release_turn_heartbeat(turn)
         if _timed:

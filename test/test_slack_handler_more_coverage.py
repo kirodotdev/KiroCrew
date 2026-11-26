@@ -1428,6 +1428,7 @@ class _Slot:
         meta=None,
         directive_user_origin,
         directive_channel_origin,
+        source_channels=(),
     ):
         assert directive_user_origin is True
         assert directive_channel_origin is True

@@ -34,6 +34,11 @@ export interface ArtifactPublication {
    *  unrecognised value.
    *  Optional so an older gateway that omits it reads as "". */
   notice_code?: string
+  /** When the destination deletes the copy (ISO 8601, UTC), or empty for no known
+   *  expiry. Optional so an older gateway that omits it reads as no expiry. */
+  expires_at?: string
+  /** Whether `expires_at` has passed, decided by the gateway's clock at read time. */
+  expired?: boolean
 }
 
 /** A publishing provider's self-described capabilities for a given artifact kind,

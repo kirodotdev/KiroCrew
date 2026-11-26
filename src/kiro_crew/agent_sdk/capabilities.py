@@ -381,6 +381,15 @@ class SessionCapabilities:
     #: no such list is read and no row is shown.
     reports_mcp_sign_in_suspects: bool
 
+    #: Whether Crew folds the user's standalone ``~/.kiro/hooks/*.json`` files into
+    #: the hooks it fires for this harness's turns, and tells the chat when a
+    #: checkout's own hook files are withheld.
+    #:
+    #: True for KAS. False everywhere else, an unknown backend included: goose and
+    #: opencode have Crew fire their spec hooks but do not read a user's standalone
+    #: files, so none are added.
+    crew_merges_user_hook_files: bool
+
     #: Whether the harness keeps the same native session across its ``/compact``
     #: boundary, so Crew compacts in place: it waits for the turn permit, sends
     #: ``/compact`` and leaves the durable session mapping untouched.
@@ -388,6 +397,15 @@ class SessionCapabilities:
     #: True for claude. False everywhere else, an unknown backend included: there
     #: the session takes the other compaction arms.
     keeps_session_across_compaction: bool
+
+    #: Whether the harness lends a custom agent kiro-cli's default resources: the
+    #: user's global and workspace steering and the default skill trees, unless the
+    #: workspace opted out (``chat.disableInheritingDefaultResources``). Context
+    #: only; nothing here grants a permission.
+    #:
+    #: True for kiro-cli. False everywhere else, an unknown backend included: no
+    #: other harness lends those trees, so Crew delivers them itself or not at all.
+    inherits_kiro_default_resources: bool
 
 
 def capabilities_for(backend: str) -> SessionCapabilities:
@@ -432,7 +450,9 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         model_auto_switches_in_place=backend == ACP_BACKEND_KAS,
         harness_loads_agent_context=backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS),
         reports_mcp_sign_in_suspects=backend == ACP_BACKEND_OPENCODE,
+        crew_merges_user_hook_files=backend == ACP_BACKEND_KAS,
         keeps_session_across_compaction=is_claude_backend_name(backend),
+        inherits_kiro_default_resources=backend == ACP_BACKEND_KIRO,
     )
 
 
@@ -479,7 +499,9 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     model_auto_switches_in_place=False,
     harness_loads_agent_context=False,
     reports_mcp_sign_in_suspects=False,
+    crew_merges_user_hook_files=False,
     keeps_session_across_compaction=False,
+    inherits_kiro_default_resources=False,
 )
 
 

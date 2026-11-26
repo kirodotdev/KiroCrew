@@ -208,6 +208,8 @@ class _ChatTurn:
     _mirror_chan: "str | None"
     _mirror_post_ts: "str | None"
     _mirror_stream_ts: "str"
+    # ``messages_noted()`` count when the mirror's task stream was opened; None with none open.
+    _mirror_stream_messages_noted: "int | None"
     _mirror_task_counter: "int"
     _mirror_thread: "str | None"
     _mirror_stream_tried: "bool"
@@ -238,6 +240,9 @@ class _ChatTurn:
     _pending_tool_ids: "dict[str, PostToolIdentity]"
     _pending_tools: "dict[str, str]"
     _person_steered_turn: "bool"
+    # This attempt ran its UserPromptSubmit fire (``turn_dispatch_gates``). Set in
+    # __init__ so a turn that dies before the fire reads False.
+    _prompt_hooks_fired: "bool"
     # The permission request being decided had its PreToolUse hooks fired by the
     # gate and they passed; reset at the start of each request's decision.
     _pre_tool_hooks_fired: "bool"
@@ -250,6 +255,9 @@ class _ChatTurn:
     _refusal_notices: "list[str]"
     _refusal_notices_settled: "int"
     _refusal_reasons: "list[tuple[str, str]]"
+    # The open segment a refusal hop dropped (``session_events._on_model_fallback``):
+    # its text and the slot's raw copy, until a model writes text after the hop.
+    _refused_segment: "tuple[str, str | None, Any, dict[str, str]] | None"
     _repeat_loop: "RepeatLoopTracker"
     _replay_accepted_this_turn: "bool"
     _replay_admitted_incarnation: "object"
@@ -464,6 +472,7 @@ class _ChatTurn:
         self._agent_started = _agent_started
         self._agent_turn_stream = None
         self._agent_cancel_owed = False
+        self._prompt_hooks_fired = False
         self._agent_cancel_event = None
         # No admission reservation until the context-builder branch opens one.
         self._admission_slot = None
@@ -477,6 +486,7 @@ class _ChatTurn:
         # alternation placeholder, with each one's ``released`` flag: dropped or
         # replayed by ``stream_chunks._settle_echo_hold`` at the segment's end.
         self._echo_held = []
+        self._refused_segment = None
 
     @property
     def assistant_text(self) -> str:

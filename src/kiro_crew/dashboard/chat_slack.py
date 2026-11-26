@@ -1109,89 +1109,38 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
-async def api_chat_slot_slack_unlink(request: web.Request) -> web.Response:
-    """POST /api/chat/slots/{slot}/slack-unlink — stop mirroring to Slack.
+def clear_slot_slack_link(state: DashboardState, session_key: str) -> bool:
+    """Clear BOTH persisted key spellings for a slot's Slack link, unconditionally.
 
-    Symmetric counterpart to ``api_chat_slot_slack_link``. Clears the Slack
-    link so subsequent dashboard turns are no longer mirrored, while keeping
-    the session, its history, and the existing Slack thread intact. Idempotent:
-    unlinking a session with no link returns ``{ok, was_linked: false}``.
+    chat_runner copies a dashboard session's link from the bare key onto the
+    "dashboard:"-prefixed one when a turn runs, so both spellings must go or
+    the next turn re-inherits the link. A channel key has no such twin. For
+    a caller with no row in hand there is nothing to compare against, so
+    this is the plain clear; a body that names a row goes through the map's
+    compare-and-clear instead.
 
-    Auth posture is identical to slack-link, with no new auth surface: both are
-    reachable as mixed-internal via the ``/api/chat`` prefix in
-    ``mixed_internal_paths`` (server.py; token_auth.py prefix-matches sub-routes),
-    so on loopback they accept the internal secret and otherwise fall back to
-    normal dashboard-token + CSRF auth. No separate allowlist entry is needed —
-    and it must NOT be added to the strict ``internal_paths`` set, which would
-    wrongly restrict this browser action to loopback-only callers.
+    Link mutations stay ON the event loop: `_save()` is a small atomic
+    temp-file rename on a rare user action, and moving a clear into
+    `asyncio.to_thread` buys nothing. The map serialises its writers under its
+    own lock, and a compare-and-clear is atomic only when BOTH steps run under
+    it -- which is why the body-armed path of `api_chat_slot_slack_unlink` is one
+    map call (`clear_slack_link_if`) and this helper serves the bodiless path.
     """
-    state: DashboardState = request.app["state"]
-    name = request.match_info.get("name") or request.match_info.get("slot", "")
-    slot = state.get_slot(name) or state._slots.get(name)
-    # Reached from mirror-unlink after its body read, so the slot found now must
-    # be the one the per-slot checkpoint judged.
-    if not slot or checkpoint_slot_replaced(request, slot):
-        return slot_not_found()
+    done = state.sessions.clear_slack_link(session_key)
+    if session_key.startswith("dashboard:"):
+        done = state.sessions.clear_slack_link(session_key[len("dashboard:") :]) or done
+    return done
 
-    # Authoritative key = the slot's own session key. Deriving it from the slot
-    # NAME instead would build "dashboard:slack:<ts>" for a channel-born slot,
-    # leaving the real link untouched so mirroring silently resumes next turn.
-    session_key = effective_session_key(slot)
 
-    # Link mutations stay ON the event loop: `_save()` is a small atomic
-    # temp-file rename on a rare user action, and moving a clear into
-    # `asyncio.to_thread` buys nothing. The map serialises its writers under its
-    # own lock, and a compare-and-clear is atomic only when BOTH steps run under
-    # it -- which is why the body-armed path below is one map call
-    # (`clear_slack_link_if`) and this helper serves the bodiless path alone.
-    def _clear_persisted_link_sync() -> bool:
-        """Clear BOTH persisted key spellings for this slot's link, unconditionally.
+async def finish_slack_unlink(
+    state: DashboardState, slot: Any, session_key: str, prev_thread_ts: str
+) -> bool:
+    """Persist a cleared Slack link, then take the slot's own fields down; True on a relink.
 
-        chat_runner copies a dashboard session's link from the bare key onto the
-        "dashboard:"-prefixed one when a turn runs, so both spellings must go or
-        the next turn re-inherits the link. A channel key has no such twin. For
-        a caller with no row in hand there is nothing to compare against, so
-        this is the plain clear; a body that names a row goes through the map's
-        compare-and-clear instead.
-        """
-        done = state.sessions.clear_slack_link(session_key)
-        if session_key.startswith("dashboard:"):
-            done = state.sessions.clear_slack_link(session_key[len("dashboard:") :]) or done
-        return done
-
-    # A click carries the identity of the conversation that asked it, so one
-    # arriving after the link is gone is refused on its own terms instead of
-    # resolving to nothing and starting a brand-new session carrying a stale
-    # answer -- so the strike-through need not run before the teardown.
-    prev_channel = slot._slack_channel
-    prev_thread_ts = slot._slack_thread_ts
-    expected = await _expected_binding(request)
-    if expected is not None:
-        # Same guard as mirror-unlink, on the Slack fields the row is projected
-        # from: a stale Slack row must not tear down a thread this slot was
-        # re-linked to after that row was drawn. Compare and clear are ONE
-        # guarded step in the map (both key spellings), so no re-link can land
-        # between them. False is a mismatch and nothing was touched.
-        channel_type, token = expected
-        if not state.sessions.clear_slack_link_if(session_key, channel_type, token):
-            sel().log_api_access(
-                caller="dashboard",
-                operation="chat.slack_unlink",
-                outcome="denied",
-                source="dashboard",
-                resources=f"{slot.key} reason=mirror_changed",
-            )
-            logger.info("slack unlink: %s refused, the link changed under the menu", slot.key)
-            return web.json_response(
-                {
-                    "error": "the session's linked channel changed; nothing was unlinked",
-                    "code": "mirror_changed",
-                },
-                status=409,
-            )
-        cleared = True
-    else:
-        cleared = _clear_persisted_link_sync()
+    Shared by the dashboard's Unlink and Slack's ``!bot off`` (``slack/bot_chat.py``).
+    ``aflush`` re-raises a failed write, so a caller tells the user the thread is
+    gone only once this returns.
+    """
     # Persist before publishing: the map's writer is debounced, and everything
     # below -- the slot's own fields, the courtesy note in the thread, the slots
     # push, the `{ok, was_linked}` answer -- tells the user the thread is gone.
@@ -1249,6 +1198,72 @@ async def api_chat_slot_slack_unlink(request: web.Request) -> web.Response:
                 "slack unlink: could not strike the pending OPTIONS control through",
                 exc_info=True,
             )
+    return relinked
+
+
+async def api_chat_slot_slack_unlink(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/slack-unlink — stop mirroring to Slack.
+
+    Symmetric counterpart to ``api_chat_slot_slack_link``. Clears the Slack
+    link so later dashboard turns are not mirrored, while keeping
+    the session, its history, and the existing Slack thread intact. Idempotent:
+    unlinking a session with no link returns ``{ok, was_linked: false}``.
+
+    Auth posture is identical to slack-link, with no new auth surface: both are
+    reachable as mixed-internal via the ``/api/chat`` prefix in
+    ``mixed_internal_paths`` (server.py; token_auth.py prefix-matches sub-routes),
+    so on loopback they accept the internal secret and otherwise fall back to
+    normal dashboard-token + CSRF auth. No separate allowlist entry is needed —
+    and it must NOT be added to the strict ``internal_paths`` set, which would
+    wrongly restrict this browser action to loopback-only callers.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info.get("name") or request.match_info.get("slot", "")
+    slot = state.get_slot(name) or state._slots.get(name)
+    # Reached from mirror-unlink after its body read, so the slot found now must
+    # be the one the per-slot checkpoint judged.
+    if not slot or checkpoint_slot_replaced(request, slot):
+        return slot_not_found()
+
+    # Authoritative key = the slot's own session key. Deriving it from the slot
+    # NAME instead would build "dashboard:slack:<ts>" for a channel-born slot,
+    # leaving the real link untouched so mirroring silently resumes next turn.
+    session_key = effective_session_key(slot)
+
+    # A click carries the identity of the conversation that asked it, so one
+    # arriving after the link is gone is refused on its own terms instead of
+    # resolving to nothing and starting a brand-new session carrying a stale
+    # answer -- so the strike-through need not run before the teardown.
+    prev_channel = slot._slack_channel
+    prev_thread_ts = slot._slack_thread_ts
+    expected = await _expected_binding(request)
+    if expected is not None:
+        # Same guard as mirror-unlink, on the Slack fields the row is projected
+        # from: a stale Slack row must not tear down a thread this slot was
+        # re-linked to after that row was drawn. Compare and clear are ONE
+        # guarded step in the map (both key spellings), so no re-link can land
+        # between them. False is a mismatch and nothing was touched.
+        channel_type, token = expected
+        if not state.sessions.clear_slack_link_if(session_key, channel_type, token):
+            sel().log_api_access(
+                caller="dashboard",
+                operation="chat.slack_unlink",
+                outcome="denied",
+                source="dashboard",
+                resources=f"{slot.key} reason=mirror_changed",
+            )
+            logger.info("slack unlink: %s refused, the link changed under the menu", slot.key)
+            return web.json_response(
+                {
+                    "error": "the session's linked channel changed; nothing was unlinked",
+                    "code": "mirror_changed",
+                },
+                status=409,
+            )
+        cleared = True
+    else:
+        cleared = clear_slot_slack_link(state, session_key)
+    relinked = await finish_slack_unlink(state, slot, session_key, prev_thread_ts)
 
     # Best-effort courtesy note so a Slack watcher knows why the thread went
     # quiet. Same redaction path as the link endpoint; failure is non-fatal.

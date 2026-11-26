@@ -176,6 +176,21 @@ def _another_scope_declares(name: str) -> bool:
     return False
 
 
+def _name_held_elsewhere(name: str) -> bool:
+    """Whether the Kiro Crew store or a provider global holds *name* as a key.
+
+    The rebuild then mounts that entry under *name*, and a Kiro global raw key whose
+    alias is *name* beside it as ``<name>-2``
+    (``mcp_aliases.raw_tools_project_onto_alias``), so the tool-off route keeps the
+    row's list under *name* instead of putting it on that raw key.
+    """
+    for path in (_kirocrew_mcp_json(), *[s.global_json for s in _extra_mcp_scopes()]):
+        servers = _load_json_or_empty(path).get("mcpServers")
+        if isinstance(servers, dict) and name in servers:
+            return True
+    return False
+
+
 def _set_kirocrew_entry(
     name: str,
     *,

@@ -247,6 +247,30 @@ def register_restart_parser(sub: _Commands) -> None:
     )
 
 
+def register_resume_parser(sub: _Commands) -> None:
+    resume_parser = cli_help.add_command(sub, "resume")
+    resume_parser.add_argument(
+        "sessions",
+        nargs="*",
+        metavar="SESSION",
+        help=(
+            "Session ids to resume (the ?sid= value), as each tab's Resume button. "
+            "Without any, resume the chats the last gateway stop cut."
+        ),
+    )
+    resume_parser.add_argument(
+        "--all",
+        action="store_true",
+        help='Resume every interrupted session, as the sidebar\'s "Resume N sessions".',
+    )
+    resume_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Dashboard port (default: resolved from KIROCREW_PORT env or dashboard.url config).",
+    )
+
+
 def register_gateway_pid_parser(sub: _Commands) -> None:
     # gateway-pid — read-only: print the PID holding this home's gateway.lock as
     # JSON, resolved through the same socket-independent lock_holder oracle that

@@ -1041,7 +1041,11 @@ async def api_memory_episodic_search(request: web.Request) -> web.Response:
     tag_filter = [t.strip() for t in request.query.get("tags", "").split(",") if t.strip()] or None
     # _try_embed runs blocking in-process model inference (and a ~1s model
     # load on first call); offload to keep the dashboard event loop responsive.
-    emb = await asyncio.to_thread(store._try_embed, query) if store.embed_fn and query else None
+    emb = (
+        await asyncio.to_thread(store._try_embed, query, query=True)
+        if store.embed_fn and query
+        else None
+    )
     results = []
     # Offload: search_episodic serializes on _db_lock — see
     # api_memory_semantic.

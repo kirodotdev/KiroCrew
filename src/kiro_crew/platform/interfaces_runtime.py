@@ -347,11 +347,12 @@ class OtlpDestination:
     code that needs fixed headers sets them on ``Session.headers``; one declared
     as data uses ``headers_env`` below.
 
-    ``allow``, ``point_attributes`` and ``resource_allow`` are the three NARROWING
-    fields.  They keep this seam add-only in the direction that matters: each one
-    can only reduce or label what THIS destination receives, and none of them can
-    widen it, reach the local JSONL sink, or touch another destination.  All three
-    default to today's behaviour, so an existing destination is byte-identical.
+    ``allow``, ``point_attributes``, ``resource_allow`` and
+    ``named_entity_namespaces`` are the NARROWING fields.  They keep this seam
+    add-only in the direction that matters: each one can only reduce or label what
+    THIS destination receives, and none of them can widen it, reach the local JSONL
+    sink, or touch another destination.  All of them default to today's behaviour,
+    so an existing destination is byte-identical.
 
     - ``allow`` -- when set, a metric whose NAME is not in the set is dropped
       before encoding for this destination.  ``None`` means send every metric the
@@ -371,8 +372,20 @@ class OtlpDestination:
       destination that may receive only a few of them says so here.  A key absent
       from the shared Resource is simply absent -- nothing is invented.  ``None``
       sends the Resource as built.
+    - ``named_entity_namespaces`` -- the namespaces whose apps this destination may
+      see by name.  An edition that names the apps of a registry it ships gives
+      them ``Entity`` values of ``<namespace>.<app>`` on ``kirocrew.app.*``
+      metrics (the namespace is all before the last ``.``); a destination is sent
+      such a value only when its namespace is listed here, and ``private`` (with
+      ``entity_version`` ``private`` too) otherwise.  Points left with the same
+      attributes are merged into one, so the destination sees one ``private``
+      series.  Empty, the default, names nothing: a destination that says nothing
+      gets ``private``.  The local sink and the operator's own
+      ``telemetry.otlp_endpoint*`` entries are not governed by this field and keep
+      the names.  Nothing is hidden while no registry row declares
+      ``appNamespace``.
 
-    All three are enforced by an exporter WRAPPER the core builds
+    All of them are enforced by an exporter WRAPPER the core builds
     (``metrics/destination_filter.py``), outside this descriptor: a destination
     declares the narrowing, the core performs it, and the wrapper rebuilds the
     batch rather than mutating SDK objects another exporter also reads.
@@ -414,6 +427,7 @@ class OtlpDestination:
     headers_env: "Mapping[str, str]" = MappingProxyType({})
     temporality: str = ""
     process_env_credentials: bool = True
+    named_entity_namespaces: "frozenset[str]" = frozenset()
 
 
 class FeedbackTrackerProvider(Protocol):
@@ -446,8 +460,8 @@ class FeedbackTrackerProvider(Protocol):
         Default) leaves today's behaviour byte-for-byte.
 
         *bundle* carries the facts a report wants: ``filename``,
-        ``total_redactions``, ``path_collapses`` (host-name replacements
-        included) and ``provenance`` (release, channel). Never put
+        ``total_redactions``, ``path_collapses`` (host-name and login
+        replacements included) and ``provenance`` (release, channel). Never put
         ``bundle.zip_path`` in the URL: it sits under the data home and leaks
         the OS login. *note* is the user's free text, untrusted; percent-encode
         it or leave it out.

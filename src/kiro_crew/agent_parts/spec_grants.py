@@ -54,7 +54,9 @@ _MATE_SERVER = "kirocrew-mate"
 #: offers the Preview opt-in card first). ``find_capabilities`` only reads the
 #: worker's tools and the catalog.
 #: ``save_notes`` writes only the calling crewmate's own briefing, the file it
-#: has always kept for itself, admitted only in its own thread. A tool
+#: has always kept for itself, admitted only in its own thread. ``memory_list``
+#: only reads the crewmate's own memory store, and ``propose_memory_changes``
+#: only offers a card whose rows the user ticks. A tool
 #: added to the server is not in this tuple, so it asks first until it is
 #: reviewed here.
 _MATE_AUTO_GRANTS = (
@@ -71,6 +73,8 @@ _MATE_AUTO_GRANTS = (
     f"@{_MATE_SERVER}/key_result_progress",
     f"@{_MATE_SERVER}/save_goal_report",
     f"@{_MATE_SERVER}/save_notes",
+    f"@{_MATE_SERVER}/memory_list",
+    f"@{_MATE_SERVER}/propose_memory_changes",
 )
 
 

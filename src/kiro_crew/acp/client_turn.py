@@ -1242,8 +1242,11 @@ async def _dispatch_events(
             # as on the auto-approve site -- a frame nothing classified reaches
             # the consumer as a non-shell tool, so the command-deny tier never
             # sees the command it carries.
+            # A reused toolCallId whose arguments contradict the cached call is
+            # refused before any of them: neither side is the call to judge.
             if not (
-                await self._deny_zero_tools(permission_event)
+                await self._refuse_reused_call_id(permission_event)
+                or await self._deny_zero_tools(permission_event)
                 or await self._deny_spec_disabled_tool(permission_event)
                 or await self._refuse_identity_drift(permission_event)
             ):

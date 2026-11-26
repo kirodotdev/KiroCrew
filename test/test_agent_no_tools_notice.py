@@ -155,6 +155,29 @@ def test_default_crew_servers_suppress_the_no_tools_notice(
     assert notice.AGENT_NO_TOOLS_NOTICE_FIELD not in ConversationLog().get_metadata(key)
 
 
+def test_an_edition_server_kas_mounts_suppresses_the_no_tools_notice(
+    home: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tool-less agent's KAS session gets the edition's server, so it is not tool-less."""
+    from kiro_crew.acp import default_crew_servers
+    from kiro_crew.acp.harness.kas import resolve_projected_spec
+
+    monkeypatch.setattr("kiro_crew.agent_state.get_capabilities", lambda agent: None)
+    monkeypatch.setattr("kiro_crew.apps.manager.owning_app_for_agent", lambda agent: None)
+    monkeypatch.setattr(default_crew_servers, "_registry_mode", lambda: False)
+    monkeypatch.setattr(default_crew_servers, "_edition_server_names", lambda: ("edition-vend",))
+    monkeypatch.setattr(
+        default_crew_servers,
+        "_edition_servers",
+        lambda names: {n: {"command": "/opt/edition/vend"} for n in names},
+    )
+    _agent(home, "empty", tools=[])
+
+    projected, _ = resolve_projected_spec(home["agents"], "empty", None)
+    assert projected["tools"] == ["@edition-vend"]
+    assert not notice.editable_agent_without_tools("empty")
+
+
 def test_an_agent_the_custom_agents_tab_cannot_edit_is_not_told_about(
     home: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

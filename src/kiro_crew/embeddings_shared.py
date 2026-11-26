@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import logging
 import threading
+import time
 from collections import OrderedDict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -29,6 +30,8 @@ from kiro_crew.embeddings_model import (
     legacy_embedding_ids,
     model_pooling_type,
     models_dir,
+    query_instruction_applies,
+    query_instruction_text,
     resolve_custom_model,
 )
 from kiro_crew.embeddings_ollama import (
@@ -599,6 +602,39 @@ def peek_ready_shared_embedder() -> EmbeddingBackend | None:
     return backend
 
 
+def wait_for_cold_shared_embedder(
+    timeout: float, should_stop: Callable[[], bool] | None = None
+) -> bool:
+    """Load an unloaded shared model for background work. True once it is loaded now.
+
+    A ``PRIORITY_BULK`` embed never waits for a load: it returns ``None`` and only
+    starts one, so a sweep that meets an idle-unloaded model would read every row
+    as failed. A sweep calls this when an embed came back empty, then tries again.
+
+    Only a backend this process already built is loaded, only while it reports it
+    can load on demand (file present, no failed load), and the wait stops at
+    *timeout* or when *should_stop* says so. False when the model was already
+    loaded, so a caller never retries an embed that failed for another reason.
+    """
+    with _shared_embedder_lock:
+        backend = _shared_embedder
+    if backend is None or backend.is_ready():
+        return False
+    can_load = getattr(backend, "can_load_on_demand", None)
+    wait_ready = getattr(backend, "wait_ready", None)
+    if not callable(can_load) or not callable(wait_ready):
+        return False
+    give_up = time.monotonic() + timeout
+    while can_load() and not (should_stop is not None and should_stop()):
+        left = give_up - time.monotonic()
+        if left <= 0:
+            return False
+        # Short slices: a stop (gateway shutdown) ends the wait within 0.1 s.
+        if wait_ready(timeout=min(0.1, left)):
+            return True
+    return False
+
+
 def peek_shared_embedding_identity() -> tuple[str | None, str]:
     """Snapshot declared identity without constructing or loading a backend.
 
@@ -730,17 +766,20 @@ def _shared_sync_embed(
 _shared_sync_embed.accepts_priority = True  # type: ignore[attr-defined]
 
 
-def embedding_in_flight(text: str) -> bool:
+def embedding_in_flight(text: str, *, query: bool = False) -> bool:
     """Whether the shared embedder is computing the vector for *text* right now.
 
     A caller that embeds *text* while this holds joins that inference, and a joined
     wait ends at the caller's own deadline even while the inference runs. Starts,
-    loads and reads nothing beyond the in-flight record.
+    loads and reads nothing beyond the in-flight record. *query* looks for the
+    recall-query form of *text*, the one ``_try_embed(..., query=True)`` embeds.
     """
     with _shared_embedder_lock:
         backend = _shared_embedder
     if backend is None:
         return False
+    if query and query_instruction_applies(backend.model_id):
+        text = query_instruction_text(text)
     with _sync_embed_cache_lock:
         return (id(backend), text[:_MAX_EMBED_CHARS]) in _sync_embed_flights
 

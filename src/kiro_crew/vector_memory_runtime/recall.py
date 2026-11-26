@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Callable
 from kiro_crew import memory_recall_filters as recall_filters
 from kiro_crew import memory_v2
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE, enter_work_phase
+from kiro_crew.vector_memory_runtime import embedding as _embedding
 from kiro_crew.vector_memory_runtime import episodic_search as _episodic_search
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery, _RecallSpaceChanged
@@ -143,7 +144,7 @@ def recall(
         signature = store.recorded_embedding_space()
     enter_work_phase("embed")
     vector = (
-        store._try_embed(query_text, PRIORITY_INTERACTIVE)
+        store._try_embed(query_text, PRIORITY_INTERACTIVE, query=True)
         if query_text.strip() and cap > 0 and store.embed_fn
         else None
     )
@@ -206,7 +207,9 @@ def recall_once(
             evidence["filters"] = filters.describe()
         if store.algorithm_version == "v2":
             evidence["operating_point"] = v2_operating_point(
-                store.recorded_embedding_space(), embed_fn=store.embed_fn
+                store.recorded_embedding_space(),
+                embed_fn=store.embed_fn,
+                instructed=_embedding.query_is_instructed(query.vector),
             )
         return evidence
 

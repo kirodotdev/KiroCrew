@@ -1329,6 +1329,21 @@ describe('CrewEditorNextDialog — General edits, footer, danger', () => {
     expect(pane).toHaveTextContent('A new bot can start from its memory.')
   })
 
+  it('gives the danger delete buttons a resting fill and a strong edge on its tint', async () => {
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-danger'))
+    const expectFilled = (button: HTMLElement) => {
+      expect(button).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(button).not.toHaveClass('bg-transparent')
+      expect(button).not.toHaveClass('border-border')
+    }
+    const del = await within(dialog).findByTestId('next-delete-crew')
+    expectFilled(del)
+    fireEvent.click(del)
+    expectFilled(await within(dialog).findByTestId('next-confirm-delete-crew'))
+    expectFilled(within(dialog).getByTestId('next-cancel-delete-crew'))
+  })
+
   it('cancels the armed danger delete', async () => {
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-danger'))

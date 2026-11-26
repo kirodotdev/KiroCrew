@@ -350,6 +350,12 @@ describe('quick ask: human check takeover', () => {
     expect(screen.queryByTestId('quick-ask-sheet')).toBeNull()
     expect(screen.getByTestId('quick-ask-zoom').style.transform).toContain('scale(')
     expect(screen.getByTestId('browser-live-canvas')).toHaveAttribute('data-interactive', 'true')
+    // The takeover bar's accent tint swallows a stock Btn's plain edge.
+    const decline = screen.getByTestId('quick-ask-decline')
+    expect(screen.getByTestId('quick-ask-takeover')).toContainElement(decline)
+    expect(decline).toHaveClass('bg-bg-elevated', 'border-border-strong')
+    expect(decline).not.toHaveClass('bg-transparent')
+    expect(decline).not.toHaveClass('border-border')
     fireEvent.click(screen.getByTestId('quick-ask-done'))
     await waitFor(() => expect(writes.answer).toHaveBeenLastCalledWith({ session_key: S, ask_id: 'a4', action: 'done' }))
   })

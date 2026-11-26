@@ -4,7 +4,7 @@
  * params; it never supplies a component, a form or a request address.
  */
 import type { ComponentType } from 'react'
-import { AlarmClock,
+import { AlarmClock, Brain,
   CalendarClock, Cog, FolderCog, Workflow, Goal, Gauge, KeyRound, LayoutDashboard, Link2, Plug, Power, ShieldCheck, ShieldOff, UserPlus, UserCog, Wrench, LayoutTemplate, PackagePlus, PackageOpen,
   type LucideIcon,
 } from 'lucide-react'
@@ -12,6 +12,7 @@ import { i18nT } from '../i18n/t'
 import type { Card, CardChange, CardKind } from '../api/cards'
 import { GOAL_HEARTBEAT_FIELD, GoalHeartbeatOption, MCP_SHARE_OFFER_FIELD, McpServerOptions, NoBody, OneCrewmateBody, ScheduleBody, type KindBodyProps } from './kindBodies'
 import { ImportFilesBody } from './ImportFilesBody'
+import { MEMORY_ROW_FIELD, MemoryChangesBody, memoryCounts } from './MemoryChangesBody'
 import { cardTimezone, fmtOneShot, isOneShot } from './oneShot'
 
 export interface CardKindSpec {
@@ -23,7 +24,7 @@ export interface CardKindSpec {
   /** The decline button, when a bare "Decline" does not say what declining means here. */
   decline?: () => string
   /** One line beside the primary button: what the press does and how to take it back. */
-  pressNote?: () => string
+  pressNote?: (card?: Card) => string
   /** The kind's own `code_exec` warning, when the generic one misstates when code runs. */
   riskNote?: () => string
   Body: ComponentType<KindBodyProps>
@@ -49,6 +50,15 @@ function checkInsPrimary(card?: Card): string {
   if (set.length > 0 && set.every(v => v)) return i18nT('components.changeCards.primary_crewmate_check_ins')
   if (set.length > 0 && set.every(v => !v)) return i18nT('components.changeCards.primary_crewmate_check_ins_off')
   return i18nT('components.changeCards.primary_crewmate_check_ins_save')
+}
+
+/** A memory card's press note: only the sentences for what the ticked rows do. */
+function memoryPressNote(card?: Card): string {
+  const { deleted, edited } = card ? memoryCounts(card) : { deleted: 0, edited: 0 }
+  return [
+    deleted ? i18nT('components.changeCards.note_crewmate_memory_delete') : '',
+    edited ? i18nT('components.changeCards.note_crewmate_memory_edit') : '',
+  ].filter(Boolean).join(' ')
 }
 
 export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
@@ -102,6 +112,12 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   'crewmate.dashboard_page': {
     icon: LayoutDashboard, label: () => i18nT('components.changeCards.kind_crewmate_dashboard_page'),
     primary: () => i18nT('components.changeCards.primary_crewmate_dashboard_page'), Body: OneCrewmateBody,
+  },
+  'crewmate.memory': {
+    icon: Brain, label: () => i18nT('components.changeCards.kind_crewmate_memory'),
+    primary: () => i18nT('components.changeCards.primary_crewmate_memory'),
+    pressNote: card => memoryPressNote(card),
+    Body: MemoryChangesBody,
   },
   'template.update': {
     icon: LayoutTemplate, label: () => i18nT('components.changeCards.kind_template_update'),
@@ -259,6 +275,13 @@ export function cardTitle(card: Pick<Card, 'kind' | 'params' | 'title' | 'change
   // The gateway's title is English; the import's is rebuilt in the reader's language.
   const name = card.kind === 'crewmate.import' ? card.params?.name : undefined
   if (typeof name === 'string' && name) return i18nT('components.changeCards.title_crewmate_import', { name })
+  if (card.kind === 'crewmate.memory') {
+    const who = card.scope?.members?.[0] || String(card.params.member ?? '')
+    const { deleted, edited } = memoryCounts(card)
+    if (deleted && edited) return i18nT('components.changeCards.title_crewmate_memory_both', { name: who, deleted, edited })
+    if (deleted) return i18nT('components.changeCards.title_crewmate_memory_delete', { name: who, n: deleted })
+    return i18nT('components.changeCards.title_crewmate_memory_edit', { name: who, n: edited })
+  }
   const server = card.kind === 'mcp.server' ? mcpServerTitle(card.params) : null
   if (server) return server
   const list = listOp(card)
@@ -311,6 +334,8 @@ export function cardChanges(card: Pick<Card, 'kind' | 'params' | 'changes'> & Pa
   if (card.kind === 'crewmate.goal') return card.changes.filter(c => c.field !== GOAL_HEARTBEAT_FIELD)
   // An MCP server card's sharing offer is drawn as its option (McpServerOptions).
   if (card.kind === 'mcp.server') return card.changes.filter(c => c.field !== MCP_SHARE_OFFER_FIELD)
+  // A memory card's rows are drawn as its ticked list (MemoryChangesBody).
+  if (card.kind === 'crewmate.memory') return card.changes.filter(c => c.field !== MEMORY_ROW_FIELD)
   const wording = listOp(card)?.wording
   if (!wording || card.changes.length !== 1) return card.changes
   return [{ ...card.changes[0], label: wording.label() }]

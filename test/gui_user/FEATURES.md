@@ -26,7 +26,7 @@ under `scenarios/` says how the lane checks it.
 
 | | Total | smoke | nightly | native-only | needs-secret | excluded |
 |---|---|---|---|---|---|---|
-| **All features** | 272 | 42 | 166 | 13 | 27 | 24 |
+| **All features** | 270 | 42 | 164 | 13 | 27 | 24 |
 | Chat sessions (`chat`) | 26 | 3 | 19 | 0 | 2 | 2 |
 | Side panel tabs (`side-panel`) | 4 | 1 | 3 | 0 | 0 | 0 |
 | Terminal panel (`terminal`) | 3 | 0 | 3 | 0 | 0 | 0 |
@@ -42,7 +42,7 @@ under `scenarios/` says how the lane checks it.
 | Artifacts (`artifacts`) | 10 | 1 | 5 | 0 | 3 | 1 |
 | File viewer & project files (`files`) | 1 | 1 | 0 | 0 | 0 | 0 |
 | Browser panel (`browser-panel`) | 3 | 0 | 1 | 1 | 0 | 1 |
-| Apps & App Store (`apps`) | 26 | 3 | 12 | 2 | 7 | 2 |
+| Apps & App Store (`apps`) | 24 | 3 | 10 | 2 | 7 | 2 |
 | Task Runner (`task-runner`) | 1 | 1 | 0 | 0 | 0 | 0 |
 | Worlds (3D scenes) (`worlds`) | 1 | 0 | 1 | 0 | 0 | 0 |
 | Dev Fleet (`dev-fleet`) | 1 | 0 | 1 | 0 | 0 | 0 |
@@ -63,7 +63,7 @@ under `scenarios/` says how the lane checks it.
 | Security & governance (`security`) | 10 | 1 | 9 | 0 | 0 | 0 |
 | Developer tools (`developer`) | 11 | 0 | 11 | 0 | 0 | 0 |
 
-Priorities: P0 10 · P1 37 · P2 161 · P3 64. Deduped from 387 raw records.
+Priorities: P0 10 · P1 37 · P2 159 · P3 64. Deduped from 387 raw records.
 
 ## Chat sessions (`chat`)
 
@@ -248,8 +248,6 @@ Priorities: P0 10 · P1 37 · P2 161 · P3 64. Deduped from 387 raw records.
 | P2 | `app-design-tweak-annotate` | As a frontend developer, I want to preview my local web app, right-click elements in Edit mode, and send a batch of visual comments, so that the agent makes source-mapped edits. | `/design-tweak` | rich | nightly | 7 |
 | P2 | `app-file-explorer-browse` | As a user, I want to open a directory on the gateway host and read a file in a tab, so that I can inspect files without leaving the dashboard. | `/file-explorer` | rich | nightly | 4 |
 | P2 | `app-md-notebook-attach-edit` | As a writer, I want to attach an existing markdown folder as a vault and edit a note in place, so that my notes stay versioned and portable beside the agent. | `/md-notebook` | rich | nightly | 6 |
-| P2 | `app-personal-shopper-start-advice` | As a shopper, I want to save my preferences and start a conversation with the advisor agent, so that I get store research without it ever buying anything. | `/personal-shopper` | rich | nightly | 4 |
-| P2 | `app-project-scaffolder-create-folders` | As a developer with a monorepo, I want to scan a project directory and tick sub-projects, so that matching sidebar folders are created without duplicates. | `/project-scaffolder` | rich | nightly | 5 |
 | P2 | `app-spec-builder-requirements` | As an engineer, I want to turn a feature idea into Requirements -> Design -> Tasks with an embedded agent and approve each stage, so that an execution session builds the approved plan. | `/spec-builder` | rich | nightly | 7 |
 | P2 | `app-workflows-validate-run` | As an orchestrator, I want to validate a dynamic-workflow script and run it, so that I watch phases and agent events stream without arbitrary Python executing. | `/workflows` | apps-installed | nightly | 5 |
 | P2 | `apps-detail` | As a user, I want one app's manifest, config, permissions and uninstall in one page, so that I can audit and manage it. | `/apps/library` | apps-installed | nightly | 3 |

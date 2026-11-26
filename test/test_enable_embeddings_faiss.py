@@ -22,6 +22,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 import kiro_crew.dashboard.handlers.memory as mem_mod
 from kiro_crew.embeddings import DOWNLOAD_ATTEMPTS_INTERACTIVE
+from kiro_crew.testing.module_table import patched_sys_modules
 
 _MOD = "kiro_crew.dashboard.handlers.memory"
 _EMB = "kiro_crew.embeddings"
@@ -99,7 +100,7 @@ def _common_patches(cfg_path, faiss_available=False, proc_rc=0, proc_stderr=b"",
         "embed_fn": patch(f"{_MOD}.make_sync_embed_fn", return_value=lambda t: [0.0]),
         # Inject a fake ``pip`` so ``_ensure_pip_available`` short-circuits and
         # these faiss-focused tests see exactly one subprocess (the faiss install).
-        "faiss": patch.dict("sys.modules", {"faiss": faiss_mod, "pip": MagicMock()}),
+        "faiss": patched_sys_modules({"faiss": faiss_mod, "pip": MagicMock()}),
         "store": patch(f"{_MOD}._get_vector_store", return_value=store),
         "wrap_argv": patch(f"{_MOD}.wrap_argv", side_effect=lambda argv, **kw: (argv, None)),
     }
@@ -547,7 +548,7 @@ class TestEnsurePipBootstrap:
     @pytest.mark.asyncio
     async def test_noop_when_pip_importable(self) -> None:
         # pip present -> no subprocess spawned, returns ok with empty error.
-        with patch.dict("sys.modules", {"pip": MagicMock()}):
+        with patched_sys_modules({"pip": MagicMock()}):
             with patch("asyncio.create_subprocess_exec") as mock_exec:
                 ok, err = await mem_mod._ensure_pip_available()
         assert ok is True
@@ -558,7 +559,7 @@ class TestEnsurePipBootstrap:
     async def test_bootstraps_pip_when_missing(self) -> None:
         # pip absent -> ensurepip runs; success returns ok.
         proc = _mock_proc(rc=0)
-        with patch.dict("sys.modules", {"pip": None}), \
+        with patched_sys_modules({"pip": None}), \
              patch(f"{_MOD}.wrap_argv", side_effect=lambda argv, **kw: (argv, None)), \
              patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             ok, err = await mem_mod._ensure_pip_available()
@@ -572,7 +573,7 @@ class TestEnsurePipBootstrap:
     async def test_returns_error_when_ensurepip_fails(self) -> None:
         # pip absent and ensurepip exits non-zero -> ok=False with a message.
         proc = _mock_proc(rc=1, stderr=b"ensurepip is not available")
-        with patch.dict("sys.modules", {"pip": None}), \
+        with patched_sys_modules({"pip": None}), \
              patch(f"{_MOD}.wrap_argv", side_effect=lambda argv, **kw: (argv, None)), \
              patch("asyncio.create_subprocess_exec", return_value=proc):
             ok, err = await mem_mod._ensure_pip_available()
@@ -597,7 +598,7 @@ class TestEnsurePipBootstrap:
              patch(f"{_MOD}.KiroCrewConfig.load", return_value=MagicMock()), \
              patch(f"{_MOD}.config_path", return_value=cfg_path), \
              patch("asyncio.create_subprocess_exec", return_value=proc), \
-             patch.dict("sys.modules", {"faiss": None, "pip": None}), \
+             patched_sys_modules({"faiss": None, "pip": None}), \
              patch(f"{_MOD}._get_vector_store", return_value=store), \
              patch(f"{_MOD}.wrap_argv", side_effect=lambda argv, **kw: (argv, None)):
             async with TestClient(TestServer(_make_app())) as c:
@@ -698,7 +699,7 @@ class TestPipStderrRedaction:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         proc = _mock_proc(rc=1, stderr=self._auth_failure_stderr())
-        with patch.dict("sys.modules", {"pip": None}), \
+        with patched_sys_modules({"pip": None}), \
              patch(f"{_MOD}.wrap_argv", side_effect=lambda argv, **kw: (argv, None)), \
              patch("asyncio.create_subprocess_exec", return_value=proc), \
              caplog.at_level(logging.WARNING, logger=_MOD):
@@ -719,7 +720,7 @@ class TestPipStderrRedaction:
         # response) must not raise UnicodeDecodeError on the failure path:
         # decode(errors="replace") keeps the warning best-effort.
         proc = _mock_proc(rc=1, stderr=b"\xff\xfe broken " + self._auth_failure_stderr())
-        with patch.dict("sys.modules", {"pip": None}), \
+        with patched_sys_modules({"pip": None}), \
              patch(f"{_MOD}.wrap_argv", side_effect=lambda argv, **kw: (argv, None)), \
              patch("asyncio.create_subprocess_exec", return_value=proc), \
              caplog.at_level(logging.WARNING, logger=_MOD):
@@ -746,7 +747,7 @@ class TestPipStderrRedaction:
             prefix + "https://ci-bot:" + self._SECRET + "@pypi.corp.example/simple/\n"
         ).encode()
         proc = _mock_proc(rc=1, stderr=stderr)
-        with patch.dict("sys.modules", {"pip": None}), \
+        with patched_sys_modules({"pip": None}), \
              patch(f"{_MOD}.wrap_argv", side_effect=lambda argv, **kw: (argv, None)), \
              patch("asyncio.create_subprocess_exec", return_value=proc), \
              caplog.at_level(logging.WARNING, logger=_MOD):

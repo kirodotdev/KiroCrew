@@ -14,9 +14,10 @@ from kiro_crew.dashboard.state import MONITOR_WAKE_PREFIX
 from kiro_crew.monitoring.also_wake import honoured_also_wake_claim, open_also_wake_targets
 from kiro_crew.monitoring.azure_devops_pull_request import AzureDevOpsPullRequestProvider
 from kiro_crew.monitoring.bitbucket_pull_request import BitbucketPullRequestProvider
-from kiro_crew.monitoring.decision import monitor_budget_reason
+from kiro_crew.monitoring.decision import monitor_budget_note, monitor_budget_reason
 from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProvider
 from kiro_crew.monitoring.gitlab_merge_request import GitLabMergeRequestProvider
+from kiro_crew.monitoring.limits import budget_notice_pct
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_PROVIDER_CONCURRENCY,
     MonitorCreationSurface,
@@ -391,6 +392,7 @@ class MonitorController:
             canonical=state.last_observation,
             wake_instructions=state.wake_instructions,
             also_wake=also_wake,
+            budget_note=monitor_budget_note(state, now=now, pct=budget_notice_pct()),
         )
         if not await self._service.monitor_dispatch_is_authorized(
             loop.id,
@@ -444,6 +446,7 @@ def format_monitor_wake(
     canonical: Mapping[str, object],
     wake_instructions: str = "",
     also_wake: Mapping[str, object] | None = None,
+    budget_note: str = "",
 ) -> str:
     """Render only allowlisted canonical facts, redacted before the hard cap.
 
@@ -463,7 +466,9 @@ def format_monitor_wake(
     the woken agent scrubbed, not raw.
 
     *also_wake* is the claim of a wake one of the watch's extras caused; it adds
-    one opening line naming that extra and what happened to it.
+    one opening line naming that extra and what happened to it. *budget_note* is
+    the one line ``monitor_budget_note`` builds from the watch's used budget; it
+    sits above the next action and is empty unless the operator turned it on.
     """
     entry = monitor_kind(kind)
     changed: list[str] = []
@@ -494,6 +499,7 @@ def format_monitor_wake(
             f"Also waiting on {subject_noun} {also_wake.get('target')}: it {event}. "
             "The lines below describe the watched one.\n"
         )
+    budget_line = f"{budget_note}\n" if budget_note else ""
     envelope = (
         f"{MONITOR_WAKE_PREFIX}\n"
         f"{opening}"
@@ -501,6 +507,7 @@ def format_monitor_wake(
         f"Fingerprint: {fingerprint}. Classification: {reason_code or 'actionable'}.\n"
         f"Head: {head if isinstance(head, str) else 'unknown'}. "
         f"Changed: {changed_line}.\n"
+        f"{budget_line}"
         f"Next action: {action}"
     )
     envelope, _ = redact_exfiltration_urls(envelope)

@@ -29,7 +29,9 @@ from kiro_crew import agent_sdk
 from kiro_crew.acp import types as acp_types
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
 from kiro_crew.agent_sdk.drivers import acp_vocab
-from kiro_crew.dashboard import crew_api_approvals, crew_api_owner
+from kiro_crew.dashboard import crew_api_approvals
+from kiro_crew.dashboard import crew_api_conversations as conversations
+from kiro_crew.dashboard import crew_api_owner
 from kiro_crew.dashboard import crew_api_responses as responses
 from kiro_crew.dashboard import crew_api_scopes, route_access
 from kiro_crew.dashboard.chat_api.turn_stop import stop_slot_turn
@@ -119,9 +121,13 @@ def test_a_body_that_is_not_an_object_is_refused(body) -> None:
         {"text": {"format": {"type": "markdown"}}},
         {"metadata": ["a"]},
         {"metadata": {"k": 1}},
-        {"metadata": {f"k{n}": "v" for n in range(responses.METADATA_MAX_PAIRS + 1)}},
-        {"metadata": {"k" * (responses.METADATA_KEY_MAX + 1): "v"}},
-        {"metadata": {"k": "v" * (responses.METADATA_VALUE_MAX + 1)}},
+        {"metadata": {f"k{n}": "v" for n in range(conversations.METADATA_MAX_PAIRS + 1)}},
+        {"metadata": {"k" * (conversations.METADATA_KEY_MAX + 1): "v"}},
+        {"metadata": {"k": "v" * (conversations.METADATA_VALUE_MAX + 1)}},
+        {"conversation": 7},
+        {"conversation": ["conv_" + "0" * 32]},
+        {"previous_response_id": 7},
+        {"previous_response_id": {"id": "resp_" + "0" * 32}},
         {"input": [{"role": "user", "content": "hi"}] * (_MAX_MESSAGES + 1)},
     ],
 )
@@ -148,8 +154,6 @@ def test_a_field_the_contract_refuses_is_a_400(change, code) -> None:
     "change",
     [
         {"background": True},
-        {"conversation": "conv_1"},
-        {"previous_response_id": "resp_1"},
         {"tools": [{"type": "function", "name": "lookup"}]},
         {"tools": [{"type": "mcp", "server_label": "docs", "server_url": "https://example.com"}]},
         {"tool_choice": "none"},
@@ -209,8 +213,9 @@ def test_fields_the_route_honours_are_not_listed_as_ignored() -> None:
 
 def test_metadata_at_its_limits_is_accepted() -> None:
     metadata = {
-        f"{n:02d}".ljust(responses.METADATA_KEY_MAX, "k"): "v" * responses.METADATA_VALUE_MAX
-        for n in range(responses.METADATA_MAX_PAIRS)
+        f"{n:02d}".ljust(conversations.METADATA_KEY_MAX, "k"): "v"
+        * conversations.METADATA_VALUE_MAX
+        for n in range(conversations.METADATA_MAX_PAIRS)
     }
     assert responses.parse_request({**ASK, "metadata": metadata}).metadata == metadata
 
@@ -392,7 +397,7 @@ async def test_the_owner_gets_the_reply_as_one_message(client) -> None:
     assert body["status"] == "completed"
     assert body["model"] == MODEL
     assert body["usage"] is None and body["error"] is None
-    assert "conversation" not in body
+    assert re.fullmatch(r"conv_[0-9a-f]{32}", body["conversation"]["id"])
     assert body["metadata"] == {"k": "v"}
     assert body["crew"] == {"ignored_parameters": ["temperature"]}
     (item,) = body["output"]

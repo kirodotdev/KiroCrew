@@ -21,8 +21,11 @@ Authored before the module; not run locally (host rule), CI runs it.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,6 +36,7 @@ from kiro_crew.connected_computers.controller import LocalController
 from kiro_crew.connected_computers.controller_lock import ControllerLock
 from kiro_crew.connected_computers.local_store import Grant, LocalGrantStore, new_grant_id
 from kiro_crew.connected_computers.share import connection_coordinates
+from kiro_crew.connected_computers.vault_doc import VaultDocError
 from kiro_crew.mcp_discovery_server_info import McpServerInfo
 from kiro_crew.secrets.vault import SecretVault
 from kiro_crew.testing.wait import async_wait_until
@@ -159,6 +163,18 @@ def _grant(store, instance: str = "desktop-7778", gateway: str = "gw-cloud") -> 
     )
 
 
+async def _stored(call, *args):
+    """A store call made off the event loop, as the controller makes each of its own.
+
+    After ``hello`` the controller's grant task may still be recording an ended
+    state: ``store.set_ended`` on a worker thread, which replaces the vault file.
+    A read of the store on the loop meets that write, and on the loop the vault's
+    read retry is off by design (it would block the loop), so on Windows one
+    denied open fails the test. Off the loop the read waits the window out.
+    """
+    return await asyncio.to_thread(call, *args)
+
+
 async def _hello(host, instances=(INSTANCE,)) -> dict:
     return await host.handle({"id": 1, "op": "hello", "instances": list(instances)})
 
@@ -194,7 +210,7 @@ async def test_g1_b02_share_writes_exactly_the_named_instance_root_and_tools(
     assert described["ok"] is True
     reply = await _share(host, consent=described["consent"], root=root, mcp=["notes"])
     assert reply["ok"] is True, reply
-    [grant] = store.active()
+    [grant] = await _stored(store.active)
     assert grant.instance_id == "desktop-7778"
     assert grant.root == str(root.resolve())
     assert [m.name for m in grant.mcp] == ["notes"]
@@ -222,7 +238,7 @@ async def test_b13_nothing_is_served_before_hello(host, store, enrolled):
     for op in ("share", "describe", "status", "revoke", "off"):
         reply = await host.handle({"id": 3, "op": op, "instance_id": "desktop-7778"})
         assert reply["ok"] is False and reply["code"] == "hello_first"
-    assert store.list() == [] and enrolled["enrolled"] == []
+    assert await _stored(store.list) == [] and enrolled["enrolled"] == []
 
 
 async def test_b13_an_instance_the_app_did_not_name_is_refused(host, store, enrolled, tmp_path):
@@ -231,7 +247,7 @@ async def test_b13_an_instance_the_app_did_not_name_is_refused(host, store, enro
         {"id": 4, "op": "share", "instance_id": "desktop-9999", "root": str(tmp_path), "mcp": []}
     )
     assert reply["ok"] is False and reply["code"] == "unknown_instance"
-    assert store.list() == [] and enrolled["enrolled"] == []
+    assert await _stored(store.list) == [] and enrolled["enrolled"] == []
 
 
 @pytest.mark.parametrize(
@@ -285,7 +301,7 @@ async def test_r2_no_os_protection_refuses_before_any_enrollment(tmp_path, flag,
         {"id": 2, "op": "share", "instance_id": "desktop-7778", "root": str(root), "mcp": []}
     )
     assert reply["ok"] is False and reply["code"] == "no_consent"
-    assert enrolled["enrolled"] == [] and store.list() == []
+    assert enrolled["enrolled"] == [] and await _stored(store.list) == []
     await host.controller.shutdown()
 
 
@@ -296,7 +312,7 @@ async def test_flag_share_is_refused_while_the_switch_is_off(host, store, flag, 
         {"id": 2, "op": "share", "instance_id": "desktop-7778", "root": str(tmp_path), "mcp": []}
     )
     assert reply["ok"] is False and reply["code"] == "connected_computers_disabled"
-    assert enrolled["enrolled"] == [] and store.list() == []
+    assert enrolled["enrolled"] == [] and await _stored(store.list) == []
     await host.controller.shutdown()
 
 
@@ -308,7 +324,7 @@ async def test_b07_revoke_one_grant_leaves_the_other(host, store, enrolled):
     await _hello(host)
     reply = await host.handle({"id": 2, "op": "revoke", "grant_id": first.grant_id})
     assert reply == {"id": 2, "ok": True, "revoked": first.grant_id}
-    assert [g.grant_id for g in store.active()] == [second.grant_id]
+    assert [g.grant_id for g in await _stored(store.active)] == [second.grant_id]
     unknown = await host.handle({"id": 3, "op": "revoke", "grant_id": "nope"})
     assert unknown["ok"] is False and unknown["code"] == "unknown_grant"
     await host.controller.shutdown()
@@ -321,8 +337,8 @@ async def test_b01_off_revokes_every_grant_and_bumps_the_off_generation(host, st
     await _hello(host)
     reply = await host.handle({"id": 2, "op": "off"})
     assert reply["ok"] is True and len(reply["revoked"]) == 2
-    assert store.active() == []
-    assert store.off_generation() == before + 1
+    assert await _stored(store.active) == []
+    assert await _stored(store.off_generation) == before + 1
     await host.controller.shutdown()
 
 
@@ -332,7 +348,7 @@ async def test_b01_off_works_while_the_switch_is_off(host, store, flag, enrolled
     flag["on"] = False
     reply = await host.handle({"id": 2, "op": "off"})
     assert reply["ok"] is True
-    assert store.active() == []
+    assert await _stored(store.active) == []
     await host.controller.shutdown()
 
 
@@ -346,10 +362,10 @@ async def test_flag_off_at_start_revokes_what_is_active_and_reports_disabled(
     flag["on"] = False
     reply = await _hello(host)
     assert reply["ok"] is True and reply["state"] == "disabled"
-    assert store.active() == []
+    assert await _stored(store.active) == []
     # Coming back on restores nothing: a new native consent is needed.
     flag["on"] = True
-    assert store.active() == []
+    assert await _stored(store.active) == []
     await host.controller.shutdown()
 
 
@@ -363,7 +379,7 @@ async def test_flag_a_hello_after_an_off_the_app_saw_revokes_saved_shares_first(
     real_reconcile = host.controller.reconcile
 
     async def reconcile() -> None:
-        dialed.append([g.grant_id for g in store.active()])
+        dialed.append([g.grant_id for g in await _stored(store.active)])
         await real_reconcile()
 
     host.controller.reconcile = reconcile  # type: ignore[method-assign]
@@ -372,7 +388,7 @@ async def test_flag_a_hello_after_an_off_the_app_saw_revokes_saved_shares_first(
             {"id": 1, "op": "hello", "instances": [INSTANCE], "revoke_saved": True}
         )
         assert reply["ok"] is True and reply["state"] == "running"
-        assert not store.get(grant.grant_id).active
+        assert not (await _stored(store.get, grant.grant_id)).active
         # The revoke landed before the controller's first reconcile could start it.
         assert dialed and dialed[0] == []
         assert host.controller._tasks == {}
@@ -385,9 +401,97 @@ async def test_flag_a_plain_hello_keeps_saved_shares_across_app_restarts(host, s
     try:
         reply = await _hello(host)
         assert reply["ok"] is True and reply["state"] == "running"
-        assert store.get(grant.grant_id).active
+        assert (await _stored(store.get, grant.grant_id)).active
     finally:
         await host.controller.shutdown()
+
+
+async def test_a_store_read_that_meets_a_denied_open_fails_on_the_loop_and_not_off_it(
+    store, monkeypatch
+):
+    """Why the tests here read the store through ``_stored``.
+
+    The Windows share deny is simulated: the next open of the vault file raises
+    ``PermissionError``, as it does while another thread replaces the file. This
+    shows the mechanism on any platform, not which handle held the file in a
+    failed run.
+    """
+    from kiro_crew import atomic_write, platform_compat
+
+    grant = _grant(store)
+    denied = {"left": 0, "reads": 0}
+    real_read = Path.read_bytes
+
+    def read_bytes(this: Path, *args, **kwargs):
+        if this.name == "secrets.enc":
+            denied["reads"] += 1
+            if denied["left"]:
+                denied["left"] -= 1
+                raise PermissionError(13, "Permission denied", str(this))
+        return real_read(this, *args, **kwargs)
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    # On the loop the read is not retried: one denied open fails it.
+    denied.update(left=1, reads=0)
+    with pytest.raises(VaultDocError):
+        store.get(grant.grant_id)
+    assert denied == {"left": 0, "reads": 1}
+    # Off the loop the same read is tried again and answers.
+    denied.update(left=1, reads=0)
+    assert (await _stored(store.get, grant.grant_id)).active
+    assert denied == {"left": 0, "reads": 2}
+
+
+def _store_calls_on_the_loop(source: str) -> list[str]:
+    """``name:line`` of each ``store.<call>(...)`` a coroutine in ``source`` makes after its first await.
+
+    Before its first await a test has started nothing that writes; after it the
+    controller may be. A coroutine nested in another has no such start: every
+    call in it counts. A call inside a plain nested function is not on the loop
+    by itself and is left to whoever calls it.
+    """
+    found = []
+    tree = ast.parse(source)
+    for function in ast.walk(tree):
+        if not isinstance(function, ast.AsyncFunctionDef):
+            continue
+        awaits = [node.lineno for node in ast.walk(function) if isinstance(node, ast.Await)]
+        if function in tree.body and not awaits:
+            continue
+        start = min(awaits) if function in tree.body else 0
+        plain = {
+            id(inner)
+            for nested in ast.walk(function)
+            if isinstance(nested, (ast.FunctionDef, ast.Lambda))
+            for inner in ast.walk(nested)
+        }
+        for node in ast.walk(function):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "store"
+                and id(node) not in plain
+                and node.lineno > start
+            ):
+                found.append(f"{function.name}:{node.lineno}")
+    return found
+
+
+def test_no_coroutine_here_calls_the_store_on_the_loop_after_its_first_await():
+    assert _store_calls_on_the_loop(inspect.getsource(sys.modules[__name__])) == []
+    # The check sees a direct call, and passes one handed to `_stored` or made before any await.
+    probe = (
+        "async def a(store):\n    store.add(1)\n    await x()\n    store.get(1)\n"
+        "    await _stored(store.get, 1)\n    f = lambda: store.get(2)\n"
+        "async def b(store):\n    return store.get(3)\n"
+        "async def c(store):\n    async def inner():\n        store.active()\n        await y()\n"
+        "    await inner()\n"
+    )
+    assert _store_calls_on_the_loop(probe) == ["a:4", "inner:11"]
 
 
 async def test_flag_revoke_saved_holds_with_an_unreadable_switch(
@@ -403,7 +507,7 @@ async def test_flag_revoke_saved_holds_with_an_unreadable_switch(
             {"id": 1, "op": "hello", "instances": [INSTANCE], "revoke_saved": True}
         )
         assert reply["ok"] is True
-        assert not store.get(grant.grant_id).active
+        assert not (await _stored(store.get, grant.grant_id)).active
     finally:
         await host.controller.shutdown()
 
@@ -415,7 +519,7 @@ async def test_b13_revoke_saved_must_be_a_boolean(host, store, value):
         {"id": 1, "op": "hello", "instances": [INSTANCE], "revoke_saved": value}
     )
     assert reply["ok"] is False and reply["code"] == "invalid_request"
-    assert store.get(grant.grant_id).active
+    assert (await _stored(store.get, grant.grant_id)).active
 
 
 async def test_flag_unreadable_at_start_keeps_saved_grants(host, store, monkeypatch):
@@ -429,9 +533,9 @@ async def test_flag_unreadable_at_start_keeps_saved_grants(host, store, monkeypa
     try:
         reply = await _hello(host)
         assert reply["ok"] is True and reply["state"] == "running"
-        assert store.get(grant.grant_id).active
-        assert store.off_generation() == generation
-        assert store.pending_forgets() == []
+        assert (await _stored(store.get, grant.grant_id)).active
+        assert await _stored(store.off_generation) == generation
+        assert await _stored(store.pending_forgets) == []
         assert host.controller._tasks == {}
     finally:
         await host.controller.shutdown()
@@ -449,7 +553,7 @@ async def test_flag_off_while_running_revokes_stops_and_exits_disabled(host, sto
     flag["on"] = False
     code = await asyncio.wait_for(task, 30)
     assert code == host_mod.EXIT_DISABLED
-    assert store.active() == []
+    assert await _stored(store.active) == []
     # The remote was told before the host exited (R8 order: stop, then remote).
     assert enrolled["forgotten"] == ["laptop"]
 
@@ -522,8 +626,8 @@ async def test_flag_the_controller_reads_the_switch_it_was_given(store):
     await asyncio.sleep(0)
     assert started == [] and ctl._tasks == {}
     assert ctl._still_active(grant.grant_id) is False
-    assert not store.get(grant.grant_id).active
-    assert store.active() == []
+    assert not (await _stored(store.get, grant.grant_id)).active
+    assert await _stored(store.active) == []
     await ctl.shutdown()
 
 
@@ -552,7 +656,7 @@ async def test_b05_a_refused_root_shares_nothing(host, store, enrolled):
     described = await _describe(host)
     reply = await _share(host, consent=described["consent"], root="/")
     assert reply["ok"] is False and reply["code"] == "refused"
-    assert enrolled["enrolled"] == [] and store.list() == []
+    assert enrolled["enrolled"] == [] and await _stored(store.list) == []
     await host.controller.shutdown()
 
 
@@ -570,7 +674,7 @@ async def test_g2_stdin_eof_stops_the_controller_and_keeps_every_grant(host, sto
     reader, out = _pipe([{"id": 1, "op": "hello", "instances": [INSTANCE]}])
     code = await asyncio.wait_for(host.serve(reader, out.write), 30)
     assert code == host_mod.EXIT_OK
-    assert [g.grant_id for g in store.active()] == [grant.grant_id]
+    assert [g.grant_id for g in await _stored(store.active)] == [grant.grant_id]
     # The lock is released, so a local gateway started next can take over.
     other = ControllerLock(host.controller._lock.path)
     assert other.acquire() is True
@@ -581,7 +685,7 @@ async def test_b13_a_first_line_that_is_not_hello_ends_the_host(host, store):
     reader, out = _pipe([{"id": 1, "op": "share", "instance_id": "desktop-7778"}])
     assert await host.serve(reader, out.write) == host_mod.EXIT_PROTOCOL
     assert out.lines[0]["ok"] is False
-    assert store.list() == []
+    assert await _stored(store.list) == []
 
 
 async def test_the_audit_log_is_opened_off_the_loop_before_the_first_request(host, monkeypatch):
@@ -674,7 +778,7 @@ async def test_b13_a_share_with_no_open_consent_is_refused(host, store, enrolled
         {"id": 2, "op": "share", "instance_id": "desktop-7778", "root": str(tmp_path), "mcp": []}
     )
     assert reply["ok"] is False and reply["code"] == "no_consent"
-    assert enrolled["enrolled"] == [] and store.list() == []
+    assert enrolled["enrolled"] == [] and await _stored(store.list) == []
     await host.controller.shutdown()
 
 
@@ -686,10 +790,10 @@ async def test_b01_an_off_while_the_native_dialogs_are_open_refuses_the_grant(
     await _hello(host)
     described = await _describe(host)  # the dialogs are now open
     assert described["ok"] is True
-    store.revoke_all()  # `kirocrew connected-computer off` in another terminal
+    await _stored(store.revoke_all)  # `kirocrew connected-computer off` in another terminal
     reply = await _share(host, consent=described["consent"], root=root)
     assert reply["ok"] is False and reply["code"] == "turned_off"
-    assert store.active() == []
+    assert await _stored(store.active) == []
     await host.controller.shutdown()
 
 
@@ -700,12 +804,12 @@ async def test_b01_a_later_dialog_never_lends_an_earlier_one_its_generation(
     root.mkdir()
     await _hello(host)
     first = await _describe(host)  # dialog A opens
-    store.revoke_all()  # Off while A is open
+    await _stored(store.revoke_all)  # Off while A is open
     second = await _describe(host)  # dialog B opens after the Off
     assert first["consent"] != second["consent"]
     reply = await _share(host, consent=first["consent"], root=root)
     assert reply["ok"] is False and reply["code"] == "turned_off"
-    assert store.active() == []
+    assert await _stored(store.active) == []
     await host.controller.shutdown()
 
 
@@ -767,8 +871,8 @@ async def test_flag_an_unreadable_switch_revokes_nothing(store, tmp_path, monkey
     monkeypatch.setattr(flag_mod, "local_switch", lambda cfg=None: None)
     reply = await _hello(host)
     assert reply["ok"] is True and reply["state"] != "disabled"
-    assert [g.grant_id for g in store.active()] == [grant.grant_id]
-    assert store.off_generation() == 0
+    assert [g.grant_id for g in await _stored(store.active)] == [grant.grant_id]
+    assert await _stored(store.off_generation) == 0
     await host.controller.shutdown()
 
 

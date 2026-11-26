@@ -751,7 +751,10 @@ These are load-bearing. Changing any of them requires a security review.
 3. **YAML aliases are rejected.** `_NoAliasSafeLoader`, a subclass of the shared
    `NoAliasSafeLoader` in `src/kiro_crew/yaml_safe.py`, refuses aliases —
    `yaml.safe_load` alone still expands them, which is a billion-laughs vector
-   on untrusted input.
+   on untrusted input. The same loader refuses a collection nested deeper than
+   `user_json.MAX_DOCUMENT_NESTING` as it starts, so PyYAML's recursive composer
+   never nears the interpreter's recursion limit; either refusal is a
+   `yaml.YAMLError` and the config becomes an `invalid_config` diagnostic.
 3a. **Content screens run on the value that will actually be written**, after any
    decoding step. Screening a JSON/encoded form and then writing the decoded one
    is not screening: a newline is stored as backslash-n so no injection pattern

@@ -44,6 +44,28 @@ def _slack_state(tmp_path, monkeypatch, *, owner: str | None = "U123"):
     return state
 
 
+def _owner_app(state):
+    """The chat test app, signed in as the configured owner.
+
+    The harness signs a request in as the local subject, which is the owner only
+    while no owner is configured; these states configure one, and the per-slot
+    owner gate admits the owner's own session.
+    """
+    from aiohttp import web
+    from chat_test_helpers import _make_app
+
+    app = _make_app(state)
+
+    @web.middleware
+    async def _as_owner(request, handler):
+        if state.owner_id and "user" not in request:
+            request["user"] = state.owner_id
+        return await handler(request)
+
+    app.middlewares.insert(0, _as_owner)
+    return app
+
+
 def _user_slot(state, name: str = "s1", **kwargs):
     slot = state.get_or_create_slot(name, origin=SlotOrigin.USER, **kwargs)
     slot.append("user", "first prompt: rotate the api key")
@@ -1016,7 +1038,6 @@ class TestSendHandlerHook:
     @pytest.mark.asyncio
     async def test_link_exists_when_the_turn_starts(self, tmp_path, monkeypatch):
         from aiohttp.test_utils import TestClient, TestServer
-        from chat_test_helpers import _make_app
 
         state = _slack_state(tmp_path, monkeypatch)
         state.get_or_create_slot("s1", origin=SlotOrigin.USER)
@@ -1034,7 +1055,7 @@ class TestSendHandlerHook:
             sl.append("done", "", "done", broadcast=False)
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(_owner_app(state))) as client:
             resp = await client.post("/api/chat", json={"message": "hello", "slot": "s1"})
             await resp.text()
         assert seen["link"] == ("ts_anchor", "D_OWNER")
@@ -1043,7 +1064,6 @@ class TestSendHandlerHook:
     @pytest.mark.asyncio
     async def test_concurrent_first_send_queues_behind_link_admission(self, tmp_path, monkeypatch):
         from aiohttp.test_utils import TestClient, TestServer
-        from chat_test_helpers import _make_app
 
         state = _slack_state(tmp_path, monkeypatch)
         state.get_or_create_slot("s1", origin=SlotOrigin.USER)
@@ -1069,7 +1089,7 @@ class TestSendHandlerHook:
 
         state.slack_client.post_message = AsyncMock(side_effect=_blocked_post)
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", _run)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(_owner_app(state))) as client:
             first_request = asyncio.create_task(
                 client.post("/api/chat", json={"message": "first", "slot": "s1"})
             )
@@ -1091,7 +1111,6 @@ class TestSendHandlerHook:
     @pytest.mark.asyncio
     async def test_slot_closed_during_link_is_not_dispatched(self, tmp_path, monkeypatch):
         from aiohttp.test_utils import TestClient, TestServer
-        from chat_test_helpers import _make_app
 
         state = _slack_state(tmp_path, monkeypatch)
         state.get_or_create_slot("s1", origin=SlotOrigin.USER)
@@ -1104,7 +1123,7 @@ class TestSendHandlerHook:
             return False
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.maybe_auto_link_slack", _close_slot)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(_owner_app(state))) as client:
             resp = await client.post("/api/chat", json={"message": "hello", "slot": "s1"})
             body = await resp.json()
 
@@ -1117,7 +1136,6 @@ class TestSendHandlerHook:
         """A Stop pressed while the send waits for the link finds no task to
         cancel; the send sees it after the hold and does not dispatch."""
         from aiohttp.test_utils import TestClient, TestServer
-        from chat_test_helpers import _make_app
 
         state = _slack_state(tmp_path, monkeypatch)
         state.get_or_create_slot("s1", origin=SlotOrigin.USER)
@@ -1134,7 +1152,7 @@ class TestSendHandlerHook:
             return False
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.maybe_auto_link_slack", _hold)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(_owner_app(state))) as client:
             send = asyncio.create_task(
                 client.post("/api/chat?ws=1", json={"message": "hello", "slot": "s1"})
             )
@@ -1160,7 +1178,6 @@ class TestSendHandlerHook:
         """Pause all lands while the first send waits for the link: the prompt is
         owed to Resume all; a pause lifted before that is recorded lets it run."""
         from aiohttp.test_utils import TestClient, TestServer
-        from chat_test_helpers import _make_app
 
         from kiro_crew import crew_pause
 
@@ -1188,7 +1205,7 @@ class TestSendHandlerHook:
             return False
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.maybe_auto_link_slack", _hold)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(_owner_app(state))) as client:
             resp = await client.post("/api/chat?ws=1", json={"message": "hello", "slot": "s1"})
             body = await resp.json()
 
@@ -1207,7 +1224,6 @@ class TestSendHandlerHook:
     ):
         """As at the end of a stopped turn, a follow-up queued during the hold runs."""
         from aiohttp.test_utils import TestClient, TestServer
-        from chat_test_helpers import _make_app
 
         state = _slack_state(tmp_path, monkeypatch)
         state.get_or_create_slot("s1", origin=SlotOrigin.USER)
@@ -1236,7 +1252,7 @@ class TestSendHandlerHook:
             return False
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.maybe_auto_link_slack", _hold)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(_owner_app(state))) as client:
             send = asyncio.create_task(
                 client.post("/api/chat?ws=1", json={"message": "first", "slot": "s1"})
             )

@@ -13,16 +13,10 @@ const USER_PREFIX = 'user:'
 
 const targetList = (result: unknown) => (Array.isArray(result) ? result as ConfiguredChannelTarget[] : [])
 
-/** Where on Telegram a scheduled job reports: the private chat, or one of its
- *  topics the bot already has a conversation in. Renders nothing while Telegram
- *  is not connected, unless the job is already pinned, so the pin can still be
- *  cleared. `value` is the job's `target_id`, `""` for none. */
-export default function TelegramDestinationSelect({ value, onChange, labelled = false }: {
-  value: string
-  onChange: (targetId: string) => void
-  /** Show the field's label and hint above it (the form's vertical layout). */
-  labelled?: boolean
-}) {
+/** The Telegram destinations a job can report to, as `{ id: target_id, label }`
+ *  rows: the private chat, then the topics the bot already has a conversation in.
+ *  `connected` is false while Telegram is not connected. */
+export function useTelegramDestinations() {
   // The key and shape the session menu caches this list under, so both share it.
   const { data: targets, error: targetsError } = useQuery({
     queryKey: ['channel-targets'],
@@ -38,16 +32,30 @@ export default function TelegramDestinationSelect({ value, onChange, labelled = 
     // No push announces a new topic, so re-read on open, focus and reconnect.
     staleTime: 0,
   })
-  // No hand-off: the notice sits beside the job form's unsaved input, which a
-  // hand-off would discard.
-  const notice = (targetsError || topicsError) && (
-    <ErrorNotice variant="inline" message={i18nT('components.jobForm.telegram_destination_load_failed')} />
-  )
-  if (chats.length === 0 && !value) return notice || null
   const rows = [
     ...chats.map(t => ({ id: t.target_id, label: i18nT('components.jobForm.telegram_private_chat', { id: t.target_id.slice(USER_PREFIX.length) }) })),
     ...(topics ?? []).map(t => ({ id: t.target_id, label: i18nT('components.jobForm.telegram_topic', { name: t.label }) })),
   ]
+  return { rows, connected: chats.length > 0, failed: !!(targetsError || topicsError) }
+}
+
+/** Where on Telegram a scheduled job reports: the private chat, or one of its
+ *  topics the bot already has a conversation in. Renders nothing while Telegram
+ *  is not connected, unless the job is already pinned, so the pin can still be
+ *  cleared. `value` is the job's `target_id`, `""` for none. */
+export default function TelegramDestinationSelect({ value, onChange, labelled = false }: {
+  value: string
+  onChange: (targetId: string) => void
+  /** Show the field's label and hint above it (the form's vertical layout). */
+  labelled?: boolean
+}) {
+  const { rows, connected, failed } = useTelegramDestinations()
+  // No hand-off: the notice sits beside the job form's unsaved input, which a
+  // hand-off would discard.
+  const notice = failed && (
+    <ErrorNotice variant="inline" message={i18nT('components.jobForm.telegram_destination_load_failed')} />
+  )
+  if (!connected && !value) return notice || null
   // A saved destination the lists no longer carry is still shown, so opening the
   // form never reads as "off" for a job that is pinned.
   if (value && !rows.some(r => r.id === value)) rows.push({ id: value, label: value })

@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 
 /* ── Built-in terminal appearance preference ────────────────────────────────
  * A single app-wide preference for the xterm.js terminals (activity-bar tabs
@@ -86,9 +86,8 @@ function loadPersisted(): TerminalFontState {
     copyOnSelect: false,
     ctrlCopyPaste: false,
   }
-  if (typeof localStorage === 'undefined') return base
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = safeGetItem(STORAGE_KEY)
     if (!raw) return base
     const p = JSON.parse(raw) as Partial<TerminalFontState> | null
     if (!p || typeof p !== 'object') return base

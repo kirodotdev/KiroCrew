@@ -1,7 +1,8 @@
 """HTTP routes for the milestones table (``kiro_crew.milestones``).
 
-Same auth as ``/api/feature-videos/*``: the dashboard's token and CSRF
-middleware guard every ``/api/*`` route, so nothing here adds or relaxes a gate.
+The dashboard's token and CSRF middleware guard every ``/api/*`` route, and the
+table is the owner's, so each route also refuses a dashboard session that is
+neither the owner nor a teammate.
 A temporary or incognito session keeps no state, so the read answers
 ``{"enabled": false}`` and the writes are accepted and dropped. No route takes a
 time or a count from the client: the server stamps ``now`` and the source.
@@ -16,7 +17,11 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew import milestones
-from kiro_crew.dashboard.handlers._shared import _is_restricted_session, read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    _is_restricted_session,
+    read_bounded_json,
+    require_owner_for_dashboard_caller,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -75,6 +80,9 @@ def _bad(error: str, code: str) -> web.Response:
 
 async def api_milestones_get(request: web.Request) -> web.Response:
     """GET /api/milestones -- the table, the top-bar numbers and due notices."""
+    owner_denied = await require_owner_for_dashboard_caller(request, "milestones.read")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if _is_restricted_session(state, request):
         return web.json_response({"enabled": False})
@@ -97,6 +105,9 @@ async def api_milestones_event(request: web.Request) -> web.Response:
     ``starter_arrived`` completes a feature row when a "Try it" landed on its
     page; see ``milestones.op_starter_arrived`` for what makes it count.
     """
+    owner_denied = await require_owner_for_dashboard_caller(request, "milestones.event")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     body, err = await _body(request)
     if err is not None:
@@ -142,6 +153,9 @@ async def api_milestones_event(request: web.Request) -> web.Response:
 
 async def api_milestones_mark_done(request: web.Request) -> web.Response:
     """POST /api/milestones/mark-done -- ``{"id"}``; feature rows only."""
+    owner_denied = await require_owner_for_dashboard_caller(request, "milestones.mark_done")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     body, err = await _body(request)
     if err is not None:
@@ -156,6 +170,9 @@ async def api_milestones_mark_done(request: web.Request) -> web.Response:
 
 async def api_milestones_mark_all_done(request: web.Request) -> web.Response:
     """POST /api/milestones/mark-all-done -- every open or skipped feature row."""
+    owner_denied = await require_owner_for_dashboard_caller(request, "milestones.mark_all_done")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     _, err = await _body(request, allow_absent=True)
     if err is not None:
@@ -167,6 +184,9 @@ async def api_milestones_mark_all_done(request: web.Request) -> web.Response:
 
 async def api_milestones_skip_all(request: web.Request) -> web.Response:
     """POST /api/milestones/skip-all -- the empty state's "Don't show again"."""
+    owner_denied = await require_owner_for_dashboard_caller(request, "milestones.skip_all")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     _, err = await _body(request, allow_absent=True)
     if err is not None:
