@@ -398,6 +398,15 @@ class SessionCapabilities:
     #: the session takes the other compaction arms.
     keeps_session_across_compaction: bool
 
+    #: Whether the harness lends a custom agent kiro-cli's default resources: the
+    #: user's global and workspace steering and the default skill trees, unless the
+    #: workspace opted out (``chat.disableInheritingDefaultResources``). Context
+    #: only; nothing here grants a permission.
+    #:
+    #: True for kiro-cli. False everywhere else, an unknown backend included: no
+    #: other harness lends those trees, so Crew delivers them itself or not at all.
+    inherits_kiro_default_resources: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -443,6 +452,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         reports_mcp_sign_in_suspects=backend == ACP_BACKEND_OPENCODE,
         crew_merges_user_hook_files=backend == ACP_BACKEND_KAS,
         keeps_session_across_compaction=is_claude_backend_name(backend),
+        inherits_kiro_default_resources=backend == ACP_BACKEND_KIRO,
     )
 
 
@@ -491,6 +501,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     reports_mcp_sign_in_suspects=False,
     crew_merges_user_hook_files=False,
     keeps_session_across_compaction=False,
+    inherits_kiro_default_resources=False,
 )
 
 
