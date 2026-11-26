@@ -3204,6 +3204,9 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   Undo, not an edit at or above 0.9 similarity) sends the
   Bot one hidden turn once its thread is idle (waiting at most ten
   minutes; a newer save, of that goal or another, replaces a waiting nudge).
+  After a person's Stop in the thread it waits for the next turn that starts in
+  the thread to end (`mate_thread_wakes.stop_held`), like the thread's other
+  wakes, and the ten minutes start again when that turn ends the hold.
   It names the goal that changed by number and id, lists every goal, and asks
   the Bot to say back that goal in a sentence. A goal set on a `crewmate.goal`
   card already answered the Heartbeat on its checkbox (the record's
@@ -5285,6 +5288,24 @@ the Bot (`app_wakes`, written by `dashboard/app_bot_wake.py`, see
 [app-kit-platform](app-kit-platform.md) §32c) as one turn with crew-log actor
 `app`, after an owed upgrade notice and after the reports. While the app is stopping
 (`mate_welcome.app_is_stopping`) no hidden turn starts and reports stay pending.
+A person's Stop holds the thread the same way: `POST /api/chat/slots/{slot}/stop`
+without an app token marks it (`hold_after_stop`, `_mate_stop_holds`, in memory),
+and until the next turn starts in the thread (a person's message, a scheduled
+check-in, a cron or patrol turn, a queued entry: the dispatch gates in
+`chat_turn/turn_dispatch_gates.py` call `release_stop_hold` for every turn
+that is not a re-run, a saved prompt's turn (`/prompts get`, run at depth 1)
+included, never for a refusal retry, a replay or a recovery turn, or a stopped
+agent-started turn that opens only to send its cancel) the flush starts nothing,
+so a report, a user action, an app wake or a notice that was waiting or arrives
+meanwhile stays pending, and the release schedules its delivery for the end of
+that turn, whatever its depth, as above (an upgrade or kept notice keeps its own
+rule, the next idle turn end); an app's wake meanwhile answers `queued`. The
+existing caps still apply while it waits (twelve user-action lines, one report per
+worker, ten refs per app). The hidden turns the flush and the goal-setup nudge
+would start are held, so they never end a hold themselves. A Stop the server
+declines (a compaction holding the session) holds the thread all the same. A stop
+by an app token or by `session_stop` holds nothing, and the thread's queue and its
+check-ins are as before.
 
 **The user's answer reaches the Bot** (`dashboard/mate_user_actions.py`). A
 card press or a Run in terminal click starts no turn, so the Bot that put the
@@ -5292,8 +5313,10 @@ card or the command in front of the user is told what the user did. Each answer 
 one line queued on that Bot's own pinned thread
 (`mate_thread_wakes.queue_user_action`, at most 12 waiting, the oldest dropped), and
 the thread's flush delivers every queued line as ONE hidden turn
-(`dispatch_hidden_turn`, `human_seen=False`) once the thread is idle: after an upgrade
-notice, before worker reports, never as a steer into a running turn. The turn is the
+(`dispatch_hidden_turn`, `human_seen=False`) once the thread is idle (after a
+person's Stop, once the next turn that starts in the thread has ended, as above):
+after an upgrade notice, before worker reports, never as a steer into a running
+turn. The turn is the
 `[User action]` envelope, `wake.preamble`, `user_action.head`, the lines and
 `user_action.guidance`, which says these are facts about what the user already did,
 not a new request, and to end with `nothing_to_do` when they change nothing.
@@ -5943,7 +5966,8 @@ turn, so once a `crewmate.capabilities` card reaches applied or partly applied
 `[Capabilities added]` turn once it is idle, when the card's `params.member` is
 that thread's Bot (a card for another Bot raised there wakes nobody)
 (`goal_setup.schedule_capabilities_nudge`, the goal nudges' wait, piece
-`goal_setup.capabilities_added`): it names the card's title and says a worker
+`goal_setup.capabilities_added`; after a person's Stop it waits for the hold to
+end like the goal-setup nudge): it names the card's title and says a worker
 already running started without the addition, so the work that waited on it
 goes to a new worker session.
 
@@ -6505,7 +6529,7 @@ at nothing for it. None of the four kinds sets the flag.
 | `test/test_mate_worker_parity.py` | Every section of `kirocrew-worker`'s prompt is a shared work-protocol rule the Bot's worker is told or allowlisted with a reason; `worker.principles` names only shared rules and copies no worker text; the Bot's worker is told its reply reaches its Bot and never that a silent turn wakes nobody; both workers carry the same coding rules; no allowlist entry is stale; a planted worker-only section and a reworded copy are caught |
 | `test/test_mate_config_migration.py` | The upgrade migration carries a shared template's or a `crew-<hex>` copy's kit and nothing the worker base has, gives a default-template Bot a file that adds nothing, gives the conductor-bound first Bot what a default-template Bot gets, leaves a binding without a `member_id` alone without a log line above DEBUG, records the kit's source, skips and logs a Bot whose worker would differ (binding and disk untouched), changes nothing on a second run, leaves a hand-made rollback alone, and the carried capabilities read as already there |
 | `test/test_mate_user_actions.py` | A card's Apply, Decline, Undo and failed Apply each queue one line on the Bot thread that raised it, a replay none; a card answer that `[CHANGE CARD RESULTS]` reports is one line pointing at that block and never restates the card, and only a refused Undo or a repeated failed Apply names it; an apply that woke on its own (`REQ_CARD_OWN_WAKE`) sends no second note; a goal card's Apply and Undo send none; a milestones card's Decline sends none; a card in the main assistant's chat tells nobody; Run in terminal ran, copied and failed reach only the owning Bot thread; queued lines go out as one idle turn and wait out a busy one |
-| `test/test_mate_thread_wakes.py` | A worker's turn end wakes its Bot once; no wake for a session the Bot did not create or that this process did not witness; a busy thread gets one report (the latest, with the turn count) after its turn ends; a held report waits for the thread's next turn end; the excerpt's end marker cannot be forged; only the creator's send witnesses the link; a quiet worker end (`nothing_to_do`, no text) reports nothing and leaves a pending report as it was, while an empty reply without it or a reply with text still reports; every top-level turn end reaches the wake path with its quiet-end fact |
+| `test/test_mate_thread_wakes.py` | A worker's turn end wakes its Bot once; no wake for a session the Bot did not create or that this process did not witness; a busy thread gets one report (the latest, with the turn count) after its turn ends; a held report waits for the thread's next turn end; the excerpt's end marker cannot be forged; only the creator's send witnesses the link; a quiet worker end (`nothing_to_do`, no text) reports nothing and leaves a pending report as it was, while an empty reply without it or a reply with text still reports; every top-level turn end reaches the wake path with its quiet-end fact; after a person's dashboard Stop nothing held or newly arrived (a report, a user action, an app wake, a rebind or kept notice) starts a turn until the next turn that starts in the thread ends, an app token's Stop holds nothing, the turn that ends the hold delivers what was held at its end with no turn-end note of its own (a depth-1 turn's), and through real `_run_chat` turns (`turn_harness`) a synthetic recovery turn and a replay leave the hold while a person's message and a saved prompt's depth-1 turn (`/prompts get`) each end it |
 | `test/test_mate_upgrade_notice.py` | A moved Bot's notice is posted once and never on a later start, never by a Bot created after the upgrade or on a thread whose binding names another member, reaches a thread not open at startup at its next turn end, and is owed only by Bots the migration moved |
 | `test/test_member_rebind_notice.py` | A chat whose `member` record keeps an agent its Bot is no longer set to gets one notice naming both agents (the one the record runs, a Bot's own file read as the conductor), never again for that agent, again for a later rebind, end to end through turn admission; a Bot's own thread also gets one hidden turn after the current turn, or at its next turn end when the flush had no turn to wait on; a chat that follows the binding, a `template` record and a member the config no longer names get none; a binding the agents snapshot does not know is rescanned once |
 | `website/src/components/chat/crewmateBubbles.test.ts` | What a Bot's chat draws (machinery dropped, speech and user-facing rows kept, same array back when nothing is dropped) and the run rule (first/middle/last, single, breaks on a user row and a pending approval but not on a long silence, reads through a resolved approval and an untimestamped streaming row, corners on the left side only); a queued message drawn where it was sent, the requeued twin, undrawn queued rows and injected (cron / app) queued rows dropped; when a send is still awaiting a reply |
