@@ -68,6 +68,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # emits nothing; the call-site scan matches the seam names its prose
         # lists (`redact(x)`, `redact_log_via_context`).
         "redaction_seams.py",
+        # Search matches the redacted text shown in results; it emits nothing.
+        "search_shown_text.py",
         # Gate-side: the .crewmate reader runs `needs_redaction` on bundle text
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.
