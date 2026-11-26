@@ -16549,6 +16549,13 @@
         "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · erzwungenes Layout {{forced}}",
         "slow_frame_log_frames_unsupported": "Dieser Browser meldet keine langen Frames."
       },
+      "deepseekKey": {
+        "title": "Anbieterschlüssel",
+        "intro": "Füge den API-Schlüssel ein, den DeepSeek Harness für die gehosteten Modelle von DeepSeek nutzt. Er wird unter Einstellungen > Secrets gespeichert, und die Konfiguration behält nur einen Verweis darauf. Ein Modell, das auf diesem Rechner läuft, braucht keinen Schlüssel.",
+        "desc_api_key": "Dein DeepSeek-API-Schlüssel von der DeepSeek-Plattform.",
+        "value_missing": "Der Schlüssel, auf den dies verweist, ist nicht mehr unter Secrets, daher werden neue DeepSeek Harness-Sitzungen abgelehnt. Speichere einen neuen Schlüssel oder entferne ihn.",
+        "read_failed": "Deine DeepSeek Harness-Einstellungen konnten nicht gelesen werden. Lade die Seite neu, um es erneut zu versuchen."
+      },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chat auf einer Crew",
         "chat_on_a_crew_desc": "Fügt dem Erstellen-Menü „New chat on crew“ hinzu und startet damit eine Sitzung auf einer Remote-Crew – einem anderen Rechner, den du unter Einstellungen > Remote-Crew verbunden hast – und zeigt die Sitzungen jeder verbundenen Crew in einer eigenen Gruppe in der Sitzungsliste. Unfertig.",

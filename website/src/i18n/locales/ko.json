@@ -16108,6 +16108,13 @@
         "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · 강제 레이아웃 {{forced}}",
         "slow_frame_log_frames_unsupported": "이 브라우저는 긴 프레임을 보고하지 않습니다."
       },
+      "deepseekKey": {
+        "title": "공급자 키",
+        "intro": "DeepSeek Harness가 DeepSeek의 호스팅 모델에 사용하는 API 키를 붙여 넣으세요. 키는 설정 > 시크릿에 저장되고, 구성에는 그에 대한 참조만 남습니다. 이 컴퓨터에서 실행되는 모델에는 키가 필요 없습니다.",
+        "desc_api_key": "DeepSeek 플랫폼에서 받은 DeepSeek API 키입니다.",
+        "value_missing": "여기서 가리키는 키가 더 이상 시크릿에 없어서 새 DeepSeek Harness 세션이 거부됩니다. 새 키를 저장하거나 제거하세요.",
+        "read_failed": "DeepSeek Harness 설정을 읽을 수 없습니다. 페이지를 새로 고친 후 다시 시도하세요."
+      },
       "featurePreviewsTab": {
         "chat_on_a_crew": "크루에서 채팅",
         "chat_on_a_crew_desc": "만들기 메뉴에 “New chat on crew”를 추가합니다. 원격 크루, 즉 설정 > 원격 크루에서 연결한 다른 컴퓨터에서 세션을 시작하고, 연결된 각 크루의 세션을 세션 목록에 크루별 그룹으로 표시합니다. 미완성입니다.",

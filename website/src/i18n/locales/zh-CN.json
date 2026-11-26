@@ -16108,6 +16108,13 @@
         "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · 强制布局 {{forced}}",
         "slow_frame_log_frames_unsupported": "此浏览器不报告长帧。"
       },
+      "deepseekKey": {
+        "title": "提供方密钥",
+        "intro": "粘贴 DeepSeek Harness 访问 DeepSeek 托管模型所用的 API 密钥。密钥保存到“设置 > 密钥”，配置中只保留对它的引用。在本机运行的模型不需要密钥。",
+        "desc_api_key": "你的 DeepSeek API 密钥，可在 DeepSeek 平台获取。",
+        "value_missing": "此处引用的密钥已不在“密钥”中，因此新的 DeepSeek Harness 会话会被拒绝。请保存新密钥，或将其移除。",
+        "read_failed": "无法读取你的 DeepSeek Harness 设置。请重新加载页面后重试。"
+      },
       "featurePreviewsTab": {
         "chat_on_a_crew": "在团队上聊天",
         "chat_on_a_crew_desc": "在新建菜单里加入“New chat on crew”，用它创建的会话运行在远程 Crew 上，也就是你在“设置 > 远程 Crew”里连接的另一台机器；并在会话列表中把每个已连接 Crew 的会话显示为单独的分组。尚未完善。",
