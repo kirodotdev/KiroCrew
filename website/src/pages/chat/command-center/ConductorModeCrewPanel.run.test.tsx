@@ -330,6 +330,13 @@ describe('Conductor mode run line', () => {
     act(() => { store.dispatch(setQuestionCard({ slot: 'root-1', card_id: 'recap-question', questions: [{ question: 'Which environment?' }] })) })
     expect(screen.getByTestId('conductor-mode-main-question')).toHaveTextContent('Which environment?')
     expect(screen.getByTestId('conductor-mode-recap')).toHaveTextContent('a question for you waits on you')
+    // A long question is cut to one line; its whole text shows in the tip on
+    // keyboard focus, never in a native title.
+    const line = within(screen.getByTestId('conductor-mode-main-question')).getByText('Which environment?')
+    expect(line).toHaveAttribute('title', '')
+    expect(line).toHaveAttribute('tabindex', '0')
+    fireEvent.focus(line)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Which environment?')
   })
 
   it('Recap keeps root background work from being described as quiet', async () => {
