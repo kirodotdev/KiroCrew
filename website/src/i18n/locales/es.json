@@ -12247,14 +12247,9 @@
     },
     "firstRunHarnessSetup": {
       "aside_headline": "Configura tu agente",
-      "aside_body": "Elige qué lo ejecuta e inicia sesión una vez. Puedes cambiarlo luego en Ajustes.",
-      "choose_title": "Elige un harness",
-      "recommended": "Recomendado",
-      "cannot_run_here": "No funciona aquí",
+      "aside_body": "Inicia sesión en Kiro o usa tu harness. Cámbialo luego en Ajustes.",
       "signed_in": "Sesión iniciada",
       "not_signed_in": "Sin sesión iniciada",
-      "no_kiro_harness": "Instala Kiro CLI o elige uno de los otros harness.",
-      "other_harnesses": "Otros harness",
       "set_up_later": "Configurar más tarde",
       "continue": "Continuar",
       "back": "Atrás",
@@ -12268,7 +12263,13 @@
       "start_chatting": "Empezar a chatear",
       "save_failed": "No se pudo guardar {{name}} como tu harness. Pulsa «Continuar» para intentarlo de nuevo.",
       "recheck_failed": "No se pudo comprobar {{name}} de nuevo. Pulsa «Comprobar de nuevo» para reintentarlo.",
-      "setup_read_failed": "No se pudo leer parte de tu configuración actual, así que puede que falten algunas opciones."
+      "setup_read_failed": "No se pudo leer parte de tu configuración actual, así que puede que falten algunas opciones.",
+      "start_title": "¿Cómo quieres empezar?",
+      "bring_your_harness": "Usa tu propio harness",
+      "without_sign_in": "Sin iniciar sesión en Kiro no tendrás el harness integrado ni los modelos de Kiro.",
+      "sign_in_save_failed": "No se pudo terminar la configuración. Pulsa «{{button}}» para intentarlo de nuevo.",
+      "continue_with_kiro": "Continuar con Kiro",
+      "continue_with_kiro_cli": "Continuar con Kiro CLI"
     }
   },
   "hooks": {

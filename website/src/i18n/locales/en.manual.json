@@ -5122,14 +5122,9 @@
     },
     "firstRunHarnessSetup": {
       "aside_headline": "Set up your agent",
-      "aside_body": "Pick what runs it and sign in once. You can change this later in Settings.",
-      "choose_title": "Choose a harness",
-      "recommended": "Recommended",
-      "cannot_run_here": "Can't run here",
+      "aside_body": "Sign in to Kiro or bring your harness. Change it later in Settings.",
       "signed_in": "Signed in",
       "not_signed_in": "Not signed in",
-      "no_kiro_harness": "Install Kiro CLI, or pick one of the other harnesses.",
-      "other_harnesses": "Other harnesses",
       "set_up_later": "Set up later",
       "continue": "Continue",
       "back": "Back",
@@ -5143,7 +5138,13 @@
       "start_chatting": "Start chatting",
       "save_failed": "Couldn't save {{name}} as your harness. Press Continue to try again.",
       "recheck_failed": "Couldn't check {{name}} again. Press Check again to retry.",
-      "setup_read_failed": "Couldn't read part of your current setup, so some choices may be missing."
+      "setup_read_failed": "Couldn't read part of your current setup, so some choices may be missing.",
+      "start_title": "How do you want to start?",
+      "bring_your_harness": "Bring your harness",
+      "without_sign_in": "Without a Kiro sign-in you won't get the built-in harness or Kiro models.",
+      "sign_in_save_failed": "Couldn't finish setting up. Press {{button}} to try again.",
+      "continue_with_kiro": "Continue with Kiro",
+      "continue_with_kiro_cli": "Continue with Kiro CLI"
     },
     "kiroSignInPrompt": {
       "copy_request_id": "Copy request ID",

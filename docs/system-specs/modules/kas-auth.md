@@ -1101,20 +1101,29 @@ engine instead ([aws-control.md](aws-control.md)).
   same read says the built-in engine is on (`engine_choice: "engine"` on
   `GET /api/kas-bundle`: the saved `agent.kas_bundle`, else the build's
   preference) and the caller may do setup (`setup_allowed`), the hold shows
-  `FirstRunHarnessSetup` instead of `KasLoginGate`:
-  pick a harness (Built-in harness first and picked; Kiro CLI always listed, with
-  its install command while it is missing and Continue off while it is picked;
-  the rest behind "Other harnesses", from the same `harnessList` and
-  `HarnessPickerList` Settings > Agent Harness uses, so a harness the
-  deployment's policy denies gets no row; with KAS denied, Kiro CLI is saved as
-  itself), sign in through the shared
-  `KiroSignInFlow`, then "You're all set". The pick is saved with the keys
+  `FirstRunHarnessSetup` instead of `KasLoginGate`. Its first screen carries the
+  shared `KiroSignInFlow` choices inline; a sign-in that lands there saves the
+  built-in harness, then "You're all set" (with a sign-in already stored, one
+  "Continue with Kiro" does the same). With Kiro CLI installed and signed in, a
+  "Continue with Kiro CLI" saves it in one click. "Bring your harness" shows one line
+  naming what only a Kiro sign-in gives (the built-in harness and Kiro models,
+  the rows of `KiroAccountUnlocks`), then one list: Kiro CLI first and always
+  listed, with its install command while it is missing and Continue off while it
+  is picked, then the rest, from the same `harnessList` and `HarnessPickerList`
+  Settings > Agent Harness uses, so a harness the deployment's policy denies
+  gets no row. Back returns to the first screen. Where the built-in harness cannot
+  run here (`host_unsupported`, whose text replaces that line) or KAS is denied
+  (then Kiro CLI is saved as itself), the step opens on the list with no Back.
+  The pick is saved with the keys
   Settings writes (`agent.acp_backend`, `agent.kas_bundle`); no chat exists yet,
   so there is no restart prompt, and each spawn reads `agent.kas_bundle` afresh.
-  A failed save stays on the choice with its error, and the pick cannot change
-  while it saves; a picked harness that is not usable yet gets Check again.
-  Kiro CLI picked here gets no Kiro Crew sign-in offer on "You're all set": the
-  person chose it. "Set up later" admits as Skip does. With the engine off, the hold is exactly
+  A failed save stays on its screen with its error, naming the button that
+  retries it, and neither the pick nor the screen can change while it saves; a picked harness that is not usable yet gets Check again.
+  "You're all set" centers the ghost under one burst of confetti
+  (`FirstRunConfetti`): it plays once and ends still, throws the same pieces
+  every time, uses theme colours only, and renders nothing under
+  `prefers-reduced-motion`. Kiro CLI picked here gets no Kiro Crew sign-in offer
+  on "You're all set": the person chose it. "Set up later" admits as Skip does. With the engine off, the hold is exactly
   the sign-in above. Until the hold has decided (status or agent unknown on a
   browser that never finished setup, or the read in flight) the app stays hidden
   once an early read, under its own query key, says the engine is on, for at

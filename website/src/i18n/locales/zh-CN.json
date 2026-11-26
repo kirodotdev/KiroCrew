@@ -11701,14 +11701,9 @@
     },
     "firstRunHarnessSetup": {
       "aside_headline": "设置你的智能体",
-      "aside_body": "选择由什么运行它，并登录一次。之后可以在“设置”中更改。",
-      "choose_title": "选择运行框架",
-      "recommended": "推荐",
-      "cannot_run_here": "无法在此运行",
+      "aside_body": "登录 Kiro，或使用自己的运行框架。之后可在“设置”中更改。",
       "signed_in": "已登录",
       "not_signed_in": "未登录",
-      "no_kiro_harness": "请安装 Kiro CLI，或选择其他运行框架之一。",
-      "other_harnesses": "其他运行框架",
       "set_up_later": "稍后设置",
       "continue": "继续",
       "back": "返回",
@@ -11722,7 +11717,13 @@
       "start_chatting": "开始聊天",
       "save_failed": "无法将 {{name}} 保存为运行框架。点“继续”重试。",
       "recheck_failed": "无法重新检查 {{name}}。点“重新检查”重试。",
-      "setup_read_failed": "无法读取当前设置的一部分，因此某些选项可能缺失。"
+      "setup_read_failed": "无法读取当前设置的一部分，因此某些选项可能缺失。",
+      "start_title": "你想怎么开始？",
+      "bring_your_harness": "使用自己的运行框架",
+      "without_sign_in": "不登录 Kiro，就用不了内置运行框架和 Kiro 模型。",
+      "sign_in_save_failed": "无法完成设置。点“{{button}}”重试。",
+      "continue_with_kiro": "使用 Kiro 继续",
+      "continue_with_kiro_cli": "使用 Kiro CLI 继续"
     }
   },
   "hooks": {

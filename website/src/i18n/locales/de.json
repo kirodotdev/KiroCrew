@@ -11974,14 +11974,9 @@
     },
     "firstRunHarnessSetup": {
       "aside_headline": "Richte deinen Agenten ein",
-      "aside_body": "Wähle, was ihn ausführt, und melde dich einmal an. Du kannst das später in den Einstellungen ändern.",
-      "choose_title": "Wähle ein Harness",
-      "recommended": "Empfohlen",
-      "cannot_run_here": "Läuft hier nicht",
+      "aside_body": "Bei Kiro anmelden oder eigenes Harness nutzen. Später in den Einstellungen änderbar.",
       "signed_in": "Angemeldet",
       "not_signed_in": "Nicht angemeldet",
-      "no_kiro_harness": "Installiere Kiro CLI oder wähle eines der anderen Harnesses.",
-      "other_harnesses": "Andere Harnesses",
       "set_up_later": "Später einrichten",
       "continue": "Weiter",
       "back": "Zurück",
@@ -11995,7 +11990,13 @@
       "start_chatting": "Loslegen",
       "save_failed": "{{name}} konnte nicht als Harness gespeichert werden. Tippe auf „Weiter“, um es erneut zu versuchen.",
       "recheck_failed": "{{name}} konnte nicht erneut geprüft werden. Tippe auf „Erneut prüfen“, um es noch einmal zu versuchen.",
-      "setup_read_failed": "Ein Teil deiner aktuellen Einrichtung konnte nicht gelesen werden, daher fehlen vielleicht einige Optionen."
+      "setup_read_failed": "Ein Teil deiner aktuellen Einrichtung konnte nicht gelesen werden, daher fehlen vielleicht einige Optionen.",
+      "start_title": "Wie möchtest du starten?",
+      "bring_your_harness": "Eigenes Harness verwenden",
+      "without_sign_in": "Ohne Kiro-Anmeldung bekommst du weder das integrierte Harness noch Kiro-Modelle.",
+      "sign_in_save_failed": "Die Einrichtung konnte nicht abgeschlossen werden. Tippe auf „{{button}}“, um es erneut zu versuchen.",
+      "continue_with_kiro": "Weiter mit Kiro",
+      "continue_with_kiro_cli": "Weiter mit Kiro CLI"
     }
   },
   "hooks": {
