@@ -247,7 +247,7 @@ async def _prepare_spec_hooks(
         # Whose hooks apply is unknown, so PreToolUse fails closed.
         logger.warning("no agent is known for this KAS session; tool calls are blocked")
         return [], True, work_dir
-    on_kas = capabilities_of(client).backend == ACP_BACKEND_KAS
+    on_kas = capabilities_of(client).backend == ACP_BACKEND_KAS  # harness-ok: kas_engine flags
     try:
         # A crewmate's worker fires its session's merged spec: the
         # session this turn holds, set at admission.
@@ -297,7 +297,7 @@ async def _prepare_spec_hooks(
     # auto-approve withhold always has a hook to fire. Returns the spec hooks
     # unchanged on a harness without ``crew_merges_user_hook_files`` (goose and
     # opencode do not read a user's standalone files).
-    is_kas = capabilities_of(client).backend == ACP_BACKEND_KAS
+    is_kas = capabilities_of(client).backend == ACP_BACKEND_KAS  # harness-ok: KAS-only notices
     try:
         hooks = await asyncio.to_thread(merge_user_hook_files, client, hooks)
     except Exception:  # noqa: BLE001 - a hook-file read must never fail a turn

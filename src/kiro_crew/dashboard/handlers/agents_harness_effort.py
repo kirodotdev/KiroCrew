@@ -55,7 +55,7 @@ def _live_on(state: Any, backend: str, crew: str) -> Any:
     on = [
         p
         for p in reversed(list(sessions.active_providers()))
-        if capabilities_of(p).backend == backend
+        if capabilities_of(p).backend == backend  # harness-ok: backend id as a lookup key
     ]
     mine = {
         id(sessions.get_provider(effective_session_key(s)))

@@ -197,6 +197,23 @@ RULES: tuple[Rule, ...] = (
         fix="default to ACP_BACKEND_KIRO — an operator who configures nothing, "
         "and one whose configuration is unusable, both get the Kiro harness",
     ),
+    Rule(
+        rule_id="backend-identity-read",
+        invariant="H6, H14",
+        # Either side of the comparison, so the mirrored spelling is caught too.
+        # Membership (``capabilities_of(p).backend in ACP_BACKENDS_X``) is the
+        # positive form and is not matched.
+        pattern=re.compile(
+            r"capabilities_of\(.*\)\.backend\b\s*[=!]="
+            r"|[=!]=\s*(?:[\w.]+\.)?capabilities_of\(.*\)\.backend\b"
+            r"""|getattr\(\s*[^,]+,\s*(?P<q>["'])_?is_\w+_backend(?P=q)"""
+        ),
+        message="a behaviour branched on which backend the session runs: a comparison "
+        "of `capabilities_of(...).backend`, or a `getattr` probe for an `is_*_backend` "
+        "attribute the provider ABC does not declare",
+        fix="read the answer as a `SessionCapabilities` field "
+        "(`capabilities_of(provider).<field>`) or as membership in a named set",
+    ),
 )
 
 
@@ -1025,7 +1042,55 @@ PROBES: tuple[tuple[str, str, str, str | None], ...] = (
         "        default=ACP_BACKEND_CLAUDE,",
         "non-kiro-default",
     ),
+    (
+        "capability-backend-compare",
+        "src/kiro_crew/dashboard/chat_turn/turn_spec_hooks.py",
+        "    on_kas = capabilities_of(client).backend == ACP_BACKEND_KAS",
+        "backend-identity-read",
+    ),
+    (
+        "capability-backend-compare-through-a-module",
+        "src/kiro_crew/agent_sdk/kas_project_hooks.py",
+        "    if spec_hooks.capabilities_of(provider).backend == ACP_BACKEND_KAS:",
+        "backend-identity-read",
+    ),
+    (
+        "capability-backend-compare-mirrored",
+        "src/kiro_crew/dashboard/chat_turn/mcp_session.py",
+        "    if ACP_BACKEND_CODEX == capabilities_of(client).backend:",
+        "backend-identity-read",
+    ),
+    (
+        "identity-attribute-probe",
+        "src/kiro_crew/session_allocation_parts/memory_policy.py",
+        '    kas_backend = bool(getattr(provider, "is_kas_backend", False))',
+        "backend-identity-read",
+    ),
+    (
+        "private-identity-attribute-probe",
+        "src/kiro_crew/dashboard/server.py",
+        "    if getattr(client, '_is_claude_backend', False):",
+        "backend-identity-read",
+    ),
     # ── allowed forms: each must produce NO hit ──
+    (
+        "capability-field-read",
+        "src/kiro_crew/dashboard/chat_turn/turn_spec_hooks.py",
+        "    if capabilities_of(client).crew_merges_user_hook_files:",
+        None,
+    ),
+    (
+        "capability-backend-membership",
+        "src/kiro_crew/dashboard/chat_turn/mcp_session.py",
+        "    if capabilities_of(provider).backend not in ACP_BACKENDS_OPEN_EXTERNAL_URL:",
+        None,
+    ),
+    (
+        "unrelated-attribute-probe",
+        "src/kiro_crew/channel.py",
+        '    is_shell = bool(getattr(event, "is_shell", False))',
+        None,
+    ),
     (
         "positive-property",
         "src/kiro_crew/providers/acp.py",
