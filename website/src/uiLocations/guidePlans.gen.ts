@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:eec5f91025114e069e0c65f44ae6a99a2a57a81fabc8796b4fb03743c3ddad1d"
+export const GUIDE_BUILD_DIGEST = "sha256:bda53b7faaf4e1c50a3645107b8e55272c95d24bdcf8f7edb3e9532e7868da85"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -66,6 +66,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "composer.automation.stop-monitor",
   "composer.context-usage",
   "composer.expand",
+  "composer.project-aws-profile",
   "composer.send",
   "composer.stop",
   "composer.voice",

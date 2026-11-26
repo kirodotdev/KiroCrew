@@ -6,6 +6,7 @@ import { api, type ProjectAwsProfile } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { isDeadlineError, refetchWhileFailed, retryThroughRestart } from '../api/queryClient'
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
 import ErrorNotice from './ErrorNotice'
 
 /** The AWS profile-name charset the server enforces (`AWS_PROFILE_NAME_RE`). A UX hint only:
@@ -204,6 +205,7 @@ export function ProjectAwsProfileSection({ project, errorHandoff = false, onHand
   return (
     <div className="px-3 py-1.5 border-t border-border flex flex-col gap-1 text-[12px] max-h-[55%] overflow-y-auto shrink-0" data-testid="pp-aws-profile">
       <button
+        {...uiLocation('composer.project-aws-profile')}
         type="button"
         aria-expanded={expanded}
         aria-controls={listId}

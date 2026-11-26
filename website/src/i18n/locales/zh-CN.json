@@ -24094,6 +24094,7 @@
       "chat_model_picker": "消息框中的模型按钮，显示当前会话使用的模型，点击可打开模型选择器。",
       "chat_session_title": "会话顶部的标题，文字就是会话名称，点击即可重命名会话。",
       "composer_approval_mode": "消息框控制栏中的审批模式选择器，用于设置是只有查找类操作直接运行（常规）、它自己的记忆、对话、技能和知识搜索也直接运行（读取）、信任本会话（信任），还是全部自动批准（YOLO）。",
+      "composer_project_aws_profile": "项目选择器底部的 AWS profile 行，点消息框下方的文件夹按钮即可打开选择器。它显示这个聊天所在的文件夹，以及该文件夹里新聊天使用的 AWS profile；展开后可以选择在 AWS Control 应用中注册过的 profile，或在 aws.project_profiles 中已绑定到文件夹的 profile，也可以输入其他 profile 名，或改回网关自身 AWS 登录。只存在于电脑 AWS 配置里的 profile 不会列出：两个来源都没有 profile 时此行不显示，请到 AWS Control → 添加账户 → 注册所选中注册一个。文档 Configuration 页的 An AWS profile per project 一节有说明。",
       "composer_voice_input": "消息框中的麦克风按钮，按下即可用语音输入代替打字；在触摸屏上它会在键盘和按住说话之间切换。",
       "members_bot_sessions_switch": "bot 资料卡“会话”标签页顶部的开关，标签里写着这个 bot 的名字。打开后，这个 bot 的会话也会显示在你自己的会话列表中。"
     }
