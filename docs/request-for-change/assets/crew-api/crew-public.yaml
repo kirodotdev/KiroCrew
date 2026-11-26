@@ -1514,6 +1514,10 @@ paths:
       - bots:chat
       - bots:read
       x-crew-phase: 1b
+      x-crew-status: available
+      x-crew-available-to:
+      - owner
+      - app
       x-crew-reuses:
       - src/kiro_crew/dashboard/handlers/members_roster.py:331 (api_members; it produces the full Owner roster,
         and Public projects only the fields of the Bot schema)

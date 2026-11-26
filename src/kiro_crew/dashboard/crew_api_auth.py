@@ -80,6 +80,7 @@ OWNER_ONLY_PUBLIC_ROUTES = {
     "/v1/crew/capabilities": "crew_api.capabilities.read",
     # Not a ``.read``: the first call on a data home makes and keeps the instance id.
     "/v1/crew/info": "crew_api.info.resolve",
+    "/v1/crew/bots": "crew_api.bots.list",
 }
 
 #: The routes that serve an app credential, by their ``crew_api_scopes.ROUTES`` key.
@@ -90,6 +91,7 @@ APP_SERVED_ROUTES: Final = frozenset(
     {
         ("GET", "/v1/models"),
         ("GET", "/v1/crew/grant"),
+        ("GET", "/v1/crew/bots"),
         ("GET", "/v1/crew/capabilities"),
         ("GET", "/v1/crew/info"),
     }

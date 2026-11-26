@@ -628,7 +628,9 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
      (`crew_api_grant_self`), which answers an app credential with the grant it
      was issued for and no other, and `GET /v1/crew/info` and
      `GET /v1/crew/capabilities` (`crew_api_instance`), which answer it with the
-     instance and with what its grant can use. This is the one
+     instance and with what its grant can use, and `GET /v1/crew/bots`
+     (`crew_api_bots`), which lists the Bots of its grant to a credential that
+     holds `bots:read` or `bots:chat`. This is the one
      point where token auth lets an app credential through: it publishes the actor
      and calls the handler, and runs none of the later steps, which judge a session
      (the peer pin, the link exchange, the installed-app allowlist). A route joins
@@ -727,6 +729,9 @@ caller, an installed app's token included, gets
 the path. Owner-tier paths under `/v1/crew/owner/` get the same refusal. These
 permission errors have the Crew API error shape and no `WWW-Authenticate` header;
 an invalid credential still gets `401 invalid_token` with the Bearer challenge.
+`GET /v1/crew/bots` passes `app_route` too, and is in `OWNER_ONLY_PUBLIC_ROUTES` under
+`crew_api.bots.list`; its handler asks for the machine owner only when the request
+carries no verified app credential.
 `GET /v1/crew/grant` is the one Public route not behind `owner_route`: its handler
 calls `crew_api_scopes.require_scope` with its own key, reads the grant named by the
 verified credential, and answers a first-party session `404 not_found`.

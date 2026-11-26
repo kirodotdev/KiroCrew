@@ -641,8 +641,9 @@ def bots(monkeypatch) -> list[str]:
     """The Bots this Kiro Crew has, as the decision reads them."""
     existing = ["scout", "planner", "writer"]
 
-    async def _existing() -> set[str]:
-        return set(existing)
+    async def _existing() -> dict[str, str | None]:
+        # Each with a member id of its own.
+        return {name: f"{name}-1" for name in existing}
 
     monkeypatch.setattr(grant_requests, "_existing_bots", _existing)
     return existing
@@ -904,10 +905,52 @@ async def test_a_degraded_config_cannot_confirm_the_default_bot(client, monkeypa
 @pytest.mark.asyncio
 async def test_a_healthy_config_confirms_only_dispatchable_bots(monkeypatch):
     config = grant_requests.KiroCrewConfig(
-        agents={name: KiroCrewAgentConfig() for name in ("default", "助手", "bad\x1bname")}
+        agents={
+            "default": KiroCrewAgentConfig(),
+            "助手": KiroCrewAgentConfig(member_id="helper-2"),
+            "bad\x1bname": KiroCrewAgentConfig(member_id="bad-1"),
+        },
+        default_agent="default",
     )
     monkeypatch.setattr(grant_requests.KiroCrewConfig, "load", lambda: config)
-    assert await grant_requests._existing_bots() == {"default", "助手"}
+    # Each Bot a turn can name, with the member id its record holds.
+    assert await grant_requests._existing_bots() == {"default": "", "助手": "helper-2"}
+
+
+@pytest.mark.asyncio
+async def test_an_approval_keeps_which_bot_each_given_name_is(client, clock, monkeypatch):
+    """The decision route hands ``decide`` the identities of the read that checked the Bots."""
+
+    async def _existing() -> dict[str, str | None]:
+        return {"scout": "", "planner": "planner-7", "writer": "writer-1"}
+
+    monkeypatch.setattr(grant_requests, "_existing_bots", _existing)
+    request_id = await _ask_for_bots(client)
+    given = ["scout", "planner"]
+    answered = await client.post(
+        _decision(request_id), json={"decision": "approve", "bots": given}, headers=AS_OWNER
+    )
+    body = await answered.json()
+    assert (answered.status, body["granted_bots"]) == (200, given)
+    # Kept with the request, for the grant made from it, and in no answer.
+    stored = json.loads(client.store._path.read_text(encoding="utf-8"))["requests"][request_id]
+    assert stored["granted_bot_member_ids"] == {"scout": "", "planner": "planner-7"}
+    assert not [key for key in stored if "default" in key]
+    read = await (await client.get(_one(request_id), headers=AS_OWNER)).json()
+
+    def _assert_no_member_ids(answer: Any) -> None:
+        if isinstance(answer, dict):
+            for key, value in answer.items():
+                assert "member_id" not in key
+                _assert_no_member_ids(value)
+        elif isinstance(answer, list):
+            for value in answer:
+                _assert_no_member_ids(value)
+        else:
+            assert answer not in ("planner-7", "writer-1")
+
+    for answer in (body, read):
+        _assert_no_member_ids(answer)
 
 
 @pytest.mark.asyncio
