@@ -21,6 +21,10 @@ seam (`src/pages/chat/DocumentPanelTabs.test.tsx`), which have their own suites.
 File/tree/folder menu rows are **not** a composition-root seam: an installed app
 declares them in its manifest under `contributes.fileMenuItems[]` and core
 POSTs the file context to the app's endpoint — see the App Kit publishing guide.
+Rows in the Sessions **New** menu work the same way: an app declares them under
+`contributes.sessionCreateItems[]` (`src/apps/sessionCreateContributions.tsx`),
+core POSTs `{ item_id }` to the app's endpoint and creates the session on the
+`project_dir` it answers.
 
 | Seam | Module | Registrar to reader |
 |------|--------|---------------------|
