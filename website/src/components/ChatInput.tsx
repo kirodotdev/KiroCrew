@@ -487,7 +487,7 @@ function ChatInput({
   const listIndentHintId = useId()
   const draftHasListLine = useMemo(() => hasListLine(value), [value])
   // True while the textarea or the hint's own Dismiss button has focus, so a
-  // Tab from the textarea lands on Dismiss instead of unmounting it mid-move.
+  // Tab from the textarea lands on Dismiss instead of hiding it mid-move.
   const [textareaFocused, setTextareaFocused] = useState(false)
   const listHintDismissRef = useRef<HTMLButtonElement>(null)
   // Dismiss hides the visible line only; screen readers still get the hint
@@ -903,12 +903,11 @@ function ChatInput({
     (promptStashEnabled && (!!promptStash.error || !!promptStash.notice || promptStash.count > 0))
   const inlineToolbar = inlineToolbarWhileFits && textFitsOneRow && !pendingFiles.length && !pendingDirs.length && !hasQuote && !hasSessionRefs && !inBoxStatusStrip && manualHeight === null &&
     !terminal.active && !voiceHoldMode && !showDictation && !lexicalLoadFailed
-  // The list-indent hint shows under the text while the textarea has focus.
-  // On the one-row shape it stays screen-reader only: a visible row would sit
-  // beside the text and squeeze it, and reshaping the box on every focus and
-  // blur moves the toolbar under the pointer. Focus never changes the shape.
-  const listHintVisible = draftHasListLine && textareaFocused && !listHintDismissed && !(lexicalComposer && !lexicalLoadFailed) && !inlineToolbar
-  const listHintShown = listHintVisible && !(showDictation || voiceHoldMode)
+  // The list-indent hint's row sits under the text and shows while the textarea has
+  // focus; blurred, it stays laid out but hidden, so focus never resizes the box. On
+  // the one-row shape it stays screen-reader only, as a row there would squeeze the text.
+  const listHintRow = draftHasListLine && !listHintDismissed && !(lexicalComposer && !lexicalLoadFailed) && !inlineToolbar && !(showDictation || voiceHoldMode)
+  const listHintShown = listHintRow && textareaFocused
   useEffect(() => {
     if (!listHintShown) setListHintSaveError(null)
   }, [listHintShown])
@@ -1616,15 +1615,16 @@ function ChatInput({
         {pasteBlocks.length > 0 && <PasteHoverLayer ref={hoverRef} value={value} blocks={pasteBlocks} mirrorRef={mirrorRef} onActivePanelChange={setPastePreviewPanelId} />}
         </>)}
         </motion.div>
-        {/* The Tab rule and its way out. Screen readers get it through the
-            textarea's aria-describedby; sighted keyboard users see the same
-            line while the textarea has focus, except on the one-row shape. */}
+        {/* The Tab rule and its way out. Screen readers get both sentences
+            through the textarea's aria-describedby; sighted keyboard users see
+            the way out while the textarea has focus, except on the one-row shape. */}
         {draftHasListLine && !(lexicalComposer && !lexicalLoadFailed) && (
-          <div className={listHintShown ? 'flex flex-wrap items-baseline gap-x-2 px-4 pt-1 text-[12px] text-muted' : 'sr-only'}>
-            <p id={listIndentHintId} data-testid="list-indent-hint" className={listHintShown ? 'min-w-0' : 'sr-only'}>
+          <div className={listHintRow ? `flex flex-wrap items-baseline gap-x-2 px-4 pt-1 text-[12px] text-muted${listHintShown ? '' : ' invisible'}` : 'sr-only'}>
+            <p id={listIndentHintId} data-testid="list-indent-hint" className={listHintRow ? 'min-w-0' : 'sr-only'}>
+              <span className="sr-only">{i18nT('components.chatInput.list_indent_keys')} </span>
               {i18nT('components.chatInput.list_indent_hint')}
             </p>
-            {listHintShown && (
+            {listHintRow && (
               <button
                 ref={listHintDismissRef}
                 type="button"
@@ -1633,6 +1633,7 @@ function ChatInput({
                 // Keep the textarea focused on a pointer press; its blur would
                 // hide this button before the click lands.
                 onMouseDown={e => e.preventDefault()}
+                onFocus={() => setTextareaFocused(true)}
                 onBlur={e => { if (e.relatedTarget !== inputRef.current) setTextareaFocused(false) }}
                 onClick={() => {
                   if (!savePrefExplicitly(LIST_HINT_DISMISSED_KEY, '1')) {
