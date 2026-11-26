@@ -2308,6 +2308,20 @@ against sweep completeness, and are torn down at `close_all`.
   (`dashboard:{slot_key}`) idle-expire like any other session. A Bot's worker
   session is one of them: its process is released, its conversation resumes on
   the next send, and `session_status` reports it as `process: released`.
+  After a reset on the idle clock (not an orphan reap) the sweep calls the
+  owner's `on_idle_expired(key)` seam. The dashboard
+  (`session_events._on_idle_expired`) logs the expiry at ERROR and appends the
+  "failed before it started" error row (without `meta.turn_failed`) only when the open
+  tab's runner is admitting a turn onto `key` itself (`_active_turn_session_key`,
+  published once a turn is past fair admission and the background-turn permit,
+  cleared when it ends) and its newest row is an unanswered turn opener whose
+  `ts` is more than a minute old (`_STALLED_TURN_SECS`): that turn has not taken
+  its session in all that time. A queued placeholder and assistant system
+  notices are looked through; any other row, the empty-response `notice`
+  included, answers the opener. A queued turn, a turn on another session, or a
+  younger or unparseable opener gets nothing. No waiting turn is cancelled, so
+  a stalled turn that recovers later still replies, under the row, and an
+  OpenAI-compatible reader of that turn reports the reply, not the row.
   `session.automated_idle_timeout_secs` (default 0, off) is the timeout for a
   session whose last turn automation started: `release(key)` stamps
   `_Session.last_turn_automated` from `session_idle_clock.turn_was_automated()`,

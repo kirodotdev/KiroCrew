@@ -18,7 +18,9 @@ import pytest
 from chat_test_helpers import _make_state
 
 from kiro_crew.dashboard import chat_utils
+from kiro_crew.dashboard.chat_utils_injected_rows import EMPTY_TURN_NOTICE_KIND
 from kiro_crew.dashboard.state import _SESSION_RECYCLED_NOTICE, stuck_turn_notice
+from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE
 
 #: Session key -> the dashboard tab that displays it; anything else has no tab.
 _TABS = {"dashboard:t1": "t1", "dashboard:gone": "gone"}
@@ -193,3 +195,110 @@ async def test_a_failing_append_or_banner_push_is_logged_not_raised(wired, monke
     assert "Failed to append recycle notice to slot t1" in logged
     assert "Failed to broadcast OAuth banner expiry for slot t1" in logged
     assert "Failed to append stuck-turn notice to slot t1" in logged
+
+
+#: The frozen "now" the expiry is judged at.
+_NOW = "2026-11-13T04:27:19+00:00"
+
+_OLD = "2026-11-13T04:25:19+00:00"
+_REPLY = (("assistant", "yes", None), ("done", "", None))
+# The empty-response verdict is the turn's outcome too, though no reply came.
+_EMPTY = (("notice", EMPTY_TURN_NOTICE, {"kind": EMPTY_TURN_NOTICE_KIND}),)
+
+
+@pytest.fixture
+def frozen_now(monkeypatch):
+    from datetime import datetime
+
+    from kiro_crew.dashboard.state_parts import session_events
+
+    monkeypatch.setattr(session_events, "_utc_now", lambda: datetime.fromisoformat(_NOW))
+
+
+def _unanswered(slot, ts: str) -> None:
+    slot.append("user", "hello", "msg msg-u", broadcast=False)
+    slot.append("assistant", "hi", "msg msg-a", broadcast=False)
+    slot.append("user", "are you there?", "msg msg-u", broadcast=False)
+    slot._messages[-1]["ts"] = ts
+
+
+def test_an_idle_expiry_of_a_stalled_message_marks_it_failed_and_logs_its_age(
+    wired, frozen_now, caplog
+):
+    """The sweep reset a session whose admitted turn has waited two minutes to start.
+
+    The turn may still recover, so the row does not pin the failure: an
+    OpenAI-compatible reader of that turn reports the reply it goes on to give.
+    """
+    from kiro_crew.dashboard import gateway_notice as gn
+    from kiro_crew.dashboard.chat_turn.queue_cycle import TURN_FAILED_META
+    from kiro_crew.dashboard.openai_compat import _TurnOutcome
+
+    state, slot, _on_recycled, _on_stuck, _banners = wired
+    _unanswered(slot, "2026-11-13T04:25:19+00:00")
+    slot._active_turn_session_key = "dashboard:t1"
+    before = len(slot._messages)
+
+    with caplog.at_level(logging.ERROR, logger="kiro_crew.dashboard.state"):
+        state.sessions.on_idle_expired("dashboard:t1")
+        # The row now answers the message, so a second expiry adds nothing.
+        state.sessions.on_idle_expired("dashboard:t1")
+
+    assert len(slot._messages) == before + 1
+    row = slot._messages[-1]
+    assert row["role"] == "error"
+    assert TURN_FAILED_META not in row["meta"]
+    assert gn.gateway_notice_meta(gn.GATEWAY_NOTICE_TURN_FAILED_BEFORE_START).items() <= (
+        row["meta"].items()
+    )
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert [r.getMessage() for r in errors] == [
+        "Idle sweep expired dashboard:t1 while its newest message had no reply for 120s"
+    ]
+
+    for role, text, meta in _REPLY:  # the stalled turn recovers and replies
+        slot.append(role, text, "msg", meta=meta, broadcast=False)
+    outcome = _TurnOutcome()
+    for msg in slot._messages[before - 1 :]:  # from the opener on
+        outcome.observe(msg)
+    assert outcome.reason is None
+
+
+@pytest.mark.parametrize(
+    "key, answer, admitting, opener_ts",
+    [
+        pytest.param("dashboard:t1", _REPLY, "dashboard:t1", _OLD, id="answered chat"),
+        pytest.param("dashboard:t1", _EMPTY, "dashboard:t1", _OLD, id="empty-response notice"),
+        pytest.param("cron:nightly", (), "cron:nightly", _OLD, id="no tab"),
+        pytest.param("dashboard:gone", (), "dashboard:gone", _OLD, id="slot gone"),
+        # A turn still queued (fair admission, the background-turn permit) has not
+        # entered admission yet, so it publishes no identity, like no turn at all.
+        pytest.param("dashboard:t1", (), "", _OLD, id="no turn admitting"),
+        pytest.param(
+            "dashboard:t1", (), "dashboard:t1", "2026-11-13T04:27:00+00:00", id="just sent"
+        ),
+        pytest.param(
+            "dashboard:t1", (), "dashboard:t1", "2026-11-13T04:26:19+00:00", id="a minute old"
+        ),
+        pytest.param("dashboard:t1", (), "dashboard:t1", "not a time", id="unparseable ts"),
+        pytest.param("cron:nightly:run-7", (), "cron:nightly", _OLD, id="another session"),
+    ],
+)
+def test_an_idle_expiry_of_a_turn_that_may_still_start_adds_nothing(
+    wired, frozen_now, monkeypatch, caplog, key, answer, admitting, opener_ts
+):
+    """Only the turn admitting onto the reset session, waiting over a minute, is marked."""
+    state, slot, _on_recycled, _on_stuck, _banners = wired
+    # A cron per-run key resolves to its job's tab, whose turns run on another session.
+    monkeypatch.setitem(_TABS, "cron:nightly:run-7", "t1")
+    _unanswered(slot, opener_ts)
+    for role, text, meta in answer:
+        slot.append(role, text, "msg", meta=meta, broadcast=False)
+    slot._active_turn_session_key = admitting
+    before = len(slot._messages)
+
+    with caplog.at_level(logging.ERROR, logger="kiro_crew.dashboard.state"):
+        state.sessions.on_idle_expired(key)
+
+    assert len(slot._messages) == before
+    assert [r for r in caplog.records if r.levelno == logging.ERROR] == []
