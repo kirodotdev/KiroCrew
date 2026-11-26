@@ -1662,6 +1662,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         is_history_day_header,
         is_history_stamp,
     )
+    from kiro_crew.memory_record_facets import (  # noqa: F401
+        record_ref,
+    )
     from kiro_crew.platform_compat import (  # noqa: F401
         isolated_python_argv,
         kill_and_reap,
