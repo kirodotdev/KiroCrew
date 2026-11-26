@@ -7,7 +7,7 @@ import { useHoverIntent } from '../../hooks/useHoverIntent'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import ErrorNotice from '../../components/ErrorNotice'
 import HoverTip from '../../components/HoverTip'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { metricColor } from '../../utils/metricColor'
 import { isMetricNumber, metricNumber } from '../../utils/metrics'
 import { machineIdentity, type MachineIdentity } from '../../utils/machineIdentity'
@@ -71,7 +71,7 @@ export function readMetricsFrame(raw: SysMetricsFrame) {
  * hover card and the metrics query they all read.
  */
 export function useMetricsReadout(isMobile: boolean, updateAvailable: boolean, actionsLevel: number) {
-  const [metricsOpen, setMetricsOpen] = useState(() => localStorage.getItem('mc-topbar-metrics') === '1')
+  const [metricsOpen, setMetricsOpen] = useState(() => safeGetItem('mc-topbar-metrics') === '1')
   // The inline metric readings are dropped by a CSS container-query rung when
   // the actions group runs out of room (the ladder in index.css, whose rungs
   // shift while the update pill is mounted). In that band the open/closed

@@ -23,8 +23,8 @@ const ACTIVITY_OPEN_PREFIX = 'mc-activity-open:'          // one key per slot
 /** Read every persisted per-slot activityOpen flag (mc-activity-open:<slot>). */
 const loadActivityOpenMap = (): Record<string, boolean> => {
   const out: Record<string, boolean> = {}
-  if (typeof localStorage === 'undefined') return out
   try {
+    if (typeof localStorage === 'undefined') return out
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i)
       if (!k || !k.startsWith(ACTIVITY_OPEN_PREFIX)) continue
