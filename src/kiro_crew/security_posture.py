@@ -333,6 +333,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # dashboard/handlers/workflows.py, the registered sink for this surface,
         # and that handler is the previewer's sole caller.
         "workflows/preview.py",
+        # Audit-side log hygiene, same shape: audit_decision scrubs a refusal's
+        # detail before the clip and the ssh_auth_sock_forward_consent SEL row.
+        "ssh_auth_sock_consent.py",
         # Audit-side log hygiene: log_decline scrubs the model-authored tool
         # title before writing the shared auto_approve_declined SEL row. The
         # audit log is a gate-side record, not an output bound for a human or
