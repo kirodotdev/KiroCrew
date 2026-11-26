@@ -120,6 +120,12 @@ def _validate_set_project(args: dict[str, Any]) -> None:
         raise ValidationError("path", "path must be empty when clear=true")
     if not clear and not path:
         raise ValidationError("path", "required (use clear=true to unset project)")
+    from kiro_crew.hooks import unc_root_refused
+
+    # The regex passes "//host/share" and "/\host\share" (legal POSIX roots);
+    # on Windows they name a share, so they are refused here too.
+    if isinstance(path, str) and unc_root_refused(path):
+        raise ValidationError("path", "must be a local directory, not a network share")
 
 
 SET_PROJECT_SCHEMA = ToolSchema(

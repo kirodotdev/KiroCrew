@@ -46,6 +46,31 @@ def is_unc_shape(raw: str) -> bool:
     return len(raw) >= 2 and raw[0] in "\\/" and raw[1] in "\\/"
 
 
+def unc_root_refused(raw: str) -> bool:
+    """Whether a project root names a network share this host must not resolve.
+
+    Windows only: there any two leading separators (``\\\\h\\s``, ``//h/s``,
+    ``/\\h\\s``) name a host, and resolving the text opens a connection to it.
+    On POSIX a doubled leading slash is an ordinary local path. Two roots stay
+    allowed: a WSL distro (``\\\\wsl.localhost\\<distro>``, ``\\\\wsl$\\<distro>``),
+    which Windows serves from the local machine, and a share under a root this
+    gateway writes to (:func:`unc_probe_allowed`). The text itself is never
+    resolved. The first call resolves and caches the gateway's own trusted
+    roots, so an async caller runs it off the loop.
+    """
+    if os.name != "nt" or not is_unc_shape(raw):
+        return False
+    # "\\host\distro\..." splits to ["", "", host, distro, ...].
+    parts = raw.replace("/", "\\").split("\\")
+    if (
+        len(parts) >= 4
+        and parts[2].casefold() in ("wsl.localhost", "wsl$")
+        and parts[3] not in ("", ".", "..")
+    ):
+        return False
+    return not unc_probe_allowed(raw)
+
+
 def _fold_extended_length_local(raw: str) -> str:
     r"""Fold a ``\\?\<drive>:\...`` extended-length LOCAL path to plain ``<drive>:\...``.
 
