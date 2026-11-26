@@ -947,7 +947,10 @@ step (`/api/update/approve`) stays host-local.
 store (`<data home>/.vault/shared-crew-ssm/invites.json`, owner-only, masked from every
 sandbox mode) holds only the id, alias, creation time, first-use time and the SHA-256
 of the secret; the credential is returned once, by the create route. The store is
-read once when the listener starts, so a request answers from memory. At most 64
+read once when the listener starts, so a request answers from memory. A missing file
+reads as empty; a file that exists but cannot be read or is not valid JSON logs one
+warning naming it and admits no invite, and a create reads it again rather than rewrite
+it from the failed read (503 `ssm_invites_unreadable` while it still fails). At most 64
 live invites. The first request carrying `?ssm_invite=` sets the `mc_ssm_<port>` cookie (keyed by the port the browser connects to, so two Crews never share one)
 (`HttpOnly`, `SameSite=Lax`) and redirects to the same URL without it
 (`Referrer-Policy: no-referrer`); that first use sets `joined`. Revoking removes the
