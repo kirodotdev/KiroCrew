@@ -760,8 +760,13 @@ describe('ChatPage renderMessage — role dispatch', () => {
       msg('notice', 'anchor row', { ts: 'n1' }),
     ])
     await waitFor(() => expect(shown()).toContain('anchor row'))
-    expect(shown()).not.toContain('later please')
-    expect(shown()).not.toContain('may I run ls?')
+    // The page reads loaded while still empty, so the approval that comes with
+    // these rows is new and the live region speaks it. The region is not a row.
+    const spoken = 'Kiro Crew is waiting for your approval: may I run ls?'
+    expect(Array.from(document.querySelectorAll('[aria-live]'), r => r.textContent)).toContain(spoken)
+    const page = shown().replace(spoken, '')
+    expect(page).not.toContain('later please')
+    expect(page).not.toContain('may I run ls?')
   })
 
   it('renders a nudge row as its own auto-nudge card, not an assistant bubble', async () => {
