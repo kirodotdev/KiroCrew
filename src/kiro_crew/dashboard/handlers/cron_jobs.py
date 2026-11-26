@@ -768,7 +768,19 @@ async def _resolve_target_session(
 
     execution = await asyncio.to_thread(read_session_execution, key)
     session_member = (execution.member_id if execution is not None else None) or ""
-    if session_member != (member_id or ""):
+    job_member = ""
+    if member_id:
+        # Body-scope: keeps the capture helper out of the cron.py facade's names.
+        from kiro_crew.cron_service.identity import cron_capture_execution
+
+        try:
+            captured = await asyncio.to_thread(cron_capture_execution, "", "", "", member_id)
+        except ValueError:
+            # The locked store write repeats this resolution and returns its
+            # established invalid_cron response without persisting the job.
+            return key, None
+        job_member = captured.member_id or ""
+    if session_member != job_member:
         return _target_session_refusal(
             "that chat belongs to another member", "session_member_mismatch"
         )

@@ -8,6 +8,7 @@ delivery leg posts the result row into the chat the job stored.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -107,6 +108,64 @@ async def test_unusable_chat_is_refused_and_nothing_is_written(
     resp, data, jobs = await _create(tmp_path, _body(session_key=session_key), slots)
     assert resp.status == 400
     assert data["code"] == code
+    assert jobs == []
+
+
+@pytest.mark.asyncio
+async def test_member_alias_targeting_own_chat_uses_canonical_identity(
+    tmp_path, monkeypatch, session_member
+):
+    from kiro_crew import execution_context
+    from kiro_crew.execution_context import MemoryStoreRef
+
+    real_derive_execution = execution_context.derive_execution
+
+    def _derive_execution(parent, *, target_member=None, **kwargs):
+        if target_member == "Atlas":
+            return replace(
+                parent,
+                member_id="atlas",
+                store=MemoryStoreRef("atlas", "atlas"),
+                selection_kind="member",
+                template_id="atlas-agent",
+                selection_name="Atlas",
+            )
+        return real_derive_execution(parent, target_member=target_member, **kwargs)
+
+    monkeypatch.setattr(execution_context, "derive_execution", _derive_execution)
+    session_member["dashboard:chat-1"] = "atlas"
+
+    resp, data, jobs = await _create(
+        tmp_path,
+        _body(session_key="chat-1", member_id="Atlas"),
+        {"chat-1": _chat()},
+    )
+
+    assert resp.status == 200, data
+    assert [job.target_session_key for job in jobs] == ["dashboard:chat-1"]
+    assert jobs[0].member_id == "atlas"
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_member_keeps_store_invalid_cron_response(
+    tmp_path, monkeypatch, session_member
+):
+    from kiro_crew import execution_context
+
+    def _reject_member(*_args, **_kwargs):
+        raise ValueError("unknown member")
+
+    monkeypatch.setattr(execution_context, "derive_execution", _reject_member)
+    session_member["dashboard:chat-1"] = "another-member"
+
+    resp, data, jobs = await _create(
+        tmp_path,
+        _body(session_key="chat-1", member_id="missing"),
+        {"chat-1": _chat()},
+    )
+
+    assert resp.status == 400
+    assert data["code"] == "invalid_cron"
     assert jobs == []
 
 
