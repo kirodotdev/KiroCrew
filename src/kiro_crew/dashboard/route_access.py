@@ -119,6 +119,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/managed-environments/{sandbox_id}/{action}"): RouteAccess(
         "managed_environments.change", UNSTABLE
     ),
+    # Dashboard caller reads a bounded overlap report across pending and live skills;
+    # nothing is staged, approved or dismissed (handlers/skills_audit.py).
+    ("GET", "/api/skills/-/audit"): RouteAccess("skills.audit.read", UNSTABLE),
     # Owner dashboard only (handlers/tailnet_mobile.py _guard); removes only the listed
     # phone-access keys from config.local.json.
     ("POST", "/api/tailnet/mobile/clear-overrides"): RouteAccess(

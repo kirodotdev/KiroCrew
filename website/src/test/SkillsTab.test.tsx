@@ -15,6 +15,7 @@ const mockApi = vi.hoisted(() => ({
   updateSkill: vi.fn(),
   deleteSkill: vi.fn(),
   skillsBudget: vi.fn(),
+  skillsAudit: vi.fn(),
 }))
 // A stub ApiError declared inside vi.hoisted so the mock factory (hoisted above
 // the imports) can close over it: createSkill.onError branches on
@@ -625,6 +626,21 @@ describe('SkillsTab create gate and coded refusal', () => {
     fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: 'code' } })
     fireEvent.change(within(dialog).getByPlaceholderText('e.g. utils, code'), { target: { value: '  ' } })
     expect(create).not.toBeDisabled()
+  })
+
+  it('refreshes the overlap audit after a skill is created', async () => {
+    mockApi.skills.mockResolvedValue(ONE_SKILL)
+    mockApi.createSkill.mockResolvedValue({ ok: true })
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+    try {
+      const { dialog, create } = await openCreateModal()
+      fireEvent.change(within(dialog).getByPlaceholderText('e.g. my-tool'), { target: { value: 'ok-name' } })
+      fireEvent.click(create)
+      await waitFor(() => expect(mockApi.createSkill).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['skills-audit'] }))
+    } finally {
+      invalidate.mockRestore()
+    }
   })
 
   it('blocks a second submit and the modal close while a create is in flight', async () => {
