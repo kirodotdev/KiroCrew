@@ -201,16 +201,19 @@ RULES: tuple[Rule, ...] = (
         rule_id="backend-identity-read",
         invariant="H6, H14",
         # Either side of the comparison, so the mirrored spelling is caught too.
+        # The call's own argument may hold one level of parentheses; matching to
+        # its close rather than greedily keeps a later ``.backend ==`` on the same
+        # line from being charged to it.
         # Membership (``capabilities_of(p).backend in ACP_BACKENDS_X``) is the
         # positive form and is not matched.
         pattern=re.compile(
-            r"capabilities_of\(.*\)\.backend\b\s*[=!]="
-            r"|[=!]=\s*(?:[\w.]+\.)?capabilities_of\(.*\)\.backend\b"
+            r"capabilities_of\((?:[^()]|\([^()]*\))*\)\.backend\b\s*[=!]="
+            r"|[=!]=\s*(?:[\w.]+\.)?capabilities_of\((?:[^()]|\([^()]*\))*\)\.backend\b"
             r"""|getattr\(\s*[^,]+,\s*(?P<q>["'])_?is_\w+_backend(?P=q)"""
         ),
         message="a behaviour branched on which backend the session runs: a comparison "
         "of `capabilities_of(...).backend`, or a `getattr` probe for an `is_*_backend` "
-        "attribute the provider ABC does not declare",
+        "attribute",
         fix="read the answer as a `SessionCapabilities` field "
         "(`capabilities_of(provider).<field>`) or as membership in a named set",
     ),
@@ -1084,6 +1087,18 @@ PROBES: tuple[tuple[str, str, str, str | None], ...] = (
         "src/kiro_crew/dashboard/chat_turn/mcp_session.py",
         "    if capabilities_of(provider).backend not in ACP_BACKENDS_OPEN_EXTERNAL_URL:",
         None,
+    ),
+    (
+        "capability-call-then-another-backend",
+        "src/kiro_crew/dashboard/chat_turn/mcp_session.py",
+        "    ok = capabilities_of(p).reports_mcp_sign_in_suspects and q(r).backend == x",
+        None,
+    ),
+    (
+        "capability-backend-compare-nested-argument",
+        "src/kiro_crew/dashboard/chat_turn/mcp_session.py",
+        "    if capabilities_of(slot.provider()).backend == ACP_BACKEND_KAS:",
+        "backend-identity-read",
     ),
     (
         "unrelated-attribute-probe",
