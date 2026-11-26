@@ -1134,7 +1134,9 @@ function ToolbarPlace({ at, narrow, children }: { at: { style: CSSProperties; be
       mutations.disconnect()
       for (const panel of panels) { panel.style.left = ''; panel.style.maxWidth = '' }
     }
-  }, [at, narrow, widths])
+    // The numbers, not the object: React can replay a queued width update and
+    // hand back an equal but new object, which would re-measure without end.
+  }, [at, narrow, widths.canvas, widths.toolbar])
   const half = widths.toolbar / 2
   const left = widths.canvas ? Math.max(12 + half, Math.min(Number(at.style.left), widths.canvas - 12 - half)) : at.style.left
   return (
