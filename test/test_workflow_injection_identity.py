@@ -128,3 +128,85 @@ async def test_fallback_slot_defers_an_unreadable_turn_limit(world):
     slot = state.get_slot("workflow-wf_unread")
     assert slot.turn_timeout_secs is None
     assert slot._turn_timeout_hydrated is False
+    # Nothing stored was read, so the defaults apply: the default title, unfiled.
+    assert (slot.title, slot.folder_id) == ("Workflow: wf_unread", "")
+
+
+def _closed_chat_line(**extra):
+    return {
+        "_type": "metadata",
+        "title": "My review chat",
+        "title_origin": "user",
+        "folder_id": "fold0001",
+        **extra,
+    }
+
+
+@pytest.mark.asyncio
+async def test_fallback_slot_keeps_the_closed_chats_name_folder_and_binding(world):
+    # A chat its person named and filed, closed before its workflow finished:
+    # the result's slot writes that chat's line, so it takes the stored name,
+    # folder, workspace and conductor instead of saving the defaults over them.
+    scope = await WorkflowScope.admit("wf_line", world.builder, "dashboard:alice")
+    state = State()
+    state._folders = [{"id": "fold0001"}]
+    state.conversation_log = _MetadataLog(
+        _closed_chat_line(workspace="ws-a", crew_mode_agent="kirocrew-conductor"), True
+    )
+    snapshot = {
+        "session_key": scope.origin,
+        "run_id": scope.run_id,
+        "name": "review",
+        "status": "finished",
+        "result": "LINE_RESULT",
+        "execution_context": scope.execution_context.to_record(),
+    }
+    assert await inject_bound_workflow_result(state, scope.run_id, snapshot)
+    slot = state.get_slot("workflow-wf_line")
+    assert (slot.title, slot._titled, slot._title_origin) == ("My review chat", True, "user")
+    assert slot.folder_id == "fold0001"
+    assert (slot.workspace, slot.crew_mode_agent) == ("ws-a", "kirocrew-conductor")
+    # The namespace pairs with the agent the slot was given: alice's member name.
+    assert (slot.agent, slot.agent_kind) == ("alice", "member")
+
+
+@pytest.mark.asyncio
+async def test_fallback_slot_takes_the_runs_own_title_and_folder_over_the_stored_ones(world):
+    scope = await WorkflowScope.admit("wf_args", world.builder, "dashboard:alice")
+    state = State()
+    state._folders = [{"id": "fold0001"}, {"id": "fold0009"}]
+    state.conversation_log = _MetadataLog(_closed_chat_line(), True)
+    snapshot = {
+        "session_key": scope.origin,
+        "run_id": scope.run_id,
+        "status": "finished",
+        "result": "ARGS_RESULT",
+        "fallback_title": "MR !1234 review",
+        "fallback_folder_id": "fold0009",
+        "execution_context": scope.execution_context.to_record(),
+    }
+    assert await inject_bound_workflow_result(state, scope.run_id, snapshot)
+    slot = state.get_slot("workflow-wf_args")
+    assert (slot.title, slot.folder_id) == ("MR !1234 review", "fold0009")
+
+
+@pytest.mark.asyncio
+async def test_refire_leaves_the_fallback_slots_title_and_folder(world):
+    # Only the delivery that creates the slot titles and files it: a re-fire
+    # must not put the default title back over a name the slot already has.
+    scope = await WorkflowScope.admit("wf_refire", world.builder, "dashboard:alice")
+    state = State()
+    state.conversation_log = _MetadataLog({"_type": "metadata"}, True)
+    snapshot = {
+        "session_key": scope.origin,
+        "run_id": scope.run_id,
+        "status": "finished",
+        "result": "REFIRE_RESULT",
+        "execution_context": scope.execution_context.to_record(),
+    }
+    assert await inject_bound_workflow_result(state, scope.run_id, snapshot)
+    slot = state.get_slot("workflow-wf_refire")
+    assert (slot.title, slot.folder_id) == ("Workflow: wf_refire", "")
+    slot.title, slot.folder_id = "Renamed after delivery", "fold0002"
+    assert await inject_bound_workflow_result(state, scope.run_id, snapshot)
+    assert (slot.title, slot.folder_id) == ("Renamed after delivery", "fold0002")
