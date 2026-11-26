@@ -16,6 +16,8 @@ piece of the change is removed:
 * a mid-turn, paused or loop-driven Bot is not woken and is tried on the next tick;
 * a Bot whose thread has a turn queued starts no turn and books nothing -- book it and
   the tick after the queue empties never wakes it;
+* a book that is there but cannot be read wakes no one and is kept -- read it as empty
+  and a Bot woken inside the floor is woken again, and the save drops every other row;
 * preview off: no wake, and the job is removed and never installed;
 * a tick that woke no one writes no run-history row -- drop the ``quiet_run`` check in
   the run recorder and every ten-minute tick adds one to the shared, capped index.
@@ -29,8 +31,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from windows_sim import read_sharing_violation
 
-from kiro_crew import crew_pause, dashboard_agentic
+from kiro_crew import atomic_write, crew_pause, dashboard_agentic
 from kiro_crew import members as members_mod
 from kiro_crew.dashboard import goal_reminder, mate_welcome, stale_wake
 from kiro_crew.dashboard_templates.manifest import parse_manifest
@@ -248,6 +251,21 @@ def test_a_book_over_its_cap_is_not_saved_and_starts_no_turn(world, monkeypatch)
     monkeypatch.setattr(stale_wake, "_BOOK_MAX_BYTES", 10)
     assert _tick(world).startswith("stopped: the wake book could not be saved")
     assert world.turns == []
+
+
+def test_a_book_that_cannot_be_read_wakes_no_one_and_is_kept(world, monkeypatch, tmp_path) -> None:
+    # Woken two minutes ago for an older write: inside the floor, so not due.
+    path = tmp_path / stale_wake.BOOK_NAME
+    path.write_text(
+        json.dumps({SLUG: {"at": world.now - 120, "fields": {"headline": "2026-11-07T00:00:00"}}})
+    )
+    before = path.read_bytes()
+    world.stale = [("headline", "2026-11-08T00:00:00+00:00")]
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+    # Held open by another program for longer than the read retry waits.
+    with read_sharing_violation(match=stale_wake.BOOK_NAME, times=10_000):
+        assert _tick(world) == "skipped: the wake book could not be read"
+    assert world.turns == [] and path.read_bytes() == before
 
 
 def test_rows_of_bots_no_longer_in_the_crew_are_dropped(world, tmp_path) -> None:
