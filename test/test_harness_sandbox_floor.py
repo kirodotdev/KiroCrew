@@ -180,7 +180,11 @@ def test_a_scratch_cwd_is_judged_by_the_floor_of_the_sessions_own_harness(
         patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
         patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
     ):
-        cwd = str(root / "runtime-old" / "x")
+        # The tier decides only for a tree that exists: a recorded folder that is not a
+        # directory is hidden on every tier.
+        earlier = root / "runtime-old" / "x"
+        earlier.mkdir(parents=True)
+        cwd = str(earlier)
         assert _stored_cwd_is_hidden_scratch(cwd, None, "dashboard_floor", override) is hidden
 
 
