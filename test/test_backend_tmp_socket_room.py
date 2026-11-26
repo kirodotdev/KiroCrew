@@ -24,6 +24,16 @@ _LONG_HOME = "/" + "h" * 70
 # The default data home's length on the reporting host.
 _SHORT_HOME = "/" + "h" * 26
 
+#: The smallest ``sun_path`` (macOS), which the suite floor pins out of reach.
+_REAL_SUN_PATH_BYTES = 104
+
+pytestmark = pytest.mark.usefixtures("_real_socket_budget")
+
+
+@pytest.fixture
+def _real_socket_budget(monkeypatch):
+    monkeypatch.setattr(bt, "_SUN_PATH_BYTES", _REAL_SUN_PATH_BYTES)
+
 
 @pytest.mark.parametrize(
     ("home", "suffix", "warns"),
