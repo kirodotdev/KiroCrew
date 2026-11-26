@@ -21,13 +21,9 @@ lands you on a dashboard where:
 - **Artifacts** library holds three saved artifacts of three kinds (the
   same set as the `artifacts-library` fixture): a widget on its second
   version, a markdown note and an svg.
-- **Apps**: `design-tweak` and `project-scaffolder` are installed and
-  enabled. Both builtins ship disabled by default, and the gateway keeps
-  an existing record's enabled state when it registers builtins at start.
-  `project-scaffolder` also carries the owner-enable marker
-  `host-exec-grants/project-scaffolder` that an owner's enable writes: its
-  two folder-scaffold host routes answer only while it stands, not on the
-  record alone.
+- **Apps**: `design-tweak` is installed and enabled. The builtin ships
+  disabled by default, and the gateway keeps an existing record's enabled
+  state when it registers builtins at start.
 
 ## Layout
 
@@ -39,11 +35,8 @@ rich/
 ├── crons.json
 ├── hooks.json
 ├── folders.json        # 1 folder ("Demos") grouping coder-demo + triage-demo
-├── apps/               # 2 builtin apps seeded enabled (both default to disabled)
-│   ├── design-tweak/installed.json
-│   └── project-scaffolder/installed.json
-├── host-exec-grants/
-│   └── project-scaffolder  # empty owner-enable marker; its host routes need it
+├── apps/               # 1 builtin app seeded enabled (it defaults to disabled)
+│   └── design-tweak/installed.json
 ├── artifacts/          # 3 saved artifacts (same set as artifacts-library)
 │   ├── release-checklist/   # widget, v2 (meta.json, current.html, versions/)
 │   ├── pagination-design/   # markdown, v1

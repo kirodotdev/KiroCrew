@@ -197,6 +197,24 @@
       "legacyNav": {
         "route": "/project-scaffolder",
         "icon": "FolderPlus"
+      },
+      "deletedCopy": {
+        "permissions": {
+          "api": [
+            "/api/project-scaffold",
+            "/api/browse-dirs",
+            "/api/recent-projects",
+            "/api/favorite-projects"
+          ]
+        },
+        "grants": {
+          "api": [
+            "/api/project-scaffold",
+            "/api/browse-dirs",
+            "/api/recent-projects",
+            "/api/favorite-projects"
+          ]
+        }
       }
     },
     {

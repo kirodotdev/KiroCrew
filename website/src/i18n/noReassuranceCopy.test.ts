@@ -24,7 +24,6 @@ const REASSURANCE = /\b(?:nothing|none of (?:them|these|it))\b[^.!?;:。]{0,80}?
 // list only shrinks.
 const APP_REPO_OWNED = new Set([
   'apps.codeReviewSage.views.learningView.reviews_read_the_consolidated_ruleset_below_neve',
-  'apps.projectScaffolder.manifest.highlight_1',
 ])
 
 function strings(node: unknown, path: string, out: Array<[string, string]>): void {

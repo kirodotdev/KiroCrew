@@ -6148,16 +6148,16 @@ app page with whatever it held) and no `footer`. A built-in that opens the picke
 declares the families in its own manifest, so its adopted copy, which reaches the picker
 through this export, declares nothing the built-in did not (E9).
 
-Create Folders From Project (`project-scaffolder`) is that built-in. The wheel pins it
-(`apps/adoption-pins.json`, § 33) at `KiroCrewCaptain/kirocrew-app-project-scaffolder`
-with `minAppSdkLevel` 7, the level of this export, so a host whose record is
+Create Folders From Project (`project-scaffolder`) was that built-in. The wheel no
+longer ships its copy and keeps only its pin row (`apps/adoption-pins.json`, § 33, "A
+pin row with no wheel copy") at `KiroCrewCaptain/kirocrew-app-project-scaffolder` with
+`minAppSdkLevel` 7, the level of this export, so a host whose record is still
 builtin-owned swaps it in place onto that tree at a restart, keeping `data/`,
 `.app_secret`, the approved grants and `enabled`; the rail keeps `/project-scaffolder`
 and the `FolderPlus` glyph. Its repository's `app.json` declares the same four families
-as the wheel copy and nothing else. Its own family, `/api/project-scaffold`, is also
-what turns its two host routes on (section 30.2), so core never names the app. A fix to
-the app lands in that repository first; a change to the wheel copy needs its `App repo:`
-line.
+as the deleted copy, which the row's `deletedCopy` freezes, and nothing else. Its own
+family, `/api/project-scaffold`, is also what turns its two host routes on (section
+30.2), so core never names the app. A fix to the app lands in that repository.
 
 Writers: `website/src/app-sdk/ProjectPicker.tsx`, `website/src/app-sdk/index.ts`,
 `website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/app-sdk/sdkLevel.ts`,
@@ -7753,10 +7753,11 @@ left on a disabled record holds nothing either, because `enabled` is read first.
 A built-in approves what it ships (`register_builtin_apps`, every start), and an
 adopted copy keeps the record's approved set and its `enabled` flag; the marker is
 per-name under `host-exec-grants/`, outside the app's tree, so the swap leaves it in
-place. The shipped Create Folders From Project app declares `/api/project-scaffold` in
-the wheel copy and in its pinned repository alike and ships `defaultEnabled: false`,
-so the owner turns it on through `enable_app`, which writes the marker: the routes
-answer exactly while it is enabled and its enable is recorded (E9 holds nothing back).
+place. Create Folders From Project, the app these routes are for, declares
+`/api/project-scaffold` in its pinned repository and in its pin row's `deletedCopy`
+alike and ships `defaultEnabled: false`, so the owner turns it on through `enable_app`,
+which writes the marker: the routes answer exactly while it is enabled and its enable is
+recorded (E9 holds nothing back).
 One cost is accepted: the marker first shipped in v0.12.1 (#30816), so a record the
 owner enabled on 0.12.0 or earlier and never toggled since reads enabled with no
 marker, and both routes answer 403 until the owner turns the app off and on again.
@@ -8774,8 +8775,8 @@ an orphan and nothing cleans up its `data/` (a retired-builtin uninstall refuses
 restart after a staged fetch swaps it in place, keeping `data/`, `.app_secret`, the
 approved grants and `enabled`. D12 compares no version. Dropping the row as well makes
 a still-pending record an orphan. Pinned by `test/test_builtin_adoption_no_wheel_copy.py`,
-which deletes the fixture app's wheel package and keeps its row. Personal Shopper is
-the first app shipped this way. The accepted cost is availability on a host that never adopted:
+which deletes the fixture app's wheel package and keeps its row. Personal Shopper was
+the first app shipped this way, and Create Folders From Project the second. The accepted cost is availability on a host that never adopted:
 the app is missing from the first boot of that release until STAGE fetches the
 pinned commit and the next restart applies it, and a host that cannot fetch keeps
 the record and its data but stays without the app until it can.
@@ -8818,8 +8819,8 @@ both paths and compares their grants, `test_a_pin_that_declares_more_than_the_fr
 `test_a_shipped_row_carries_a_deleted_copy_exactly_when_its_wheel_copy_is_gone`,
 `test_a_grant_family_registered_later_is_frozen_with_no_change`,
 `test_a_frozen_copy_stands_for_the_record_registering_that_copy_writes` and the
-`freeze` and `verify` tests). Personal Shopper's row carries the copy frozen from the
-parent of the commit that deleted it.
+`freeze` and `verify` tests). Personal Shopper's and Create Folders From Project's rows
+each carry the copy frozen from the parent of the commit that deleted it.
 
 Every other core path that reads the wheel copy to decide a limit or a grant finds
 none. The table names each, what it does then, and which way it fails. Rows 1 to 6,

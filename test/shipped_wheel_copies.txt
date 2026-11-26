@@ -23,6 +23,5 @@ mochi
 ops-mission-control
 papyrus
 pptx-maker
-project-scaffolder
 spec-builder
 workflows

@@ -1,11 +1,12 @@
 """GATE: Kiro Crew core does not depend on the Create Folders From Project app.
 
-The app (``project-scaffolder``) is to leave this repository whole. That is only
-possible while nothing outside ``src/kiro_crew/apps/builtins/`` imports it or names
-it. Its page calls two host routes, ``POST /api/project-scaffold/scan`` and
+The app (``project-scaffolder``) ships no wheel copy: it runs from its own repository
+at the commit its adoption pin names, so nothing in core may import it or name it.
+Its page still calls two host routes, ``POST /api/project-scaffold/scan`` and
 ``/create``; they answer while an enabled app holds an approved ``permissions.api``
 entry inside ``/api/project-scaffold`` (the app-agnostic seam
 ``kiro_crew.apps.core_route_grants``), so core never asks about this app by name.
+The adoption pin row is data, not a core module, and is not read here.
 
 Two properties are pinned:
 

@@ -3,16 +3,16 @@
   "raw_record_count": 387,
   "counts": {
     "smoke": 42,
-    "nightly": 165,
+    "nightly": 164,
     "native-only": 13,
     "needs-secret": 27,
     "excluded": 24,
-    "total": 271
+    "total": 270
   },
   "priorities": {
     "P0": 10,
     "P1": 35,
-    "P2": 160,
+    "P2": 159,
     "P3": 64
   },
   "per_feature": {
@@ -123,7 +123,7 @@
     },
     "apps": {
       "smoke": 3,
-      "nightly": 11,
+      "nightly": 10,
       "native-only": 2,
       "needs-secret": 7,
       "excluded": 2
@@ -3523,33 +3523,6 @@
         "apps-notes-enable-and-attach-local-vault"
       ],
       "component": "website/src/apps/md-notebook/MdNotebookPage.tsx"
-    },
-    {
-      "id": "app-project-scaffolder-create-folders",
-      "feature": "apps",
-      "title": "Create Folders From Project: scan a project and create sidebar folders",
-      "user_story": "As a developer with a monorepo, I want to scan a project directory and tick sub-projects, so that matching sidebar folders are created without duplicates.",
-      "start_url": "/project-scaffolder",
-      "entry_path": "Enable Create Folders From Project > Rail > Create Folders > pick project root > Scan > tick rows > Create",
-      "preconditions": {
-        "seed": "rich",
-        "members": [],
-        "feature_flags": [],
-        "notes": "Scan is read-only via /api/project-scaffold; needs a project directory with detectable sub-packages on disk. Uses the shared ProjectPicker (recent + browse)."
-      },
-      "runnable": "nightly",
-      "estimated_steps": 5,
-      "rationale": "Fully local, native-control UI; needs a fixture project tree on disk, so nightly rather than smoke.",
-      "source": [
-        "src/kiro_crew/apps/builtins/project_scaffolder/app.json",
-        "website/src/apps/project-scaffolder/ProjectScaffolderPage.tsx",
-        "website/src/apps/project-scaffolder/api.ts"
-      ],
-      "priority": "P2",
-      "merged_from": [
-        "app-project-scaffolder-create-folders"
-      ],
-      "component": "website/src/apps/project-scaffolder/ProjectScaffolderPage.tsx"
     },
     {
       "id": "app-spec-builder-requirements",

@@ -304,6 +304,26 @@ _SHIPPED_PINS = [
         "archiveSha256": "57b4ca60d07e073389b50b55d698091c0a3ea53d906e3c3870e0b18bc99d0f43",
         "minAppSdkLevel": 7,
         "legacyNav": {"route": "/project-scaffolder", "icon": "FolderPlus"},
+        # ``adoption_pin.py freeze project-scaffolder``: the copy at the parent of
+        # the commit that deleted it.
+        "deletedCopy": {
+            "permissions": {
+                "api": [
+                    "/api/project-scaffold",
+                    "/api/browse-dirs",
+                    "/api/recent-projects",
+                    "/api/favorite-projects",
+                ],
+            },
+            "grants": {
+                "api": [
+                    "/api/project-scaffold",
+                    "/api/browse-dirs",
+                    "/api/recent-projects",
+                    "/api/favorite-projects",
+                ],
+            },
+        },
     },
     {
         "name": "md-notebook",
