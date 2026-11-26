@@ -144,7 +144,7 @@ from kiro_crew.instances.crew_ref import clean_crew_ref
 
 # Runtime-budget policy and coercion live in the monitoring limits leaf module,
 # keeping the section builders free of duplicated bounds.
-from kiro_crew.monitoring.limits import coerce_runtime_ceiling
+from kiro_crew.monitoring.limits import coerce_budget_notice_pct, coerce_runtime_ceiling
 
 # The speech-to-text bounds come from the package that owns them, so a tuning
 # knob cannot be clamped past what the session accepts; its defaults are the
@@ -234,6 +234,7 @@ def _build_monitoring_config(data: dict, prefer_structured_arming: bool) -> Moni
     return MonitoringConfig(
         prefer_structured_arming=prefer_structured_arming,
         max_runtime_secs=coerce_runtime_ceiling(section.get("max_runtime_secs")),
+        budget_notice_pct=coerce_budget_notice_pct(section.get("budget_notice_pct")),
     )
 
 

@@ -88,6 +88,19 @@ one more line right after `[Monitor wake]`: `Also waiting on pull request
 without merging`, `it could not be read and is no longer checked`). Every other
 line still describes the watched pull request.
 
+With `monitoring.budget_notice_pct` set (1 to 99; 0, the default, is off), a wake
+sent once the watch has used that share or more of its agent turns, tokens or
+runtime has one more line above `Next action`:
+
+```
+Budget: 8 of 10 agent turns used, 212000 of 250000 tokens used, 2400s of 14400s runtime left; 80% or more used.
+```
+
+The turns part appears only when the watch bounds its turns, the tokens part only
+when the token usage is known, and the runtime part always. The line states facts
+and asks for nothing. It passes through the same redaction and 4,096-character cap
+as the rest of the envelope. With the setting at 0 the envelope is unchanged.
+
 `MONITOR_WAKE_PREFIX = '[Monitor wake]'` is defined in `dashboard/state_parts/injected_turns.py`.
 The complete envelope is redacted before its 4,096-character cap and contains
 only canonical provider facts, never raw responses, logs, comments, diffs,

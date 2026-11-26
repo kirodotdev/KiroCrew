@@ -545,6 +545,37 @@ def monitor_budget_reason(state: MonitorState, *, now: float) -> str:
     return ""
 
 
+def monitor_budget_note(state: MonitorState, *, now: float, pct: int) -> str:
+    """One line naming a watch's used budget once a bound reaches *pct* percent.
+
+    The line states facts and asks for nothing. It names the agent turns only when
+    they are bounded, the tokens only when the usage is known (never a count the
+    provider did not report), and the runtime always. It is empty when *pct* is
+    not a whole number from 1 to 99 or when no named bound has reached the share,
+    so a wake with the setting off is the one main sends. Every comparison is
+    whole-number arithmetic: the runtime is truncated to whole seconds first.
+    """
+    if type(pct) is not int or not 1 <= pct <= 99:
+        return ""
+    budgets = state.budgets
+    parts: list[str] = []
+    reached = False
+    if budgets.max_agent_turns > 0:
+        parts.append(f"{state.agent_turns} of {budgets.max_agent_turns} agent turns used")
+        reached = reached or state.agent_turns * 100 >= pct * budgets.max_agent_turns
+    if state.token_usage_known:
+        parts.append(f"{state.total_tokens} of {budgets.max_tokens} tokens used")
+        reached = reached or state.total_tokens * 100 >= pct * budgets.max_tokens
+    elapsed = max(0, int(now - state.created_ts))
+    parts.append(
+        f"{max(0, budgets.max_runtime_secs - elapsed)}s of {budgets.max_runtime_secs}s runtime left"
+    )
+    reached = reached or elapsed * 100 >= pct * budgets.max_runtime_secs
+    if not reached:
+        return ""
+    return f"Budget: {', '.join(parts)}; {pct}% or more used."
+
+
 def monitor_stall_reason(state: MonitorState, *, now: float) -> str:
     """Return the stall reason when the streak has tripped, else the empty string.
 
