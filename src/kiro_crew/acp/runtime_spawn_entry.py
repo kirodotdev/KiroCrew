@@ -284,7 +284,7 @@ async def _fell_back_from_preview_bundle(runtime: AcpRuntime, failure: AcpRuntim
     build default chose the bundle on a host the engine never ran on.
 
     The ``chat_runtime_sharing`` preview puts KAS on Crew's own engine
-    (``kas_route.REASON_SHARING_PREVIEW``), and so does a packaged build's preference
+    (``kas_route.REASON_SHARING_PREVIEW``), and so does the build's preference
     (``kas_route.REASON_BUILD_DEFAULT``). A plan that built but whose engine
     then died or left ``initialize`` unanswered must not cost the chat: the
     failure is recorded (``kas_route.note_preview_bundle_failed``, or

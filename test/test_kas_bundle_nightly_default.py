@@ -1,8 +1,8 @@
-"""A packaged build prefers Kiro Crew's own KAS engine for an unset ``agent.kas_bundle``.
+"""Every build prefers Kiro Crew's own KAS engine for an unset ``agent.kas_bundle``.
 
-The decision reads the distribution ``scripts/stamp-distribution.sh`` bakes
-(``beacon.baked_distribution``), so nightly, insider and stable behave alike and a
-source checkout keeps the relay (:mod:`kiro_crew.acp.kas_build_default`). A saved
+Neither the distribution ``scripts/stamp-distribution.sh`` bakes
+(``beacon.baked_distribution``) nor the lane decides, so nightly, insider, stable
+and a source checkout behave alike (:mod:`kiro_crew.acp.kas_build_default`). A saved
 value always wins, and the loaded field is only ever the saved value. The lane
 stamp (``_build_info.BUILD_CHANNEL``) is still baked by every build workflow and
 read by :mod:`kiro_crew.build_channel`; the tests at the end pin that wiring.
@@ -72,16 +72,17 @@ class TestBakedBuildChannel:
         assert build_channel.KNOWN_BUILD_CHANNELS == frozenset(RELEASE_CHANNELS)
 
 
-class TestAPackagedBuildPrefersTheEngine:
+class TestEveryBuildPrefersTheEngine:
     @pytest.mark.parametrize("value", ["dmg", "appimage", "deb", "rpm", "nsis", "wheel", "docker"])
     def test_every_packaged_distribution_prefers_it(self, dist, value):
         dist(value)
         assert kas_build_default.kas_bundle_preferred_by_build() is True
 
     @pytest.mark.parametrize("value", ["source", ""])
-    def test_a_source_checkout_does_not(self, dist, value):
+    def test_a_source_checkout_prefers_it_too(self, dist, value):
+        """A checkout reads as unstamped; its installs lay the engine down like any other."""
         dist(value)
-        assert kas_build_default.kas_bundle_preferred_by_build() is False
+        assert kas_build_default.kas_bundle_preferred_by_build() is True
 
     @pytest.mark.parametrize("lane", ["nightly", "insider", "stable", ""])
     def test_the_lane_does_not_decide(self, dist, stamp, lane):

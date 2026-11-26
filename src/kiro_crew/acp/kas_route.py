@@ -15,7 +15,7 @@ The rule, in order:
    (rule 2) and no ``KIROCREW_KIRO_BIN`` (rule 4): the bundle route
    (:func:`sharing_preview_selects_bundle`). A spawn whose engine cannot be
    installed or started continues with the rules below.
-1b. ``agent.kas_bundle`` unset in a packaged build that prefers the engine
+1b. ``agent.kas_bundle`` unset in a build that prefers the engine
    (:mod:`kiro_crew.acp.kas_build_default`), the route open to the switch (rules 2
    and 4) and a usable Kiro Crew sign-in: the bundle route
    (:func:`build_default_selects_bundle`). kiro-cli's sign-in is never copied, so
@@ -98,7 +98,7 @@ REASON_KIRO_CLI_LAUNCHER = "kiro_cli_launcher"
 #: ``agent.kas_bundle``. A spawn falls back to the default route when the engine
 #: cannot be installed or started (``KasHarness.resolve_spawn``).
 REASON_SHARING_PREVIEW = "chat_runtime_sharing"
-#: ``agent.kas_bundle`` is unset, this packaged build prefers Crew's engine and Kiro
+#: ``agent.kas_bundle`` is unset, this build prefers Crew's engine and Kiro
 #: Crew is signed in (rule 1b, :mod:`kiro_crew.acp.kas_build_default`).
 REASON_BUILD_DEFAULT = "build_default"
 
@@ -377,7 +377,7 @@ def _crew_signed_in() -> bool:
 def build_default_selects_bundle(
     *, pin: str = "", environ: Mapping[str, str] | None = None, cooldown: bool = True
 ) -> bool:
-    """Rule 1b: whether this packaged build's preference moves this KAS spawn to the bundle.
+    """Rule 1b: whether this build's preference moves this KAS spawn to the bundle.
 
     True only with ``agent.kas_bundle`` unset (a saved value always wins), a build
     that prefers the engine, no ``KIROCREW_KIRO_BIN`` (rule 4), a route open to the

@@ -150,7 +150,7 @@ def acp_backend_bundle_route() -> bool:
     On the bundle route a Kiro CLI pick stays on kiro-cli: KAS there spawns Crew's
     own bundled engine, which kiro-cli's own v3 support says nothing about, so the
     gateway floor and the per-process probe both decline to promote the pick.
-    An absent key is ``False``, as the loader reads it: a packaged build only
+    An absent key is ``False``, as the loader reads it: the build only
     PREFERS the engine for an unset key (``acp.kas_build_default``), which leaves
     a Kiro CLI pick where it was. A stored value that is not a bool reads ``False``
     too, as the loader's ``_safe_bool`` does, so the two readers agree.

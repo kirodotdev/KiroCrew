@@ -588,7 +588,7 @@ def _read_backend_choice(
 def _resolved_kas_bundle(agent_data: Mapping[str, object]) -> bool:
     """``agent.kas_bundle`` as loaded: the SAVED value, else ``False``.
 
-    An unset key is not resolved into the field: a packaged build only prefers the
+    An unset key is not resolved into the field: the build only prefers the
     engine for it, per spawn (``acp.kas_build_default``, ``kas_route`` rule 1b), so
     every reader of the loaded field still reads "the user chose the engine".
     ``save()`` keeps the undeclared key off disk, so that preference stays live.

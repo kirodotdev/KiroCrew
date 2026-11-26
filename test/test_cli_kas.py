@@ -191,6 +191,18 @@ class TestInstallFromDir:
         assert "kirocrew config set agent.kas_bundle true" in out
         assert "kiro-cli is not used on this route" in out
 
+    def test_a_preferred_engine_waiting_on_sign_in_names_the_sign_in(
+        self, cfg, host, local_source, tmp_path, monkeypatch, capsys
+    ):
+        """Unset switch, the build prefers the engine, Crew signed out: sign in, not "turn it on"."""
+        _set_route(monkeypatch, bundle=False)
+        monkeypatch.setattr(kas_bundle, "crew_sign_in_moves_to_bundle", lambda: True)
+        monkeypatch.setattr(kas_bundle, "install_bundle", lambda m, **k: _installed(tmp_path))
+        assert cli_kas.kas_cmd(self._args(local_source)) == 0
+        out = capsys.readouterr().out
+        assert "Kiro Crew will use this engine once you sign in to Kiro Crew." in out
+        assert "config set agent.kas_bundle true" not in out
+
     def test_route_on_names_the_restart_only(
         self, cfg, host, local_source, tmp_path, monkeypatch, capsys
     ):
@@ -442,7 +454,11 @@ class TestInstallWhenAlreadyInstalled:
         asked: list = []
 
         def fake_installed_bundle(*, root=None, version=None):
-            asked.append((root, version))
+            # The closing advice reads the route, whose build-default host probe
+            # asks for any engine (no root, no version); only the install's own
+            # lookups are recorded.
+            if (root, version) != (None, None):
+                asked.append((root, version))
             return _installed(tmp_path / "engines", version or _PIN)
 
         monkeypatch.setattr(kas_bundle, "kas_engines_root", lambda: tmp_path / "engines")

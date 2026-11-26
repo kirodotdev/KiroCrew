@@ -44,10 +44,17 @@ STAGE_DIST := $(VENV)/bin/python -m kiro_crew.frontend stage .
 
 all: test
 
-# Build the frontend (npm/vite), install the backend into a local venv, then
-# stage the dashboard into the package.
+# Build the frontend (npm/vite), install the backend into a local venv, stage
+# the dashboard into the package, then install the built-in KAS engine this
+# checkout pins. A checkout prefers that engine (acp/kas_build_default.py), so
+# the build never ends without it: `--if-in-use` installs the pin whatever
+# agent.kas_bundle says, downloads nothing when it is already there, exits 0 on
+# a host that cannot run it, and 1 on any other failure, which fails the build.
 build: frontend backend
 	$(STAGE_DIST)
+	$(VENV)/bin/kirocrew kas install --if-in-use || { \
+	  echo "ERROR: could not install the built-in KAS engine. Retry when online: $(VENV)/bin/kirocrew kas install" >&2; \
+	  exit 1; }
 
 frontend:
 	bash ensure-node.sh || true

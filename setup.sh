@@ -261,6 +261,16 @@ else
     cd - > /dev/null 2>&1
     return 1 2>/dev/null || exit 1
 fi
+# A checkout prefers the built-in KAS engine (acp/kas_build_default.py), so setup
+# never ends without it. `--if-in-use` exits 0 on a host that cannot run it. A
+# failure is recorded here and fails setup at the very end, after the remaining
+# steps, so the retry is the only thing left to do.
+_kc_kas_failed=0
+echo "→ Installing the built-in KAS engine (kirocrew kas install)..."
+if ! "$_venv/bin/kirocrew" kas install --if-in-use; then
+    _kc_kas_failed=1
+    echo "  ❌ Could not install the built-in KAS engine (setup continues, then fails at the end)"
+fi
 # Symlink CLI so `kirocrew` works on PATH
 mkdir -p "$HOME/.local/bin"
 ln -sf "$_venv/bin/kirocrew" "$HOME/.local/bin/kirocrew"
@@ -326,3 +336,8 @@ echo "    Install ollama (https://ollama.com), then: ollama pull qwen3-embedding
 
 # Cleanup
 cd - > /dev/null 2>&1
+if [ "$_kc_kas_failed" -eq 1 ]; then
+    echo ""
+    echo "  ❌ The built-in KAS engine is not installed. Retry when online: kirocrew kas install"
+    return 1 2>/dev/null || exit 1
+fi

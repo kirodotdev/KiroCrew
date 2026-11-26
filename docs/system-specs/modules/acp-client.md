@@ -6120,9 +6120,11 @@ Choosing KAS means Kiro Crew's own engine and Kiro Crew's own sign-in. The
 route is `acp/kas_route.py`, one rule read by the harness and, through
 `agent_sdk.kas_bundle.kas_route()`, by every reader that describes a spawn:
 (1) `agent.kas_bundle` on is the bundle route; (1b) `agent.kas_bundle` unset
-in a packaged build (`acp/kas_build_default.kas_bundle_preferred_by_build`: a
-`beacon.baked_distribution()` stamp other than `source`, on a host
-`host_unsupported_reason()` clears) is the bundle route once Kiro Crew's own
+in any build, a source checkout included
+(`acp/kas_build_default.kas_bundle_preferred_by_build`: a host
+`host_unsupported_reason()` clears, whatever `beacon.baked_distribution()` says;
+every source install path lays the engine down, see
+[install](../../guides/install.md)) is the bundle route once Kiro Crew's own
 sign-in is usable, or the engine already ran on the host, and the route is open
 to the switch (no `KIROCREW_KIRO_BIN`, no stored Kiro CLI pick, no first-switch
 or sharing-preview failure cooling down), reason `build_default`

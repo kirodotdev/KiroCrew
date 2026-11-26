@@ -3,11 +3,11 @@
 The engine is not part of the wheel (it must never reach a GitHub Release or a
 ghcr image, and it belongs in the data home's read-only ``engines/`` leaf), so
 each installer runs the just-installed ``kirocrew kas install`` once Kiro Crew
-itself is in. A failed download must not fail the install: it warns and names
-the exact command to retry. A first install on a host that cannot run the
-engine at all ends ``cli.sh`` with exit 3 instead. ``--no-kas`` means "Kiro CLI
-only": it skips the step and saves ``agent.kas_bundle`` off, so a packaged build's
-preference for the engine does not apply. The installer never turns it on.
+itself is in. A failed download names the exact command to retry and fails a
+first ``cli.sh`` install and every ``install.sh`` run. A first install on a host
+that cannot run the engine at all ends ``cli.sh`` with exit 3 instead. ``--no-kas``
+means "Kiro CLI only": it skips the step and saves ``agent.kas_bundle`` off, so the
+build's preference for the engine does not apply. The installer never turns it on.
 
 The ``cli.sh`` cases drive the real script through the signed-manifest harness
 of ``test_installer_binary_only`` (pipx branch, everything faked), with a
@@ -243,15 +243,27 @@ def test_install_sh_downloads_the_engine_by_default() -> None:
     assert re.search(r"^\s*--no-kas\)\s+WITH_KAS=0 ;;$", text, re.MULTILINE)
     # The former opt-in keeps parsing, so an existing command line still runs.
     assert re.search(r"^\s*--kas\)\s+WITH_KAS=1 ;;$", text, re.MULTILINE)
+    # A checkout prefers the engine, so nothing says it stays off until turned on.
+    assert "until you turn it on" not in text
+    assert "Kiro Crew uses it once you sign in to Kiro Crew." in text
 
 
-def test_install_sh_failed_engine_download_only_warns() -> None:
+def test_install_sh_failed_engine_download_fails_the_install_after_the_next_steps() -> None:
+    """A checkout prefers the engine, so the install is never "done" without it.
+
+    The block only records the failure, so the next steps still print; the script's
+    last statement then exits 1 with the retry command.
+    """
     text = _install_sh()
     block = text[text.index('"$_kirocrew" kas install || _kas_rc=$?') :]
     block = block[: block.index("\n        fi\n")]
 
-    assert "exit" not in block, "a failed engine download must not fail the install"
+    assert "exit" not in block, "the next steps must still print after a failed download"
     assert 'detail "Retry when online: kirocrew kas install"' in block
+    assert "KAS_DOWNLOAD_FAILED=1" in block
+    tail = text[text.rindex('if [ "$KAS_DOWNLOAD_FAILED" -eq 1 ]; then') :]
+    assert "Retry when online: kirocrew kas install" in tail
+    assert tail.rstrip().endswith("exit 1\nfi")
     # Exit 3 (the host cannot run the engine) gets no retry advice.
     unsupported = block[block.index('"$_kas_rc" -eq 3') :]
     unsupported = unsupported[: unsupported.index("else")]
@@ -353,3 +365,40 @@ def test_cli_sh_data_home_export_expands_a_leading_tilde(
     data_home = launcher.parents[2].resolve() / "data-home"
     assert f'  export KIROCREW_HOME="{data_home}"\n' in result.stdout, result.stdout
     assert not (launcher.parents[3] / "~").exists()
+
+
+@pytest.mark.parametrize(
+    ("script", "flag"),
+    [("setup.sh", "_kc_kas_failed"), ("minimal_install.sh", "_kas_failed")],
+)
+def test_contributor_installers_fail_on_the_engine_only_after_every_other_step(
+    script: str, flag: str
+) -> None:
+    """The engine step only records a failure; the script's last statement fails it.
+
+    Failing at the step itself would stop before the PATH link and the agent config,
+    so the printed retry would leave the install unfinished.
+    """
+    text = (ROOT / script).read_text(encoding="utf-8")
+    step = text.index("kas install --if-in-use")
+    assert f"{flag}=1" in text[step : step + 300]
+    tail = text[text.rindex(f'if [ "${flag}" -eq 1 ]; then') :]
+    assert "Retry when online:" in tail and "kirocrew kas install" in tail
+    assert tail.rstrip().endswith("fi")
+    assert text.rindex("ln -sf") < text.rindex(f'if [ "${flag}" -eq 1 ]; then')
+
+
+def test_a_failed_cloud_install_is_retried_once_then_fails_the_launch() -> None:
+    """install.sh exits 1 when the KAS engine download fails (the engine guarantee).
+
+    The EC2 bootstrap runs it: one retry covers a CDN blip on first boot, and a
+    second failure fails the stack rather than bringing up a box with no engine.
+    """
+    from kiro_crew.cloud import ec2
+
+    text = ec2.load_template()
+    attempt = "if ! bash install.sh --voice; then"
+    first = text.index(attempt)
+    retry = text.index("bash install.sh --voice", first + len(attempt))
+    fatal = text.index('|| fail "kirocrew source fetch or install failed"')
+    assert first < retry < fatal
