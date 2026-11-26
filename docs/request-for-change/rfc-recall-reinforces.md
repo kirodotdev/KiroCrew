@@ -30,7 +30,7 @@ the strength view is not on main yet.
 
 | # | Change | Kind |
 |---|---|---|
-| 1 | A recall that puts an experience into a session's context makes it fade more slowly from then on, and starts its fade again from that day. | changed ranking |
+| 1 | A recall that relevance earned makes an experience's strength fade more slowly and starts its fade again from that day. Recall uses that strength only to settle near-ties: at most `MARGIN` (0.02) above today's score. | changed ranking |
 | 2 | An edit to an experience starts its fade again from the edit day. | changed ranking |
 | 3 | Recall counts live in the planned `memory_usage` table, which the gateway writes in the background, never on the recall path. | uses a planned derived table |
 | 4 | Existing memories score exactly as today until they are next recalled or edited. | migration |
@@ -71,12 +71,20 @@ For one V1 experience:
   `MARGIN = 0.02`. Relevance decides the order; reinforcement can only reorder
   candidates whose scores are within 0.02 of each other today, and never lifts a
   row over one that is more relevant by more than that (section 7).
+- The shown strength is that score at a cosine of 1, cap included:
+  `recall_weight = min(strength(now), today(now) at cosine 1 + MARGIN)`. The page
+  and the graph read it, so what they show is what recall uses.
 
-With `n = 0` and no edit, `S = S₀` and `t₀ = written`, so the score is exactly
-today's. Worked example at the default rate (`S₀` = 33.3 days, so `S_MAX` =
-133.3 days), importance 0.5:
+So `strength(t)` is the memory's reinforced fade, and recall uses at most
+`MARGIN` of it above today's score: reinforcement settles near-ties, it does
+not keep an old memory on top. With `n = 0` and no edit, `S = S₀` and
+`t₀ = written`, so the score is exactly today's.
 
-| Recalls | S (days) | Day it falls under 0.385 after its last recall |
+Worked example of `strength(t)` (before the cap) at the default rate (`S₀` = 33.3
+days, so `S_MAX` = 133.3 days), importance 0.5. It says how long a memory keeps
+its tie-breaking edge; the recall score's lift is never more than `MARGIN`:
+
+| Recalls | S (days) | Day `strength` falls under 0.385 after its last recall |
 |---|---|---|
 | 0 | 33.3 | 27 |
 | 1 | 50.0 | 40 |
@@ -126,14 +134,16 @@ table, its counter and its flush are that PR's.
 ## 5. What changes for existing memories
 
 - **At ship:** nothing. No row has a usage entry, so every score is today's.
-- **After ship:** a row that is recalled starts fading from its recall day and
-  more slowly each time. A row that is never recalled fades exactly as today.
+- **After ship:** a row whose recalls relevance earned wins near-ties against
+  rows that were never recalled, by at most `MARGIN`. A row that is never
+  recalled scores exactly as today.
 - **Edits:** an edit restarts the fade from the edit day without changing `S`.
   Edits before ship already set `updated_at`, so an experience edited before
   ship gets its fresh start on the first recompute. That is the one change that
   lands at ship, and only for edited rows (`revision > 1`). Open question 1 asks
   whether to count only edits after ship.
-- **Memory page:** the curve becomes a line that jumps back up at each recall;
+- **Memory page:** the curve shows `recall_weight`, cap included, so it rises by
+  at most `MARGIN` at each recall;
   the detail panel names the recall count and the last recall day. The line
   "Recalls and edits don't slow fading" goes away, and Save as lesson stays for
   a memory that should never fade.
@@ -198,5 +208,5 @@ direction users expect.
 | Phase | Change | Exit criteria |
 |---|---|---|
 | P1 | The counting rule on `memory_usage` (needs the index series' usage PR) | A test recalls a row twice on one day and once the next: its `uses` is 2. Dashboard search and Test recall add none. |
-| P2 | `S`, `t₀` and the `MARGIN` cap in all three scoring sites and `recall_weight` | With an empty table, every recall-ranking test passes unchanged. A test asserts the shown strength equals recall's score after a recall, on both scoring paths. The section 7 rank-concentration check passes. |
+| P2 | `S`, `t₀` and the `MARGIN` cap in all three scoring sites and `recall_weight` | With an empty table, every recall-ranking test passes unchanged. After a recall, a test asserts recall's score at an exact match equals the shown `recall_weight` (`min(strength, today + MARGIN)`), on both scoring paths, and that it is never more than `MARGIN` above today's score. The section 7 rank-concentration check passes. |
 | P3 | Memory page and graph | The detail panel shows the recall count and the jump in the curve; the old line is gone. |
