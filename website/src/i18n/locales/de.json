@@ -7081,7 +7081,9 @@
       "touch_select_done": "Bereich ausgewählt — tippe auf Kopieren",
       "use_here": "Terminal hier verwenden",
       "use_starting_directory": "Startverzeichnis des Terminals verwenden",
-      "use_starting_directory_hint": "Öffnet eine neue Shell im konfigurierten Terminalverzeichnis des Servers (dashboard.terminal.cwd, sonst das Home-Verzeichnis des Servers). Der fehlgeschlagene Befehl wird nicht erneut gesendet."
+      "use_starting_directory_hint": "Öffnet eine neue Shell im konfigurierten Terminalverzeichnis des Servers (dashboard.terminal.cwd, sonst das Home-Verzeichnis des Servers). Der fehlgeschlagene Befehl wird nicht erneut gesendet.",
+      "loading": "Terminal wird gestartet…",
+      "load_failed": "Das Terminal konnte nicht geladen werden. Prüfe die Verbindung zum Gateway und versuch es dann noch einmal."
     },
     "codeBlock": {
       "add_comment": "Kommentar hinzufügen",

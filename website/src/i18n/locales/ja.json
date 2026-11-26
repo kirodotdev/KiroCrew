@@ -6894,7 +6894,9 @@
       "touch_select_done": "範囲を選択 — コピーをタップ",
       "use_here": "ここでターミナルを使う",
       "use_starting_directory": "ターミナルの開始ディレクトリを使用",
-      "use_starting_directory_hint": "サーバーで設定されたターミナルのディレクトリ（dashboard.terminal.cwd、未設定ならサーバーのホームディレクトリ）で新しいシェルを開きます。失敗したコマンドは再送されません。"
+      "use_starting_directory_hint": "サーバーで設定されたターミナルのディレクトリ（dashboard.terminal.cwd、未設定ならサーバーのホームディレクトリ）で新しいシェルを開きます。失敗したコマンドは再送されません。",
+      "loading": "ターミナルを起動しています…",
+      "load_failed": "ターミナルを読み込めませんでした。ゲートウェイへの接続を確認してから、もう一度お試しください。"
     },
     "codeBlock": {
       "add_comment": "コメントを追加",

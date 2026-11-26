@@ -43,6 +43,7 @@ import {
   sendToTerminalSession,
   sendRawToTerminalSession,
   ensureTerminalConnection,
+  pasteWhenOpen,
   disposeTerminalConnection,
   dropTerminalDataForThisKey,
   useTerminalConnStatus,
@@ -444,6 +445,22 @@ describe('terminalRegistry', () => {
       expect(sendRawToTerminalSession(id, 'evil\rrm -rf x')).toBe(false)
       expect(sendRawToTerminalSession(id, '\n')).toBe(false)
       expect(ws.send).not.toHaveBeenCalled()
+    })
+
+    it('pastes text typed before the socket opened ahead of keys typed after it, without a newline', () => {
+      const id = session('paste-when-open')
+      const term = new FakeTerm()
+      const paste = vi.fn((data: string) => term.dataCb?.(data))
+      Object.assign(term, { paste })
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+
+      pasteWhenOpen(id, 'echo \nhi')
+      expect(paste).not.toHaveBeenCalled()
+      ws.simulateOpen()
+      term.dataCb?.('!')
+      expect(paste).toHaveBeenCalledWith('echo hi')
+      expect(ws.send.mock.calls.map((_, i) => decode(ws, i))).toEqual(['echo hi', '!'])
     })
 
     it('does not type into a socket that has not finished dialing', () => {

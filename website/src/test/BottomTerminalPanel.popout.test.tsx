@@ -26,8 +26,11 @@ import { disposeTerminalConnection } from '../utils/terminalRegistry'
 import { openPopout, isPopoutOpen, focusPopout, bringBack, returnSelfToMain } from '../utils/terminalPopout'
 import { renderHook } from '@testing-library/react'
 
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: ({ sessionId }: { sessionId: string }) => <div data-testid={`cli-${sessionId}`} />,
+}))
+vi.mock('../components/terminalSessions', () => ({
+  preloadTerminal: vi.fn(),
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))

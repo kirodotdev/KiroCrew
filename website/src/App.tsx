@@ -82,6 +82,7 @@ import { usePinnedScrollOrigin } from './hooks/usePinnedScrollOrigin'
 // Side effect: closes a terminal tab when its shell exits (main window and popout).
 import './utils/terminalExitClose'
 import { focusPopout as focusTerminalPopout } from './utils/terminalPopout'
+import { preloadTerminalOnIntent } from './components/terminalSessions'
 import { mainStackingClass } from './utils/terminalFullscreen'
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
@@ -609,6 +610,7 @@ export default function App() {
           secondary={<>
             {terminalEnabled && (
               <NavItem
+                ref={preloadTerminalOnIntent}
                 navId="terminal"
                 path="#"
                 label={i18nT('app.terminal')}

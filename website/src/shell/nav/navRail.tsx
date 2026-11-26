@@ -9,6 +9,7 @@ import { DndContext, closestCenter, DragOverlay } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { toggleBottomTerminal } from '../../hooks/useBottomTerminal'
 import { focusPopout as focusTerminalPopout } from '../../utils/terminalPopout'
+import { preloadTerminalOnIntent } from '../../components/terminalSessions'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { isAppNavId } from '../../appNotificationBadges'
@@ -352,7 +353,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                      focus is a harmless no-op). Explicit re-dock lives in the
                      TerminalDetachedBar below -- never a timing heuristic. */
                   onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
-                  {...uiLocation('shell.terminal')}
+                  {...uiLocation('shell.terminal', preloadTerminalOnIntent)}
                 />
               )}
               {hasRenderableMobileConnect && (

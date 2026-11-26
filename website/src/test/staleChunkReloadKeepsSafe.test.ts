@@ -55,8 +55,8 @@ async function harness(opts: { safe: boolean }) {
     setItem: (k: string, v: string) => { store.set(k, v) },
   }
   new Function(
-    'window', 'sessionStorage', 'isCatalogChunkError', 'reloadKeepingSafe', code,
-  )(win, sessionStorage, () => false, () => reloadKeepingSafe(win as unknown as Window))
+    'window', 'sessionStorage', 'isCatalogChunkError', 'isSpeculativeTerminalChunkError', 'reloadKeepingSafe', code,
+  )(win, sessionStorage, () => false, () => false, () => reloadKeepingSafe(win as unknown as Window))
   expect(listener).not.toBeNull()
   const preventDefault = vi.fn()
   listener!({ payload: new Error('Failed to fetch dynamically imported module'), preventDefault })

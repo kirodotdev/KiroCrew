@@ -49,8 +49,12 @@ export const DEFAULT_BUDGET_BYTES = 500 * KB
  * Lowered on main @ 55e47ba417 plus the change that loads the Lottie player
  * (lottie-web) on demand from PackAvatar: 11 chunks, 9,829,769 B. Ceiling =
  * 9,829,769 B * 1.05, rounded up to whole KB.
+ *
+ * Lowered on main @ c31700d145 plus the change that loads the xterm terminal
+ * (CliPanel) on demand: 11 chunks, 9,478,468 B (main alone 9,830,620 B).
+ * Ceiling = 9,478,468 B * 1.05, rounded up to whole KB.
  */
-export const FIRST_LOAD_BUDGET_BYTES = 10080 * KB
+export const FIRST_LOAD_BUDGET_BYTES = 9720 * KB
 
 /**
  * Explicit ceilings for the chunks that are already known-large, keyed by

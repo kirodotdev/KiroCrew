@@ -6894,7 +6894,9 @@
       "touch_select_done": "已选择范围 — 点按复制",
       "use_here": "在此窗口使用终端",
       "use_starting_directory": "使用终端起始目录",
-      "use_starting_directory_hint": "在服务器配置的终端目录（dashboard.terminal.cwd，未设置时为服务器主目录）中打开新 shell。失败命令不会重新发送。"
+      "use_starting_directory_hint": "在服务器配置的终端目录（dashboard.terminal.cwd，未设置时为服务器主目录）中打开新 shell。失败命令不会重新发送。",
+      "loading": "正在启动终端…",
+      "load_failed": "终端无法加载。请检查与网关的连接，然后重试。"
     },
     "codeBlock": {
       "add_comment": "添加评论",

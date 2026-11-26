@@ -14,7 +14,7 @@ import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { TerminalTabsView } from '../components/BottomTerminalPanel'
 import { __resetBottomTerminal, openBottomTerminal, addTab, setTerminalFullscreen, isBottomTerminalOpen } from '../hooks/useBottomTerminal'
-import { openTerminalSearch } from '../components/CliPanel'
+import { openTerminalSearch } from '../components/terminalSessions'
 
 const platformMock = vi.hoisted(() => ({ isMac: false }))
 vi.mock('../utils/platform', async (orig) => ({
@@ -26,8 +26,11 @@ vi.mock('../hooks/useIsMobile', async (orig) => ({
   ...(await orig<typeof import('../hooks/useIsMobile')>()),
   useIsMobile: () => mobileMock.mobile,
 }))
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: ({ sessionId }: { sessionId: string }) => <div data-testid={`cli-${sessionId}`} />,
+}))
+vi.mock('../components/terminalSessions', () => ({
+  preloadTerminal: vi.fn(),
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
   openTerminalSearch: vi.fn(() => true),

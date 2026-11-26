@@ -7268,7 +7268,9 @@
       "touch_select_done": "Intervallo selezionato — tocca Copia",
       "use_here": "Usa il terminale qui",
       "use_starting_directory": "Usa la directory iniziale del terminale",
-      "use_starting_directory_hint": "Apre una nuova shell nella directory del terminale configurata sul server (dashboard.terminal.cwd, altrimenti la directory home del server). Il comando non riuscito non viene reinviato."
+      "use_starting_directory_hint": "Apre una nuova shell nella directory del terminale configurata sul server (dashboard.terminal.cwd, altrimenti la directory home del server). Il comando non riuscito non viene reinviato.",
+      "loading": "Avvio del terminale…",
+      "load_failed": "Impossibile caricare il terminale. Controlla la connessione al gateway, poi riprova."
     },
     "codeBlock": {
       "add_comment": "Aggiungi commento",
