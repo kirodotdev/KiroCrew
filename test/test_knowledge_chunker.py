@@ -253,6 +253,35 @@ def test_slides_over_the_chunk_cap_keep_the_last_slide():
     assert chunks[-1]["section_title"] == "Slide 58"
 
 
+def _deck_text(bodies: list[str]) -> str:
+    # The slide reader joins "## Slide N" blocks with a blank line.
+    return "\n\n".join(f"## Slide {n}\n{body}" for n, body in enumerate(bodies, 1))
+
+
+def test_a_slide_cites_the_last_line_of_its_text():
+    text = _deck_text(["first a\nfirst b", "second a\nsecond b\nsecond c"])
+    chunks = HeadingAwareChunker().chunk_slides(text)
+    assert [(c["line_start"], c["line_end"]) for c in chunks] == [(1, 3), (5, 8)]
+    source = text.split("\n")
+    for c in chunks:
+        assert source[c["line_end"] - 1] == c["content"].split("\n")[-1]
+
+
+def test_a_slide_followed_by_another_keeps_the_range_it_had():
+    chunks = HeadingAwareChunker().chunk_slides(_deck_text(["a\nb", "c"]))
+    assert (chunks[0]["line_start"], chunks[0]["line_end"]) == (1, 3)
+
+
+def test_a_slide_with_no_text_ends_on_its_own_marker():
+    chunks = HeadingAwareChunker().chunk_slides("## Slide 1\n## Slide 2\nbody")
+    assert [(c["line_start"], c["line_end"]) for c in chunks] == [(1, 1), (2, 3)]
+
+
+def test_text_before_the_first_slide_ends_on_its_last_text_line():
+    chunks = HeadingAwareChunker().chunk_slides("intro\nmore\n\n## Slide 1\nbody")
+    assert [(c["line_start"], c["line_end"]) for c in chunks] == [(1, 2), (4, 5)]
+
+
 @pytest.mark.parametrize("heading", ["#", "# ", "##\t"])
 def test_an_empty_heading_does_not_take_the_next_line_as_its_title(heading):
     text = f"{heading}\nFirst paragraph under it\n"
