@@ -77,6 +77,7 @@ _OWNERS = (
     "kiro_crew.dashboard.session_control_parts.session_messaging",
     "kiro_crew.dashboard.session_control_parts.crew_filing",
     "kiro_crew.dashboard.session_control_parts.session_create_pins",
+    "kiro_crew.dashboard.session_control_parts.session_create_folder",
     "kiro_crew.dashboard.session_control_parts.session_create",
     "kiro_crew.dashboard.session_control_parts.session_tree",
     "kiro_crew.dashboard.session_control_parts.session_handoff",
@@ -302,6 +303,10 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _register_spawn_pending_edge,
         _store_s_crewmate,
         create_session,
+    )
+    from kiro_crew.dashboard.session_control_parts.session_create_folder import (  # noqa: F401
+        folder_project_for_create,
+        inherited_project_folder,
     )
     from kiro_crew.dashboard.session_control_parts.session_create_pins import (  # noqa: F401
         _inherited_pin_foreign_to_child,

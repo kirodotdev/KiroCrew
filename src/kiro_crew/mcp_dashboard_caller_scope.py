@@ -2,7 +2,7 @@
 
 The strict checks the folder and tag tools run before they read the session list or write
 the tree, the app scope that narrows both (``_caller_app_scope``), the caller's own
-sidebar slot, the dispatch-time refusal of a ``channel:`` caller's board write, and
+sidebar slot and the folder a session it creates inherits from it, the dispatch-time refusal of a ``channel:`` caller's board write, and
 ``_is_messaging_caller``, which tells a channel or messaging-thread caller apart.
 ``SERVER_NAME`` is defined here because those refusals are audited under it.
 :mod:`kiro_crew.mcp_dashboard` binds every name defined here, so each one reads, imports
@@ -12,8 +12,10 @@ and patches as ``kiro_crew.mcp_dashboard.<name>``.
 from __future__ import annotations
 
 from kiro_crew.constants import CHANNEL_SESSION_NAMESPACES
+from kiro_crew.mcp_dashboard_folder_tree import _chat_folder_paths
 from kiro_crew.mcp_dashboard_references import _get_rows
 from kiro_crew.mcp_tools.table import ToolContext
+from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.sel import sel
 from kiro_crew.validation import SLACK_THREAD_TS_RE
 
@@ -187,6 +189,48 @@ def _visible_chat_slots(ctx: ToolContext) -> tuple[list[dict], str | None]:
     if not scope:
         return live, None
     return [r for r in live if str(r.get("app") or "") == scope], None
+
+
+def _caller_folder_id(caller_key: str, rows: list[dict]) -> str:
+    """The folder the caller's own session is filed in, ``""`` when unfiled.
+
+    Read off the caller's own row in the slot list, so only a ``dashboard:`` caller
+    has one: any other caller (a channel, a subagent, a cron) reads as unfiled.
+    """
+    if not caller_key.startswith("dashboard:"):
+        return ""
+    slot_key = caller_key.split(":", 1)[1]
+    for r in rows:
+        if str(r.get("key") or "") == slot_key:
+            return str(r.get("folder_id") or "")
+    return ""
+
+
+def _inherited_caller_folder(ctx: ToolContext) -> tuple[str, str, str, str | None]:
+    """``(folder_id, folder_label, "", error)``: the caller's own folder, for a create.
+
+    A session a filed caller creates without naming a folder is filed beside it,
+    the way a fork lands beside its source. Nothing is created, so this is not tree
+    shaping and has no gate of its own: the key is the one the row's strict gate
+    verified, and a caller with no ``dashboard:`` key has no folder to inherit.
+    A Crew Mode chat keeps its sessions out of folders, and an app-scoped caller is
+    left to the create route's own refusal, so neither inherits one.
+    """
+    caller_key = ctx.caller_key
+    if not caller_key or not caller_key.startswith("dashboard:"):
+        return "", "", "", None
+    rows, rows_err = _get_rows(ctx.client, "/api/chat/slots")
+    if rows_err:
+        return "", "", "", redact(f"Error: {rows_err}")
+    if _caller_in_crew_tree(caller_key, rows) or _caller_app_scope(caller_key, rows) != "":
+        return "", "", "", None
+    folder_id = _caller_folder_id(caller_key, rows)
+    if not folder_id:
+        return "", "", "", None
+    folders, folders_err = _get_rows(ctx.client, "/api/chat/folders")
+    if folders_err:
+        return "", "", "", redact(f"Error: {folders_err}")
+    return folder_id, _chat_folder_paths(folders).get(folder_id, folder_id), "", None
 
 
 def _refuse_tree_shaping_if_unverifiable(

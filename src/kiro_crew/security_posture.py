@@ -1051,6 +1051,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # RESULTS and agent-authored names before they are persisted or returned,
         # but the egress boundary itself is the transport the result crosses, not
         # these modules.
+        "mcp_dashboard_caller_scope.py",
         "mcp_dashboard_folder_runs.py",
         "mcp_dashboard_references.py",
         "mcp_dashboard_session_runs.py",

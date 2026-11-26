@@ -71,6 +71,7 @@ def _resolve_chat_folder_ref(
     client: DashboardClient | None = None,
     session_key: str | None = None,
     before_create: Callable[[str], str | None] | None = None,
+    root: str = "",
 ) -> tuple[str, list[str], str | None]:
     """Resolve a sidebar-folder reference to a folder id. THE resolution chokepoint.
 
@@ -86,10 +87,28 @@ def _resolve_chat_folder_ref(
       is duplicated, the reference is refused.
     * **A path to walk**, creating missing segments when ``create_missing``.
 
+    A non-empty ``root`` makes the reference a path BELOW that folder: only the walk
+    applies, starting at ``root``, and an empty path names ``root`` itself.
+
     Uses the caller's folder list, so the tree cannot shift between the two
     lookups of one move.
     """
     ref = str(ref or "").strip()
+    if root:
+        walked, created, walk_err = _walk_chat_folder_segments(
+            ref,
+            folders,
+            create_missing=create_missing,
+            client=client,
+            session_key=session_key,
+            before_create=before_create,
+            root=root,
+        )
+        if walk_err:
+            return "", created, walk_err
+        if walked:
+            return walked, created, None
+        return "", created, f"folder not found: {redact(ref)}"
     if not ref or ref.lower() == "root":
         return "", [], None
     if any(str(f.get("id") or "") == ref for f in folders):
@@ -121,6 +140,7 @@ def _resolve_chat_folder_ref(
         client=client,
         session_key=session_key,
         before_create=before_create,
+        root=root,
     )
     if walk_err:
         return "", created, walk_err
@@ -147,12 +167,13 @@ def _resolve_chat_folder_ref(
 
 
 def _resolve_existing_chat_folder_prefix(
-    segments: list[str], folders: list[dict]
+    segments: list[str], folders: list[dict], root: str = ""
 ) -> tuple[str, int, str | None]:
     """The deepest EXISTING folder a path's leading segments name.
 
     Returns ``(folder_id, consumed, error)``: ``consumed`` segments are covered
-    by ``folder_id`` (``0`` and ``""`` = nothing exists, start at the top level).
+    by ``folder_id`` (``0`` and ``""`` = nothing exists, start at the top level;
+    with a ``root`` folder, ``0`` and ``root`` = nothing exists below it).
     A folder name may itself contain ``/``, so each step tries every run of the
     remaining segments as one name (``a/b`` as well as ``a``) and follows every
     folder that matches, duplicate siblings included. The deepest reading wins;
@@ -175,7 +196,7 @@ def _resolve_existing_chat_folder_prefix(
             for match in matches:
                 follow(str(match.get("id") or ""), end)
 
-    follow("", 0)
+    follow(root, 0)
     depth = max(reached)
     ids = sorted(reached[depth])
     if len(ids) > 1:
@@ -201,6 +222,7 @@ def _walk_chat_folder_segments(
     client: DashboardClient | None = None,
     session_key: str | None = None,
     before_create: Callable[[str], str | None] | None = None,
+    root: str = "",
 ) -> tuple[str, list[str], str | None]:
     """Walk a ``/``-separated path segment by segment. ONE walk, two modes.
 
@@ -215,6 +237,7 @@ def _walk_chat_folder_segments(
     Before the first create, every segment's length is checked and ``before_create``
     is called once with the deepest existing folder id; an error from it ends the
     walk with nothing made. ``session_create`` uses it to check its own refusal.
+    The walk starts at ``root`` (``""`` = the top level).
     """
     created: list[str] = []
     checked_before_create = before_create is None
@@ -224,7 +247,7 @@ def _walk_chat_folder_segments(
     # must file ``worker`` inside it, not mint a fresh ``a`` > ``b`` pair at the
     # top level. Only the remainder below that prefix is walked one segment at a
     # time (and created, when ``create_missing``).
-    walked, consumed, prefix_err = _resolve_existing_chat_folder_prefix(segments, folders)
+    walked, consumed, prefix_err = _resolve_existing_chat_folder_prefix(segments, folders, root)
     if prefix_err:
         return "", created, prefix_err
     parent = walked
@@ -348,6 +371,7 @@ def _ensure_chat_folder_path(
     client: DashboardClient,
     session_key: str,
     before_create: Callable[[str], str | None] | None = None,
+    root: str = "",
 ) -> tuple[str, list[str], str | None]:
     """Resolve a parent-folder reference, creating missing segments (mkdir -p).
 
@@ -362,6 +386,7 @@ def _ensure_chat_folder_path(
         client=client,
         session_key=session_key,
         before_create=before_create,
+        root=root,
     )
 
 

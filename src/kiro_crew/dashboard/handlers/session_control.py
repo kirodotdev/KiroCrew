@@ -477,6 +477,13 @@ async def api_session_control_create(request: web.Request) -> web.Response:
         dry_run = body.get("dry_run", False)
         if not isinstance(dry_run, bool):
             raise sc.SessionControlError("dry_run must be a boolean", code="invalid_field_type")
+        # Set by the MCP resolver when `folder_id` is the caller's own folder,
+        # inherited because the create named none: it files the child only.
+        folder_inherited = body.get("folder_inherited", False)
+        if not isinstance(folder_inherited, bool):
+            raise sc.SessionControlError(
+                "folder_inherited must be a boolean", code="invalid_field_type"
+            )
         # The selection namespace for `agent`: "template", or absent for
         # name-first resolution. Typed strictly here so a non-string never reaches
         # the closed-set check in `create_session` as something that compares
@@ -517,6 +524,7 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             agent=str(body.get("agent") or ""),
             agent_kind=agent_kind,
             folder_id=str(body.get("folder_id") or ""),
+            folder_inherited=folder_inherited,
             model=str(body.get("model") or ""),
             reasoning_effort=effort,
             # Typed by `create_session`, which refuses a non-number (a bool
