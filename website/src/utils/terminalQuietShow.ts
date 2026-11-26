@@ -17,6 +17,11 @@ export function skipFocusOnNextShow(sessionId: string): void {
   quiet.add(sessionId)
 }
 
+/** Whether this show will skip the focus, leaving the mark for the terminal. */
+export function willSkipFocusOnShow(sessionId: string): boolean {
+  return quiet.has(sessionId)
+}
+
 /** Whether this show should skip the focus. Clears the mark. */
 export function takeSkipFocusOnShow(sessionId: string): boolean {
   return quiet.delete(sessionId)

@@ -33,7 +33,7 @@ const RemoteFilesPanel = lazyRetry(() => import('./RemoteFilesPanel'), {
 import { CrewWorkersTab } from './command-center/CrewWorkerList'
 import FilesHomePanel from './FilesHomePanel'
 import { slotEnvironmentQueryKey, useSlotEnvironmentPlacement } from '../../components/sessionEnvironmentHooks'
-import { disposeTerminalSession, useDeleteTerminalSession } from '../../components/CliPanel'
+import { disposeTerminalSession, useDeleteTerminalSession } from '../../components/terminalSessions'
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useTerminalEnabled } from '../../utils/terminalRegistry'

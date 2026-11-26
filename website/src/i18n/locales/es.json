@@ -7268,7 +7268,9 @@
       "touch_select_done": "Rango seleccionado: toca Copiar",
       "use_here": "Usar la terminal aquí",
       "use_starting_directory": "Usar el directorio inicial del terminal",
-      "use_starting_directory_hint": "Abre un shell nuevo en el directorio de terminal configurado en el servidor (dashboard.terminal.cwd o, si no existe, el directorio personal del servidor). El comando fallido no se vuelve a enviar."
+      "use_starting_directory_hint": "Abre un shell nuevo en el directorio de terminal configurado en el servidor (dashboard.terminal.cwd o, si no existe, el directorio personal del servidor). El comando fallido no se vuelve a enviar.",
+      "loading": "Iniciando terminal…",
+      "load_failed": "No se pudo cargar el terminal. Comprueba la conexión con el gateway y vuelve a intentarlo."
     },
     "codeBlock": {
       "add_comment": "Añadir comentario",

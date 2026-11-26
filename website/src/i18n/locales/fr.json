@@ -7268,7 +7268,9 @@
       "touch_select_done": "Plage sélectionnée — touchez Copier",
       "use_here": "Utiliser le terminal ici",
       "use_starting_directory": "Utiliser le répertoire de démarrage du terminal",
-      "use_starting_directory_hint": "Ouvre un nouveau shell dans le répertoire de terminal configuré sur le serveur (dashboard.terminal.cwd, sinon le répertoire personnel du serveur). La commande échouée n’est pas renvoyée."
+      "use_starting_directory_hint": "Ouvre un nouveau shell dans le répertoire de terminal configuré sur le serveur (dashboard.terminal.cwd, sinon le répertoire personnel du serveur). La commande échouée n’est pas renvoyée.",
+      "loading": "Démarrage du terminal…",
+      "load_failed": "Le terminal n’a pas pu se charger. Vérifie la connexion à la passerelle, puis réessaie."
     },
     "codeBlock": {
       "add_comment": "Ajouter un commentaire",

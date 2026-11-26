@@ -19,7 +19,8 @@ import { AllTabsMenu } from './AllTabsMenu'
 import { useTranslation } from 'react-i18next'
 import { TabCloseMenuItems, batchCloseConfirm, openTabCloseMenu, type TabCloseActions } from './TabCloseMenu'
 import { useConfirm } from './ConfirmDialog'
-import CliPanel, { disposeTerminalSession, useDeleteTerminalSession, prewarmTerminal, openTerminalSearch } from './CliPanel'
+import { disposeTerminalSession, useDeleteTerminalSession, prewarmTerminal, preloadTerminal, openTerminalSearch } from './terminalSessions'
+import CliPanel from './LazyCliPanel'
 import ErrorNotice from './ErrorNotice'
 import { getTerminalTitle, useTerminalTitle, disposeTerminalConnection } from '../utils/terminalRegistry'
 import { useAppSelector } from '../store'
@@ -42,6 +43,18 @@ import { TERMINAL_TAB_COMMAND_EVENT, type TerminalTabCommand } from '../lib/pane
 
 /** Longest a phone waits for an idle moment to build a restored terminal. */
 const PREWARM_IDLE_TIMEOUT_MS = 4000
+
+/** Run `fn` at an idle moment (at most PREWARM_IDLE_TIMEOUT_MS away); returns the cancel. */
+function whenIdle(fn: () => void): () => void {
+  const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (h: number) => void }
+  if (w.requestIdleCallback && w.cancelIdleCallback) {
+    const h = w.requestIdleCallback(fn, { timeout: PREWARM_IDLE_TIMEOUT_MS })
+    const cancel = w.cancelIdleCallback
+    return () => cancel(h)
+  }
+  const t = window.setTimeout(fn, PREWARM_IDLE_TIMEOUT_MS)
+  return () => window.clearTimeout(t)
+}
 /** Latest: open the terminal even if the slide never reports completion. */
 const SETTLE_CEILING_MS = 700
 
@@ -832,16 +845,12 @@ export default function BottomTerminalPanel() {
   const hydratePending = useTerminalHydratePending()
   useEffect(() => {
     if (!isMobile || open || hydratePending || !activeId || !tabs.some(t => t.id === activeId)) return
-    const run = () => prewarmTerminal(activeId, window.innerWidth, height)
-    const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (h: number) => void }
-    if (w.requestIdleCallback && w.cancelIdleCallback) {
-      const h = w.requestIdleCallback(run, { timeout: PREWARM_IDLE_TIMEOUT_MS })
-      const cancel = w.cancelIdleCallback
-      return () => cancel(h)
-    }
-    const t = window.setTimeout(run, PREWARM_IDLE_TIMEOUT_MS)
-    return () => window.clearTimeout(t)
+    return whenIdle(() => prewarmTerminal(activeId, window.innerWidth, height))
   }, [isMobile, open, hydratePending, activeId, tabs, height])
+  // Also on a phone, the terminal's code must be loaded before the tap that
+  // opens a first terminal: its focus stand-in raises the keyboard only when it
+  // takes focus inside that tap (see LazyCliPanel).
+  useEffect(() => (isMobile ? whenIdle(preloadTerminal) : undefined), [isMobile])
   const [dragging, setDragging] = useState(false)
   // The docked panel's guide scope (`shell.terminal-panel`), reported from
   // outside its `open` guard so "closed" is said while it is hidden.

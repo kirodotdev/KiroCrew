@@ -8,8 +8,11 @@ import { renderWithProviders } from './helpers'
 import BottomTerminalPanel from '../components/BottomTerminalPanel'
 import { __resetBottomTerminal, openBottomTerminal } from '../hooks/useBottomTerminal'
 
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: () => <div data-testid="cli" />,
+}))
+vi.mock('../components/terminalSessions', () => ({
+  preloadTerminal: vi.fn(),
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))

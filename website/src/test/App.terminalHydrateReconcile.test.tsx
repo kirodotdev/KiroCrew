@@ -33,10 +33,13 @@ vi.mock('../pages/LogsPage', () => ({ default: () => null }))
 vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/NotificationsPage', () => ({ default: () => null }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => null }))
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: () => <div data-testid="cli-panel" />,
+}))
+vi.mock('../components/terminalSessions', () => ({
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
+  preloadTerminalOnIntent: () => {},
 }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kirocrew' }], defaultAgent: 'kirocrew' })) }))
