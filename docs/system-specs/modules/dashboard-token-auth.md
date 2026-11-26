@@ -1543,6 +1543,19 @@ peers is explicitly out of scope (it would break warm-pool and cron callers).
 TCP requests never engage the branch — browser cookies, Windows, and remote
 `local_only=False` deployments are untouched.
 
+**TCP declarations are logged, not judged.** On an internal-secret grant over
+TCP loopback (not the Unix socket, not the agent socket), a non-blank
+`X-Session-Key` other than `dashboard:ui` is checked with
+`member_memory_auth.session_key_is_attested`. When nothing attests it, token auth
+writes one `would refuse:` WARNING naming the key's kind (a closed prefix set,
+else `other`), the `X-Internal-Caller` (from `KNOWN_INTERNAL_CALLERS`, else
+`other`), the route template and whether a token was sent, at most once per
+(kind, caller, route) every 600 s, and counts every such request in
+`token_auth_callers._WOULD_REFUSE_COUNTS`. The request is answered exactly as
+without the check, and a check that raises is swallowed
+(`_note_unattested_tcp_session_key`; `test_token_auth_would_refuse_log.py`).
+The line never carries the key, the token, the secret or the query string.
+
 Client side, `loopback_http.loopback_urlopen` accepts a `unix_socket_path`
 and `mcp_core` prefers the socket for every `_API` request when the file
 exists (`_api_urlopen`), falling back to TCP **only** when nothing answered
