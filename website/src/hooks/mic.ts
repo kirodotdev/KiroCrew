@@ -189,6 +189,54 @@ export function humanizeMicError(e: unknown): string {
 }
 
 /**
+ * How long a capture track may stay muted before it counts as withheld. WebKit
+ * mutes a fresh track for a moment before audio flows, so an immediate report
+ * would be a false alarm on every press.
+ */
+export const TRACK_MUTE_GRACE_MS = 1500
+
+/**
+ * Watch a capture stream's audio track for the browser ending it or keeping it
+ * muted past {@link TRACK_MUTE_GRACE_MS}. Either one means no audio is arriving
+ * while the level reads 0, which otherwise looks exactly like a silent speaker.
+ *
+ * Calls `onFailure` at most once, with the message to show. Returns the detach
+ * function; every teardown path must call it so a stale stream never reports
+ * into a newer capture. A track that cannot be listened to is not watched.
+ */
+export function watchTrackHealth(stream: MediaStream, onFailure: (message: string) => void): () => void {
+  const track = stream.getAudioTracks()[0]
+  if (typeof track?.addEventListener !== 'function') return () => {}
+  let muteTimer: ReturnType<typeof setTimeout> | null = null
+  const clearMuteTimer = () => {
+    if (muteTimer !== null) clearTimeout(muteTimer)
+    muteTimer = null
+  }
+  const detach = () => {
+    clearMuteTimer()
+    track.removeEventListener('mute', onMute)
+    track.removeEventListener('unmute', clearMuteTimer)
+    track.removeEventListener('ended', onEnded)
+  }
+  const fail = (message: string) => {
+    detach()
+    onFailure(message)
+  }
+  function onMute() {
+    clearMuteTimer()
+    muteTimer = setTimeout(() => fail(i18nT('hooks.mic.browser_muted_the_microphone')), TRACK_MUTE_GRACE_MS)
+  }
+  function onEnded() {
+    fail(i18nT('hooks.mic.microphone_disconnected_by_browser'))
+  }
+  track.addEventListener('mute', onMute)
+  track.addEventListener('unmute', clearMuteTimer)
+  track.addEventListener('ended', onEnded)
+  if (track.muted) onMute()
+  return detach
+}
+
+/**
  * Per-frame audio features for visualizer consumers.
  *
  * Distinct from the `onLevel` callback below on purpose. `onLevel` feeds React

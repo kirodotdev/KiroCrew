@@ -12651,6 +12651,8 @@
   },
   "hooks": {
     "mic": {
+      "browser_muted_the_microphone": "Браузер отключил звук микрофона. Перезагрузи страницу, чтобы снова дать доступ.",
+      "microphone_disconnected_by_browser": "Браузер отключил микрофон.",
       "could_not_start_the_microphone": "Не удалось включить микрофон.",
       "microphone_is_unavailable_another_app_may_be_usi": "Микрофон недоступен — возможно, его использует другое приложение.",
       "microphone_permission_denied_allow_mic_access_in": "Доступ к микрофону запрещён. Разреши доступ в настройках ОС и браузера.",
@@ -12813,6 +12815,7 @@
       "stt_error": "ошибка stt"
     },
     "useVoiceInput": {
+      "microphone_start_timed_out": "Микрофон не включился. Нажми ещё раз или перезагрузи страницу, если это повторяется.",
       "transcription_failed": "Расшифровка не удалась: {{error}}",
       "transcription_request_failed": "Запрос расшифровки не удался.",
       "polish_failed": "Очистка ИИ не выполнена. Ваша расшифровка не изменена."

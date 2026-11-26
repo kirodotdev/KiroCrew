@@ -11829,6 +11829,8 @@
   },
   "hooks": {
     "mic": {
+      "browser_muted_the_microphone": "ブラウザーがマイクをミュートしました。もう一度許可するにはページを再読み込みしてください。",
+      "microphone_disconnected_by_browser": "ブラウザーがマイクを切断しました。",
       "could_not_start_the_microphone": "マイクを起動できませんでした。",
       "microphone_is_unavailable_another_app_may_be_usi": "マイクは利用できません — 別のアプリが使用中の可能性があります。",
       "microphone_permission_denied_allow_mic_access_in": "マイクのアクセス許可が拒否されました。OSとブラウザーの設定でマイクアクセスを許可してください。",
@@ -11988,6 +11990,7 @@
       "stt_error": "sttエラー"
     },
     "useVoiceInput": {
+      "microphone_start_timed_out": "マイクが起動しませんでした。もう一度押してください。続く場合はページを再読み込みしてください。",
       "transcription_failed": "文字起こしに失敗しました：{{error}}",
       "transcription_request_failed": "転写リクエストが失敗しました。",
       "polish_failed": "AI によるクリーンアップは実行されませんでした。文字起こしは変更されていません。"

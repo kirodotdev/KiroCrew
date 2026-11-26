@@ -12103,6 +12103,8 @@
   },
   "hooks": {
     "mic": {
+      "browser_muted_the_microphone": "ব্রাউজার মাইক্রোফোন মিউট করে দিয়েছে। আবার অনুমতি দিতে পেজ রিলোড করো।",
+      "microphone_disconnected_by_browser": "ব্রাউজার মাইক্রোফোন বিচ্ছিন্ন করে দিয়েছে।",
       "could_not_start_the_microphone": "মাইক্রোফোন চালু করা যায়নি।",
       "microphone_is_unavailable_another_app_may_be_usi": "মাইক্রোফোন পাওয়া যাচ্ছে না — হয়তো অন্য কোনো অ্যাপ এটা ব্যবহার করছে।",
       "microphone_permission_denied_allow_mic_access_in": "মাইক্রোফোনের অনুমতি দেওয়া হয়নি। তোমার OS ও ব্রাউজার সেটিংয়ে মাইকের অ্যাক্সেস দাও।",
@@ -12263,6 +12265,7 @@
       "stt_error": "stt এরর"
     },
     "useVoiceInput": {
+      "microphone_start_timed_out": "মাইক্রোফোন চালু হয়নি। আবার চাপো, বা বারবার এমন হলে পেজ রিলোড করো।",
       "transcription_failed": "প্রতিলিপিকরণ ব্যর্থ হয়েছে: {{error}}",
       "transcription_request_failed": "ট্রান্সক্রিপশন রিকোয়েস্ট ব্যর্থ হয়েছে।",
       "polish_failed": "AI পরিষ্কারকরণ চলেনি। তোমার ট্রান্সক্রিপ্ট অপরিবর্তিত আছে।"

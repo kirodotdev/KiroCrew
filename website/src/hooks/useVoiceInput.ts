@@ -3,7 +3,7 @@ import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { downloadBlob } from '../utils/download'
 import { streamingSupported, useStreamingStt } from './useStreamingStt'
-import { acquireMicStream, activeDeviceId, humanizeMicError, createLevelMeter, createAudioSample, getPreferredMicId, setPreferredMicId } from './mic'
+import { acquireMicStream, activeDeviceId, humanizeMicError, createLevelMeter, createAudioSample, getPreferredMicId, setPreferredMicId, watchTrackHealth } from './mic'
 import { beginTranscription, settleTranscription, subscribeTranscripts, failedCapture, discardFailedCapture, takeFailedCapture } from './voiceTranscriptInbox'
 import type { SttModelProgress } from '../lib/sttProviders'
 import { i18nT } from '../i18n/t'
@@ -25,6 +25,13 @@ export const voiceInputSupported =
 
 /** Release a pre-warmed mic if the user presses but doesn't start within this window. */
 const WARM_IDLE_MS = 15000
+
+/**
+ * A startup that has not reached capture by then is cancelled with an error. A
+ * `getUserMedia`, worklet load or `AudioContext.resume()` that never settles
+ * (iOS WebKit) would otherwise hold the start latch, and the hold bar, forever.
+ */
+export const VOICE_START_DEADLINE_MS = 15000
 
 /**
  * Shortest gap between two recogniser prewarm requests.
@@ -520,7 +527,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     warmTimerRef.current = setTimeout(releaseWarm, WARM_IDLE_MS)
   }, [streamEnabled, acquireWarm, releaseWarm])
 
-  const start = useCallback(async () => {
+  const startCapture = useCallback(async () => {
     setError(null)
     if (streamEnabled) {
       // Re-entrancy guard for the async startup window (mirrors the batch path
@@ -599,7 +606,9 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
       discardRef.current = false
       const myEpoch = ++recordingEpochRef.current
       mr.ondataavailable = e => { if (e.data.size) chunksRef.current.push(e.data) }
+      let unwatchTrack = () => {}
       mr.onstop = async () => {
+        unwatchTrack()
         // Superseded by a newer recording — stop only THIS recorder's own tracks
         // and bow out. Touching the shared meter/level/chunks/ownership here would
         // clobber the new session (cancel-then-immediate-restart race).
@@ -629,6 +638,14 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
       }
       mr.start()
       mediaRef.current = mr
+      // A track the browser ends or keeps muted stops the recording with the
+      // reason; what was captured before still goes to the transcriber.
+      // The recorder's onstop detaches it, which every teardown path reaches.
+      unwatchTrack = watchTrackHealth(stream, message => {
+        if (mediaRef.current !== mr) return
+        setError(message)
+        stopRef.current()
+      })
       setBatchMuted(false)
       // Capture is running, so the last failed recording's offer ends here
       // (see the streaming path above for why not earlier).
@@ -665,6 +682,35 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     if (gen === startGenRef.current) startingRef.current = false
   }, [streamEnabled, streamStart, streamStop, acquireWarm])
 
+  // `stop` and `cancel` are declared below and read through refs so the
+  // capture path and the deadline can reach them.
+  const stopRef = useRef<() => void>(() => {})
+  const cancelRef = useRef<() => void>(() => {})
+
+  /**
+   * Start capture, bounded by {@link VOICE_START_DEADLINE_MS}: a startup still
+   * pending then is cancelled with an error, and the returned promise settles,
+   * so neither this hook's latch nor a caller awaiting it stays held.
+   */
+  const start = useCallback(() => {
+    const genBefore = startGenRef.current
+    const run = startCapture()
+    // Refused by the latch or unsupported: no startup of ours to bound.
+    if (startGenRef.current === genBefore) return run
+    const gen = startGenRef.current
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<void>(resolve => {
+      timer = setTimeout(() => {
+        if (gen === startGenRef.current && startingRef.current) {
+          cancelRef.current()
+          setError(i18nT('hooks.useVoiceInput.microphone_start_timed_out'))
+        }
+        resolve()
+      }, VOICE_START_DEADLINE_MS)
+    })
+    return Promise.race([run, deadline]).finally(() => clearTimeout(timer))
+  }, [startCapture])
+
   const stop = useCallback(() => {
     // Routed on the utterance in flight, never on the preference: the preference
     // names the transport the NEXT utterance will take, so a flip mid-utterance
@@ -686,6 +732,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     }
     setRecording(false)
   }, [streamEnabled, streamStop])
+  stopRef.current = stop
 
   // Cancel (discard) — end capture WITHOUT transcribing. Esc routes here so a
   // mistaken or abandoned dictation is thrown away instead of committed; the
@@ -733,6 +780,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     setRecording(false)
     setSessionOwner(null)
   }, [streamEnabled, streamCancel, releaseWarm])
+  cancelRef.current = cancel
 
   // Drop a stale owner once streaming is the transport and no session of any kind
   // is in flight here. `streamEnabled` is the saved preference, not a first-hand
