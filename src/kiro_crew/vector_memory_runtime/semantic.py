@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import context_omissions, injection_receipts
+from kiro_crew import context_omissions
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_relevance_rule as _relevance_rule
 from kiro_crew import memory_schema, memory_v2
@@ -1267,12 +1267,11 @@ def _install_scoring_set(
     return built
 
 
-def _fact_lines(store: VectorMemoryStore, rows: list, cap: int) -> tuple[list[str], list[str]]:
-    """The fact lines that fit *cap*, best first, and the keys they render."""
+def _fact_lines(store: VectorMemoryStore, rows: list, cap: int) -> list[str]:
+    """The fact lines that fit *cap*, best first."""
     lines: list[str] = []
-    keys: list[str] = []
     if not rows:
-        return lines, keys
+        return lines
     total = 0
     for r in store._eligible_rows(rows, "fact"):
         try:
@@ -1288,9 +1287,8 @@ def _fact_lines(store: VectorMemoryStore, rows: list, cap: int) -> tuple[list[st
             # Skip a line that does not fit; a shorter, lower-ranked one may.
             continue
         lines.append(line)
-        keys.append(str(r["key"]))
         total += len(line) + 1
-    return lines, keys
+    return lines
 
 
 def get_semantic_context(
@@ -1314,19 +1312,16 @@ def get_semantic_context(
     *relevance_rule* is ``memory.relevance_rule``
     (:mod:`kiro_crew.memory_relevance_rule`). Under ``enforce`` a fact, on
     either store, also needs the private store's evidence gate
-    (``relevance_evidence``) measured on the request's significant terms only;
-    ``shadow`` keeps today's block and records in the injection receipt the
-    fact keys that gate would add or drop. ``pref.*`` rows are never gated.
+    (``relevance_evidence``) measured on the request's significant terms only.
+    ``pref.*`` rows are never gated.
     """
     max_rows = max(cap // 15, 20)
-    mode = relevance_rule_mode_from(relevance_rule)
-    gated = mode != _relevance_rule.MODE_OFF and bool(query_text)
+    gated = relevance_rule_mode_from(relevance_rule) != _relevance_rule.MODE_OFF
 
     # Two row shapes reach the loop below -- dicts from the candidate
     # selectors, sqlite3.Row from the no-query path -- and it reads both as
     # mappings.
     rows: list
-    enforced: list = []
     if query_text:
         # Query-aware filtering: hybrid vector + keyword scoring
         candidates = (
@@ -1334,10 +1329,9 @@ def get_semantic_context(
             if store.algorithm_version == "v2"
             else store._semantic_candidates_v1(query_text)
         )
-        rows = candidates[:max_rows]
         if gated:
             terms = _relevance_rule.fact_terms(query_text)
-            enforced = [
+            candidates = [
                 row
                 for row in candidates
                 if str(row["key"]).startswith("pref.")
@@ -1346,9 +1340,8 @@ def get_semantic_context(
                     _relevance_rule.fact_text(store._fact_label(row), row["value_json"]),
                     (row.get("retrieval") or {}).get("cosine"),
                 )
-            ][:max_rows]
-            if mode == _relevance_rule.MODE_ENFORCE:
-                rows = enforced
+            ]
+        rows = candidates[:max_rows]
     elif store.algorithm_version == "v2":
         rows = store._semantic_candidates_v2(query_text)[:max_rows]
     else:
@@ -1361,28 +1354,8 @@ def get_semantic_context(
         )
     if facts_only:
         rows = [r for r in rows if not str(r["key"]).startswith("pref.")]
-        enforced = [r for r in enforced if not str(r["key"]).startswith("pref.")]
 
-    lines, shown = _fact_lines(store, rows, cap)
-    if gated:
-        if mode == _relevance_rule.MODE_SHADOW:
-            kept = _fact_lines(store, enforced, cap)[1]
-            injection_receipts.record_stage(
-                injection_receipts.RELEVANCE_RULE,
-                mode=mode,
-                policy=_relevance_rule.POLICY_VERSION,
-                would_add=[k for k in kept if k not in shown],
-                would_drop=[k for k in shown if k not in kept],
-                part=_relevance_rule.PART_FACTS,
-                kept=[k for k in shown if k in kept],
-            )
-        else:
-            injection_receipts.record_stage(
-                injection_receipts.RELEVANCE_RULE,
-                mode=mode,
-                policy=_relevance_rule.POLICY_VERSION,
-                part=_relevance_rule.PART_FACTS,
-            )
+    lines = _fact_lines(store, rows, cap)
     if not lines:
         return ""
     if facts_only:

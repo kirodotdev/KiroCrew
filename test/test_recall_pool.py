@@ -525,7 +525,6 @@ class TestReceiptReplay:
         from kiro_crew import injection_receipts
 
         injection_receipts.replay({"lessons": {"ids": ["lesson.a"], "omitted": 0}})
-        assert injection_receipts.current_ids("lessons") == []
         with injection_receipts.collect() as sink:
             pass
         assert sink == {}

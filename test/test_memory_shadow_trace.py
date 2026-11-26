@@ -96,7 +96,10 @@ def test_observing_is_false_only_when_every_stage_is_off() -> None:
     off = SimpleNamespace(**{stage.name: "off" for stage in msr.STAGES})
     assert trace.observing(off) is False
     # Default-on stages without a shadow mode are not observed.
-    on = {name: "enforce" for name in ("kind_routing", "lesson_fold", "rule_authority_order")}
+    on = {
+        name: "enforce"
+        for name in ("kind_routing", "lesson_fold", "rule_authority_order", "relevance_rule")
+    }
     assert trace.observing(SimpleNamespace(**vars(off), **on)) is False
     for stage in msr.STAGES:
         mode = "propose" if stage.name == "dream" else "shadow"
@@ -235,41 +238,6 @@ def test_a_stage_field_names_a_control_sample_of_the_rows_it_keeps() -> None:
     control = line[ir.RULE_AUTHORITY_ORDER]["control"]
     assert control and set(control) <= set(lessons[100:]), "only rows the stage keeps"
     assert control == trace.control_keys(SESSION, lessons[100:])
-
-
-def test_kept_task_facts_feed_the_relevance_control_and_never_reach_the_line() -> None:
-    facts = [f"project.f{i:03d}" for i in range(200)]
-    with ir.collect() as sink:
-        ir.record_stage(
-            ir.RELEVANCE_RULE,
-            mode="shadow",
-            policy=1,
-            would_drop=facts[:10],
-            part="facts",
-            kept=facts[10:],
-        )
-        ir.record_stage(ir.RELEVANCE_RULE, mode="shadow", policy=1, part="findings")
-    line = ir.build_line(
-        sink,
-        session_key=SESSION,
-        turn_index=1,
-        user_msg_id="",
-        model="",
-        agent="",
-        phase="session_start",
-        store="",
-        now=_T0,
-    )
-    assert line is not None
-    field = line[ir.RELEVANCE_RULE]
-    assert "kept" not in field and "parts" not in field
-    assert field["control"] == trace.control_keys(SESSION, facts[10:])
-    assert field["control"]
-    replayed: dict = {}
-    with ir.collect() as again:
-        ir.replay(json.loads(json.dumps(sink)))
-        replayed = dict(again)
-    assert replayed[ir.RELEVANCE_RULE]["kept"] == sorted(facts[10:])
 
 
 def test_recalled_lessons_cross_the_recall_child_boundary_but_never_a_line() -> None:
@@ -452,7 +420,7 @@ async def test_a_recall_answers_the_same_bytes_and_shadow_adds_only_its_receipt(
     off = await _recall(store, "persistent", monkeypatch)
     assert not (home / "usage" / "injections").exists(), "off writes nothing"
     assert "project.signer_region" in off
-    _config(home, relevance_rule="shadow")
+    _config(home, lesson_origin_gate="shadow")
     shadow = await _recall(store, "persistent", monkeypatch)
     assert shadow == off
     (line,) = _shards(home)
@@ -470,7 +438,7 @@ async def test_a_recall_names_the_lessons_it_rendered(home: Path, store, monkeyp
     (lesson,) = [r["key"] for r in store.get_lessons()] or [None]
     _config(home)
     off = await _recall(store, "persistent", monkeypatch)
-    _config(home, relevance_rule="shadow")
+    _config(home, lesson_origin_gate="shadow")
     assert await _recall(store, "persistent", monkeypatch) == off
     (line,) = _shards(home)
     assert lesson and line["recall"]["ids"] == [lesson]
@@ -486,7 +454,7 @@ async def test_a_private_session_recall_writes_nothing(
     store.set_semantic(
         "project.signer_region", "the signer deploys to us-west-2", 1.0, "user_explicit"
     )
-    _config(home, relevance_rule="shadow")
+    _config(home, lesson_origin_gate="shadow")
     await _recall(store, memory_mode, monkeypatch)
     assert not (home / "usage" / "injections").exists()
 
@@ -557,62 +525,39 @@ def _card(data: dict, stage: str) -> dict:
     return next(c for c in data["stages"] if c["stage"] == stage)
 
 
-def _rao(drop: list[str], control: list[str]) -> dict:
-    return {
-        "mode": "shadow",
-        "policy": 1,
-        "would_add": [],
-        "would_drop": drop,
-        "control": control,
-    }
-
-
-def _rao_log(days: range) -> dict:
-    return {
-        "counts": {f"2026-10-{d:02d}": {"relevance_rule": {"shadow": {"lines": 20}}} for d in days},
-        "stages": {"relevance_rule": {"policy": 1, "started_at": "2026-10-01T00:00:00Z"}},
-    }
-
-
-def test_a_render_drop_is_missed_only_by_a_later_outcome_in_its_own_session(
-    home: Path, capsys
-) -> None:
-    _config(home, relevance_rule="shadow")
-    lines = [
-        _start(1, "dashboard:a", relevance_rule=_rao(["lesson.x", "lesson.y"], ["lesson.k"])),
-        _start(1, "dashboard:b", relevance_rule=_rao(["lesson.x"], ["lesson.k"])),
-        # a: recalled after the drop -> a miss; b: recalled BEFORE its drop -> not.
-        _outcome("recall", 1, "dashboard:a", ["lesson.x"]),
-        _outcome("recall", 1, "dashboard:b", ["lesson.x"], hour=9),
-        # Another session's re-teach of y does not count for a's render.
-        _outcome("learn_add", 2, "dashboard:c", ["lesson.y"]),
-        # b re-teaches its kept control row.
-        _outcome("learn_add", 2, "dashboard:b", ["lesson.k"]),
-    ]
-    _write_receipts(home, lines, _rao_log(range(1, 3)))
-    card = _card(_report(capsys), "relevance_rule")
-    assert card["miss"] == {"items": 3, "missed": 1, "rate": 0.3333}
-    assert card["control"] == {"items": 2, "missed": 1, "rate": 0.5}
-    assert card["verdict"] == msr.VERDICT_WAIT
-    assert card["verdict_reason"] == "2/14 days, 2/200 sessions"
-
-
-def _bar_met(home: Path, drop_misses: int, control_misses: int, *, control: int = 100) -> dict:
-    """14 days, 200 session starts, 200 drops and *control* control rows in sessions s0..s199."""
+def _bar_met(home: Path, drop_misses: int, control_misses: int, *, control: int = 100) -> None:
+    """14 days, 200 session starts, 200 origin-gate drops and *control* control rows."""
     lines = []
+    meta: dict[str, object] = {}
+    for d in range(1, 15):
+        day = f"2026-10-{d:02d}"
+        meta[f"memory_origin_log:counts:{day}"] = {
+            "shadow": {"consolidation": {"lessons": 20, "demoted": 15}}
+        }
+        meta[f"memory_origin_log:ids:{day}"] = []
+        meta[f"memory_origin_log:control:{day}"] = []
     for i in range(200):
+        d = 1 + i % 14
+        day = f"2026-10-{d:02d}"
         session = f"dashboard:s{i}"
-        drop = [f"lesson.d{i}"]
-        ctrl = [f"lesson.c{i}"] if i < control else []
-        lines.append(_start(1 + i % 14, session, relevance_rule=_rao(drop, ctrl)))
+        lines.append(_start(d, session))
+        at = _at(d).replace("Z", "+00:00")
+        drop, kept = f"lesson.d{i}", f"lesson.c{i}"
+        meta[f"memory_origin_log:ids:{day}"].append(  # type: ignore[union-attr]
+            {"key": drop, "path": "consolidation", "rules": 1, "at": at}
+        )
+        if i < control:
+            meta[f"memory_origin_log:control:{day}"].append(  # type: ignore[union-attr]
+                {"key": kept, "rules": 1, "at": at}
+            )
         if i < drop_misses:
-            lines.append(_outcome("recall", 1 + i % 14, session, drop))
+            lines.append(_outcome("recall", d, session, [drop]))
         if i < control_misses:
-            lines.append(_outcome("recall", 1 + i % 14, session, ctrl))
+            lines.append(_outcome("recall", d, session, [kept]))
     # An outcome that names nothing scored, so the window has an observed trace.
     lines.append(_outcome("recall", 3, "dashboard:other", ["project.unrelated"]))
-    _write_receipts(home, lines, _rao_log(range(1, 15)))
-    return lines[0]
+    _write_receipts(home, lines, {"counts": {}, "stages": {}})
+    _write_meta(meta)
 
 
 @pytest.mark.parametrize(
@@ -627,9 +572,9 @@ def _bar_met(home: Path, drop_misses: int, control_misses: int, *, control: int 
 def test_the_verdict_needs_the_bar_and_a_miss_rate_within_both_limits(
     home: Path, capsys, drop_misses, control_misses, verdict
 ) -> None:
-    _config(home, relevance_rule="shadow")
+    _config(home, lesson_origin_gate="shadow")
     _bar_met(home, drop_misses, control_misses)
-    card = _card(_report(capsys), "relevance_rule")
+    card = _card(_report(capsys), "lesson_origin_gate")
     assert (card["days"], card["sessions"]) == (14, 200)
     assert card["miss"]["items"] == 200 and card["control"]["items"] == 100
     assert card["verdict"] == verdict, card
@@ -639,7 +584,7 @@ def test_the_bar_is_compared_without_rounding() -> None:
     """3 of 299 is 1.003%: over the bar, though it rounds to 1.00%."""
     card = {
         "mode": "shadow",
-        "stage": "relevance_rule",
+        "stage": "lesson_origin_gate",
         "days": 14,
         "sessions": 200,
         "miss": {"items": 299, "missed": 3, "rate": 0.01},
@@ -651,22 +596,9 @@ def test_the_bar_is_compared_without_rounding() -> None:
     assert msr._verdict(card, 0) == (msr.VERDICT_WAIT, "no outcome trace in window")
 
 
-def test_activity_ids_are_not_scored_and_a_dropped_key_leaves_the_control(
-    home: Path, capsys
-) -> None:
-    _config(home, relevance_rule="shadow", member_lesson_dedup="shadow")
-    field = {
-        "mode": "shadow",
-        "policy": 1,
-        "would_add": [],
-        "would_drop": ["projects:abc", "history:def", "project.fact"],
-        "control": ["projects:ghi", "project.kept"],
-    }
-    log = {
-        "counts": {"2026-10-01": {"relevance_rule": {"shadow": {"lines": 1}}}},
-        "stages": {"relevance_rule": {"policy": 1, "started_at": "2026-10-01T00:00:00Z"}},
-    }
-    _write_receipts(home, [_start(1, "dashboard:a", relevance_rule=field)], log)
+def test_a_dropped_key_leaves_the_control(home: Path, capsys) -> None:
+    _config(home, member_lesson_dedup="shadow")
+    _write_receipts(home, [_start(1, "dashboard:a")], {"counts": {}, "stages": {}})
     _write_meta(
         {
             "memory_dedup_log:counts:2026-10-01": {"shadow": {"lessons": 2}},
@@ -685,28 +617,8 @@ def test_activity_ids_are_not_scored_and_a_dropped_key_leaves_the_control(
             ],
         }
     )
-    data = _report(capsys)
-    relevance = _card(data, "relevance_rule")
-    assert (relevance["miss"]["items"], relevance["control"]["items"]) == (1, 1)
-    dedup = _card(data, "member_lesson_dedup")
+    dedup = _card(_report(capsys), "member_lesson_dedup")
     assert (dedup["miss"]["items"], dedup["control"]["items"]) == (1, 1)
-
-
-def test_a_row_dropped_in_one_session_stays_in_another_sessions_control(home: Path, capsys) -> None:
-    _config(home, relevance_rule="shadow")
-    log = {
-        "counts": {"2026-10-01": {"relevance_rule": {"shadow": {"lines": 2}}}},
-        "stages": {"relevance_rule": {"policy": 1, "started_at": "2026-10-01T00:00:00Z"}},
-    }
-    keep = {"mode": "shadow", "policy": 1, "would_add": [], "would_drop": [], "control": ["k"]}
-    drop = {"mode": "shadow", "policy": 1, "would_add": [], "would_drop": ["k"]}
-    lines = [
-        _start(1, "dashboard:a", relevance_rule=keep),
-        _start(1, "dashboard:b", relevance_rule=drop),
-    ]
-    _write_receipts(home, lines, log)
-    card = _card(_report(capsys), "relevance_rule")
-    assert (card["miss"]["items"], card["control"]["items"]) == (1, 1)
 
 
 def test_outcome_lines_keep_flowing_after_their_first_window(home: Path) -> None:
@@ -723,9 +635,9 @@ def test_outcome_lines_keep_flowing_after_their_first_window(home: Path) -> None
 
 
 def test_no_control_sample_waits(home: Path, capsys) -> None:
-    _config(home, relevance_rule="shadow")
+    _config(home, lesson_origin_gate="shadow")
     _bar_met(home, 0, 0, control=0)
-    card = _card(_report(capsys), "relevance_rule")
+    card = _card(_report(capsys), "lesson_origin_gate")
     assert (card["verdict"], card["verdict_reason"]) == (msr.VERDICT_WAIT, "no control sample")
 
 
@@ -775,7 +687,7 @@ def test_write_stage_trace_reads_new_and_old_entries_and_never_text(home: Path, 
 
 
 def test_outcome_totals_count_only_the_reported_store(home: Path, capsys) -> None:
-    _config(home, relevance_rule="shadow")
+    _config(home, lesson_origin_gate="shadow")
     other = {**_outcome("recall", 1, "dashboard:a", ["lesson.x"]), "memory_store": "mate"}
     _write_receipts(home, [_start(1, "dashboard:a"), other], {"counts": {}, "stages": {}})
     assert _report(capsys)["outcomes"] == {"recall": 0, "learn_add": 0}
