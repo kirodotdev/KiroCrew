@@ -818,7 +818,7 @@ async def api_members_import(request: web.Request) -> web.Response:
     from kiro_crew.crewmate_bundle import crewmate_import_params, read_crewmate_file
 
     def _vet(data: bytes) -> dict[str, Any]:
-        files = read_crewmate_file(data)
+        files = read_crewmate_file(data, allow_agent_file=_agent_files_on())
         return crewmate_import_params(files.bundle, files)
 
     params: dict[str, Any] = {}
@@ -854,6 +854,17 @@ async def api_members_import(request: web.Request) -> web.Response:
         _unhold(held)
     delivered = await _broadcast(request.app["state"], card)
     return web.json_response({**card, "delivered_clients": delivered})
+
+
+def _agent_files_on() -> bool:
+    """``dashboard.import_agent_files``, read per import; off when the read fails."""
+    try:
+        from kiro_crew.config import KiroCrewConfig
+
+        return bool(KiroCrewConfig.load().dashboard.import_agent_files)
+    except Exception:
+        logger.debug("import_agent_files lookup failed; reading zips only")
+        return False
 
 
 def _unhold(sha: str) -> None:

@@ -155,6 +155,8 @@ Rules on the file:
 
 **File names (amendment of 2026-10-31).** Export writes the file as `<name>.crewjam`, its manifest as `crewjam.json` and `"format": "kirocrew.crewjam"`. The reader also takes the form shipped before that date: a `.crewmate` file with a `crewmate.json` manifest and `"format": "kirocrew.crewmate"`. Both forms go through every rule above unchanged, the size caps, path rules, plain-file rule and key checks included. The two manifest names are one part: a file holding both `crewjam.json` and `crewmate.json` is refused. `formatVersion` stays `1`, since the entries and fields are the same. The table and example above show the original names; read `crewjam.json` and `kirocrew.crewjam` for what an export writes. Since 2026-11-04 an export writes `<name>.kirobot`, `kirobot.json` and `"format": "kirocrew.kirobot"`; the reader takes all three forms, and a file holding more than one of the three manifest names is refused.
 
+**Agent definition files (amendment of 2026-11-26).** With `dashboard.import_agent_files` on (off by default, else `agent_files_off`), Import also takes one Markdown file with a front matter block, then the prompt (`crewmate_agent_file.py`), whose `name`, `description` and `model` become the manifest's name, description and `modelHint` and whose body becomes the rules, with `agent.json` empty and every other field (a tool list, hooks, MCP servers) dropped, before every rule above runs on those parts.
+
 What a bundle never carries:
 
 | Left out | Why |

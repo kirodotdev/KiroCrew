@@ -23908,6 +23908,7 @@
       "import_refused_mcp": "Este archivo trae servidores MCP, que aún no se pueden importar.",
       "import_refused_user_template": "Este archivo nombra un panel personalizado que solo tiene quien lo envió.",
       "import_refused_text": "Este archivo contiene texto que parece una contraseña o clave, así que no se puede importar.",
+      "import_refused_agent_files_off": "Este es un archivo de definición de agente. Activa dashboard.import_agent_files para importarlo.",
       "slug_collision": "Este Bot comparte su nombre corto con \"{{name}}\", cuyo chat ya lo usa. Cambiar el nombre mantiene el nombre corto, así que elimina \"{{self}}\" y vuelve a crearlo con un nombre que tenga otro nombre corto. Conserva \"{{name}}\".",
       "thread_open_failed": "No se pudo abrir el chat de este Bot.",
       "owner_check_failed": "No se pudo comprobar si puedes importar Bots aquí, así que «Importar desde archivo» está oculto.",

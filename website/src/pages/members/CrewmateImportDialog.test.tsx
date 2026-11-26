@@ -76,7 +76,7 @@ describe('CrewmateImportDialog', () => {
     const input = screen.getByTestId('crewmate-import-input') as HTMLInputElement
     expect(input.type).toBe('file')
     expect(input.accept).toBe(CREWMATE_FILE_ACCEPT)
-    expect(CREWMATE_FILE_ACCEPT).toBe('.kirobot,.crewjam,.crewmate')
+    expect(CREWMATE_FILE_ACCEPT).toBe('.kirobot,.crewjam,.crewmate,.md')
   })
 
   it('sends the picked file and shows the one card the gateway raised', async () => {
@@ -137,5 +137,6 @@ describe('CrewmateImportDialog', () => {
     await waitFor(() => expect(screen.getByTestId('crewmate-import-refused')).toBeTruthy())
     expect(screen.queryByTestId('change-card-stub')).toBeNull()
     expect(importRefusal({ body: JSON.stringify({ code: 'grant_in_bundle' }) })).not.toBe(importRefusal({}))
+    expect(importRefusal({ body: JSON.stringify({ code: 'agent_files_off' }) })).toContain('dashboard.import_agent_files')
   })
 })

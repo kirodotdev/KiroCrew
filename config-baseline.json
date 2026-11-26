@@ -11028,6 +11028,7 @@
         "title_ticket_prefix": false,
         "upload_max_mb": 100,
         "attachment_sheet_digest": false,
+        "import_agent_files": false,
         "mcp_probe_timeout_secs": 15,
         "loop_stall_exit_after_secs": null,
         "chat_entry_cache_max_entries": 4096,
@@ -12020,6 +12021,20 @@
       "tags": [],
       "label": "Digest Attached CSV, TSV And Excel Files",
       "help": "When on, a CSV, TSV or Excel file attached in chat is followed in the prompt by a short digest: column names, an inferred type for each column, a row count and the first three rows, for each sheet of a workbook (at most 5). Only the first 256 KiB of a CSV or TSV is read, and a workbook over 8 MiB is skipped; each prompt shows at most 3 files, 20 columns each, with cells cut to 40 characters. Off by default: the agent then gets the path alone. Takes effect on the next message; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.import_agent_files",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Import Agent Definition Files As Bots",
+      "help": "When on, the Bot import card also takes one agent definition file (Markdown with a front matter block, then the prompt): its name, description and model hint fill the card and its body becomes the Bot's rules. A tool list, hooks and MCP servers are never carried. Off by default: such a file is refused. Takes effect on the next import; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

@@ -23321,6 +23321,7 @@
       "import_refused_mcp": "Diese Datei bringt MCP-Server mit, die noch nicht importiert werden können.",
       "import_refused_user_template": "Diese Datei nennt ein eigenes Dashboard, das nur der Absender hat.",
       "import_refused_text": "Diese Datei enthält Text, der wie ein Passwort oder Schlüssel aussieht, und kann daher nicht importiert werden.",
+      "import_refused_agent_files_off": "Das ist eine Agent-Definitionsdatei. Aktiviere dashboard.import_agent_files, um sie zu importieren.",
       "slug_collision": "Dieser Bot teilt seinen Kurznamen mit „{{name}}“, dessen Chat ihn bereits verwendet. Umbenennen behält den Kurznamen bei. Lösche daher „{{self}}“ und lege ihn unter einem Namen mit anderem Kurznamen neu an. Behalte „{{name}}“.",
       "thread_open_failed": "Der Chat dieses Bot konnte nicht geöffnet werden.",
       "owner_check_failed": "Es ließ sich nicht prüfen, ob du hier Bots importieren darfst, daher ist „Aus Datei importieren“ ausgeblendet.",

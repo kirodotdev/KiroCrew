@@ -22734,6 +22734,7 @@
       "import_refused_mcp": "这个文件带有 MCP 服务器，目前还无法导入。",
       "import_refused_user_template": "这个文件指定了只有发送者才有的自定义仪表板。",
       "import_refused_text": "这个文件含有像密码或密钥的文字，所以无法导入。",
+      "import_refused_agent_files_off": "这是一个代理定义文件。启用 dashboard.import_agent_files 后即可导入。",
       "slug_collision": "此 Bot 与“{{name}}”的简称相同，聊天已被后者占用。重命名不会改变简称。删除“{{self}}”，再用简称不同的名字重新创建。保留“{{name}}”。",
       "thread_open_failed": "无法打开此 Bot 的聊天。",
       "owner_check_failed": "无法确认你能否在这里导入 Bot，因此已隐藏“从文件导入”。",

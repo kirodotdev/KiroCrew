@@ -8,8 +8,9 @@ import { useChangeCards } from '../../cards/useChangeCards'
 import { CREWMATE_IMPORT_SLOT, cardsApi, errorCode, type Card } from '../../api/cards'
 import { i18nT } from '../../i18n/t'
 
-/** The file picker's filter: a `.crewmate` file is a zip under its own name. */
-export const CREWMATE_FILE_ACCEPT = '.kirobot,.crewjam,.crewmate'
+/** The file picker's filter: a `.crewmate` file is a zip under its own name; `.md` is an
+ *  agent definition file, read only with `dashboard.import_agent_files` on. */
+export const CREWMATE_FILE_ACCEPT = '.kirobot,.crewjam,.crewmate,.md'
 
 /** Cards that still ask something of the owner: press, wait, retry or undo. */
 const OPEN: ReadonlySet<string> = new Set(['pending', 'applying', 'failed', 'partial'])
@@ -23,6 +24,7 @@ const REFUSALS: Record<string, () => string> = {
   needs_mate_config: () => i18nT('pages.membersPage.import_refused_mcp'),
   user_template: () => i18nT('pages.membersPage.import_refused_user_template'),
   invalid_text: () => i18nT('pages.membersPage.import_refused_text'),
+  agent_files_off: () => i18nT('pages.membersPage.import_refused_agent_files_off'),
 }
 
 /** What the dialog says about a refused file: the code's own line, else the generic one. */

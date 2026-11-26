@@ -22734,6 +22734,7 @@
       "import_refused_mcp": "このファイルには MCP サーバーが含まれていますが、まだインポートできません。",
       "import_refused_user_template": "このファイルは送信者だけが持つカスタムダッシュボードを指定しています。",
       "import_refused_text": "このファイルにはパスワードやキーのような文字列が含まれているため、インポートできません。",
+      "import_refused_agent_files_off": "これはエージェント定義ファイルです。インポートするには dashboard.import_agent_files を有効にします。",
       "slug_collision": "この Bot は「{{name}}」と短い名前が重複しており、チャットは後者が使用しています。名前を変更しても短い名前は変わりません。「{{self}}」を削除し、短い名前が異なる名前で作成し直してください。「{{name}}」は残してください。",
       "thread_open_failed": "この Bot のチャットを開けませんでした。",
       "owner_check_failed": "ここで Bot をインポートできるか確認できなかったため、「ファイルからインポート」を非表示にしています。",
