@@ -170,7 +170,7 @@ export function CardRecordLine({ card, moved = false }: { card: CardRef; moved?:
 
 function ChangeCardRow({ card, slot }: { card: CardRef; slot: string | null }) {
   const own = !!slot && card.slot === slot
-  const { cards, error, isFetched, store, refresh, remove } = useChangeCards(own ? slot : null)
+  const { cards, error, isSuccess: cardsRead, store, refresh, remove } = useChangeCards(own ? slot : null)
   const live = own ? cards.find(c => c.id === card.id && c.slot_key === slot) : undefined
   // The reason is labelled with whoever proposed the card: the crewmate whose
   // chat it came from, on any page, else the name this page already gives.
@@ -210,7 +210,7 @@ function ChangeCardRow({ card, slot }: { card: CardRef; slot: string | null }) {
     )
   }
   // Until the store answers, an unfinished record could still be a live card.
-  if (own && !isFetched && !finished) return null
+  if (own && !cardsRead && !finished) return null
   return <CardRecordLine card={card} />
 }
 
