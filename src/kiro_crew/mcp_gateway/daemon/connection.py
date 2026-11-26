@@ -440,7 +440,7 @@ async def _handle_connection(
             # malformed key yields ``None`` from ``_caller_from_register`` and
             # is ignored, so a bad recaller can never clobber a good caller.
             if msg.get("type") == "recaller":
-                _apply_recaller(msg, conn, pool_key.human_readable())
+                await _apply_recaller(msg, conn, pool_key.human_readable(), writer)
                 continue
 
             # Bridge-phase liveness ping: the stub sends ``{"type": "ping"}``

@@ -6260,8 +6260,16 @@ own, so the registrant cannot author it. The self-reported pids stay in the clai
 INDEX, where they are harmless: a claim only ever narrows to connections carrying
 its own token or none. A connection whose ancestry the kernel did not attest loses
 the register-time shortcut, not its identity — claim-push still reaches it through
-the index. (What a same-uid process can assert on the register frame itself is a
-separate question — a tokenless register's self-reported `session_key` is believed.)
+the index.
+
+**A tokenless register names itself only through the daemon.** Its
+`session_key`, `principal_id` and `channel_id` are written by whichever process
+connected, so they are not the caller. The caller is the key gatewayd's own peer
+walk resolves (with empty principal and channel until a claim fills them), or a
+later claim. The one exception is a register the kernel reports as sent by the
+daemon's owning gateway (or its exec successor), which is how a
+resource-subscription holder registers. A `recaller` frame is held to the same
+rule: its key is adopted only when the peer walk resolves the same session.
 
 Two details keep that binding sound (`mcp_gateway/daemon/identity.py`). The register
 path asks for the token's binding exactly once, after its last await and immediately
