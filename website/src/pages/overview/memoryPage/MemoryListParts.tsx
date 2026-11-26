@@ -2,7 +2,8 @@
  * The memory list's controls and rows: the kind pills, the sort menu, the
  * filter panel with live counts, the active-filter chips and one record row.
  */
-import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import InfoTip from '../../../components/InfoTip'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, ArrowDownUp, Check, ChevronDown, Folder, History, Mail, MoreHorizontal, Plus, Search, Sparkles, X } from 'lucide-react'
 import { Btn, IconButton, Input, PanelSectionHeader, Slider } from '../../../components/ui'
@@ -11,6 +12,7 @@ import { compareText, fmtDateTimeNumeric, fmtNumber, fmtDate } from '../../../i1
 import type { MemoryRecord, MemoryRecordFacetGroup, MemoryRecordFacets, MemoryRecordFilters, MemoryRecordSort } from '../../../types/memoryEditing'
 import { MEMORY_RECORD_ICONS, MEMORY_RECORD_LABELS, memoryRecordBody } from '../memoryRecordParts'
 import { rangeLabel } from './MemoryDateRange'
+import { kindTip, sourceTip } from './memoryTypeTips'
 import type { DateRange } from './memoryDateRange'
 import { FACET_GROUPS, GROUP_KINDS, SCOPE_UNUSABLE, effectiveSort, facetLabel, sourceGroup, lessonFacts, recordTags, recordTitle, type KindTab, type ListView, type SearchMode } from './memoryListView'
 
@@ -43,16 +45,21 @@ export const fmtScore = (value: number) => fmtNumber(value, { minimumFractionDig
 const SCORE_KEYS = { confidence: 'memoryPage.confidence_value', importance: 'memoryPage.importance_value', match: 'memoryPage.match_value' } as const
 
 /** The kind pills, one row with live counts; a phone scrolls the row sideways. */
-export function KindPills({ kind, counts, onChange, disabled, wrap = false }: { kind: KindTab; counts?: Record<string, number>; onChange: (kind: KindTab) => void; disabled?: boolean; wrap?: boolean }) {
+export function KindPills({ kind, counts, onChange, disabled, wrap = false, bot }: { kind: KindTab; counts?: Record<string, number>; onChange: (kind: KindTab) => void; disabled?: boolean; wrap?: boolean; bot?: string }) {
   const { t } = useTranslation()
   const total = counts ? (counts.fact || 0) + (counts.directive || 0) + (counts.episode || 0) : undefined
   return <div role="radiogroup" aria-label={t('memoryV2.group_kind')} title={t('memoryV2.memory_kinds_explanation')} className={`-mx-1 flex min-w-0 gap-2 px-1 ${wrap ? 'flex-wrap' : 'overflow-x-auto [scrollbar-width:none]'}`}>
     {KINDS.map(([key, label]) => {
       const on = key === kind
       const count = key === 'all' ? total : counts ? counts[key] || 0 : undefined
-      return <button key={key} type="button" role="radio" aria-checked={on} disabled={disabled} onClick={() => onChange(key)} className="flex min-h-11 shrink-0 items-center disabled:opacity-40 sm:min-h-8">
-        <span className={`flex h-8 items-center gap-1.5 rounded-full border px-3 text-[13px] ${on ? PILL_ON : 'border-border text-text'}`}>{t(label)}{count !== undefined && <span className={`tabular-nums ${on ? 'opacity-70' : 'text-muted'}`}>{fmtNumber(count)}</span>}</span>
-      </button>
+      const hint = key === 'all' ? undefined : kindTip(key, bot)
+      // The (?) sits beside the pill, not in it, so opening the tip never picks the kind.
+      return <span key={key} className="flex shrink-0 items-center gap-0.5">
+        <button type="button" role="radio" aria-checked={on} disabled={disabled} onClick={() => onChange(key)} className="flex min-h-11 shrink-0 items-center disabled:opacity-40 sm:min-h-8">
+          <span className={`flex h-8 items-center gap-1.5 rounded-full border px-3 text-[13px] ${on ? PILL_ON : 'border-border text-text'}`}>{t(label)}{count !== undefined && <span className={`tabular-nums ${on ? 'opacity-70' : 'text-muted'}`}>{fmtNumber(count)}</span>}</span>
+        </button>
+        {hint && <InfoTip text={hint} />}
+      </span>
     })}
   </div>
 }
@@ -91,12 +98,17 @@ export function SortControl({ view, onChange }: { view: ListView; onChange: (sor
   </div>
 }
 
-export function FacetCheck({ label, count, on, warn, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; onToggle: () => void }) {
-  return <label className="grid min-h-11 cursor-pointer items-center gap-2 text-[13px] text-text sm:min-h-8" style={{ gridTemplateColumns: '16px minmax(0,1fr) 48px' }}>
-    <input type="checkbox" aria-label={label} className="h-4 w-4 accent-accent" checked={on} onChange={onToggle} />
-    <span className={`truncate ${warn ? 'text-warn-text' : ''}`} title={label}>{label}</span>
-    <span className="text-right text-[12px] tabular-nums text-muted">{fmtNumber(count)}</span>
-  </label>
+/** One rail value: its checkbox, label and count. A `hint` adds a (?) after the
+ *  label that explains it; the (?) sits outside the label, so pressing it, by
+ *  mouse, key or touch, opens the tip and never ticks the box. */
+export function FacetCheck({ label, count, on, warn, hint, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; hint?: string; onToggle: () => void }) {
+  const id = useId()
+  return <div data-facet-row className="grid min-h-11 items-center gap-x-2 text-[13px] text-text sm:min-h-8" style={{ gridTemplateColumns: `16px minmax(0,1fr)${hint ? ' auto' : ''} 48px` }}>
+    <input id={id} type="checkbox" aria-label={label} className="h-4 w-4 cursor-pointer accent-accent" checked={on} onChange={onToggle} />
+    <label htmlFor={id} className={`cursor-pointer truncate ${warn ? 'text-warn-text' : ''}`} title={label}>{label}</label>
+    {hint && <InfoTip text={hint} />}
+    <label htmlFor={id} className="cursor-pointer text-right text-[12px] tabular-nums text-muted">{fmtNumber(count)}</label>
+  </div>
 }
 
 /** A rail group's values, at most 16 rows high; past that the group scrolls, with a
@@ -124,8 +136,10 @@ export function GroupScroll({ capped, children }: { capped: boolean; children: R
 
 /** The filter groups with live counts from `facets=1`, and the confidence range.
  *  A box at the top narrows every group's values by label. */
-export function FilterPanel({ view, facets, trailing, capped = false, onToggle, onRange }: {
+export function FilterPanel({ view, facets, trailing, capped = false, bot, onToggle, onRange }: {
   view: ListView; facets?: MemoryRecordFacets
+  /** The bot this store belongs to, named in the (?) tips. */
+  bot?: string
   /** A control at the end of the search row (the wide rail's hide button). */
   trailing?: ReactNode
   /** The wide rail: each group scrolls inside 16 rows. */
@@ -169,7 +183,7 @@ export function FilterPanel({ view, facets, trailing, capped = false, onToggle, 
       return <section key={group} aria-label={heading}>
         <PanelSectionHeader label={heading} />
         <GroupScroll capped={capped}>
-          {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={() => onToggle(group, value)} />)}
+          {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} hint={group === 'source' ? sourceTip(value, bot) : undefined} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={() => onToggle(group, value)} />)}
         </GroupScroll>
       </section>
     })}

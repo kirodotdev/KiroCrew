@@ -127,6 +127,20 @@ describe('the memory list', () => {
     await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all' }))
   })
 
+  it('puts a (?) beside each kind pill that opens without picking the kind', async () => {
+    renderWithProviders(<List />)
+    await screen.findByText('Work in a worktree')
+    const pills = screen.getByRole('radiogroup', { name: 'Memory type' })
+    const lessons = within(pills).getByRole('radio', { name: /^Lessons/ })
+    const tip = lessons.parentElement!.querySelector('button[aria-label]:not([role])') as HTMLButtonElement
+    fireEvent.click(tip)
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+    expect(lessons).toHaveAttribute('aria-checked', 'false')
+    expect(lastView()[1]).toEqual({ q: '', kind: 'all' })
+    // All has no tip: it is every kind.
+    expect(within(pills).getByRole('radio', { name: /^All/ }).parentElement!.querySelector('button:not([role])')).toBeNull()
+  })
+
   it('ranks a search by Best match, and falls back to the picked sort when it is cleared', async () => {
     renderWithProviders(<List />)
     await screen.findByText('Work in a worktree')

@@ -512,7 +512,7 @@ describe('MemoryTab — lessons', () => {
     const sources = lessonRows().map((tr) => tr.querySelector('td:nth-child(4)'))
       .map((td) => td?.textContent)
     expect(sources).toEqual([
-      'Saved by you or the agent',
+      'Saved on purpose',
       'Learned from chat',
       'Learned from a task',
       'init',

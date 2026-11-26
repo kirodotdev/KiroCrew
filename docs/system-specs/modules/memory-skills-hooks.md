@@ -1917,6 +1917,10 @@ the unsafe-text block) into one Refused item whose count is their sum; a
 row's chip still names the exact refusal. The detail panel shows the key, kind,
 source, time, raw `event_type`, the value before and after, and for a refusal
 one sentence naming the rule (`memoryAuditLabels`). Nothing prunes the table.
+Each Event, Kind and Source value in the rails, and each kind pill, carries a (?)
+with one sentence on what the type means (`memoryTypeTips`); on a bot's page a
+tip that speaks of the bot names it. The (?) sits outside the checkbox's label
+and beside the pill, so opening it never ticks a filter or picks a kind.
 Test recall, on the global page too, shows two panes: At session start
 (`GET /api/memory/context-preview`, the prompt path, with no task) and, once a
 task is typed, With this message (`GET /api/memory/recall`), with the exact text

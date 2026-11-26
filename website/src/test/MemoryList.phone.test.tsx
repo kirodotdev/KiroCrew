@@ -110,7 +110,7 @@ describe('the filter sheet', () => {
     expect(within(sheet).getByRole('checkbox', { name: 'website/src/pages' })).toBeVisible()
     expect(within(sheet).queryByRole('checkbox', { name: 'Tool' })).toBeNull()
     expect(within(sheet).queryByRole('checkbox', { name: 'All repos' })).toBeNull()
-    expect(within(within(sheet).getByRole('checkbox', { name: 'src/kiro_crew' }).closest('label')!).getByText('1')).toBeVisible()
+    expect(within(within(sheet).getByRole('checkbox', { name: 'src/kiro_crew' }).closest('[data-facet-row]') as HTMLElement).getByText('1')).toBeVisible()
     fireEvent.change(find, { target: { value: 'zzz' } })
     expect(within(sheet).getByRole('status')).toHaveTextContent('No memories match your search')
     fireEvent.change(find, { target: { value: '' } })
@@ -181,7 +181,7 @@ describe('row chips as filters', () => {
     await waitFor(() => expect(within(list()).getByRole('button', { name: '#worktree' })).toHaveAttribute('aria-pressed', 'true'))
     fireEvent.click(within(list()).getByRole('button', { name: '#worktree' }))
     await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all' }))
-    for (const name of ['website', 'On topic', 'Lesson · Tool', 'Saved by you or the agent']) {
+    for (const name of ['website', 'On topic', 'Lesson · Tool', 'Saved on purpose']) {
       fireEvent.click((await within(await screen.findByRole('list', { name: 'Memories' })).findAllByRole('button', { name }))[0])
     }
     await waitFor(() => expect(lastView()[1]).toEqual({ q: '', kind: 'all', filters: { scope: ['website'], applies: ['on_topic'], category: ['tool'], source: ['user_explicit'] } }))

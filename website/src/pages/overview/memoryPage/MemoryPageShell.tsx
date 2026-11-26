@@ -28,11 +28,13 @@ const TABS: [MemoryPageTab, string][] = [
   ['failures', 'memoryPage.tab_failures'], ['audit', 'memoryPage.tab_audit'], ['settings', 'memoryPage.tab_settings'],
 ]
 
-export default function MemoryPageShell({ id, label, switcher, notices, embedded, initialTab = 'memories', mountAll = false, canCreate, canRecall, onCopy, copyDisabled, onCreated, onDraftChange, memories, panels }: {
+export default function MemoryPageShell({ id, label, botName, switcher, notices, embedded, initialTab = 'memories', mountAll = false, canCreate, canRecall, onCopy, copyDisabled, onCreated, onDraftChange, memories, panels }: {
   /** Distinguishes this store's tab underline from another store's as it slides. */
   id: string
   /** The store's name: the tab list's accessible name and the phone sheet's title. */
   label: string
+  /** The bot this store belongs to, named in the (?) tips; none on the global page. */
+  botName?: string
   /** The store switcher, at the left of the header row. */
   switcher: ReactNode
   /** Store notices (a refused store list, a missing database), under the header row. */
@@ -126,7 +128,7 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
       {panel('profile', panels.profile)}
       {panel('recovery', panels.recovery)}
       {panel('failures', panels.failures)}
-      {panel('audit', <MemoryAudit store={id} />)}
+      {panel('audit', <MemoryAudit store={id} botName={botName} />)}
       {panel('settings', panels.settings)}
     </Tabs>
     </MemoryJumpContext.Provider>

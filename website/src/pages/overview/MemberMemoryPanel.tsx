@@ -192,11 +192,11 @@ export default function MemberMemoryPanel({ store, summary, onDirtyChange, focus
     </Card></div>
   }
   return <div className="min-w-0 space-y-4">
-    <MemoryPageShell id={store} label={summary.owner_member || summary.name} switcher={switcher} embedded={<MemoryEmbeddedLine store={store} />}
+    <MemoryPageShell id={store} label={summary.owner_member || summary.name} botName={summary.owner_member || undefined} switcher={switcher} embedded={<MemoryEmbeddedLine store={store} />}
       notices={<>{notices}{!privateMemory && !summary.is_default && <p className="text-[13px] text-muted">{t('pages.kiroCrewAgentsPage.private_memory_legacy')}</p>}</>}
       initialTab={focusFailures ? 'failures' : focusGraph ? 'graph' : 'memories'} canCreate={false} canRecall={privateMemory}
       onCopy={privateMemory ? () => setCopying(true) : undefined} copyDisabled={!summary.exists}
-      memories={controls => <MemoryList jump={controls.jump} store={store} storeName={summary.owner_member || summary.name} privateMemory={privateMemory} focusKey={focusLessonKey}
+      memories={controls => <MemoryList jump={controls.jump} store={store} storeName={summary.owner_member || summary.name} botName={summary.owner_member || undefined} privateMemory={privateMemory} focusKey={focusLessonKey}
         selecting={controls.selecting} onSelectingChange={controls.setSelecting} recallOpen={controls.recallOpen} onRecallOpenChange={controls.setRecallOpen}
         onDirtyChange={setRecordsDirty} onRecovery={() => controls.openTab('recovery')}
         emptyActions={<>{privateMemory && <Btn className="min-h-11" onClick={openMember}><ArrowUpRight className="lucide-inline" />{t('memoryV2.open_member')}</Btn>}{privateMemory && <Btn className="min-h-11" disabled={!summary.exists} onClick={() => setCopying(true)}><Copy className="lucide-inline" />{t('memoryPage.copy_from')}</Btn>}</>} />}

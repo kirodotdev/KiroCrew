@@ -52,8 +52,10 @@ export const SWITCH_INLINE_MIN = 512
 const clampRail = (width: number) => Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(width)))
 const SELECT_ALL_LIMIT = 10000
 
-export default function MemoryList({ jump, store, privateMemory, canRecall = privateMemory, focusKey, focusLessons = false, selecting, onSelectingChange, recallOpen, onRecallOpenChange, onDirtyChange, onRecovery, emptyActions, storeName }: {
+export default function MemoryList({ jump, store, botName, privateMemory, canRecall = privateMemory, focusKey, focusLessons = false, selecting, onSelectingChange, recallOpen, onRecallOpenChange, onDirtyChange, onRecovery, emptyActions, storeName }: {
   store: string; privateMemory: boolean
+  /** The bot this store belongs to, named in the (?) tips; none on the global page. */
+  botName?: string
   /** Test recall in the toolbar: a bot's store, and the global one. */
   canRecall?: boolean
   /** A saved lesson landing (`?lesson=`), searched by key without replacing the saved view. */
@@ -220,7 +222,7 @@ export default function MemoryList({ jump, store, privateMemory, canRecall = pri
   const meaningUnavailable = (records.error as { status?: number } | null)?.status === 409
   const narrowed = !!view.q || view.kind !== 'all' || activeFilterCount(view.filters) > 0 || !!view.range
   const filterCount = activeFilterCount(filtersForKind(view.filters, view.kind))
-  const filterPanel = <FilterPanel view={view} facets={facets} onToggle={onToggleFilter} onRange={onRange} />
+  const filterPanel = <FilterPanel bot={botName} view={view} facets={facets} onToggle={onToggleFilter} onRange={onRange} />
 
   // Under a score sort, rows with no score come last, newest first; a divider marks where.
   const scoreSort = sort === 'confidence' || sort === 'importance'
@@ -267,7 +269,7 @@ export default function MemoryList({ jump, store, privateMemory, canRecall = pri
       {!phone && canRecall && <Btn className="min-h-10 shrink-0 whitespace-nowrap" {...uiLocation('memory.test-recall')} onClick={() => onRecallOpenChange(true)}><Sparkles className="lucide-inline" />{t('memoryPage.test_recall')}</Btn>}
     </div></div>}
     {!selecting && <SavedTopics topics={topics.topics} query={view.q} canSave={meaning} onRun={runTopic} onRemove={topics.remove} onSave={() => topics.save(view.q)} />}
-    <KindPills wrap={!phone} kind={view.kind} counts={facets?.kind} disabled={locked} onChange={(kind: KindTab) => change({ kind })} />
+    <KindPills bot={botName} wrap={!phone} kind={view.kind} counts={facets?.kind} disabled={locked} onChange={(kind: KindTab) => change({ kind })} />
     <ActiveFilters range={view.range} rangeField={dateField} onClearRange={() => setRange(undefined)} filters={filtersForKind(view.filters, view.kind)} onToggle={onToggleFilter} onRange={onRange} onClear={clearFilters} onClearRefs={() => { setJumpFocus(null); change({ filters: Object.fromEntries(Object.entries(view.filters).filter(([key]) => key !== 'ref')) }) }} />
   </div>
 
@@ -312,7 +314,7 @@ export default function MemoryList({ jump, store, privateMemory, canRecall = pri
     {phone ? <div className="space-y-4">{toolbar}{list}{detailPanel}</div> : <div className="flex gap-6">
       {/* The rail stays in view while the list scrolls, as tall as the window, and scrolls on its own. */}
       {!compact && <FilterRail open={railOpen} width={railWidth} onResize={resizeRail}>
-        <FilterPanel capped view={view} facets={facets} onToggle={onToggleFilter} onRange={onRange}
+        <FilterPanel bot={botName} capped view={view} facets={facets} onToggle={onToggleFilter} onRange={onRange}
           trailing={<IconButton aria-label={t('memoryPage.hide_filters')} title={t('memoryPage.hide_filters')} aria-expanded className="pi-morph -mr-2.5 flex h-9 w-9 shrink-0 items-center justify-center text-muted" onClick={() => setRailOpen(false)}><PanelLeftLight size={16} aria-hidden="true" /></IconButton>} />
       </FilterRail>}
       <div className="min-w-0 flex-1 space-y-4">{toolbar}{list}</div>

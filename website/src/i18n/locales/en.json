@@ -10150,7 +10150,7 @@
         "source_consolidation": "Learned from chat",
         "source_taskrunner": "Learned from a task",
         "source_unknown": "Unknown",
-        "source_user_explicit": "Saved by you or the agent",
+        "source_user_explicit": "Saved on purpose",
         "summarize_now": "Summarize now",
         "tool": "tool",
         "when": "When"
@@ -10371,7 +10371,6 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · runs locally in-process",
         "key_e_g_pref_backend_framework": "Key (e.g. pref.backend.framework)",
-        "load_more": "Load more…",
         "model_loaded_embedding_engine_is_starting_up": "Model loaded. Embedding engine is starting up.",
         "model_loading": "model loading",
         "open_embedding_model_settings": "Open embedding model settings",

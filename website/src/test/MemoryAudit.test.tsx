@@ -35,9 +35,9 @@ describe('the Audit tab', () => {
     renderWithProviders(<MemoryAudit store="reviewer" />)
     const rail = await screen.findByRole('complementary', { name: 'Filters' })
     const refused = await within(rail).findByRole('checkbox', { name: 'Refused' })
-    expect(refused.closest('label')).toHaveTextContent('8')
-    expect(within(rail).getByRole('checkbox', { name: 'Blocked: unsafe text' }).closest('label')).toHaveTextContent('2')
-    expect(within(rail).getByRole('checkbox', { name: 'Lessons' }).closest('label')).toHaveTextContent('12')
+    expect(refused.closest('[data-facet-row]')).toHaveTextContent('8')
+    expect(within(rail).getByRole('checkbox', { name: 'Blocked: unsafe text' }).closest('[data-facet-row]')).toHaveTextContent('2')
+    expect(within(rail).getByRole('checkbox', { name: 'Lessons' }).closest('[data-facet-row]')).toHaveTextContent('12')
     fireEvent.click(refused)
     await waitFor(() => expect(lastQuery().filters.event).toEqual(['allowlist_reject', 'low_confidence', 'reserved_prefix', 'value_empty', 'work_state', 'consolidation_value_size']))
     expect(api.memoryEvents.mock.calls.every(([store]) => store === 'reviewer')).toBe(true)
@@ -45,6 +45,27 @@ describe('the Audit tab', () => {
     expect(screen.getByRole('button', { name: 'Remove filter: Refused' })).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Clear all' }))
     await waitFor(() => expect(lastQuery().filters).toEqual({}))
+  })
+
+  it('gives each known type a (?) that opens on a press or a key and never ticks the box', async () => {
+    renderWithProviders(<MemoryAudit store="reviewer" botName="reviewer" />)
+    const rail = await screen.findByRole('complementary', { name: 'Filters' })
+    const row = (await within(rail).findByRole('checkbox', { name: 'Refused' })).closest('[data-facet-row]') as HTMLElement
+    const tip = within(row).getByRole('button')
+    const before = api.memoryEvents.mock.calls.length
+    fireEvent.click(tip)
+    expect(within(row).getByRole('checkbox')).not.toBeChecked()
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+    expect(api.memoryEvents.mock.calls.length).toBe(before)
+    // Every event, kind and source the store knows has one; a focusable button reaches it by keyboard.
+    for (const name of ['Saved', 'Blocked: unsafe text', 'Facts', 'Lessons', 'Experiences', 'Learned from chat', 'Saved on purpose']) {
+      const each = within(rail).getByRole('checkbox', { name }).closest('[data-facet-row]') as HTMLElement
+      expect(within(each).getByRole('button')).not.toHaveAttribute('tabindex', '-1')
+    }
+    // On a bot's page a tip that speaks of the bot names it.
+    const lessons = within(rail).getByRole('checkbox', { name: 'Lessons' }).closest('[data-facet-row]') as HTMLElement
+    fireEvent.click(within(lessons).getByRole('button'))
+    await waitFor(() => expect(screen.getAllByRole('tooltip').some(node => node.textContent!.includes('reviewer'))).toBe(true))
   })
 
   it('loads the next page as the end comes near and says how many are shown', async () => {

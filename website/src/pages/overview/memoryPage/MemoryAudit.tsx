@@ -30,6 +30,7 @@ import { MemoryDetailSlide } from './MemoryDetailSlide'
 import { DateRangeButton, rangeLabel } from './MemoryDateRange'
 import { rangeBounds, type DateRange } from './memoryDateRange'
 import { facetLabel, sourceGroup } from './memoryListView'
+import { eventTip, kindTip, sourceTip } from './memoryTypeTips'
 import { eventCodes, eventLabel, eventTone, eventWhy, railEvents } from './memoryAuditLabels'
 
 const PAGE_SIZE = 50
@@ -45,6 +46,9 @@ type Picked = Partial<Record<MemoryAuditGroup, string[]>>
 const valueLabel = (group: MemoryAuditGroup, value: string) =>
   group === 'event' ? eventLabel(value) : group === 'kind' ? (KIND_KEYS[value as MemoryRecordKind] ? i18nT(KIND_KEYS[value as MemoryRecordKind]) : value) : facetLabel('source', value)
 
+const groupTip = (group: MemoryAuditGroup, value: string, bot?: string) =>
+  group === 'event' ? eventTip(value, bot) : group === 'kind' ? kindTip(value, bot) : sourceTip(value, bot)
+
 /** A stored value as the row and the detail read it: a JSON string unquoted. */
 function shownValue(raw: string | null): string {
   if (raw === null || raw === undefined) return ''
@@ -58,7 +62,7 @@ function eventTitle(event: MemoryAuditEvent): string {
   return value ? `${event.memory_key} = ${value}` : event.memory_key
 }
 
-export default function MemoryAudit({ store }: { store: string }) {
+export default function MemoryAudit({ store, botName }: { store: string; botName?: string }) {
   const { t } = useTranslation()
   const phone = useIsMobile()
   const [input, setInput] = useState('')
@@ -141,7 +145,7 @@ export default function MemoryAudit({ store }: { store: string }) {
       return <section key={group} aria-label={heading}>
         <PanelSectionHeader label={heading} />
         <GroupScroll capped={capped}>
-          {values.map(value => <FacetCheck key={value} label={valueLabel(group, value)} count={groupCounts[value] || 0} on={ticked.includes(value)} onToggle={() => toggle(group, value)} />)}
+          {values.map(value => <FacetCheck key={value} label={valueLabel(group, value)} hint={groupTip(group, value, botName)} count={groupCounts[value] || 0} on={ticked.includes(value)} onToggle={() => toggle(group, value)} />)}
         </GroupScroll>
       </section>
     })}
