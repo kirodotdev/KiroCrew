@@ -267,3 +267,97 @@ def test_a_hash_tag_line_stays_body_text():
     assert [c["section_title"] for c in chunks] == ["Notes"]
     assert "#tag" in chunks[0]["content"]
     assert "####### seven" in chunks[0]["content"]
+
+
+class _CopyCounter(str):
+    """A str that counts the characters its slices and splits copy."""
+
+    def __new__(cls, value: str, counter: list[int]):
+        self = super().__new__(cls, value)
+        self.counter = counter
+        return self
+
+    def __getitem__(self, key):
+        out = str.__getitem__(self, key)
+        if isinstance(key, slice):
+            self.counter[0] += len(out)
+        return out
+
+    def split(self, *args, **kwargs):
+        self.counter[0] += len(self)
+        return str.split(self, *args, **kwargs)
+
+
+def test_a_heading_dense_document_is_not_copied_once_per_heading():
+    """Each section's first line comes from the pass that found it, not a prefix slice.
+
+    Counting copied characters, rather than timing, keeps the check
+    deterministic: a prefix slice per heading copies about half the document
+    each time, so the total grows with the square of the heading count.
+    """
+    doc = "".join(f"## h{i}\nbody line {i}\n" for i in range(2000))
+    counter = [0]
+    chunks = HeadingAwareChunker().chunk_markdown(_CopyCounter(doc, counter))
+    assert chunks
+    assert counter[0] <= 8 * len(doc)
+
+
+_OVERSIZED = (
+    "## Small\nfew words\n## Big\n"
+    + "alpha beta gamma delta epsilon.\n\n" * 6
+    + "## Tail\nlast words\n"
+)
+
+_FIXED_DOCUMENTS = {
+    "fenced": ("intro\n# Top\n```\n# not a heading\n```\n## Sub\nbody\n", 800),
+    "empty headings": ("#\nfirst\n## \nsecond\n## Named\nthird\n", 3),
+    "tags": ("# Notes\n#tag\nmore text\n####### seven\n## Next\nend\n", 6),
+    "preamble": ("opening line\nsecond line\n## H1\nbody one\n## H2\nbody two\n", 5),
+    "oversized": (_OVERSIZED, 12),
+    "oversized after a preamble": ("lead in\n\n" + _OVERSIZED, 12),
+    "over the chunk cap": ("".join(f"## h{i}\nbody {i}\n" for i in range(200)), 3),
+}
+
+# (chunk count, first three, last three) of (section_title, line_start,
+# line_end, len(content)), taken from main before the change: nothing may move.
+_FIXED_EXPECTED: dict[str, tuple] = {
+    "empty headings": (
+        3,
+        [(None, 1, 2, 7), (None, 3, 4, 10), ("Named", 5, 6, 14)],
+        [(None, 1, 2, 7), (None, 3, 4, 10), ("Named", 5, 6, 14)],
+    ),
+    "fenced": (1, [("Top", 1, 7, 48)], [("Top", 1, 7, 48)]),
+    "over the chunk cap": (
+        50,
+        [("h0", 1, 4, 25), ("h2", 5, 8, 25), ("h4", 9, 12, 25)],
+        [("h94", 189, 192, 29), ("h96", 193, 196, 29), ("h98", 197, 200, 29)],
+    ),
+    "oversized": (
+        8,
+        [("Small", 1, 2, 18), ("Big", 3, 4, 38), ("Big", 6, 6, 31)],
+        [("Big", 12, 12, 31), ("Big", 14, 14, 31), ("Tail", 16, 17, 18)],
+    ),
+    "oversized after a preamble": (
+        8,
+        [("Small", 1, 4, 26), ("Big", 5, 6, 38), ("Big", 8, 8, 31)],
+        [("Big", 14, 14, 31), ("Big", 16, 16, 31), ("Tail", 18, 19, 18)],
+    ),
+    "preamble": (
+        3,
+        [(None, 1, 2, 24), ("H1", 3, 4, 14), ("H2", 5, 6, 14)],
+        [(None, 1, 2, 24), ("H1", 3, 4, 14), ("H2", 5, 6, 14)],
+    ),
+    "tags": (
+        3,
+        [("Notes", 1, 3, 22), ("Notes", 4, 4, 13), ("Next", 5, 6, 11)],
+        [("Notes", 1, 3, 22), ("Notes", 4, 4, 13), ("Next", 5, 6, 11)],
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_FIXED_DOCUMENTS))
+def test_chunk_lists_of_fixed_documents_are_unchanged(name):
+    text, target = _FIXED_DOCUMENTS[name]
+    chunks = HeadingAwareChunker(target_size=target).chunk_markdown(text)
+    got = [(c["section_title"], c["line_start"], c["line_end"], len(c["content"])) for c in chunks]
+    assert (len(got), got[:3], got[-3:]) == _FIXED_EXPECTED[name]

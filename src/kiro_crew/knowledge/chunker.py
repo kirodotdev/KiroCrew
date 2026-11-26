@@ -391,10 +391,10 @@ class HeadingAwareChunker:
         # starts a section, with no title. Plain string checks rather than a
         # pattern: a heading is 1-6 "#" then a space, a tab or the line end.
         spans = list(iter_fence_spans(text))
-        splits: list[tuple[int, str | None]] = []
+        splits: list[tuple[int, str | None, int]] = []
         k = 0
         offset = 0
-        for line in text.split("\n"):
+        for lineno, line in enumerate(text.split("\n"), 1):
             start, offset = offset, offset + len(line) + 1
             heading = _heading_at(line)
             if heading is None:
@@ -402,24 +402,23 @@ class HeadingAwareChunker:
             while k < len(spans) and spans[k][1] <= start:
                 k += 1
             if k == len(spans) or start < spans[k][0]:
-                splits.append((start, heading[1]))
+                splits.append((start, heading[1], lineno))
 
         if not splits:
             # No headings — fall back to generic chunking
             return self.chunk(text)
 
-        sections: list[tuple[str | None, int, str]] = []
-        for i, (start_pos, title) in enumerate(splits):
+        sections: list[tuple[str | None, int, str, int]] = []
+        for i, (start_pos, title, line_start) in enumerate(splits):
             end_pos = splits[i + 1][0] if i + 1 < len(splits) else len(text)
             body = text[start_pos:end_pos]
-            line_start = text[:start_pos].count("\n") + 1
-            sections.append((title, line_start, body))
+            sections.append((title, line_start, body, start_pos))
 
         # Include any text before the first heading
         if splits[0][0] > 0:
             preamble = text[: splits[0][0]].strip()
             if preamble:
-                sections.insert(0, (None, 1, preamble))
+                sections.insert(0, (None, 1, preamble, 0))
 
         # Merge small sections, split oversized ones
         results: list[dict] = []
@@ -428,6 +427,7 @@ class HeadingAwareChunker:
         current_body = ""
         current_start = 1
         current_end = 1
+        current_offset = 0
 
         def _section_end_line(line_start: int, body: str) -> int:
             """Last source line the section body's own text occupies.
@@ -447,9 +447,7 @@ class HeadingAwareChunker:
             if _word_count(current_body) > self.target_size:
                 # An oversized body is a single unmerged section, so each sub
                 # piece is located in the source from the section's first line.
-                cursor, line = 0, current_start
-                if current_start > 1:
-                    cursor = len(text) - len(text.split("\n", current_start - 1)[-1])
+                cursor, line = current_offset, current_start
                 for sub in self._recursive_split(current_body, _SEPARATORS):
                     at, end = _span(text, sub, cursor)
                     sub_line_start = line + text.count("\n", cursor, at)
@@ -481,11 +479,12 @@ class HeadingAwareChunker:
                 )
                 idx += 1
 
-        for title, line_start, body in sections:
+        for title, line_start, body, body_offset in sections:
             if not current_body:
                 current_title = title
                 current_body = body
                 current_start = line_start
+                current_offset = body_offset
                 current_end = _section_end_line(line_start, body)
             elif _word_count(current_body + body) <= self.target_size:
                 current_body += "\n" + body
@@ -497,6 +496,7 @@ class HeadingAwareChunker:
                 current_title = title
                 current_body = body
                 current_start = line_start
+                current_offset = body_offset
                 current_end = _section_end_line(line_start, body)
 
         if current_body.strip():
