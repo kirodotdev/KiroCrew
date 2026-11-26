@@ -6975,9 +6975,10 @@ Writers: `apps/worker_slots.py`. Tests: `test/test_apps_worker_slots.py`.
 
 A slot's `mode` is fixed at creation, and the chat sidebar lists only `""` slots, so an
 app whose throwaway worker slots must stay off the sidebar creates them under a mode of
-its own. `POST /api/chat/slots` and the auto-create on `POST /api/chat` accept only
+its own. `POST /api/chat/slots` and the auto-create on `POST /api/chat` accept
 `chat_handlers._CREATABLE_MODES`, which is `""` followed by `seams.worker_slot_modes()`
-(section 30); the core spells no app's mode.
+(section 30), plus the creating app's own id when that app declares hidden sessions
+(below); the core spells no app's mode.
 
 - **Registration.** A builtin's `seams.py` calls `seams.register_worker_slot_mode(app_id)`
   with its own id when it is imported. A non-`str` id is refused with `ValueError`; the
@@ -6994,8 +6995,12 @@ its own. `POST /api/chat/slots` and the auto-create on `POST /api/chat` accept o
   `apps/hidden_sessions.may_hide_sessions` holds: installed, enabled, trusted to
   execute (`third_party_ceiling_closed`) and declaring, and never for a mode core gives
   a meaning (`member`, a retired mode). Any other mode is `400 invalid_mode`, so an app
-  hides only chats it creates; an existing chat keeps its mode, and the auto-create on
-  `POST /api/chat` is unchanged. The Older-sessions listing (`GET /api/sessions?user_only=1`,
+  hides only chats it creates; an existing chat keeps its mode. The auto-create on
+  `POST /api/chat` asks the same `_app_hides_own_mode` of the same request, and only
+  when that send creates the slot (a chat that lived in memory, recreated by the
+  app's next send after a restart): the mode is kept exactly when the create route
+  would take it, and any other is dropped to `""` rather than refused, as an
+  unlisted mode always was there. The Older-sessions listing (`GET /api/sessions?user_only=1`,
   `history_reads.user_hidden_modes`) and its "Delete all" leave out a row whose `mode`
   names such an app, so a chat its app may not hide right now is listed; resuming it
   (`hidden_sessions.resume_keeps_mode`, read off the loop by the resume and handed to
@@ -7008,6 +7013,7 @@ its own. `POST /api/chat/slots` and the auto-create on `POST /api/chat` accept o
   it (`HiddenSessionsBox`); the `chatSlots` copy is unchanged, since chats opened through `ctx.chat_slots.open` stay listed unless the app passes `hidden=True`, which asks `may_hide_sessions` off the loop, creates the slot with `mode` equal to the app's id and `_app` stamped as for any SDK slot, and raises `ChatSlotRefused` (nothing created) when the app may not hide. An open chat lists by `hidden_sessions.listed_surface`, the resume rule: its slot `surface` turns `""` once its app may not hide it, so it shows in the sidebar and on /chat again. A mode that names no app (a built-in's worker mode, any other mode) mirrors as before. The listing reads only the set of hiding apps that `refresh_hiding_apps` computes in a worker thread at startup and after each app record write, owner disable, uninstall, trust write and live edit of an `agent.apps_*` trust setting (`watch_trust_config`), then resends the slots frame when the set changes; before a set is published, or when the refresh fails, the chat is shown. It grants nothing: the app's page already runs with the dashboard's
   authority, and the mode only moves a chat the app itself creates out of a list.
   Writers: `apps/hidden_sessions.py`, `apps/chat_slot_sdk.py`, `dashboard/chat_api/slot_create.py`,
+  `dashboard/chat_api/chat_send.py`,
   `dashboard/handlers/sessions_parts/history_reads.py`. Tests:
   `test/test_app_hidden_sessions.py`,
   `website/src/hooks/websocket/hiddenSessionApprovalNotify.test.ts`.
@@ -8893,7 +8899,7 @@ frozen-copy tests above; row 8 reads no wheel file; row 10 is no limit.
 | 2 | the own-server grant (`builtin_adoption_gate.adopted_app_own_mcp_servers`, with the wheel agent map `execution.builtin_app_agents`) | grants nothing: an adopted app's calls to its own servers ask, and an unattended run is refused when its card expires | fail-closed | auto-improvement, mochi |
 | 3 | the `agentTools` ceiling (`app_agent_tools._adopted_first_party_apps`, `_within_wheel_copy`) | an adopted app's tools are not listed, and a call is refused as `unknown_tool` (`dashboard/handlers/app_agent_tools.py`, `mcp_tools/app_tools.py`) | fail-closed | design-tweak, dev-fleet, issue-radar, ops-mission-control |
 | 4 | the gate's `app-own-tools` row (`own_agent_tools.gate_grants`: the wheel agent map and the wheel `agentTools`) | approves nothing, so the app's own agent's calls to its own tools ask | fail-closed | the apps of row 3 |
-| 5 | the built-in seam providers (`seams._load_builtin_seams` imports `builtins/<package>/seams.py` only) | design-critique's worker slot mode leaves `chat_handlers._CREATABLE_MODES` (read once at import): `POST /api/chat/slots` refuses the mode unless the app may hide sessions, and a send that recreates the slot drops it to `""`. aws-control's `crew_runtime`, `aws_account_policy` and `transfer_staging` answer None, so their core callers degrade or refuse | breaks (fail-closed) | design-critique, aws-control |
+| 5 | the built-in seam providers (`seams._load_builtin_seams` imports `builtins/<package>/seams.py` only) | design-critique's worker slot mode leaves `chat_handlers._CREATABLE_MODES` (read once at import): unless the app may hide sessions (section 23a), `POST /api/chat/slots` refuses the mode and a send that recreates the slot drops it to `""`; a pinned tree that declares `permissions.hiddenSessions` keeps it on both. aws-control's `crew_runtime`, `aws_account_policy` and `transfer_staging` answer None, so their core callers degrade or refuse | breaks (fail-closed) | design-critique, aws-control |
 | 6 | the built-in host grants (`builtin_host_grants.builtin_host_grants` imports `builtins/<package>/host_grants.py` only) | dev-fleet's two pod-token mint routes leave `kiro_relay.limits`' relay credential set, so a relayed caller is **no longer refused** there; its five `/pod/*` routes leave the strict internal set and refuse the internal-secret caller; its BUILD rlimit, `KIROCREW_DEVFLEET_*` forwarding and `dev_fleet` config key go | **fail-open** (relay refusal); fail-closed (strict paths) | dev-fleet |
 | 7 | the record's `app.json` copy and approved grants, which `register_builtin_apps` rewrites from the wheel at every start | **handled**: both stay as the host's last release left them, so E9 and the swap read the row's `deletedCopy` instead (`builtin_adoption_baseline.no_copy_baseline`, "The row freezes the deleted copy for E9" above): the host adopts with the grants the last copy's registration would have stored; a row without one vouches for nothing, so any declared grant is `permission_widening` | fail-closed only past the frozen copy | none once the deletion PR freezes the copy (`adoption_pin.py freeze`) |
 | 8 | not a wheel read: `registry_pipeline/install._adoption_pending` with `builtin_adoption.pending_install_refusal` | when STAGE is refused (rows 1 and 7), the builtin-owned record runs no code and an App Store install is refused `adoption_pending` with a message saying the app "stays a built-in app", which no longer holds: a dead end | fail-closed, no way out | the apps of rows 1 and 7 |
