@@ -36,7 +36,11 @@ from kiro_crew.slack.handler import (
     is_shared_user,
     shared_user_refused_for_session,
 )
-from kiro_crew.slack.interactions_context import _orch, register_view_handler
+from kiro_crew.slack.interactions_context import (
+    _orch,
+    _start_interaction_turn,
+    register_view_handler,
+)
 from kiro_crew.slack.shared_access import SHARED_OWNER_ONLY_TEXT, shared_command_refused
 from kiro_crew.start_priority import StartPriority
 
@@ -698,9 +702,8 @@ async def _handle_review_revise_submit(payload: dict) -> None:
             )
             logger.exception("Review revision failed for %s in %s", caller, channel)
 
-    t = asyncio.create_task(_do_revise())
-    _orch._handler_tasks.add(t)
-    t.add_done_callback(_orch._handler_tasks.discard)
+    # The thread's router task while it runs, so a message typed meanwhile is answered.
+    _start_interaction_turn(_orch, _do_revise(), thread_ts, thread_ts)
 
 
 register_view_handler("mc_review_revise_submit", _handle_review_revise_submit)

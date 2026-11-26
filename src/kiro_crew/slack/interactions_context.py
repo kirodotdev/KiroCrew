@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine
 
 import aiohttp
 
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.http_proxy import resolve_proxy
+from kiro_crew.slack.events_queue import _drain_slack_queue, _spawn_tracked, _track_router_task
 from kiro_crew.slack.scope_probe import log_probe_failure, warn_unreadable_tracked_channels
 
 if TYPE_CHECKING:
@@ -36,6 +37,58 @@ logger = logging.getLogger("kiro_crew.slack.interactions")
 
 # Module-level orchestrator reference — set by ``init()``.
 _orch: GatewayOrchestrator | None = None
+
+
+def _start_interaction_turn(
+    orch: GatewayOrchestrator,
+    coro: Coroutine[Any, Any, None],
+    session_key: str,
+    thread_ts: str | None,
+) -> asyncio.Task[None]:
+    """Start the turn an interaction opened, as *session_key*'s router task once the key is free.
+
+    A message typed while this turn holds the session is queued with ⏳, because the
+    router reads the key as busy (``_key_busy``) or the session's semaphore refuses it.
+    Only a router task's end drains that queue, so a turn the router never registered
+    leaves the queued message waiting until some later typed turn ends. Registered like a
+    routed turn, this one's end runs ``_drain_slack_queue``, which yields while a ``!stop``
+    on the key is in flight and leaves the drain to that stop's settle.
+
+    The registration waits for the key: ``_session_tasks[key]`` is the turn every Stop
+    cancels, so a click admitted while another turn is tracked must not take its place
+    (the Stop would cancel the click's turn, possibly a co-tenant's, and leave the running
+    one). The click's task is registered when the current holder ends and the key is free,
+    or re-armed on whatever took the key meanwhile. Only ``_session_tasks`` is read here,
+    not the stop holds: a click admitted while a stop is in flight is newer intent, left
+    running.
+
+    *session_key* is the router's key for the thread -- the bare thread ts, or the ts of
+    the message a thread is started from -- the same key a typed message is queued under.
+    """
+    task = asyncio.create_task(coro)
+    orch._handler_tasks.add(task)
+
+    def _after(done: asyncio.Task[None]) -> None:
+        orch._handler_tasks.discard(done)
+        if orch._session_tasks.get(session_key) is done:
+            del orch._session_tasks[session_key]
+        _spawn_tracked(_drain_slack_queue(orch, session_key))
+
+    task.add_done_callback(_after)
+    _register_when_free(orch, session_key, task, thread_ts)
+    return task
+
+
+def _register_when_free(
+    orch: GatewayOrchestrator, session_key: str, task: asyncio.Task[None], thread_ts: str | None
+) -> None:
+    """Make *task* the key's router task now, or once the task holding the key ends."""
+    holder = orch._session_tasks.get(session_key)
+    if holder is None or holder is task or holder.done():
+        if not task.done():
+            _track_router_task(orch, session_key, task, thread_ts)
+        return
+    holder.add_done_callback(lambda _done: _register_when_free(orch, session_key, task, thread_ts))
 
 
 def _probe_tracked_channel_scope(channel_ids: set[str]) -> None:

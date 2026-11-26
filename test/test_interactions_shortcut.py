@@ -62,7 +62,11 @@ class FakeOrch:
         self._approval_mode = None
         self.slack = FakeSlackClient()
         self._handler_tasks: set = set()
+        # The router surface the forwarded turn registers with; its end drains an empty queue.
+        self._session_tasks: dict = {}
+        self._pending_queue: dict = {}
         self.sessions = MagicMock()
+        self.sessions.dequeue = MagicMock(return_value=None)
         self.ctx_builder = MagicMock()
         self.cron_svc = MagicMock()
         self.conv_log = MagicMock()

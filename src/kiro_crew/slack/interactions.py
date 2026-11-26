@@ -22,7 +22,7 @@ import re
 import sys as _sys
 import time
 import unicodedata
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine
 
 import aiohttp
 
@@ -68,7 +68,12 @@ from kiro_crew.slack.allowlist import (
     persist_tracking_channel,
 )
 from kiro_crew.slack.channel_policy import channel_refusal
-from kiro_crew.slack.events_queue import _configured_approval_mode
+from kiro_crew.slack.events_queue import (
+    _configured_approval_mode,
+    _drain_slack_queue,
+    _spawn_tracked,
+    _track_router_task,
+)
 from kiro_crew.slack.format import (
     LINK_DASHBOARD_ACTION,
     OPTIONS_ACTION_PREFIX,
@@ -1193,6 +1198,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.interactions_context import VIEW_REGISTRY  # noqa: F401
     from kiro_crew.slack.interactions_context import ViewHandler  # noqa: F401
     from kiro_crew.slack.interactions_context import _probe_tracked_channel_scope  # noqa: F401
+    from kiro_crew.slack.interactions_context import _register_when_free  # noqa: F401
+    from kiro_crew.slack.interactions_context import _start_interaction_turn  # noqa: F401
     from kiro_crew.slack.interactions_context import ack_button  # noqa: F401
     from kiro_crew.slack.interactions_modals import _PRIVATE_METADATA_CAP  # noqa: F401
     from kiro_crew.slack.interactions_modals import _SHORTCUT_MAX_FILES  # noqa: F401

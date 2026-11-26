@@ -80,6 +80,10 @@ def _make_orch() -> MagicMock:
     orch.slack.views_open = AsyncMock()
     orch.dashboard_state = None
     orch._handler_tasks = set()
+    # The router surface a button turn now registers with: its end drains an empty queue.
+    orch._session_tasks = {}
+    orch._pending_queue = {}
+    orch.sessions.dequeue = MagicMock(return_value=None)
     return orch
 
 
