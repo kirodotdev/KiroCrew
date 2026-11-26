@@ -1662,7 +1662,28 @@ CSRF branch, `is_direct_local_request`), and a `RelayCaller` at
 `remote`. `is_proxied_request` answers true for it. Each sign-in provider is a
 separate Kiro user, so a personal Crew honors only the same provider and the same
 user as its computer: the owner match is exact on the stable ID, never an email or
-display name. A team Crew takes the person as the relay names them.
+display name. A team Crew makes the stamped person a teammate.
+
+**The access token check.** The stamped ID is checked by the relay client, not
+taken on trust from the relay, whenever the relay's `request` or `ws-upgrade`
+frame carries the person's Kiro access token (`accessToken`, optional until the
+relay sends it on every frame; a non-string one is a malformed frame).
+`relay_client/access_token.py` verifies it before the caller is stamped: ES256
+under a key from the issuer's key set (`<iss>/.well-known/jwks.json`, cached,
+fetched again only for a key ID it does not hold and at most once per 10 seconds),
+`typ` `kiro-relay-access+jwt`, `aud` `kiro-relay/access`, `iss`, `rgn`, `ep` and
+`kind` equal to what the Crew's own host token names (the lease service hands
+the host token over, and the same issuer mints both), `nbf` and `exp` with 30
+seconds of skew, a lifetime of at most 300 seconds, and `sub` equal to the
+frame's `user`. The stamp then names the verified `sub`. A token that fails any
+check is never stamped: the HTTP request ends with a `crew_unreachable` error
+frame naming the refusal, a WebSocket with a refused close, and the refusal is a
+rate-limited `relay_access_check=refused reason=<code>` warning plus a denied SEL
+row (`relay_token_<code>`). A frame with no token is handed over as the relay
+named it, counted in `LoopbackIngress.tokenless_frames` and logged as one
+`relay_access_check=absent` warning per 10 minutes; requiring the token waits for
+the relay to send it. The token is never logged or part of a `repr`
+(`test_relay_client_access_token.py`).
 
 **The person's email and name.** When the relay's `request` or `ws-upgrade` frame
 carries `userEmail` or `userName`, the relay client checks each against the

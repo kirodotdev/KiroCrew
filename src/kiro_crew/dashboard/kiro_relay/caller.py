@@ -199,12 +199,19 @@ class HostBinding:
     def caller_for(
         self, kiro_user_id: str, *, email: str = "", display_name: str = ""
     ) -> RelayCaller | None:
-        """The caller the relay named, or ``None`` when this Crew does not honor them.
+        """The caller for *kiro_user_id*, or ``None`` when this Crew does not honor them.
 
-        A personal Crew honors the header only for its signed-in owner. A team Crew
-        takes the person as the relay names them, because Kiro minted their token
-        only after checking their grant, and makes them a teammate. *email* and
-        *display_name* are labels only and play no part in the decision.
+        *kiro_user_id* is the ID the relay client stamped. When the relay's message
+        carried the person's access token, it is that token's ``sub``, which the
+        relay client checked against Kiro's signature, this Crew's endpoint and kind,
+        and the frame's user before stamping it; a frame whose token failed is never
+        stamped. A frame with no token is stamped as the relay named it, until the
+        relay sends the token on every frame (``relay_client.ingress``).
+
+        A personal Crew honors the ID only for its signed-in owner. A team Crew makes
+        the person a teammate: Kiro minted their token only after checking their
+        grant. *email* and *display_name* are labels only and play no part in the
+        decision.
         """
         if not is_kiro_user_id(kiro_user_id):
             return None
