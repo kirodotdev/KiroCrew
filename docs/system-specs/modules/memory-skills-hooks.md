@@ -4039,7 +4039,22 @@ The backend `POST /api/memory/migrate` endpoint and the `kirocrew memory migrate
 The active Global store and cached named V1/V2 stores share one gateway repair
 loop for pending vectors. Each 30-second pass takes one ready store, revalidates
 named declarations and ownership, and handles at most 16 rows of each kind with
-a fair cursor across stores. It only uses an already loaded model, shares the
+a fair cursor across stores. A V2 `apply_consolidation` writes its facts,
+episodes and lessons with no vector and, after its commit, queues their ids in
+the store (`embedding_repair.queue_fresh_vectors`, in-process, at most 4,096 per
+kind). Stores with queued rows get every other visit, taken in turn by their
+own cursor, so a busy store cannot starve the rotation; the rotation's cursor
+does not move for them. Their bounded page serves the queued rows before the
+paged backlog, so new memories are embedded within about two visits instead of
+behind the backlog.
+A store the visit turns away (unavailable, provider-owned, no model) has its
+queue dropped; those rows keep their NULL vector for the paged sweep. The visit
+uses an already loaded model; only queued rows make it load an idle-unloaded
+one (`wait_for_cold_shared_embedder`, at most 120 s), so a backlog row that
+never embeds cannot keep the model resident. A sweep row whose
+`PRIORITY_BULK` embed found the shared model unloaded (that embed only starts
+the load) waits for the load once, up to 120 s, and embeds again instead of
+counting the row failed. The visit shares the
 normal bounded embedding worker, pauses during model replacement and checks
 shutdown before committing. Global joins the rotation only after its boot
 migration and full repair sweep finish, and the loop never opens a store. Seeded

@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import logging
 import threading
+import time
 from collections import OrderedDict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -597,6 +598,39 @@ def peek_ready_shared_embedder() -> EmbeddingBackend | None:
     if backend is None or not backend.is_ready():
         return None
     return backend
+
+
+def wait_for_cold_shared_embedder(
+    timeout: float, should_stop: Callable[[], bool] | None = None
+) -> bool:
+    """Load an unloaded shared model for background work. True once it is loaded now.
+
+    A ``PRIORITY_BULK`` embed never waits for a load: it returns ``None`` and only
+    starts one, so a sweep that meets an idle-unloaded model would read every row
+    as failed. A sweep calls this when an embed came back empty, then tries again.
+
+    Only a backend this process already built is loaded, only while it reports it
+    can load on demand (file present, no failed load), and the wait stops at
+    *timeout* or when *should_stop* says so. False when the model was already
+    loaded, so a caller never retries an embed that failed for another reason.
+    """
+    with _shared_embedder_lock:
+        backend = _shared_embedder
+    if backend is None or backend.is_ready():
+        return False
+    can_load = getattr(backend, "can_load_on_demand", None)
+    wait_ready = getattr(backend, "wait_ready", None)
+    if not callable(can_load) or not callable(wait_ready):
+        return False
+    give_up = time.monotonic() + timeout
+    while can_load() and not (should_stop is not None and should_stop()):
+        left = give_up - time.monotonic()
+        if left <= 0:
+            return False
+        # Short slices: a stop (gateway shutdown) ends the wait within 0.1 s.
+        if wait_ready(timeout=min(0.1, left)):
+            return True
+    return False
 
 
 def peek_shared_embedding_identity() -> tuple[str | None, str]:

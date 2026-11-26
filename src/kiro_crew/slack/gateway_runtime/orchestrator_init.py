@@ -18,7 +18,8 @@ Orchestrator fields written: ``_adaptive_controller``, ``_allowed_users``,
 ``_marker_clear_pending``, ``_marker_write_task``, ``_mcp_gateway_manager``,
 ``_mcp_launch_approval_ready``, ``_mcp_resolve_home``, ``_mcp_resolve_prefetch``,
 ``_mcp_resource_subscription_task``,
-``_mcp_target_env``, ``_memory_repair_cursor``, ``_memory_repair_stop``,
+``_mcp_target_env``, ``_memory_repair_cursor``, ``_memory_repair_fresh_cursor``,
+``_memory_repair_fresh_turn``, ``_memory_repair_stop``,
 ``_memory_repair_task``, ``_memory_startup``, ``_memory_startup_task``,
 ``_model_download_task``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
 ``_open_channels``, ``_owner_id``, ``_pending_queue``,
@@ -199,6 +200,8 @@ def __init__(
     self._memory_repair_task = None
     self._memory_repair_stop = threading.Event()
     self._memory_repair_cursor = ""
+    self._memory_repair_fresh_cursor = ""
+    self._memory_repair_fresh_turn = True
     # Dedicated ownership for the repair's dep_sync/pip process tree. The
     # general set only prevents task GC; shutdown must cancel and await this
     # task so _check_console_script can kill and reap its child group.
