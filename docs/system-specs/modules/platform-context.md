@@ -1398,8 +1398,8 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   served by neither, so stays `private`), and only when that registry's cached
   index lists the app at the clone target its install record names. An id that
   does not match `^[a-z0-9][a-z0-9._-]{0,63}$` stays
-  `private`. A destination that must not see these names sets
-  `OtlpDestination.private_entity_namespaces`.
+  `private`. A destination sees these names only when it lists
+  the namespace in `OtlpDestination.named_entity_namespaces`; otherwise it gets `private`.
 - `TelemetryProvider.otlp_destinations(cfg) -> Sequence[OtlpDestination]` — the
   OTLP collectors this edition sends telemetry to. Read by
   `metrics/provider.py::_otlp_destinations` once per recorder build (through

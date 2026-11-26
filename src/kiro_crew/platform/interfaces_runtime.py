@@ -348,7 +348,7 @@ class OtlpDestination:
     as data uses ``headers_env`` below.
 
     ``allow``, ``point_attributes``, ``resource_allow`` and
-    ``private_entity_namespaces`` are the NARROWING fields.  They keep this seam
+    ``named_entity_namespaces`` are the NARROWING fields.  They keep this seam
     add-only in the direction that matters: each one can only reduce or label what
     THIS destination receives, and none of them can widen it, reach the local JSONL
     sink, or touch another destination.  All of them default to today's behaviour,
@@ -372,13 +372,17 @@ class OtlpDestination:
       destination that may receive only a few of them says so here.  A key absent
       from the shared Resource is simply absent -- nothing is invented.  ``None``
       sends the Resource as built.
-    - ``private_entity_namespaces`` -- an ``Entity`` value that starts with one of
-      these namespaces and a ``.`` (``<namespace>.<app>``, the public id of an app from a
-      registry the edition named) is sent to this destination as ``private``, and
-      that point's ``entity_version`` as ``private`` too.  Points left with the same
+    - ``named_entity_namespaces`` -- the namespaces whose apps this destination may
+      see by name.  An edition that names the apps of a registry it ships gives
+      them ``Entity`` values of ``<namespace>.<app>``; a destination is sent such a
+      value only when its namespace is listed here, and ``private`` (with
+      ``entity_version`` ``private`` too) otherwise.  Points left with the same
       attributes are merged into one, so the destination sees one ``private``
-      series, as it would if the app had no public id.  Empty sends ``Entity`` as
-      collected.
+      series.  Empty, the default, names nothing: a destination that says nothing
+      gets ``private``.  The local sink and the operator's own
+      ``telemetry.otlp_endpoint*`` entries are not governed by this field and keep
+      the names.  Nothing is hidden while no registry row declares
+      ``appNamespace``.
 
     All of them are enforced by an exporter WRAPPER the core builds
     (``metrics/destination_filter.py``), outside this descriptor: a destination
@@ -422,7 +426,7 @@ class OtlpDestination:
     headers_env: "Mapping[str, str]" = MappingProxyType({})
     temporality: str = ""
     process_env_credentials: bool = True
-    private_entity_namespaces: "frozenset[str]" = frozenset()
+    named_entity_namespaces: "frozenset[str]" = frozenset()
 
 
 class FeedbackTrackerProvider(Protocol):

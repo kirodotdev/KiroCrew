@@ -284,7 +284,6 @@ class TestTheObservableOutcome:
             _product(point_attributes={}, resource_allow=None),
             _product(allow=None, resource_allow=None),
             _product(allow=None, point_attributes={}),
-            _hiding(),
         ):
             assert df.narrows_export(dest) is True
 
@@ -531,18 +530,25 @@ class TestTheWrapperKeepsTheCoresDecisions:
         assert calls == [("force_flush", 1234), ("shutdown", 5678)]
 
 
-# -- private_entity_namespaces ------------------------------------------------------
+# -- named_entity_namespaces --------------------------------------------------------
 
 APP_PRESENT = "kirocrew.app.present"
 
 
-def _hiding(namespaces: "frozenset[str]" = frozenset({"acme"})) -> OtlpDestination:
-    """A destination that narrows only by hiding ``<namespace>.<app>`` entities."""
+@pytest.fixture(autouse=True)
+def _edition_names_apps(monkeypatch, request):
+    """Say a registry row declares ``appNamespace``, for the tests of this section."""
+    if request.cls is TestNamedEntityNamespaces:
+        monkeypatch.setattr("kiro_crew.apps.store_origin.edition_names_apps", lambda: True)
+
+
+def _listing(namespaces: "frozenset[str]" = frozenset({"acme"})) -> OtlpDestination:
+    """A destination that lists the namespaces it may see by name."""
     return OtlpDestination(
-        "hiding",
-        "https://hiding.example/v1/metrics",
+        "listing",
+        "https://listing.example/v1/metrics",
         frozenset({"metrics"}),
-        private_entity_namespaces=namespaces,
+        named_entity_namespaces=namespaces,
     )
 
 
@@ -571,34 +577,45 @@ def _record_entities(h) -> None:
     h.meter.create_counter(ALLOWED).add(1, attributes={"status": "on"})
 
 
-class TestPrivateEntityNamespaces:
-    def test_a_hidden_entity_is_private_and_merged_into_the_private_series(self, harness):
-        h = harness([_operator(), _hiding()])
-        _record_entities(h)
-        h.flush()
-
-        assert _entity_points(h.exporters["hiding"]) == {
-            ("private", "private", "on"): 3,
-            ("weather-app", "1.2.3", "on"): 1,
-            ("acmex.tool", "1.0.0", "on"): 1,
-        }
-        assert h.exporters["hiding"].attrs(ALLOWED) == [{"status": "on"}]
-
-    def test_the_operator_destination_and_the_local_sink_keep_the_names(self, harness):
-        h = harness([_operator(), _hiding()])
+class TestNamedEntityNamespaces:
+    def test_a_destination_that_says_nothing_gets_private(self, harness):
+        h = harness([_operator()])
         _record_entities(h)
         h.flush()
 
         assert _entity_points(h.exporters["operator"]) == {
+            ("private", "private", "on"): 4,
+            ("weather-app", "1.2.3", "on"): 1,
+        }
+        assert h.exporters["operator"].attrs(ALLOWED) == [{"status": "on"}]
+
+    def test_a_listed_namespace_keeps_its_names_and_others_are_private(self, harness):
+        h = harness([_listing()])
+        _record_entities(h)
+        h.flush()
+
+        assert _entity_points(h.exporters["listing"]) == {
             ("acme.tool-a", "1.0.0", "on"): 1,
             ("acme.tool-b", "2.0.0", "on"): 1,
-            ("private", "private", "on"): 1,
+            ("private", "private", "on"): 2,
             ("weather-app", "1.2.3", "on"): 1,
-            ("acmex.tool", "1.0.0", "on"): 1,
         }
+
+    def test_the_local_sink_and_an_operator_owned_destination_keep_every_name(self, harness):
+        inner = _RecordingExporter()
+        assert df.wrap_if_narrowed(_operator(), inner, operator_owned=True) is inner
+        h = harness([_operator()])
+        _record_entities(h)
+        h.flush()
+
         _, points, _ = h.local_records()
         local = {(p.get("attributes") or {}).get("Entity") for p in points}
-        assert {"acme.tool-a", "acme.tool-b", "private"} <= local, local
+        assert {"acme.tool-a", "acme.tool-b", "acmex.tool"} <= local, local
+
+    def test_nothing_is_wrapped_while_no_registry_declares_a_namespace(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.apps.store_origin.edition_names_apps", lambda: False)
+        inner = _RecordingExporter()
+        assert df.wrap_if_narrowed(_operator(), inner) is inner
 
     def test_the_merged_point_spans_both_windows(self):
         from opentelemetry.sdk.metrics.export import NumberDataPoint
@@ -607,7 +624,3 @@ class TestPrivateEntityNamespaces:
         b = NumberDataPoint({"Entity": "private"}, 5, 30, 2, [])
         (merged,) = df._summed_by_attributes([a, b])
         assert (merged.start_time_unix_nano, merged.time_unix_nano, merged.value) == (5, 30, 3)
-
-    def test_no_namespaces_is_not_wrapped(self):
-        inner = _RecordingExporter()
-        assert df.wrap_if_narrowed(_hiding(frozenset()), inner) is inner

@@ -164,16 +164,23 @@ def _run(tmp_path, monkeypatch, *, rows, namespaces):
 
     local_dir = tmp_path / "local"
     local_dir.mkdir()
-    operator, product = _Recording(), _Recording()
+    operator, product, silent = _Recording(), _Recording(), _Recording()
     dest = OtlpDestination(
         "product",
         "https://p.example/v1/metrics",
         frozenset({"metrics"}),
-        private_entity_namespaces=namespaces,
+        named_entity_namespaces=namespaces,
     )
+    # A destination that says nothing about namespaces.
+    nothing = OtlpDestination("silent", "https://s.example/v1/metrics", frozenset({"metrics"}))
     readers = [
         PeriodicExportingMetricReader(e, export_interval_millis=math.inf)
-        for e in (JsonlMetricExporter(local_dir), operator, df.wrap_if_narrowed(dest, product))
+        for e in (
+            JsonlMetricExporter(local_dir),
+            operator,
+            df.wrap_if_narrowed(dest, product),
+            df.wrap_if_narrowed(nothing, silent),
+        )
     ]
     provider = MeterProvider(metric_readers=readers)
     recorder = MetricsRecorder(
@@ -207,38 +214,45 @@ def _run(tmp_path, monkeypatch, *, rows, namespaces):
                             for p in m["data"]["data_points"]:
                                 key = p["attributes"]["Entity"]
                                 local[key] = local.get(key, 0) + p["value"]
-    return (
+    return (  # operator, product, local, dest, product raw, silent, silent raw
         {n: ours(operator.entities(n)) for n in (fu.APP_PRESENT, fu.APP_OPENED)},
         {n: ours(product.entities(n)) for n in (fu.APP_PRESENT, fu.APP_OPENED)},
         ours(local),
         dest,
         product,
+        {n: ours(silent.entities(n)) for n in (fu.APP_PRESENT, fu.APP_OPENED)},
+        silent,
     )
 
 
 def test_with_no_registry_declared_every_destination_gets_todays_values(tmp_path, monkeypatch):
-    operator, product, local, dest, _ = _run(
+    operator, product, local, dest, _, silent, _ = _run(
         tmp_path, monkeypatch, rows=None, namespaces=frozenset()
     )
     today = {"weather-app": 1, "private": 4}
     for metric in (fu.APP_PRESENT, fu.APP_OPENED):
         assert operator[metric] == today, metric
         assert product[metric] == today, metric
+        assert silent[metric] == today, metric
     assert local == today
     assert df.narrows_export(dest) is False
 
 
-def test_a_declared_registry_names_its_apps_and_a_hiding_destination_gets_private(
+def test_a_declared_namespace_is_hidden_from_a_destination_that_does_not_list_it(
     tmp_path, monkeypatch
 ):
-    operator, product, local, _, raw = _run(
+    operator, product, local, _, _, silent, raw = _run(
         tmp_path, monkeypatch, rows=EDITION_ROWS, namespaces=frozenset({"acme"})
     )
     named = {"weather-app": 1, "acme.acme-tool": 1, "private": 3}
     for metric in (fu.APP_PRESENT, fu.APP_OPENED):
         # The undeclared registry, the over-long id and the local tree stay private.
         assert operator[metric] == named, metric
-        assert product[metric] == {"weather-app": 1, "private": 4}, metric
+        # The destination that lists the namespace sees the name.
+        assert product[metric] == named, metric
+        # A destination that says nothing is sent private: the core test that fails
+        # if a namespace is declared and a destination without the field gets a name.
+        assert silent[metric] == {"weather-app": 1, "private": 4}, metric
     assert local == named
     opened = [
         dict(p.attributes)

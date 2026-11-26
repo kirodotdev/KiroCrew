@@ -457,7 +457,7 @@ is what this guide is about.
 A destination is also allowed to receive only PART of that. `OtlpDestination`
 carries three optional fields. An `otlp_endpoints` entry sets them with the keys
 of the same names, and a build that assembles its own destination can set them
-too (a build can also set a fourth, `private_entity_namespaces`, below):
+too (a build can also set a fourth, `named_entity_namespaces`, below):
 
 - `allow` -- only metrics whose name is in this set are sent. Unset means
   everything, which is what your endpoint gets.
@@ -468,9 +468,10 @@ too (a build can also set a fourth, `private_entity_namespaces`, below):
   does not receive `service.instance.id`.
 
 A build can name the apps of a registry it ships, as `<namespace>.<name>` in `Entity`.
-A destination the build assembles can set `private_entity_namespaces` to receive
-those values as `private` instead. An `otlp_endpoints` entry has no such key, and
-nothing is named unless the build declares the registry.
+A destination receives those values only when it lists the namespace in
+`named_entity_namespaces`; a destination that says nothing is sent `private`. Your
+`otlp_endpoints` entries and the local JSONL sink see every name. Nothing is named
+unless the build declares the registry.
 
 Three things to take from this if you operate a collector:
 

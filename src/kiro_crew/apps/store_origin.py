@@ -74,6 +74,28 @@ class _NamedRegistry:
     listed: "tuple[tuple[str, str], ...]"
 
 
+def edition_names_apps() -> bool:
+    """True when a ``default_registries()`` row of the edition declares ``appNamespace``.
+
+    A cheap read of the raw rows: it says whether names can exist at all, not
+    whether an app has one. False when the rows cannot be read.
+    """
+    from kiro_crew.platform import PlatformCompositionError, current_context, safe_context_call
+
+    empty: list[dict[str, Any]] = []
+    try:
+        rows: Any = safe_context_call(
+            lambda: current_context().apps_loader.default_registries(),
+            fallback=empty,
+            log_message="edition default_registries() unavailable",
+        )
+    except PlatformCompositionError:
+        return False
+    if not rows or isinstance(rows, (str, bytes, dict)) or not hasattr(rows, "__iter__"):
+        return False
+    return any(isinstance(r, dict) and r.get(APP_NAMESPACE_KEY) for r in rows)
+
+
 def _registry_namespaces() -> dict[str, _NamedRegistry]:
     """Registry identity key -> :class:`_NamedRegistry`, for each registry the build named.
 

@@ -1550,7 +1550,9 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
         # destination's own exporter, so the local sink and every other
         # destination are untouched by construction, and a destination that
         # declared none is handed back the exporter object itself.
-        exporter = destination_filter.wrap_if_narrowed(dest, exporter)
+        exporter = destination_filter.wrap_if_narrowed(
+            dest, exporter, operator_owned=dest in otlp_endpoints.config_destinations(cfg)
+        )
         return PeriodicExportingMetricReader(
             exporter,
             export_interval_millis=float(getattr(cfg, "export_interval_seconds", 60)) * 1000.0,

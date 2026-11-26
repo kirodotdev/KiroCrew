@@ -10,9 +10,9 @@ Four narrowings, all declared on ``OtlpDestination`` and all one-directional:
 * ``allow`` -- a metric whose name is not in the set never reaches the encoder.
 * ``point_attributes`` -- fixed pairs added to every exported data point.
 * ``resource_allow`` -- the exported Resource reduced to the named keys.
-* ``private_entity_namespaces`` -- an ``Entity`` of ``<namespace>.<app>`` is sent as
-  ``private``, with its ``entity_version``; points that then share attributes are
-  merged into one.
+* ``named_entity_namespaces`` -- the namespaces whose ``<namespace>.<app>`` names this
+  destination may see. Any other namespaced ``Entity`` is sent as ``private``, with
+  its ``entity_version``; points that then share attributes are merged into one.
 
 Three properties this module exists to guarantee, in the order they matter:
 
@@ -81,7 +81,7 @@ def validate_point_attributes(attributes: Optional[Mapping[str, str]]) -> "dict[
     return {str(key): str(value) for key, value in pairs.items()}
 
 
-def narrows_export(dest: "OtlpDestination") -> bool:
+def narrows_export(dest: "OtlpDestination", operator_owned: bool = False) -> bool:
     """Whether *dest* declared any narrowing, i.e. whether it needs a wrapper.
 
     Read off the descriptor with ``getattr`` defaults so a destination built by
@@ -91,8 +91,24 @@ def narrows_export(dest: "OtlpDestination") -> bool:
         getattr(dest, "allow", None) is not None
         or bool(getattr(dest, "point_attributes", None))
         or getattr(dest, "resource_allow", None) is not None
-        or bool(getattr(dest, "private_entity_namespaces", None))
+        or hides_entity_names(dest, operator_owned)
     )
+
+
+def hides_entity_names(dest: "OtlpDestination", operator_owned: bool = False) -> bool:
+    """True when *dest* is sent ``private`` for an app the edition named.
+
+    The rule: the local sink and the operator's own ``telemetry.otlp_endpoint*``
+    entries (*operator_owned*) see every name. Any other destination sees only the
+    namespaces it lists, and one that lists none sees none. It is False while no
+    registry row declares ``appNamespace``, so a build that names no apps wraps
+    nothing.
+    """
+    if operator_owned:
+        return False
+    from kiro_crew.apps import store_origin
+
+    return store_origin.edition_names_apps()
 
 
 class FilteredMetricExporter:
@@ -115,15 +131,18 @@ class FilteredMetricExporter:
         allow: "Optional[frozenset[str]]" = None,
         point_attributes: Optional[Mapping[str, str]] = None,
         resource_allow: "Optional[frozenset[str]]" = None,
-        private_entity_namespaces: "Optional[frozenset[str]]" = None,
+        named_entity_namespaces: "Optional[frozenset[str]]" = None,
+        hide_entity_names: bool = False,
     ) -> None:
         self._exporter = exporter
         self._name = name
         self._allow = None if allow is None else frozenset(allow)
         self._point_attributes = validate_point_attributes(point_attributes)
         self._resource_allow = None if resource_allow is None else frozenset(resource_allow)
-        # ``str.startswith`` takes a tuple; the ``.`` keeps namespace ``a`` off ``ab.x``.
-        self._hidden_starts = tuple(sorted(f"{p}." for p in private_entity_namespaces or ()))
+        # An app name holds no ``.``, so an ``Entity`` with one is ``<namespace>.<app>``.
+        # The namespace is the text before the first ``.``: ``a`` is not ``ab``.
+        self._hide_names = hide_entity_names
+        self._named = frozenset(named_entity_namespaces or ())
         # One warning for the first narrowing failure, then debug. A per-minute
         # reader that kept warning would write one line per interval forever.
         self._warned = False
@@ -244,12 +263,12 @@ class FilteredMetricExporter:
     def _hide_entities(self, metric: Any) -> Any:
         """*metric* with each hidden ``Entity`` sent as ``private``, or *metric* itself.
 
-        A point whose ``Entity`` starts with a hidden namespace gets ``Entity`` and
+        A point whose ``Entity`` is namespaced and not named by this destination gets ``Entity`` and
         ``entity_version`` set to ``private``. It can then share its attributes
         with a point that was ``private`` already; on a counter the two are summed
         into one, so the destination never sees two points of one series.
         """
-        if not self._hidden_starts:
+        if not self._hide_names:
             return metric
         data = getattr(metric, "data", None)
         points = getattr(data, "data_points", None)
@@ -260,7 +279,11 @@ class FilteredMetricExporter:
         for point in points:
             attrs = getattr(point, "attributes", None) or {}
             entity = attrs.get("Entity")
-            if not (isinstance(entity, str) and entity.startswith(self._hidden_starts)):
+            if not (
+                isinstance(entity, str)
+                and "." in entity
+                and entity.partition(".")[0] not in self._named
+            ):
                 out.append(point)
                 continue
             new = dict(attrs)
@@ -313,7 +336,7 @@ def _summed_by_attributes(points: "list[Any]") -> "list[Any]":
     return list(merged.values())
 
 
-def wrap_if_narrowed(dest: "OtlpDestination", exporter: Any) -> Any:
+def wrap_if_narrowed(dest: "OtlpDestination", exporter: Any, operator_owned: bool = False) -> Any:
     """Return *exporter* wrapped for *dest*, or *exporter* itself unchanged.
 
     A destination that narrows nothing is handed back untouched, so a build with
@@ -324,7 +347,7 @@ def wrap_if_narrowed(dest: "OtlpDestination", exporter: Any) -> Any:
     Raises ``ValueError`` for an unreviewed point-attribute key; the caller
     degrades that destination to no reader.
     """
-    if not narrows_export(dest):
+    if not narrows_export(dest, operator_owned):
         return exporter
     return FilteredMetricExporter(
         exporter,
@@ -332,5 +355,6 @@ def wrap_if_narrowed(dest: "OtlpDestination", exporter: Any) -> Any:
         allow=getattr(dest, "allow", None),
         point_attributes=getattr(dest, "point_attributes", None),
         resource_allow=getattr(dest, "resource_allow", None),
-        private_entity_namespaces=getattr(dest, "private_entity_namespaces", None),
+        named_entity_namespaces=getattr(dest, "named_entity_namespaces", None),
+        hide_entity_names=hides_entity_names(dest, operator_owned),
     )

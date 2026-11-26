@@ -606,7 +606,7 @@ narrowing, so a destination that sets none of them gets the full payload.
 | `allow: frozenset[str] \| None` | `None` | A metric whose name is not in the set is dropped before encoding. `None` sends every metric collected. Full instrument names, `kirocrew.` prefix included. |
 | `point_attributes: Mapping[str, str]` | empty | Fixed pairs added to every exported data point of this destination. |
 | `resource_allow: frozenset[str] \| None` | `None` | This destination's batches carry a `Resource` reduced to these keys. A key the shared resource does not set is simply absent. |
-| `private_entity_namespaces: frozenset[str]` | empty | An `Entity` of `<namespace>.<app>` (an app from a registry the edition named) is sent as `private`, with that point's `entity_version`. Counter points left with the same attributes are summed into one, so the destination sees one `private` series. |
+| `named_entity_namespaces: frozenset[str]` | empty | The namespaces whose `<namespace>.<app>` `Entity` values (apps from a registry the edition named) this destination may see. Any other namespaced `Entity` is sent as `private`, with that point's `entity_version`; empty names nothing. The local sink and `telemetry.otlp_endpoint*` entries keep names. Counter points left with the same attributes are summed into one, so the destination sees one `private` series. |
 
 `metrics/destination_filter.py` enforces all four as an exporter WRAPPER that
 `_build_otlp_reader` puts around that destination's own exporter. The descriptor
