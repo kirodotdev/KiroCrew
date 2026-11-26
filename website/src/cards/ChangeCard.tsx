@@ -364,7 +364,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
                 </div>
                 {/* What the press does, read beside the warning, before any code. */}
                 {spec?.pressNote && card.status === 'pending' && !expired && (
-                  <p className="m-0 mt-1 pl-[22px]" data-testid="change-card-press-note">{spec.pressNote()}</p>
+                  <p className="m-0 mt-1 pl-[22px]" data-testid="change-card-press-note">{spec.pressNote(card)}</p>
                 )}
                 {widen && (
                   <label className="mt-1 flex min-h-11 items-center gap-2 cursor-pointer">
@@ -384,7 +384,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
             )}
 
             {spec?.pressNote && card.risk !== 'widen' && card.risk !== 'code_exec' && card.status === 'pending' && !expired && (
-              <p className="m-0 mt-3 text-[13px] leading-5 text-text" data-testid="change-card-press-note">{spec.pressNote()}</p>
+              <p className="m-0 mt-3 text-[13px] leading-5 text-text" data-testid="change-card-press-note">{spec.pressNote(card)}</p>
             )}
 
             <div className="mt-2 [&>[data-card-row]+[data-card-row]]:border-t [&>[data-card-row]+[data-card-row]]:border-border" data-testid="change-card-rows">
@@ -412,7 +412,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
                       </>}
                 </CardRow>
               )}
-              {spec && <spec.Body card={card} disabled={busy || expired} />}
+              {spec && <spec.Body card={card} disabled={busy || expired} preview={preview} />}
               <UserInputs fields={fields} values={inputs} disabled={busy || expired} onChange={(f, v) => setInputs(prev => ({ ...prev, [f]: v }))} />
               {/* The reason is one more row of the same grid: same label
                   column, same divider, so it reads like Goal or Affects. */}

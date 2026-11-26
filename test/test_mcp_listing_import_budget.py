@@ -125,11 +125,14 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for each server: the manifest's ``contributes`` block reads its Sessions New
 #: rows from the new owner ``apps.manifest_session_create``, which ``manifest_contributes``
 #: imports; the module count rose by that one file and nothing new loads.
+#: Raised by 1 for ``mcp-mate`` (368 to 369): the memory-change card tools read their
+#: limits and kind names from ``kiro_crew.change_card_memory``, a ``typing``-only leaf;
+#: that one file is the whole rise.
 PACKAGE_MODULE_CEILING = {
     "mcp-core": 505,
     "mcp-cron": 372,
     "mcp-guide": 366,
-    "mcp-mate": 368,
+    "mcp-mate": 369,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

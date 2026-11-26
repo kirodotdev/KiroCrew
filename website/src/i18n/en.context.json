@@ -4,6 +4,8 @@
     "components.startupModules.failed": "Dismissible notice shown when an app's dashboard startup module throws or fails to load; {{name}} is the app's name, kept as written, and the rest of the dashboard remains usable.",
     "components.startupModules.dismiss": "Accessible name and tooltip of the startup notice's close button; {{name}} is the app's name, and dismissal hides this app's notice until the browser page reloads even if it fails again.",
     "components.startupModules.open_app": "Action link in a failed startup module's notice that opens the app's page; Open is a verb and {{name}} is the app's name, kept as written.",
+    "components.changeCards.memory_now": "Small label before a memory's current text on a bot's memory cleanup card row that edits it; means 'the text as it is today'.",
+    "components.changeCards.memory_new": "Small label before a memory's replacement text on a bot's memory cleanup card row that edits it; means 'the text it will have after Apply'.",
     "components.changeCards.reason_why": "Label of the row on an MCP server change card that shows why the agent asks for the change; a noun heading meaning 'reason', not a question.",
     "pages.artifactsPage.quick_doc": "Label under the Artifacts page's quick-create tile that starts a new blank document. A short noun for a document, shown under an icon; not a verb.",
     "pages.artifactsPage.quick_canvas": "Label under the Artifacts page's quick-create tile that starts a new empty whiteboard (a canvas). A short noun shown under an icon, matching the canvas kind's name; not a verb.",

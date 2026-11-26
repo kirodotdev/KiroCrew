@@ -64,6 +64,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/browser/recipe-watch-off"): RouteAccess(
         "apps.browser_recipes.watch_off", UNSTABLE
     ),
+    # Internal secret plus an attested bot turn in its own thread
+    # (handlers/member_memory_self.py); reads the bot's own memory, writes nothing.
+    ("POST", "/api/member/self/memory/list"): RouteAccess("member.memory.list", UNSTABLE),
     # Owner gate (handlers/connections_app_manifest.py); writes nothing.
     ("GET", "/api/connections/app-manifests"): RouteAccess(
         "connections.app_manifests.read", UNSTABLE

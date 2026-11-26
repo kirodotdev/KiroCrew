@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import _facade_mirror
 from kiro_crew import change_card_mcp_server as _mcp_server_kind
+from kiro_crew import change_card_memory as _memory_kind
 from kiro_crew import guide_catalog
 from kiro_crew import member_goals as _goals
 from kiro_crew.change_card_catalog_kinds import (
@@ -163,6 +164,9 @@ def extract_evidence(
     if kind == _mcp_server_kind.KIND_MCP_SERVER:
         # The launch the sharing step approves: read by the step before it.
         return pick("expected_launch")
+    if kind == _memory_kind.KIND_CREWMATE_MEMORY:
+        # A group's preview returns the signed selection its apply step sends back.
+        return pick("preview_id", "changed_count")
     if kind == KIND_MCP_INSTALL:
         return pick("name")
     if kind == KIND_MCP_ADD_CUSTOM:
@@ -201,7 +205,7 @@ def _apply_step_is_write(step: dict[str, Any]) -> bool:
     if str(step.get("method", "")).upper() == "GET":
         return False
     path = str(step.get("path", "")).partition("?")[0]
-    return not path.endswith("/capabilities/preview")
+    return not path.endswith("/capabilities/preview") and path != _memory_kind.PREVIEW_ROUTE
 
 
 def applied_write_count(apply_plan: list[dict[str, Any]], succeeded: int) -> int:
@@ -692,6 +696,8 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PATCH", "/api/chat/folders/{id}"),
         ("POST", "/api/workflows/definitions"),
         ("PATCH", "/api/workflows/definitions/{workflow_ref}"),
+        ("POST", _memory_kind.PREVIEW_ROUTE),
+        ("POST", _memory_kind.APPLY_ROUTE),
     }
 )
 #: The folder PATCH is hooked only so a ``folder.steering`` card can be applied
@@ -702,7 +708,9 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #: is described in Global memory. The workflow-library routes are hooked so a
 #: ``workflow.save`` or ``workflow.update`` card can be applied through them; a
 #: saved script is code, not a setting, and an ordinary save from the Workflows
-#: tab stays off the hook entirely, so neither writes a memory line.
+#: tab stays off the hook entirely, so neither writes a memory line. The memory
+#: page's bulk edit routes are hooked so a ``crewmate.memory`` card can be applied
+#: through them; an ordinary edit from the Memory page writes no memory line.
 MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
     # A launch line is code, never described in Global memory; the card itself
     # is the record.
@@ -725,6 +733,10 @@ MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
     ("DELETE", "/api/members/{slug}/import-files"),
     ("POST", "/api/workflows/definitions"),
     ("PATCH", "/api/workflows/definitions/{workflow_ref}"),
+    # A bot's memory belongs to that bot, never to Global memory: the bulk edit
+    # writes its own audit and its own memory events.
+    ("POST", _memory_kind.PREVIEW_ROUTE),
+    ("POST", _memory_kind.APPLY_ROUTE),
 }
 
 
@@ -780,6 +792,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         FOLDER_STEERING_DIR_MAX,
         GATEWAY_RESOLVED_KINDS,
         HEARTBEAT_HOURS_KEY,
+        KIND_CREWMATE_MEMORY,
         KIND_MCP_SERVER,
         KIND_PROJECT_MCP_SERVER,
         KIND_SCHEDULE_UPDATE,

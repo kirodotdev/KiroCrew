@@ -27,21 +27,7 @@ import { queryReadFailed } from '../../utils/queryReadFailed'
  *  unconditionally. */
 export const MEMORY_STORES_KEY = ['memory-stores'] as const
 
-/** Every `/api/memory/*` query-key PREFIX this tab owns.
- *
- *  The page's global refresh invalidates the family through these rather than
- *  naming each store, because a prefix match also reaches the stores a user
- *  looked at earlier in the session and whose cached rows would otherwise
- *  survive the refresh. */
-export const MEMORY_QUERY_PREFIXES: readonly string[][] = [
-  ['memory-stores'],
-  ['memory-doc'],
-  ['memory-retired'],
-  ['memory-backups'],
-  ['memory-carve'],
-  ['member-memory'],
-  ['memory-records'],
-]
+export { MEMORY_QUERY_PREFIXES } from '../../api/memoryQueryKeys'
 
 /** Statuses whose refusal is settled: the owner gate, an undeclared store name,
  *  and a lineage that has no facets. A retry cannot change any of those answers,
