@@ -338,3 +338,46 @@ class TestValidationSurface:
         spec = next(t for t in mcp_cron._list_tools() if t["name"] == "cron_list")
         assert "json" in spec["inputSchema"]["properties"]
         assert "history_available" in spec["inputSchema"]["properties"]["json"]["description"]
+
+
+class TestTheHistoryReadNamesTheCaller:
+    """The history read acts for the calling session, so it says which one."""
+
+    def test_the_tool_hands_its_own_session_to_the_fetch(self, monkeypatch) -> None:
+        monkeypatch.setenv("KIROCREW_STUB_SESSION_TOKEN", "tok-json")
+        seen: list[object] = []
+
+        def _fetch(job_ids, identity_headers=None):
+            seen.append(identity_headers)
+            return {}, ""
+
+        with (
+            patch.object(mcp_cron.CronService, "list_jobs", return_value=[_job()]),
+            patch.object(mcp_cron, "_fetch_history_stats", side_effect=_fetch),
+        ):
+            mcp_cron._call_tool_inner("cron_list", {"json": True})
+        assert seen == [{"X-Session-Key": "dashboard:json-slot", "X-Session-Token": "tok-json"}]
+
+    def test_the_request_carries_the_key_and_token_beside_the_secret(self) -> None:
+        sent: list[dict[str, str]] = []
+
+        def _open(req, timeout):
+            sent.append({k.lower(): v for k, v in req.header_items()})
+            raise OSError("stop after one request")
+
+        # Through the facade: these names are bound by more than one cron module.
+        with (
+            patch.object(mcp_cron, "resolve_serving_port", return_value=5476),
+            patch.object(mcp_cron, "read_local_secret", return_value="s3"),
+            patch.object(mcp_cron, "loopback_urlopen", side_effect=_open),
+        ):
+            mcp_cron._fetch_history_stats(
+                ["j1"], {"X-Session-Key": "dashboard:json-slot", "X-Session-Token": "t"}
+            )
+        assert sent == [
+            {
+                "x-internal-secret": "s3",
+                "x-session-key": "dashboard:json-slot",
+                "x-session-token": "t",
+            }
+        ]

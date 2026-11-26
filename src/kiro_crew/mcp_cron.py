@@ -54,6 +54,7 @@ from kiro_crew.cron_script import (
 )
 from kiro_crew.cron_trigger import _JOB_ID_RE, trigger_cron_job
 from kiro_crew.mcp_caller import current_caller
+from kiro_crew.mcp_core_parts.gateway import session_identity_headers
 from kiro_crew.mcp_core_parts.identity import (
     _resolve_session_key,
     require_strict_session_key,
@@ -825,7 +826,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # already forced verbose on, so the precedence is stated in the description
         # the same way `ids over verbose` already is.
         if bool(args.get("json", False)):
-            return _render_cron_list_json(jobs)
+            return _render_cron_list_json(jobs, session_identity_headers(session_key))
         if verbose:
             return _render_cron_list_full(jobs)
         return _render_cron_list_compact(jobs)
@@ -1364,7 +1365,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # is paired to the instance actually serving and the job runs here.
         port = resolve_serving_port()
         secret_path = config_dir() / ".local_secret"
-        ok, msg = trigger_cron_job(jid, port, secret_path)
+        ok, msg = trigger_cron_job(
+            jid, port, secret_path, session_identity_headers(_authz_session_key())
+        )
         sel().log_api_access(
             caller="mcp",
             operation="cron.trigger",

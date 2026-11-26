@@ -429,6 +429,32 @@ class TestCronTriggerMCP:
             result = _call_tool_inner("cron_trigger", {"job_id": job.id})
         assert result == "Error: HTTP 409: job is already running"
 
+    def test_trigger_names_the_calling_session(self, mock_dashboard, monkeypatch):
+        """The trigger acts for the caller, so it sends that session's key and token."""
+        port, cfg_dir = mock_dashboard
+        monkeypatch.setenv("KIROCREW_HOME", str(cfg_dir))
+        monkeypatch.setenv("KIROCREW_STUB_SESSION_TOKEN", "tok-trigger")
+        from kiro_crew import mcp_cron
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=cfg_dir)
+        job = svc.add_job(
+            name="test-job-name",
+            message="go",
+            every_secs=120,
+            session_key="dashboard:conftest-slot",
+        )
+        _MockDashboardHandler.last_request_headers = {}
+        with (
+            patch.object(mcp_cron, "config_dir", return_value=cfg_dir),
+            patch.object(mcp_cron, "resolve_serving_port", lambda: port),
+        ):
+            _call_tool_inner("cron_trigger", {"job_id": job.id})
+        headers = _MockDashboardHandler.last_request_headers
+        assert headers.get("X-Session-Key") == "dashboard:conftest-slot"
+        assert headers.get("X-Session-Token") == "tok-trigger"
+        assert headers.get("X-Internal-Secret") == "test-secret-123"
+
     def test_trigger_invalid_id(self, monkeypatch, tmp_path):
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew import mcp_cron

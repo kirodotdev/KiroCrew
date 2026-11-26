@@ -158,13 +158,21 @@ async def _refuse_foreign_app_job(
     """Refuse an APP caller acting on any cron job it does not own.
 
     ``app == ""`` callers are ruled on by ``require_owner_dashboard_request``
-    already, and an internal-secret caller carries no app claim; both skip
-    this. An app token may reach these routes (``docs/app-kit/api-reference.md``
-    lists them), but only for its OWN jobs: the ones whose host-written
-    ``created_by`` is its ``app:<name>`` stamp. A job without that stamp -- the
-    person's, another app's, or one that does not exist -- is refused with the
-    owner gate's own 403 (``_owner_denial_response``), so a missing id reads the
-    same as a foreign one.
+    already, and an internal-secret caller whose session no app owns carries no
+    app claim; both skip this. An app token may reach these routes
+    (``docs/app-kit/api-reference.md`` lists them), but only for its OWN jobs:
+    the ones whose host-written ``created_by`` is its ``app:<name>`` stamp. A job
+    without that stamp -- the person's, another app's, or one that does not
+    exist -- is refused with the owner gate's own 403 (``_owner_denial_response``),
+    so a missing id reads the same as a foreign one.
+
+    An internal-secret caller from an app-owned session is the one other shape,
+    and it also owns the jobs its own session created: the cron MCP server's
+    ``cron_add`` stores the calling session as the job's ``session_key`` and
+    stamps no ``created_by``, and it names that same session on the trigger and
+    history requests. Such a job is admitted when its ``session_key`` is the key
+    the request names. Declaring that key is what derived the app claim in the
+    first place, so this admits nothing the key did not already reach.
 
     Both outcomes are SEL-audited under ``app:<name>``, the caller that actually
     decided the outcome. ``require_owner_dashboard_request`` is not reused for
@@ -172,8 +180,10 @@ async def _refuse_foreign_app_job(
     person the token was minted for, not the app acting.
 
     Every id is checked before the caller acts on any, so a batch that names one
-    foreign job changes nothing. The lookup is cache-only: ``created_by`` never
-    changes after creation, and a stale miss can only refuse, never allow.
+    foreign job changes nothing. The stamp lookup is cache-only: ``created_by``
+    never changes after creation, and a stale miss can only refuse, never allow.
+    The own-session check always reads the current store, because another
+    process can create or transfer a job before the cache sees it.
     """
     app = _app_caller(request)
     if not app:
@@ -182,14 +192,26 @@ async def _refuse_foreign_app_job(
     # ``kiro_crew.apps.cron_sdk`` runs ``kiro_crew.apps.__init__`` and its cycle.
     from kiro_crew.apps.cron_sdk import app_owner_name
 
-    refused = next(
-        (
-            job_id
-            for job_id in job_ids
-            if app_owner_name(getattr(state.crons.get_job(job_id), "created_by", None)) != app
-        ),
-        None,
+    own_session = (
+        request.headers.get("X-Session-Key", "").strip()
+        if request.get("internal_auth") is True
+        else ""
     )
+
+    async def _owned(job_id: str) -> bool:
+        job = state.crons.get_job(job_id)
+        if app_owner_name(getattr(job, "created_by", None)) == app:
+            return True
+        if not own_session:
+            return False
+        job = await state.crons.get_job_async(job_id)
+        return getattr(job, "session_key", None) == own_session
+
+    refused = None
+    for job_id in job_ids:
+        if not await _owned(job_id):
+            refused = job_id
+            break
     # One SEL row per decision, allow and deny alike.
     _audit_app_cron(
         app,
