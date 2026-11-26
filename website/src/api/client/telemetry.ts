@@ -96,7 +96,8 @@ export type UiControl =
 /** One app view the dashboard reports (POST /api/telemetry/app-view). The server
  *  resolves the app's public id and version from `app` itself and counts any
  *  other `surface` as `other`; mirrors `APP_OPENED_SURFACE_VALUES` and
- *  `APP_FOREGROUND_SURFACE_VALUES` in `src/kiro_crew/metrics/feature_usage.py`. */
+ *  `APP_FOREGROUND_SURFACE_VALUES` in `src/kiro_crew/metrics/feature_usage.py`,
+ *  less `shortcut`, which only the desktop shell sends (`electron/app-window-host.js`). */
 export type AppViewReport =
   | { app: string; surface: 'page' | 'popout' | 'desktop'; event: 'opened' }
   | { app: string; surface: 'page' | 'popout'; event: 'foreground'; seconds: number }
