@@ -24130,7 +24130,26 @@
     "tip_source_user_explicit": "有意写入：由你在这个页面写入，或由 Bot 的记忆工具写入。",
     "tip_source_user_explicit_named": "有意写入：由你在这个页面写入，或由 {{bot}} 的记忆工具写入。",
     "tip_source_taskrunner": "后台任务完成时写入。",
-    "counts_failed": "无法读取计数"
+    "counts_failed": "无法读取计数",
+    "strength": "强度",
+    "strength_value": "强度 {{value}}",
+    "strength_strong": "强",
+    "strength_fading": "即将淡出",
+    "strength_faded": "已淡出",
+    "strength_tip_fading": "一周内，新记忆会排在它前面，即使它完全匹配。",
+    "strength_tip_faded": "新记忆会排在它前面，即使它完全匹配。",
+    "strength_rate": "每天衰减 {{rate}}",
+    "strength_rate_tag": "每天衰减 {{rate}}，由 #{{tag}} 设定",
+    "strength_never": "不会衰减",
+    "strength_never_tag": "不会衰减，由 #{{tag}} 设定",
+    "strength_below_on": "从 {{date}} 起，新记忆会排在它前面，即使它完全匹配。",
+    "strength_keep": "召回和编辑不会减慢衰减。经验永不衰减。",
+    "save_as_lesson": "存为经验",
+    "strength_curve_label": "今天强度 {{now}}，保存时 {{start}}。",
+    "strength_default_rate": "默认速率",
+    "divider_no_strength": "事实和经验不会衰减 · 最新在前",
+    "strength_rate_outrank_other": "{{label}}：重要度 {{importance}} 的记忆会在 {{days}} 天后排在新记忆后面",
+    "strength_rate_steady": "{{label}}：不会衰减"
   },
   "uiLocations": {
     "description": {

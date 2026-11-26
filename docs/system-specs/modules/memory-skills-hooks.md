@@ -3358,6 +3358,42 @@ not coordinate, so reason about them separately:
 3. **Cap eviction**: `_enforce_episodic_cap()`, above. Independent of age
    except as a tiebreak.
 
+#### Strength on the memory page (`memory_decay.py`)
+
+The memory page shows mechanism 2 per experience. A V1 experience's
+**strength** is `episodic_search.recall_weight`: `recall_score` at a cosine of
+1, so `(0.7 + 0.3 × importance) × exp(-rate × days_old)`. `recall_score` is the
+one place the formula lives; the FAISS rung, the vectorised scoring set and
+`episodic_candidate` all call it. `test_memory_decay.py` pins the shown strength equal to the
+score recall returns for an exact match, on both the vectorised and the stdlib
+path.
+
+- **Fade line** `fade_line()` = `recall_score(_EPISODIC_RELEVANCE_THRESHOLD, 0, 0, 0)` = 0.385:
+  the score of a memory written today at importance 0 that just clears the
+  short-text gate. Below it, even an exact match ranks under any such new
+  memory. The row is still stored and still admitted on a close match.
+- **Bands** (the `strength` facet, V1 experiences only): `faded` under the line,
+  `fading` when it crosses within `SOON_DAYS` = 7, else `strong`. A rate-0 tag
+  never crosses. At the default rate an importance-0.5 row crosses on day 27.
+- **What moves it**: importance, the tag rate (`decay_rate_for` →
+  `decay_rule_for`, which also names the tag that set it) and age. A recall
+  stamps `last_accessed_at` and an edit changes the text; neither enters the
+  score, and the page says so. Lessons never fade, so the global page's detail
+  panel offers **Save as lesson**, which opens New memory on a lesson with the
+  text typed in.
+- **Wire**: `GET /api/memory/records` adds `decay` (`strength`, `start`, `rate`,
+  `rate_tag`, `days_old`, `days_to_line`, `state`) to each V1 experience, after
+  its revision hash, so the hash does not move with the day; a `strength` sort
+  and facet; and, with `facets=1` on a V1 store, the store's
+  `decay` (`fade_line`, `importance`, `start`, and `rates`, each with its
+  `days_to_line` from `memory_decay.days_to_line`). The page shows these
+  numbers and works none of them out itself. A cached summary keeps the terms
+  its strength comes from (`memory_decay.summary_terms`), and every listing
+  recomputes strength and band from them (`memory_decay.refresh`), so a row
+  that ages past the line moves band with no write; the facet-count cache keys
+  on the bands' digest, and the summary cache on the fade rates, so a reloaded
+  `memory.decay_rates` is a miss. V2 stores send none of it: they do not decay.
+
 ### In-Process Embedder (`embeddings.py`)
 
 `embeddings.py` is a mirror facade (`kiro_crew._facade_mirror`) over sibling owner

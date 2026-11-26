@@ -610,5 +610,6 @@
   "pages.appsPage.bot_chat_stop_retry_all",
   "pages.appsPage.blanket_bot_chat_stop_failed",
   "components.chatHistorySearch.image_count",
-  "components.chatHistorySearch.file_count"
+  "components.chatHistorySearch.file_count",
+  "memoryPage.strength_rate_outrank"
 ]

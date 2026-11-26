@@ -4,6 +4,7 @@
  * each facet value reads as.
  */
 import { i18nT } from '../../../i18n/t'
+import { fmtNumber } from '../../../i18n/format'
 import { safeGetSessionItem, safeSetSessionItem } from '../../../utils/safeStorage'
 import { parseRange, type DateRange } from './memoryDateRanges'
 import type { MemoryRecord, MemoryRecordFacetGroup, MemoryRecordFilters, MemoryRecordKind, MemoryRecordQuery, MemoryRecordSort } from '../../../types/memoryEditing'
@@ -24,9 +25,11 @@ export type ListView = {
   range?: DateRange
 }
 export type SearchMode = 'words' | 'meaning'
+/** A 0–1 score with two decimals, in the reader's locale. */
+export const fmtScore = (value: number) => fmtNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 export const DEFAULT_VIEW: ListView = { q: '', kind: 'all', sort: 'updated', order: 'desc', filters: {}, mode: 'words' }
-export const FACET_GROUPS: MemoryRecordFacetGroup[] = ['category', 'applies', 'scope', 'tag', 'source', 'surface', 'crew']
-const SORTS: MemoryRecordSort[] = ['updated', 'created', 'confidence', 'importance', 'key', 'match']
+export const FACET_GROUPS: MemoryRecordFacetGroup[] = ['category', 'applies', 'scope', 'tag', 'strength', 'source', 'surface', 'crew']
+const SORTS: MemoryRecordSort[] = ['updated', 'created', 'confidence', 'importance', 'strength', 'key', 'match']
 
 /** The sort a request sends: Best match needs search words, so it falls back to Updated without them. */
 export const effectiveSort = (view: ListView): MemoryRecordSort => byMeaning(view) ? 'match' : view.sort === 'match' && !view.q ? 'updated' : view.sort
@@ -35,7 +38,7 @@ export const byMeaning = (view: ListView) => view.mode === 'meaning' && !!view.q
 
 /** Which kinds a facet group or a score belongs to. */
 export const GROUP_KINDS: Record<MemoryRecordFacetGroup, MemoryRecordKind[]> = {
-  category: ['directive'], applies: ['directive'], scope: ['directive'], tag: ['episode'],
+  category: ['directive'], applies: ['directive'], scope: ['directive'], tag: ['episode'], strength: ['episode'],
   source: ['fact', 'directive', 'episode'], surface: ['fact', 'directive', 'episode'], crew: ['fact', 'directive', 'episode'],
 }
 
@@ -95,6 +98,9 @@ export function toggleFilter(filters: MemoryRecordFilters, group: MemoryRecordFa
 export const SCOPE_UNUSABLE = ':unusable'
 const CATEGORY_KEYS: Record<string, string> = { knowledge: 'memoryPage.category_knowledge', tool: 'memoryPage.category_tool', preference: 'memoryPage.category_preference' }
 const APPLIES_KEYS: Record<string, string> = { always: 'memoryPage.applies_always', on_topic: 'memoryPage.applies_on_topic', unstated: 'memoryPage.applies_unstated' }
+// `memory_decay.STATES`, in the order the rail lists them.
+export const STRENGTH_STATES = ['strong', 'fading', 'faded'] as const
+const STRENGTH_KEYS: Record<string, string> = { strong: 'memoryPage.strength_strong', fading: 'memoryPage.strength_fading', faded: 'memoryPage.strength_faded' }
 const SOURCE_KEYS: Record<string, string> = {
   user_explicit: 'pages.overview.memoryTab.source_user_explicit',
   consolidation: 'pages.overview.memoryTab.source_consolidation',
@@ -123,6 +129,7 @@ export function facetLabel(group: MemoryRecordFacetGroup, value: string): string
   if (group === 'source') return SOURCE_KEYS[value] !== undefined ? i18nT(SOURCE_KEYS[value]) : value
   // The channel and the crew are stamped on a bot's memory; an empty one was never recorded.
   if (group === 'surface' || group === 'crew') return value === '' ? i18nT('pages.overview.memoryCarveCard.not_recorded') : value
+  if (group === 'strength') return STRENGTH_KEYS[value] ? i18nT(STRENGTH_KEYS[value]) : value
   return `#${value}`
 }
 
