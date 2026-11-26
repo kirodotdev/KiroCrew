@@ -35,7 +35,6 @@ from kiro_crew.dashboard import chat_history_cached as chc
 from kiro_crew.dashboard.handlers.sessions import message_query
 from kiro_crew.history import ConversationLog
 from kiro_crew.history_index import INDEX_FILENAME, SessionSearchIndex
-from kiro_crew.session_storage_parts import trash_reclaim
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 pytestmark = pytest.mark.skipif(not fts5_available(), reason="SQLite built without FTS5")
@@ -168,7 +167,7 @@ def test_no_cache_is_built_between_the_trash_drop_and_the_file_move(stores, monk
     log = _trashable_tab(crew_home, kiro_home)
     store = csc.store_for(crew_home / "sessions")
     paused, release = threading.Event(), threading.Event()
-    real_move = trash_reclaim._move_file
+    real_move = session_storage._move_file
 
     def held_move(src, dst):
         # The cache drop is done; no file has moved yet.
@@ -177,7 +176,7 @@ def test_no_cache_is_built_between_the_trash_drop_and_the_file_move(stores, monk
             assert release.wait(FALLBACK_TIMEOUT_SECS)
         return real_move(src, dst)
 
-    monkeypatch.setattr(trash_reclaim, "_move_file", held_move)
+    monkeypatch.setattr(session_storage, "_move_file", held_move)
     out: dict = {}
     mover = threading.Thread(target=lambda: out.update(batch=_trash_first()), daemon=True)
     mover.start()
@@ -228,7 +227,7 @@ def test_a_chat_the_move_to_trash_left_in_place_is_cached_again(stores, monkeypa
     def no_move(src, dst):
         raise OSError("disk full")
 
-    monkeypatch.setattr(trash_reclaim, "_move_file", no_move)
+    monkeypatch.setattr(session_storage, "_move_file", no_move)
     with pytest.raises(session_storage.SessionStorageError):
         _trash_first()
 

@@ -4,6 +4,7 @@ the search window that answers from it (``dashboard/chat_history_cached.py``).""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import threading
@@ -554,6 +555,13 @@ def _holding(store, text: str) -> list[str]:
     return [p.name for p in store.dir.iterdir() if text.encode() in p.read_bytes()]
 
 
+def _bump(store, key: str) -> None:
+    """What :meth:`ChatSearchCache.drop` does before its sweep: bump *key*'s gen."""
+    stem = csc._safe_key(key)
+    with store._lock:
+        store._gen[stem] = store._gen.get(stem, 0) + 1
+
+
 def test_a_drop_between_a_builds_read_and_its_commit_voids_the_build(log, monkeypatch):
     _tab_pair(log)
     store = _store(log)
@@ -571,8 +579,8 @@ def test_a_drop_between_a_builds_read_and_its_commit_voids_the_build(log, monkey
     decoded = _decoded(log, monkeypatch)
     thread, out = _in_thread(lambda: _update(log, LATER))
     assert inside.wait(FALLBACK_TIMEOUT_SECS)
-    # The drop's entry lands while the page holding FIRST's row is not committed.
-    store._tombstone([csc._safe_key(FIRST)])
+    # The drop's gen bump lands while the page holding FIRST's row is not committed.
+    _bump(store, FIRST)
     release.set()
     thread.join(FALLBACK_TIMEOUT_SECS)
 
@@ -614,14 +622,14 @@ def test_a_drop_after_a_build_committed_a_page_sweeps_that_file(log, monkeypatch
     assert _counts(log, _update(log, LATER), "quincefruit")[""] == 0
 
 
-def test_a_drop_writes_its_entry_before_it_sweeps_the_files(log, monkeypatch):
+def test_a_drop_bumps_the_gens_before_it_sweeps_the_files(log, monkeypatch):
     _tab_pair(log)
     store = _store(log)
     entered, release = threading.Event(), threading.Event()
     real_in_flight = log.delete_in_flight
 
     def in_flight(key):
-        # The build has taken its drop log position and opened no file yet.
+        # The build has copied its chain's gens and opened no file yet.
         if threading.current_thread() is not threading.main_thread():
             entered.set()
             assert release.wait(FALLBACK_TIMEOUT_SECS)
@@ -651,30 +659,86 @@ def test_a_drop_writes_its_entry_before_it_sweeps_the_files(log, monkeypatch):
     assert _holding(store, "quincefruit") == []
 
 
-@pytest.mark.asyncio
-async def test_a_search_of_a_cache_whose_chain_was_dropped_reads_the_scan(log, monkeypatch):
-    _tab_pair(log)
-    snap = _update(log, LATER)
+def _cherry_first(log) -> None:
+    """Rewrite row 0, so the next update rebuilds the cache from an empty table."""
+    rows = _rows(log)
+    rows[0] = {**rows[0], "content": "a cherry instead"}
+    _rewrite(log, rows)
+
+
+def test_a_search_inside_the_file_when_a_rebuild_starts_reads_the_old_table(log, monkeypatch):
+    _plums(log, 20)
+    old = _update(log)
     store = _store(log)
-    assert store.holds(LATER)
-    # Only the drop's entry: no sweep removed the file.
-    store._tombstone([csc._safe_key(FIRST)])
-    started = []
-    monkeypatch.setattr(chc, "start_build", lambda _log, key: started.append(key) or False)
-    monkeypatch.setattr(chc, "BUILD_WAIT_SECS", FALLBACK_TIMEOUT_SECS)
-    async with TestClient(TestServer(_app(log, LATER))) as client:
-        body = await _get(client, SEARCH, "q=quincefruit")
+    _cherry_first(log)
+    inside, release, rebuilding = threading.Event(), threading.Event(), threading.Event()
+    real_reading, real_use = store.reading, store._use
+
+    @contextlib.contextmanager
+    def held(snap):
+        with real_reading(snap) as conn:
+            inside.set()
+            assert release.wait(FALLBACK_TIMEOUT_SECS)
+            yield conn
+
+    monkeypatch.setattr(store, "reading", held)
+    search, found = _in_thread(lambda: _cached(log, old, "plum"))
+    assert inside.wait(FALLBACK_TIMEOUT_SECS)
+
+    def use(key, gen):
+        if threading.current_thread() is not search:
+            rebuilding.set()
+        return real_use(key, gen)
+
+    monkeypatch.setattr(store, "_use", use)
+    build, built = _in_thread(lambda: _update(log))
+    try:
+        # The rebuild has started; it needs the file the search holds.
+        assert rebuilding.wait(FALLBACK_TIMEOUT_SECS)
+    finally:
+        release.set()
+        search.join(FALLBACK_TIMEOUT_SECS)
+        build.join(FALLBACK_TIMEOUT_SECS)
+
+    assert found["result"]["complete"] is True
+    assert (found["result"]["counts"][""], found["result"]["total"]) == (20, 20)
+    monkeypatch.setattr(store, "reading", real_reading)
+    assert _counts(log, built["result"], "plum")[""] == 19
+
+
+@pytest.mark.asyncio
+async def test_a_search_during_a_rebuild_never_answers_partial_counts(log, monkeypatch):
+    _plums(log, 20)
+    monkeypatch.setattr(csc, "BUILD_PAGE_ROWS", 5)
+    old = _update(log)
+    store = _store(log)
+    _cherry_first(log)
+    paused, release = threading.Event(), threading.Event()
+
+    def pause() -> None:
+        # Called after the reset commit, before the first page is read.
+        paused.set()
+        assert release.wait(FALLBACK_TIMEOUT_SECS)
+
+    build, built = _in_thread(lambda: store.update(log, KEY, chc.cache_entry, pause))
+    try:
+        assert paused.wait(FALLBACK_TIMEOUT_SECS)
+        with pytest.raises(csc.CacheDropped):
+            _cached(log, old, "plum")
+        # The route took its snapshot before the reset and reads it after.
+        monkeypatch.setattr(store, "holds", lambda _key: True)
+        monkeypatch.setattr(store, "current", lambda _log, _key: old)
+        monkeypatch.setattr(chc, "start_build", lambda _log, _key: False)
+        async with TestClient(TestServer(_app(log))) as client:
+            body = await _get(client, SEARCH, "q=plum")
+            counts = await _get(client, COUNTS, "q=plum")
+    finally:
+        release.set()
+        build.join(FALLBACK_TIMEOUT_SECS)
 
     assert "complete" not in body
-    assert not store.path(LATER).exists()
-    assert not store.holds(LATER)
-    # A search that reads an earlier snapshot directly is refused the same way.
-    _tab_pair(log)
-    snap = _update(log, LATER)
-    store._tombstone([csc._safe_key(FIRST)])
-    with pytest.raises(csc.CacheDropped):
-        _cached(log, snap, "quincefruit")
-    assert not store.path(LATER).exists()
+    assert body["counts"][""] == 19 and counts["counts"][""] == 19
+    assert _counts(log, built["result"], "plum")[""] == 19
 
 
 def test_a_drop_leaves_the_other_caches_unwritten(log, monkeypatch):
