@@ -13,11 +13,10 @@
  * the keys and are equally write-only once saved.
  */
 
+import { readAgentEnvMap } from './agentEnvMap'
+
 /** The config path the card writes the reference map to. */
 export const STRANDS_ENV_KEY = 'agent.strands_env'
-
-/** The reference prefix `agent.strands_env` admits, and nothing else. */
-export const SECRET_REF_PREFIX = 'secret://'
 
 /** One value the provider reads from its environment. */
 export interface StrandsProviderField {
@@ -74,21 +73,7 @@ export function strandsVaultName(env: string): string {
 
 /** `agent.strands_env` as a plain string map; anything else reads as empty. */
 export function readStrandsEnv(cfg: unknown): Record<string, string> {
-  const agent = (cfg as { agent?: unknown } | undefined)?.agent
-  const raw = (agent as { strands_env?: unknown } | undefined)?.strands_env
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
-  const out: Record<string, string> = {}
-  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof v === 'string') out[k] = v
-  }
-  return out
-}
-
-/** The vault name a mapped value references, or null when it is not a reference. */
-export function referencedVaultName(value: string | undefined): string | null {
-  if (!value || !value.startsWith(SECRET_REF_PREFIX)) return null
-  const name = value.slice(SECRET_REF_PREFIX.length)
-  return name ? name : null
+  return readAgentEnvMap(cfg, 'strands_env')
 }
 
 /** The config path the provider picker writes. */

@@ -16,11 +16,16 @@ describe('SessionMessageCard', () => {
     render(<SessionMessageCard sender={sender} recipient={recipient} body="plan is ready for review" onOpenSession={onOpen} />)
     expect(screen.getByTestId('session-message-card').getAttribute('data-direction')).toBe('outgoing')
     // The sender is named "This session", not by a title that reads as another
-    // sender; the title stays on hover. Never a link to itself.
+    // sender; the title is its description and shows in the tip on focus, never
+    // in a native title. Never a link to itself.
     const title = screen.getByTestId('session-card-title')
     expect(title.textContent).toBe('This session')
-    expect(title).toHaveAttribute('title', 'wf-planner')
+    expect(title).toHaveAttribute('title', '')
+    expect(title).toHaveAccessibleDescription('wf-planner')
     expect(title.tagName).not.toBe('BUTTON')
+    fireEvent.focus(title)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(/^This sessionwf-planner$/)
+    fireEvent.blur(title)
     // The direction is visible text, not an sr-only span or an icon.
     const direction = screen.getByTestId('session-card-direction')
     expect(direction.textContent).toBe('Sent to @Parent chat')

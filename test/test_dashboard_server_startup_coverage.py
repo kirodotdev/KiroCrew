@@ -1214,6 +1214,82 @@ class TestStartDashboardWiring:
             assert runner.app["port"] == 0
             assert state.resume_channel_agents is None
 
+    @staticmethod
+    def _seed_closed_note(tmp_path: Path) -> list[tuple[str, str | None]]:
+        """Store what an earlier run left: its closed-port note and two others.
+
+        Returns the two notes a start must keep, as ``(source, key)``.
+        """
+        from kiro_crew.dashboard import entry_gate
+
+        rows = [
+            ("system", entry_gate.CLOSED_KEY, "critical"),
+            ("system", "config-syntax", "critical"),
+            ("system", None, "default"),
+        ]
+        (tmp_path / "notifications.jsonl").write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "id": f"note-{index}",
+                        "ts": "2026-11-25T00:00:00+00:00",
+                        "source": source,
+                        "channel": "system.agent",
+                        "priority": priority,
+                        "title": f"note {index}",
+                        "body": "",
+                        **({} if key is None else {"key": key}),
+                    }
+                )
+                + "\n"
+                for index, (source, key, priority) in enumerate(rows)
+            )
+        )
+        return [(source, key) for source, key, _priority in rows[1:]]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("entry_port", [0, 18443])
+    async def test_a_start_removes_the_closed_port_note_of_an_earlier_run(
+        self, entry_port, tmp_path, monkeypatch
+    ) -> None:
+        """The port is open again, or the owner set it to 0: the old note is gone.
+
+        The entry listeners are not bound here; the start is past the entry port
+        either way, and every other note is kept.
+        """
+        from kiro_crew.dashboard import entry_gate
+        from kiro_crew.dashboard.state import _load_notifications
+
+        kept = self._seed_closed_note(tmp_path)
+        (tmp_path / "config.json").write_text(json.dumps({"dashboard": {"entry_port": entry_port}}))
+        opened = AsyncMock(return_value=[])
+        monkeypatch.setattr(entry_gate, "start", opened)
+        async with _dashboard(tmp_path, monkeypatch) as (_runner, state, _spies):
+            assert opened.await_args.args[2] == entry_port
+            assert state.ready is True
+            assert [(n["source"], n.get("key")) for n in state._notification_log] == kept
+            assert [(n["source"], n.get("key")) for n in _load_notifications()] == kept
+
+    @pytest.mark.asyncio
+    async def test_a_closed_port_note_that_cannot_be_removed_does_not_stop_the_start(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from kiro_crew.dashboard import entry_gate
+        from kiro_crew.dashboard.state import DashboardState
+
+        kept = self._seed_closed_note(tmp_path)
+        monkeypatch.setattr(
+            DashboardState,
+            "dismiss_notification",
+            AsyncMock(side_effect=OSError("read-only data home")),
+        )
+        async with _dashboard(tmp_path, monkeypatch) as (_runner, state, _spies):
+            assert state.ready is True
+            assert [(n["source"], n.get("key")) for n in state._notification_log] == [
+                ("system", entry_gate.CLOSED_KEY),
+                *kept,
+            ]
+
     @pytest.mark.asyncio
     async def test_the_knowledge_store_is_built_off_the_loop(self, tmp_path, monkeypatch) -> None:
         """Its constructor prepares and opens SQLite files, which must not run on the loop.

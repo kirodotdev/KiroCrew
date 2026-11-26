@@ -144,7 +144,7 @@ async def test_install_holds_one_slot_and_reports_the_job(sel, sup, monkeypatch)
     release = asyncio.Event()
     seen: list[tuple[str, ...]] = []
 
-    async def fake_install(home, progress, *, components, refresh=False):
+    async def fake_install(home, progress, *, components, refresh=False, before_clear=None):
         seen.append(components)
         progress(harness_install.STAGE_INSTALLING_HARNESS, "x")
         await release.wait()
@@ -169,7 +169,7 @@ async def test_install_holds_one_slot_and_reports_the_job(sel, sup, monkeypatch)
 async def test_a_second_install_on_the_same_state_is_a_409(sel, sup, monkeypatch) -> None:
     release = asyncio.Event()
 
-    async def fake_install(home, progress, *, components, refresh=False):
+    async def fake_install(home, progress, *, components, refresh=False, before_clear=None):
         await release.wait()
         return harness_install.install_state(home)
 
@@ -187,7 +187,7 @@ async def test_a_second_install_on_the_same_state_is_a_409(sel, sup, monkeypatch
 
 @pytest.mark.asyncio
 async def test_an_install_failure_lands_on_the_job(sel, sup, monkeypatch) -> None:
-    async def fake_install(home, progress, *, components, refresh=False):
+    async def fake_install(home, progress, *, components, refresh=False, before_clear=None):
         raise harness_install.InstallError(
             harness_install.STAGE_INSTALLING_HARNESS, "hash mismatch"
         )
@@ -214,7 +214,7 @@ async def test_an_unknown_component_is_a_400(sel, sup) -> None:
 
 @pytest.mark.asyncio
 async def test_stop_install_cancels_a_running_job(sel, sup, monkeypatch) -> None:
-    async def fake_install(home, progress, *, components, refresh=False):
+    async def fake_install(home, progress, *, components, refresh=False, before_clear=None):
         await asyncio.Event().wait()
 
     monkeypatch.setattr(harness_install, "install", fake_install)
@@ -268,7 +268,7 @@ async def test_redownload_sends_refresh_so_an_installed_chromium_is_replaced(
     """
     seen: list[tuple[tuple[str, ...], bool]] = []
 
-    async def fake_install(home, progress, *, components, refresh=False):
+    async def fake_install(home, progress, *, components, refresh=False, before_clear=None):
         seen.append((components, refresh))
         return harness_install.install_state(home)
 
@@ -302,7 +302,7 @@ async def test_redownload_keeps_kiros_own_chromium_down_while_it_runs(
     stops: list[int] = []
     during: list[bool] = []
 
-    async def fake_install(home, progress, *, components, refresh=False):
+    async def fake_install(home, progress, *, components, refresh=False, before_clear=None):
         during.append(sup.replacing_chromium)
         return harness_install.install_state(home)
 
@@ -356,7 +356,7 @@ async def test_a_harness_install_holds_browser_starts_only_while_it_rebuilds_the
     then; outside that window, starts that worked before keep working."""
     during: list[bool] = []
 
-    async def fake_install(home, progress, *, components, refresh=False):
+    async def fake_install(home, progress, *, components, refresh=False, before_clear=None):
         for stage in stages:
             progress(stage, "")
             during.append(sup.installing_harness)
@@ -375,7 +375,7 @@ async def test_a_harness_install_holds_browser_starts_only_while_it_rebuilds_the
 async def test_a_failed_harness_install_opens_the_start_gate_again(sel, sup, monkeypatch) -> None:
     during: list[object] = []
 
-    async def failing_install(home, progress, *, components, refresh=False):
+    async def failing_install(home, progress, *, components, refresh=False, before_clear=None):
         progress(_VENV, "")
         during.append(getattr(sup, "installing_harness", None))
         raise harness_install.InstallError(harness_install.STAGE_CREATING_VENV, "boom")
@@ -390,6 +390,38 @@ async def test_a_failed_harness_install_opens_the_start_gate_again(sel, sup, mon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("components", "order"),
+    [(["harness"], [("stopped", True), "clear"]), (["chromium"], ["clear"])],
+)
+async def test_the_venv_clear_waits_for_the_harness_running_from_it_to_stop(
+    sel, sup, monkeypatch, components: list[str], order: list[object]
+) -> None:
+    """The daemon and worker run from the venv's interpreter: the install's thread
+    waits for the job to stop them before it clears, and starts are refused from the
+    stop on. A job that leaves the harness alone stops nothing."""
+    seen: list[object] = []
+
+    async def fake_stop() -> None:
+        await asyncio.sleep(0)
+        seen.append(("stopped", sup.installing_harness))
+
+    def fake_install_sync(home, progress, *, components, refresh, stop, before_clear):
+        before_clear()
+        seen.append("clear")
+        return harness_install.install_state(home)
+
+    monkeypatch.setattr(harness_install, "install_sync", fake_install_sync)
+    monkeypatch.setattr(sup, "stop", fake_stop)
+    req = _owner("/api/browser/install", sup, body={"components": components})
+    assert (await routes.api_browser_harness_install(req)).status == 202
+    await req.app["state"]._browser_harness_install_task
+    assert routes._job(req.app["state"]).status == routes.STATUS_SUCCEEDED
+    assert seen == order
+    assert sup.installing_harness is False
+
+
+@pytest.mark.asyncio
 async def test_redownload_installs_only_after_kiros_chromium_has_stopped(
     sel, sup, monkeypatch
 ) -> None:
@@ -400,7 +432,7 @@ async def test_redownload_installs_only_after_kiros_chromium_has_stopped(
     stopping = asyncio.Event()
     release = asyncio.Event()
 
-    async def fake_install(home, progress, *, components, refresh=False):
+    async def fake_install(home, progress, *, components, refresh=False, before_clear=None):
         order.append("install")
         return harness_install.install_state(home)
 
@@ -452,7 +484,7 @@ async def test_status_reinstalls_an_install_whose_interpreter_an_update_removed(
     (prefix / harness_install.MARKER_FILE).write_text(json.dumps(marker), encoding="utf-8")
     release = asyncio.Event()
 
-    async def fake_install(home, progress, *, components, refresh=False):
+    async def fake_install(home, progress, *, components, refresh=False, before_clear=None):
         await await_until(release, what="the repair's install released")
         return harness_install.install_state(home)
 

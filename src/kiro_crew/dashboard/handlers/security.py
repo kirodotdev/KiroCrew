@@ -457,6 +457,11 @@ async def _apply_mutation(request: web.Request, op: str, mutate) -> web.Response
 
 async def api_denied_commands_list(request: web.Request) -> web.Response:
     """GET /api/security/denied-commands — full snapshot (no audit; read)."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "denied_commands.list")
+    if denied is not None:
+        return denied
     return await _snapshot_response()
 
 

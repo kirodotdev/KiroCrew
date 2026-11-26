@@ -731,6 +731,38 @@ Tests: `website/src/test/ChatEmbed.pushRead.test.tsx`,
 `website/src/test/appSlotPush.test.ts`,
 `website/src/test/useWebSocket.appSlotRows.test.ts`, `test/test_app_slot_push_frames.py`.
 
+## ChatEmbed read relay
+
+While a `ChatEmbed` is seen, the rows it renders count as read: it sends the
+dashboard's `slot_read` through `emitExactSlotRead`, watermarked at exactly the
+newest gateway-minted row it renders (`newestServerRowTs`), never client time,
+so a row that lands after the read keeps its badge on every device. Unlike
+`emitSlotRead`, the exact entry point does not widen the watermark to permission
+rows the dashboard socket received or to a conductor's read cover: the embed has
+not necessarily fetched those rows. Both entry points share the per-slot
+throttle, and a coalesced send carries the newest watermark either caller passed.
+
+Seen means the host tab is active (`info.active`), the person is not away from
+the window (`isWindowAway`: the page is visible and the window has focus), the
+transcript scroller is on screen (`elementOnScreen`: a box with area, some of it
+inside the viewport, and a hit test that lands inside it, so a header without the
+transcript, an overflow clip or an opaque cover counts as unseen), and it is not
+hidden by `visibility` or `opacity` (`checkVisibility`). An embed mounted under
+`display: none` to load ahead, with no mounted transcript scroller, collapsed to
+no height, scrolled out of view or covered reads nothing. The gate reads the
+scroller ref at each check, so a scroller that mounts later is eligible at the
+next poll or visibility event. The gate is judged on demand: on every landed read
+of the slot (`dataUpdatedAt`) and on focus, blur and visibility changes, never by
+an observer. So an embed scrolled or expanded into view, or a cover that lifts,
+with no other event, is read at the next poll; a watermark already sent is not
+sent again. When the embed stops being seen on a focus, blur, visibility or
+host-tab change, its pending trailing read is sent at once (`flushSlotRead`).
+The read rides the dashboard user's own socket, so the gateway's owner gate on
+`slot_read` still applies.
+
+Writers: `website/src/app-sdk/embedSlotRead.ts`, `website/src/app-sdk/ChatEmbed.tsx`.
+Tests: `website/src/test/ChatEmbed.slotRead.test.tsx`.
+
 ## App Store source selection
 
 Discover's Sources rail filters the catalog shelf by namespaced source identity.
@@ -2950,7 +2982,10 @@ because iterating a string yields its characters (`"*"` → the wildcard, and
 `bridges_agents._register_agents` → `_enforce_declared_mcp_tools` adds every
 host-managed tool the app did not declare (judged by
 `permissions.check_tool_permission`) to each app agent's `managedToolPolicy.exclude`,
-unioned with any exclude the agent spec authored. The managed-tool universe is each
+unioned with any exclude the agent spec authored. A host tool may be declared bare
+(`memory_recall`) or in the ref form agent `tools` lists use
+(`@kirocrew-core/memory_recall`); a ref whose server is a managed server counts as its
+bare name. The managed-tool universe is each
 managed server's unconditional declaration (`mcp_discovery_managed.managed_tool_names_for_policy`),
 so a tool hidden behind a runtime enable is excluded before the enable flips. A managed
 server whose declaration cannot be read has no names to exclude, so it fails closed: it
@@ -7965,8 +8000,12 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `useBrowserView` and `useBrowserCoords` (RFC app-sdk-browser, step 1c) and the SDK's
 `appWebOriginStatus` (§18k); level 12 adds `permissions.kiroOperations`, its route and
 `ctx.kiro_call` (§47), and the SDK's `SessionChanges` and `DiffView` (§18l); level 13 adds
-`/api/apps/<name>/browser-sites` and the SDK's `useBrowserSites` (§45). Several seams share level 7,
-three share level 8, and the open batch that level 10 starts shares level 10, so an app that needs one
+`/api/apps/<name>/browser-sites` and the SDK's `useBrowserSites` (§45); level 14 adds backend
+SDK names, one batch: `canonical_file_path`, `vet_public_url`, `UrlRejectedError`,
+`address_is_not_public`, `sniff_raster_mime` and `RASTER_SNIFF_BYTES`, and the
+descriptor-pinned path walk and copy (§40). Several seams
+share level 7, three share level 8, the open batch that level 10 starts shares level 10, and the backend SDK
+batch shares level 14, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -8306,9 +8345,11 @@ actor `app`, so nothing in it speaks as the owner, and the Bot is told that what
 reads through the app's tools is data, not instructions. The refs wait in the thread's
 wake store (`mate_thread_wakes.app_wakes`, per thread and app) and the flush that
 delivers a worker report delivers them (`mate_thread_wakes.schedule_flush`): at once
-on an idle thread, else from the thread's next turn end, all of one thread's refs in
-one turn, after an owed upgrade notice and after any waiting worker reports, so a
-steady run of wakes cannot hold a report back
+on an idle thread, else from the thread's next turn end (a thread a person's Stop holds
+answers `queued` and gets them at the end of the next turn that starts in it,
+[crew-mode](crew-mode.md)), all of one thread's refs in one turn, after an owed upgrade
+notice and after any waiting worker reports, so a steady run of wakes cannot hold a
+report back
 (`test_a_waiting_worker_report_goes_before_the_app_wakes`). Before a held ref is
 delivered the flush reads the grant again (`app_bot_wake.still_granted`): an app that
 no longer holds `wake` or the Bot (the owner unticked it, took `wake` back, or disabled
@@ -8356,10 +8397,12 @@ Writers: `apps/bot_grants.py`, `apps/routes_bot_grants.py`, `apps/manifest_secti
 ## 33. Former built-in adoption
 
 A built-in app that moves to its own repository keeps working for everyone who
-already has it. A release that pins the app still ships its wheel copy; on a host
+already has it. A release that pins the app first ships its wheel copy too; on a host
 whose record is builtin-owned, the gateway swaps the record **in place** onto the
 pinned repository tree, keeping `data/`, `.app_secret`, the approved grants and
-`enabled`. A host that cannot adopt keeps running the wheel copy unchanged. Core
+`enabled`. A host that cannot adopt keeps running the wheel copy unchanged. A later
+release may delete the wheel copy and keep the pin row, and adoption then runs from
+the row alone ("A pin row with no wheel copy" below). Core
 names no app anywhere in this machinery but one stated place, the row keys of
 `apps/legacy_state_moves` ("A legacy state move holds the swap" below): the pin table
 is data, and `test_builtin_adoption_pins.py` fails on a shipped built-in name in any
@@ -8442,7 +8485,23 @@ authored. `builtin_adoption_pins.load_adoption_pins` reads it once per process; 
 bad row is dropped, a duplicated name drops every row with it, more than 64 rows
 or an unreadable file is an empty table, which is today's behaviour. A
 first-adoption pin's `version` must equal the wheel built-in's (D12, so a
-one-release downgrade is data-safe).
+one-release downgrade is data-safe) while the wheel ships one; a row whose wheel copy
+is gone has no wheel version to match. `adoption_pin.py` runs the same tree checks the
+gateway runs, so for such a row it checks without a wheel manifest, carries
+`legacyNav` from the row (no wheel page is left to read it from), and refuses a name
+that is neither shipped nor pinned.
+
+**A pin keeps its bundle styled.** A pinned tree's UI bundle ships no stylesheet:
+its Tailwind utilities resolve against the dashboard's sheet, which compiles only
+what `website/src/` uses. A PR that adds or changes a row therefore also runs
+`npm run gen:adopted-app-classes` in `website/` and commits the regenerated
+`website/src/tailwind-adopted-app-classes.css`, the append-only list of every
+utility a pinned tree's `ui/src/` or wheel copy uses; `adoptedAppClassSafelist.test.ts`
+fails while the list's recorded commits differ from the table. That list, not the
+wheel copy, is what keeps an adopted app styled once its copy under
+`website/src/apps/<name>/` is deleted
+([theming-contract](../../../website/docs/theming-contract.md), *Adopted apps'
+utilities*).
 
 **The wheel copy stops being the place to fix a pinned app.** An adopted host runs
 the pinned repository tree, so a change made only to the wheel copy
@@ -8471,7 +8530,9 @@ commit, so a wheel-copy change that lands after that event is not caught until t
 next one. Whoever approves a pin PR therefore edits its body (or pushes) right before
 approving, which re-runs the check against the current tip. The comparison reads
 trees only (`git diff-tree`), so the named commit must be in the head's or the base
-tip's history, and an unreadable one fails closed.
+tip's history, and an unreadable one fails closed. A row whose app has no non-test
+wheel-copy file at the base tip needs no line (`git_wheel_copy_ships`): with the copy
+deleted there is nothing left for the pin to fall behind.
 
 **Who owns the pinned repositories.** The first-party app repositories a pin
 names live under `KiroCrewCaptain`, the Kiro Crew team's GitHub bot account, and
@@ -8487,7 +8548,9 @@ is no record and the name is marked `adopted` (uninstalled after adoption). A us
 app shadowing the name is not released: it keeps today's stand-down behaviour. A pinned name with
 no record and no marker is a fresh install and is NOT released:
 `register_builtin_apps` registers the built-in as today, and that record then
-adopts through STAGE and APPLY exactly like an upgrading host's. A record that cannot be read, a path occupied by something
+adopts through STAGE and APPLY exactly like an upgrading host's. Once the wheel copy
+is gone there is nothing to register, so such a host has no record and the app is an
+ordinary registry install. A record that cannot be read, a path occupied by something
 else, or a swap in flight (`_update_in_progress`) keeps today's behaviour. It can
 only remove first-party status, never grant it. It gates:
 
@@ -8568,7 +8631,12 @@ shortcut's `platformAccelerators` and `contributes.memoryProviders` (level 8),
 `getattr`/`hasattr` of that name on any receiver, and the backend SDK package in
 any form in such a file (level 7): the file names both `kiro_crew` and the word
 `backend_sdk`, which catches a dotted import, `from kiro_crew.apps import
-backend_sdk`, an attribute of an imported parent and a string lookup alike. A level below the highest one found
+backend_sdk`, an attribute of an imported parent and a string lookup alike. Once any
+such file names the package, each name of `backend_sdk._EXPORT_LEVELS` that any such
+file holds as a word counts at its own level (`canonical_file_path`, `vet_public_url`,
+`UrlRejectedError`, `address_is_not_public`, the pinned path names such as `pin_parent`
+and `copy_file_pinned`, level 14), so a
+shim's lookup in one file and its caller in another still count. A level below the highest one found
 is refused, naming what was found, by `compute` and `verify` alike, so a tree that
 feature-detects a seam and degrades still pins at that seam's level, and a host
 without it keeps the wheel copy. The scan errs wide: a false hit only asks for a
@@ -8597,6 +8665,50 @@ newer Kiro Crew is needed (`needs_newer_sdk`, or a `host_*` ledger reason), a
 restart switches it (a `staged` ledger for the pin commit, the only state APPLY
 consumes), it is on hold (`blocked`), or it switches in the background. Only the
 `staged` wording mentions a restart.
+
+**A pin row with no wheel copy.** A release may delete a pinned app's wheel copy and
+keep its pin row; core, its tests and `adoption_pin.py` treat that as a normal state,
+and the row alone carries the adoption. An adopted record is unaffected: it already
+runs the pinned tree from the data home, and STAGE skips it. A builtin-owned record
+(a host that never adopted) has no shipped code left to run and holds no first-party
+status (`is_builtin_app`, `builtin_app_names`), but its name is pinned, so it is not
+an orphan and nothing cleans up its `data/` (a retired-builtin uninstall refuses with
+`not_orphaned`). STAGE and APPLY run for it as for any builtin-owned record, so the
+restart after a staged fetch swaps it in place, keeping `data/`, `.app_secret`, the
+approved grants and `enabled`; E9 compares against the record's own `app.json` copy.
+D12 compares no version. Dropping the row as well makes a still-pending record an
+orphan. Pinned by `test/test_builtin_adoption_no_wheel_copy.py`, which deletes the
+fixture app's wheel package and keeps its row.
+
+Every other core path that reads the wheel copy to decide a limit or a grant finds
+none. The table names each, what it does then, and which way it fails. Rows 1 to 9
+are open blockers for deleting the copies of the apps they name, and none is handled
+yet; row 6 fails OPEN, so dev-fleet's copy must not be deleted before it is fixed.
+Row 10 blocks nothing. Rows 1 to 6 and 9 are pinned by
+`test_no_wheel_copy_a_security_limit_reads_is_deleted` (`test/test_builtin_adoption_pins.py`,
+deriving from `test/wheel_copy_limit_sources.py`): it pins, per limit and one name per
+line, the pinned apps whose wheel copy supplies its input, read from the files and keys
+these readers read, and compares the derived set with that list exactly. Deleting one
+of those copies fails CI until its limit has a non-wheel source and that PR removes the
+app's line; a copy that starts supplying a limit adds one. Because the apps are named, a
+deletion cannot pass by another copy gaining the same key, and two deletions for the
+same limit edit different lines, so they merge into the right set or conflict as text
+instead of turning `main` red. Rows 7, 8 and 10 are not pinned: row 7 is the record
+every copy rewrites, not a file only some copies supply; row 8 reads no wheel file;
+row 10 is no limit.
+
+| # | Read of the wheel copy | With no wheel copy | Direction | Apps it blocks |
+|---|---|---|---|---|
+| 1 | E10's stdio server ceiling (`builtin_adoption_apply._shipped_manifest` into `builtin_adoption_mcp.adopted_mcp_servers_refusal`; `adoption_pin.py` asks the same) | a pinned tree that declares `mcpServers` is refused `pinned_feature_unsupported`, a never-retried code, so a host that never adopted never adopts, and `adoption_pin.py verify` refuses the row | fail-closed, permanent | auto-improvement, mochi |
+| 2 | the own-server grant (`builtin_adoption_gate.adopted_app_own_mcp_servers`, with the wheel agent map `execution.builtin_app_agents`) | grants nothing: an adopted app's calls to its own servers ask, and an unattended run is refused when its card expires | fail-closed | auto-improvement, mochi |
+| 3 | the `agentTools` ceiling (`app_agent_tools._adopted_first_party_apps`, `_within_wheel_copy`) | an adopted app's tools are not listed, and a call is refused as `unknown_tool` (`dashboard/handlers/app_agent_tools.py`, `mcp_tools/app_tools.py`) | fail-closed | design-tweak, dev-fleet, issue-radar, ops-mission-control |
+| 4 | the gate's `app-own-tools` row (`own_agent_tools.gate_grants`: the wheel agent map and the wheel `agentTools`) | approves nothing, so the app's own agent's calls to its own tools ask | fail-closed | the apps of row 3 |
+| 5 | the built-in seam providers (`seams._load_builtin_seams` imports `builtins/<package>/seams.py` only) | design-critique's worker slot mode leaves `chat_handlers._CREATABLE_MODES` (read once at import): `POST /api/chat/slots` refuses the mode unless the app may hide sessions, and a send that recreates the slot drops it to `""`. aws-control's `crew_runtime`, `aws_account_policy` and `transfer_staging` answer None, so their core callers degrade or refuse | breaks (fail-closed) | design-critique, aws-control |
+| 6 | the built-in host grants (`builtin_host_grants.builtin_host_grants` imports `builtins/<package>/host_grants.py` only) | dev-fleet's two pod-token mint routes leave `kiro_relay.limits`' relay credential set, so a relayed caller is **no longer refused** there; its five `/pod/*` routes leave the strict internal set and refuse the internal-secret caller; its BUILD rlimit, `KIROCREW_DEVFLEET_*` forwarding and `dev_fleet` config key go | **fail-open** (relay refusal); fail-closed (strict paths) | dev-fleet |
+| 7 | the record's `app.json` copy and approved grants, which `register_builtin_apps` rewrites from the wheel at every start | both stay as the host's last release left them, and E9 compares the pin with that copy: a host last booted on a release whose copy lacks a grant the pin declares gets `permission_widening` at every pass, which no later pass can clear | fail-closed, permanent | spec-builder, dev-fleet |
+| 8 | not a wheel read: `registry_pipeline/install._adoption_pending` with `builtin_adoption.pending_install_refusal` | when STAGE is refused (rows 1 and 7), the builtin-owned record runs no code and an App Store install is refused `adoption_pending` with a message saying the app "stays a built-in app", which no longer holds: a dead end | fail-closed, no way out | the apps of rows 1 and 7 |
+| 9 | the built-in leg of `credential_masks` (`_builtin_manifests`) and `agent_readonly_dirs` | the built-in declarations go; the installed leg (the record's `app.json`) stays, so an adopted record keeps its masks and read-only dirs | narrows to the installed declaration | md-notebook, meetings, spec-builder |
+| 10 | auto-research's `stopped_loop_tombstone`, the one other provider the same loader imports | its adopted tree registers the provider itself from `on_startup`, for the life of the gateway process. Only a process where that hook never ran (the app disabled from boot until the stop, or a never-adopted host before APPLY) has none: `_keeps_stopped_loop` then answers False, so the stop removes the loop's row like any other legacy loop's, and after the next enable the watchdog cannot tell that campaign worker's deliberate finish from an unreachable session. No security impact | fails toward the ordinary path; not a deletion blocker | none |
 
 **STAGE** (`builtin_adoption_apply.staging_pass`, kicked by
 `_kick_builtin_adoption_staging` after the listener serves) never mutates a record.
@@ -10091,16 +10203,41 @@ that wants one helper does not pay for the security stack.
 |---|---|---|
 | Sensitive paths | `is_sensitive_path(path)`, `contains_sensitive_path(directory)` | `security.is_sensitive_path`, `security.path_contains_sensitive` |
 | Files | `read_bytes_nofollow(path, *, within_root, max_bytes, within_root_is_canonical)`, `FileTooLargeError` | `hooks.safe_read_file_bytes_nolink`, `hooks.FileTooLargeError` |
+| Files (level 14) | `canonical_file_path(path)` | `hooks.validate_file_path`, called with the path alone |
 | Files | `atomic_write(path, content, *, fsync, mode, newline, restrict_to_owner)`, `ensure_owner_only_dir(path)` | `atomic_write.atomic_write`, `owner_only_files.ensure_directory` |
+| Pinned paths (level 14) | `supports_pinned_walk()`, `is_reparse_point(path)`, `pin_parent(resolved_parent, *, what)`, `copy_file_pinned(src, dst, *, dir_fd, name, force_mode, max_bytes, expected_src_ident, on_skip, on_created)`, `fd_real_path(fd)`, `PinnedPathRefusal` | the `pinned_fs` names of the same spelling |
 | Redaction | `scrub_outbound(text)`, `ScrubResult` | `apps.scrub_sdk.ScrubSDK.outbound` (the `ctx.scrub` pass) |
 | Audit | `audit_log(app_name=None)` | `apps.audit_sdk.AuditSDK` (the `ctx.audit` writer) |
 | Sandboxed children | `run_sandboxed`, `run_sandboxed_async`, `sandboxed_argv`, `sandboxed_argv_async`, `SandboxUnavailableError` | `sandbox.sandboxed_spawn_argv` then `sandbox.run_limited`; `sandbox.sandboxed_spawn_argv_async` then `sandbox.create_subprocess_limited`; the two preparations alone; `sandbox.SandboxUnavailableError` |
 | Process and locks | `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_POSIX`, `kill_and_reap`, `is_link_or_junction`, `first_linked_ancestor`, `rmtree_force`, `file_lock` | the `platform_compat` names of the same spelling |
+| Outbound URLs (level 14) | `vet_public_url(url)`, `UrlRejectedError`, `address_is_not_public(address)` | `link_unfurl.vet_unfurl_url`, `link_unfurl.UnfurlRejected`, `link_unfurl.address_is_not_public` |
+| Media type (level 14) | `sniff_raster_mime(head)`, `RASTER_SNIFF_BYTES` | `messaging.raster.sniff_raster_mime`, `messaging.raster.SNIFF_BYTES` |
 
 **Same safety semantics.** A read refuses exactly what the private read refuses and
-raises the gateway's own `FileTooLargeError`; a spawn the host cannot sandbox raises
-the gateway's own `SandboxUnavailableError`. The exception classes are the private
-ones, not look-alikes, so an `except` written against either catches both.
+raises the gateway's own `FileTooLargeError`; the path gate answers exactly what
+`hooks.validate_file_path` answers (the empty, unrepresentable, Windows UNC and Windows
+link refusals before any resolution, then the sensitive-path list on the `realpath`); a spawn the host cannot sandbox raises
+the gateway's own `SandboxUnavailableError`; a refused URL raises the gateway's own
+`UnfurlRejected` (as `UrlRejectedError`) with the same `invalid_url` or `blocked_url`
+code, and the result is the gateway's own `link_unfurl.VettedUrl`, which is not an SDK
+name: no app imports the class, so an app reads the result's `url`, `scheme`, `host`,
+`wire_host`, `port`, `ip`, `addresses` and `domain` and never names its type. A pinned
+copy refuses exactly what the private copy refuses (a link at the final name, a
+hardlinked or non-regular source, an inode other than the one the caller vetted, a size
+over its cap, an existing destination), and a refused walk raises the gateway's own
+`PinnedPathRefusal`. The
+exception classes are the private ones, not look-alikes, so an `except` written against
+either catches both.
+The sniff answers from the leading bytes the caller holds, never from a name or a declared
+type (CWE-434), with the gateway's own table: no SVG, and a RIFF container only when
+its form tag is `WEBP`. Its answer is the set the gateway can sniff, not an acceptance
+list, so the app keeps its own allowlist on top and a type the gateway adds later does
+not widen what the app takes (the `messaging/raster.py` contract in
+[messaging](messaging.md)). `RASTER_SNIFF_BYTES` is bound from the gateway's own
+`raster.SNIFF_BYTES` when `backend_sdk.media` is imported, so an app slicing its read
+with it carries no hand-copied window. An app that names the package and still defines
+its own shim function spelled `sniff_raster_mime` is counted at level 14 as well
+(§33), which only asks for a higher `--min-sdk-level`.
 
 **No widening knob.** A public signature carries only the parameters the apps use, and
 never one that adds reach. `sandboxed_argv` accepts the `standard` and `strict` tiers
@@ -10108,7 +10245,27 @@ and refuses any other value (`off` included) with `ValueError` before anything i
 prepared; the private chokepoint's `extra_*_dirs`, `first_party_fixed_argv` and
 `is_kiro_cli` lift a mask, open a write window in a sealed parent or reclassify the
 child, which is the gateway's decision for its own spawns, so they are not offered.
-The read has no `admit_hardlinked` or `canonical_gate`. The SDK spawns nothing that
+The read has no `admit_hardlinked` or `canonical_gate`. The path gate takes the path
+alone, so neither `canonical_gate` nor `classify_sensitive` is offered: how the check is
+bounded is the gateway's choice. Its answer judges a NAME, so the bytes come from
+`read_bytes_nofollow` or a descriptor-pinned open, never a plain `open` of the result,
+and its docstring and the api-reference row say so. The hardlink-admitting
+`hooks.safe_read_file_bytes` is not offered under any name: `read_bytes_nofollow` is the
+one public read. The URL check has no
+`resolve`, `allow_any_port` or `allow_private`: the first lets the caller choose the
+answers that are checked, the second lifts the 80/443 port rule and the third narrows
+the address rule to link-local and metadata addresses, each the gateway's choice for
+its own probes, so `vet_public_url` takes the URL alone and always applies the full
+public-address rule. It opens no connection and pins nothing, so the caller dials
+only the result's `addresses`, through a resolver keyed on its `wire_host`; a
+second resolution at connect time would dial an address the check never saw. It
+blocks on one `getaddrinfo`, so an in-process app calls it from a worker thread.
+`address_is_not_public` keeps the private polarity (`True` means refuse) and answers
+`True` for a value that is not an IP literal. The pinned walk has no `refusal` type, so
+it always raises `PinnedPathRefusal`, and the copy has no `src_fd`, `dst_dir_fd` /
+`dst_name`, `skip_existing`, `skip_unreadable` or `on_opened`, which no app uses. The
+copy holds no policy and does not ask the sensitive-path gate, as the private one does
+not: the caller asks `is_sensitive_path` first. The SDK spawns nothing that
 is not sandboxed: `run_sandboxed` and `run_sandboxed_async` prepare through the
 chokepoint and run under the resource limits in the same function, with the
 scrubbed environment and the cleanup path removed on every outcome, so
@@ -10130,7 +10287,9 @@ outlives it; its docstring and the api-reference row point such a child at the
 async form. The private limited spawners, which run whatever argv they are
 handed, are not offered. Nothing here is gated by a
 permission because nothing adds reach: the controls only refuse, redact, record or
-confine, and an in-process app could call the private names anyway.
+confine (the URL check's one `getaddrinfo` is a lookup any backend can make, and a
+pinned copy writes nothing a plain copy by the same process could not), and an
+in-process app could call the private names anyway.
 
 **Audit attribution.** `audit_log()` returns the `ctx.audit` writer for the name in
 `KIROCREW_APP_NAME`, which the gateway sets on every spawned backend, or for an
@@ -10140,15 +10299,38 @@ attribution is cooperative, as it is for `ctx.audit`. The SEL log is written
 cross-process under its chain lock (`sel_chain_lock`), so a spawned backend's row and
 the gateway's own interleave safely.
 
+**Pinned paths.** For a file a person named by path, which anything running as the
+same user can swap for a link between a check and the open. The caller refuses the
+path when `supports_pinned_walk()` is `False` (Windows, which has no `O_NOFOLLOW` or
+`dir_fd`, so a by-name source there follows a final link), resolves it once, asks
+`is_sensitive_path`, takes `pin_parent` of its directory and copies it with
+`copy_file_pinned(dir_fd=, name=, expected_src_ident=, max_bytes=)` into a directory it
+just created, since the destination is opened by name. `on_created` hands back the
+copy's identity for a later reopen, and `fd_real_path` names where an opened descriptor
+really is. `is_reparse_point` is a cheap name screen before the walk, not the guard; it
+matches what `is_link_or_junction` matches on POSIX and, on Windows, any non-zero
+`st_reparse_tag`, not only a symlink or a junction. The `on_skip` reason codes
+(`symlink`, `not_regular`, `identity_changed`, `too_large`) are the private ones.
+
 **Level.** `SDK_LEVEL` is `APP_SDK_LEVEL`; `BACKEND_SDK_LEVEL` is 7, the level that
 publishes the package. The adoption pin tool counts any non-test source naming the
 package as a level-7 use (§33), so a tree that adopts it is held on a host without it.
+A name published later is a row of `_EXPORT_LEVELS` with its own level, and
+`BACKEND_SDK_LEVEL` stays 7. Level 14 is one batch of such names, each added by its own
+change, all sharing the level: `canonical_file_path`, `vet_public_url`,
+`UrlRejectedError`, `address_is_not_public`, `sniff_raster_mime` and
+`RASTER_SNIFF_BYTES`, and the descriptor-pinned path names `supports_pinned_walk`,
+`is_reparse_point`, `pin_parent`, `copy_file_pinned`, `fd_real_path` and
+`PinnedPathRefusal`. A host from level 7 to 13 has the
+package without the name, so an app feature-detects the name with `getattr` and keeps its
+own refusal, and the pin tool counts a tree that names the package and the name as a use
+of the name's level (§33), so a host below it keeps the wheel copy.
 
 **Not in it yet.** The names the apps reach that this package does not cover stay
 private and keep their `_host.py` gap: chat slot and auto-nudge internals (they belong
-to the app-owned chat slot seam of ruling item 4), `pinned_fs` descriptor helpers,
-`link_unfurl` URL vetting, `messaging.raster.sniff_raster_mime`,
-`asset_downloader.download_to`, `executors.subprocess_executor`,
+to the app-owned chat slot seam of ruling item 4),
+`link_unfurl.pinned_connector` and `PinnedResolver`, `asset_downloader.download_to`,
+`executors.subprocess_executor`,
 `apps.registry.minimal_env`, `config.loader.config_dir` and `KiroCrewConfig`,
 `security.redact_local_paths`, `security.iter_credential_matches`,
 `atomic_write.read_bytes_with_retry`, `owner_only_files.mkdirs_owner_only` and
@@ -10159,9 +10341,13 @@ to the app-owned chat slot seam of ruling item 4), `pinned_fs` descriptor helper
 Writers: `apps/backend_sdk/__init__.py`, `apps/backend_sdk/paths.py`,
 `apps/backend_sdk/files.py`, `apps/backend_sdk/redaction.py`,
 `apps/backend_sdk/audit.py`, `apps/backend_sdk/spawn.py`,
-`apps/backend_sdk/process.py`, `apps/app_sdk_level.py`,
-`website/src/app-sdk/sdkLevel.ts`, `scripts/adoption_pin.py` (`_seam_level_uses`).
-Pinned by `test/test_app_backend_sdk.py` and `test/test_builtin_adoption_pins.py`.
+`apps/backend_sdk/process.py`, `apps/backend_sdk/urls.py`, `apps/backend_sdk/media.py`,
+`apps/backend_sdk/pinned.py`, `apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
+`scripts/adoption_pin.py` (`_seam_level_uses`, `_BACKEND_SDK_LATER_NAMES`).
+Pinned by `test/test_app_backend_sdk.py`, `test/test_app_backend_sdk_file_gate.py`,
+`test/test_app_backend_sdk_urls.py`, `test/test_app_backend_sdk_media.py`,
+`test/test_app_backend_sdk_pinned.py` and
+`test/test_builtin_adoption_pins.py`.
 App authors: `docs/app-kit/api-reference.md` § Backend SDK.
 
 ## 41. App-owned chat slots (seam level 7)

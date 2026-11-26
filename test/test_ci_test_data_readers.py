@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 from macos_lane_helpers import load_workflow
 
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 from scripts import ci_test_selection as cts
 from scripts import ci_test_selection_ledger as ledger
@@ -524,3 +525,25 @@ def test_the_select_command_prints_the_readers_of_a_changed_doc(
     diff.write_text("A\tsrc/kiro_crew/docs/new.md\n", encoding="utf-8")
     assert ctm.main([*argv, "--name-status", str(diff)]) == ctm.FULL
     assert "full suite: A src/kiro_crew/docs/new.md: file set changed" in capsys.readouterr().err
+
+
+def test_the_rule_counts_the_time_its_scans_take(monkeypatch: pytest.MonkeyPatch) -> None:
+    rule = readers.DataRule(ROOT)
+    scans: list[list[str]] = []
+
+    def scan(docs: list[str], root: str) -> list[str]:
+        scans.append(docs)
+        return ["test/test_reads_docs.py"]
+
+    monkeypatch.setattr(rule.docs, "readers", scan)
+    # A clock that moves one second each time it is read.
+    ManualClock(monotonic_start=0.0, tick=1.0).install(monkeypatch, readers)
+    assert rule.seconds == 0.0
+    first = rule.tests(["docs/README.md"])
+    assert rule.seconds == 1.0 and len(scans) == 1
+    # The same docs again cost a second reading of the clock and no second scan.
+    assert rule.tests(["docs/README.md"]) == first
+    assert rule.seconds == 2.0 and len(scans) == 1
+    # A path with no readers here is not a scan, and is still counted as a call.
+    assert rule.tests(["src/kiro_crew/a.py"]) == set()
+    assert len(scans) == 1

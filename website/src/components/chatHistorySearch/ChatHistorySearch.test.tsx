@@ -6,6 +6,7 @@ import { renderWithProviders } from '../../test/helpers'
 const mocks = vi.hoisted(() => ({
   chatHistorySearch: vi.fn(),
   chatHistoryAround: vi.fn(),
+  chatHistoryCounts: vi.fn(),
   mobile: false,
 }))
 
@@ -22,6 +23,7 @@ vi.mock('../../api/client', async (importOriginal) => {
       get(target, prop, receiver) {
         if (prop === 'chatHistorySearch') return mocks.chatHistorySearch
         if (prop === 'chatHistoryAround') return mocks.chatHistoryAround
+        if (prop === 'chatHistoryCounts') return mocks.chatHistoryCounts
         return Reflect.get(target, prop, receiver)
       },
     }),
@@ -65,6 +67,8 @@ beforeEach(() => {
   vi.setSystemTime(NOW)
   mocks.chatHistorySearch.mockReset().mockResolvedValue(HITS)
   mocks.chatHistoryAround.mockReset().mockResolvedValue(AROUND)
+  // No counts unless a test answers them: the tabs keep their bare names.
+  mocks.chatHistoryCounts.mockReset().mockReturnValue(new Promise(() => {}))
   mocks.mobile = false
 })
 
@@ -222,20 +226,70 @@ describe('ChatHistorySearch', () => {
     await waitFor(() => expect(mocks.chatHistorySearch).toHaveBeenLastCalledWith('chat-7', expect.objectContaining({ kind, q: 'plum' }), expect.anything()))
   })
 
-  it("shows each tab's count from the replies' counts, summed over the steps read", async () => {
-    mocks.chatHistorySearch
-      .mockResolvedValueOnce({ ...HITS, next_before: 10, counts: { '': 2, images: 1, files: 1, videos: 0 } })
-      .mockResolvedValueOnce({ hits: [], next_before: null, total: 50, counts: { '': 3, videos: 2, widgets: 1 } })
+  // Each rendered tab's count, keyed by the kind its count names (`all` for All).
+  const tabCounts = () => Object.fromEntries(screen.getAllByRole('tab').map(tab => {
+    const badge = tab.querySelector('[data-testid^="chat-history-tab-count-"]')
+    return [badge?.getAttribute('data-testid')?.replace('chat-history-tab-count-', ''), badge?.textContent?.trim()]
+  }))
+
+  it("shows every tab's whole-chat count from one read, unchanged by a tab switch", async () => {
+    // Each tab's own list pages differently, and its replies' counts differ:
+    // the tabs must not show them.
+    mocks.chatHistorySearch.mockImplementation(async (_slot: string, p: { kind?: string }) => ({ ...HITS, next_before: null, counts: { '': p.kind === 'links' ? 125 : 423, images: 11 } }))
+    mocks.chatHistoryCounts.mockResolvedValue({ counts: { '': 900, images: 30, files: 1, links: 104, videos: 0 }, total: 5000, complete: true })
+    open()
+    fireEvent.click(screen.getByRole('button', { name: 'Images' }))
+    await waitFor(() => expect(screen.getByTestId('chat-history-tab-count-all')).toHaveTextContent('900'))
+    const first = tabCounts()
+    // Every rendered tab shows the counts read's number for its kind, 0 when absent.
+    const counts: Record<string, number> = { '': 900, images: 30, files: 1, links: 104, videos: 0 }
+    expect(Object.keys(first).length).toBe(screen.getAllByRole('tab').length)
+    for (const [kind, shown] of Object.entries(first)) expect(shown).toBe(String(counts[kind === 'all' ? '' : kind] ?? 0))
+
+    for (const name of [/^Links/, /^Files/, /^Videos/, /^Images/]) {
+      fireEvent.click(screen.getByRole('tab', { name }))
+      await waitFor(() => expect(screen.getByRole('tab', { name, selected: true })).toBeInTheDocument())
+      expect(tabCounts()).toEqual(first)
+    }
+    // One counts read for the chat and its (empty) query, never one per tab.
+    expect(mocks.chatHistoryCounts).toHaveBeenCalledTimes(1)
+    expect(mocks.chatHistoryCounts).toHaveBeenCalledWith('chat-7', { q: undefined, since: undefined, until: undefined }, expect.anything())
+  })
+
+  it('reads the counts again when the query changes, and keeps no stale reply', async () => {
+    const replies: Record<string, (v: unknown) => void> = {}
+    mocks.chatHistoryCounts.mockImplementation((_slot: string, p: { q?: string }) => new Promise(r => { replies[p.q ?? ''] = r }))
     const { input } = open()
     fireEvent.change(input, { target: { value: 'plum' } })
-    await waitFor(() => expect(screen.getByTestId('chat-history-tab-count-all')).toHaveTextContent('5'))
-    expect(screen.getByRole('tab', { name: 'Videos 2' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Widgets 1' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Images 1' })).toBeInTheDocument()
-    // A type with none found shows no number.
-    expect(screen.getByRole('tab', { name: 'PDFs' })).toBeInTheDocument()
-    // Two steps, not one request per tab.
-    expect(mocks.chatHistorySearch).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(replies.plum).toBeDefined())
+    fireEvent.change(input, { target: { value: 'pear' } })
+    await waitFor(() => expect(replies.pear).toBeDefined())
+    await act(async () => { replies.pear({ counts: { '': 4, links: 2 }, total: 50, complete: true }) })
+    await waitFor(() => expect(screen.getByTestId('chat-history-tab-count-all')).toHaveTextContent('4'))
+    // The older query answers last: its numbers never replace the newer ones.
+    await act(async () => { replies.plum({ counts: { '': 77, links: 70 }, total: 50, complete: true }) })
+    expect(screen.getByTestId('chat-history-tab-count-all')).toHaveTextContent('4')
+    expect(screen.getByTestId('chat-history-tab-count-links')).toHaveTextContent('2')
+    expect(mocks.chatHistoryCounts).toHaveBeenLastCalledWith('chat-7', expect.objectContaining({ q: 'pear' }), expect.anything())
+  })
+
+  it('shows no number from a count walk the server cut short', async () => {
+    mocks.chatHistoryCounts.mockResolvedValue({ counts: { '': 9, links: 0 }, total: 200_000, complete: false })
+    const { input } = open()
+    fireEvent.change(input, { target: { value: 'plum' } })
+    await screen.findAllByRole('option')
+    await waitFor(() => expect(mocks.chatHistoryCounts).toHaveBeenCalled())
+    expect(screen.queryByTestId('chat-history-tab-count-all')).toBeNull()
+    expect(screen.queryByTestId('chat-history-tab-count-links')).toBeNull()
+  })
+
+  it('keeps the list and flags a failed count read through ErrorNotice', async () => {
+    mocks.chatHistoryCounts.mockRejectedValue(new Error('503'))
+    const { input } = open()
+    fireEvent.change(input, { target: { value: 'plum' } })
+    expect(await screen.findByTestId('chat-history-counts-error', {}, { timeout: 10_000 })).toBeInTheDocument()
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+    expect(screen.queryByTestId('chat-history-tab-count-all')).toBeNull()
   })
 
   it('names the app that sent a user message instead of You', async () => {
@@ -354,14 +408,14 @@ describe('ChatHistorySearch', () => {
   it('scrolls the row to the chosen tab again once the counts arrive and widen the tabs before it', async () => {
     const layout = layOutTabs()
     let reply: (v: unknown) => void = () => {}
-    mocks.chatHistorySearch.mockReset().mockReturnValue(new Promise(r => { reply = r }))
+    mocks.chatHistoryCounts.mockReset().mockReturnValue(new Promise(r => { reply = r }))
     try {
       open()
       fireEvent.click(screen.getByRole('button', { name: 'Widgets' }))
       const tabs = await screen.findByTestId('chat-history-tabs')
       await waitFor(() => expect(tabs.scrollLeft).toBe(450))
       tabs.scrollLeft = 0
-      await act(async () => { reply({ ...HITS, counts: { '': 2, files: 8, videos: 1, widgets: 2 } }) })
+      await act(async () => { reply({ counts: { '': 2, files: 8, videos: 1, widgets: 2 }, total: 50, complete: true }) })
       await screen.findByTestId('chat-history-tab-count-files')
       await waitFor(() => expect(tabs.scrollLeft).toBe(450))
     } finally {
@@ -414,7 +468,8 @@ describe('ChatHistorySearch', () => {
 
 describe('ChatHistorySearch in a session chat', () => {
   it('lists pinned messages under Pinned with its count, with the query, and says how to pin when there are none', async () => {
-    mocks.chatHistorySearch.mockResolvedValue({ ...HITS, counts: { '': 9, pinned: 2 } })
+    mocks.chatHistorySearch.mockResolvedValue(HITS)
+    mocks.chatHistoryCounts.mockResolvedValue({ counts: { '': 9, pinned: 2 }, total: 50, complete: true })
     renderWithProviders(<ChatHistorySearch slotKey="chat-7" onClose={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Pinned' }))
 

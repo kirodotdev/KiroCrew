@@ -1287,30 +1287,61 @@ def _cloud_gated(handler):
     return _guarded
 
 
+def _owner_gated(handler):
+    """Refuse a deploy WRITE from a dashboard session that is not the owner or a teammate.
+
+    Every write acts on the owner's cloud account with the owner's AWS profile, so a
+    messaging allowlist link session (an empty app claim, its own subject) must not
+    reach one. ``require_owner_for_dashboard_caller`` admits the owner and Shared
+    Crew teammates and leaves any other caller class to the control that already
+    governs it (``@_internal_denied`` for the agent transport). Applied at
+    REGISTRATION, outermost, for the same reason as :func:`_cloud_gated`: a new
+    write route is gated by being wrapped where it is registered, and
+    ``test_deploy_owner_or_teammate_gate`` walks the route table for one that is not.
+    """
+
+    # circular import: same downward import as `_cloud_gated`; this runs at registration.
+    from kiro_crew.dashboard.handlers._shared import (
+        guarded_route,
+        require_owner_for_dashboard_caller,
+    )
+
+    operation = "deploy." + getattr(handler, "__name__", "unknown").removeprefix("_handle_")
+
+    async def _owner_guard(request: web.Request) -> web.Response | None:
+        return await require_owner_for_dashboard_caller(request, operation)
+
+    return guarded_route(handler, _owner_guard)
+
+
 def register_routes(app: web.Application) -> None:
     """Mount deploy routes under /api/deploy/* (core module)."""
     r = app.router
     r.add_get("/api/deploy/config", _handle_get_config)
-    r.add_put("/api/deploy/config", _cloud_gated(_handle_put_config))
+    r.add_put("/api/deploy/config", _owner_gated(_cloud_gated(_handle_put_config)))
     r.add_get("/api/deploy/profiles", _handle_profiles_get)
-    r.add_post("/api/deploy/profiles", _cloud_gated(_handle_profiles_post))
-    r.add_put("/api/deploy/profiles/{name}", _cloud_gated(_handle_profiles_put))
-    r.add_delete("/api/deploy/profiles/{name}", _cloud_gated(_handle_profiles_delete))
+    r.add_post("/api/deploy/profiles", _owner_gated(_cloud_gated(_handle_profiles_post)))
+    r.add_put("/api/deploy/profiles/{name}", _owner_gated(_cloud_gated(_handle_profiles_put)))
+    r.add_delete(
+        "/api/deploy/profiles/{name}", _owner_gated(_cloud_gated(_handle_profiles_delete))
+    )
     r.add_get("/api/deploy/iam-policy", _handle_iam_policy)
-    r.add_post("/api/deploy/verify", _cloud_gated(_handle_verify))
+    r.add_post("/api/deploy/verify", _owner_gated(_cloud_gated(_handle_verify)))
     r.add_get("/api/deploy/pricing", _handle_pricing)
-    r.add_post("/api/deploy/deploy", _cloud_gated(_handle_deploy))
-    # Withdrawal is deliberately UNGATED — see _cloud_gated. These take a live
-    # public URL off the internet, so blocking them would strand exposure created
-    # while deployment was still permitted.
-    r.add_post("/api/deploy/recall", _handle_recall)
-    r.add_post("/api/deploy/destroy", _handle_destroy)
+    r.add_post("/api/deploy/deploy", _owner_gated(_cloud_gated(_handle_deploy)))
+    # Withdrawal is deliberately not CLOUD-gated — see _cloud_gated. These take a
+    # live public URL off the internet, so blocking them would strand exposure
+    # created while deployment was still permitted. They are still owner-gated.
+    r.add_post("/api/deploy/recall", _owner_gated(_handle_recall))
+    r.add_post("/api/deploy/destroy", _owner_gated(_handle_destroy))
     r.add_get("/api/deploy/list", _handle_list)
-    r.add_post("/api/deploy/teardown/{slug}", _handle_teardown)
+    r.add_post("/api/deploy/teardown/{slug}", _owner_gated(_handle_teardown))
     # ── Pending confirmations ──
     r.add_get("/api/deploy/pending", _handle_pending_list)
-    r.add_post("/api/deploy/pending/{id}/confirm", _cloud_gated(_handle_pending_confirm))
-    r.add_post("/api/deploy/pending/{id}/dismiss", _handle_pending_dismiss)
+    r.add_post(
+        "/api/deploy/pending/{id}/confirm", _owner_gated(_cloud_gated(_handle_pending_confirm))
+    )
+    r.add_post("/api/deploy/pending/{id}/dismiss", _owner_gated(_handle_pending_dismiss))
 
     # ── Registration-time assertion: every handler must be in the allowlist
     # or carry the @_internal_denied decorator. A new handler that forgets both

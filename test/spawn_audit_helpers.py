@@ -1266,6 +1266,14 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # shape as dashboard/stale_bundle_guard.py::_backend_website_tree above.
         "pod/provision.py::_resolve_oid",
         "pod/provision.py::_manifest_path",
+        # `git -C <checkout> status --porcelain --untracked-files=normal --
+        # website`: the same pinned git and hardened_git_env as the probes
+        # above, a fixed argv, read-only, bounded timeout. git status can run a
+        # repo-named `filter.<name>.clean` driver, so the caller refuses first
+        # with update_governance.repo_exec_driver_reason and treats the tree as
+        # dirty instead, as frontend.py::_write_build_source_fingerprint does.
+        # Runs only from build_dist (an explicit provision), never the Fleet poll.
+        "pod/provision.py::_website_dirty",
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",
         # `kirocrew pod exec` on Windows. POSIX execs the pod's own kirocrew in

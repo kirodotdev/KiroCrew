@@ -391,11 +391,18 @@ def _backup_and_copy(
             if installed is not None:
                 installed.add(f)
             live = mc / f
-            if live.is_symlink() or pinned_fs.is_reparse_point(live):
-                print(f"⚠️  Moving symlinked core file aside during backup: {live}")
-                shutil.move(str(live), str(backup / f))
-            elif live.is_file():
-                shutil.move(str(live), str(backup / f))
+            try:
+                if live.is_symlink() or pinned_fs.is_reparse_point(live):
+                    print(f"⚠️  Moving symlinked core file aside during backup: {live}")
+                    shutil.move(str(live), str(backup / f))
+                elif live.is_file():
+                    shutil.move(str(live), str(backup / f))
+            except OSError:
+                # A move that raised left the live file in place, so recovery must not
+                # read the name as reached and delete it.
+                if installed is not None:
+                    installed.discard(f)
+                raise
             # Not `copy2`, which opens the destination by name and follows a symlink
             # planted after the move; copy_file_pinned uses O_CREAT|O_EXCL|O_NOFOLLOW.
             # Skips are fatal: the live file is already in the backup, so a skip would
@@ -444,11 +451,17 @@ def _backup_and_copy(
                     # or leave the archive's file unrestored. os.rename through both pinned
                     # descriptors cannot be redirected by a swapped ancestor, and is atomic.
                     live_st = pinned_fs.stat_at(dst_fd, f)
-                    if live_st is not None and _stat.S_ISLNK(live_st.st_mode):
-                        print(f"⚠️  Moving symlinked core file aside during backup: {live}")
-                        os.rename(f, f, src_dir_fd=dst_fd, dst_dir_fd=backup_fd)
-                    elif live_st is not None and _stat.S_ISREG(live_st.st_mode):
-                        os.rename(f, f, src_dir_fd=dst_fd, dst_dir_fd=backup_fd)
+                    try:
+                        if live_st is not None and _stat.S_ISLNK(live_st.st_mode):
+                            print(f"⚠️  Moving symlinked core file aside during backup: {live}")
+                            os.rename(f, f, src_dir_fd=dst_fd, dst_dir_fd=backup_fd)
+                        elif live_st is not None and _stat.S_ISREG(live_st.st_mode):
+                            os.rename(f, f, src_dir_fd=dst_fd, dst_dir_fd=backup_fd)
+                    except OSError:
+                        # As in the by-name branch: nothing moved, so the name is not reached.
+                        if installed is not None:
+                            installed.discard(f)
+                        raise
                     try:
                         copied = pinned_fs.copy_file_pinned(
                             str(snap / f),
@@ -1182,13 +1195,18 @@ def _drop_derived_indexes_absent_from_bundle(
         # needs. Adding the name before a save is known is what let recovery delete an
         # occupant it had never saved.
         installed.add(rel)
-        if platform_compat.is_link_or_junction(live) and not live.is_symlink():
-            # A junction is a directory reparse point; `shutil.move` on it is not the
-            # pairing this repo uses. Remove the link itself -- there is nothing to save,
-            # because the link's target is not ours and stays where it is.
-            platform_compat.unlink_link_or_junction(live)
-        else:
-            shutil.move(str(live), str(backup / rel))
+        try:
+            if platform_compat.is_link_or_junction(live) and not live.is_symlink():
+                # A junction is a directory reparse point; `shutil.move` on it is not the
+                # pairing this repo uses. Remove the link itself -- there is nothing to save,
+                # because the link's target is not ours and stays where it is.
+                platform_compat.unlink_link_or_junction(live)
+            else:
+                shutil.move(str(live), str(backup / rel))
+        except OSError:
+            # Nothing was removed, so the live index is not reached and recovery keeps it.
+            installed.discard(rel)
+            raise
         print(f"  ↩️  {rel} is not in the archive — moved aside so it can be rebuilt")
 
 

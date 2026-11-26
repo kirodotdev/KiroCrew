@@ -438,6 +438,9 @@ class SubagentInfo:
     # first, which is the run's ``failed``, not ``reaped``.
     _deadline_ending: bool = False
     streaming_text: str = ""
+    # The run's reasoning so far, stream-redacted and bounded
+    # (``cap_streaming_text``); shown in its live status read, never the result.
+    streaming_thinking: str = ""
     elapsed: float = 0.0
     # Deadline captured when execution starts (``0`` until then). A config
     # reload changes the manager default for future runs only; it never

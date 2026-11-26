@@ -152,6 +152,10 @@ The other spawn tools:
 3. Results are automatically injected back as `[Subagent completion event]`
 4. Kiro Crew synthesizes the results into a final response
 
+While a sub-agent runs, its card shows the sub-agent's thinking in a collapsed
+block above Output. The thinking is shown live only, so a reload does not bring
+it back, and it never becomes part of the result or the report the parent gets.
+
 After a gateway restart the dashboard's Subagents panel is rebuilt with recent
 finished runs: the newest 50 from the last day. Dismissing a card is recorded
 durably, so it stays dismissed after a restart. A dismissal that answers HTTP 503

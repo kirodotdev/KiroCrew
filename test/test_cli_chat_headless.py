@@ -311,7 +311,7 @@ def _opts(caps=None, **kw):
     return o
 
 
-def _run(opts, gw, monkeypatch, *, items=None, credits=0.0, cfg=None):
+def _run(opts, gw, monkeypatch, *, items=None, credits=0.0, cfg=None, poll_secs=1.0):
     monkeypatch.setattr(
         h, "ledger_items", lambda client, slot: items() if callable(items) else (items or [])
     )
@@ -322,7 +322,7 @@ def _run(opts, gw, monkeypatch, *, items=None, credits=0.0, cfg=None):
         h, "transcript_path", lambda slot: __import__("pathlib").Path(f"/x/dashboard_{slot}.jsonl")
     )
     clock = Clock()
-    return h.run(opts, gw, cfg or _cfg(""), clock=clock, sleep=clock.sleep, poll_secs=1.0)
+    return h.run(opts, gw, cfg or _cfg(""), clock=clock, sleep=clock.sleep, poll_secs=poll_secs)
 
 
 BUSY = {"row": {"running": True}}
@@ -508,6 +508,34 @@ def test_a_worker_approval_is_an_ask(monkeypatch):
     }
     stops = {c[1] for c in gw.calls if c[1].endswith("/stop")}
     assert stops == {f"/api/chat/slots/{ROOT}/stop", f"/api/chat/slots/{WORKER}/stop"}
+
+
+def test_a_root_chat_approval_is_an_ask(monkeypatch):
+    gw = FakeGateway(
+        [
+            {
+                "row": {
+                    "running": True,
+                    "pending_approval": True,
+                    "pending_approval_info": {"tool": "x"},
+                }
+            }
+        ]
+    )
+    r = _run(_opts(), gw, monkeypatch)
+    assert (r.status, r.ask_events[0]["kind"], r.ask_events[0]["slot"]) == (
+        "asked",
+        "approval",
+        ROOT,
+    )
+
+
+def test_a_run_without_timeout_ends_at_the_default_cap(monkeypatch):
+    assert h.options_from_args(_parse(["--headless", "-m", "x"])).timeout == 6 * 3600
+    assert h.options_from_args(_parse(["--headless", "-m", "x", "--timeout", "0"])).timeout == 0
+    # A run that never ends on its own (a busy turn, no ask) stops at the cap.
+    r = _run(_opts(), FakeGateway([BUSY]), monkeypatch, poll_secs=600.0)
+    assert r.status == "timeout" and r.wall_s >= h.DEFAULT_TIMEOUT_SECS
 
 
 def test_ask_by_options_list_ends_the_run(monkeypatch):
@@ -1080,6 +1108,18 @@ def test_a_refused_close_still_cancels_agents_and_is_reported(monkeypatch):
     cancel_at = gw.calls.index(("POST", "/api/spawn/stop-all", {"slot": ROOT}))
     assert cancel_at < gw.calls.index(("DELETE", f"/api/chat/slots/{ROOT}", None))
     assert r.to_json()["unclosed"] == [ROOT]
+
+
+def test_a_trust_chat_left_open_is_reported_as_left_in_trust():
+    class Refusing:
+        def call(self, method, path, body=None, timeout=60):
+            if method == "DELETE":
+                raise RuntimeError(f"DELETE {path}: HTTP 500 history_write_running")
+            return {}
+
+    res = h.Result(slot=ROOT, approval_mode="trust")
+    h._stop(Refusing(), {ROOT}, res, "done")
+    assert res.unclosed == [ROOT] and res.error == f"not closed, left in Trust: {ROOT}"
 
 
 def test_an_already_closed_chat_is_not_reported():

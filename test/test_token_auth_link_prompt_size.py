@@ -68,7 +68,9 @@ def test_a_long_prompt_is_dropped_and_the_link_fits(prompt: str, caplog) -> None
     assert len(token) <= token_auth_mod.LINK_TOKEN_MAX_CHARS
     assert len(token) + _LINE_AROUND_TOKEN_BYTES < _SLACK_LINE_SPLIT_BYTES
     claims = _claims(token)
-    assert set(claims) == {"sub", "exp", "session_exp", "iat", "nonce", "gen"} | set(_EXTRA)
+    assert set(claims) == {"sub", "exp", "session_exp", "iat", "nonce", "gen", "fam_v"} | set(
+        _EXTRA
+    )
     # Every other claim survives, so the exchange still opens the window for
     # this channel and thread (on_token_consumed reads channel and thread_ts).
     for key, value in _EXTRA.items():

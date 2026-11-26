@@ -203,6 +203,8 @@ def _bundled_runtime_cannot_run_here() -> str | None:
         return "no vendored llama.cpp runtime for this platform"
     if libs == "win_amd64" and embeddings_native._missing_windows_msvc_runtime():
         return "the Microsoft Visual C++ runtime is not installed"
+    if libs == "win_amd64" and embeddings_native._windows_x86_64_missing_cpu_flags() != []:
+        return "this CPU lacks an instruction the bundled build needs"
     if libs == "linux_x86_64":
         flags = embeddings_native._linux_x86_64_cpu_flags()
         if flags is None or embeddings_native._LINUX_X86_64_REQUIRED_CPU_FLAGS - flags:

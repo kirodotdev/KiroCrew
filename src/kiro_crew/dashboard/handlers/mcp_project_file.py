@@ -173,6 +173,17 @@ def write_project_server(folder: str, file: str, name: str, spec: dict[str, Any]
         return _write_locked(folder, file, name, spec)
 
 
+def _file_entry(file: str, name: str, spec: dict[str, Any]) -> dict[str, Any]:
+    """The entry serialized to *file* and fingerprinted for the card's approval."""
+    if file == KIRO_PROJECT_MCP_FILE:
+        from kiro_crew.mcp_utils import kiro_oauth_wire_entry
+
+        # kiro-cli reads ``oauthScopes`` and ``oauth.clientId``; Crew's own spelling
+        # of those hints would be ignored there.
+        return kiro_oauth_wire_entry(spec, store_entry=None, server=name)
+    return spec
+
+
 def _write_locked(folder: str, file: str, name: str, spec: dict[str, Any]) -> str:
     """The read-check-replace, every folder on the way opened without following a link.
 
@@ -191,12 +202,7 @@ def _write_locked(folder: str, file: str, name: str, spec: dict[str, Any]) -> st
         return FOLDER_NOT_FOUND
     if _crosses_a_link(folder, file):
         return NOT_EDITABLE
-    if file == KIRO_PROJECT_MCP_FILE:
-        from kiro_crew.mcp_utils import kiro_oauth_wire_entry
-
-        # kiro-cli reads ``oauthScopes`` and ``oauth.clientId``; Crew's own spelling
-        # of those hints would be ignored there.
-        spec = kiro_oauth_wire_entry(spec, store_entry=None, server=name)
+    spec = _file_entry(file, name, spec)
     *dirs, leaf = file.split(os.sep)
     path = os.path.join(folder, file)
     try:
@@ -299,6 +305,26 @@ def _crosses_a_link(folder: str, file: str) -> bool:
     return False
 
 
+def _approve_written(folder: str, file: str, name: str, spec: dict[str, Any]) -> None:
+    """Record the launch the person just confirmed as approved in *folder*.
+
+    The card that wrote it showed this exact launch, so the session-start check
+    (:mod:`kiro_crew.project_mcp_approvals`) does not ask again. A file rewritten
+    since the write, or a full record, leaves it unapproved: the next chat holds
+    it and asks. Never raises. Blocking.
+    """
+    import logging
+
+    from kiro_crew import project_mcp_approvals as approvals
+
+    try:
+        approvals.approve(folder, file, name, approvals.fingerprint(spec))
+    except (approvals.ApprovalStale, approvals.RecordFull, ValueError, OSError):
+        logging.getLogger(__name__).info(
+            "project MCP file: %s was written but not recorded as approved", name
+        )
+
+
 def _deny(status: int, code: str, message: str) -> web.Response:
     return web.json_response({"error": message, "code": code}, status=status)
 
@@ -350,10 +376,9 @@ async def api_mcp_project_file(request: web.Request) -> web.Response:
     if err:
         return _deny(400, "invalid_spec", f"server '{name}': {err}")
     folder = os.path.normpath(folder)
+    clean = _clean_spec(spec)
     try:
-        outcome = await asyncio.to_thread(
-            write_project_server, folder, file, name, _clean_spec(spec)
-        )
+        outcome = await asyncio.to_thread(write_project_server, folder, file, name, clean)
     except OSError as exc:
         outcome = "error"
         detail = exc.strerror or type(exc).__name__
@@ -368,6 +393,9 @@ async def api_mcp_project_file(request: web.Request) -> web.Response:
         resources=f"{name} -> {path}",
     )
     if outcome == WRITTEN:
+        await asyncio.to_thread(
+            _approve_written, folder, file, name, _file_entry(file, name, clean)
+        )
         return web.json_response({"written": path})
     if outcome == ALREADY_EXISTS:
         return _deny(409, ALREADY_EXISTS, f"'{name}' is already in {path}")

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, createContext, lazy, memo, Suspense, type ReactNode } from 'react'
+import { useEffect, useState, useCallback, useRef, createContext, lazy, memo, Suspense, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from './store'
 import { setUpdateProgress } from './store/dashboardSlice'
@@ -114,6 +114,7 @@ import { useAppShell } from './shell/appShell'
 import { ShellHeader } from './shell/topbar/shellHeader'
 import { hiddenChromeProps } from './shell/focus/focusChrome'
 import { RelayReconnectingView } from './shell/RelayReconnectingView'
+import { FOCUSABLE, useDialogFocusTrap } from './hooks/useDialogFocusTrap'
 import { ShellNavRail } from './shell/nav/navRail'
 import { NavItem, NavBadge } from './shell/nav/navRow'
 import { DockMatesTiles, useDockMates } from './shell/nav/matesDock'
@@ -208,6 +209,16 @@ const UPDATE_STEP_LABEL_KEY: Record<string, string> = {
   error: 'app.update_failed_2',
 }
 
+const NO_ESCAPE = () => {}
+/** Keys pressed inside the update overlay stay there: a page shortcut (Settings, a route) must not act on the
+ *  dashboard it covers. Escape stops here too: the overlay has no Escape action, so it must not close a bar behind it
+ *  (unlike `isolateKeys` in updateFlow.tsx, whose dialog does close on Escape). While the overlay holds no focus stop
+ *  of its own (mid-update, before any button), Tab has nowhere inside to go, so it goes nowhere: the focus trap only
+ *  wraps between stops it can find. */
+function isolateOverlayKeys(e: ReactKeyboardEvent<HTMLElement>) {
+  e.stopPropagation()
+  if (e.key === 'Tab' && ![...e.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE)].some(el => el.tabIndex >= 0)) e.preventDefault()
+}
 const STEP_ORDER = ['pulling', 'syncing', 'building', 'installing', 'restarting']
 const STUCK_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
 
@@ -234,6 +245,10 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   const isFailed = step === 'failed' || step === 'error'
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef(Date.now())
+  // A modal over the whole shell: Tab stays inside it, so focus cannot walk onto
+  // the dashboard it hides. It has no Escape: Cancel and Dismiss are its only ways out.
+  const overlayRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(overlayRef, NO_ESCAPE, { handleEscape: false })
 
   // Track elapsed time for stuck detection
   useEffect(() => {
@@ -264,7 +279,17 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
 
   return (
     // A relay Crew pane hides under it (lib/relayCrewPanes.ts).
-    <div data-relay-pane-overlay="" className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe">
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler only stops keystrokes reaching page shortcuts behind the modal; it performs no action
+    <div
+      ref={overlayRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={i18nT('app.updating_kirocrew')}
+      tabIndex={-1}
+      onKeyDown={isolateOverlayKeys}
+      data-relay-pane-overlay=""
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe outline-hidden"
+    >
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
         {/* A terminal step is not in progress, so it does not pulse. */}
         <div className={`text-4xl mb-4 ${isFailed ? 'text-danger' : 'animate-pulse'}`} data-testid="update-overlay-step-icon">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
@@ -913,13 +938,13 @@ export default function App() {
 
           {/* Updating overlay */}
           {(updating || showUpdateModal) && <UpdateOverlay onCancel={() => { setUpdating(false); setShowUpdateModal(false) }} />}
-          {/* Both held while What's new or the shortcuts dialog is open, so two
-              trapped dialogs never stack and fight over Tab; each takes its turn
-              once the other closes, with its state intact. */}
-          <UpdateModal held={showChangelog || shortcutsOpen} />
+          {/* Both held while What's new, the shortcuts dialog or the update
+              overlay is open, so two trapped dialogs never stack and fight over
+              Tab; each takes its turn once the other closes, with its state intact. */}
+          <UpdateModal held={showChangelog || shortcutsOpen || updating || showUpdateModal} />
           {updateAvailable && (
             <Suspense fallback={null}>
-              <UpdateFoundModal held={showChangelog || shortcutsOpen} />
+              <UpdateFoundModal held={showChangelog || shortcutsOpen || updating || showUpdateModal} />
             </Suspense>
           )}
           <MobileConnectDialog mobileConnect={mobileConnect} />

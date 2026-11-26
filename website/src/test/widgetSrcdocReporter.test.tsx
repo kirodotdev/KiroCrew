@@ -15,7 +15,7 @@ import { buildSrcdoc } from '../lib/widgetSrcdoc'
 // before its images finish posts its first measurement BEFORE `load`; if the
 // reporter's deadband then swallowed the load-time re-check (same height, no
 // post), that healthy, rendering document would be flagged "no longer showing"
-// three seconds after every open — the false positive this test locks out.
+// once that window passes after every open — the false positive this test locks out.
 
 type Listener = (ev?: unknown) => void
 

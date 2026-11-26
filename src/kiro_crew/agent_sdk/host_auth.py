@@ -810,16 +810,17 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # on the operator's own machine needs no key at all.
         sign_in_remedy=(
             "DeepSeek Harness reaches a hosted model with a provider key Kiro Crew "
-            "holds for it. Save the key under Settings → Secrets, then map it in "
-            "agent.deepseek_env under the environment-variable name the provider "
-            "expects, such as DEEPSEEK_API_KEY. A model served locally on this "
-            "machine needs no key: point a provider route at it instead."
+            "holds for it. Save the key under Settings → Agent Harness → DeepSeek "
+            "Harness → Provider key, which keeps it in Settings → Secrets. A model "
+            "served locally on this machine needs no key: point a provider route at "
+            "it instead. Another provider route's key is mapped in agent.deepseek_env "
+            "under the name that route reads."
         ),
         signed_out_message=(
-            "DeepSeek Harness has no provider key. Save one under Settings > Secrets "
-            "and map it in `agent.deepseek_env` (for example "
-            "`DEEPSEEK_API_KEY: secret://my-dsh-key`), or point a provider route at a "
-            "model served locally on this machine, then start a new chat."
+            "DeepSeek Harness has no provider key. Save one under Settings > Agent "
+            "Harness > DeepSeek Harness > Provider key, which keeps it in Settings > "
+            "Secrets, or point a provider route at a model served locally on this "
+            "machine, then start a new chat."
         ),
         # Excluded deliberately, and for this harness the reason is stronger than a
         # separate store: there is no host credential on the wire at all, so a

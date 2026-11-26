@@ -14,6 +14,10 @@ import { isUnsafeKey, safeKey } from './wire'
 import { jsonEqual } from '../../utils/structuralEqual'
 
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
+/** A card's reasoning past this many characters keeps only its newest
+ *  `SUBAGENT_THINKING_KEEP`, behind the truncation marker. */
+export const SUBAGENT_THINKING_CAP = 20_000
+export const SUBAGENT_THINKING_KEEP = 16_000
 /** Per-slot subagent map, falling back to the global active mirror — the
  *  read-only selector twin of the internal `getSlotSubs`. Exists so the
  *  Activity panel can subscribe to this itself instead of having ChatPage hold
@@ -731,6 +735,7 @@ export const subagentReducers = {
       engine: action.payload.engine === true || existing?.engine || undefined,
       engineTurn: engineTurnOf(action.payload.engine_turn) || existing?.engineTurn,
       status: 'running', streaming: existing?.streaming || '', lastTool: '', startedAt: existing?.startedAt || Date.now(), elapsed: 0,
+      ...(existing?.thinking ? { thinking: existing.thinking } : {}),
       // Reusing an entry's start time inherits whether that time was ASSUMED.
       // Rebuilding the entry without this would silently promote an assumption
       // to an assertion, because a spawn frame carries no start time of its own
@@ -813,12 +818,20 @@ export const subagentReducers = {
       }
     }
   },
-  /** One coalesced ~1s frame of concatenated streaming text per agent. */
-  sseSubagentBatchChunks(state: ChatState, action: PayloadAction<{ chunks: { id: string; slot: string; text: string }[] }>) {
+  /** One coalesced ~1s frame of concatenated streaming text per agent, and the
+   *  reasoning a `subagent_thinking` frame carried (`thinking`), kept apart from
+   *  the output. */
+  sseSubagentBatchChunks(state: ChatState, action: PayloadAction<{ chunks: { id: string; slot: string; text: string; thinking?: string }[] }>) {
     for (const c of action.payload.chunks || []) {
       const a = upsertSlotSub(state, c.slot, c.id)
       if (!a) continue
       a.retrying = false
+      if (c.thinking) {
+        const thinking = (a.thinking ?? '') + c.thinking
+        a.thinking = thinking.length > SUBAGENT_THINKING_CAP
+          ? i18nT('store.chatSlice.truncated') + '\n' + thinking.slice(-SUBAGENT_THINKING_KEEP)
+          : thinking
+      }
       a.streaming += c.text
       if (a.streaming.length > 50_000) {
         a.streaming = i18nT('store.chatSlice.truncated') + '\n' + a.streaming.slice(-40_000)
@@ -1026,6 +1039,8 @@ export const subagentReducers = {
       // No replayed frame restores a Stop, so a reconnect keeps the mark it left.
       parentStopped: existing?.parentStopped || undefined,
       status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
+      // Reasoning is client-only: no snapshot carries it, so a replay keeps it.
+      ...(existing?.thinking ? { thinking: existing.thinking } : {}),
       // Replay applies the live tool-frame rule to a copy of a held timeline.
       // A card the replay creates seeds its timeline from the latest tool.
       toolCalls: existing?.toolCalls?.length

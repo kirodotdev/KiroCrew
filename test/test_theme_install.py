@@ -1519,7 +1519,9 @@ class TestDeleteLock:
             '{"name": "Lock", "level": 0}', encoding="utf-8"
         )
 
-        req = types.SimpleNamespace(method="DELETE", match_info={"slug": slug})
+        # No app claim (an internal caller): the owner gate for theme writes does
+        # not judge it, so the delete reaches the lock under test.
+        req = types.SimpleNamespace(method="DELETE", match_info={"slug": slug}, get=lambda *_: None)
 
         # Simulate an in-flight reinstall holding the per-slug lock.
         lock = themes_mod._theme_install_lock(slug)

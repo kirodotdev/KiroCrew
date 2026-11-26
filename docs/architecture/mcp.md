@@ -173,7 +173,9 @@ therefore updates the one mount instead of mounting the server again as
 two entries match apart from `disabledTools`
 (`mcp_aliases.raw_tools_project_onto_alias()`); any other pair keeps the normal
 collision handling. The merged entry is the one read, so a Kiro global guard on the
-raw key survives a store entry that omits the field.
+raw key survives a store entry that omits the field. `list_servers()` folds the raw
+and alias rows into one and applies the same predicate (`_alias_renders_raw`), so
+the row's `disabled_tools` is the list this reconcile mounts.
 
 **A raw store key adopts its own rendering.** Switching such a row off writes
 `disabled: true` onto the raw store entry, which then differs from the previous
@@ -4017,6 +4019,19 @@ change card, and the server is written to the template's additions record
   (so a spec the failed rebuild already wrote converges back), and the step
   answers `503 spec_not_rewritten`: the card stays as it was (an Undo stays
   available to retry).
+
+### A folder's own MCP servers wait for the person (`mcp.project_server`)
+
+A server in a folder's `.kiro/settings/mcp.json` or `.mcp.json` starts only once the
+person approved that launch in that folder. A session that would start one the
+record does not hold gets a server with no tools under that name instead (kiro-cli,
+KAS) or the name in `disabledMcpjsonServers` (Claude Code), and the chat shows an
+`mcp.project_server` card per held server: the file, the launch, and what changed.
+**Allow <server> in this folder** records it and restarts every open chat;
+**Skip for this chat** leaves it held, and the next chat in that folder asks again.
+The card is raised by the chat, never by an agent (`GATEWAY_RESOLVED_KINDS`). The
+record, what counts as a launch and the one-time first record are in
+[security](../system-specs/modules/security.md) (project MCP files).
 
 ### A `kirocrew-core` tool has two halves
 

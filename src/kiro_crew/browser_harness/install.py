@@ -40,7 +40,7 @@ import sysconfig
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -257,18 +257,32 @@ async def install(
     *,
     components: tuple[str, ...] = COMPONENTS,
     refresh: bool = False,
+    before_clear: Callable[[], Coroutine[Any, Any, None]] | None = None,
 ) -> InstallState:
     """Create or refresh the venv and download Chromium. Raises :class:`InstallError`.
 
     *refresh* replaces a Chromium that is already present (Settings' Redownload);
     without it a whole copy is kept. Runs its blocking steps in a worker thread;
     *progress* is called from that thread with ``(stage, detail)`` and must
-    marshal onto the loop itself.
+    marshal onto the loop itself. *before_clear* runs on the loop, and is waited
+    for, before an install that clears the venv removes anything.
     """
+    loop = asyncio.get_running_loop()
+
+    def clearing() -> None:
+        if before_clear is not None:
+            asyncio.run_coroutine_threadsafe(before_clear(), loop).result()
+
     stop = threading.Event()
     worker = asyncio.create_task(
         asyncio.to_thread(
-            install_sync, home, progress, components=components, refresh=refresh, stop=stop
+            install_sync,
+            home,
+            progress,
+            components=components,
+            refresh=refresh,
+            stop=stop,
+            before_clear=clearing,
         )
     )
     try:
@@ -295,8 +309,14 @@ def install_sync(
     refresh: bool = False,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     stop: threading.Event | None = None,
+    before_clear: Callable[[], None] | None = None,
 ) -> InstallState:
-    """The blocking body; *runner* replaces the owned subprocess in tests."""
+    """The blocking body; *runner* replaces the owned subprocess in tests.
+
+    *before_clear* is called before either arm that clears the venv (a rebuild, a
+    copy from the runtime) removes the marker; a stop set meanwhile keeps the marker.
+    A repair, and an install that keeps the venv, never call it.
+    """
 
     def notify(stage: str, detail: str) -> None:
         _check_stop(stop, stage)
@@ -308,7 +328,11 @@ def install_sync(
     notify(STAGE_PREPARING, str(prefix))
     if COMPONENT_HARNESS in components:
         _install_harness(
-            prefix, notify, runner or functools.partial(_run, cwd=prefix, stop=stop), stop=stop
+            prefix,
+            notify,
+            runner or functools.partial(_run, cwd=prefix, stop=stop),
+            stop=stop,
+            before_clear=before_clear,
         )
     if COMPONENT_CHROMIUM in components:
         try:
@@ -330,6 +354,7 @@ def _install_harness(
     run: Callable[..., subprocess.CompletedProcess[str]],
     *,
     stop: threading.Event | None = None,
+    before_clear: Callable[[], None] | None = None,
 ) -> None:
     if sys.version_info < MIN_PYTHON:
         raise InstallError(
@@ -345,6 +370,9 @@ def _install_harness(
     # nothing to build, so neither the pip checks nor the pillow refusal below apply.
     runtime_files = _runtime_harness_files()
     if runtime_files is not None:
+        if before_clear is not None:
+            before_clear()
+            _check_stop(stop, STAGE_CREATING_VENV)
         _copy_runtime_harness(prefix, notify, run, runtime_files, stop=stop)
         return
     # Interpreters differ in which half of pip they ship: the packaged app has
@@ -396,6 +424,9 @@ def _install_harness(
         repair_argv.append(str(venv_dir(prefix)))
         _step(run, repair_argv, _VENV_TIMEOUT_SECS, STAGE_CREATING_VENV)
     elif rebuild:
+        if before_clear is not None:
+            before_clear()
+            _check_stop(stop, STAGE_CREATING_VENV)
         # The marker goes first: a rebuild that fails part-way must read as
         # "not installed", never as a finished install of a venv now cleared.
         (prefix / MARKER_FILE).unlink(missing_ok=True)

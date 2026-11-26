@@ -9,16 +9,17 @@ Each function here whose first parameter is ``self`` is a ``ClaudeAcpClient`` me
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_claude_held_asks``, ``_claude_held_mcp``, ``_claude_inline_settings``,
+Instance fields written: ``_claude_held_asks``, ``_claude_held_mcp``,
+``_claude_held_project_servers``, ``_claude_inline_settings``, ``_claude_project_mcp_unreadable``,
 ``_claude_local_settings_excluded``, ``_claude_side_read_denies``, ``_claude_tools_withheld_reason``,
 ``_claude_worker_builtin_tools``, ``_last_substitution_model``, ``_model``,
 ``_resolved_model_id``, ``_session_mcp_cache``, ``claude_mode_pinned_notice``.
 
-Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_include_memory``,
+Instance fields read: ``_agent``, ``_agent_version``, ``_agent_version_read``, ``_include_memory``,
 ``_launch_mcp_servers``, ``_mcp_mount_servers``, ``_permission_mode``, ``_session_id``,
 ``_session_key``, ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
 ``_side_read_only``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
-``_spec_zero_tools``, ``memory_mode``.
+``_spec_zero_tools``, ``_work_dir``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -491,7 +492,7 @@ def _claude_session_needs_options(self: ClaudeAcpClient) -> bool:
 
     Its project tier is left out, it is a Side Chat, its spec declares
     ``"tools": []``, or its built-in tools are narrowed (a worker's excludes or a
-    named agent's ``tools`` list): each of those
+    named agent's ``tools`` list), or it holds a project MCP server: each of those
     rides ``_meta.claudeCode.options``, which an adapter below the floor may ignore.
     """
     return bool(
@@ -499,6 +500,8 @@ def _claude_session_needs_options(self: ClaudeAcpClient) -> bool:
         or getattr(self, "_side_read_only", False)
         or getattr(self, "_spec_zero_tools", False)
         or getattr(self, "_claude_worker_builtin_tools", None) is not None
+        or bool(getattr(self, "_claude_held_project_servers", ()))
+        or getattr(self, "_claude_project_mcp_unreadable", False)
     )
 
 
@@ -574,7 +577,7 @@ async def _prepare_claude_side_read_denies(self: ClaudeAcpClient) -> None:
 
 
 async def _prepare_claude_held_asks(self: ClaudeAcpClient) -> None:
-    """Read the held-limit asks of the Bot behind this session off the loop, before its envelope.
+    """Read the session's project-server holds and its Bot's held-limit asks off the loop.
 
     ``mate_held_rules.claude_ask_rules`` reads the migration ledger and the
     session's execution record from disk. Any session attributed to a Bot with
@@ -582,7 +585,11 @@ async def _prepare_claude_held_asks(self: ClaudeAcpClient) -> None:
     every other session.
     """
     from kiro_crew import mate_held_rules
+    from kiro_crew.agent_sdk.project_mcp_holds import project_hold
 
+    hold = await asyncio.to_thread(project_hold, self.backend, self._agent, self._work_dir)
+    self._claude_held_project_servers = tuple(sorted({s.name for s in hold.pending}))
+    self._claude_project_mcp_unreadable = bool(hold.unreadable)
     key = getattr(self, "_session_key", None) or ""
     if not key:
         self._claude_held_asks = ()
@@ -616,6 +623,9 @@ def _bridged_server_asks(client: ClaudeAcpClient) -> list[str]:
 
 def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
     """The ``_meta`` envelope for a claude ``session/new`` or ``session/load``.
+
+    Held project servers ride ``settings.disabledMcpjsonServers`` independently
+    of the seed's ownership and the session's setting sources.
 
     Empty options, unless this session leaves a project-owned
     ``settings.local.json`` out: then ``settingSources`` is ``user`` alone,
@@ -677,6 +687,12 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
             inline = getattr(self, "_session_mcp_inline_settings", None)
         if isinstance(inline, dict) and inline:
             options["settings"] = dict(inline)
+    held_project = getattr(self, "_claude_held_project_servers", ())
+    if held_project:
+        carried_settings = dict(options.get("settings") or {})
+        rejected = set(carried_settings.get("disabledMcpjsonServers") or [])
+        carried_settings["disabledMcpjsonServers"] = sorted(rejected.union(held_project))
+        options["settings"] = carried_settings
     adopted = getattr(self, "_adopted_substitute_model", None)
     if adopted and adopted == self._model:
         # The model a substitution retry names rides the flag tier as well as the
@@ -742,6 +758,10 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
         # The held ``mcp__<server>`` asks name only the servers Crew sends: a
         # server from the user's own config, the project's or a plugin's, which
         # an allow rule there may pre-approve, would run unasked beside them.
+        options["strictMcpConfig"] = True
+    if getattr(self, "_claude_project_mcp_unreadable", False):
+        # The folder's ``.mcp.json`` cannot be read, so no server in it can be
+        # checked: the whole file is held.
         options["strictMcpConfig"] = True
     # Read off the loop before the envelope is built (_prepare_claude_held_asks).
     held_asks = getattr(self, "_claude_held_asks", ())
@@ -949,7 +969,9 @@ async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
     worker whose native-tool excludes narrow ``tools``, or a named agent whose
     spec ``tools`` list does (``_claude_worker_builtin_tools``), is stopped below
     the floor for the same reason; above it, its mode is handled as any other
-    session's.
+    session's. So is a session that holds a project MCP server, or runs with
+    ``strictMcpConfig`` because its project MCP file could not be read: the
+    hold rides the same options.
 
     Observed on claude-agent-acp 0.84.0
     (``test/fixtures/claude_mode_pin/``): ``session/new`` and
@@ -966,9 +988,10 @@ async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
     side = getattr(self, "_side_read_only", False)
     zero_tools = getattr(self, "_spec_zero_tools", False)
     depends_on_options = excludes_local or side or zero_tools
-    narrowed = getattr(self, "_claude_worker_builtin_tools", None) is not None
     pin_inherited = not depends_on_options and resolve_cc_pin_inherited_mode()
-    if not (depends_on_options or narrowed or pin_inherited):
+    # Narrowed built-ins and a held project server also ride the options, so they
+    # reach the floor check below even though they need no mode pin.
+    if not (pin_inherited or self._claude_session_needs_options()):
         return
     below_floor = self._claude_adapter_below_setting_sources_floor()
     if below_floor and self._claude_session_needs_options():

@@ -120,8 +120,10 @@ DENY_CLASS_S3_UNREAD_DOWNLOAD = "s3_unread_download"
 #: passes. This class keeps the upload answer and adds the forms that do pass.
 #: Chosen only for the exfil GATE's refusal, by the rule id on its own diagnostic
 #: line. The regex tier's row for the same id matches ``curl`` with a ``--data @``
-#: form and has no inert-line carve-out, so a line this prose says passes can still
-#: meet it; its refusal keeps the exfil-shape prose.
+#: form; it applies the SAME inert-line carve-out as the substring tier
+#: (``deny_gate._file_body_narrows``), so on POSIX an inert search this prose says
+#: passes passes both tiers. On Windows that narrower returns False, so the regex
+#: tier stays fail-closed there.
 DENY_CLASS_FILE_BODY_TEXT = "file_body_text"
 _FILE_BODY_RULE_ID = "data-exfil-curl-file-body"
 
@@ -618,11 +620,11 @@ REMEDIATION: dict[str, str] = {
         "a literal epoch, once per epoch (a loop keeps a live `$` beside `-d @`, so "
         "it stays refused); Python's `datetime.fromtimestamp` for many epochs at "
         "once; and a search for the text with your file-search tool, or a line made "
-        "only of `grep`, `date`, `echo`, `cat`, `head`, `tail`, `wc` and read-only "
-        "`gh` search, view and list calls, with no `$`, no backtick and no redirect. "
-        "A line that names `curl` together with a `--data @` form is refused by a "
-        "second rule wherever that pair appears, so search for that pair with the "
-        "file-search tool."
+        "only of `grep`, `date`, `echo`, `cat`, `head`, `tail`, `wc` "
+        "and read-only `gh` search, view and list calls, with no `$`, no backtick "
+        "and no redirect. On POSIX such an inert search passes even when it names "
+        "`curl` next to a `--data @` form; on Windows, where the shell is not bash, "
+        "search for that pair with your file-search tool instead."
     ),
     DENY_CLASS_SELF_PROTECTION: (
         "This refusal is about what the action would DO — reach the product's own "

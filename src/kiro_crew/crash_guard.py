@@ -30,6 +30,8 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
+from kiro_crew import install_liveness
+
 logger = logging.getLogger(__name__)
 
 _INSTALLED = False
@@ -71,6 +73,11 @@ def _write_crash(header: str, exc_info: tuple | None = None) -> None:
             f.write(f"{header}\n")
             f.write(f"Time: {datetime.now(timezone.utc).isoformat()}\n")
             f.write(f"PID:  {os.getpid()}\n")
+            # Read at import, not here: the build that wrote this record, which
+            # after an update may not be the one the frame paths now point at.
+            version, install = install_liveness.BUILD_IDENTITY
+            f.write(f"Version: {version}\n")
+            f.write(f"Install: {install}\n")
             f.write(f"{'-' * 72}\n")
             if exc_info and exc_info[0] is not None:
                 traceback.print_exception(*exc_info, file=f)

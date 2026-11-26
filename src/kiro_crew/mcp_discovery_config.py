@@ -343,6 +343,37 @@ def _server_from_spec(name: str, spec: dict, source: str) -> McpServerInfo:
     )
 
 
+def _alias_renders_raw(
+    alias: str, raw: str, by_source: dict[str, dict[str, Any]], agent_cfg: dict
+) -> bool:
+    """Whether the rebuild mounts the *raw* key's ``disabledTools`` on *alias*.
+
+    Applies the rebuild's own predicate, ``rendered_alias_projects_raw_tools``, to
+    the spec the rebuild merges for *raw* and the alias entry it rendered into
+    the agent config. The merge mirrors the rebuild: the highest-priority global
+    holding *raw*, then the Kiro Crew store's fields on top. The predicate lives
+    with the rebuild because the rendered entry carries the command the rebuild
+    resolved, and the source's command is resolved the way the rebuild emits it
+    before the two are compared.
+    """
+    from kiro_crew.agent import mcp_aliases
+    from kiro_crew.mcp_provenance import without_marker
+
+    merged: dict[str, Any] = {}
+    for scope in _scope_priority(by_source):
+        spec = by_source.get(scope, {}).get(raw)
+        if scope != SCOPE_KIROCREW and isinstance(spec, dict):
+            merged = without_marker(spec)
+            break
+    store_spec = by_source.get(SCOPE_KIROCREW, {}).get(raw)
+    if isinstance(store_spec, dict):
+        merged.update(store_spec)
+    rendered = agent_cfg.get("mcpServers", {}).get(alias)
+    return mcp_aliases.rendered_alias_projects_raw_tools(
+        alias, merged, rendered, by_source.values()
+    )
+
+
 def list_servers() -> list[McpServerInfo]:
     """Return all known MCP servers from agent config + mcp.json + CC global.
 
@@ -504,22 +535,43 @@ def list_servers() -> list[McpServerInfo]:
     #     names alias to themselves, so non-scoped servers are unaffected. When
     #     both forms are present, presence flags are unioned and the entry whose
     #     own key is already the canonical alias is kept as the representative.
+    #     The row reports the ``disabledTools`` the rebuild mounts under the
+    #     canonical name. When no scope declares the alias and its rendered
+    #     spec matches the raw key's apart from ``disabledTools``, the alias is
+    #     the rebuild's rendering of the raw key (``_alias_renders_raw``). The
+    #     row then takes the raw key's list, or none when no scope gives the
+    #     raw key one, because ``reconcile_raw_key_tool_overrides`` aligns the
+    #     alias mount with the merged raw entry. In any
+    #     other layout the alias entry is the canonical mount, the raw key
+    #     mounts as a ``-<n>`` sibling, and the row keeps the alias's own list.
     canonical_servers: dict[str, McpServerInfo] = {}
+    raw_name_of: dict[str, str] = {}
     for name, server in servers.items():
         canon = mcp_server_alias(name)
         rep = canonical_servers.get(canon)
         if rep is None:
             server.name = canon
             canonical_servers[canon] = server
+            raw_name_of[canon] = name
             continue
         union = {
             scope: bool(rep.presence.get(scope)) or bool(server.presence.get(scope))
             for scope in rep.presence
         }
-        chosen = server if name == canon else rep
+        rep_raw = raw_name_of[canon]
+        if name == canon:
+            chosen, chosen_raw, other, other_raw = server, name, rep, rep_raw
+        else:
+            chosen, chosen_raw, other, other_raw = rep, rep_raw, server, name
+        if _alias_renders_raw(chosen_raw, other_raw, by_source, agent_cfg):
+            value = other.disabled_tools if other_raw in disabled_tools_claimed else []
+            # A copy of a list; a malformed value (hand-edited ``null``) is
+            # carried as-is, as the reconcile mounts it, instead of crashing.
+            chosen.disabled_tools = list(value) if isinstance(value, list) else value
         chosen.name = canon
         chosen.presence = union
         canonical_servers[canon] = chosen
+        raw_name_of[canon] = chosen_raw
     servers = canonical_servers
 
     # 3c. Consent is per SCOPE: a ``disabled: true`` ANYWHERE withholds the

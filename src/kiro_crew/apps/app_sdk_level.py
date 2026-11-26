@@ -17,6 +17,15 @@ the person's Kiro sign-in, which never reaches the app; and the SDK's
 Level 13 adds ``/api/apps/<name>/browser-sites``: the app's browsing list with the
 sites the owner added, which the app and its backend read, and the owner's edits to
 it; and the SDK's ``useBrowserSites``, whose add asks the owner in the dashboard.
+Level 14 adds backend SDK names, one batch: ``canonical_file_path``, the gateway's
+file path gate (the UNC and link screens and the sensitive-path list, answered as the
+canonical path or None); and ``vet_public_url``, ``UrlRejectedError`` and
+``address_is_not_public``, the gateway's outbound public-address check for a URL, or
+a resolved address, an app's backend fetches. Level 14 also adds ``sniff_raster_mime``
+and ``RASTER_SNIFF_BYTES``: the gateway's own raster sniffer, by reference. Level 14
+also adds the descriptor-pinned path walk and copy: ``supports_pinned_walk``,
+``is_reparse_point``, ``pin_parent``, ``copy_file_pinned``, ``fd_real_path`` and
+``PinnedPathRefusal``.
 """
 
-APP_SDK_LEVEL = 13
+APP_SDK_LEVEL = 14

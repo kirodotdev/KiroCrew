@@ -785,7 +785,7 @@ class TestRedactCredentials:
         # counter behind `revocation_gen.current_revocation_gen()`, LOADED FROM
         # DISK on first use. Left ambient, the
         # derived floor would depend on how many times this machine has revoked:
-        # the repr widens at 10, moving the floor 145 -> 147, so the pin below would
+        # the repr widens at 10 and moves the floor, so the pin below would
         # fail on a clean checkout with no code change.
         shortest = {"sub": "x", "gen": 0}
         minimal = {
@@ -796,7 +796,7 @@ class TestRedactCredentials:
         worst = len(base64.urlsafe_b64encode(raw).decode().rstrip("=")) - 3
         assert worst > floor, f"derived floor {worst} no longer clears {{{floor},}}"
         # Pinned so the figure quoted in `security.py` cannot rot silently.
-        assert worst == 145, f"derived floor moved to {worst}; update security.py"
+        assert worst == 161, f"derived floor moved to {worst}; update security.py"
 
     def test_bearer_word_alone_not_redacted(self) -> None:
         """The word `Bearer` without the `Authorization:` header prefix is prose."""

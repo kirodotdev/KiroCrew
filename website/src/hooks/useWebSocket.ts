@@ -752,6 +752,12 @@ export function useWebSocket() {
             if (chunkSlot && chunkId && chunkText) buffers.bufferSubagentChunk(chunkSlot, chunkId, chunkText)
             break
           }
+          case 'subagent_thinking': {
+            // An agent's reasoning: buffered beside its card's text, kept apart.
+            const { slot: thinkSlot, id: thinkId, text: thinkText } = data as { slot: string; id: string; text: string }
+            if (thinkSlot && thinkId && typeof thinkText === 'string' && thinkText) buffers.bufferSubagentThinking(thinkSlot, thinkId, thinkText)
+            break
+          }
           case 'subagent_tool':
             dispatch(sseSubagentTool(data as { slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string; is_update?: boolean }))
             break
@@ -807,7 +813,7 @@ export function useWebSocket() {
           case 'subagent_batch_chunks':
             // chunks must dispatch before newer server-batched chunks arrive.
             buffers.flushSubagentChunks()
-            dispatch(sseSubagentBatchChunks(data as { chunks: { id: string; slot: string; text: string }[] }))
+            dispatch(sseSubagentBatchChunks(data as { chunks: { id: string; slot: string; text: string; thinking?: string }[] }))
             break
           case 'subagent_snapshot_batch': {
             // Reconnect replay collapsed into one frame at scale — fan the

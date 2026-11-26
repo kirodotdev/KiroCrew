@@ -39,7 +39,11 @@ def refuse_contested_agent_spec(agent: str | None) -> None:
     """
     from kiro_crew import agent_spec_pins
     from kiro_crew.agent import is_registered_agent_name, kiro_agents_dir_path
-    from kiro_crew.agent_discovery import AmbiguousAgentSpecError, declared_spec_claim
+    from kiro_crew.agent_discovery import (
+        AmbiguousAgentSpecError,
+        declared_spec_claim,
+        held_spec_refusal,
+    )
     from kiro_crew.config.paths import spec_dir_for
 
     if not agent or not is_registered_agent_name(agent):
@@ -63,10 +67,6 @@ def refuse_contested_agent_spec(agent: str | None) -> None:
         return
     except OSError:
         return
-    if claim is not None and held and agent_spec_pins.spec_pin_for(agent, pins) is None:
-        raise AmbiguousAgentSpecError(
-            agent_spec_pins.held_spec_message(
-                agent, [str(path) for path in held], [path.name for path in claim.claimants]
-            ),
-            agent=agent,
-        )
+    refusal = held_spec_refusal(agent, claim, held, pins)
+    if refusal is not None:
+        raise refusal

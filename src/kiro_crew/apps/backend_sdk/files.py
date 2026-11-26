@@ -1,4 +1,4 @@
-"""File helpers with the gateway's own refusals: no-follow reads and atomic writes."""
+"""File helpers with the gateway's own refusals: the path gate, no-follow reads, atomic writes."""
 
 from __future__ import annotations
 
@@ -11,6 +11,25 @@ from kiro_crew import hooks, owner_only_files
 #: Raised by :func:`read_bytes_nofollow` when the file is over its byte cap. The
 #: gateway's own class, so ``except FileTooLargeError`` catches what it raises.
 FileTooLargeError = hooks.FileTooLargeError
+
+
+def canonical_file_path(path: str) -> str | None:
+    """The canonical path of *path*, or ``None`` when the gateway's file path gate refuses it.
+
+    ``kiro_crew.hooks.validate_file_path``, the gate the gateway's own file surfaces
+    ask: ``None`` for an empty or unrepresentable path, a Windows UNC path outside
+    the trusted roots (refused BEFORE any resolution, because resolving one is
+    itself the outbound SMB probe), a Windows link the link screen refuses, and a
+    path whose resolved target is on the sensitive-path list. Otherwise the
+    ``realpath``, every link followed. Seam level 14 (``_EXPORT_LEVELS``).
+
+    The answer judges a NAME, and what the name points at can change before it is
+    opened. Read the bytes through :func:`read_bytes_nofollow` or a
+    descriptor-pinned open, never a plain ``open`` of the result. Blocking (it
+    resolves the path and asks the sensitive-path list): call it off the event loop.
+    """
+    # One positional argument: the gate's own default, so no other check is chosen.
+    return hooks.validate_file_path(path)
 
 
 def read_bytes_nofollow(

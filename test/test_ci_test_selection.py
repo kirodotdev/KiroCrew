@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 from scripts import ci_test_map as ctm
 from scripts import ci_test_selection as cts
@@ -407,8 +408,14 @@ def test_cli_writes_a_select_verdict_for_a_tree(
         "covered",
         "unknown",
         "windows",
+        "timings",
     }
     assert verdict["schema"] == 1 and verdict["bundle_commit"] == "c0ffee"
+    # Where the time went: the parts are inside the whole, and the diff's one edited module is counted.
+    timings = verdict["timings"]
+    assert set(timings) == {"load", "readers", "score", "modified_py"}
+    assert 0 <= timings["load"] <= timings["score"] and 0 <= timings["readers"] <= timings["score"]
+    assert timings["modified_py"] == 1
     assert verdict["covered"] == {}
     assert verdict["base"] is None and verdict["head"] is None
     assert verdict["verdict"] == "select" and verdict["reason"] is None
@@ -573,3 +580,56 @@ def test_a_revision_that_names_no_commit_is_a_full_verdict(
     verdict = json.loads(out.read_text(encoding="utf-8"))
     assert verdict["verdict"] == "full" and verdict["reason"].startswith("CalledProcessError")
     assert (verdict["base"], verdict["head"]) == ("nope", "HEAD")
+
+
+def test_a_diff_that_was_not_scored_has_no_timings(tmp_path: Path) -> None:
+    # No bundle: nothing was loaded, read or scored, so there is nothing to time.
+    code, verdict = _main(tmp_path, None)
+    assert code == 0 and verdict["verdict"] == "full"
+    assert "timings" not in verdict
+
+
+def test_the_timings_say_what_each_part_took(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolate_git(tmp_path, monkeypatch)
+    repo = tmp_path / "repo"
+    _repo(
+        repo, {"src/kiro_crew/testing/wait.py": "", "test/test_gate.py": "", "test/test_o.py": ""}
+    )
+    bundle = {
+        "schema": 1,
+        "commit": "c0ffee",
+        "tests": {"test/test_o.py": 1},
+        "files": {"src/kiro_crew/testing/wait.py": [0]},
+        "cochange": {},
+        "guard": ["test/test_gate.py"],
+    }
+    # A clock that moves one second each time it is read: a part's time is the reads inside it.
+    clock = ManualClock(monotonic_start=0.0, tick=1.0)
+    clock.install(monkeypatch, cts)
+    clock.install(monkeypatch, cts.data_readers)
+    code, verdict = _main(tmp_path, json.dumps(bundle), root=repo)
+    assert code == 0 and verdict["verdict"] == "select"
+    timings = verdict["timings"]
+    # The bundle is read between two readings of the clock, and nothing else is.
+    assert timings["load"] == 1.0
+    # No doc and no frontend path: no scan ran, whatever the clock did meanwhile.
+    assert timings["readers"] == 0.0
+    # The whole spans the load and the readings after it.
+    assert timings["score"] >= 2.0
+    # A diff with a prose doc runs the readers scan, and its time is counted apart.
+    argv = ["--root", str(repo), "--bundle", str(tmp_path / "bundle.json")]
+
+    def timed(rows: str) -> dict:
+        diff, out = tmp_path / "diff-2.txt", tmp_path / "verdict-2.json"
+        diff.write_text(rows, encoding="utf-8")
+        assert cts.main([*argv, "--name-status", str(diff), "--out", str(out)]) == 0
+        return json.loads(out.read_text(encoding="utf-8"))["timings"]
+
+    timings = timed("M\tsrc/kiro_crew/testing/wait.py\nM\tdocs/guide.md\nM\ttest/test_o.py\n")
+    assert 1.0 <= timings["readers"] < timings["score"]
+    assert timings["modified_py"] == 2
+    # Modified `.py` files only: not the doc, an added file or a deleted one.
+    rows = "M\tsrc/kiro_crew/testing/wait.py\nA\ttest/test_new.py\nD\tsrc/kiro_crew/gone.py\n"
+    assert timed(rows)["modified_py"] == 1

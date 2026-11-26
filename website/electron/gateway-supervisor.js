@@ -453,6 +453,7 @@ function createGatewaySupervisor({
   });
   const {
     isCurrentBundleGateway,
+    isCurrentBundleGatewayForUpdate,
     resolveUnresponsiveHolder,
     resolveGatewayConflict,
   } = createHolderDecision({
@@ -475,7 +476,7 @@ function createGatewaySupervisor({
     fs, path, http, processObj, port: PORT, backendUrl: BACKEND_URL, isWindows: IS_WIN, log: glog,
     setTimeoutFn, waitForPortFree, probeGatewayPortBinding, snapshotGatewayPortPids, psCommand,
     posixDescendantPids, isTrustedWindowsGatewayCommand, sameHomeGatewayPid, runGatewayStop,
-    isCurrentBundleGateway, getRunLocalGateway, getGatewayOwnership,
+    isCurrentBundleGateway: isCurrentBundleGatewayForUpdate, getRunLocalGateway, getGatewayOwnership,
     getGatewayProcess: () => gatewayProcess,
     setGatewayProcess: setOwnedChild,
     setSpawnedExecutablePaths: (paths) => { spawnedExecutablePaths = paths; },
