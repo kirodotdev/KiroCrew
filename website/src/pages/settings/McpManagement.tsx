@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Check, ExternalLink, ListChecks, RefreshCw, Server as ServerIcon, Share2 } from 'lucide-react'
@@ -85,6 +85,10 @@ import { reportForError } from '../../utils/errorReport'
 
 /** The query param that asks the Sharing view to open its Review dialog. */
 export const REVIEW_PARAM = 'review'
+
+/** What the Review dialog's one apply left for the page to say, kept past an unmount. */
+type ReviewApplyOutcome = 'restart' | 'not_live' | null
+const REVIEW_APPLY_KEY = ['mcpReviewApplyOutcome'] as const
 
 /**
  * MCP Management, top to bottom: the hero (title, Learn more, the page-wide
@@ -279,9 +283,9 @@ export function McpManagement({
 
   const setStub = useMutation({
     // `refused` is the stored refusal's own `expected_launch` behind the press.
-    mutationFn: ({ name, stub, expectedLaunch, cwdUse, trustChanges }: { name: string; stub: boolean; expectedLaunch?: string; refused?: string; cwdUse?: McpCwdUse; trustChanges?: boolean }) =>
-      trustChanges
-        ? api.mcpGatewaySetStub(name, stub, expectedLaunch, false, cwdUse, true)
+    mutationFn: ({ name, stub, expectedLaunch, cwdUse, trustChanges, deferApply }: { name: string; stub: boolean; expectedLaunch?: string; refused?: string; cwdUse?: McpCwdUse; trustChanges?: boolean; deferApply?: boolean }) =>
+      trustChanges || deferApply
+        ? api.mcpGatewaySetStub(name, stub, expectedLaunch, false, cwdUse, trustChanges === true, deferApply === true)
         : cwdUse ? api.mcpGatewaySetStub(name, stub, expectedLaunch, false, cwdUse) : api.mcpGatewaySetStub(name, stub, expectedLaunch),
     onSuccess: async (res, vars) => {
       invalidate()
@@ -291,7 +295,7 @@ export function McpManagement({
       }
       if (res && res.restart_required) {
         setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
-      } else if (res && res.applied === false) {
+      } else if (res && res.applied === false && !res.apply_deferred) {
         setError(i18nT('pages.mcpManagement.stub_not_live'))
       }
     },
@@ -330,6 +334,8 @@ export function McpManagement({
     name: string
     routed: boolean
     approve?: { expectedLaunch: string; refused?: string; trustChanges?: boolean }
+    /** Asked from the Review dialog, whose one apply waits for this answer. */
+    fromReview?: boolean
   } | null>(null)
   const answerCwd = useMutation({
     mutationFn: ({ name, answer, routed }: { name: string; answer: McpCwdUse; routed: boolean }) =>
@@ -698,7 +704,49 @@ export function McpManagement({
     const refused = status?.launch_refused ?? {}
     setReviewItems(waiting.map(server => ({ server, refusal: refused[server.name] })))
   }
-  const closeReview = useCallback(() => setReviewItems(null), [])
+  // Each Approve in the dialog records its launch with the apply deferred; the
+  // close sends the one apply that covers them, so approving N servers restarts
+  // the broker and resets the open chats once, not N times. It waits for an
+  // approval still in flight, and sends nothing when none landed.
+  const reviewApprovals = useRef<Promise<boolean>[]>([])
+  // The outcome goes into the query cache rather than this page's state: these
+  // callbacks still run after the page unmounted, and the next mount shows it.
+  const { mutate: applyReviewed } = useMutation({
+    mutationFn: async (pending: Promise<boolean>[]) => {
+      const landed = await Promise.all(pending)
+      return landed.some(Boolean) ? api.mcpGatewayApplyStubs() : null
+    },
+    onSuccess: res => {
+      if (res) qc.setQueryData<ReviewApplyOutcome>(REVIEW_APPLY_KEY, res.restart_required ? 'restart' : res.applied === false ? 'not_live' : null)
+    },
+    onError: () => qc.setQueryData<ReviewApplyOutcome>(REVIEW_APPLY_KEY, 'not_live'),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ['mcpGatewayStatus'] })
+      void qc.invalidateQueries({ queryKey: ['mcpGatewayServers'] })
+    },
+  })
+  const flushReview = useCallback(() => {
+    const pending = reviewApprovals.current
+    reviewApprovals.current = []
+    if (pending.length > 0) applyReviewed(pending)
+  }, [applyReviewed])
+  const closeReview = useCallback(() => {
+    setReviewItems(null)
+    flushReview()
+  }, [flushReview])
+  // Leaving the page with the dialog open still applies what it approved.
+  useEffect(() => flushReview, [flushReview])
+  const { data: reviewApplyOutcome } = useQuery<ReviewApplyOutcome>({
+    queryKey: REVIEW_APPLY_KEY,
+    queryFn: () => null,
+    staleTime: Infinity,
+  })
+  useEffect(() => {
+    if (!reviewApplyOutcome) return
+    if (reviewApplyOutcome === 'restart') setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
+    else setError(i18nT('pages.mcpManagement.stub_not_live'))
+    qc.setQueryData<ReviewApplyOutcome>(REVIEW_APPLY_KEY, null)
+  }, [reviewApplyOutcome, qc])
   // `?review=1`: once the servers and their status are read on this mount, open
   // the dialog if any wait, then drop the param so neither a reload nor a later
   // pause opens it unasked. A failed read opens nothing and still drops it.
@@ -724,15 +772,16 @@ export function McpManagement({
     const server = servers.find(s => s.name === name)
     if (server && needsCwdAnswer(server)) {
       // The approval needs the working-folder answer first: ask it, and send
-      // the approval with a "No".
-      closeReview()
-      setCwdAsk({ name, routed: true, approve: { expectedLaunch, refused, trustChanges } })
+      // the approval with a "No". The dialog's apply waits for that answer, so
+      // this approval joins the same batch.
+      setReviewItems(null)
+      setCwdAsk({ name, routed: true, approve: { expectedLaunch, refused, trustChanges }, fromReview: true })
       return null
     }
+    const write = api.mcpGatewaySetStub(name, true, expectedLaunch, false, undefined, trustChanges, true)
+    reviewApprovals.current.push(write.then(() => true, () => false))
     try {
-      const res = trustChanges
-        ? await api.mcpGatewaySetStub(name, true, expectedLaunch, false, undefined, true)
-        : await api.mcpGatewaySetStub(name, true, expectedLaunch)
+      const res = await write
       dropCurrentLaunch(name)
       if (res && res.restart_required) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
       // An approval only clears the refusal; with sharing off nothing is shared
@@ -1243,13 +1292,23 @@ export function McpManagement({
       <CwdQuestionDialog
         name={cwdAsk?.name ?? null}
         busy={answerCwd.isPending}
-        onCancel={() => setCwdAsk(null)}
+        onCancel={() => {
+          if (cwdAsk?.fromReview) flushReview()
+          setCwdAsk(null)
+        }}
         onAnswer={answer => {
           if (!cwdAsk) return
-          if (answer === 'not_used' && cwdAsk.approve) {
+          if (answer === 'not_used' && cwdAsk.approve && cwdAsk.fromReview) {
+            setCwdAsk(null)
+            // Deferred like the dialog's own approvals; the one apply follows it.
+            const write = setStub.mutateAsync({ name: cwdAsk.name, stub: true, ...cwdAsk.approve, cwdUse: answer, deferApply: true })
+            reviewApprovals.current.push(write.then(() => true, () => false))
+            flushReview()
+          } else if (answer === 'not_used' && cwdAsk.approve) {
             setCwdAsk(null)
             setStub.mutate({ name: cwdAsk.name, stub: true, ...cwdAsk.approve, cwdUse: answer })
           } else {
+            if (cwdAsk.fromReview) flushReview()
             answerCwd.mutate({ name: cwdAsk.name, routed: cwdAsk.routed, answer })
           }
         }}
