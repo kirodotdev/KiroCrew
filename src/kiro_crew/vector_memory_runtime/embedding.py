@@ -35,11 +35,29 @@ class _EmbeddingVector(list[float]):
     """An inference result bound to the database space observed before inference."""
 
     def __init__(
-        self, values: list[float], token: tuple[str | None, str], *, managed: bool = False
+        self,
+        values: list[float],
+        token: tuple[str | None, str],
+        *,
+        managed: bool = False,
+        instructed: bool = False,
     ):
         super().__init__(values)
         self.space_token = token
         self.managed = managed
+        #: Embedded with the model's query instruction, so the gates read the
+        #: instructed cosine floors (see :func:`query_is_instructed`).
+        self.instructed = instructed
+
+
+def query_is_instructed(vector: object) -> bool:
+    """Whether a query vector was embedded with the model's query instruction.
+
+    The flag rides on the vector, so a gate picks the floors measured for the
+    way that query was embedded. A plain list (a test's own vector, a caller's
+    embed function) reads as plain.
+    """
+    return bool(getattr(vector, "instructed", False))
 
 
 @dataclass(frozen=True)
@@ -58,9 +76,14 @@ class _RecallSpaceChanged(Exception):
 
 
 def try_embed(
-    store: VectorMemoryStore, text: str, priority: int = PRIORITY_NORMAL
+    store: VectorMemoryStore, text: str, priority: int = PRIORITY_NORMAL, *, query: bool = False
 ) -> list[float] | None:
     """Embed text using embed_fn if available.
+
+    *query* marks a recall query, compared against stored memories. On the
+    shared embedder, a model that wants a query-side instruction
+    (``embeddings.query_instruction_applies``) embeds the query with it, and the
+    result is flagged ``instructed``. Stored text never takes it.
 
     If embed_fn is None but embed_fn_factory is set, attempt to lazily
     rebind embed_fn (rate-limited via cooldown). This recovers from the
@@ -143,10 +166,19 @@ def try_embed(
                 )
             ):
                 return None
+            instructed = (
+                query
+                and producer is not None
+                and embeddings.query_instruction_applies(producer.model_id)
+            )
             # A managed call pins its producer through cache/coalescing too;
             # a later singleton replacement cannot relabel its result.
             if producer is not None:
-                result = embeddings._shared_sync_embed(text, priority=priority, backend=producer)
+                result = embeddings._shared_sync_embed(
+                    embeddings.query_instruction_text(text) if instructed else text,
+                    priority=priority,
+                    backend=producer,
+                )
             elif getattr(store.embed_fn, "accepts_priority", False):
                 result = store.embed_fn(text, priority=priority)  # type: ignore[call-arg]
             else:
@@ -166,7 +198,7 @@ def try_embed(
             else:
                 logger.debug("Embed returned None for text_len=%d", len(text))
             return (
-                _EmbeddingVector(result, persistent_token, managed=managed)
+                _EmbeddingVector(result, persistent_token, managed=managed, instructed=instructed)
                 if result is not None
                 else None
             )

@@ -30,6 +30,8 @@ from kiro_crew.embeddings_model import (
     legacy_embedding_ids,
     model_pooling_type,
     models_dir,
+    query_instruction_applies,
+    query_instruction_text,
     resolve_custom_model,
 )
 from kiro_crew.embeddings_ollama import (
@@ -764,17 +766,20 @@ def _shared_sync_embed(
 _shared_sync_embed.accepts_priority = True  # type: ignore[attr-defined]
 
 
-def embedding_in_flight(text: str) -> bool:
+def embedding_in_flight(text: str, *, query: bool = False) -> bool:
     """Whether the shared embedder is computing the vector for *text* right now.
 
     A caller that embeds *text* while this holds joins that inference, and a joined
     wait ends at the caller's own deadline even while the inference runs. Starts,
-    loads and reads nothing beyond the in-flight record.
+    loads and reads nothing beyond the in-flight record. *query* looks for the
+    recall-query form of *text*, the one ``_try_embed(..., query=True)`` embeds.
     """
     with _shared_embedder_lock:
         backend = _shared_embedder
     if backend is None:
         return False
+    if query and query_instruction_applies(backend.model_id):
+        text = query_instruction_text(text)
     with _sync_embed_cache_lock:
         return (id(backend), text[:_MAX_EMBED_CHARS]) in _sync_embed_flights
 

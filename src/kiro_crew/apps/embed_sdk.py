@@ -300,9 +300,10 @@ def _prepare(texts: Any, instruction: Any) -> list[str] | None:
         return None
     if not all(isinstance(t, str) and t.strip() for t in texts):
         return None
-    prefix = ""
-    if instruction is not None:
-        if not isinstance(instruction, str) or not instruction.strip():
-            return None
-        prefix = f"Instruct: {instruction.strip()}\nQuery:"
-    return [prefix + t for t in texts]
+    if instruction is None:
+        return list(texts)
+    if not isinstance(instruction, str) or not instruction.strip():
+        return None
+    from kiro_crew.embeddings_model import query_instruction_text
+
+    return [query_instruction_text(t, instruction.strip()) for t in texts]

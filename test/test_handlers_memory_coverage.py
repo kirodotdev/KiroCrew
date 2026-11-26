@@ -1010,7 +1010,7 @@ class TestEpisodicEndpoints:
         state = _make_state(vector_store=store)
         req = _make_request(state, query={"q": "hello"})
         assert (await mem_mod.api_memory_episodic_search(req)).status == 200
-        store._try_embed.assert_called_once_with("hello")
+        store._try_embed.assert_called_once_with("hello", query=True)
         assert store.search_episodic.call_args.kwargs["query_embedding"] == [0.1]
 
     @pytest.mark.asyncio

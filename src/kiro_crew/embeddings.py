@@ -132,6 +132,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CUSTOM_LABEL,
         _POOLING_SUFFIX_SEPARATOR,
         LEGACY_EMBEDDING_WARNING,
+        QWEN3_QUERY_TASK,
         CustomModelSpec,
         _custom_model_id,
         _is_sensitive_model_path,
@@ -159,6 +160,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         model_file_present,
         model_pooling_type,
         models_dir,
+        query_instruction_applies,
+        query_instruction_text,
         resolve_custom_model,
         validate_custom_model_path,
     )
