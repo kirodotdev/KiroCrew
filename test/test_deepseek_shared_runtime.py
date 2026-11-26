@@ -31,6 +31,7 @@ from kiro_crew.acp.transport_errors import AcpToolGateUnroutable
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_KIRO,
     METHOD_SESSION_CLOSE,
     METHOD_SESSION_RESUME,
     AcpEvent,
@@ -223,8 +224,12 @@ def test_a_provider_key_mapping_the_harness_would_not_honour_refuses_the_spawn(m
 def test_deepseek_restores_through_the_resume_capability_and_nothing_else():
     assert can_restore_session(ACP_BACKEND_DEEPSEEK, {"sessionCapabilities": {"resume": {}}})
     assert not can_restore_session(ACP_BACKEND_DEEPSEEK, {"loadSession": True})
-    assert can_restore_session(ACP_BACKEND_CODEX, {"loadSession": True})
-    assert not can_restore_session(ACP_BACKEND_CODEX, {"sessionCapabilities": {"resume": {}}})
+    # codex is a member too (its resume is the restore that waits for MCP startup);
+    # kiro-cli is the contrast, read through ``loadSession``.
+    assert can_restore_session(ACP_BACKEND_CODEX, {"sessionCapabilities": {"resume": {}}})
+    assert not can_restore_session(ACP_BACKEND_CODEX, {"loadSession": True})
+    assert can_restore_session(ACP_BACKEND_KIRO, {"loadSession": True})
+    assert not can_restore_session(ACP_BACKEND_KIRO, {"sessionCapabilities": {"resume": {}}})
 
 
 def test_both_drivers_read_the_restore_capability_with_one_function():

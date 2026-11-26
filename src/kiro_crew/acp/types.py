@@ -253,7 +253,8 @@ METHOD_SESSION_LOAD = "session/load"
 #: implement full loading: it restores the session WITHOUT replaying the previous
 #: messages. Its request and response carry the same fields as ``session/load``'s,
 #: which is why one membership set (``ACP_BACKENDS_RESUME_WITHOUT_LOAD``) decides
-#: which of the two a harness is sent rather than each having a restore path.
+#: which of the two a harness is sent rather than each having a restore path. codex
+#: serves both and is sent this one, the only restore its adapter holds for MCP startup.
 METHOD_SESSION_RESUME = "session/resume"
 #: Copies a stored session into a new one and answers the new ``sessionId``; the
 #: source is left untouched. Advertised as ``sessionCapabilities.fork``.

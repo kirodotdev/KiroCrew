@@ -306,20 +306,21 @@ def test_the_cloud_sandbox_is_a_harness_the_runtime_installs():
 
 
 @pytest.mark.parametrize("backend", _SERVED_BACKENDS)
-@pytest.mark.parametrize("method", ["session/new", "session/load"])
+@pytest.mark.parametrize("method", ["session/new", "session/load", "session/resume"])
 def test_every_served_host_sends_the_request_it_was_built(backend, method):
     """A request with no customAgents batch goes out as built on every served host (H13).
 
     The exceptions the seam allows are KAS naming the batch's first agent as
     ``_meta.kiro.modeId`` on ``session/new`` (test_kas_mode_binding.py), which
     these params do not carry, and codex asking its adapter to wait for the
-    array's MCP startup on ``session/new`` (test_acp_codex_harness.py).
+    array's MCP startup on ``session/new`` and on the ``session/resume`` it
+    restores with (test_acp_codex_harness.py).
     """
     params = {"cwd": "/workspace/ws", "mcpServers": [{"name": "kirocrew-core"}]}
     out, agent = harness_for(backend).session_request(
         method, params, "kirocrew", agent_capabilities={}
     )
-    if backend == ACP_BACKEND_CODEX and method == "session/new":
+    if backend == ACP_BACKEND_CODEX and method in ("session/new", "session/resume"):
         wait = {"mcpStartupAwaitTimeoutMs": CodexHarness.MCP_STARTUP_AWAIT_MS}
         assert out == {**params, "_meta": wait}
     else:
