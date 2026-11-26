@@ -9,7 +9,9 @@ pass, while any other dashboard session (an empty app claim, a subject that is
 neither) is refused 403 ``owner_only``.
 
 The second half covers the follow-up families: approvals, lessons, cron reads and
-folders, sub-agent runs, and the strict internal paths' cookie arm.
+folders, sub-agent runs, notification writes, theme writes, speech, the owner's
+configuration reads, chat uploads, logs, saved workflows, task reads, and the
+strict internal paths' cookie arm.
 """
 
 from __future__ import annotations
@@ -348,7 +350,53 @@ FOLLOWUP_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-FOLLOWUP = FOLLOWUP_ACTIONS
+#: The owner's data and settings: feed writes, themes, speech, configuration
+#: reads, uploads, logs, saved workflows, tasks and task-runner plans.
+FOLLOWUP_OWNER_DATA: frozenset[tuple[str, str]] = frozenset(
+    {
+        # notification writes
+        ("DELETE", "/api/notifications"),
+        ("POST", "/api/notifications/clear"),
+        ("POST", "/api/notifications/ack"),
+        ("POST", "/api/notifications/unack"),
+        ("POST", "/api/notifications/ack-all"),
+        # theme writes
+        ("POST", "/api/themes"),
+        ("POST", "/api/themes/install"),
+        ("POST", "/api/themes/install-zip"),
+        ("PUT", "/api/themes/{slug}"),
+        ("DELETE", "/api/themes/{slug}"),
+        # speech
+        ("GET", "/api/voice/config"),
+        ("PUT", "/api/voice/config"),
+        ("POST", "/api/voice/synthesize"),
+        ("GET", "/api/config/stt"),
+        ("PUT", "/api/config/stt"),
+        ("POST", "/api/stt/transcribe"),
+        ("POST", "/api/stt/polish"),
+        # the owner's configuration reads
+        ("GET", "/api/hooks"),
+        ("GET", "/api/webhooks"),
+        ("GET", "/api/security/denied-commands"),
+        ("GET", "/api/security/tool-grants"),
+        ("GET", "/api/security/posture"),
+        ("GET", "/api/governance/policy"),
+        ("GET", "/api/config/schema"),
+        # chat uploads
+        ("POST", "/api/upload/file"),
+        # logs, saved workflows, tasks, task-runner plan reads
+        ("GET", "/api/logs"),
+        ("GET", "/api/workflows/definitions"),
+        ("GET", "/api/workflows/definitions/{workflow_ref}"),
+        ("GET", "/api/taskrunner"),
+        ("GET", "/api/tasks"),
+        ("GET", "/api/tasks/{task_id}"),
+        ("GET", "/api/taskrunner/{task_id}/plan-context"),
+        ("GET", "/api/taskrunner/{task_id}/plan.yaml"),
+    }
+)
+
+FOLLOWUP = FOLLOWUP_ACTIONS | FOLLOWUP_OWNER_DATA
 
 
 def _route_table() -> dict[tuple[str, str], Any]:
@@ -404,7 +452,13 @@ def test_every_followup_route_is_registered() -> None:
 async def _past_gate(handler, request) -> bool:
     """Whether *handler* got past the owner gate for *request*."""
     try:
-        resp = await handler(request)
+        if request.path == "/api/logs":
+            # The log stream runs until its client leaves; a client that has left
+            # by the time the stream opens ends it right after the gate.
+            with patch.object(web.StreamResponse, "prepare", side_effect=ConnectionResetError):
+                resp = await handler(request)
+        else:
+            resp = await handler(request)
     except web.HTTPException as exc:
         return not _is_owner_refusal(exc)
     except Exception:  # noqa: BLE001 - the stub state ran out after the gate

@@ -322,6 +322,12 @@ def _lineage(value: Any) -> Optional[dict[str, Any]]:
 
 async def api_workflow_definitions(request: web.Request) -> web.Response:
     """GET /api/workflows/definitions — list or locally search saved workflows."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    # Each definition carries its full script source.
+    owner_denied = await require_owner_for_dashboard_caller(request, "workflow_definition_list")
+    if owner_denied is not None:
+        return owner_denied
     svc = _svc(request)
     if svc is None:
         return _error("workflows not available", "workflows_unavailable", 503)
@@ -403,6 +409,12 @@ async def api_workflow_definitions_create(request: web.Request) -> web.Response:
 
 async def api_workflow_definition_get(request: web.Request) -> web.Response:
     """GET /api/workflows/definitions/{ref} — resolve by id or slug."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    # The definition carries its full script source, as the list does.
+    owner_denied = await require_owner_for_dashboard_caller(request, "workflow_definition_get")
+    if owner_denied is not None:
+        return owner_denied
     svc = _svc(request)
     if svc is None:
         return _error("workflows not available", "workflows_unavailable", 503)

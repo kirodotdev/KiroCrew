@@ -332,6 +332,11 @@ async def api_stt_polish(request: web.Request) -> web.Response:
     denied = _deny_app_token(request, "stt.polish")
     if denied is not None:
         return denied
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "stt.polish")
+    if owner_denied is not None:
+        return owner_denied
     cfg = KiroCrewConfig.load()
     if not cfg.stt.polish:
         # Refused rather than silently passed through: the setting is the consent.
@@ -436,8 +441,12 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
     import uuid
 
     from kiro_crew.dashboard import part_stream
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
     from kiro_crew.transcribe import transcribe_audio  # noqa: F811
 
+    owner_denied = await require_owner_for_dashboard_caller(request, "stt.transcribe")
+    if owner_denied is not None:
+        return owner_denied
     cfg = KiroCrewConfig.load()
     # Off the loop: every provider branch of the probe reaches the filesystem, and
     # `local` and `transcribe` each import an optional extra the first time.

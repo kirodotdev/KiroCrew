@@ -375,6 +375,8 @@ class TestLiveScopeNarrowing:
         state._slots = {}
         state._ws_client_allowed = DashboardState._ws_client_allowed.__get__(state)
         state._ws_log_subscribers = {ws}
+        # The owner's socket: the log reaches only the owner set.
+        state._owner_ws_clients = {ws}
         with patch("kiro_crew.sel.sel") as sel_mock:
             _aio.run(upd._safe_ws_send(ws, '{"type":"log"}', state))
         assert sent == ['{"type":"log"}'], "the owner must still receive the line"
