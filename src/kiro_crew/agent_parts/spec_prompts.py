@@ -166,6 +166,21 @@ file or image a worker needs, put its absolute path in the worker's message and
 tell the worker to open it. Never retell it in words instead.
 
 """,
+    "seed_writing": """**Write each seed for a reader with none of your context:** say why the item
+matters, what is known or ruled out and the report you want back, and never a
+phrase only you can resolve, such as "based on your findings".
+
+""",
+    "dispatch_together": """**Dispatch a round's independent items together in one block;** when the
+host-health rule or `concurrency_cap` holds some back, send first the one a
+later round waits on.
+
+""",
+    "missing_tool": """**Work that needs a tool your own chat lacks is no reason to refuse:** hand it
+to a worker, who often has it, and say it cannot be done only after that worker
+reports it lacks the tool too.
+
+""",
     "host_health": """**Keep the host healthy.** Your goal is that the gateway and every worker
 survive. Read `resource_status` at the start of every patrol turn and before
 each dispatch wave; it shows host memory and disk and each of your workers'
@@ -253,6 +268,10 @@ three of them:
   turn: `what` you need, `why` only they can, each option with its `outcome`,
   and your `pick` with `pick_why`.
 - **`progress`** — informational. Do nothing.
+
+""",
+    "fail_evidence": """**Quote an `accept_eval` fail word for word** in the `decide` and the steer you
+send its worker, then add your one-line diagnosis.
 
 """,
     "claimed_pr": """**A claimed `pr` is not an acceptance condition.** When a worker reports a pull
@@ -353,6 +372,15 @@ when a conductor dispatched you. A turn that ends having reported nothing tells
 nobody where the goal stands.
 
 """,
+    "no_predicting": """**Never predict an item that is still running:** until its worker reports, say
+it is still running.
+
+""",
+    "after_compaction": """**A compaction or a reset does not end the goal:** read the ledger first, never
+dispatch again an item a live worker holds or resend a report you sent, and
+take the owner's latest message as a steer, not a new goal.
+
+""",
     "skill_first": """The `goal-conductor` skill carries the operating procedure — the work-item
 tests, the dispatch steps, the patrol cycle, the stop conditions. Read it before
 acting on a goal. When a turn carries a REINJECTED AFTER COMPACTION block, the
@@ -445,6 +473,9 @@ call at a time, only to bind an existing session. The order is not a preference:
     ("dispatch_seed", _LEDGER_CONDUCTOR_RULES["dispatch_seed"]),
     ("bind_before_seed", _LEDGER_CONDUCTOR_RULES["bind_before_seed"]),
     ("send_files", _LEDGER_CONDUCTOR_RULES["send_files"]),
+    ("seed_writing", _LEDGER_CONDUCTOR_RULES["seed_writing"]),
+    ("dispatch_together", _LEDGER_CONDUCTOR_RULES["dispatch_together"]),
+    ("missing_tool", _LEDGER_CONDUCTOR_RULES["missing_tool"]),
     ("host_health", _LEDGER_CONDUCTOR_RULES["host_health"]),
     ("item_budget", _LEDGER_CONDUCTOR_RULES["item_budget"]),
     ("split_items", _LEDGER_CONDUCTOR_RULES["split_items"]),
@@ -562,6 +593,7 @@ this checklist, and pass it again on every cycle while the ask is open:
     ("dependent_calls", _LEDGER_CONDUCTOR_RULES["dependent_calls"]),
     ("worker_communication", _LEDGER_CONDUCTOR_RULES["worker_communication"]),
     ("act_by_status", _LEDGER_CONDUCTOR_RULES["act_by_status"]),
+    ("fail_evidence", _LEDGER_CONDUCTOR_RULES["fail_evidence"]),
     (
         "steer",
         """**A person's steer outranks your decision.** When the person types into a crew
@@ -582,6 +614,7 @@ steer.
     ("wake_check", _LEDGER_CONDUCTOR_RULES["wake_check"]),
     ("routine_incidents", _LEDGER_CONDUCTOR_RULES["routine_incidents"]),
     ("report_before_park", _LEDGER_CONDUCTOR_RULES["report_before_park"]),
+    ("no_predicting", _LEDGER_CONDUCTOR_RULES["no_predicting"]),
     ("patrol_reply", _CONDUCTOR_PATROL_REPLY),
     (
         "tracker",
@@ -735,6 +768,7 @@ conductor gets `not_bound` from `work_brief` and knows it has no parent.
 
 """,
     ),
+    ("after_compaction", _LEDGER_CONDUCTOR_RULES["after_compaction"]),
     ("skill_first", _LEDGER_CONDUCTOR_RULES["skill_first"]),
     (
         "goal_changes",

@@ -35,6 +35,12 @@ Moved verbatim from the goal-conductor `SKILL.md` core; the core says when to re
    the item. Any other answer is recorded with `action=verdict` (with `fails` when you are
    counting retries).
 
+   A `fail` goes back to its worker as your prompt's fail-evidence rule says:
+   the evaluator chose what its evidence holds, so it is the one thing you
+   quote word for word, and a paraphrase drops the detail the worker needs.
+   Anything else from the pull request, a review line included, goes in only
+   as its link and `path:line`.
+
    Verdicts: `pass` / `fail` are final for this cycle. `pending` means keep
    waiting, within the budget below. `refused` means the spec asked for
    something the evaluator will not do — most often naming a command, which it

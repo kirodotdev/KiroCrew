@@ -32,3 +32,14 @@ Worked example — goal "resolve this repo's open issues":
 | Check status and pick the next round | Yours. This is the control loop. |
 | Advise the user on issues nobody can action | Not a task. Run the needs-human checklist (Stop conditions). |
 | Write the summary report | Yours. A fold over the ledger. |
+
+## Weak and strong items
+
+A strong item names one outcome a check can see, and its acceptance is that
+check. A weak one names an activity, so no verdict can tell done from busy.
+
+| Weak item | Why it is weak | Strong item |
+|---|---|---|
+| "Improve the CLI docs", `human_approval` | no outcome a check can see; the person ends up grading effort | "Document the `--json` flag in the CLI guide", `pr_merged` on the PR that adds it |
+| "Look into the flaky test", `file` at a notes path | the file proves a file was written, not that anything was found | "Name the root cause of the flaky test with the failing log line and its `path:line`", `file` at that path, the seed saying what the file must hold |
+| "Fix #12 and #15, and clean up the parser" | three lines of work behind one verdict, and the clean-up is a finding no Done when condition asked for | one item per issue, each `pr_merged`; the clean-up goes to Parked |

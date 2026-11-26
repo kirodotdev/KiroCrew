@@ -40,6 +40,12 @@ or pieces AND a failed piece should re-run alone, add one line: run it with
 step as `ctx.agent(cwd=)`, and put the run id in `artifacts`. Otherwise the
 worker orders its own steps. You still never call `workflow_run` yourself.
 
+**A seed is written as your prompt's seed-writing rule says.** Give what is known or ruled out by path or link, as your prompt's send-files rule says, not retold; ask for the report's length and shape ("five lines", "a table of each file and its verdict"); and in place of "fix what the review found", name the finding, the file and the line.
+
+**A round goes out as your prompt's dispatch-together rule says.** Its `work_dispatch` calls share one block; when capacity holds some back, the one a later round waits on goes first; an item that waits on another in this round belongs to a later round.
+
+**A request that needs a tool your chat lacks is dispatched all the same, as your prompt's missing-tool rule says.** Name the tool or MCP server in the seed. A Bot's conductor with Dynamic capabilities on sees its worker's servers in the `session_create` result; otherwise the worker's report says whether it has the tool. Only a worker that reports it lacks the tool too makes the request one you cannot do.
+
 ## Which agent: depth, sessions, specialist crews
 
 `depth` is computed when a child first opens its ledger (its first `goal` or

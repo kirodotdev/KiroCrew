@@ -718,6 +718,11 @@ SKILL_POINTERS: dict[str, str] = {
     "reuse_worker": "your prompt's worker-reuse rule",
     "read_message_detail": "as your prompt's read-message rule says",
     "patrol_final_report": "end the patrol as your prompt's patrol rules say",
+    "seed_writing": "as your prompt's seed-writing rule says",
+    "dispatch_together": "as your prompt's dispatch-together rule says",
+    "fail_evidence": "as your prompt's fail-evidence rule says",
+    "after_compaction": "as your prompt's after-compaction rule says",
+    "missing_tool": "as your prompt's missing-tool rule says",
 }
 
 

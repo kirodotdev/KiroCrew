@@ -424,3 +424,17 @@ def test_the_manual_identity_raises_the_opt_in_card_rather_than_a_profile_toggle
     assert "request_capabilities" in text
     # It names the card as the on-switch and warns off the manual-Profile framing.
     assert "do not tell the user to go turn Dynamic capabilities on in their Profile" in text
+
+
+def test_both_identities_send_a_missing_tool_to_the_worker_before_refusing():
+    """A Bot's chat mounts fewer MCP servers than its worker, so work that needs a
+    tool the chat lacks goes to a worker first, with Dynamic capabilities on or off.
+    The off variant still raises its card at once when the user asks for a tool
+    itself, and otherwise once the worker lacks the tool too."""
+    on = crewmate_prompts.text("conductor.mate_tools_identity")
+    assert "check what your worker can use" in on
+    off = crewmate_prompts.text("conductor.mate_tools_identity_manual")
+    assert "Work that needs a tool this chat lacks goes to a worker first, never refused." in off
+    raise_card = off.index("RAISE that card")
+    assert off.index("when the user asks for a tool itself") < raise_card
+    assert off.index("a worker reports it lacks one the work needs") < raise_card
