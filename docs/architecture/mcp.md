@@ -1300,8 +1300,15 @@ withholds that registry shows only its own featured rows.
 Each change is applied to the one raw config key its row stands for: the row's exact
 key, else the single raw key whose alias it is (`npm:@playwright/mcp` for the row
 `playwright-mcp`). A name that is the alias of several raw keys is refused with `409`
-and `"code": "mcp_server_name_ambiguous"` before any write, both by `POST /api/mcp/apply`
-(uninstalls included) and by `POST /api/mcp/toggle`.
+and `"code": "mcp_server_name_ambiguous"` before any write, by `POST /api/mcp/apply`
+(uninstalls included), by `POST /api/mcp/toggle` and by `POST /api/mcp/toggle-tool`.
+The last writes `disabledTools` onto that key in the Kiro global, so a session also
+reads a raw slash key's list under the alias it mounts as
+(`session_mcp_disabled_tools`), unless the same file holds the alias or a second raw key
+with it, or the Kiro Crew store or a provider global holds the alias as its own key.
+When the store or a provider global holds the row's name itself, that entry is the mount
+and the raw key mounts beside it as `playwright-mcp-2`, so the route writes the list
+under the row's name instead.
 
 Per-tool overrides edit that raw key only while it is the server mounted under the
 row's name. When the Kiro global or a provider global declares the alias itself
