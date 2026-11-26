@@ -11569,9 +11569,9 @@
       "unmute_short": "음소거 해제"
     },
     "promptStash": {
-      "badge_full_hint": "보관함이 가득 찼습니다. 새로 보관하기 전에 초안 하나를 삭제하거나 복원하세요. 입력창이 비어 있을 때 {{chord}}을(를) 누르면 최근 초안을 복원합니다.",
+      "badge_full_hint": "보관함이 가득 찼습니다. 새로 보관하기 전에 초안 하나를 삭제하거나 복원하세요. 입력창이 비어 있을 때 {{chord}}을(를) 누르면 목록이 열립니다.",
       "badge_full_hint_touch": "보관함이 가득 찼습니다. 새로 보관하기 전에 초안 하나를 삭제하거나 복원하세요. 둘 다 {{menu}} 메뉴에 있습니다.",
-      "badge_hint": "이 채팅에서 보관한 초안입니다. 입력창이 비어 있을 때 {{chord}}을(를) 누르면 최근 초안을 복원합니다.",
+      "badge_hint": "이 채팅에서 보관한 초안입니다. 입력창이 비어 있을 때 {{chord}}을(를) 누르면 초안을 복원합니다.",
       "badge_hint_touch": "이 채팅에서 보관한 초안입니다. {{menu}} 메뉴에서 최근 초안을 복원합니다.",
       "badge_other": "{{count}}개 초안 보관됨",
       "empty": "보관한 초안이 없습니다. 입력창에 내용이 있을 때 {{chord}}을(를) 누르면 보관합니다.",
@@ -11579,7 +11579,7 @@
       "full": "보관함이 가득 찼습니다({{max}}개). 공간을 만들려면 보관된 초안 하나를 삭제하세요.",
       "menu_restore": "보관한 초안 복원",
       "menu_restore_has_draft": "먼저 초안을 보관하거나 보내세요.",
-      "menu_restore_desc_other": "{{count}}개 보관 중. 최근 초안을 복원합니다. 입력창이 비어 있을 때 {{chord}}을(를) 눌러도 됩니다.",
+      "menu_restore_desc_other": "{{count}}개 보관 중. 최근 초안을 복원합니다. 입력창이 비어 있을 때 {{chord}}을(를) 누르면 여러 개일 때 고를 수 있습니다.",
       "menu_stash": "초안 보관",
       "menu_stash_desc": "텍스트를 보관하고 입력창을 비웁니다({{chord}}).",
       "notice_attachments": "보관하거나 복원하려면 첨부를 제거하세요.",
@@ -11590,7 +11590,7 @@
       "restored_other": "보관한 초안을 복원했습니다. {{count}}개가 남아 있습니다.",
       "save_failed": "초안을 보관하지 못했습니다. 브라우저 저장소가 가득 찼거나 사용할 수 없습니다. 초안은 입력창에 그대로 있습니다.",
       "shortcut_label": "초안 보관 또는 빈 입력창에 복원",
-      "stashed_other": "초안을 보관했습니다({{count}}개 보관 중). 입력창이 비어 있을 때 {{chord}}을(를) 누르면 최근 초안을 복원합니다.",
+      "stashed_other": "초안을 보관했습니다({{count}}개 보관 중). 입력창이 비어 있을 때 {{chord}}을(를) 누르면 복원되며, 여러 개면 고를 수 있습니다.",
       "stashed_touch_other": "초안을 보관했습니다({{count}}개 보관 중). {{menu}} 메뉴에서 최근 초안을 복원할 수 있습니다.",
       "too_large": "보관하지 못했습니다. 보관함이 크기 한도에 도달했습니다. 초안은 입력창에 그대로 있습니다. 공간을 만들려면 보관된 초안 하나를 삭제하세요.",
       "too_large_single": "보관하지 못했습니다. 이 초안은 보관함 크기 한도보다 큽니다. 초안은 입력창에 그대로 있습니다.",
@@ -11604,7 +11604,9 @@
       "undo_discard": "실행 취소",
       "discard_failed": "초안을 삭제하지 못했습니다. 브라우저 저장소를 사용할 수 없습니다. 초안은 그대로 보관되어 있습니다.",
       "undo_failed": "초안을 다시 보관하지 못했습니다. 보관함이 가득 찼거나 브라우저 저장소를 사용할 수 없습니다.",
-      "discarded_other": "보관한 초안을 삭제했습니다. {{count}}개가 남아 있습니다."
+      "discarded_other": "보관한 초안을 삭제했습니다. {{count}}개가 남아 있습니다.",
+      "picker_label": "보관한 초안",
+      "picker_hint": "↑ ↓ 이동 · Enter 복원 · Delete 삭제 · Esc 닫기"
     },
     "globalChatSearch": {
       "title": "모든 채팅 검색",
@@ -16108,6 +16110,13 @@
         "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · 강제 레이아웃 {{forced}}",
         "slow_frame_log_frames_unsupported": "이 브라우저는 긴 프레임을 보고하지 않습니다."
       },
+      "deepseekKey": {
+        "title": "공급자 키",
+        "intro": "DeepSeek Harness가 DeepSeek의 호스팅 모델에 사용하는 API 키를 붙여 넣으세요. 키는 설정 > 시크릿에 저장되고, 구성에는 그에 대한 참조만 남습니다. 이 컴퓨터에서 실행되는 모델에는 키가 필요 없습니다.",
+        "desc_api_key": "DeepSeek 플랫폼에서 받은 DeepSeek API 키입니다.",
+        "value_missing": "여기서 가리키는 키가 더 이상 시크릿에 없어서 새 DeepSeek Harness 세션이 거부됩니다. 새 키를 저장하거나 제거하세요.",
+        "read_failed": "DeepSeek Harness 설정을 읽을 수 없습니다. 페이지를 새로 고친 후 다시 시도하세요."
+      },
       "featurePreviewsTab": {
         "chat_on_a_crew": "크루에서 채팅",
         "chat_on_a_crew_desc": "만들기 메뉴에 “New chat on crew”를 추가합니다. 원격 크루, 즉 설정 > 원격 크루에서 연결한 다른 컴퓨터에서 세션을 시작하고, 연결된 각 크루의 세션을 세션 목록에 크루별 그룹으로 표시합니다. 미완성입니다.",
@@ -16391,6 +16400,7 @@
         "could_not_read_account_name": "Kiro CLI 계정 이름을 읽지 못했습니다",
         "could_not_check_kiro_cli": "Kiro CLI 로그인을 확인하지 못했습니다",
         "could_not_check_kiro_crew": "{{productName}}에 저장된 로그인을 확인하지 못했습니다",
+        "could_not_check_kiro_crew_hint": "다시 로그인하면 바뀝니다.",
         "maybe_two_accounts_body_by_place": "서로 다른 계정이라면 Kiro Agent는 Kiro CLI 계정의 할당량을 사용하지 않습니다. Kiro Agent는 {{productName}}에 저장된 로그인으로 실행됩니다. Kiro CLI 로그인도 있지만 두 계정이 같은지는 {{productName}}에서 확인할 수 없습니다.",
         "two_accounts_body_by_place": "Kiro Agent는 Kiro CLI 계정의 할당량을 사용하지 않습니다. Kiro Agent는 {{productName}}에 저장된 로그인으로 실행되며, Kiro CLI 로그인은 다른 계정입니다.",
         "using_kiro_cli_body_unnamed": "Kiro Agent는 Kiro CLI가 로그인한 계정으로 실행됩니다. 여기서 로그인할 필요가 없습니다. 아래에서 로그인하면 Kiro Agent는 그 계정을 대신 사용합니다.",

@@ -8868,7 +8868,7 @@
       "answers_set_how_kiro_explains_things_plain_langu": "Antworten legen fest, wie Kiro Dinge erklärt — in einfacher Sprache oder mit vollständigen technischen Details. Auf diesem Gerät gespeichert; jederzeit unter Einstellungen → Chat änderbar.",
       "back": "Zurück",
       "change_anything_later_in_settings": "Alles lässt sich später in den Einstellungen ändern.",
-      "choose_a_color_theme_and_mode_you_can_change_it": "Wähle Modus, Farbthema und durchscheinende Flächen – du kannst es jederzeit ändern.",
+      "choose_a_color_theme_and_mode_you_can_change_it": "Wähle Modus, Farb-Theme und durchscheinende Flächen – du kannst es jederzeit ändern.",
       "color_theme": "Farb-Theme",
       "continue": "Weiter",
       "couldn_t_save_your_answers_press_next_to_retry_o": "Deine Antworten konnten nicht gespeichert werden — drücke „Weiter“, um es erneut zu versuchen, oder erneut „Überspringen“, um\n            ohne Speichern fortzufahren.",
@@ -11831,9 +11831,9 @@
       "unmute_short": "Stumm aus"
     },
     "promptStash": {
-      "badge_full_hint": "Es ist kein Platz für weitere Entwürfe. Verwirf einen oder stelle einen wieder her, bevor du einen weiteren zurücklegst; {{chord}} in einem leeren Eingabefeld stellt den neuesten wieder her.",
+      "badge_full_hint": "Es ist kein Platz für weitere Entwürfe. Verwirf einen oder stelle einen wieder her, bevor du einen weiteren zurücklegst; {{chord}} in einem leeren Eingabefeld listet sie auf.",
       "badge_full_hint_touch": "Es ist kein Platz für weitere Entwürfe. Verwirf einen oder stelle einen wieder her, bevor du einen weiteren zurücklegst; beides findest du im {{menu}}-Menü.",
-      "badge_hint": "Zurückgelegte Entwürfe für diesen Chat. {{chord}} in einem leeren Eingabefeld stellt den neuesten wieder her.",
+      "badge_hint": "Zurückgelegte Entwürfe für diesen Chat. {{chord}} in einem leeren Eingabefeld holt einen zurück.",
       "badge_hint_touch": "Zurückgelegte Entwürfe für diesen Chat. Über das {{menu}}-Menü holst du den neuesten zurück.",
       "badge_one": "{{count}} Entwurf zurückgelegt",
       "badge_other": "{{count}} Entwürfe zurückgelegt",
@@ -11843,7 +11843,7 @@
       "menu_restore": "Zurückgelegten Entwurf wiederherstellen",
       "menu_restore_has_draft": "Lege deinen Entwurf zuerst zurück oder sende ihn.",
       "menu_restore_desc_one": "{{count}} Entwurf zurückgelegt. {{chord}} in einem leeren Eingabefeld macht dasselbe.",
-      "menu_restore_desc_other": "{{count}} Entwürfe zurückgelegt; der neueste kommt zurück. {{chord}} in einem leeren Eingabefeld macht dasselbe.",
+      "menu_restore_desc_other": "{{count}} Entwürfe zurückgelegt; der neueste kommt zurück. Mit {{chord}} in einem leeren Eingabefeld wählst du selbst.",
       "menu_stash": "Entwurf zurücklegen",
       "menu_stash_desc": "Legt den Text zurück und leert das Eingabefeld ({{chord}}).",
       "notice_attachments": "Entferne die Anhänge, um zurückzulegen oder wiederherzustellen.",
@@ -11856,7 +11856,7 @@
       "save_failed": "Der Entwurf konnte nicht zurückgelegt werden: Der Browserspeicher ist voll oder nicht verfügbar. Dein Entwurf ist noch im Eingabefeld.",
       "shortcut_label": "Entwurf zurücklegen oder in einem leeren Eingabefeld wiederherstellen",
       "stashed_one": "Entwurf zurückgelegt. {{count}} Entwurf ist zurückgelegt; drücke {{chord}} in einem leeren Eingabefeld, um ihn wiederherzustellen.",
-      "stashed_other": "Entwurf zurückgelegt. {{count}} Entwürfe sind zurückgelegt; drücke {{chord}} in einem leeren Eingabefeld, um den neuesten wiederherzustellen.",
+      "stashed_other": "Entwurf zurückgelegt. {{count}} Entwürfe sind zurückgelegt; drücke {{chord}} in einem leeren Eingabefeld, um einen auszuwählen.",
       "stashed_touch_one": "Entwurf zurückgelegt. {{count}} Entwurf ist zurückgelegt; stelle ihn über das {{menu}}-Menü wieder her.",
       "stashed_touch_other": "Entwurf zurückgelegt. {{count}} Entwürfe sind zurückgelegt; stelle den neuesten über das {{menu}}-Menü wieder her.",
       "too_large": "Konnte nicht zurückgelegt werden: Die zurückgelegten Entwürfe haben ihre Größengrenze erreicht. Dein Entwurf ist noch im Eingabefeld. Verwirf einen zurückgelegten Entwurf, um Platz zu schaffen.",
@@ -11875,7 +11875,9 @@
       "discard_failed": "Der Entwurf konnte nicht verworfen werden: Der Browser-Speicher ist nicht verfügbar. Er ist noch zurückgelegt.",
       "undo_failed": "Der Entwurf konnte nicht zurückgelegt werden: Es ist kein Platz mehr oder der Browser-Speicher ist nicht verfügbar.",
       "discarded_one": "Zurückgelegter Entwurf verworfen. {{count}} Entwurf ist noch zurückgelegt.",
-      "discarded_other": "Zurückgelegter Entwurf verworfen. {{count}} Entwürfe sind noch zurückgelegt."
+      "discarded_other": "Zurückgelegter Entwurf verworfen. {{count}} Entwürfe sind noch zurückgelegt.",
+      "picker_label": "Zurückgelegte Entwürfe",
+      "picker_hint": "↑ ↓ zum Wechseln · Enter zum Wiederherstellen · Entf zum Verwerfen · Esc zum Schließen"
     },
     "globalChatSearch": {
       "title": "Alle Chats durchsuchen",
@@ -16549,6 +16551,13 @@
         "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · erzwungenes Layout {{forced}}",
         "slow_frame_log_frames_unsupported": "Dieser Browser meldet keine langen Frames."
       },
+      "deepseekKey": {
+        "title": "Anbieterschlüssel",
+        "intro": "Füge den API-Schlüssel ein, den DeepSeek Harness für die gehosteten Modelle von DeepSeek nutzt. Er wird unter Einstellungen > Secrets gespeichert, und die Konfiguration behält nur einen Verweis darauf. Ein Modell, das auf diesem Rechner läuft, braucht keinen Schlüssel.",
+        "desc_api_key": "Dein DeepSeek-API-Schlüssel von der DeepSeek-Plattform.",
+        "value_missing": "Der Schlüssel, auf den dies verweist, ist nicht mehr unter Secrets, daher werden neue DeepSeek Harness-Sitzungen abgelehnt. Speichere einen neuen Schlüssel oder entferne ihn.",
+        "read_failed": "Deine DeepSeek Harness-Einstellungen konnten nicht gelesen werden. Lade die Seite neu, um es erneut zu versuchen."
+      },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chat auf einer Crew",
         "chat_on_a_crew_desc": "Fügt dem Erstellen-Menü „New chat on crew“ hinzu und startet damit eine Sitzung auf einer Remote-Crew – einem anderen Rechner, den du unter Einstellungen > Remote-Crew verbunden hast – und zeigt die Sitzungen jeder verbundenen Crew in einer eigenen Gruppe in der Sitzungsliste. Unfertig.",
@@ -16832,6 +16841,7 @@
         "could_not_read_account_name": "Der Name des Kiro CLI-Kontos konnte nicht gelesen werden",
         "could_not_check_kiro_cli": "Die Kiro CLI-Anmeldung konnte nicht geprüft werden",
         "could_not_check_kiro_crew": "Die in {{productName}} gespeicherte Anmeldung konnte nicht geprüft werden",
+        "could_not_check_kiro_crew_hint": "Melde dich erneut an, um sie zu ersetzen.",
         "maybe_two_accounts_body_by_place": "Falls es verschiedene Konten sind, nutzt Kiro Agent nicht das Kontingent deines Kiro CLI-Kontos. Kiro Agent läuft unter der in {{productName}} gespeicherten Anmeldung. Die Kiro CLI-Anmeldung ist ebenfalls vorhanden, und {{productName}} kann nicht feststellen, ob es dasselbe Konto ist.",
         "two_accounts_body_by_place": "Kiro Agent nutzt nicht das Kontingent deines Kiro CLI-Kontos. Kiro Agent läuft unter der in {{productName}} gespeicherten Anmeldung, und die Kiro CLI-Anmeldung gehört zu einem anderen Konto.",
         "using_kiro_cli_body_unnamed": "Kiro Agent läuft unter dem Konto, mit dem Kiro CLI angemeldet ist. Du musst dich hier nicht anmelden. Wenn du dich unten anmeldest, verwendet Kiro Agent stattdessen dieses Konto.",

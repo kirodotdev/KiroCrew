@@ -298,7 +298,13 @@ async def api_upload_file(request: web.Request) -> web.Response:
     Saves files to the data home's uploads/ and returns server-side paths
     that ACP's _send_prompt() can detect for image inlining.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
 
+    # The files land in the owner's data home and the answer names host paths,
+    # so only the owner or a teammate uploads here.
+    denied = await require_owner_for_dashboard_caller(request, "upload.file")
+    if denied is not None:
+        return denied
     upload_dir = _upload_dir()
     ensure_directory(upload_dir)  # 0700 in the data home: uploads are user files
     # Read once per request, off the loop: a config load stats and may parse

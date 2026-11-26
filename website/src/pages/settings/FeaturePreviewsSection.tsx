@@ -680,10 +680,9 @@ export function FeaturePreviewsSection() {
             writes the KEYSTONE `decisions_consent.json`, not a config path. It lives in
             `DecisionsCard.tsx` because it is a list and a detail rather than one row,
             and that file's own doc comment carries why. */}
-        {/* Mounted SYNCHRONOUSLY. Settings search highlights a control by probing the
-            DOM for it and gives up after 100 ms, so a card behind a chunk boundary was a
-            deep link that rang nothing. The card's own per-point detail panel is the part
-            that is lazy -- see `DecisionsCard.tsx`. */}
+        {/* Mounted SYNCHRONOUSLY, so a settings search deep link finds its rows as soon
+            as the tab opens rather than once a chunk arrives. The card's own per-point
+            detail panel is the part that is lazy -- see `DecisionsCard.tsx`. */}
         <DecisionsCard />
       </PreviewGroup>
     </div>

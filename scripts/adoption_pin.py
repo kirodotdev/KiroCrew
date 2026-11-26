@@ -11,6 +11,11 @@ the adoption tree checks against the shipped built-in of the same name. The
 ``legacyNav`` route and icon are read from the shipped built-in's first page.
 ``verify`` does the same for every row and fails on any difference.
 
+A pin row can outlive its wheel copy: the copy is deleted and the row kept. For such
+a name the tree checks run with no shipped built-in, as the gateway runs them, and
+``legacyNav`` is carried from the name's current row. A name that is neither shipped
+nor pinned is refused.
+
 ``minAppSdkLevel`` is ``--min-sdk-level`` (default 1); the tool never raises it on
 its own. The tree is scanned for the App Kit seams above level 1 it uses
 (``_seam_level_uses``), and a level below the highest one found is refused by both
@@ -242,6 +247,14 @@ def _shipped(name: str) -> tuple[Path, dict[str, Any]] | None:
     return None
 
 
+def _current_legacy_nav(name: str) -> dict[str, str]:
+    """*name*'s ``legacyNav`` in the shipped table, its only record once the wheel copy is gone."""
+    current = parse_adoption_pins(json.loads(_PINS_PATH.read_text(encoding="utf-8"))).get(name)
+    if current is None:
+        raise SystemExit(f"{name}: no shipped built-in and no pin row of that name")
+    return {"route": current.legacy_route, "icon": current.legacy_icon}
+
+
 def _clone(repository: str, commit: str, dest: Path) -> None:
     """Check *commit* out into *dest* under the gateway's STAGE git posture.
 
@@ -302,20 +315,17 @@ def _measure(pin: AdoptionPin, work: Path) -> dict[str, Any]:
     manifest = AppManifest.from_json_file(extracted / "app.json")
     shipped = _shipped(pin.name)
     if shipped is None:
-        raise SystemExit(f"{pin.name}: no shipped built-in of that name")
-    shipped_root, shipped_raw = shipped
-    refusal = pinned_tree_refusal(
-        pin,
-        manifest,
-        extracted,
-        shipped_manifest=AppManifest.from_json_file(shipped_root / "app.json"),
-    )
+        page = _current_legacy_nav(pin.name)
+        shipped_manifest = None
+    else:
+        page = (shipped[1].get("ui", {}).get("pages") or [{}])[0]
+        shipped_manifest = AppManifest.from_json_file(shipped[0] / "app.json")
+    refusal = pinned_tree_refusal(pin, manifest, extracted, shipped_manifest=shipped_manifest)
     if refusal:
         raise SystemExit(f"{pin.name}: the pinned tree is refused: {refusal}")
     sdk_refusal = _sdk_level_refusal(pin.name, pin.min_app_sdk_level, _seam_level_uses(extracted))
     if sdk_refusal:
         raise SystemExit(sdk_refusal)
-    page = (shipped_raw.get("ui", {}).get("pages") or [{}])[0]
     return {
         "name": pin.name,
         "repository": pin.repository,

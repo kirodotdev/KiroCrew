@@ -4422,7 +4422,10 @@ The dispatcher's order is not global FIFO. The store side is in
   `GET /api/spawn/{agent_id}/resume?wait_secs=N` (held server-side up to
   `MAX_HOLD_SECS` = 8 s, under the MCP client's 10 s GET timeout) →
   `{known, granted, slot_released, resume_pending, done}`, and
-  `GET /api/spawn/lanes` → `admission.lane_snapshot_async()`.
+  `GET /api/spawn/lanes` → `admission.lane_snapshot_async()`. Both refuse a
+  dashboard session that is neither the owner nor an admitted teammate with
+  403 `owner_only`; the tool's hold is an internal caller, which that gate
+  leaves to its own transport.
 - **Settings.** `FairnessSettings.from_agent_config(cfg.agent)` (cached on
   the manager for `FAIRNESS_SETTINGS_TTL_SECS` = 2 s; `set_fairness_settings`
   pins a value for live reload and tests): `lane_weights`, `child_reserve`,

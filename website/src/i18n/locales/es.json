@@ -12093,9 +12093,9 @@
       "unmute_short": "Activar"
     },
     "promptStash": {
-      "badge_full_hint": "No caben más borradores. Descarta o recupera uno antes de guardar otro; {{chord}} con el cuadro de texto vacío recupera el último.",
+      "badge_full_hint": "No caben más borradores. Descarta o recupera uno antes de guardar otro; {{chord}} con el cuadro de texto vacío los muestra en una lista.",
       "badge_full_hint_touch": "No caben más borradores. Descarta o recupera uno antes de guardar otro; ambas opciones están en el menú {{menu}}.",
-      "badge_hint": "Borradores guardados aparte para este chat. {{chord}} con el cuadro de texto vacío recupera el último.",
+      "badge_hint": "Borradores guardados aparte para este chat. {{chord}} con el cuadro de texto vacío recupera uno.",
       "badge_hint_touch": "Borradores guardados aparte para este chat. Recupera el último desde el menú {{menu}}.",
       "badge_many": "{{count}} borradores guardados",
       "badge_one": "{{count}} borrador guardado",
@@ -12105,9 +12105,9 @@
       "full": "No caben más borradores (máximo {{max}}). Descarta un borrador guardado para hacer sitio.",
       "menu_restore": "Recuperar borrador guardado",
       "menu_restore_has_draft": "Guarda o envía tu borrador primero.",
-      "menu_restore_desc_many": "{{count}} borradores guardados aparte; vuelve el último. Pulsar {{chord}} con el cuadro de texto vacío hace lo mismo.",
+      "menu_restore_desc_many": "{{count}} borradores guardados aparte; vuelve el último. Con {{chord}} y el cuadro de texto vacío puedes elegir.",
       "menu_restore_desc_one": "{{count}} borrador guardado aparte. Pulsar {{chord}} con el cuadro de texto vacío hace lo mismo.",
-      "menu_restore_desc_other": "{{count}} borradores guardados aparte; vuelve el último. Pulsar {{chord}} con el cuadro de texto vacío hace lo mismo.",
+      "menu_restore_desc_other": "{{count}} borradores guardados aparte; vuelve el último. Con {{chord}} y el cuadro de texto vacío puedes elegir.",
       "menu_stash": "Guardar borrador aparte",
       "menu_stash_desc": "Aparta el texto y vacía el cuadro de texto ({{chord}}).",
       "notice_attachments": "Quita los adjuntos para guardar aparte o recuperar.",
@@ -12120,9 +12120,9 @@
       "restored_other": "Borrador recuperado. Quedan {{count}} borradores guardados.",
       "save_failed": "No se pudo guardar el borrador: el almacenamiento del navegador está lleno o no está disponible. Tu borrador sigue en el cuadro de texto.",
       "shortcut_label": "Guardar el borrador aparte o recuperarlo en un cuadro de texto vacío",
-      "stashed_many": "Borrador guardado aparte. Hay {{count}} borradores guardados; pulsa {{chord}} con el cuadro de texto vacío para recuperar el último.",
+      "stashed_many": "Borrador guardado aparte. Hay {{count}} borradores guardados; pulsa {{chord}} con el cuadro de texto vacío para elegir uno.",
       "stashed_one": "Borrador guardado aparte. Hay {{count}} borrador guardado; pulsa {{chord}} con el cuadro de texto vacío para recuperarlo.",
-      "stashed_other": "Borrador guardado aparte. Hay {{count}} borradores guardados; pulsa {{chord}} con el cuadro de texto vacío para recuperar el último.",
+      "stashed_other": "Borrador guardado aparte. Hay {{count}} borradores guardados; pulsa {{chord}} con el cuadro de texto vacío para elegir uno.",
       "stashed_touch_many": "Borrador guardado aparte. Hay {{count}} borradores guardados; recupera el último desde el menú {{menu}}.",
       "stashed_touch_one": "Borrador guardado aparte. Hay {{count}} borrador guardado; recupéralo desde el menú {{menu}}.",
       "stashed_touch_other": "Borrador guardado aparte. Hay {{count}} borradores guardados; recupera el último desde el menú {{menu}}.",
@@ -12146,7 +12146,9 @@
       "undo_failed": "No se pudo volver a guardar el borrador: no hay espacio o el almacenamiento del navegador no está disponible.",
       "discarded_many": "Borrador descartado. Quedan {{count}} borradores guardados.",
       "discarded_one": "Borrador descartado. Queda {{count}} borrador guardado.",
-      "discarded_other": "Borrador descartado. Quedan {{count}} borradores guardados."
+      "discarded_other": "Borrador descartado. Quedan {{count}} borradores guardados.",
+      "picker_label": "Borradores guardados",
+      "picker_hint": "↑ ↓ para moverte · Enter para recuperar · Supr para descartar · Esc para cerrar"
     },
     "globalChatSearch": {
       "title": "Buscar en todos los chats",
@@ -16990,6 +16992,13 @@
         "slow_frame_log_script": "{{duration}} · {{invoker}} · {{source}} · diseño forzado {{forced}}",
         "slow_frame_log_frames_unsupported": "Este navegador no informa de fotogramas largos."
       },
+      "deepseekKey": {
+        "title": "Clave del proveedor",
+        "intro": "Pega la clave de API que DeepSeek Harness usa para los modelos alojados de DeepSeek. Se guarda en Configuración > Secretos y la configuración solo conserva una referencia a ella. Un modelo que se ejecuta en esta máquina no necesita clave.",
+        "desc_api_key": "Tu clave de API de DeepSeek, de la plataforma de DeepSeek.",
+        "value_missing": "La clave a la que esto apunta ya no está en Secretos, así que se rechazan las nuevas sesiones de DeepSeek Harness. Guarda una clave nueva o quítala.",
+        "read_failed": "No se pudo leer la configuración de DeepSeek Harness. Recarga la página para volver a intentarlo."
+      },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chatear en un Crew",
         "chat_on_a_crew_desc": "Añade “New chat on crew” al menú de creación, que inicia una sesión en un crew remoto, es decir, otra máquina que conectaste en Configuración > Crew remoto, y muestra las sesiones de cada crew conectado en su propio grupo de la lista de sesiones. Sin terminar.",
@@ -17273,6 +17282,7 @@
         "could_not_read_account_name": "No se pudo leer el nombre de la cuenta de Kiro CLI",
         "could_not_check_kiro_cli": "No se pudo comprobar el inicio de sesión de Kiro CLI",
         "could_not_check_kiro_crew": "No se pudo comprobar el inicio de sesión guardado en {{productName}}",
+        "could_not_check_kiro_crew_hint": "Inicia sesión de nuevo para reemplazarlo.",
         "maybe_two_accounts_body_by_place": "Si son cuentas diferentes, Kiro Agent no está usando la cuota de tu cuenta de Kiro CLI. Se ejecuta con el inicio de sesión guardado en {{productName}}. El inicio de sesión de Kiro CLI también está ahí, y {{productName}} no puede saber si son la misma cuenta.",
         "two_accounts_body_by_place": "Kiro Agent no está usando la cuota de tu cuenta de Kiro CLI. Se ejecuta con el inicio de sesión guardado en {{productName}}, y el inicio de sesión de Kiro CLI es de otra cuenta.",
         "using_kiro_cli_body_unnamed": "Kiro Agent se ejecuta con la cuenta con la que Kiro CLI ha iniciado sesión. No necesitas iniciar sesión aquí. Si inicias sesión abajo, Kiro Agent usará esa cuenta en su lugar.",

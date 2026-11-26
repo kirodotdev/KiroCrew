@@ -169,8 +169,20 @@ until the first stage past `installing_harness`; while it is set, a start sets t
 status to `disconnected` with "Browser Harness is being reinstalled; try again
 when it finishes" (`HARNESS_REINSTALLING_DETAIL`) and raises
 `HarnessNotInstalled`. A spawn whose venv interpreter vanished between the
-install read and the spawn (`FileNotFoundError`) answers the same. An install
-that keeps the venv, and the Chromium download, hold nothing.
+install read and the spawn (`FileNotFoundError`) answers the same. Before either
+arm that clears the venv (a rebuild, a copy from the runtime) removes the marker,
+the job waits for `HarnessSupervisor.stop_for_harness_rebuild`: it sets
+`installing_harness` and runs the ordinary stop, which ends the browser session
+(the agent's tabs, the relay, Kiro's Chromium) with the daemon and helper worker
+started from the venv's interpreter, or reclaims a daemon a previous gateway left,
+waiting up to `_STOP_GRACE_SECS` for that process (by the pid its ping reply
+carries) to exit, since it still runs its shutdown cleanup after its socket stops
+answering. Left running, they lose their packages to the clear on POSIX, and on
+Windows the clear fails part-way on the interpreter they hold. The rebuild stop
+returns only after a helper call still holding the call lock lets go of it. An
+install stopped while it waits keeps the marker. A repair (`venv --upgrade`) holds starts but stops
+nothing; an install that keeps the venv, and the Chromium download, hold and stop
+nothing.
 
 The daemon starts with a scrubbed environment built by one function and pinned
 by one test:
@@ -224,7 +236,10 @@ whole script unscrubbed.
 carries none unless its runtime bundles the harness), so each helper call runs in
 a worker the venv's interpreter executes
 (`<prefix>/bin/python -I browser_harness/helper_worker.py`, JSON lines on its
-pipes, one call at a time behind a lock, `CALL_TIMEOUT_SECS = 90`). The pipe is
+pipes, one call at a time behind a lock, `CALL_TIMEOUT_SECS = 90`). A call whose
+handle a stop or restart retired before it got that lock, or while it was starting
+a worker under it, raises `BrowserRestarted`; a worker it was starting is stopped
+first. The pipe is
 read with an 8 MiB line limit (`WORKER_LINE_LIMIT`; asyncio's 64 KiB default is
 smaller than an ordinary snapshot) and the worker refuses to write a reply over
 4 MiB (`REPLY_CAP_BYTES`, an error reply instead); a line that still overruns is

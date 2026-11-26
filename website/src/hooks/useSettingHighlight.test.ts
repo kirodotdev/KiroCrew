@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
+import { MemoryRouter, Router, UNSAFE_createMemoryHistory as createMemoryHistory, useLocation, useNavigate } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { createElement } from 'react'
 import { AGENT_SANDBOX_HIGHLIGHT_ANCHOR, DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR, KIRO_SIGN_IN_HIGHLIGHT_ANCHOR, useSettingHighlight } from './useSettingHighlight'
@@ -153,6 +153,8 @@ describe('useSettingHighlight against the real registry and catalogs', () => {
     { name: 'TTS with keyed STT', highlight: 'voice.provider-2', target: { settingId: 'voice.provider-2' }, sibling: { configKey: 'stt.provider' } },
     { name: 'TTS with unkeyed legacy row', highlight: 'voice.provider-2', target: { settingId: 'voice.provider-2' }, sibling: {} },
     { name: 'STT with explicit TTS', highlight: 'key:stt.provider', target: { configKey: 'stt.provider' }, sibling: { settingId: 'voice.provider-2' } },
+    // Settings search links the STT row by its registry id, which has no settingId.
+    { name: 'STT by its registry id with explicit TTS', highlight: 'voice.provider', target: { configKey: 'stt.provider' }, sibling: { settingId: 'voice.provider-2' } },
     // The one `key:` anchor that names NO registry entry and still waits: the
     // Kiro sign-in card, rendered only after its tab's config query. It is
     // authoritative before it mounts, exactly like
@@ -234,6 +236,120 @@ describe('useSettingHighlight against the real registry and catalogs', () => {
       view.unmount()
       playback.remove()
       preventSleep.remove()
+      vi.clearAllTimers()
+    }
+  })
+
+  // Settings search links every entry by its registry id. An entry with no
+  // settingId is found by its config key, else its label: the Feishu App Secret is
+  // a SecretField that carries only that label, the Slack row also its own config
+  // key. Both panels render after a request, which can finish well past the first
+  // probe tick.
+  it.each([
+    { name: 'a label-only secret field', id: 'channels.feishu-app-secret' },
+    { name: 'a row carrying its own config key', id: 'channels.agent-sessions-slack' },
+  ])('waits for $name whose panel mounts late', async ({ id }) => {
+    const { SETTINGS_REGISTRY } = await import('../components/commandPalette/settingsRegistry.gen')
+    const { i18nT } = await import('../i18n/t')
+    const entry = SETTINGS_REGISTRY.find(e => e.id === id)
+    expect(entry, `${id} must exist in the registry`).toBeTruthy()
+    expect(entry!.settingId).toBeUndefined()
+    const label = entry!.labelKey ? i18nT(entry!.labelKey as Parameters<typeof i18nT>[0]) : entry!.label
+    const row = settingControl(label, { configKey: entry!.configKey })
+    vi.useFakeTimers()
+    const view = renderHook(() => {
+      useSettingHighlight()
+      return useLocation().search
+    }, { wrapper: wrapper([`/settings/channels?channel=${entry!.params!.channel}&highlight=${id}`]) })
+
+    try {
+      act(() => { vi.advanceTimersByTime(300) })
+      expect(row.scrollIntoView).not.toHaveBeenCalled()
+      expect(view.result.current).toContain('highlight=')
+
+      await act(async () => { document.body.appendChild(row) })
+      expect(row.scrollIntoView).toHaveBeenCalledTimes(1)
+      expect(row.style.outlineOffset).toBe('4px')
+      expect(view.result.current).not.toContain('highlight=')
+    } finally {
+      view.unmount()
+      row.remove()
+      vi.clearAllTimers()
+    }
+  })
+
+  it.each([
+    { click: 'Slack in the channel list', to: '/settings/channels/slack' },
+    // A tab click names no pane; the list writes its first one, Slack, in later.
+    { click: 'the Channels tab', to: '/settings/channels' },
+  ])('does not ring the same label on a sibling pane a pending link rides to ($click)', async ({ to }) => {
+    // Discord's "Folder name" row renders only while its folder filing is on, so the
+    // link can still be waiting when the user clicks away. That click keeps the
+    // query string, and Slack's row carries the same label.
+    const { SETTINGS_REGISTRY } = await import('../components/commandPalette/settingsRegistry.gen')
+    const { i18nT } = await import('../i18n/t')
+    const entry = SETTINGS_REGISTRY.find(e => e.id === 'channels.folder-name-discord')
+    expect(entry, 'channels.folder-name-discord must exist in the registry').toBeTruthy()
+    expect(entry!.settingId).toBeUndefined()
+    const slackRow = settingControl(i18nT(entry!.labelKey as Parameters<typeof i18nT>[0]), {})
+    vi.useFakeTimers()
+    const view = renderHook(() => {
+      useSettingHighlight()
+      return { search: useLocation().search, navigate: useNavigate() }
+    }, { wrapper: wrapper(['/settings/channels/discord?highlight=channels.folder-name-discord']) })
+
+    try {
+      act(() => { vi.advanceTimersByTime(150) })
+      expect(view.result.current.search).toContain('highlight=')
+      act(() => { view.result.current.navigate(`${to}?highlight=channels.folder-name-discord`) })
+      await act(async () => { document.body.appendChild(slackRow) })
+      act(() => { vi.advanceTimersByTime(150) })
+      expect(slackRow.scrollIntoView).not.toHaveBeenCalled()
+      expect(slackRow.style.outlineOffset).toBe('')
+      // The link is kept for Discord's own pane.
+      expect(view.result.current.search).toContain('highlight=')
+    } finally {
+      view.unmount()
+      slackRow.remove()
+      vi.clearAllTimers()
+    }
+  })
+
+  it('a late row does not overwrite a navigation that is still pending', async () => {
+    // The user clicks another tab while a search link still waits for its panel.
+    // BrowserRouter applies that click in a transition, so the row can mount
+    // while the old location is still rendered, and a strip built from it would
+    // replace the click's entry with the page the user just left.
+    const { SETTINGS_REGISTRY } = await import('../components/commandPalette/settingsRegistry.gen')
+    const { i18nT } = await import('../i18n/t')
+    const entry = SETTINGS_REGISTRY.find(e => e.id === 'channels.feishu-app-secret')
+    expect(entry, 'channels.feishu-app-secret must exist in the registry').toBeTruthy()
+    expect(entry!.settingId).toBeUndefined()
+    expect(entry!.configKey).toBeUndefined()
+    const row = settingControl(i18nT(entry!.labelKey as Parameters<typeof i18nT>[0]), {})
+    vi.useFakeTimers()
+    const history = createMemoryHistory({
+      initialEntries: [`/settings/channels?channel=${entry!.params!.channel}&highlight=${entry!.id}`],
+    })
+    // The router keeps rendering this location, as BrowserRouter does while a
+    // click's navigation is still in its transition.
+    const at = history.location
+    const view = renderHook(() => useSettingHighlight(), {
+      wrapper: ({ children }: { children: ReactNode }) => createElement(Router, { location: at, navigator: history }, children),
+    })
+
+    try {
+      act(() => { vi.advanceTimersByTime(150) })
+      expect(history.location.search).toContain('highlight=')
+      act(() => { history.push('/settings/display') })
+      await act(async () => { document.body.appendChild(row) })
+      act(() => { vi.advanceTimersByTime(150) })
+      expect(row.scrollIntoView).not.toHaveBeenCalled()
+      expect(history.location.pathname + history.location.search).toBe('/settings/display')
+      expect(history.index).toBe(1)
+    } finally {
+      view.unmount()
+      row.remove()
       vi.clearAllTimers()
     }
   })

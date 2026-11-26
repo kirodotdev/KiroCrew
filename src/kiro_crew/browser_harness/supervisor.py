@@ -501,6 +501,19 @@ class HarnessSupervisor:
             await self.stop()
             self._set(DISCONNECTED, CHROMIUM_REPLACING_DETAIL)
 
+    async def stop_for_harness_rebuild(self) -> None:
+        """Before the install clears the venv: refuse new starts, end the browser session.
+
+        Its daemon and worker run from the venv's interpreter; :meth:`stop` also
+        reclaims a daemon a previous gateway left. The caller sets
+        :attr:`installing_harness` back to ``False`` when the install ends.
+        """
+        self.installing_harness = True
+        await self.stop()
+        # A call still starting a worker from the venv stops it before letting go.
+        async with self._call_lock:
+            pass
+
     def stop_soon(self) -> asyncio.Task[None]:
         """Start :meth:`stop` once, or return the one already running.
 
@@ -570,8 +583,15 @@ class HarnessSupervisor:
         if relay is not None and handle.relay is not relay:
             raise BrowserRestarted("the browser restarted during the op; its context is gone")
         async with self._call_lock:
+            # A stop or restart retires the handle without this lock; its call ends here.
+            if self._handle is not handle:
+                raise BrowserRestarted("the browser stopped or restarted before the call ran")
             if not _alive(handle.worker):
-                handle.worker = await self._start_worker(handle)
+                worker = await self._start_worker(handle)
+                if self._handle is not handle:
+                    await _stop_unowned(worker)
+                    raise BrowserRestarted("the browser stopped or restarted as the call began")
+                handle.worker = worker
             assert handle.worker is not None
             request = {"id": next(self._request_ids), "helper": helper, "kwargs": kwargs}
             try:
@@ -1219,14 +1239,23 @@ class HarnessSupervisor:
         await self._ipc_request({"meta": "shutdown"})
 
     async def _shutdown_stray_daemon(self) -> None:
-        """A daemon from a previous gateway life would make ours exit as 'already running'."""
+        """A daemon from a previous gateway life would make ours exit as 'already running'.
+
+        Waits for its process, by the pid its ping reply carries, not only for its
+        socket: once it stops answering it still runs its shutdown cleanup from the
+        venv's interpreter, and a venv rebuild must not clear the venv under that.
+        """
         runtime = self._runtime_dir_or_none()
         if runtime is None:
             return
-        if await self._ipc_ping():
+        reply = await self._ipc_request({"meta": "ping"})
+        if isinstance(reply, dict) and reply.get("pong") is True:
+            pid = reply.get("pid")
             await self._ipc_shutdown()
             deadline = time.monotonic() + _STOP_GRACE_SECS
-            while time.monotonic() < deadline and await self._ipc_ping():
+            while time.monotonic() < deadline and (
+                await self._ipc_ping() or (isinstance(pid, int) and platform_compat.pid_exists(pid))
+            ):
                 await asyncio.sleep(_POLL_SECS)
         for name in (_SOCK_FILE, _PORT_FILE):
             try:

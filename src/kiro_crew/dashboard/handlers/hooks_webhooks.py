@@ -311,6 +311,11 @@ def _webhooks_snapshot() -> tuple[list[dict], bool, list[dict], list[dict]]:
 @_store_failure_guard
 async def api_webhooks(request: web.Request) -> web.Response:
     """GET /api/webhooks — endpoint config, tokens, contexts and run history."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "webhooks.list")
+    if denied is not None:
+        return denied
     # One offloaded hop for the whole read: four separate to_thread round trips
     # would each be a context switch, and a snapshot taken under one call is also
     # internally consistent rather than interleaved with a concurrent token edit.

@@ -736,6 +736,12 @@ def materialize_workspace_dir(validated: Path, *, leaf: Path, display: str) -> N
             "workspace_dir_uncreatable",
             f"Directory '{display}' could not be created: {exc.strerror or exc}",
         ) from exc
+    # A device name (Windows ``NUL``) takes the mkdir and leaves no directory.
+    if not validated.is_dir():
+        raise WorkspaceDirUnusable(
+            "workspace_dir_not_a_directory",
+            f"'{display}' exists and is not a directory; choose another dir or remove it first",
+        )
 
 
 def workspace_dir_from_entry(entry: WorkspaceConfig | None) -> Path:

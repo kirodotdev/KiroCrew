@@ -151,9 +151,11 @@ export function SignInStoreUnreadableErrors({ sources }: { sources: KasLoginSour
   return (
     <>
       {/* No hand-off: the embedded Company SSO form can hold an unsaved portal URL and region. */}
+      {/* The way forward: a sign-in replaces a vault no key opens (auth/store.py keeps the old file). */}
       <ErrorNotice
         className="mb-3"
-        message={sources?.kiro_crew.stored === null ? i18nT('pages.developer.kiroSignInCard.could_not_check_kiro_crew') : null}
+        title={i18nT('pages.developer.kiroSignInCard.could_not_check_kiro_crew')}
+        message={sources?.kiro_crew.stored === null ? i18nT('pages.developer.kiroSignInCard.could_not_check_kiro_crew_hint') : null}
         testId="kiro-sign-in-kiro-crew-unreadable"
       />
       {/* No hand-off: the embedded Company SSO form can hold an unsaved portal URL and region. */}

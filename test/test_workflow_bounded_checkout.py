@@ -29,9 +29,6 @@ _THRESHOLD = 10
 #: Remove an entry once the job is migrated to a bounded fetch.
 ALLOWED: frozenset[tuple[str, str]] = frozenset(
     {
-        # add-contributor reads `git log` across arbitrary merged-PR history to
-        # collect commit authors; a bounded fetch would miss author commits.
-        ("add-contributor.yml", "add"),
         # code-review.yml jobs are being migrated to bounded fetches in a
         # separate open PR; remove these entries once those jobs are migrated.
         ("code-review.yml", "autosde-rules"),
@@ -76,24 +73,19 @@ def _violations(workflows: Path = WORKFLOWS) -> list[tuple[str, str]]:
     return found
 
 
-def test_guard_finds_violations_in_current_allowed_set() -> None:
-    """Self-check: the scanner must find at least the known allowed violations.
+def test_guard_finds_a_tight_budget_on_a_real_full_history_job(tmp_path: Path) -> None:
+    """Self-check: the scanner must match the checkout form this repo uses.
 
-    If this fails, YAML structure changed or the scanner has a bug -- every
-    assertion below would be vacuously true.
+    No job in the repository pairs the two any more, so the scanner reads a
+    real full-history job with its budget cut back to the threshold.  If this
+    fails, YAML structure changed or the scanner has a bug -- the invariant
+    below would be vacuously true.
     """
-    found = set(_violations())
-    # ALLOWED may shrink as other PRs migrate their jobs; check only the entries
-    # that are expected to still be present (the ones not yet migrated).
-    still_expected = {
-        ("add-contributor.yml", "add"),
-    }
-    missing = still_expected - found
-    assert not missing, (
-        f"The scanner no longer finds these expected violations: {sorted(missing)}.  "
-        "Either the workflows were migrated (great -- remove them from still_expected) "
-        "or the scanner has stopped matching the checkout form this repo uses."
-    )
+    text = (WORKFLOWS / "add-contributor.yml").read_text(encoding="utf-8")
+    tight, count = re.subn(r"(?m)^(    timeout-minutes: )\d+$", rf"\g<1>{_THRESHOLD}", text)
+    assert count == 1, "add-contributor.yml no longer has one plain job timeout"
+    (tmp_path / "add-contributor.yml").write_text(tight, encoding="utf-8")
+    assert _violations(tmp_path) == [("add-contributor.yml", "add")]
 
 
 def test_no_new_full_history_checkout_under_tight_timeout() -> None:
@@ -134,6 +126,8 @@ def test_full_history_jobs_moved_off_a_tight_budget_stay_blobless() -> None:
     clone finish inside the job budget, and the budget leaves headroom.
     """
     for workflow, job_id in (
+        # Cut off daily by a 10-minute budget until the clone went blobless.
+        ("add-contributor.yml", "add"),
         ("internal-content-scan.yml", "scan"),
         ("release.yml", "stable-gate"),
         ("fork-internal-content-scan.yml", "fork-internal-content-scan"),
