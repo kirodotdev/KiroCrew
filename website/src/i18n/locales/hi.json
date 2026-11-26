@@ -14301,10 +14301,14 @@
       "turnBlock": {
         "earlier_step_one": "{{count}} पिछला चरण",
         "earlier_step_other": "{{count}} पिछले चरण",
+        "folded_message_one": "{{count}} संदेश",
+        "folded_message_other": "{{count}} संदेशों",
         "hide_earlier_steps": "पिछले चरण छिपाएँ",
         "hide_tool_calls": "टूल कॉल छिपाएँ",
         "worked_through_step_one": "{{count}} चरण पूरा किया",
-        "worked_through_step_other": "{{count}} चरण पूरे किए"
+        "worked_through_step_other": "{{count}} चरण पूरे किए",
+        "worked_through_step_with_messages_one": "{{count}} चरण पूरा किया ({{messages}} सहित)",
+        "worked_through_step_with_messages_other": "{{count}} चरण पूरे किए ({{messages}} सहित)"
       },
       "userMessage": {
         "cancel": "रद्द करें",
