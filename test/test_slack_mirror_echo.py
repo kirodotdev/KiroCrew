@@ -24,7 +24,11 @@ Defects a linked thread showed on mirrored turns:
 * a tool step with no purpose line showed its raw ``@server/tool`` id; it now
   reads the dashboard row's derived title ("Wait", "Git status");
 * the task stream named no recipient user, which an org-wide install refuses,
-  so every mirrored turn fell back to ``chat.update``; it now names the owner.
+  so every mirrored turn fell back to ``chat.update``; it now names the owner;
+* the task stream stayed where the turn's first tool opened it, so a message a
+  person sent in the thread while the turn ran sat below the moving steps and
+  read as not picked up. The next step after such a message now opens a fresh
+  stream under it.
 """
 
 from __future__ import annotations
@@ -55,6 +59,7 @@ from kiro_crew.crew_log import emit_turn as crew_log_emit
 from kiro_crew.dashboard.chat_runner import _prepare_mirror_msg
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.format import escape_mrkdwn_keep_links, mirror_prompt_echo
+from kiro_crew.slack.stream_window import note_thread_message
 from kiro_crew.testing.wait import async_wait_until
 
 _DONE = AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
@@ -358,6 +363,112 @@ async def test_a_refused_stream_leaves_the_line_up_until_the_answer() -> None:
     ]
     assert names.index("start_stream") < names.index("delete_message") < answer_at
     assert _surviving_thinking(slack) == []
+
+
+def _a_person_writes(thread_ts: str = "thread-1") -> Do:
+    """The route takes in a message in the linked channel's *thread_ts* mid-turn."""
+    return Do(lambda ctx: note_thread_message("C-1", thread_ts))
+
+
+def _step_cards(slack: _SlackRecorder) -> list[tuple[str, str, str]]:
+    """``(stream ts, task id, status)`` of every task card, in order."""
+    return [(a["ts"], a["task_id"], a["status"]) for n, a in slack.calls if n == "append_task"]
+
+
+def _streams(slack: _SlackRecorder) -> list[str]:
+    """The ts of every stream opened, in order."""
+    return [
+        f"start_stream-ts-{i + 1}" for i, (n, _) in enumerate(slack.calls) if n == "start_stream"
+    ]
+
+
+_SECOND_TOOL = AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="t2", title="read_2", tool_kind="read")
+
+
+@pytest.mark.asyncio
+async def test_a_message_in_the_thread_moves_the_next_step_below_it() -> None:
+    slack = await _linked_turn(
+        [_TOOL, _a_person_writes(), _SECOND_TOOL, _ANSWER, _DONE], owner_id="U0OWNER"
+    )
+    first, second = _streams(slack)
+    # The step that ran before the message ends complete on the old stream; the
+    # one after it is drawn only on the new one.
+    assert _step_cards(slack) == [
+        (first, "tool_1", "in_progress"),
+        (first, "tool_1", "complete"),
+        (second, "tool_2", "in_progress"),
+        (second, "tool_2", "complete"),
+    ]
+    names = [name for name, _ in slack.calls]
+    stops = [a["ts"] for n, a in slack.calls if n == "stop_stream"]
+    assert stops == [first, second]
+    # The old stream is closed before the new one opens at the thread's end.
+    reopened = [i for i, n in enumerate(names) if n == "start_stream"][1]
+    assert names.index("stop_stream") < reopened
+    moved = slack.calls[reopened][1]
+    assert (moved["channel"], moved["thread_ts"], moved["user_id"]) == (
+        "C-1",
+        "thread-1",
+        "U0OWNER",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_message_that_lands_while_the_stream_opens_is_below_it() -> None:
+    class _WrittenToWhileOpening(_SlackRecorder):
+        def __getattr__(self, name: str) -> Any:
+            call = super().__getattr__(name)
+            if name != "start_stream":
+                return call
+
+            async def _start(*args: Any, **kwargs: Any) -> str:
+                if "start_stream" not in [n for n, _ in self.calls]:
+                    note_thread_message("C-1", "thread-1")
+                return await call(*args, **kwargs)
+
+            return _start
+
+    slack = _WrittenToWhileOpening()
+    await _linked_turn([_TOOL, _ANSWER, _DONE], slack=slack)
+    first, second = _streams(slack)
+    # The first stream is above the message, so the step is drawn only below it.
+    assert _step_cards(slack) == [(second, "tool_1", "in_progress"), (second, "tool_1", "complete")]
+    assert [a["ts"] for n, a in slack.calls if n == "stop_stream"] == [first, second]
+
+
+@pytest.mark.asyncio
+async def test_a_message_in_another_thread_leaves_the_stream_where_it_is() -> None:
+    slack = await _linked_turn([_TOOL, _a_person_writes("thread-2"), _SECOND_TOOL, _ANSWER, _DONE])
+    assert len(_streams(slack)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stream_slack_refuses_after_a_move_ends_the_step_list() -> None:
+    class _RefusesTheSecondStream(_SlackRecorder):
+        def __getattr__(self, name: str) -> Any:
+            call = super().__getattr__(name)
+            if name != "start_stream":
+                return call
+
+            async def _start(*args: Any, **kwargs: Any) -> str | None:
+                ts = await call(*args, **kwargs)
+                opened = [n for n, _ in self.calls].count("start_stream")
+                return ts if opened == 1 else None
+
+            return _start
+
+    slack = _RefusesTheSecondStream()
+    third = AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="t3", title="read_3", tool_kind="read")
+    await _linked_turn(
+        [_TOOL, _a_person_writes(), _SECOND_TOOL, third, _ANSWER, _DONE], slack=slack
+    )
+    first = _streams(slack)[0]
+    # The old list is closed once and complete; no later step is drawn anywhere,
+    # and the stream is not asked for again on the next tool.
+    assert _step_cards(slack) == [(first, "tool_1", "in_progress"), (first, "tool_1", "complete")]
+    assert [a["ts"] for n, a in slack.calls if n == "stop_stream"] == [first]
+    assert len(_streams(slack)) == 2
+    assert [a["text"] for n, a in slack.calls if n == "post_message"][-1] == "the reply"
 
 
 @pytest.mark.asyncio
