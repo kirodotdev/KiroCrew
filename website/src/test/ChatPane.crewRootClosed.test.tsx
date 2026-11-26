@@ -109,6 +109,8 @@ describe('Crew Mode L1: a worker in a Split View pane under a closed conductor',
   it('says the reopen line once and leaves the placeholder empty', async () => {
     await renderPane()
     expect(screen.getByTestId('crew-worker-root-closed')).toHaveTextContent('Main chat is closed')
+    // On the composer's column, as on the chat page: its glass pane lines up with the composer.
+    expect(screen.getByTestId('crew-worker-root-closed').parentElement!.className).toMatch(/\bpx-4 mx-auto w-full\b/)
     expect(screen.getAllByText(/Main chat is closed/)).toHaveLength(1)
     const box = screen.getByRole('textbox')
     expect(box.getAttribute('placeholder') ?? '').toBe('')
