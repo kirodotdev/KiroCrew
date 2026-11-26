@@ -275,8 +275,11 @@ class SecretStorageServer:
     revision this process last read or wrote (``None``: it read nothing), and a
     delete removes only that entry. A store writes only over that entry too, so
     a token refreshed from an older read cannot replace one another process
-    saved since; the refused engine reads again. A key this process never
-    touched is deleted or stored outright: it holds no copy that could be stale.
+    saved since; the refused engine reads again. That keeps the first save even
+    on a server that let the second refresh succeed and honours only its result:
+    the trade taken for rotating servers that revoke on reuse. A key this
+    process never touched is deleted or stored outright: it holds no copy that
+    could be stale.
     """
 
     def __init__(self, store: McpGrantStore | None = None) -> None:
