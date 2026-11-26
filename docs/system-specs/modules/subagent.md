@@ -5680,7 +5680,8 @@ User-typed `spawn <task>`, `bg <task>`, `spawn list`, `spawn status` are interce
 ## Session sharing (shared AcpRuntime)
 
 When `agent.session_sharing` is enabled (default **on**) and the parent uses a
-backend in `ACP_BACKENDS_SESSION_SHARING` (currently `kiro` or `codex`), subagents
+backend in `ACP_BACKENDS_SESSION_SHARING` (currently `kiro`, `codex` and `kas`; on
+`kas` only a parent process that qualifies, below), subagents
 open an additional ACP session on a **shared `AcpRuntime`** instead of spawning a
 fresh process each. One process multiplexes the parent session plus all of its
 subagents. Startup drops from ~3–5 s to ~200 ms and per-subagent memory from
@@ -5696,7 +5697,7 @@ Decision + lifecycle:
   shares when `_pinned_model_shares` (`subagent_parts/model_choice.py`) answers a
   real `True`, which needs both: the parent's backend runs each session of
   one process on its own model (`SessionCapabilities.takes_model_per_session`,
-  membership in `ACP_BACKENDS_MODEL_PER_SESSION`: `kiro` and `codex`), read off
+  membership in `ACP_BACKENDS_MODEL_PER_SESSION`: `kiro`, `codex` and `kas`), read off
   the parent's live provider and never inferred from which harness it is; and
   the start takes no reasoning effort from config (`resolve_session_effort`, the
   level the factory gives a start that names none). A level is applied when a
@@ -5811,6 +5812,33 @@ Decision + lifecycle:
   process are bounded by the subagents that joined it before the first one left,
   and end with it when the parent session ends. kiro-cli's teardown reaps the
   session's MCP children, so a kiro process keeps taking subagents.
+
+- **A KAS parent's own process must qualify.** Membership is necessary, not
+  sufficient on KAS: `AcpProvider.is_session_sharing_eligible` asks
+  `acp.kas_subagent_sharing.runtime_hosts_subagents` of the parent's own
+  process: its handshake advertised `sessionCapabilities.close`
+  (`AcpRuntime.can_release`), the engine recorded at its spawn
+  (`bundle_engine_version` or `relay_engine_version`) is at or above
+  `KAS_CHAT_SHARING_MIN_ENGINE`, it was not spawned in KAS machine mode nor under
+  a looser `agent.sandbox` tier than a fresh start gets (`sandbox_tier_tightened`), and the
+  parent's provider holds no chat-sharing lease on it. Each term reads fields
+  set at spawn, so the answer is safe on the event loop; anything unreadable is
+  dedicated. `_run_inner` then caps a KAS parent at
+  `KAS_SHARED_CHILDREN_PER_PARENT` (8) children (`_kas_shared_slot_taken`): the
+  count and the reservation (`_shared_slot_reserved`) happen with no await
+  between them, so racing starts cannot both take the last place; the next
+  takes the dedicated path, and a dedicated fallback gives its place back. The engine dedupes user MCP servers across sessions by config
+  and resolved cwd, so a child in the pool cwd (`info.cwd or _pool_cwd`) joins the
+  parent's servers when the parent runs in the pool cwd; parallel children share
+  that working folder. Pinned by `test_kas_subagent_sharing.py`.
+- **A shared child's teardown keeps a record the host would delete.** The
+  non-owning branch of `AcpSessionProvider.shutdown` destroys the handle inside
+  `AcpRuntime.keep_record_on_teardown` when the transcript is kept and the
+  runtime `can_release()`, so `terminate_session` sends `session/close` (KAS's
+  teardown verb `_kiro/session/delete` would remove what `spawn_continue`
+  loads). The tombstone pruner deletes the record with the run folder
+  (`_schedule_kas_session_delete`). On kiro-cli and codex `can_release()` is
+  False and the teardown is unchanged.
 
 Backends outside `ACP_BACKENDS_SESSION_SHARING` are not eligible and use the
 per-process path regardless of the flag.

@@ -43,8 +43,8 @@ The `spawn_run` tool accepts:
 
 Setting `reasoning_effort` or `backend`, or `keep: true`, forces the
 dedicated-process path instead of session sharing. A `model` alone keeps
-session sharing where the parent's backend sets a model per session (Kiro CLI
-and Codex); on any other backend, or together with a reasoning effort
+session sharing where the parent's backend sets a model per session (Kiro CLI,
+Codex and KAS); on any other backend, or together with a reasoning effort
 (per call, the Subagent Effort setting, or the default Reasoning Effort), it
 takes the dedicated-process path too.
 
@@ -170,6 +170,33 @@ durably, so it stays dismissed after a restart. A dismissal that answers HTTP 50
 - **Nesting**: a subagent can spawn its own subagents. A nested spawn is tracked apart from the parent's wave, so its children are not counted against that wave's completion total
 - **macOS memory pressure**: on macOS the memory guard also reads the kernel's memory-pressure level (the one Activity Monitor graphs). While it is WARN or CRITICAL and one of this gateway's dedicated subagents is running, a new start waits even when the free-memory figure is above the floor; the chip says "macOS reports memory pressure". Temporary and incognito spawns wait the same way. A held start is re-checked every 15 seconds and whenever a subagent finishes; if it has been held for `agent.subagent_queue_max_wait_secs` (30 minutes by default) with no other top-level start from the same chat beginning in that time (the starts ahead of it in that chat's queue, from any `spawn_run` batch; scheduled and background jobs share one queue, so a start from any of them counts for all of them), it is ended without starting ("never started: waiting for memory"), and the wave's results count it among those that never started, to resubmit once memory eases; and while an episode lasts longer than that, new starts it would hold end at once. With no dedicated subagent of ours running, the start is judged on the figure alone, and a subagent's own nested subagents are never held. `agent.spawn_min_memory_gb = 0` turns this off with the rest of the guard
 - **Redaction**: task strings in SubagentInfo are redacted (credentials, inside URLs too) before surfacing to Slack/dashboard
+
+## Sub-agents on a KAS chat's process
+
+With `agent.session_sharing` on (the default), a `spawn_run` sub-agent of a KAS
+chat runs as a session on the chat's own KAS process, as it does on Kiro CLI and
+Codex, instead of starting a process of its own. The KAS engine runs one copy of
+an MCP server for all sessions of a process that use the same server settings in
+the same folder, so such a sub-agent reuses the chat's servers and starts only
+its own Kiro Crew servers.
+
+- **Where it works**: a sub-agent given no `cwd` works in Kiro Crew's workspace
+  folder, as Kiro CLI sub-agents on a shared process do. Sub-agents running at
+  the same time then share one working folder and one `$KIROCREW_SCRATCH`, so
+  give each one its own `cwd` (or `isolate: "worktree"`) when they write files.
+- **Resume**: when a sub-agent ends, its session is closed and its record kept,
+  so `spawn_continue` works as before; the record is deleted with the run's
+  folder.
+- **Who still gets a process of its own**: a sub-agent with a reasoning effort
+  (per call or a role pin), `keep`, `bare`, `allowed_tools`, a `backend` of its
+  own, a crew member context or an AWS profile other than the chat's, and every
+  one past 8 live at once in one chat. So does every sub-agent of a chat whose
+  process does not qualify: it must advertise `session/close`, run `@kiro/agent`
+  0.66.104 or newer, not be in KAS machine mode, not run under a looser
+  `agent.sandbox` level than the one set now, and not serve other chats
+  ("ACP runtime sharing").
+- **Off switch**: `agent.session_sharing: false` gives every sub-agent a process
+  of its own, on KAS as on every other backend.
 
 ## KAS sub-agents (a feature preview)
 

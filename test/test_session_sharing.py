@@ -19,7 +19,7 @@ import pytest
 from kiro_crew.acp.runtime import AcpRuntimeDead
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import AcpEvent
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.subagent import SubagentInfo, SubagentManager
@@ -303,7 +303,11 @@ class TestPinnedModelSharing:
 
     @pytest.mark.parametrize(
         "backend",
-        [pytest.param(ACP_BACKEND_KIRO, id="kiro"), pytest.param(ACP_BACKEND_CODEX, id="codex")],
+        [
+            pytest.param(ACP_BACKEND_KIRO, id="kiro"),
+            pytest.param(ACP_BACKEND_CODEX, id="codex"),
+            pytest.param(ACP_BACKEND_KAS, id="kas"),
+        ],
     )
     @pytest.mark.parametrize(
         "pin",
@@ -1410,16 +1414,23 @@ class TestSharedSessionCliDefaultModel:
         )
 
     @pytest.mark.asyncio
-    async def test_an_unpinned_kas_sub_agent_inherits_its_folders_cli_default(self, monkeypatch):
+    @pytest.mark.parametrize("agent_model", ["", "auto"])
+    async def test_an_unpinned_kas_sub_agent_inherits_its_folders_cli_default(
+        self, monkeypatch, agent_model
+    ):
         from kiro_crew.acp.types import ACP_BACKEND_KAS
 
-        manager, sessions, runtime, read_dirs = self._manager(monkeypatch, backend=ACP_BACKEND_KAS)
+        manager, sessions, runtime, read_dirs = self._manager(
+            monkeypatch, backend=ACP_BACKEND_KAS, agent_model=agent_model
+        )
         info = self._info("kas-cli-default")
         provider = await manager._create_shared_session(info, "subagent:kas-cli-default", "kc")
         handle = runtime.create_session.return_value
         assert handle.set_model.await_args_list == [((("cli-default-model",)), {"inherit": True})]
         assert read_dirs == ["/work/child"]
-        sessions._cfg.acp_effective_model.assert_called_once_with("kc", None)
+        sessions._cfg.acp_effective_model.assert_called_once_with(
+            "kc", None, namespace=capabilities_for(ACP_BACKEND_KAS).model_id_namespace
+        )
         assert info._shared_provider is provider
         await provider.shutdown()
 
@@ -1446,29 +1457,80 @@ class TestSharedSessionCliDefaultModel:
         await info._late_start_provider.shutdown()
 
     @pytest.mark.asyncio
-    async def test_a_kiro_parent_sends_nothing(self, monkeypatch):
-        from kiro_crew.acp.types import ACP_BACKEND_KIRO
-
-        manager, _sessions, runtime, read_dirs = self._manager(
-            monkeypatch, backend=ACP_BACKEND_KIRO
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_CODEX])
+    @pytest.mark.parametrize("agent_model", ["", "spec-model"])
+    async def test_other_backends_send_nothing(self, monkeypatch, backend, agent_model):
+        manager, sessions, runtime, read_dirs = self._manager(
+            monkeypatch, backend=backend, agent_model=agent_model
         )
         provider = await manager._create_shared_session(
-            self._info("kiro-parent"), "subagent:kiro-parent", "kc"
+            self._info("other-parent"), "subagent:other-parent", "kc"
         )
         runtime.create_session.return_value.set_model.assert_not_awaited()
+        sessions._cfg.acp_effective_model.assert_not_called()
         assert read_dirs == []
         await provider.shutdown()
 
     @pytest.mark.asyncio
-    async def test_a_model_crew_pins_is_left_alone(self, monkeypatch):
-        from kiro_crew.acp.types import ACP_BACKEND_KAS
-
-        manager, _sessions, runtime, read_dirs = self._manager(
+    async def test_a_model_crew_pins_is_applied(self, monkeypatch):
+        manager, sessions, runtime, read_dirs = self._manager(
             monkeypatch, backend=ACP_BACKEND_KAS, agent_model="spec-model"
         )
+
+        def _resolve(*args, **kwargs):
+            # Reading agent files must not block the event loop.
+            with pytest.raises(RuntimeError, match="no running event loop"):
+                asyncio.get_running_loop()
+            return "spec-model"
+
+        sessions._cfg.acp_effective_model.side_effect = _resolve
+        apply_model = AsyncMock()
+        monkeypatch.setattr("kiro_crew.agent_sdk.drivers.acp.apply_configured_model", apply_model)
         provider = await manager._create_shared_session(
             self._info("kas-spec-model"), "subagent:kas-spec-model", "kc"
         )
+        apply_model.assert_awaited_once_with(
+            runtime.create_session.return_value, "spec-model", backend=ACP_BACKEND_KAS
+        )
+        sessions._cfg.acp_effective_model.assert_called_once_with(
+            "kc", None, namespace=capabilities_for(ACP_BACKEND_KAS).model_id_namespace
+        )
+        assert read_dirs == []
+        await provider.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_a_runs_own_pin_is_not_replaced_by_the_cli_default(self, monkeypatch):
+        """The pin was applied in the bind; the inherited default must not follow it."""
+        from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+        manager, sessions, runtime, read_dirs = self._manager(
+            monkeypatch, backend=ACP_BACKEND_KAS, agent_model="spec-model"
+        )
+        info = self._info("kas-run-pin")
+        info.requested_model = "run-pin"
+        with patch("kiro_crew.subagent._apply_shared_start_model", AsyncMock()):
+            provider = await manager._create_shared_session(info, "subagent:kas-run-pin", "kc")
+        runtime.create_session.return_value.set_model.assert_not_awaited()
+        sessions._cfg.acp_effective_model.assert_not_called()
+        assert read_dirs == []
+        await provider.shutdown()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("resolution_fails", [False, True])
+    async def test_a_failed_crew_pin_still_starts_without_a_cli_default(
+        self, monkeypatch, resolution_fails
+    ):
+        manager, sessions, runtime, read_dirs = self._manager(
+            monkeypatch, backend=ACP_BACKEND_KAS, agent_model="spec-model"
+        )
+        if resolution_fails:
+            sessions._cfg.acp_effective_model.side_effect = OSError("agent unreadable")
+        apply_model = AsyncMock(side_effect=RuntimeError("model not served"))
+        monkeypatch.setattr("kiro_crew.agent_sdk.drivers.acp.apply_configured_model", apply_model)
+        info = self._info("kas-pin-refused")
+        provider = await manager._create_shared_session(info, "subagent:kas-pin-refused", "kc")
+        assert info._shared_provider is provider
+        assert apply_model.await_count == (0 if resolution_fails else 1)
         runtime.create_session.return_value.set_model.assert_not_awaited()
         assert read_dirs == []
         await provider.shutdown()

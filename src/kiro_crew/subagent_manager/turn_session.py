@@ -316,6 +316,7 @@ async def acquire_session(
                 exc,
             )
             info._session_sharing = False
+            info._shared_slot_reserved = False
             info._shared_provider = None
             use_session_sharing = False
             # Admitted at the shared price; the process this launches was
@@ -373,6 +374,7 @@ async def acquire_session(
         # teardown to the shared arm. The old attempt's teardown, which read
         # it, has finished before this one runs.
         info._session_sharing = False
+        info._shared_slot_reserved = False
         info._shared_provider = None
 
         def _claim():
