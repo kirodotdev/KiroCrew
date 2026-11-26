@@ -694,8 +694,7 @@ headless gateway binds it on `127.0.0.1`, and on `[::1]` when the machine has an
 loopback; no setting changes the address. The API-only server does not open it. On
 Windows each entry listener has a listener guard (`dashboard/listener_guard.py`). When a
 guard cannot rebind its listener, the gateway closes the entry port, keeps serving on
-loopback, and reports a warning (**proposed amendment, 2026-11-25, waiting for a
-maintainer's sign-off**).
+loopback, and reports a warning.
 The gateway does not start, configure or ship the proxy.
 
 Who can reach what through it:
