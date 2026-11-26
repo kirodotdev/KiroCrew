@@ -760,10 +760,22 @@ take the hold in `cli.main` after argument parsing.
   `wheel_apply.restart_reaches` still holds for it ([cli](cli.md),
   `kirocrew doctor --bundle`). A cycle that finds the same version already
   staged builds nothing. No restart is scheduled, queued or retried; the new version starts at the next restart or
-  stop a person chooses, or at a fresh start. The same note carries two other
+  stop a person chooses, or at a fresh start. The same note carries three other
   causes: the approved in-app wheel (`updates_step_up`
-  stages it and marks `REASON_STAGED`; it never restarts), and the stale-asset
-  watchdog's vanished bundle (`REASON_ASSETS_GONE`). The interpreter a restart would exec is
+  stages it and marks `REASON_STAGED`; it never restarts), an offered version
+  another process installed (`kirocrew update` in a terminal, a re-run of the
+  install script: `updates_check.note_installed_beside` marks `REASON_STAGED`
+  when the tree a restart would exec (`wheel_engine.respawn_executable`, a
+  versioned `crew-venv-<version>` or the fixed `crew-venv` the install script
+  rebuilds in place; a tree outside the managed layout, such as a pipx venv,
+  never counts) holds the offered version in its `kirocrew` (or LTS
+  `kirocrew-lts`) dist-info, the
+  same read still holds under the layout's update lock taken without waiting (a
+  writer still holding it, such as an install script run that may yet roll back,
+  means "ask again on a later frame"), and no live-target pointer is set, from the update check and from every status frame
+  while that version is offered and not yet noted, so an open tab learns it
+  within one frame), and the stale-asset watchdog's vanished bundle
+  (`REASON_ASSETS_GONE`). The interpreter a restart would exec is
   `respawn_executable()`: the stable link's RESOLVED tree. No tree is called
   ready when that would not exec the promoted one (`wheel_apply.restart_reaches`;
   `respawn_executable` falls back to the running interpreter when the link
