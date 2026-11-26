@@ -4640,8 +4640,15 @@ re-link carrying a refreshed admission is left in place.
   `connected` (true only after the Gateway handshake reached READY this
   session), `connect_error`, `configured` (token AND enabled AND non-empty
   allowlist — the transport fails closed on an empty list), `read_only`
-  (true unless the request is direct-local), and the two render toggles
-  `reactions_enabled` / `show_thinking`. Never returns a raw secret.
+  (true unless the request is direct-local), the three render toggles
+  `reactions_enabled` / `show_thinking` / `show_timing_footer`, and the bot's
+  invite links `install_url` (thread permissions) / `install_url_dm_only`, built
+  by `discord.install_url.build_install_url` from the `application_id` READY
+  gave the client of the Discord transport registered in
+  `DashboardState.channel_transports`. The channel lifecycle drops a closed or
+  superseded start's registration by identity, so the links name the running
+  bot. Both are empty with no registered transport, before READY, or when the
+  id is not a snowflake. Never returns a raw secret.
 - `PUT /api/discord/config` — requires a direct-local request (loopback peer
   AND no forwarding headers); remote gets 403. Validate-first/commit-last.
   New tokens must match the three-segment bot-token shape (an accidental
@@ -4651,8 +4658,8 @@ re-link carrying a refreshed admission is left in place.
   returns 400 and writes nothing, network failure saves with
   `verify_warning`. `bot_token_clear` must be a strict boolean.
   `allowed_user_ids`, `allowed_thread_ids`, and `allowed_channel_ids` accept
-  numeric snowflake strings only; `auto_thread`, `reactions_enabled` and
-  `show_thinking` are strict booleans. Secrets
+  numeric snowflake strings only; `auto_thread`, `reactions_enabled`,
+  `show_thinking` and `show_timing_footer` are strict booleans. Secrets
   land in `config_dir/.env` (atomic 0600) with `os.environ`
   synced; non-secrets go to
   `config.json` under `discord`. Every field applies live, so
