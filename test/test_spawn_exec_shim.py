@@ -31,7 +31,7 @@ from _clock_isolation import assert_clock_is_private
 from spawn_test_helpers import strip_spawn_shim
 
 from kiro_crew import _spawn_exec_shim as shim
-from kiro_crew import sandbox
+from kiro_crew import sandbox, sandbox_rlimit
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_BUILD,
     RLIMIT_PROFILE_EXTRACTOR,
@@ -305,6 +305,44 @@ class TestShimArgvContract:
             shim.main(["--oom-bias", "--", "/bin/true"])
             assert biased == [True]
 
+    def test_nice_only_when_requested_and_after_the_limits(self):
+        order: list[str] = []
+        with (
+            patch.object(shim, "_apply_rlimits", lambda _p: order.append("limits")),
+            patch.object(shim, "_bias_oom_score", lambda: order.append("oom")),
+            patch.object(shim, "_lower_cpu_priority", lambda n: order.append(f"nice{n}")),
+            patch.object(
+                shim.os,
+                "execv",
+                lambda *_a: order.append("exec") or (_ for _ in ()).throw(OSError(13, "x")),
+            ),
+        ):
+            shim.main(["--", "/bin/true"])
+            assert order == ["limits", "exec"]
+            order.clear()
+            shim.main(["--oom-bias", "--nice=10", "--", "/bin/true"])
+            assert order == ["limits", "oom", "nice10", "exec"]
+
+    def test_a_malformed_nice_is_refused_rather_than_ignored(self, capsys):
+        execs: list[tuple] = []
+        with patch.object(shim.os, "execv", lambda *args: execs.append(args)):
+            assert shim.main(["--nice=high", "--", "/bin/true"]) == 127
+            assert "bad --nice=" in capsys.readouterr().err
+            assert shim.main(["--nice=-5", "--", "/bin/true"]) == 127
+            assert "bad --nice=" in capsys.readouterr().err
+        assert execs == []
+
+    def test_lowering_cpu_priority_never_raises(self):
+        def refuse(_n):
+            raise OSError(1, "nope")
+
+        with patch.object(shim.os, "nice", refuse, create=True):
+            shim._lower_cpu_priority(10)
+        calls: list[int] = []
+        with patch.object(shim.os, "nice", calls.append, create=True):
+            shim._lower_cpu_priority(0)
+        assert calls == []
+
 
 @posix_only
 class TestShimPosixSpawnFlags:
@@ -459,6 +497,15 @@ class TestSpawnShimArgv:
         prefix = spawn_shim_argv(RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST)
         assert "--rlimits=RLIMIT_NOFILE:hard" in prefix
         assert "--oom-bias" in prefix
+
+    def test_only_the_unbounded_session_host_yields_cpu(self):
+        # No cgroup CPUWeight over the tree: nice is the only CPU share left.
+        prefix = spawn_shim_argv(RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST)
+        assert f"--nice={sandbox_rlimit._UNBOUNDED_SESSION_HOST_NICE}" in prefix
+        nice_flag = f"--nice={sandbox_rlimit._UNBOUNDED_SESSION_HOST_NICE}"
+        assert prefix.index(nice_flag) < prefix.index("--")
+        for profile in (RLIMIT_PROFILE_SESSION_HOST, RLIMIT_PROFILE_TOOL, RLIMIT_PROFILE_BUILD):
+            assert not any(a.startswith("--nice=") for a in spawn_shim_argv(profile)), profile
 
     def test_unbounded_session_host_fallback_keeps_the_session_host_preexec(self):
         # A shim-less install drops the bias but must keep the descriptor
@@ -1469,3 +1516,39 @@ class TestRealChild:
             scores[profile] = tuple(int(v) for v in out.decode().split())
         assert scores[RLIMIT_PROFILE_SESSION_HOST] == (own, own)
         assert scores[RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST] == (1000, 1000)
+
+    @pytest.mark.asyncio
+    async def test_unbounded_session_host_lowers_what_its_harness_runs(self):
+        # Like the OOM bias, the nice value has to reach a GRANDCHILD (the
+        # harness's own shell commands and builds), not just the host.
+        own = os.nice(0)
+        step = sandbox_rlimit._UNBOUNDED_SESSION_HOST_NICE
+        grandchild_bound = default_timeout() / 2
+        probe = (
+            "import os,subprocess,sys;"
+            "print(os.nice(0),"
+            " subprocess.run([sys.executable,'-c','import os;print(os.nice(0))'],"
+            f" capture_output=True,text=True,timeout={grandchild_bound}).stdout.strip())"
+        )
+        levels = {}
+        for profile in (RLIMIT_PROFILE_SESSION_HOST, RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST):
+            proc = await create_subprocess_limited(
+                sys.executable,
+                "-c",
+                probe,
+                profile=profile,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                out, err = await finished(proc.communicate(), f"the {profile} probe's output")
+            finally:
+                if proc.returncode is None:
+                    proc.kill()
+                    await finished(proc.wait(), f"the killed {profile} probe")
+            assert proc.returncode == 0, err.decode()
+            levels[profile] = tuple(int(v) for v in out.decode().split())
+        # The kernel clamps at 19, so a runner already near it still passes.
+        lowered = min(own + step, 19)
+        assert levels[RLIMIT_PROFILE_SESSION_HOST] == (own, own)
+        assert levels[RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST] == (lowered, lowered)

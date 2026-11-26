@@ -3,7 +3,7 @@
 Spawned as::
 
     <sys.executable> -I -S -c <this file's source> [--rlimits=SPEC] [--oom-bias]
-        [--chdir-fd=N] [--ctty-fd=N] -- argv...
+        [--nice=N] [--chdir-fd=N] [--ctty-fd=N] -- argv...
 
 and replaces itself with ``argv`` via ``execv``, so the PID, process group,
 session, inherited fds, and exit status the caller observes are all the child's
@@ -52,6 +52,7 @@ except ImportError:  # pragma: no cover - Windows has no POSIX rlimits
 
 _RLIMIT_FLAG = "--rlimits="
 _OOM_BIAS_FLAG = "--oom-bias"
+_NICE_FLAG = "--nice="
 _CHDIR_FD_FLAG = "--chdir-fd="
 _CTTY_FD_FLAG = "--ctty-fd="
 # The three jobs ``Popen`` does in a forked child, done here instead when the
@@ -156,6 +157,23 @@ def _bias_oom_score() -> None:
             os.write(fd, b"1000")
         finally:
             os.close(fd)
+    except OSError:
+        pass
+
+
+def _lower_cpu_priority(increment: int) -> None:
+    """Raise this process's nice value by *increment* (``os.nice``).
+
+    So a busy agent tree yields CPU to the gateway under contention when no
+    cgroup ``CPUWeight`` covers it. Inherited across ``exec`` and by
+    descendants. Unprivileged (only lowering priority), best-effort -- never
+    raises.
+    """
+    lower = getattr(os, "nice", None)
+    if lower is None or increment <= 0:
+        return
+    try:
+        lower(increment)
     except OSError:
         pass
 
@@ -315,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     spec = ""
     want_oom_bias = False
+    nice_increment = 0
     chdir_fd: int | None = None
     ctty_fd: int | None = None
     want_setsid = False
@@ -326,6 +345,17 @@ def main(argv: list[str] | None = None) -> int:
             spec = item[len(_RLIMIT_FLAG) :]
         elif item == _OOM_BIAS_FLAG:
             want_oom_bias = True
+        elif item.startswith(_NICE_FLAG):
+            raw_nice = item[len(_NICE_FLAG) :]
+            try:
+                nice_increment = int(raw_nice)
+            except ValueError:
+                nice_increment = -1
+            if nice_increment < 0:
+                # Fail closed like the other valued flags: a malformed value
+                # means the caller and this shim disagree about the contract.
+                sys.stderr.write(f"spawn shim: bad {_NICE_FLAG}{raw_nice!r}\n")
+                return _EXEC_FAILED
         elif item == _SETSID_FLAG:
             want_setsid = True
         elif item == _CLOSE_FDS_FLAG:
@@ -409,6 +439,8 @@ def main(argv: list[str] | None = None) -> int:
     _apply_rlimits(pairs)
     if want_oom_bias:
         _bias_oom_score()
+    if nice_increment:
+        _lower_cpu_priority(nice_increment)
     # execv, not execve: the environment this process was given IS the
     # environment the caller built for the command, and passing it through
     # untouched avoids rebuilding the whole mapping under the new limits.

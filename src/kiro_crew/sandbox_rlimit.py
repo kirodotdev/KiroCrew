@@ -329,6 +329,21 @@ _PROFILE_OOM_BIAS = {
     RLIMIT_PROFILE_NONE: False,
 }
 
+# profile -> nice increment the shim applies before exec. Only the session host
+# the cgroup scope did NOT wrap gets one, for the same reason it gets the OOM
+# bias: with no ``CPUWeight`` on the agent tree, every runtime and every build
+# it starts competes with the gateway at nice 0. A host running a dozen busy
+# runtimes then starves the gateway's event loop until it stalls or dies, and
+# every session dies with it. Ten matches the first-party worker children
+# (``_CHILD_NICE``): the agents still get all the idle CPU, and yield it to the
+# gateway only under contention. A wrapped session host keeps nice 0: its scope
+# carries ``CPUWeight`` when the cpu controller is delegated. A scope without
+# cpu delegation gets neither ``CPUWeight`` nor a nice increment.
+_UNBOUNDED_SESSION_HOST_NICE = 10
+_PROFILE_NICE = {
+    RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST: _UNBOUNDED_SESSION_HOST_NICE,
+}
+
 # The shim's own argv contract, mirrored here so a cached prefix can be extended
 # for one spawn. Kept as literals rather than imported from the shim module: the
 # shim is consumed as a source string captured at import time, never imported from
@@ -336,6 +351,7 @@ _PROFILE_OOM_BIAS = {
 _SHIM_ARGV_SEPARATOR = "--"
 _SHIM_CHDIR_FD_FLAG = "--chdir-fd="
 _SHIM_CTTY_FD_FLAG = "--ctty-fd="
+_SHIM_NICE_FLAG = "--nice="
 _SHIM_SETSID_FLAG = "--setsid"
 _SHIM_CHDIR_FLAG = "--chdir="
 _SHIM_CLOSE_FDS_FLAG = "--close-fds"
@@ -434,7 +450,8 @@ def spawn_shim_argv(
         return ()
     spec = _rlimit_spec(profile)
     bias = _PROFILE_OOM_BIAS.get(profile, True)
-    if not spec and not bias and ctty_fd is None:
+    nice = _PROFILE_NICE.get(profile, 0)
+    if not spec and not bias and not nice and ctty_fd is None:
         # Nothing to do post-exec: skip the interpreter hop entirely rather than
         # pay ~10ms to exec a shim that would only exec again.
         _SHIM_ARGV_CACHE[key] = ()
@@ -444,6 +461,8 @@ def spawn_shim_argv(
         argv.append(f"--rlimits={spec}")
     if bias:
         argv.append("--oom-bias")
+    if nice:
+        argv.append(f"{_SHIM_NICE_FLAG}{nice}")
     if ctty_fd is not None:
         argv.append(f"{_SHIM_CTTY_FD_FLAG}{ctty_fd}")
     argv.append(_SHIM_ARGV_SEPARATOR)
@@ -483,8 +502,9 @@ def _preexec_for_profile(profile: str) -> "Callable[[], None] | None":
     if profile == RLIMIT_PROFILE_NONE:
         return None
     if profile in (RLIMIT_PROFILE_SESSION_HOST, RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST):
-        # The OOM bias rides on the shim only; a shim-less install keeps the
-        # session host's NOFILE headroom, never the tool's 1024 cap.
+        # The OOM bias and the nice increment ride on the shim only; a shim-less
+        # install keeps the session host's NOFILE headroom, never the tool's
+        # 1024 cap.
         return session_host_preexec()
     if profile == RLIMIT_PROFILE_BUILD:
         return build_resource_limit_preexec()
