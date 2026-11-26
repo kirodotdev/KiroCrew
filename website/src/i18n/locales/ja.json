@@ -14844,6 +14844,7 @@
       "delivery_unconfirmed_pending": "送信はまだ確認されていません。",
       "delivery_unconfirmed_resend_manually": "送信はまだ確認できていません。1分以内に返信がなく、上のメッセージが確認待ちのままなら、コピーしてもう一度送信してください。最初の送信が届いていた場合、エージェントは同じメッセージを2回受け取ります。",
       "could_not_read_file_reason": "{{path}} を読み取れませんでした（{{reason}}）",
+      "could_not_read_unc_path": "{{path}} を読み取れませんでした。{{productName}} は自身のフォルダー以外のネットワークパスを開きません。WSL のプロジェクトでは、WSL 内で {{productName}} を実行し、Windows のブラウザーからダッシュボードを開いてください。",
       "screenshot_failed_reason": "スクリーンショットに失敗しました：{{reason}}",
       "snip_refused_in_embedded_pane": "このタブでは画面の切り取りを使えません。自分でスクリーンショットを撮って添付してください。",
       "source_hosts_failed_reason": "セルフホストの GitLab と Jira のリンクは、現在変更で開けません：{{reason}}",

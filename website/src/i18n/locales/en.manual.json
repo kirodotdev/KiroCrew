@@ -7205,6 +7205,7 @@
       "delivery_unconfirmed_pending": "Delivery not confirmed yet.",
       "delivery_unconfirmed_resend_manually": "Delivery not confirmed yet. If no reply arrives within a minute and the message above still says it is pending, copy it and send it again. If the first send did get through, the agent receives it twice.",
       "could_not_read_file_reason": "Could not read {{path}} ({{reason}})",
+      "could_not_read_unc_path": "Could not read {{path}}: {{productName}} does not open network paths outside its own folders. For a WSL project, run {{productName}} inside WSL and open its dashboard from your Windows browser.",
       "screenshot_failed_reason": "Screenshot failed: {{reason}}",
       "snip_refused_in_embedded_pane": "Screen snip isn't available in this tab. Take a screenshot yourself and attach it.",
       "source_hosts_failed_reason": "Self-hosted GitLab and Jira links can't be opened in Changes for now: {{reason}}",

@@ -32,7 +32,7 @@ import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { ContentSkeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { lazyRetry } from '../../components/lazyRetry'
-import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause, type PartialCause } from '../../utils/fileReadQuery'
+import { fetchFileRead, fileReadFailureMessage, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause, type PartialCause } from '../../utils/fileReadQuery'
 import { errMessage } from '../../utils/thunkError'
 import { useAppSelector } from '../../store'
 import { mcpAppKey } from '../../store/chatSlice'
@@ -303,9 +303,7 @@ export function HydratingFileTab({ path, slot, onDiskContent }: {
         // The same sentence the chip click reports for a failed read: a human
         // line naming the file, with the status as the detail -- a bare "HTTP
         // 500" is a code machines produce, not something a reader can act on.
-        setError(i18nT('pages.chatPage.could_not_read_file_reason', {
-          path, reason: i18nT('pages.chatPage.http_status', { status: r.status }),
-        }))
+        setError(fileReadFailureMessage(path, r))
       } catch (e) {
         if (!ac.signal.aborted) {
           setError(i18nT('pages.chatPage.could_not_read_file_reason', {

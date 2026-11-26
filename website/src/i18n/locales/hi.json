@@ -15208,6 +15208,7 @@
       "delivery_unconfirmed_pending": "डिलिवरी अभी पुष्ट नहीं हुई।",
       "delivery_unconfirmed_resend_manually": "डिलीवरी की पुष्टि अभी नहीं हुई। अगर एक मिनट में कोई जवाब नहीं आता और ऊपर वाला संदेश अब भी लंबित दिखता है, तो उसे कॉपी करके दोबारा भेजो। अगर पहली बार भेजा गया संदेश पहुँच गया था, तो एजेंट को यह दो बार मिलेगा।",
       "could_not_read_file_reason": "{{path}} पढ़ा नहीं जा सका ({{reason}})",
+      "could_not_read_unc_path": "{{path}} पढ़ा नहीं जा सका: {{productName}} अपने फ़ोल्डरों के बाहर के नेटवर्क पाथ नहीं खोलता। WSL प्रोजेक्ट के लिए, {{productName}} को WSL के अंदर चलाओ और उसका डैशबोर्ड अपने Windows ब्राउज़र से खोलो।",
       "screenshot_failed_reason": "स्क्रीनशॉट विफल: {{reason}}",
       "snip_refused_in_embedded_pane": "इस टैब में स्क्रीन स्निप उपलब्ध नहीं है। खुद स्क्रीनशॉट लो और उसे संलग्न करो।",
       "source_hosts_failed_reason": "सेल्फ-होस्टेड GitLab और Jira लिंक अभी बदलाव में नहीं खुल सकते: {{reason}}",

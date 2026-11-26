@@ -16,7 +16,7 @@ import type { ChatMessage } from '../../../types'
 import { mergeIntoDraft } from '../../../utils/chatDrafts'
 import { detectPreviewUrl, previewFeedDecision } from '../../../utils/detectPreviewUrl'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS } from '../../../utils/fenceShell'
-import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause } from '../../../utils/fileReadQuery'
+import { fetchFileRead, fileReadFailureMessage, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause } from '../../../utils/fileReadQuery'
 import { safeSetItem } from '../../../utils/safeStorage'
 import { onTerminalReady, sendRawToTerminalSession } from '../../../utils/terminalRegistry'
 import { errMessage } from '../../../utils/thunkError'
@@ -267,10 +267,9 @@ export function useColdFileTabHydration({ tabsCtl, showActionError }: {
         // Writing the error sentence into the tab made it look like the file's
         // own text — and a clean, saveable one at that.
         reportedColdReadsRef.current.add(t.id)
-        const reason = r.isError
-          ? (errMessage(r.error) || i18nT('pages.chatPage.unknown_error'))
-          : i18nT('pages.chatPage.http_status', { status: r.data!.status })
-        showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: t.path!, reason }))
+        showActionError(r.isError
+          ? i18nT('pages.chatPage.could_not_read_file_reason', { path: t.path!, reason: errMessage(r.error) || i18nT('pages.chatPage.unknown_error') })
+          : fileReadFailureMessage(t.path!, r.data!))
       }
     })
   }, [coldFileResults, coldFileTabs, tabsCtl, showActionError])

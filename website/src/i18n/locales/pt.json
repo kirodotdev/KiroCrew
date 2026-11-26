@@ -15572,6 +15572,7 @@
       "delivery_unconfirmed_pending": "Entrega ainda não confirmada.",
       "delivery_unconfirmed_resend_manually": "Entrega ainda não confirmada. Se nenhuma resposta chegar em um minuto e a mensagem acima continuar pendente, copie-a e envie-a novamente. Se o primeiro envio tiver chegado, o agente vai recebê-la duas vezes.",
       "could_not_read_file_reason": "Não foi possível ler {{path}} ({{reason}})",
+      "could_not_read_unc_path": "Não foi possível ler {{path}}: o {{productName}} não abre caminhos de rede fora das próprias pastas. Para um projeto no WSL, execute o {{productName}} dentro do WSL e abra o painel no navegador do Windows.",
       "screenshot_failed_reason": "Falha na captura de tela: {{reason}}",
       "snip_refused_in_embedded_pane": "O recorte de tela não está disponível nesta guia. Faça você mesmo uma captura de tela e anexe-a.",
       "source_hosts_failed_reason": "Por enquanto, os links do GitLab e do Jira auto-hospedados não podem ser abertos em Alterações: {{reason}}",

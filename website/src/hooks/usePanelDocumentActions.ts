@@ -7,7 +7,7 @@ import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
 import { clearInlineDraft, getInlineDraft, type usePanelTabs } from './usePanelTabs'
 import { i18nT } from '../i18n/t'
 import type { Artifact } from '../types'
-import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause } from '../utils/fileReadQuery'
+import { fetchFileRead, fileReadFailureMessage, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause } from '../utils/fileReadQuery'
 import { announceDashboardPreviewOpened, dashboardPreviewRef, dashboardPreviewTargetFromRef } from '../utils/dashboardPreview'
 import { errMessage } from '../utils/thunkError'
 import { optsForReplace } from '../pages/chat/replaceGuard'
@@ -105,7 +105,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
       const { text, ok, status, binary } = read
       if (!ok && status !== 404) {
         // Read failure — nothing in the viewer to lose, so the notice hands off.
-        showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: i18nT('pages.chatPage.http_status', { status }) }))
+        showActionError(fileReadFailureMessage(filePath, read))
         return
       }
       // A 404 is a real answer about the file (it is not on disk), so the
@@ -148,7 +148,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
       ])
       const { text, ok, status, binary } = read
       if (!ok && status !== 404) {
-        showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: i18nT('pages.chatPage.http_status', { status }) }))
+        showActionError(fileReadFailureMessage(filePath, read))
         return
       }
       const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')

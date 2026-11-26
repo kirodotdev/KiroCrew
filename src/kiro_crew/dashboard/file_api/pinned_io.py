@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         _FILE_KINDS_MAX_PATHS,
         _FILE_READ_BINARY_EXTS,
         _FILE_READ_SNIFF_BYTES,
+        _UNC_PATH_REFUSED_ERROR,
         MEMORY_DB_FILE,
         SQLITE_SIDECAR_SUFFIXES,
         _path_probe_stall_key,
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
         _probe_request_path,
         _run_path_probe,
         _sel,
+        _unc_path_refused,
         atomic_write,
         bounded_read,
         config_dir,
@@ -370,6 +372,12 @@ def _open_refusal(denied: _OpenDenied, *, tool_name: str) -> _OpenRefusal:
     code, res = denied.code, denied.path
     if code == "invalid_path":
         _log("denied", res)
+        if _unc_path_refused(res):
+            return _OpenRefusal(
+                web.json_response(
+                    {"error": _UNC_PATH_REFUSED_ERROR, "code": "unc_path_refused"}, status=400
+                )
+            )
         return _OpenRefusal(web.json_response({"error": "invalid or forbidden path"}, status=400))
     if code == "sensitive_path":
         _log("denied", res, "sensitive_path")

@@ -18,6 +18,7 @@
  * that keeps the last copy of a deleted file names a partial one as partial,
  * and why.
  */
+import { i18nT } from '../i18n/t'
 import { fileReadUrl } from './fileReadUrl'
 
 /** What a `['file-read', path]` cache entry holds. */
@@ -36,6 +37,26 @@ export interface FileReadResult {
   /** The body is not the file as written: the bytes were not valid UTF-8 and
    *  the decode substituted replacement characters (`X-Lossy-Decode`). */
   lossy: boolean
+  /** The refusal's machine `code` from a failed read's JSON body, when it has one. */
+  code?: string
+}
+
+/** The sentence a failed (non-404) read is reported with. A network path the
+ *  gateway will not open (`unc_path_refused`) says why and what to do; any
+ *  other failure names its HTTP status. */
+export function fileReadFailureMessage(filePath: string, r: Pick<FileReadResult, 'status' | 'code'>): string {
+  if (r.code === 'unc_path_refused') return i18nT('pages.chatPage.could_not_read_unc_path', { path: filePath })
+  return i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: i18nT('pages.chatPage.http_status', { status: r.status }) })
+}
+
+async function failureCode(res: Response): Promise<string | undefined> {
+  try {
+    const body: unknown = await res.json()
+    const code = (body as { code?: unknown } | null)?.code
+    return typeof code === 'string' ? code : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** Why a read handed over less than the file as written. */
@@ -76,5 +97,6 @@ export async function fetchFileRead(filePath: string, signal?: AbortSignal, slot
     truncated: res.headers.get('X-Truncated') === 'true',
     redacted: res.headers.get('X-Redacted') === 'true',
     lossy: res.headers.get('X-Lossy-Decode') === 'true',
+    ...(res.ok ? {} : { code: await failureCode(res) }),
   }
 }
