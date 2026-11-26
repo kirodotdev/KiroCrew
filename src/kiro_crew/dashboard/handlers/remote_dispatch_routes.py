@@ -450,14 +450,14 @@ async def check_version(mgr: Any, instance_id: str) -> str:
 def skewed_reply(status: int, payload: Any) -> bool:
     """Whether a peer reply says the crew does not know the call.
 
-    A plain (non-JSON) ``404`` is a route the crew does not serve (:func:`peer_call`
-    returns it with no body); a ``400`` coded ``unknown_field`` is a body field it
-    does not take. A JSON ``404`` is the crew's own answer (no such session), and a
-    ``5xx`` is a fault, not a skew.
+    Only a plain (non-JSON) ``404``: a route the crew does not serve (:func:`peer_call`
+    returns it with no body). A JSON ``404`` is the crew's own answer (no such
+    session), and a ``5xx`` is a fault, not a skew. No peer route the hub calls
+    refuses an unknown body field with a code of its own (slot create ignores one;
+    the ``work-item`` PATCH answers ``invalid_value`` naming the field), so a 400 is
+    left as the crew's refusal.
     """
-    if status == 404 and payload is None:
-        return True
-    return status == 400 and isinstance(payload, dict) and payload.get("code") == "unknown_field"
+    return status == 404 and payload is None
 
 
 def incompatible_error(instance_id: str, what: str) -> CrewCallError:

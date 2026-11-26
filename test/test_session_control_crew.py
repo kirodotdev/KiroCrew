@@ -721,21 +721,15 @@ def test_a_disconnected_crew_is_refused_typed(env):
     assert (status, body["code"]) == (503, "proxy_peer_not_connected")
 
 
-@pytest.fixture
-def _fresh_skew(monkeypatch):
-    monkeypatch.setattr(crew, "_SKEW_WARNED", set())
-    monkeypatch.setattr(crew, "_PEER_VERSIONS", {})
-
-
 @pytest.mark.parametrize("version", ["0.0.1", "0"])
-def test_a_version_skewed_crew_still_dispatches(env, _fresh_skew, version):
+def test_a_version_skewed_crew_still_dispatches(env, version):
     env.peer.version = version
     target = _create(env)
     assert env.peer.calls[0]["path"] == "api/chat/slots"
     assert _call(env, "send", crew="lab", target=target, message="go")[0] == 200
 
 
-def test_a_version_skew_warns_once_per_crew_and_version(env, _fresh_skew, caplog):
+def test_a_version_skew_warns_once_per_crew_and_version(env, caplog):
     env.peer.version = "0.0.1"
     with caplog.at_level(logging.WARNING, logger=crew.logger.name):
         target = _create(env)
@@ -746,7 +740,7 @@ def test_a_version_skew_warns_once_per_crew_and_version(env, _fresh_skew, caplog
     assert "0.0.1" in warned[0].getMessage()
 
 
-def test_a_route_the_crew_lacks_names_both_versions(env, _fresh_skew):
+def test_a_route_the_crew_lacks_names_both_versions(env):
     env.peer.version = "0.0.1"
     target = _create(env)
     env.peer.content_type = "text/plain"  # aiohttp's own 404: no such route
@@ -754,13 +748,6 @@ def test_a_route_the_crew_lacks_names_both_versions(env, _fresh_skew):
     status, body = _call(env, "stop", crew="lab", target=target)
     assert (status, body["code"]) == (502, "crew_peer_incompatible")
     assert "runs 0.0.1" in body["error"] and kiro_crew.__version__ in body["error"]
-
-
-def test_a_field_the_crew_does_not_take_is_a_version_hint(env, _fresh_skew):
-    target = _create(env)
-    env.peer.reply("POST", "api/chat", 400, {"error": "no", "code": "unknown_field"})
-    status, body = _call(env, "send", crew="lab", target=target, message="go")
-    assert (status, body["code"]) == (502, "crew_peer_incompatible")
 
 
 @pytest.mark.parametrize(
@@ -771,7 +758,7 @@ def test_a_field_the_crew_does_not_take_is_a_version_hint(env, _fresh_skew):
         (400, {"error": "bad", "code": "invalid_steer"}, "crew_peer_refused"),
     ],
 )
-def test_other_peer_failures_keep_their_codes(env, _fresh_skew, status, payload, code):
+def test_other_peer_failures_keep_their_codes(env, status, payload, code):
     target = _create(env)
     env.peer.reply("POST", f"api/chat/slots/{target}/stop", status, payload)
     _, body = _call(env, "stop", crew="lab", target=target)
