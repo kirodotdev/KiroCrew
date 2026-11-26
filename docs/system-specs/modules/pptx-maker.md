@@ -574,7 +574,10 @@ sensitive-path check and the governance ceiling — would never be reached.
     decoded head actually begins with a real raster signature
     (`routes._has_bitmap_signature`: the shared `messaging.raster.sniff_raster_mime`
     table, which `messaging/raster.py` owns, plus the `ftyp` box at offset 4 for
-    AVIF/HEIF). Anything else stays in the text and is scanned as ordinary prose.
+    AVIF/HEIF). The adopted repository asks the same table through the public
+    `apps.backend_sdk.sniff_raster_mime` (seam level 14, app-kit-platform §40), so
+    its pin carries `minAppSdkLevel` 14. Anything else stays in the text and is
+    scanned as ordinary prose.
     Both directions are pinned per format: a fake bitmap body cannot carry a
     credential, and every real signature survives.
     **And the signature is necessary, not sufficient.** A correct header only proves
