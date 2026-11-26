@@ -596,9 +596,9 @@ receive only part of it -- a product destination reporting how Kiro Crew is used
 whose exported set is a reviewed list rather than everything the process happens
 to record.
 
-So `OtlpDestination` carries three optional NARROWING fields. Each can only
+So `OtlpDestination` carries four optional NARROWING fields. Each can only
 reduce or label what THAT destination receives; none of them can widen anything,
-reach the local sink, or touch another destination. All three default to no
+reach the local sink, or touch another destination. All four default to no
 narrowing, so a destination that sets none of them gets the full payload.
 
 | Field | Default | What it does |
@@ -606,8 +606,9 @@ narrowing, so a destination that sets none of them gets the full payload.
 | `allow: frozenset[str] \| None` | `None` | A metric whose name is not in the set is dropped before encoding. `None` sends every metric collected. Full instrument names, `kirocrew.` prefix included. |
 | `point_attributes: Mapping[str, str]` | empty | Fixed pairs added to every exported data point of this destination. |
 | `resource_allow: frozenset[str] \| None` | `None` | This destination's batches carry a `Resource` reduced to these keys. A key the shared resource does not set is simply absent. |
+| `named_entity_namespaces: frozenset[str]` | empty | The namespaces whose `<namespace>.<app>` `Entity` values (apps from a registry the edition named) this destination may see. Any other namespaced `Entity` is sent as `private`, with that point's `entity_version`; empty names nothing. The local sink and `telemetry.otlp_endpoint*` entries keep names. Counter points left with the same attributes are summed into one, so the destination sees one `private` series. |
 
-`metrics/destination_filter.py` enforces all three as an exporter WRAPPER that
+`metrics/destination_filter.py` enforces all four as an exporter WRAPPER that
 `_build_otlp_reader` puts around that destination's own exporter. The descriptor
 declares the narrowing; the core performs it. Four properties follow from where
 the wrapper sits:
@@ -3245,7 +3246,7 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.lesson.injected` | counter | `hit` | each admitted turn composed with a lesson tier |
 | `kirocrew.skill.lazy_load.count` | counter | adds `skill`: a shipped skill id (nested ones by their path), `custom` or `other` | each on-demand skill body load; the duration histogram keeps `hit` alone |
 | `kirocrew.app.task.completed` | counter, **deprecated** | `app`, `outcome` (kept in the manifest only) | nowhere: retired, no longer recorded. It counted Papyrus compiles; its manifest row stays `deprecated` so the name is never reused |
-| `kirocrew.app.installed` | counter | `app`: `app_public_id`, a shipped built-in's `app.json` name, the name of an app whose install record says it came from the public store (`apps/store_origin.py`, read at install, so a later delist keeps it), else `private`; `entity_version`: `app_public_version`, the app's version when it is `N.N.N` (at most four digits each), `other` for any other version, `private` when `app` is; `via`: `store` / `default` / `other` | the first successful `install_from_registry` of an app, after its provenance is written; `via=default` from the default-apps pass. An update is not counted |
+| `kirocrew.app.installed` | counter | `app`: `app_public_id`, a shipped built-in's `app.json` name, the name of an app whose install record says it came from the public store (`apps/store_origin.py`, read at install, so a later delist keeps it), `<namespace>.<name>` for an app from a registry whose edition row sets `appNamespace`, else `private`; `entity_version`: `app_public_version`, the app's version when it is `N.N.N` (at most four digits each), `other` for any other version, `private` when `app` is; `via`: `store` / `default` / `other` | the first successful `install_from_registry` of an app, after its provenance is written; `via=default` from the default-apps pass. An update is not counted |
 | `kirocrew.app.updated` | counter | `app`, `entity_version` (the new version) and `via`, as on `kirocrew.app.installed` | a successful `install_from_registry` over an installed app, after its provenance is written (`store_origin.count_install`) |
 | `kirocrew.app.uninstalled` | counter | `app` and `entity_version` (the removed version), read before the install record is removed; `keep_data`: `true` / `false` | `uninstall_app` once it commits; a `retired_builtin` cleanup is Crew's own removal and is not counted |
 | `kirocrew.app.session_started` | counter | `app` and `entity_version` of the provider's `owning_app`, as on `kirocrew.app.installed`; `kind`: the session's `session_kind` (9 values) | `record_session_started`, right after it counts `kirocrew.session.started`, when the provider's trusted `owning_app` (the caller's slot app) is set; a failure here leaves `session.started` counted |
