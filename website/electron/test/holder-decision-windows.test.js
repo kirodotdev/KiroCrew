@@ -218,3 +218,28 @@ test("the update stop's bundle check reads the listener's executable on Windows,
   });
   assert.strictEqual(await junction.decision.isCurrentBundleGatewayForUpdate(), true);
 });
+
+// The update stop's bundle check reads the same snapshot, so it answers "not
+// this bundle's gateway" on a null one.
+const OWN_EXE = "C:\\New\\resources\\backend-dist\\kirocrew-backend\\python.exe";
+const OWN_COMMAND = `"${OWN_EXE}" ${OWN_EXE} -m kiro_crew gateway --no-open --port 5476`;
+
+test("one failed netstat run still identifies this bundle's gateway for the update stop", async () => {
+  const netstat = netstatSnapshot(1);
+  const { decision } = windowsHolder({
+    command: OWN_COMMAND,
+    snapshotGatewayPortPids: netstat.snapshotGatewayPortPids,
+  });
+  assert.strictEqual(await decision.isCurrentBundleGatewayForUpdate(), true);
+  assert.strictEqual(netstat.runs(), 2, "the second attempt named the listener");
+});
+
+test("a netstat that never answers still reads as not this bundle's gateway", async () => {
+  const netstat = netstatSnapshot(Infinity);
+  const { decision } = windowsHolder({
+    command: OWN_COMMAND,
+    snapshotGatewayPortPids: netstat.snapshotGatewayPortPids,
+  });
+  assert.strictEqual(await decision.isCurrentBundleGatewayForUpdate(), false);
+  assert.strictEqual(netstat.runs(), 2, "bounded: two attempts, then unknown");
+});
