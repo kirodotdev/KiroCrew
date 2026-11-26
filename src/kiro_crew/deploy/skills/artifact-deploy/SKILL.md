@@ -210,6 +210,9 @@ Python first on `PATH`.
 - **Deploy (static)**: `scripts/deploy.sh <app_dir> [--slug NAME] [--ttl HOURS] [--profile P] [--region R]`
 - **Deploy (fullstack)**: `scripts/deploy-app.sh <app_dir> --slug NAME [--table] [--runtime R] [--handler H] [--wait] [--profile P] [--region R]`
 - **Deploy (backend only)**: `scripts/deploy-backend.sh <handler_dir> --slug NAME [--table] [--runtime R] [--handler H] [--wait] [--profile P] [--region R]`
+  (it stops before uploading the code archive if the base stack's bucket policy
+  does not deny CloudFront `_backends/`; run `deploy.sh` once to apply the
+  current base template)
 - **Install reaper**: `scripts/install-reaper.sh [--rate 'rate(1 hour)'] [--alarm-email EMAIL] [--profile P] [--region R]`
 - **Teardown**: `scripts/teardown.sh <slug> [--profile P] [--region R]`
 - **Lifecycle**: `scripts/list.sh`, `scripts/cost.sh [slug]`, `scripts/persist.sh <slug>`, `scripts/detach_backend.py --region R --dist-id ID --slug NAME [--profile P]`
