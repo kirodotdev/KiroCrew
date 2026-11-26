@@ -25,7 +25,7 @@ from kiro_crew.dashboard.slot_ownership import TASK_REVIEW_SLOT_PREFIX, task_rev
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, bind_session_execution
 from kiro_crew.hooks import FileTooLargeError, validate_file_path
-from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
+from kiro_crew.llm_helpers import RefusalHopText, _steer_host_deny, unfinished_turn_error
 from kiro_crew.messaging.driver import strip_steering_markers
 from kiro_crew.security import (
     is_sensitive_path,
@@ -1436,8 +1436,9 @@ async def _run_refine(
         client, _is_new, _resumed = await state.sessions.get_or_create(
             session_key, start_priority=start_priority
         )
-
+        refusal = RefusalHopText()
         async for event in client.stream(prompt):
+            state._refine_text = refusal.fold(event, state._refine_text)
             if event.kind == EVENT_TEXT_CHUNK:
                 state._refine_text += event.text
                 now = _time.monotonic()
