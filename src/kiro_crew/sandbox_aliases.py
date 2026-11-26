@@ -120,7 +120,12 @@ _CREW_ALIAS_CHAIN_DEGRADE_LEAVES: frozenset[str] = frozenset(_MD_NOTEBOOK_RETIRE
 #:   repositories. Reachable from inside the sandbox rather than only by pre-planting: the
 #:   Notes backend is itself a sandboxed spawn holding a legitimate window on this leaf, so
 #:   one agent can create the second name and an ordinary session then reads the token.
-#: * ``ops_mission_control_secrets.json`` -- the app's credential store by name.
+#: * ``ops_mission_control_secrets.json`` -- the app's provider-token store at its retired
+#:   root name, kept for the restore reason below.
+#: * ``apps/ops-mission-control/data/secrets/secrets.json`` -- the same store at its live
+#:   name, inside the app's declared ``secrets/`` directory. A directory declaration does
+#:   not judge the files in it, so the store file is named here, as the Notes PAT is: a
+#:   hard-linking backup of the data home makes a second, unmasked name for it all the same.
 #: * ``browser-cookies.txt``, ``playwright-storage-state.json`` and
 #:   ``playwright-extension-token`` -- browser session material: site cookies, the storage
 #:   state that carries them plus localStorage tokens, and the extension's bearer token.
@@ -148,6 +153,7 @@ _CREW_HARDLINK_REFUSED_LEAVES: frozenset[str] = frozenset(
         _MD_NOTEBOOK_STATE_LEAVES[0],
         f"workspace/{MD_NOTEBOOK_APP_NAME}/pat",
         "ops_mission_control_secrets.json",
+        "apps/ops-mission-control/data/secrets/secrets.json",
         "browser-cookies.txt",
         "playwright-storage-state.json",
         "playwright-extension-token",

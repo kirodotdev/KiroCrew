@@ -54,11 +54,16 @@ APP_NAMES = ("ops_mission_control", "ops-mission-control")
 #: seam. Each row is deleted together with the file, table or tool it names.
 KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
     {
-        # -- The sandbox's leaf tables. The app's credential store and autonomy
-        #    ceiling are HIDDEN / READONLY crew-home leaves, and its rotation schedule
-        #    and incident index are write-protected. These are the core's ceiling
-        #    over the agent, which an app may not write for itself.
+        # -- The sandbox's leaf tables. The app's autonomy ceiling is a HIDDEN /
+        #    READONLY crew-home leaf, and its rotation schedule and incident index are
+        #    write-protected. These are the core's ceiling over the agent, which an
+        #    app may not write for itself. Its credential store is masked by the app's
+        #    own ``credentialMasks``, which also feeds the tool gate; the core keeps
+        #    only the store's retired root name (hidden, hard-link refused, fenced),
+        #    and the live store file on the hard-link refused set, because a directory
+        #    declaration does not judge the files in it (the Notes PAT row's reason).
         ("sandbox_aliases.py", "ops_mission_control_secrets.json"),
+        ("sandbox_aliases.py", "apps/ops-mission-control/data/secrets/secrets.json"),
         ("sandbox_leaves.py", "ops_mission_control_secrets.json"),
         ("sandbox_leaves.py", "ops_mission_control_policy.json"),
         ("security/paths_lists.py", "ops_mission_control_secrets.json"),

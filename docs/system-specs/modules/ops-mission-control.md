@@ -57,16 +57,18 @@ shrink. Each row is deleted in the change that removes what it names:
   policies already name. No core constant names it, and adoption's E10 no longer
   refuses the app on it.
 * **The sandbox leaf tables** (`sandbox_leaves.py`, `sandbox_aliases.py`,
-  `security/paths_lists.py`) that hide the secret store, hold the autonomy ceiling
-  read-only and write-protect the rotation schedule and the incident index. The
-  manifest's `credentialMasks` (`app-kit-platform.md`, section 37) cannot carry the
-  secret store's rows: it masks only files under the app's own data directory, and the
-  store is `<data home>/ops_mission_control_secrets.json`, at the data-home root. The
-  rows leave when the store lives under `apps/ops-mission-control/data/` and the
-  manifest declares it there (#32681); the root name then stays masked as a retired leaf, as
-  `browser-cookies.txt` does, because a restored backup can bring it back. An adopted
-  record already keeps its store under `data/secrets/` (above), but it rewrites the root
-  file as the wheel copy's downgrade copy, so the rows stay until the wheel copy leaves.
+  `security/paths_lists.py`) that hold the autonomy ceiling read-only and write-protect
+  the rotation schedule and the incident index. The secret store,
+  `<data dir>/secrets/secrets.json` (the adopted copy's layout, so either copy finds the other's
+  tokens), is masked by the app's own `credentialMasks` entry `secrets/`
+  (`app-kit-platform.md`, section 37), which masks the directory whole and reaches the
+  agent tool gate too. The core still names the store's old root name,
+  `ops_mission_control_secrets.json`: it stays masked, hard-link refused and fenced as a
+  retired leaf, as `browser-cookies.txt` does, because a restored backup can bring it
+  back, and the adopted copy rewrites that file as the downgrade copy. The core also puts
+  the live store file on the hard-link refused set (`sandbox_aliases.py`), as it does the
+  Notes PAT: a directory declaration does not judge the files in it, and a hard-linking
+  backup of the data home would otherwise give the tokens a second, unmasked name.
 * **The `security_posture*.py` rows** that classify the app's files: the core's audit of
   the app's code.
 * **The packaged skill** `builtin_skills/ops-mission-control/` and its row in the closed
@@ -753,11 +755,50 @@ we assign.
 
 ### 4. Keystone secret path (security)
 
-`ops_mission_control_secrets.json` on the crew home, registered in
-`security._CREW_SECRET_LEAVES`. That places it on the shared **read+write**
-sensitive-path floor, so the agent's own file tools (`is_sensitive_path`) and shell
-forms (`is_sensitive_bash_command` — `cat`, `>`, `tee`, `tar -C`/`unzip -d`) can
-neither read nor overwrite it.
+`<data dir>/secrets/secrets.json`, the layout the adopted copy keeps. The
+app's `credentialMasks` declares the `secrets/` directory, which the sandbox masks whole
+in every mode (so the lock and the temp a write stages beside the store are masked too)
+and which reaches `security._CREW_SECRET_LEAVES` through the built-in declarations. That
+places it on the shared **read+write** sensitive-path floor, so the agent's own file tools
+(`is_sensitive_path`) and shell forms (`is_sensitive_bash_command` — `cat`, `>`, `tee`,
+`tar -C`/`unzip -d`) can neither read nor overwrite it. A write stages inside that
+directory with `atomic_write(restrict_to_owner=True)`.
+
+An install that kept the store at the data-home root,
+`<crew_home>/ops_mission_control_secrets.json`, has it moved at gateway startup (an
+`on_startup` hook `register_routes` adds runs `migrate_legacy_store` in a worker thread)
+and by the first save or revoke (`KeystoneFileBackend._migrate_legacy`): under the store's
+lock and the old store's lock, copied byte for byte over whatever is at the new path,
+written and fsynced, every directory from the data home down to `secrets/` synced, and
+only then is the root file replaced by the handover marker (`secrets.MOVED_MARKER`).
+
+**The marker decides which file is the store.** The store in `secrets/` counts only while
+the root name holds exactly the marker, as a regular file with one name. Every build masks
+the root name, so only the gateway writes it. A sandbox of an earlier build does not mask
+`data/`, so it can plant the store file in `secrets/` before the first upgraded start; with no
+marker that file is never read (a webhook signature check, a provider poll) or merged into,
+and the move writes the root store over it. A root store that comes back later (a restored
+backup) replaces the marker, so it is the store again and the next move copies it. An
+earlier build reads the marker as a store with no provider and refuses to save into it, so
+a downgrade cannot split the tokens across two files.
+
+A lookup never moves the store, because the provider catalog reads it on the event loop;
+it reads the root file once and follows the marker, so a move between two reads cannot
+show it an empty store. The move is held back, without an error, while a sandbox started
+by an earlier build still runs (`older_sandboxes.sandboxes_masking_only`): that sandbox
+masks the root name and not the new directory, so it would read the tokens there. Until it
+ends, a lookup, a save and a revoke use the root file where it is, and a first save with no
+store yet creates the store at the root; each startup and save retries the move. A root
+store that is a symlink or has a second name (a hard-linked backup) is not moved, so the
+sandbox's multi-link check keeps reading its name. A save refuses when the move fails, so it
+never starts a new store that hides the old one's tokens. Once the marker is written, a save
+or revoke runs no process-table scan, as Notes does after its own move. A save, a revoke or
+the move is refused when the file it would replace has a second hard link, because a replace
+gives the store a fresh inode and the other name would keep the old tokens where the
+sandbox's hard-link check no longer finds them. Every access is refused when a link sits at
+the store or in its directory chain (such a sandbox does not mask `data/`, so it could plant
+one). The
+root name stays masked, hard-link refused and fenced as a retired leaf.
 
 Do NOT move these tokens into `config.json` or the app's `data/config.json`: the
 latter is served over `/api/apps/<name>/config` **without session auth**, and the
@@ -765,21 +806,23 @@ former is writable by any auto-approved agent shell. The owner-only dashboard
 PUT handler is the only writer and opens the path directly, bypassing the gate, so
 Settings still works.
 
-`test_security.py` asserts `SECRETS_FILENAME in security._CREW_SECRET_LEAVES`, so a
-rename that forgets the registration fails the build rather than silently dropping
-the protection.
+`test_security.py` asserts the manifest declaration, the
+`security._CREW_SECRET_LEAVES` row and `secrets_path()` agree, so a rename that
+forgets one fails the build rather than silently dropping the protection.
+
+The wheel copy and the adopted copy keep the store at the same path under the same
+declaration, so an install that ran either finds its tokens under the other. The adopted
+copy additionally rewrites the root file as a downgrade copy; the wheel copy removes the
+root file once it has moved it.
 
 **Retention: credentials outlive an uninstall, deliberately — and it is disclosed.**
-The file sits at the crew-home ROOT, which is what puts it on the sensitive-path floor.
-The consequence is that `uninstall_app` (which removes `apps/<name>/`) cannot reach it,
-so a PagerDuty/Datadog token survives uninstall. Moving it under the app dir would hand
-the agent its own credentials; silently wiping tokens would break the legitimate
+`uninstall_app` keeps `data/` unless the operator purges it, and the masks follow the
+kept data (`app-kit-platform.md`, section 37), so a PagerDuty/Datadog token survives a
+default uninstall. Silently wiping tokens would break the legitimate
 uninstall/reinstall flow. So the behavior stays, and Settings states it plainly next to
 the Revoke button — the only control that changes it. Two tests pin both halves
-(`test_secrets_live_outside_the_app_dir_so_uninstall_cannot_reach_them`,
-`test_settings_discloses_that_uninstall_keeps_credentials`), the first of which also
-fails if a future change moves the file under `apps/` and thereby drops the keystone
-protection.
+(`test_secrets_live_in_the_masked_data_dir_that_uninstall_keeps`,
+`test_settings_discloses_that_uninstall_keeps_credentials`).
 
 **Disable is clean** (verified live): crons fully deregister — `/api/crons` shows zero
 for this app — and every route 403s via `_require_enabled`. Credentials are kept, which
@@ -3001,8 +3044,8 @@ returns to paused after a disable→enable cycle.
 ├── incidents/index.json   # dispatch index — {incident_id: Incident}
 ├── incidents/<id>.md      # postmortem, written when the incident CLOSES (0o600)
 ├── ledger.jsonl           # append-only LedgerEntry stream
-└── rotation.yaml          # optional team schedule, git-synced with the ledger
-<crew_home>/ops_mission_control_secrets.json   # KEYSTONE (see contract 4)
+├── rotation.yaml          # optional team schedule, git-synced with the ledger
+└── secrets/secrets.json   # KEYSTONE, credentialMasks "secrets/" (see contract 4)
 <crew_home>/ops_mission_control_policy.json    # operator-only policy store
 ```
 

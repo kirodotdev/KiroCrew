@@ -158,6 +158,7 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.registry import get_reg
 from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import (  # noqa: F401 -- historical module export
     delete_secret,
     describe_secrets,
+    migrate_legacy_store,
     put_secret,
     redact_tokens,
 )
@@ -467,6 +468,21 @@ async def _settings_write_or_refuse(
 # ---------------------------------------------------------------------------
 
 
+async def _move_legacy_secret_store(_app: web.Application) -> None:
+    """Startup hook: move the root secret store off the loop, fail-open.
+
+    Until the move succeeds a lookup, a save and a revoke use the root store where it is,
+    and the next save retries the move, so a fault here must not stop startup. The message
+    is a fixed literal; the traceback carries no store bytes.
+    """
+    try:
+        await asyncio.to_thread(migrate_legacy_store)
+    except Exception:  # noqa: BLE001 -- a store fault must not break gateway startup
+        logger.exception(  # nosemgrep: python-logger-credential-disclosure
+            "ops-mission-control: could not move the secret store from the data-home root"
+        )
+
+
 def register_routes(app: web.Application) -> None:
     """Register Ops Mission Control's routes on the gateway application."""
     add = app.router
@@ -518,5 +534,10 @@ def register_routes(app: web.Application) -> None:
         get_registry()
     except Exception:  # noqa: BLE001 — a discovery fault must not break gateway startup
         logger.exception("ops-mission-control: registry warm-up failed; will retry lazily")
+
+    # Move an earlier version's root secret store into the app's data directory at startup,
+    # before any request is served, in a worker thread: the move takes two file locks and
+    # two fsyncs, and this function itself runs on the loop.
+    app.on_startup.append(_move_legacy_secret_store)
 
     logger.info("ops-mission-control: routes registered")

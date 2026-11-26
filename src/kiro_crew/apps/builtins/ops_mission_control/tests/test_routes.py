@@ -102,6 +102,31 @@ class TestRouteRegistration(unittest.IsolatedAsyncioTestCase):
             app = web.Application()
             routes.register_routes(app)  # must not raise
 
+    async def test_startup_moves_the_secret_store_in_a_worker_thread(self):
+        """The move takes locks and fsyncs, so it runs at startup and off the loop."""
+        import threading
+
+        app = web.Application()
+        seen: list[bool] = []
+
+        def _record() -> None:
+            seen.append(threading.current_thread() is threading.main_thread())
+
+        with mock.patch.object(routes, "migrate_legacy_store", side_effect=_record):
+            routes.register_routes(app)
+            self.assertEqual(seen, [], "registering must not move the store on the loop")
+            for hook in app.on_startup:
+                await hook(app)
+        self.assertEqual(seen, [False])
+
+    async def test_a_secret_store_move_fault_does_not_break_startup(self):
+        """A lookup reads the root store until the move succeeds, so startup goes on."""
+        app = web.Application()
+        with mock.patch.object(routes, "migrate_legacy_store", side_effect=OSError("eio")):
+            routes.register_routes(app)
+            for hook in app.on_startup:
+                await hook(app)  # must not raise
+
 
 class TestEnabledGate(unittest.IsolatedAsyncioTestCase):
     """Every handler must refuse while the app is disabled."""

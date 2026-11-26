@@ -418,11 +418,11 @@ function ProviderRow({
                 <Trash2 className="lucide-inline" /> {i18nT('apps.opsMissionControl.settingsPanel.revoke_stored_credentials')}
               </Btn>
               {/* Disclose the retention boundary HERE, next to the only control that
-                  changes it. Credentials live in a keystone file at the crew-home root
-                  (they must, for the sensitive-path floor), NOT under the app
-                  directory — so uninstalling the app cannot remove them, and nothing
-                  else tells the user that. Revoking before uninstall is the only way
-                  to be sure a token is gone. */}
+                  changes it. Credentials live in a keystone file in the app's data
+                  directory, which the sandbox masks and a default uninstall keeps —
+                  so uninstalling the app does not remove them, and nothing else
+                  tells the user that. Revoking before uninstall is the only way to
+                  be sure a token is gone. */}
               <p className="text-[12px] text-muted mt-1.5">
                 {i18nT('apps.opsMissionControl.settingsPanel.credential_retention_note')}
               </p>
