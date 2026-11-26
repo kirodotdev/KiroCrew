@@ -708,21 +708,21 @@ class TestDashboardUserGrantsAreAudited:
         assert (DASHBOARD_USER_AUDITEE, "subscribe_logs", "granted") in _wes._sel_last_audit
 
     def test_subscribe_logs_refuses_a_dashboard_session_that_is_not_the_owners(self, monkeypatch):
-        """``GET /api/logs`` refuses this session, so its socket gets no ring
-        replay and no live log frames either.
+        """``GET /api/logs`` refuses this session, and ``/api/ws`` refuses it before
+        the upgrade, so it gets no ring replay and no live log frames, and the
+        refusal is audited.
         """
-        from kiro_crew.dashboard import ws as dashboard_ws
-        from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE
-
         state = self._dashboard_state()
-        with patch.object(dashboard_ws, "_audit_deny") as deny:
+        with patch("kiro_crew.sel.sel") as sel_mock:
             fake_ws = self._drive_one_message(
                 monkeypatch, state, {"type": "subscribe_logs"}, user="U_STRANGER"
             )
 
+        state.register_ws.assert_not_called()
         state.subscribe_logs.assert_not_called()
-        assert not [f for f in fake_ws.sent if f.get("type") == "log"]
-        assert deny.call_args.args == (DASHBOARD_USER_AUDITEE, "subscribe_logs", "owner_only")
+        assert fake_ws.sent == []
+        audit = sel_mock.return_value.log_api_access.call_args.kwargs
+        assert (audit["operation"], audit["outcome"]) == ("ws.connect", "denied")
 
     def test_reconnect_replay_to_the_dashboard_user_takes_the_chokepoint(self, monkeypatch):
         """The subagent reconnect replay writes to the socket directly but

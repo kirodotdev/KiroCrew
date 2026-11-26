@@ -69,8 +69,9 @@ def stt_background(monkeypatch) -> set:
 
 @pytest.fixture
 def as_the_owner(_floor_monkeypatch) -> None:
-    """Every request is the owner's own: prepare, prewarm and the decoder fetch ask
-    the owner gate, which reads the caller's subject against the gateway's owner."""
+    """Every request is the owner's own: status, prepare, prewarm and the decoder
+    fetch ask the owner gate, which reads the caller's subject against the gateway's
+    owner."""
     import sys
 
     module = sys.modules[__name__]
@@ -92,6 +93,7 @@ def _availability(ok: bool, code: str = "", detail: str = ""):
     return core_mod.stt.Availability(ok, code, detail)
 
 
+@pytest.mark.usefixtures("as_the_owner")
 class TestSttStatus:
     """``GET /api/stt/status`` is the runtime half of the settings surface.
 

@@ -436,10 +436,10 @@ class TestPeriodicCheckStatusRefresh:
 
     @pytest.mark.asyncio
     async def test_non_owner_dashboard_user_does_not_start_refresh_loop(self, monkeypatch) -> None:
-        """A signed-in dashboard user who is NOT the owner renders PUBLIC-repo
-        chip status READ-ONLY from the owner-populated caches, so it must NOT
-        start the periodic driver — both the status and visibility refreshes run
-        the operator's credentials and are owner-only."""
+        """A signed-in dashboard user who is neither the owner nor a teammate must
+        NOT start the periodic driver — both the status and visibility refreshes run
+        the operator's credentials and are owner-only. ``/api/ws`` refuses that
+        session before the upgrade, so its handler never reaches the loop."""
         from kiro_crew.dashboard import ws as dashboard_ws
         from kiro_crew.dashboard.handlers import source_providers
 
@@ -458,61 +458,19 @@ class TestPeriodicCheckStatusRefresh:
 
         check_refresh = MagicMock()
         vis_refresh = MagicMock()
-
-        class FakeWebSocket:
-            def __init__(self) -> None:
-                self.closed = False
-                self.sent: list[dict] = []
-                self._flags: dict = {"_is_dashboard_user": True}
-
-            def __setitem__(self, key: str, value) -> None:
-                self._flags[key] = value
-
-            def __getitem__(self, key: str):
-                return self._flags[key]
-
-            def get(self, key: str, default=None):
-                return self._flags.get(key, default)
-
-            async def prepare(self, request) -> None:
-                return None
-
-            async def send_json(self, payload: dict) -> None:
-                self.sent.append(payload)
-
-            async def send_str(self, payload: str) -> None:
-                # Connect snapshot sends a pre-dumped string (offender-note
-                # seam); parse back so assertions keep reading dict frames.
-                self.sent.append(json.loads(payload))
-
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                handler_entered.set()
-                await await_until(hold, what="the socket handler to end")
-                raise StopAsyncIteration
-
-        handler_entered = asyncio.Event()
-        hold = asyncio.Event()
-        fake_ws = FakeWebSocket()
+        open_socket = MagicMock()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", open_socket)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", check_refresh)
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", vis_refresh)
 
-        task = asyncio.ensure_future(dashboard_ws.api_ws(Request()))  # type: ignore[arg-type]
-        try:
-            await await_until(handler_entered, what="the handler to reach its connection loop")
-            # The negative window: a wrongly started refresh loop would fire within these 50 ms.
-            with pytest.raises(asyncio.TimeoutError):
-                await asyncio.wait_for(hold.wait(), timeout=0.05)
-        finally:
-            hold.set()
-        await await_until(task, what="api_ws to end")
-        # Non-owner: the driver never starts, so neither refresh is ever called
-        # and source_link_urls is never polled by a refresh round.
+        result = await dashboard_ws.api_ws(Request())  # type: ignore[arg-type]
+        assert result.status == 403
+        # Refused before the socket is even built, so no driver can exist: neither
+        # refresh is ever called and source_link_urls is never polled.
+        open_socket.assert_not_called()
+        state.register_ws.assert_not_called()
         assert not check_refresh.called
         assert not vis_refresh.called
 
