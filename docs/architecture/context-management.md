@@ -742,7 +742,12 @@ deny over the masked root re-opens `file-read-metadata` on the literal
 directories above each window (`sandbox_plan.window_ancestors`) and nothing else:
 `realpath` of a window `lstat`s every component, so without it a harness that
 canonicalizes its `$TMPDIR` — the Copilot CLI's `session/new` — fails on its own
-directory. Siblings stay unlistable and unreadable. The seams and the
+directory. Siblings stay unlistable and unreadable. One consequence reaches
+git: a worktree of a shared clone placed in one session's scratch reads as
+`prunable` to every other session's git, so one `git worktree prune` there
+deletes its metadata. The prompt's clone recipe therefore forbids that prune in
+a shared clone and tells the agent to remove only worktrees it created. The
+seams and the
 ownership rule: [subagent](../system-specs/modules/subagent.md#one-kirocrew_scratch-per-session-tree).
 
 ## 4. Default agent vs other agents
