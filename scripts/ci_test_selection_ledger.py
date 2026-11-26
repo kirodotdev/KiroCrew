@@ -88,9 +88,9 @@ stay in the ledger and are reported apart.
 
 Two more reasons are decided at report time
 (`scripts/ci_test_selection_ledger_causes.py`). `flake`: another `source`
-failed the file and passed it on a rerun within 14 days. A failure that stays
-caused by the diff, was never rerun and is the file's only failure in the
-ledger carries the note `one_off`, which clears nothing. `from_main`, with
+failed the file and passed it on a rerun within 14 days. A Windows miss that
+stays caused by the diff, was never rerun and is its file's only failure in
+14 days carries the note `one_off`, which changes no count. `from_main`, with
 `--notes`: a main-red issue the watcher wrote named the file while the run was
 created, whether the issue was still open when the pass ran or not. Each pass
 writes the spans of the issues it listed, and whether it left a listed run
@@ -1361,12 +1361,10 @@ def summarize(rows: list[Row], failures: list[Row], tiers: dict[str, Row]) -> st
                     row["tier"],
                     causes.reasons(row),
                     _covered_cell(covered.get((row["run"], row["attempt"]), {})),
-                    "one_off" if row["one_off"] else "",
                 ]
                 for row in picked
             ]
             head = ["PR", "Head", "Run", "File", "Tier", "Not diff-caused", "Covered paths"]
-            head.append("Note")
             lines += ["", *_table(head, body)]
     return "\n".join(lines)
 

@@ -795,10 +795,10 @@ Turning selection off on them is safe.
   `scripts/ci_test_selection_ledger_causes.py`, from the ledger and from
   `notes.jsonl`, where each pass writes the spans of the main-red issues it
   listed in its one issues request. A rerun on the failure's own branch is no
-  flake, and notes that do not read as notes label nothing. A failure that
-  stays counted, was never rerun and is its file's only failure in the ledger
-  carries the note `one_off` in the summary's miss tables: it clears nothing,
-  and a person reads those rows.
+  flake, and notes that do not read as notes label nothing. A Windows miss
+  that stays counted, was never rerun and is its file's only failure in 14
+  days carries the note `one_off` in the Windows miss table: it changes no
+  count, and a person reads those rows.
 - **The Windows auto-off line says whether the pass settled.** A pass reads the
   newest runs first and stops at its budget, so what clears a failure may sit
   in a run it has not reached. A pass that left a listed run unread is not

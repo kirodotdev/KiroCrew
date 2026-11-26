@@ -763,7 +763,7 @@ def test_no_summary_cell_can_carry_markup(gh: FakeGh, tmp_path: Path) -> None:
     assert run_main(tmp_path) == 0
 
     line = next(text for text in summary(tmp_path).splitlines() if "test/test_a.py" in text)
-    assert line == "| 1:x???b??team?? y | aaaaaaaaaaaa | 1 | test/test_a.py | G |  |  | one_off |"
+    assert line == "| 1:x???b??team?? y | aaaaaaaaaaaa | 1 | test/test_a.py | G |  |  |"
 
 
 # -- WINDOWS ------------------------------------------------------------------

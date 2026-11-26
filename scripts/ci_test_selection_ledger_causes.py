@@ -27,9 +27,10 @@ auto-off line holds what the newest settled pass said, when that pass is no
 older than `SETTLED_WITHIN`; with none that recent it is judged on the rows as
 they stand, so a ledger that never settles cannot keep selection on.
 
-`one_off`. A failure counted as caused by the diff whose run was never rerun,
-and whose file no other run in the ledger failed, is noted `one_off`. The note
-clears nothing: the row stays counted, and a person reads it.
+`one_off`. A Windows miss counted as caused by the diff, whose run was never
+rerun and whose file no other run failed within `FLAKE_DAYS`, is noted
+`one_off`. The note is for display: it clears nothing and changes no count,
+and a person reads the row.
 
 The notes file is JSONL beside the ledger, one object per line:
 
@@ -227,9 +228,19 @@ def flake(row: Row, same_file: list[Row], days: float = FLAKE_DAYS) -> bool:
     )
 
 
-def one_off(row: Row, same_file: list[Row]) -> bool:
-    """Whether the failure's run was never rerun and no other run failed the file."""
-    return row["attempt"] == 1 and all(other["run"] == row["run"] for other in same_file)
+def one_off(row: Row, same_file: list[Row], days: float = FLAKE_DAYS) -> bool:
+    """Whether a Windows miss was never rerun and no other run failed its file within `days`."""
+    at = _when(str(row["date"]))
+    return (
+        row["kind"] == "windows_failure"
+        and row["miss"]
+        and row["attempt"] == 1
+        and not any(
+            other["run"] != row["run"]
+            and abs((_when(str(other["date"])) - at).total_seconds()) <= days * 86400
+            for other in same_file
+        )
+    )
 
 
 def reasons(row: Row) -> str:

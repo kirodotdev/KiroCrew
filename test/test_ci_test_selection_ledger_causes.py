@@ -5,8 +5,8 @@ and the in-memory GitHub of `ci_test_selection_ledger_fake.py`. Pinned:
 
 * FLAKE -- a failure is a flake only when another branch failed the file and
   passed it on a rerun, inside the window; its own branch's rerun clears nothing.
-* ONE OFF -- a counted failure never rerun and seen once carries a note, and
-  stays counted.
+* ONE OFF -- a counted Windows miss never rerun and seen once in 14 days
+  carries a note, and every count is what it is without the note.
 * REAL MISS -- a file that fails on one branch alone, head after head, stays
   caused by the diff, with or without notes.
 * FROM MAIN -- a main-red issue the watcher wrote labels the failures created
@@ -145,29 +145,43 @@ def test_a_linux_failure_another_branch_passed_on_a_rerun_is_a_flake_in_the_fit(
 # -- ONE OFF ------------------------------------------------------------------
 
 
-def test_a_counted_failure_never_rerun_and_seen_once_is_noted_one_off_and_stays_counted(
-    gh: FakeGh, tmp_path: Path
+def test_a_windows_miss_never_rerun_and_seen_once_is_noted_one_off_and_no_count_moves(
+    gh: FakeGh, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _twenty_trials(gh)
     gh.messages[MISS] = "PermissionError: [WinError 32] in use"
     win_run(gh, 1, 7, [MISS], date=_day(18))
+    # A Linux miss seen once, and a Windows failure inside the run set: neither is noted.
     failed_run(gh, 2, 6, ["test/test_a.py"], date=_day(18))
+    win_run(gh, 3, 5, ["test/test_in.py"], date=_day(18))
 
     assert _pass(tmp_path) == 0
 
     assert _windows(tmp_path)[1]["one_off"] and _windows(tmp_path)[1]["diff_caused"]
     text = summary(tmp_path)
     assert f"| #7 | aaaaaaaaaaaa | 1 | {MISS} | os | shadow |  |  | one_off |" in text
-    assert "| #6 | aaaaaaaaaaaa | 2 | test/test_a.py | G |  |  | one_off |" in text
-    assert "Windows misses caused by the diff: 1; on fork runs, not counted: 0." in text
-    assert "Misses caused by the diff: 1." in text
-    assert _status(tmp_path)["diff_caused_windows_misses"] == 1
+    assert text.count("one_off") == 1
+    held = ledger.current(rows(tmp_path), None)
+    marked = [*ledger.classify(held, 3.0), *ledger.classify_windows(held, 3.0)]
+    assert sorted((row["run"], row["file"]) for row in marked if row["diff_caused"]) == [
+        (1, MISS),
+        (2, "test/test_a.py"),
+        (3, "test/test_in.py"),
+    ]
+    assert [row["run"] for row in marked if row["one_off"]] == [1]
+    status = _status(tmp_path)
+    assert status["diff_caused_windows_misses"] == 1
+    # With the note never given, the summary differs in that one cell and nothing else.
+    monkeypatch.setattr(ledger.causes, "one_off", lambda row, same_file: False)
+    assert _pass(tmp_path, "--limit", "0") == 0
+    assert summary(tmp_path) == text.replace(" one_off |", "  |")
+    assert _status(tmp_path) == status
 
 
 @pytest.mark.parametrize(
     "seen_again, rerun_red, cleared",
     [
-        # The same branch failed the file on another head: a second sighting.
+        # The same branch failed the file on another head a day later: a second sighting.
         (True, False, False),
         # Rerun, and red again: it was rerun.
         (False, True, False),
@@ -192,6 +206,17 @@ def test_a_failure_seen_twice_rerun_or_cleared_is_not_noted_one_off(
     row = _windows(tmp_path)[1]
     assert row["one_off"] is False and row["diff_caused"] is not cleared
     assert "one_off |" not in summary(tmp_path)
+
+
+def test_a_sighting_outside_the_window_leaves_the_miss_noted_one_off(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    win_run(gh, 1, 7, [MISS], date=_day(2))
+    win_run(gh, 2, 7, [MISS], date=_day(18))
+
+    assert _pass(tmp_path) == 0
+
+    assert [_windows(tmp_path)[run]["one_off"] for run in (1, 2)] == [True, True]
 
 
 # -- REAL MISS ----------------------------------------------------------------
