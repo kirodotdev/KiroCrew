@@ -184,6 +184,16 @@ async def _deliver_cron_agent_result(
                 turn_stats=_turn_stats,
                 stored_folder=await stored_cron_folder(self.dashboard_state, job.id),
             )
+        if job.target_session_key and not job.hide_in_chat:
+            from kiro_crew.dashboard.cron_inject import post_result_to_target_session
+
+            # Best-effort: the job's own tab and the bell still carry the result.
+            try:
+                await post_result_to_target_session(self.dashboard_state, job, result_text)
+            except Exception:
+                logger.warning(
+                    "Cron '%s': posting into the target chat failed", job.name, exc_info=True
+                )
         run_tab = ""
         if job.new_chat_per_run and not job.persistent_session and not job.hide_in_chat:
             # The run's own tab, on the run's own session (``new_chat_per_run``).

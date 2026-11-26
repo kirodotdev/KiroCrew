@@ -398,6 +398,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         on_tab_close="fresh" if j.get("on_tab_close") == "fresh" else "resume",
         folder_id=_guard_str("folder_id"),
         chat_folder_id=_guard_str("chat_folder_id"),
+        target_session_key=_guard_str("target_session_key"),
         project_path=_guard_str("project_path"),
         model=_guard_str("model"),
         last_retry_count=_guard_num("last_retry_count", 0),
@@ -627,6 +628,8 @@ def job_record(j: CronJob) -> dict[str, Any]:
     # A job with no project directory saves to the bytes an older build wrote.
     if j.project_path:
         record["project_path"] = j.project_path
+    if j.target_session_key:
+        record["target_session_key"] = j.target_session_key
     # Written only when set, by the same rule.
     if j.new_chat_per_run:
         record["new_chat_per_run"] = True

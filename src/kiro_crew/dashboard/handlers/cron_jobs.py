@@ -710,6 +710,67 @@ async def _channel_target_kwargs(
     return pair, None
 
 
+def _target_session_refusal(error: str, code: str) -> tuple[str, web.Response]:
+    return "", web.json_response({"error": error, "code": code}, status=400)
+
+
+async def _resolve_target_session(
+    request: web.Request,
+    state: DashboardState,
+    body: dict[str, Any],
+    member_id: str,
+    hide_in_chat: object,
+) -> tuple[str, web.Response | None]:
+    """The ``dashboard:<slot>`` key a new job also posts its result into.
+
+    ``("", None)`` when the body names no ``session_key``. A bare slot name is
+    read as ``dashboard:<slot>``; any other namespace is refused, because only a
+    dashboard chat has a tab the delivery can write to. The chat must be open
+    now and show its own conversation (not a channel's or another job's), and
+    it must belong to the same member as the job: a job does not post into
+    another member's chat. A hidden job has no chat delivery, so it cannot
+    name one. An app cannot name a chat at all: where an agent turn's output
+    lands is the owner's choice.
+    """
+    raw = body.get("session_key")
+    if raw is None or raw == "":
+        return "", None
+    try:
+        name = validate_string_field(body, "session_key", max_len=MAX_SHORT_STRING)
+    except ValidationError as exc:
+        return _target_session_refusal(str(exc), "invalid_session_key")
+    if not name:
+        return "", None
+    if _app_caller(request):
+        return "", _owner_denial_response(request)
+    key = name if ":" in name else f"dashboard:{name}"
+    if not key.startswith("dashboard:"):
+        return _target_session_refusal(
+            "session_key must name a dashboard chat", "unsupported_session_namespace"
+        )
+    if len(key) > MAX_SHORT_STRING:
+        return _target_session_refusal(
+            f"session_key too long (max {MAX_SHORT_STRING})", "invalid_session_key"
+        )
+    if hide_in_chat:
+        return _target_session_refusal(
+            "a job hidden from chat cannot post into a chat", "hidden_job_cannot_target_session"
+        )
+    slot = state.get_slot(key.removeprefix("dashboard:"))
+    linked = (getattr(slot, "linked_session_key", "") or "") if slot is not None else ""
+    if slot is None or (linked and linked != key):
+        return _target_session_refusal("no such open chat", "unknown_session")
+    from kiro_crew.execution_context import read_session_execution
+
+    execution = await asyncio.to_thread(read_session_execution, key)
+    session_member = (execution.member_id if execution is not None else None) or ""
+    if session_member != (member_id or ""):
+        return _target_session_refusal(
+            "that chat belongs to another member", "session_member_mismatch"
+        )
+    return key, None
+
+
 async def api_crons_create(request: web.Request) -> web.Response:
     """POST /api/crons — create a cron job."""
     # Owner identity is a property of a dashboard-user request: ``app == ""`` is
@@ -942,9 +1003,15 @@ async def api_crons_create(request: web.Request) -> web.Response:
         )
         if refused is not None:
             return refused
+    target_session_key, target_err = await _resolve_target_session(
+        request, state, body, member_id or "", hide_in_chat
+    )
+    if target_err is not None:
+        return target_err
     add_kwargs: dict[str, Any] = {
         "channel": channel,
         **channel_target,
+        "target_session_key": target_session_key,
         "agent_id": (agent_id or ""),
         "member_id": member_id or "",
         "model": model_val,

@@ -1,0 +1,171 @@
+"""``session_key`` on ``POST /api/crons``: a job that also posts into a chosen chat.
+
+The create route accepts the chat, refuses one that is unknown, in another
+namespace, in another member's memory or named by a hidden job, and the
+delivery leg posts the result row into the chat the job stored.
+"""
+
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+from body_stream_helpers import attach_body
+
+from kiro_crew.cron import CronService
+from kiro_crew.dashboard import cron_inject
+from kiro_crew.dashboard.handlers import api_crons_create
+from kiro_crew.validation import MAX_SHORT_STRING
+
+
+def _request(body: dict, crons: CronService, slots: dict) -> MagicMock:
+    state = MagicMock()
+    state.crons = crons
+    state.get_slot = lambda name: slots.get(name)
+    request = MagicMock()
+    request.app = {"state": state}
+    attach_body(request, body)
+    return request
+
+
+def _body(**extra) -> dict:
+    return {"name": "later", "message": "say hi", "delay": 3600, **extra}
+
+
+@pytest.fixture()
+def session_member(monkeypatch):
+    """The member each session key's execution record names (absent: none)."""
+    members: dict[str, str | None] = {}
+
+    def _read(key, **_kw):
+        if key not in members:
+            return None
+        return SimpleNamespace(member_id=members[key])
+
+    monkeypatch.setattr("kiro_crew.execution_context.read_session_execution", _read)
+    return members
+
+
+def _chat(linked: str = "") -> SimpleNamespace:
+    return SimpleNamespace(linked_session_key=linked, messages=[])
+
+
+async def _create(tmp_path, body, slots):
+    crons = CronService(base_dir=tmp_path)
+    resp = await api_crons_create(_request(body, crons, slots))
+    return resp, json.loads(resp.text), crons.list_jobs(include_disabled=True)
+
+
+@pytest.mark.asyncio
+async def test_named_open_chat_is_stored_as_the_target(tmp_path, session_member):
+    resp, data, jobs = await _create(tmp_path, _body(session_key="chat-1"), {"chat-1": _chat()})
+    assert resp.status == 200, data
+    assert [j.target_session_key for j in jobs] == ["dashboard:chat-1"]
+    # The job keeps its own identity: the target is delivery only.
+    assert jobs[0].session_key == ""
+    # And the target survives a reload of the store.
+    reloaded = CronService(base_dir=tmp_path).list_jobs(include_disabled=True)
+    assert [j.target_session_key for j in reloaded] == ["dashboard:chat-1"]
+
+
+@pytest.mark.asyncio
+async def test_namespaced_key_is_accepted_as_given(tmp_path, session_member):
+    slots = {"chat-1": _chat("dashboard:chat-1")}
+    resp, data, jobs = await _create(tmp_path, _body(session_key="dashboard:chat-1"), slots)
+    assert resp.status == 200, data
+    assert jobs[0].target_session_key == "dashboard:chat-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [_body(), _body(session_key=""), _body(session_key=None)])
+async def test_no_session_key_stores_no_target(tmp_path, session_member, body):
+    resp, data, jobs = await _create(tmp_path, body, {})
+    assert resp.status == 200, data
+    assert [j.target_session_key for j in jobs] == [""]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_key", "slots", "code"),
+    [
+        ("nope", {}, "unknown_session"),
+        # A tab showing a channel's or a job's conversation is not this chat.
+        ("chat-1", {"chat-1": _chat("slack:C1:1.2")}, "unknown_session"),
+        ("slack:C1:1.2", {}, "unsupported_session_namespace"),
+        (42, {}, "invalid_session_key"),
+        # Within the cap bare, over it once namespaced.
+        ("x" * (MAX_SHORT_STRING - 3), {}, "invalid_session_key"),
+    ],
+)
+async def test_unusable_chat_is_refused_and_nothing_is_written(
+    tmp_path, session_member, session_key, slots, code
+):
+    resp, data, jobs = await _create(tmp_path, _body(session_key=session_key), slots)
+    assert resp.status == 400
+    assert data["code"] == code
+    assert jobs == []
+
+
+@pytest.mark.asyncio
+async def test_chat_of_another_member_is_refused(tmp_path, session_member):
+    session_member["dashboard:chat-1"] = "other-bot"
+    resp, data, jobs = await _create(tmp_path, _body(session_key="chat-1"), {"chat-1": _chat()})
+    assert resp.status == 400
+    assert data["code"] == "session_member_mismatch"
+    assert jobs == []
+
+
+@pytest.mark.asyncio
+async def test_hidden_job_cannot_name_a_chat(tmp_path, session_member):
+    body = _body(session_key="chat-1", hide_in_chat=True)
+    resp, data, jobs = await _create(tmp_path, body, {"chat-1": _chat()})
+    assert resp.status == 400
+    assert data["code"] == "hidden_job_cannot_target_session"
+    assert jobs == []
+
+
+def _job(target: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        id="abcd1234", name="later", target_session_key=target, last_run_ts=0, timezone=""
+    )
+
+
+@pytest.mark.asyncio
+async def test_result_is_posted_into_the_target_chat_once(monkeypatch):
+    posted: list[tuple] = []
+    monkeypatch.setattr(
+        cron_inject,
+        "append_and_surface",
+        lambda state, slot, role, content, cls: (
+            posted.append((slot, role, content)),
+            slot.messages.append({"content": content}),
+        ),
+    )
+    chat = _chat()
+    state = MagicMock()
+    state.get_slot = lambda name: {"chat-1": chat}.get(name)
+    job = _job("dashboard:chat-1")
+
+    assert await cron_inject.post_result_to_target_session(state, job, "hello") is True
+    assert [(s, r) for s, r, _ in posted] == [(chat, "assistant")]
+    assert posted[0][2].endswith("\n\nhello")
+    # The same result again does not stack a second copy.
+    assert await cron_inject.post_result_to_target_session(state, job, "hello") is False
+    assert len(posted) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "slots"),
+    [
+        ("", {"chat-1": _chat()}),
+        ("dashboard:chat-1", {"chat-1": _chat("slack:C1:1.2")}),
+    ],
+)
+async def test_no_target_or_relinked_chat_posts_nothing(monkeypatch, target, slots):
+    monkeypatch.setattr(cron_inject, "append_and_surface", lambda *a, **k: pytest.fail("posted"))
+    state = MagicMock()
+    state.get_slot = lambda name: slots.get(name)
+    assert await cron_inject.post_result_to_target_session(state, _job(target), "hi") is False

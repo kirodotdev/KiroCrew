@@ -27,6 +27,7 @@ from kiro_crew.dashboard.slot_persistence.metadata_values import (
 from kiro_crew.dashboard.state import (
     DashboardState,
     SlotOrigin,
+    append_and_surface,
     durable_row_count,
     note_crew_log_class,
     row_mid,
@@ -1019,6 +1020,52 @@ def inject_cron_result_to_dashboard(
             payload["reset"] = True
         state.broadcast_context_usage(slot.key, payload)
     state.push_slots_update()
+
+
+async def post_result_to_target_session(
+    state: DashboardState, job: "CronJob", result_text: str
+) -> bool:
+    """Post a run's result into the chat the job was created to target.
+
+    ``job.target_session_key`` is a ``dashboard:<slot>`` key that
+    ``POST /api/crons`` accepted. This is a copy, not a move: the job keeps its
+    own tab, its ``cron:{id}`` session and its identity, and the chat gets only
+    the result row, never the prompt row, so it reads as the job's answer and
+    not as a turn the person typed. The row is appended to the live slot,
+    whose save persists it with the rest of that chat.
+
+    A chat that is not loaded is loaded from its transcript first. One the
+    person closed stays closed (``adopt_closed`` is left off): a delivery does
+    not reopen a chat. Returns whether a row was posted; a chat that is gone,
+    closed, or now shows another conversation costs the copy, never the run.
+    """
+    key = job.target_session_key
+    if not isinstance(key, str) or not key.startswith("dashboard:"):
+        return False
+    slot_name = key.removeprefix("dashboard:")
+    if not slot_name or slot_name == cron_tab_name(f"cron:{job.id}"):
+        return False
+    slot = state.get_slot(slot_name)
+    if slot is None:
+        # Body-scope: chat_persistence imports this module's neighbours at load.
+        from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+        from kiro_crew.dashboard.state import load_window_off_loop
+
+        slot = await rehydrate_slot_from_history_async(state, slot_name)
+        if slot is None:
+            return False
+        if getattr(slot, "window_pending", False) is True:
+            await load_window_off_loop(slot)
+    linked = getattr(slot, "linked_session_key", "") or ""
+    if (linked and linked != key) or _app_owned(slot):
+        return False
+    safe_result, _ = redact_exfiltration_urls(result_text)
+    safe_result, _ = redact_credentials(safe_result)
+    content = f"# Cron Job Result: {_safe_job_name(job)}{run_stamp(job)}\n\n{safe_result}"
+    if any(msg.get("content") == content for msg in slot.messages):
+        return False
+    append_and_surface(state, slot, "assistant", content, "msg msg-a")
+    return True
 
 
 def _app_owned(slot: Any) -> bool:
