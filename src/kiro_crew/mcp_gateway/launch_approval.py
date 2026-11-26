@@ -64,6 +64,12 @@ from kiro_crew.mcp_gateway.hashing import (
     launch_env_value_bytes,
 )
 from kiro_crew.mcp_gateway.launch_approval_heal import CASING_AUDIT_REASON  # noqa: F401
+from kiro_crew.mcp_gateway.launch_approval_normalize import (  # noqa: F401 - re-exported
+    NORMALIZED_AUDIT_REASON,
+    normalized_command_hash,
+    normalized_repair_source,
+    retire_normalized_sources,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +278,16 @@ class LaunchApprovals:
     #: Every server stem declared, as this pass read them; incomplete if one source was skipped.
     declared: set[str] = field(default_factory=set)
     declared_incomplete: bool = False
+    #: stem -> approved pair -> its normalized command digest
+    #: (:func:`normalized_command_hash`), when an edition normalizer folds it.
+    approved_normalized: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: Fingerprints admitted as an approved launch whose only change is a token
+    #: the edition normalizer folds (stem -> fingerprint -> source fingerprint
+    #: and pair), saved under the same guard as :attr:`casing_healed`.
+    normalized_healed: dict[str, dict[str, tuple[str, str]]] = field(default_factory=dict)
+    #: Normalized digests this pass learned for live approved pairs (stem -> pair
+    #: -> digest); a save writes each only while its pair is still approved.
+    normalized_seen: dict[str, dict[str, str]] = field(default_factory=dict)
     #: Additional redacted display argv found by the final target filter.
     refused_commands: dict[str, list[list[str]]] = field(default_factory=dict)
     #: Every approval identity and its redacted command/env displays seen this pass.
@@ -470,6 +486,16 @@ class LaunchApprovals:
         self.live_overflow.setdefault(stem, set()).add(identity)
         return _launch_displays(launch, env)
 
+    def _learn_normalized(
+        self, stem: str, identity: str, launch: tuple[str, list[str]] | None
+    ) -> None:
+        """Remember *identity*'s normalized digest for the save, when it has one."""
+        if launch is None:
+            return
+        digest = normalized_command_hash(str(launch[0]), [str(a) for a in launch[1]])
+        if digest is not None and self.approved_normalized.get(stem, {}).get(identity) != digest:
+            self.normalized_seen.setdefault(stem, {})[identity] = digest
+
     def admit(
         self,
         name: str,
@@ -503,6 +529,7 @@ class LaunchApprovals:
             and self.admits_launch(stem, command_hash, derived_env_hash)
         ):
             self._note_live(stem, identity, launch, env)
+            self._learn_normalized(stem, identity, launch)
             return True
         # The operator approved this exact declared launch -- resolved command,
         # args and the env text with its ``${VAR}`` references unexpanded -- and
@@ -515,7 +542,7 @@ class LaunchApprovals:
             and fingerprint in self.approved.get(stem, ())
             and not self.admits_launch(stem, command_hash, derived_env_hash)
         )
-        healed = prefolded = None
+        healed = prefolded = normalized = None
         if not (self.probe or managed or rebind):
             healed = _heal.casing_repair_of_approved(
                 self, stem, fingerprint, derived_env_hash, launch
@@ -525,10 +552,20 @@ class LaunchApprovals:
                 if healed
                 else _heal.prefold_approval_of(self, stem, fingerprint, prefold, launch)
             )
-        trusted = not (self.probe or rebind or healed or prefolded) and _heal.trusts_change(
-            self, stem, managed
+            if healed is None and prefolded is None:
+                normalized = normalized_repair_source(
+                    self, stem, fingerprint, derived_env_hash, launch
+                )
+        trusted = not (
+            self.probe or rebind or healed or prefolded or normalized
+        ) and _heal.trusts_change(self, stem, managed)
+        rebind = (
+            rebind
+            or healed is not None
+            or prefolded is not None
+            or normalized is not None
+            or trusted
         )
-        rebind = rebind or healed is not None or prefolded is not None or trusted
         additions: list[tuple[Mapping[str, Collection[Any]], Collection[Any]]] = []
         # A rebind is an approved launch, so like the exact one above it is not
         # counted against the display set; what it adds to the store stays capped.
@@ -559,10 +596,13 @@ class LaunchApprovals:
             self._record(stem, name, fingerprint, derived_env_hash, launch, env)
             return True
         if rebind:
+            self._learn_normalized(stem, identity, launch)
             if healed is not None:
                 self.casing_healed.setdefault(stem, {})[fingerprint] = healed
             elif prefolded is not None:
                 self.prefold_healed.setdefault(stem, {})[fingerprint] = prefolded
+            elif normalized is not None:
+                self.normalized_healed.setdefault(stem, {})[fingerprint] = normalized
             elif trusted:
                 self.trust_admitted.setdefault(stem, {})[fingerprint] = identity
             else:
@@ -587,9 +627,13 @@ class LaunchApprovals:
                         "how its digest folds the gateway's PATH"
                         if prefolded
                         else (
-                            "its launch, and the operator trusts its changes"
-                            if trusted
-                            else "a ${VAR} value in its declared env"
+                            "a version folder the edition folds"
+                            if normalized
+                            else (
+                                "its launch, and the operator trusts its changes"
+                                if trusted
+                                else "a ${VAR} value in its declared env"
+                            )
                         )
                     )
                 ),
@@ -985,6 +1029,15 @@ def _parse(raw: Any) -> LaunchApprovals:
             env_digests = _parse_env_digests(record.get("displays"), displays)
             if env_digests:
                 approvals.approved_env_digests[stem] = env_digests
+            stored_normalized = record.get("normalized")
+            if isinstance(stored_normalized, dict):
+                normalized = {
+                    pair: digest
+                    for pair, digest in stored_normalized.items()
+                    if pair in pairs and _is_digest(digest)
+                }
+                if normalized:
+                    approvals.approved_normalized[stem] = normalized
             name = record.get("name")
             approvals.names[stem] = _bounded_name(name if isinstance(name, str) else stem)
             if record.get("trust_changes") is True:
@@ -1170,6 +1223,13 @@ def _document(approvals: LaunchApprovals, refused: Mapping[str, Mapping[str, Any
         }
         if displays:
             servers[stem]["displays"] = dict(list(displays.items())[:_MAX_SERVER_LAUNCHES])
+        normalized = {
+            pair: digest
+            for pair, digest in sorted(approvals.approved_normalized.get(stem, {}).items())
+            if pair in pairs
+        }
+        if normalized:
+            servers[stem]["normalized"] = normalized
     kept_refused: dict[str, dict[str, Any]] = {}
     eligible_refused = [
         (stem, record) for stem, record in sorted(refused.items()) if len(stem) <= _MAX_NAME_CHARS
@@ -1328,7 +1388,11 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
         current = _load_for_update(target)
         changed = False
         withheld: dict[str, set[str]] = {}
-        for stem, fps in approvals.captured.items():
+        stems = approvals.captured.keys() | (
+            current.approved_normalized.keys() if approvals.full_pass else set()
+        )
+        for stem in stems:
+            fps = approvals.captured.get(stem, set())
             before = set(current.approved.get(stem, ()))
             before_pairs = set(current.approved_pairs.get(stem, ()))
             written, retired, untouched = _heal.settle_rebinds(
@@ -1340,10 +1404,12 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
                 for pair in dropped
                 if approvals.rebound[stem][pair] not in before
             }
-            # A casing repair is written only while the store still approves its source.
+            # A casing, pre-fold or normalized repair is written only while the
+            # store still approves its source.
             healed = {
                 **approvals.casing_healed.get(stem, {}),
                 **approvals.prefold_healed.get(stem, {}),
+                **approvals.normalized_healed.get(stem, {}),
             }
             for fp, (source, source_pair) in healed.items():
                 if source not in before or source_pair not in before_pairs:
@@ -1355,7 +1421,7 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
             withheld[stem] = withdrawn
             superseded = _heal.superseded_sources(approvals, stem, withdrawn)
             fps = {fp for fp in fps if fp not in withdrawn}
-            if not fps:
+            if not fps and not before_pairs:
                 continue
             captured_pairs = {
                 pair
@@ -1369,6 +1435,17 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
             name = approvals.names.get(stem, stem)
             final_fps = (before | fps) - superseded
             final_pairs = (before_pairs | captured_pairs) - retired - superseded
+            retire_normalized_sources(
+                approvals,
+                stem,
+                current.approved_normalized.get(stem, {}),
+                before,
+                before_pairs,
+                final_fps,
+                final_pairs,
+            )
+            if not fps and final_fps == before and final_pairs == before_pairs:
+                continue
             final_fps, final_pairs = _heal.retire_trusted(
                 approvals, current, stem, final_fps, final_pairs
             )
@@ -1401,6 +1478,18 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
             changed = (
                 changed or final_fps != before or final_pairs != before_pairs or bool(new_displays)
             )
+
+        # A learned normalized digest is written only beside a pair the merged
+        # store still approves, so a revoke that landed during the pass wins.
+        for stem, seen in approvals.normalized_seen.items():
+            live_pairs = current.approved_pairs.get(stem, set())
+            for pair, digest in seen.items():
+                if (
+                    pair in live_pairs
+                    and current.approved_normalized.get(stem, {}).get(pair) != digest
+                ):
+                    current.approved_normalized.setdefault(stem, {})[pair] = digest
+                    changed = True
 
         def _approved_since(stem: str) -> bool:
             identities = approvals.refused_identities(stem)
@@ -1475,6 +1564,7 @@ def approve(
             pairs: set[str] = set()
             displays: dict[str, tuple[list[str], list[str]]] = {}
             digests: dict[str, tuple[str, dict[str, str]]] = {}
+            normalized: dict[str, str] = {}
             for launch in items:
                 fps.add(launch.fingerprint)
                 command_hash, _declared_env_hash = _split(launch.fingerprint)
@@ -1492,6 +1582,9 @@ def approve(
                 )
                 if launch_digests is not None:
                     digests.update({pair: launch_digests for pair in launch_pairs})
+                folded = normalized_command_hash(launch.command, list(launch.args))
+                if folded is not None:
+                    normalized.update({pair: folded for pair in launch_pairs})
                 if len(fps) > _MAX_SERVER_LAUNCHES or len(pairs) > _MAX_SERVER_LAUNCHES:
                     break
             if not fps:
@@ -1508,6 +1601,7 @@ def approve(
             current.approved_pairs[stem] = set(pairs)
             current.approved_displays[stem] = displays
             current.approved_env_digests[stem] = digests
+            current.approved_normalized[stem] = normalized
             current.names[stem] = _bounded_name(name)
             (current.trusted.add if name in trusted else current.trusted.discard)(stem)
             decided[stem] = (name, fps, pairs)
@@ -1536,6 +1630,7 @@ class ApprovalSnapshot:
     displays: dict[str, dict[str, tuple[list[str], list[str]]]] = field(default_factory=dict)
     env_digests: dict[str, dict[str, tuple[str, dict[str, str]]]] = field(default_factory=dict)
     trusted: set[str] = field(default_factory=set)
+    normalized: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 def revoke(names: Iterable[str], path: Path | None = None) -> ApprovalSnapshot:
@@ -1566,6 +1661,11 @@ def revoke(names: Iterable[str], path: Path | None = None) -> ApprovalSnapshot:
             for stem in stems
             if stem in current.approved_env_digests
         }
+        snapshot.normalized = {
+            stem: dict(current.approved_normalized[stem])
+            for stem in stems
+            if stem in current.approved_normalized
+        }
         snapshot.refused = {
             stem: copy.deepcopy(current.stored_refused[stem])
             for stem in stems
@@ -1578,6 +1678,7 @@ def revoke(names: Iterable[str], path: Path | None = None) -> ApprovalSnapshot:
             current.approved_pairs.pop(stem, None)
             current.approved_displays.pop(stem, None)
             current.approved_env_digests.pop(stem, None)
+            current.approved_normalized.pop(stem, None)
             current.names.pop(stem, None)
         refused = {s: r for s, r in current.stored_refused.items() if s not in stems}
         _write(target, _document(current, refused))
@@ -1622,6 +1723,13 @@ def restore(snapshot: ApprovalSnapshot, path: Path | None = None) -> None:
                 stem: copy.deepcopy(snapshot.env_digests[stem])
                 for stem in restore_stems
                 if stem in snapshot.env_digests
+            }
+        )
+        current.approved_normalized.update(
+            {
+                stem: dict(snapshot.normalized[stem])
+                for stem in restore_stems
+                if stem in snapshot.normalized
             }
         )
         current.stored_refused.update(

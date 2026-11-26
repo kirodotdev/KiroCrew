@@ -1682,6 +1682,18 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   list of the spawns that add it, so it never counts the server where a spawn
   does not add it. Read through `getattr`, so an edition provider that predates
   it names none. Default `()`. v1 addition, no `CONTRACT_VERSION` bump.
+- `McpToolingProvider.launch_token_normalizer(token: str) -> str` — WIRED:
+  `mcp_gateway.launch_approval_normalize.normalized_command_hash` maps each
+  argument of an MCP launch through it (the command stays literal in the
+  digest, so a changed program is still refused), in the gateway's rewrite pass
+  (`LaunchApprovals.admit`) and the operator's approval writer
+  (`launch_approval.approve`), so an approved launch whose only change is a
+  folded version folder keeps its approval (security.md). `hashing.hash_command`
+  never calls it, so the pool key, the broker stub and gatewayd's check stay
+  literal. A launch whose arguments it leaves unchanged, a call that raises or returns a
+  non-string, and a provider without the method (read through `getattr`) fold
+  nothing. Default returns the token unchanged. v1 addition, no
+  `CONTRACT_VERSION` bump.
 - `McpToolingProvider.extra_mcp_scopes() -> List[McpScope]` — provider-specific
   GLOBAL MCP config scopes. `/api/mcp/apply` and the MCP uninstall path write
   each returned scope's `global_json` (and strip its `agent_mcp_file`) IN

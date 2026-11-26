@@ -1662,12 +1662,27 @@ the new pair and drops the older expansion of the same launch: the values come
 from the gateway environment (the operator's shell and the crew `.env`), which
 no agent can write. A sidecar publication failure drops every rebind from that
 pass, so gatewayd refuses the changed expansion and the next boot retries. A
-changed command, argument or declared env text is still refused, with one
-exception: a command that `env.saved_command_casing` produced from an approved
+changed command, argument or declared env text is still refused, with two
+exceptions. First, a command that `env.saved_command_casing` produced from an approved
 spelling (the PATHEXT extension case, read from the directory entry) keeps the
 approval when the same args and env pair are approved with a stored display. It
 is recorded beside the old spelling and audited as
 `approved launch, Windows command casing repaired`.
+Second, an edition may supply a launch normalizer through
+`McpToolingProvider.launch_token_normalizer` (read from
+`current_context().mcp_tooling`); the public default returns each token
+unchanged, so core folds nothing. The normalizer maps each argument to a spelling with a known
+version folder folded; the command is never passed to it and stays literal in
+the normalized digest, so a launch whose program changed is still refused. It runs only in the gateway's rewrite pass and in the
+operator's approval writer, never in `hashing.hash_command`, so the pool key,
+the stub and gatewayd's check stay literal. Each server's `normalized` field in
+`approvals.json` holds the normalized digest of each approved pair. An approval
+writes it, and so does a pass that admits the pair exactly or as a rebind. A launch that is not
+approved keeps the approval when its normalized digest equals an approved
+pair's, its declared and derived env are that pair's, and the pair has a stored
+display. Its literal fingerprint is recorded and audited as
+`approved launch, edition-folded version folder moved`, and the save writes it
+only while the store still approves the source pair. A full pass that saw every live launch retires each unused approved pair whose stored or learned normalized digest matches a live pair that remains approved with the same derived env and, when each command has one declared-env fingerprint, the same declared env, and only while the store holds no approved pair or fingerprint for that server that the pass did not load or record; otherwise that server's retirement waits for the next full pass. It drops all fingerprints whose command belonged to a retired pair only when no approved pair retains that command. Pairs without a digest or without a matching live digest remain approved.
 Both halves of the fingerprint fold exactly three gateway-computed spellings
 (`hashing.install_aliases`), each in the ONE slot the gateway's own writer
 (`apps/bridges_mcp.py`) emits it in: `sys.executable` (what the rewriter substitutes
