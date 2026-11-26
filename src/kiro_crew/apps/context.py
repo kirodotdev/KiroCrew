@@ -24,6 +24,7 @@ from kiro_crew.apps.browser_sdk import preview_on as browser_preview_on
 from kiro_crew.apps.chat_slot_sdk import ChatSlotSDK
 from kiro_crew.apps.crewmate_sdk import CrewmateSDK
 from kiro_crew.apps.cron_sdk import CronSDK
+from kiro_crew.apps.download_sdk import VerifiedDownloadSDK
 from kiro_crew.apps.embed_sdk import EmbedSDK
 from kiro_crew.apps.event_bus import EventBus
 from kiro_crew.apps.gateway_origin import loopback_gateway_origin
@@ -156,9 +157,14 @@ class AppContext:
     # The gateway's untrusted-text screen, neutralizer and fences. Unconditional,
     # like `scrub`, and built from `name` so its audit rows name this app.
     untrusted: UntrustedTextSDK = field(init=False)
+    # One sha256-pinned https file into `data_dir` (seam level 18). Unconditional and
+    # built from this context's own `name` and `data_dir`, like `untrusted`: it only
+    # narrows a download the app's own code could make, so no permission gates it.
+    verified_download: VerifiedDownloadSDK = field(init=False)
 
     def __post_init__(self) -> None:
         self.untrusted = UntrustedTextSDK(self.name)
+        self.verified_download = VerifiedDownloadSDK(self.name, self.data_dir)
 
     @property
     def browser(self) -> BrowserSDK | None:

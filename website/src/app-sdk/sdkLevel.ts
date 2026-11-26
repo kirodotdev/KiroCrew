@@ -31,5 +31,10 @@
  * exfiltration-URL check, the credential directory names, the minimal environment,
  * the git hook overrides, the output cap on `run_sandboxed_async` and the fail-closed
  * audit row); the dashboard gains nothing at that level.
+ *
+ * Level 18 adds a batch of backend SDK names (the trusted tool lookups, the host
+ * agent-template values, the bind-address predicate, hidden paths on a sandboxed
+ * spawn and the verified download, `ctx.verified_download`); the dashboard gains
+ * nothing at that level.
  */
-export const APP_SDK_LEVEL = 17
+export const APP_SDK_LEVEL = 18

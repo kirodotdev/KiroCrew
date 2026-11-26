@@ -8147,9 +8147,11 @@ descriptor-pinned path walk and copy (§40); level 15 adds
 second batch of backend SDK names: the credential scan and placeholder, the
 exfiltration-URL check, `DENIED_ROOT_PARTS`, `minimal_env`, the git hook overrides,
 `max_output_bytes` on `run_sandboxed_async` and the audit writer's `record_or_raise`
-(§40). Several seams
+(§40); level 18 adds a third batch: the trusted tool lookups, the host agent-template
+values, the bind-address predicate, `extra_hidden_dirs` on the spawn names and the
+verified download, `ctx.verified_download` with its backend SDK accessor (§40). Several seams
 share level 7, three share level 8, the open batch that level 10 starts shares level 10, and the backend SDK
-batches share levels 14 and 17, so an app that needs one
+batches share levels 14, 17 and 18, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -9385,7 +9387,10 @@ of a built-in's state out of a layout core created, is a core row keyed on the a
   is the one host tool `{HOST_PATH}` carries off `PATH`, because the core locates it
   for its own file-panel slide previews (`soffice_discovery`, below); a host tool the
   core does not itself use is the app's to find. A value the
-  host cannot compute (no `uv`, an empty `{HOST_PATH}`) is left out. Every value is
+  host cannot compute (no `uv`, an empty `{HOST_PATH}`) is left out. The three that
+  name no app come from one function, `agent_template_values.host_values`, which the
+  renderer and the backend SDK's `agent_template_host_values` (level 18, §40) both
+  call, so an app that states the contract reads what is rendered. Every value is
   computed in the gateway and none is read from a file, and rendering grants nothing:
   the rendered config passes through the same MCP policy, tool ceiling and
   auto-approve strip as one naming no placeholder. A built-in may also ship
@@ -10414,8 +10419,12 @@ that wants one helper does not pay for the security stack.
 | Audit | `audit_log(app_name=None)`; its `record_or_raise` (level 17), which is `ctx.audit`'s too | `apps.audit_sdk.AuditSDK` (the `ctx.audit` writer); `record_or_raise` is `sel.log_api_access` with `critical=True` |
 | Sandboxed children | `run_sandboxed`, `run_sandboxed_async`, `sandboxed_argv`, `sandboxed_argv_async`, `SandboxUnavailableError` | `sandbox.sandboxed_spawn_argv` then `sandbox.run_limited`; `sandbox.sandboxed_spawn_argv_async` then `sandbox.create_subprocess_limited`; the two preparations alone; `sandbox.SandboxUnavailableError` |
 | Sandboxed children (level 17) | `run_sandboxed_async(..., max_output_bytes=None)`, `OutputLimitExceeded`, `minimal_env(**extra)` | the same spawn with each pipe drained under the cap; `minimal_env` of the `apps.registry` facade, read from its owner `apps.registry_pipeline.subprocess_env` |
+| Sandboxed children (level 18) | `extra_hidden_dirs` on `sandboxed_argv`, `sandboxed_argv_async`, `run_sandboxed` and `run_sandboxed_async` | the chokepoint's own `extra_hidden_dirs`, each entry made absolute once in `spawn._normalized_hidden_dirs`; refused when it overlaps `sandbox._CREW_READONLY_TARGETS` or `sandbox._relocated_crew_targets(_CREW_READONLY_LEAVES)`, or when `sandbox.credential_mask_applies` is `False` |
 | Git hooks (level 17) | `git_hook_disable_args(cwd, *, mode, env)`, `git_hook_disable_args_async(cwd, *, mode, env)`, `GitHookScanError` | `git_config_hooks.config_hook_disable_args_sandboxed` and its `_async` form, with `sandbox.sandboxed_spawn_argv` as the spawner; `git_config_hooks.ConfigHookScanError` |
 | Process and locks | `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_POSIX`, `kill_and_reap`, `is_link_or_junction`, `first_linked_ancestor`, `rmtree_force`, `file_lock` | the `platform_compat` names of the same spelling |
+| Process and locks (level 18) | `address_covers_loopback(address)` | `platform_compat.address_covers_loopback` |
+| Host tools (level 18) | `trusted_git_bin()`, `trusted_system_bin(name)`, `uv_executable()`, `nvm_version_bin_dirs()`, `agent_template_host_values()` | `platform_compat.trusted_git_bin` and `trusted_system_bin`; `env.resolve_uv`; `env.nvm_version_bin_dirs`; `apps.agent_template_values.host_values` |
+| Verified download (level 18) | `verified_download()`, `VerifiedDownloadError`; `ctx.verified_download` | `apps.download_sdk.VerifiedDownloadSDK.fetch`: `link_unfurl.vet_unfurl_url`, then `asset_downloader.download_to` with `pinned_addresses` into `asset_downloader.pin_target_dir` of the app's data directory |
 | Outbound URLs (level 14) | `vet_public_url(url)`, `UrlRejectedError`, `address_is_not_public(address)` | `link_unfurl.vet_unfurl_url`, `link_unfurl.UnfurlRejected`, `link_unfurl.address_is_not_public` |
 | Media type (level 14) | `sniff_raster_mime(head)`, `RASTER_SNIFF_BYTES` | `messaging.raster.sniff_raster_mime`, `messaging.raster.SNIFF_BYTES` |
 
@@ -10462,13 +10471,43 @@ values when their submodule is imported, so an app carries no hand-copied
 `minimal_env` keeps only the location hints of this process's own environment (the
 `registry_pipeline.subprocess_env` allowlist) and adds the caller's `extra`, so it
 removes variables and reads nothing the process did not already have.
+The tool lookups (level 18) answer with a path or `None` from the lookup the gateway
+runs for its own children, in the caller's process: `trusted_git_bin` and
+`trusted_system_bin` read only the fixed system directories (and Git for Windows' fixed
+roots), never `PATH`, so a shim planted on `PATH` is not what the app runs; `uv_executable`
+is `env.resolve_uv` (the `uv` wheel's locator, then an absolute `PATH` hit), the `uv` the
+renderer puts in `{UV_BIN}`, published under a new spelling because a current pin that
+names the package already spells `resolve_uv`; `nvm_version_bin_dirs` is the nvm
+share of the gateway's Node search. `agent_template_host_values` is
+`agent_template_values.host_values`, the function the renderer itself calls, so it
+answers `{UV_BIN}`, `{HOST_PATH}` and `{PATH_SEP}` as they are rendered, with a value the
+host cannot compute left out. `{APP_ROOT}` and `{APP_DATA}` are not in it: computing
+them takes an app name, and another app's directory is a path outside the caller's own
+data; the app holds its own checkout and `ctx.data_dir`. `address_covers_loopback` is a
+predicate over a bind-address string the caller holds. None of these opens, lists or
+enumerates anything a same-user process could not read itself.
 
 **No widening knob.** A public signature carries only the parameters the apps use, and
 never one that adds reach. `sandboxed_argv` accepts the `standard` and `strict` tiers
 and refuses any other value (`off` included) with `ValueError` before anything is
-prepared; the private chokepoint's `extra_*_dirs`, `first_party_fixed_argv` and
-`is_kiro_cli` lift a mask, open a write window in a sealed parent or reclassify the
-child, which is the gateway's decision for its own spawns, so they are not offered.
+prepared; the private chokepoint's `extra_visible_dirs`, `extra_private_dirs`,
+`extra_writable_dirs`, `first_party_fixed_argv` and `is_kiro_cli` lift a mask, open a
+window or a write window in a sealed parent or reclassify the child, which is the
+gateway's decision for its own spawns, so they are not offered. `extra_hidden_dirs`
+(level 18) is offered because it only adds masks: with none of those options beside
+it, an added mask cannot cancel one the tier applies (a cancellation needs a visible
+path, `sandbox_plan.hidden_path_contains_visible_path`), so the data home's secret
+floor stays hidden whatever an app passes. Each entry is made absolute once, against
+the process's working directory, and that one spelling is checked and forwarded. An
+entry that is, holds or sits in one of the data home's read-only leaves is refused with
+`ValueError`: those are the ceilings and gateway records in-sandbox code reads, and
+hiding a ceiling from the process that enforces it reads as the permissive default, so
+that mask would remove the ceiling rather than protect it (the keystone note in
+`sandbox_leaves.py`). A spawn `sandbox.credential_mask_applies` says would not carry the
+masks (no backend, or a spawn already inside a Kiro Crew sandbox) raises
+`SandboxUnavailableError` rather than start the child with the paths readable. The
+checks resolve paths and can probe the backend, so the async forms run them on a worker
+thread, and every refusal comes before anything is prepared.
 The read has no `admit_hardlinked` or `canonical_gate`. The path gate takes the path
 alone, so neither `canonical_gate` nor `classify_sensitive` is offered: how the check is
 bounded is the gateway's choice. Its answer judges a NAME, so the bytes come from
@@ -10536,9 +10575,71 @@ call runs in rather than `<cwd>/<cwd>`. Its answer
 is argv entries (`-c hook.<name>.enabled=false` per name, then the submodule-recursion
 pins), and a refusal is the gateway's own `ConfigHookScanError`. Nothing here is gated by a
 permission because nothing adds reach: the controls only refuse, redact, record or
-confine (the URL check's one `getaddrinfo` is a lookup any backend can make, and a
-pinned copy writes nothing a plain copy by the same process could not), and an
+confine (the URL check's one `getaddrinfo` is a lookup any backend can make, a
+pinned copy writes nothing a plain copy by the same process could not, and a verified
+download fetches nothing and writes nowhere the app's own code could not), and an
 in-process app could call the private names anyway.
+
+**Verified download** (level 18). `VerifiedDownloadSDK.fetch(url, dest, *, sha256,
+max_bytes, on_progress=None)` is one sha256-pinned https file into the app's own data
+directory, with every choice of the private `asset_downloader.download_to` fixed. The
+digest is required (64 hex characters, compared lowercased) and the cap is required (1 to
+`asset_downloader.DEFAULT_MAX_BYTES`); the url must be https and passes
+`link_unfurl.vet_unfurl_url` with no option, the check `vet_public_url` is, so a url with
+credentials, another port or a name with any non-public address is refused with the
+gateway's `UnfurlRejected`. The transfer is `download_to` with `pinned_addresses`: its
+opener (`asset_downloader.build_opener(pin=...)`) builds each connection for the vetted
+host and port alone and dials only the approved addresses in turn
+(`_PinnedHTTPSHandler`, `_PinnedHTTPSConnection`), so a second lookup at connect time
+cannot reach an address the vet never saw. Each connection is built only with a context
+that verifies the certificate and the host name (`ssl.CERT_REQUIRED` and
+`check_hostname`, `_require_verified`), the module's own `make_ssl_context` unless the
+caller passes one, and the handler forwards no connection argument and refuses one, so
+nothing turns either check off. It keeps the same-host redirect handler, so any redirect to another host,
+port or scheme is refused, and it uses no proxy, which would resolve the name itself.
+There is no redirect switch, no optional digest and no target outside the data
+directory: a relative `dest` is resolved in the data directory and an absolute one must
+resolve into it, and the parent is resolved (`realpath`) once and must already be a
+directory: nothing is created by name, since a `mkdir` through an ancestor swapped for
+a link would write outside. That one spelling is pinned open (`pin_target_dir`) and
+written through, and on every platform the kernel's answer for the pinned handle
+(`pinned_fs.fd_real_path`: `/proc/self/fd` on Linux, `F_GETPATH` on macOS,
+`GetFinalPathNameByHandleW` on Windows) must be exactly that spelling
+(`asset_downloader.same_real_path`, case, the `\\?\` prefix and separators
+folded), and an unreadable answer refuses. The pin refuses a link or junction at the
+folder's own name, and this comparison catches one at any ancestor between the data
+directory and the folder, which the pin follows, so a folder swapped during the vet
+writes nothing outside. While the transfer runs, the held handle keeps the folder and
+its ancestors from being renamed on Windows (on POSIX every step is relative to the
+descriptor), and immediately before the rename the open staging file's own real path
+must be in the pinned folder (`asset_downloader._require_staged_in_pinned_dir`). The
+file lands owner-only in one rename only after the digest matches. The bytes are staged in a file
+of the call's own, `.<dest name>.<random token>.kc-dl`, created with `O_CREAT | O_EXCL |
+O_NOFOLLOW` in the pinned directory (`download_to`'s `exclusive_staging`,
+`asset_downloader.create_staging_exclusive`), never at the engine's default
+`<dest>.part`: an app's own files beside the destination are never replaced or
+removed, a name already taken refuses the transfer and stays as it was, and two fetches
+at once stage apart. One owner (`asset_downloader._ExclusiveStaging`) records the
+identity of the file it created before anything else can fail and, in the transfer's
+`finally`, removes the staging name only while it still names that file, on every exit
+but a completed install: a refusal right after the create, a failed write, flush,
+`fsync` (run before the rename, so a write the kernel deferred fails while the transfer
+can still refuse) or close, the real-path check, a failed rename, the reopen and
+identity check after it, and an interrupt. The close sits in its own `try` with the
+removal in the inner `finally`, and a close error on a way out that already has its
+error or outcome is logged, not raised, so the first error is the one reported and a
+full disk leaves no partial behind. A failed transfer raises
+`VerifiedDownloadError` with the engine's own reason, which names hosts and never the
+url's path or a credential, and leaves nothing at `dest`. `ctx.verified_download` is
+built in `AppContext.__post_init__` from the context's own name and `data_dir`;
+`backend_sdk.verified_download()` takes no name and builds it for the
+`KIROCREW_APP_NAME` the gateway set on a spawned backend, refusing a blank or malformed
+one with `LookupError`. It is ungated, as the rest of the package is, because it only
+narrows a fetch the app's own code could make into its own directory, and its
+attribution is cooperative, as `ctx.audit`'s is. Its default target, a GitHub release
+or `/archive/` url, answers with a redirect to another host, so an app that fetches one
+moves to a url that serves the bytes itself (the codeload tarball the adoption fetch
+uses, an operator mirror) rather than to a switch.
 
 **Audit attribution.** `audit_log()` returns the `ctx.audit` writer for the name in
 `KIROCREW_APP_NAME`, which the gateway sets on every spawned backend, or for an
@@ -10590,7 +10691,12 @@ change, all sharing the level: `canonical_file_path`, `vet_public_url`,
 `GitHookScanError` and `OutputLimitExceeded`, plus a keyword and a method that are not
 package attributes: `max_output_bytes` on `run_sandboxed_async`
 (`_KEYWORD_LEVELS`) and `record_or_raise` on the audit writer
-(`audit_sdk.METHOD_LEVELS`). A host from level 7 to 13 has the
+(`audit_sdk.METHOD_LEVELS`). Level 18 is a third batch: `trusted_git_bin`,
+`trusted_system_bin`, `uv_executable`, `nvm_version_bin_dirs`,
+`agent_template_host_values`, `address_covers_loopback`, `verified_download` and
+`VerifiedDownloadError`, plus the keyword `extra_hidden_dirs` on the four spawn names
+(`_KEYWORD_LEVELS`) and the context seam `ctx.verified_download` (the pin tool's
+`_CONTEXT_SEAMS`). A host from level 7 to 13 has the
 package without the name, so an app feature-detects the name with `getattr` and keeps its
 own refusal, and the pin tool counts a tree that names the package and the name as a use
 of the name's level (§33), so a host below it keeps the wheel copy.
@@ -10598,7 +10704,8 @@ of the name's level (§33), so a host below it keeps the wheel copy.
 **Not in it yet.** The names the apps reach that this package does not cover stay
 private and keep their `_host.py` gap: chat slot and auto-nudge internals (they belong
 to the app-owned chat slot seam of ruling item 4),
-`link_unfurl.pinned_connector` and `PinnedResolver`, `asset_downloader.download_to`,
+`link_unfurl.pinned_connector` and `PinnedResolver`, `asset_downloader.download_to`
+(its switches stay private; the verified download is the public form),
 `executors.subprocess_executor`,
 `config.loader.config_dir` and `KiroCrewConfig`, `platform.boot_platform`,
 `security.redact_local_paths`,
@@ -10613,22 +10720,38 @@ its identity and credential providers included, as the calling process's global.
 the spawned backends that call it need is for the SDK's own spawn and scrub names to
 resolve a context on a non-standalone edition, which is a gap to close inside the SDK,
 not a name to offer.
+Vetted for level 18 and left out: `platform_compat.find_port_listeners`, `get_ppid` and
+`kill_process_tree` (and its async form). Each takes any port or pid, so it lists or
+signals processes the app did not start, the gateway's own and, on Windows, other
+users' included, and a parent-pid check cannot tell an in-process app's child from the
+gateway's. The safe shape answers only about a child the SDK itself started: a
+long-lived sandboxed child handle whose stop kills that child's tree and whose answer
+names the loopback ports that tree listens on. The SDK starts no long-lived child yet
+(that is the open `popen_limited` ruling), so neither shape ships. The uploads root
+(`<data home>/uploads`, which `/api/upload/file` writes) is left out too: it holds every
+picture a person pasted into any chat, so a path to it is a path outside the app's own
+data. An app that keeps work files there moves them to `ctx.data_dir`; reading a file
+the person handed to the app is a call that resolves that one upload, not a directory.
 
 Writers: `apps/backend_sdk/__init__.py`, `apps/backend_sdk/paths.py`,
 `apps/backend_sdk/files.py`, `apps/backend_sdk/redaction.py`,
 `apps/backend_sdk/audit.py`, `apps/backend_sdk/spawn.py`,
 `apps/backend_sdk/process.py`, `apps/backend_sdk/urls.py`, `apps/backend_sdk/media.py`,
 `apps/backend_sdk/pinned.py`, `apps/backend_sdk/content.py`,
-`apps/backend_sdk/git_hooks.py`, `apps/audit_sdk.py` (`record_or_raise`,
-`METHOD_LEVELS`), `apps/context.py` (the gateway-named `ctx.audit`),
+`apps/backend_sdk/git_hooks.py`, `apps/backend_sdk/tools.py`,
+`apps/backend_sdk/download.py`, `apps/download_sdk.py`, `apps/audit_sdk.py`
+(`record_or_raise`, `METHOD_LEVELS`), `apps/context.py` (the gateway-named
+`ctx.audit`, `ctx.verified_download`), `apps/agent_template_values.py` (`host_values`),
+`asset_downloader.py` (`build_opener`'s `pin`, `download_to`'s `pinned_addresses`),
 `apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
 `scripts/adoption_pin.py` (`_seam_level_uses`, `_BACKEND_SDK_LATER_NAMES`,
-`_AUDIT_METHOD_LEVELS`).
+`_AUDIT_METHOD_LEVELS`, `_CONTEXT_SEAMS`).
 Pinned by `test/test_app_backend_sdk.py`, `test/test_app_backend_sdk_file_gate.py`,
 `test/test_app_backend_sdk_urls.py`, `test/test_app_backend_sdk_media.py`,
 `test/test_app_backend_sdk_pinned.py`, `test/test_app_backend_sdk_content.py`,
 `test/test_app_backend_sdk_git_hooks.py`, `test/test_app_backend_sdk_output_cap.py`,
-`test/test_audit_sdk.py` and
+`test/test_app_backend_sdk_tools.py`, `test/test_app_backend_sdk_hidden_dirs.py`,
+`test/test_app_backend_sdk_download.py`, `test/test_audit_sdk.py` and
 `test/test_builtin_adoption_pins.py`.
 App authors: `docs/app-kit/api-reference.md` § Backend SDK.
 

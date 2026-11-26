@@ -77,6 +77,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import http.client
 import io
 import logging
 import os
@@ -89,7 +90,7 @@ import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew._ssl_compat import _ssl_context_has_ca_trust
@@ -290,11 +291,106 @@ class _HttpsOnlyRedirectHandler(_GuardedRedirect):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def _require_verified(context: ssl.SSLContext) -> ssl.SSLContext:
+    """*context*, or ``ValueError`` when it would not verify the server's certificate and name.
+
+    A pinned transfer is only as good as the TLS check on the addresses it dials, so the
+    context must require a certificate that chains to a trusted root
+    (``ssl.CERT_REQUIRED``) and names the host (``check_hostname``).
+    """
+    if context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname:
+        raise ValueError(
+            "a pinned transfer verifies the server certificate and host name; "
+            "this SSL context does not"
+        )
+    return context
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """An HTTPS connection that dials only approved addresses and always verifies TLS.
+
+    It is built with a verifying context only (:func:`_require_verified`) and takes no
+    other connection option, so nothing passed to it turns the certificate or host name
+    check off. http.client dials through ``_create_connection``
+    (``HTTPConnection.connect``), so that one step is replaced with :meth:`_dial`;
+    ``HTTPSConnection.connect`` still wraps the socket with SNI and the check.
+    """
+
+    def __init__(
+        self, host: str, *, addresses: tuple[str, ...], context: ssl.SSLContext, timeout: Any
+    ) -> None:
+        super().__init__(host, timeout=timeout, context=_require_verified(context))
+        self._addresses = addresses
+        setattr(self, "_create_connection", self._dial)
+
+    def _dial(
+        self, address: tuple[str, int], timeout: Any, source_address: Any = None, *_rest: Any
+    ) -> socket.socket:
+        """``socket.create_connection`` to each approved address in turn, never to the name.
+
+        http.client calls it with the host it would have resolved; only that host's port
+        is read, and *timeout* is passed through as http.client holds it.
+        """
+        failure: OSError | None = None
+        for ip in self._addresses:
+            try:
+                return socket.create_connection((ip, address[1]), timeout, source_address)
+            except OSError as exc:
+                failure = exc
+        raise failure if failure is not None else OSError("no approved address to connect to")
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """An HTTPS handler that reaches one host, and only at the addresses a vet approved.
+
+    urllib resolves a host name itself when it connects, a second lookup an
+    attacker's DNS may answer differently from the one a caller vetted (rebinding).
+    Each connection here is a :class:`_PinnedHTTPSConnection` built for the pinned host
+    alone (another host, a redirect hop to one included, is refused before a socket
+    opens) and dials the approved addresses in turn, while the host name still drives
+    SNI, certificate validation and the ``Host`` header. The handler holds one verifying
+    context and builds every connection with it; no connection argument is forwarded.
+    """
+
+    def __init__(self, context: ssl.SSLContext, host: str, port: int, addresses: tuple[str, ...]):
+        verified = _require_verified(context)
+        super().__init__(context=verified)
+        self._ssl_context = verified
+        self._pinned_host = host
+        self._pinned_port = port
+        self._addresses = addresses
+
+    def https_open(self, req):  # noqa: ANN001, ANN201 - urllib handler signature
+        # No connection argument: the connection takes its context from this handler.
+        return self.do_open(self._connection, req)
+
+    def _connection(self, host: str, **kwargs: Any) -> _PinnedHTTPSConnection:
+        # urllib passes only ``timeout``; anything else, a ``context`` included, is
+        # refused rather than handed to the connection.
+        refused = sorted(set(kwargs) - {"timeout"})
+        if refused:
+            raise TypeError(f"a pinned connection takes no {', '.join(refused)}")
+        conn = _PinnedHTTPSConnection(
+            host,
+            addresses=self._addresses,
+            context=self._ssl_context,
+            timeout=kwargs.get("timeout", socket.getdefaulttimeout()),
+        )
+        reached = ((conn.host or "").lower().rstrip("."), conn.port)
+        if reached != (self._pinned_host, self._pinned_port):
+            raise urllib.error.URLError(
+                f"refusing a connection to {reached[0] or '?'}: the transfer is pinned to "
+                f"{self._pinned_host}"
+            )
+        return conn
+
+
 def build_opener(
     context: "ssl.SSLContext | None" = None,
     *,
     allow_cross_host_redirects: bool = False,
     redirect_allowed: "Callable[[str], bool] | None" = None,
+    pin: "tuple[str, int, tuple[str, ...]] | None" = None,
 ) -> urllib.request.OpenerDirector:
     """An opener that verifies TLS and pins redirects.
 
@@ -314,7 +410,17 @@ def build_opener(
 
     *redirect_allowed*, when given, is asked about every redirect target the
     handler would otherwise follow; ``False`` refuses that hop. It only narrows.
+
+    *pin*, ``(host, port, addresses)``, holds every connection to that one origin and
+    dials only *addresses* (:class:`_PinnedHTTPSHandler`), for a url whose addresses
+    a caller vetted. It keeps the same-host redirect policy, so it refuses
+    *allow_cross_host_redirects* with ``ValueError``, and it uses no proxy: a proxy
+    resolves the name itself, so the vetted addresses would not be what it dials. Its
+    context must verify the certificate and host name; a *context* that does not is
+    refused with ``ValueError``.
     """
+    if pin is not None and allow_cross_host_redirects:
+        raise ValueError("a pinned transfer stays on its host; cross-host redirects are refused")
     handler_cls = (
         _HttpsOnlyRedirectHandler if allow_cross_host_redirects else _SameHostRedirectHandler
     )
@@ -322,8 +428,16 @@ def build_opener(
     if redirect_allowed is not None:
         handler = handler_cls()
         handler.redirect_allowed = redirect_allowed
+    ssl_context = context or make_ssl_context()
+    if pin is None:
+        return urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=ssl_context), handler
+        )
+    host, port, addresses = pin
     return urllib.request.build_opener(
-        urllib.request.HTTPSHandler(context=context or make_ssl_context()), handler
+        _PinnedHTTPSHandler(ssl_context, host, port, tuple(addresses)),
+        handler,
+        urllib.request.ProxyHandler({}),
     )
 
 
@@ -725,13 +839,22 @@ def open_staging_nofollow(target_dir: TargetDir, name: str) -> "io.BufferedWrite
     opened relative to the held directory, so the directory the caller checked is
     the one written into.
     """
-    staging = target_dir.describe(name)
     _remove_stale_staging(target_dir, name)
+    return create_staging_exclusive(target_dir, name)
+
+
+def _open_exclusive_fd(target_dir: TargetDir, name: str) -> int:
+    """``O_CREAT | O_EXCL | O_NOFOLLOW`` of *name* through *target_dir*, removing nothing.
+
+    Anything already at the name, a file, a link or a directory, raises
+    :class:`StagingRefused` and is left exactly as it was; nothing was created then.
+    """
+    staging = target_dir.describe(name)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_BINARY
     try:
         # 0o600: the payload may be owner-only, and a staging file that is briefly
         # world-readable is the same exposure as the installed one being so.
-        fd = target_dir.open(name, flags, 0o600)
+        return target_dir.open(name, flags, 0o600)
     except FileExistsError as exc:
         raise StagingRefused(
             f"refusing to write through a path planted at the staging name: {staging}"
@@ -742,12 +865,120 @@ def open_staging_nofollow(target_dir: TargetDir, name: str) -> "io.BufferedWrite
                 f"refusing to write through a symlinked staging path: {staging}"
             ) from exc
         raise
+
+
+def create_staging_exclusive(target_dir: TargetDir, name: str) -> "io.BufferedWriter":
+    """Create staging file *name* exclusively, removing nothing: the second half of
+    :func:`open_staging_nofollow`.
+
+    :func:`_open_exclusive_fd`, then the descriptor is compared to the name
+    (:func:`_refuse_unless_named_file`), as for a fresh open.
+    """
+    fd = _open_exclusive_fd(target_dir, name)
     try:
         _refuse_unless_named_file(fd, target_dir, name)
     except StagingRefused:
         os.close(fd)
         raise
     return os.fdopen(fd, "wb")
+
+
+def _fsync(fd: int) -> None:
+    """``os.fsync`` of the staging file before its rename, so a write error the kernel
+    deferred surfaces while the transfer can still refuse."""
+    os.fsync(fd)
+
+
+class _ExclusiveStaging:
+    """The one owner of an exclusive staging file's life: created here, removed here.
+
+    :meth:`create` records the identity of the file it created before anything else
+    can fail, and :meth:`remove` removes the staging name only while it still names
+    that file, so a refusal after the create, a failed write, flush, fsync, close or
+    rename, and an interrupt all end with the transfer's own file gone and any other
+    file at the name untouched. :meth:`remove` never raises: it runs while the first
+    error, or the decided outcome, is already on its way out.
+    """
+
+    def __init__(self, target_dir: TargetDir, name: str) -> None:
+        self.target_dir = target_dir
+        self.name = name
+        self.identity: tuple[int, int] | None = None
+
+    def create(self) -> "io.BufferedWriter":
+        fd = _open_exclusive_fd(self.target_dir, self.name)
+        try:
+            try:
+                self.identity = file_identity(os.fstat(fd))
+            except OSError:
+                named = self.target_dir.lstat(self.name)
+                self.identity = file_identity(named) if named is not None else None
+            _refuse_unless_named_file(fd, self.target_dir, self.name)
+            return os.fdopen(fd, "wb")
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def remove(self) -> None:
+        if self.identity is None:
+            return
+        try:
+            named = self.target_dir.lstat(self.name)
+            if named is not None and file_identity(named) == self.identity:
+                self.target_dir.unlink(self.name)
+        except OSError:
+            logger.warning(
+                "staging file %s could not be removed", self.target_dir.describe(self.name)
+            )
+
+
+def _close_after_failure(out: "io.BufferedWriter", target_dir: TargetDir, name: str) -> None:
+    """Close the staging writer on a way out that already has its outcome or its error.
+
+    A close then retries a flush that already failed (a full disk fails it again), so
+    its error is logged rather than raised: raising it would replace the first error
+    and skip the staging file's removal. The raw descriptor is closed either way.
+    """
+    try:
+        out.close()
+    except Exception as exc:
+        logger.warning(
+            "staging file %s could not be closed after the transfer stopped: %s",
+            target_dir.describe(name),
+            type(exc).__name__,
+        )
+
+
+def same_real_path(first: str, second: str) -> bool:
+    """Whether two resolved paths name the same place, spelled the way this OS compares.
+
+    Lexical on purpose (:func:`platform_compat.strip_extended_length_prefix`, then
+    ``normpath`` and ``normcase``): both sides are already a kernel's or ``realpath``'s
+    answer, and resolving again here could bless the redirect a caller checks for.
+    """
+
+    def fold(path: str) -> str:
+        return os.path.normcase(
+            os.path.normpath(platform_compat.strip_extended_length_prefix(path))
+        )
+
+    return fold(first) == fold(second)
+
+
+def _require_staged_in_pinned_dir(where: PinnedTargetDir, fd: int, name: str) -> None:
+    """Refuse unless the open staging file *fd* really is *name* in the pinned directory.
+
+    Both answers come from the kernel for the handles held open
+    (:func:`pinned_fs.fd_real_path`, ``GetFinalPathNameByHandleW`` on Windows), so a
+    directory reached through a link, on any platform, reads as a different place
+    rather than as the name it was opened by. A path that cannot be read refuses.
+    """
+    held = pinned_fs.fd_real_path(where.fd)
+    staged = pinned_fs.fd_real_path(fd)
+    if held is None or staged is None or not same_real_path(staged, os.path.join(held, name)):
+        raise StagingRefused(
+            f"the staging file is not in the pinned download directory: {where.describe(name)}"
+        )
 
 
 def file_identity(st: os.stat_result) -> tuple[int, int]:
@@ -850,6 +1081,8 @@ def download_to(
     allow_cross_host_redirects: bool = False,
     label: str = "asset",
     target_dir: TargetDir | None = None,
+    pinned_addresses: tuple[str, ...] = (),
+    exclusive_staging: bool = False,
 ) -> tuple[bool, str]:
     """Fetch *url* into *path*, verified against *sha256*. Blocking.
 
@@ -892,6 +1125,19 @@ def download_to(
       staging file, the install rename and the lockdown all address the directory
       it holds open; without one, ``path.parent`` is addressed by name. *staging*,
       when given, must sit in that same directory.
+    * *pinned_addresses*, when given, are the addresses a caller's vet approved for
+      the url's host: every connection dials only them, a redirect stays on that
+      host, and no proxy is used (:func:`build_opener`'s *pin*). It cannot be
+      combined with *allow_cross_host_redirects*.
+    * *exclusive_staging* is for a caller whose directory holds files it did not
+      create: the *staging* name it passes (required, and *resume* is refused) is
+      created exclusively (:func:`create_staging_exclusive`), so a file already at
+      that name refuses the transfer and is never removed, and the one cleanup, on
+      every way out but a completed install, removes only the file this transfer
+      created. With a :class:`PinnedTargetDir`, the open staging file's real path is
+      also checked against the pinned directory's before the rename
+      (:func:`_require_staged_in_pinned_dir`). Without it the staging name is the caller's to reserve: whatever is
+      already there is replaced, and a failure removes it.
     """
     if not sha256:
         return False, f"{_ERROR_PREFIX}: no sha256 pin for {label}"
@@ -900,12 +1146,27 @@ def download_to(
         # https-only gate, but this function installs whatever it fetched, so it
         # refuses plaintext (and file://, which would read a local path) itself.
         return False, f"{_ERROR_PREFIX}: refusing a non-https url"
+    pin: "tuple[str, int, tuple[str, ...]] | None" = None
+    if pinned_addresses:
+        if allow_cross_host_redirects:
+            return False, f"{_ERROR_PREFIX}: a pinned transfer refuses cross-host redirects"
+        try:
+            split = urllib.parse.urlsplit(url)
+            pin = (
+                (split.hostname or "").lower().rstrip("."),
+                split.port or 443,
+                tuple(pinned_addresses),
+            )
+        except ValueError:
+            return False, f"{_ERROR_PREFIX}: the url's port cannot be read"
 
     # size (exact) beats max_bytes (a bound) beats the module default; the result
     # is never 0, so no transfer runs without a ceiling.
     ceiling = size or max_bytes or DEFAULT_MAX_BYTES
     if staging is not None and staging.parent != path.parent:
         return False, f"{_ERROR_PREFIX}: staging file must sit beside {label}"
+    if exclusive_staging and (staging is None or resume):
+        return False, f"{_ERROR_PREFIX}: exclusive staging needs its own staging name, no resume"
     staging_name = staging.name if staging is not None else f"{path.name}{PART_SUFFIX}"
     where = target_dir if target_dir is not None else TargetDir(path.parent)
     try:
@@ -927,6 +1188,13 @@ def download_to(
     out: "io.BufferedWriter | None" = None
     offset = 0
     digest = hashlib.sha256()
+    # Exclusive staging only: the owner of the staging file this transfer created, and
+    # whether that file reached the final name.
+    exclusive: "_ExclusiveStaging | None" = None
+    installed = False
+    # The failure branches below remove the staging name for a fresh transfer; with
+    # exclusive staging that removal is the `finally`'s, by its owner.
+    discard_on_failure = not resume and not exclusive_staging
     try:
         if resume:
             resumed = _resume_partial(where, staging_name, size=size)
@@ -940,7 +1208,11 @@ def download_to(
         if offset:
             request.add_header("Range", f"bytes={offset}-")
         logger.info("Downloading %s from %s", label, redact_url(url))
-        opener = build_opener(allow_cross_host_redirects=allow_cross_host_redirects)
+        opener = (
+            build_opener(allow_cross_host_redirects=allow_cross_host_redirects)
+            if pin is None
+            else build_opener(pin=pin)
+        )
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- https is enforced above, redirects are pinned (host-pinned unless the operator's own env url), and the payload is sha256-pinned
         with opener.open(request, timeout=timeout_secs) as resp:
             status = int(getattr(resp, "status", 0) or 0)
@@ -961,7 +1233,10 @@ def download_to(
             this_run = 0
             started = time.monotonic()
             overflow = 0
-            if out is None:
+            if out is None and exclusive_staging:
+                exclusive = _ExclusiveStaging(where, staging_name)
+                out = exclusive.create()
+            elif out is None:
                 out = open_staging_nofollow(where, staging_name)
             staging_file = out
             # The inode every hashed byte lands in. The install compares the
@@ -991,11 +1266,18 @@ def download_to(
                     if owed > 0:
                         time.sleep(owed)
             staging_file.flush()
+            if exclusive is not None:
+                _fsync(staging_file.fileno())
+            if exclusive is not None and isinstance(where, PinnedTargetDir):
+                # The last moment the staging handle is open on every platform: the
+                # file the digest covers must be the one in the pinned directory.
+                _require_staged_in_pinned_dir(where, staging_file.fileno(), staging_name)
             if not platform_compat.IS_POSIX:
                 # Windows: the rename and every unlink below need the handle closed.
                 staging_file.close()
             if overflow:
-                where.unlink(staging_name)
+                if exclusive is None:
+                    where.unlink(staging_name)
                 return False, (
                     f"{_ERROR_PREFIX}: body longer than the {ceiling}-byte "
                     f"ceiling (got {overflow})"
@@ -1004,23 +1286,30 @@ def download_to(
             on_verifying()
         got = digest.hexdigest()
         if got != sha256:
-            where.unlink(staging_name)
+            if exclusive is None:
+                where.unlink(staging_name)
             return False, (
                 f"sha256 mismatch: got {got[:16]}…, expected {sha256[:16]}… (corrupt download)"
             )
         # The size is what was written, counted -- not a stat of a name.
         if min_bytes and downloaded < min_bytes:
-            where.unlink(staging_name)
+            if exclusive is None:
+                where.unlink(staging_name)
             return False, f"downloaded file too small ({downloaded} bytes)"
         install_verified(
             where, staging_name, path.name, verified=verified, restrict_to_owner=restrict_to_owner
         )
+        installed = True
+        if exclusive is not None and out is not None:
+            # Closed here, inside the try, so a close error on the way to success is
+            # reported rather than logged; the file has been verified and installed.
+            out.close()
         return True, ""
     except StagingRefused as exc:
         # Message kept verbatim: it names a local path, never the url. Listed BEFORE
         # the transport branch because it is an OSError and would otherwise be
         # reduced to "OSError", losing the one thing a reader needs to know.
-        if not resume:
+        if discard_on_failure:
             _discard(where, staging_name)
         return False, f"{_ERROR_PREFIX}: {exc}"
     except RedirectRefused as exc:
@@ -1028,7 +1317,7 @@ def download_to(
         # carries two hostnames and the policy, never a path or a credential, and
         # it is the one diagnostic an operator with a redirecting mirror needs —
         # reduced to "HTTPError" it would read as a broken CDN.
-        if not resume:
+        if discard_on_failure:
             _discard(where, staging_name)
         return False, f"{_ERROR_PREFIX}: {exc.reason}"
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
@@ -1041,7 +1330,7 @@ def download_to(
             # Windows will not remove an open file, so let go of the partial first.
             out.close()
             out = None
-        if not resume or range_refused:
+        if discard_on_failure or range_refused:
             # A 416 answer to our range means the held partial is not a prefix the
             # server can continue (most often it already holds every byte of a
             # payload with no declared size). Keeping it would send the same
@@ -1062,7 +1351,7 @@ def download_to(
         # A resumable partial is KEPT on a transport failure — that is the whole
         # point of resume — but discarded for a non-resuming caller so a stale
         # prefix cannot be mistaken for a fresh attempt.
-        if not resume:
+        if discard_on_failure:
             _discard(where, staging_name)
         # No `exc_info=True`: a traceback renders the exception's own `str()`, which
         # for `InvalidURL` is the credential-bearing url this line exists to keep
@@ -1072,8 +1361,18 @@ def download_to(
         logger.warning("%s download from %s failed: %s", label, redact_url(url), type(exc).__name__)
         return False, f"{_ERROR_PREFIX}: {type(exc).__name__} from {redact_url(url)}"
     finally:
-        if out is not None:
-            out.close()
+        try:
+            if out is not None and exclusive is not None:
+                # Every way here with the writer still open already has its outcome or
+                # its error, which a second failed flush must not replace.
+                _close_after_failure(out, where, staging_name)
+            elif out is not None:
+                out.close()
+        finally:
+            if exclusive is not None and not installed:
+                # Every way out but a completed install, an interrupt or a failed close
+                # included, and only the file this transfer created.
+                exclusive.remove()
 
 
 __all__ = [
@@ -1085,6 +1384,7 @@ __all__ = [
     "PART_SUFFIX",
     "TargetDir",
     "build_opener",
+    "create_staging_exclusive",
     "download_to",
     "file_identity",
     "install_verified",
@@ -1092,4 +1392,5 @@ __all__ = [
     "network_failure_cause",
     "open_staging_nofollow",
     "redact_url",
+    "same_real_path",
 ]

@@ -43,6 +43,17 @@ hooks, listed by a sandboxed git; ``max_output_bytes`` on ``run_sandboxed_async`
 ``OutputLimitExceeded``; and ``record_or_raise`` on the audit writer (``ctx.audit``
 and ``audit_log``), the fail-closed row, written only under the name the gateway
 gave the app.
+
+Level 18 adds backend SDK names, one batch: ``trusted_git_bin``,
+``trusted_system_bin``, ``uv_executable`` and ``nvm_version_bin_dirs``, the gateway's
+own lookups for the tools it runs; ``agent_template_host_values``, the values it
+renders for the agent-template placeholders that name no app;
+``address_covers_loopback``, the bind-address predicate; ``extra_hidden_dirs`` on the
+spawn names, more paths hidden from a child and nothing lifted; and the verified
+download, ``ctx.verified_download`` with ``verified_download`` and
+``VerifiedDownloadError``: one sha256-pinned https file into the app's own data
+directory, the url vetted and the connection pinned to its addresses, no redirect off
+the host.
 """
 
-APP_SDK_LEVEL = 17
+APP_SDK_LEVEL = 18

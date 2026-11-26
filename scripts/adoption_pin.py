@@ -86,6 +86,7 @@ _CONTEXT_SEAMS = {
     "gateway_origin": 5,
     "chat_slots": 7,
     "webhook_source": 7,
+    "verified_download": 18,
 }
 
 #: A receiver whose last name says it is the app's context (``ctx``, ``self._ctx``,
