@@ -32,6 +32,7 @@ import pytest
 from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
 from acp_runtime_helpers import _pinned_kiro_cli_version  # noqa: F401
 from acp_runtime_helpers import (
+    _answering_send_for_answer,
     _await_routed,
     _feed,
     _make_runtime,
@@ -338,6 +339,9 @@ class _Plane:
 
         stack.enter_context(patch.object(rt, "_send_and_await", _send_and_await))
         stack.enter_context(patch.object(rt, "send_request", _send_request))
+        stack.enter_context(
+            patch.object(rt, "send_request_for_answer", _answering_send_for_answer())
+        )
         stack.enter_context(patch.object(rt, "send_notification", _send_notification))
         stack.enter_context(
             patch.object(AcpSessionHandle, "_wait_for_response", _wait_for_response)

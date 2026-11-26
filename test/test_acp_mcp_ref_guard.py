@@ -24,6 +24,7 @@ import sys
 from typing import Any
 
 import pytest
+from acp_runtime_helpers import _answering_send_for_answer
 from redaction_structured_cases import github_classic
 
 from kiro_crew import agent as agent_mod
@@ -934,6 +935,9 @@ class TestTheRuntimeCallSitesAreWired:
         with ExitStack() as stack:
             stack.enter_context(patch.object(rt, "_send_and_await", _send_and_await))
             stack.enter_context(patch.object(rt, "send_request", _send_request))
+            stack.enter_context(
+                patch.object(rt, "send_request_for_answer", _answering_send_for_answer())
+            )
             stack.enter_context(
                 patch.object(AcpSessionHandle, "_wait_for_response", _wait_for_response)
             )

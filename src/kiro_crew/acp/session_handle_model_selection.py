@@ -17,12 +17,14 @@ Instance fields written: ``_advertised_models_changed``, ``_available_models``,
 ``inherited_model``, ``model_pin_partial``, ``model_pin_refused``.
 
 Instance fields read: ``_engine_fallback``, ``_runtime``, ``_session_id``,
-``kas_bundle_engine_version``, ``last_prompt_stats``, ``request_vault_identity``.
+``kas_bundle_engine_version``, ``kas_select_seen``, ``last_prompt_stats``,
+``request_vault_identity``, ``served_default_after_pin``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import time
 from typing import TYPE_CHECKING, Any, cast
@@ -38,6 +40,7 @@ from kiro_crew.acp.client import (
     AcpProcessDied,
     AcpTimeoutError,
     _is_config_value_rejection,
+    _jsonrpc_error_code,
     _push_model_via_effort_split,
     advertised_model_ids,
     catalog_row_would_drop,
@@ -47,7 +50,11 @@ from kiro_crew.acp.client import (
     resolve_pin_spelling_on,
     resolve_usable_model,
 )
-from kiro_crew.acp.session_handle_runtime_contract import AcpRequestTimeout, AcpRuntimeError
+from kiro_crew.acp.session_handle_runtime_contract import (
+    AcpRequestTimeout,
+    AcpRuntimeDead,
+    AcpRuntimeError,
+)
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -107,6 +114,18 @@ _READ_PATH_PROBE_DEADLINE_SECS = 3.0
 # kiro-cli 2.28 answers in well under a second (measured: 0.03-0.04s), so this
 # bounds only an adapter that never answers; that silence is read as accepted.
 _SET_MODEL_REPLY_TIMEOUT = 3.0
+
+# How long ``set_config_option`` waits for its answer, from the send. A start's MCP
+# wait that is still running when it passes extends it (``_config_option_answer``).
+_CONFIG_OPTION_REPLY_TIMEOUT = 10.0
+
+#: The event ``create_session`` sets when its MCP start wait ends, as the tasks its
+#: ``on_mode_set`` starts see it: they copy the context while it is set. A write the
+#: wait sends itself (the served-default switch) sees ``None`` and keeps its plain
+#: bound, since it could never outlast a wait that is waiting for it.
+START_WAIT_END: contextvars.ContextVar[asyncio.Event | None] = contextvars.ContextVar(
+    "kas_start_wait_end", default=None
+)
 
 
 def parse_advertised_models(resp: dict[str, Any]) -> list[dict[str, str]]:
@@ -236,6 +255,16 @@ def kas_select_refuses_auto(served: list[str]) -> bool:
     later prompt when the region serves no ``auto``.
     """
     return DEFAULT_MODEL not in served and any(m != DEFAULT_MODEL for m in served)
+
+
+def kas_model_select_known(handle: AcpSessionHandle) -> bool:
+    """Whether *handle*'s own KAS ``model`` select names a concrete model.
+
+    The evidence :meth:`AcpSessionHandle.set_model` judges a concrete pin by: with
+    it, a pin the account is not served is refused before the wire; without it,
+    the pin is sent unjudged.
+    """
+    return any(m != DEFAULT_MODEL for m in handle._kas_served_ids)
 
 
 def kas_auto_judged_ids(handle: AcpSessionHandle) -> list[str]:
@@ -409,7 +438,7 @@ async def set_model(self: AcpSessionHandle, model_id: str, *, inherit: bool = Fa
             logger.warning("KAS model select lists no auto; staying on the session's current model")
             self.model_pin_refused = model_id
             return
-        if model_id and model_id != DEFAULT_MODEL and any(m != DEFAULT_MODEL for m in served):
+        if model_id and model_id != DEFAULT_MODEL and kas_model_select_known(self):
             listed = resolve_pin_spelling(model_id, served)
             if not listed:
                 logger.warning(
@@ -738,6 +767,84 @@ async def _push_model_config_option(self: AcpSessionHandle, model_id: str, *, st
     return ""
 
 
+async def _config_option_answer(
+    handle: AcpSessionHandle,
+    answer: asyncio.Future[dict[str, Any]],
+    drain_done: asyncio.Event | None,
+) -> dict[str, Any]:
+    """The result of a ``session/set_config_option`` *answer*, or the error it means.
+
+    Waits :data:`_CONFIG_OPTION_REPLY_TIMEOUT` from the send, then, while the
+    start's MCP wait is still running (*drain_done* not set), until that wait
+    ends: the deadline is the later of the two. No answer by then raises
+    :class:`AcpTimeoutError`, as a reply read off the queue did, and the
+    registration is dropped so a reply that never comes holds nothing.
+    """
+    try:
+        done, _ = await asyncio.wait({answer}, timeout=_CONFIG_OPTION_REPLY_TIMEOUT)
+        if not done and drain_done is not None and not drain_done.is_set():
+            drain_end = asyncio.ensure_future(drain_done.wait())
+            waiters: set[asyncio.Future[Any]] = {answer, drain_end}
+            try:
+                await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                drain_end.cancel()
+        if not answer.done():
+            raise AcpTimeoutError(f"Timeout waiting for response to {METHOD_SET_CONFIG_OPTION}")
+    finally:
+        if not answer.done():
+            handle._runtime.forget_request(answer)
+    if answer.cancelled():
+        raise handle._died("Runtime process died while waiting for response")
+    error = answer.exception()
+    if isinstance(error, AcpRuntimeDead):
+        raise handle._died("Runtime process died while waiting for response") from error
+    if error is not None:
+        rpc_error = getattr(error, "rpc_error", None)
+        raise_answer_error(handle, rpc_error if rpc_error is not None else {"message": str(error)})
+        # An error answer the mapping did not raise for reads as an answer with
+        # no result, as it did off the queue.
+        return {}
+    return answer.result()
+
+
+def raise_answer_error(handle: AcpSessionHandle, error: object) -> None:
+    """Raise what an error answer to one of this session's requests means.
+
+    The ONE mapping every request that waits for its answer reads, whether the
+    answer came through the session queue (``_wait_for_response``) or straight
+    from the runtime (``set_config_option``): the shared raise helper gives the SAME treatment as
+    AcpClient: actionable prose from _format_acp_error (model-unavailable /
+    throttle / auth / 5xx), credential+URL redaction, the transient= verdict for
+    the chat_runner / llm_helpers retry ladder, and the AcpPromptBusy subclass for
+    a concurrent in-flight prompt. Raising a bare f"ACP error: {error}" put the
+    raw JSON-RPC dict in front of the user. The advertised ids let the shared
+    entitlement discriminator tell "your plan lacks this model" (terminal) from a
+    capacity blip (retryable).
+
+    The raw JSON-RPC code is re-attached on the way out: the shared helper decides
+    everything from the frame's prose, and a bare ``-32602 Invalid params``
+    carries no prose to decide from. A config-option write is the one request
+    whose shape is fixed and whose value is the only variable, so for it that
+    code IS a value refusal rather than a malformed request. Nothing else
+    branches on ``code``, so setting it cannot change any other path's outcome.
+    Under KAS machine mode a refused credential is the host token's.
+    """
+    from kiro_crew.agent_sdk.kas_machine import raise_turn_error
+
+    try:
+        raise_turn_error(
+            handle._runtime,
+            error,
+            handle._advertised_model_ids(),
+            backend=handle._runtime.acp_backend,
+        )
+    except AcpError as _exc:
+        if getattr(_exc, "code", None) is None:
+            _exc.code = _jsonrpc_error_code(error)
+        raise
+
+
 async def set_config_option(self: AcpSessionHandle, config_id: str, value: str) -> None:
     """Set a session config option (e.g. effort level).
 
@@ -748,13 +855,22 @@ async def set_config_option(self: AcpSessionHandle, config_id: str, value: str) 
     and the matching ``config_option_update`` notification sits buffered on
     the queue until the next turn drains it, so a follow-up write gated on
     :meth:`supports_config_option` would otherwise read the stale list.
+
+    The answer is read straight from the runtime (``send_request_for_answer``),
+    never off the session queue: a start's MCP wait drains that queue and
+    discards every response on it, and a write the start sends alongside that
+    wait (``create_session``'s ``on_mode_set``) would lose its answer there.
+    The wait lasts :data:`_CONFIG_OPTION_REPLY_TIMEOUT` from the send. For a write
+    a task ``on_mode_set`` started sends, it lasts until the start's MCP wait ends
+    (:data:`START_WAIT_END`) when that is later, since an answer that lands while
+    the start is still waiting costs it nothing.
     """
-    req_id = await self._send_awaited(
+    drain_done = START_WAIT_END.get()
+    answer = await self._runtime.send_request_for_answer(
         METHOD_SET_CONFIG_OPTION,
         {"sessionId": self._session_id, "configId": config_id, "value": value},
     )
-    msg = await self._wait_for_response(req_id, timeout=10.0)
-    result = getattr(msg, "result", None)
+    result = await _config_option_answer(self, answer, drain_done)
     config_options = result.get("configOptions") if isinstance(result, dict) else None
     if isinstance(config_options, list):
         self._config_options = config_options
@@ -871,6 +987,7 @@ def store_config_options(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
             and not select_lists_only_its_current_model(select)
         ):
             self._kas_served_ids = ids
+            self.kas_select_seen.set()
         # KAS sends no ``models`` object, so the select's ``currentValue`` is
         # the only place it says which model the session runs (``auto`` on a
         # new session). Without it ``served_model`` stays ``""`` and every turn
@@ -943,6 +1060,40 @@ def store_config_options(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
 _KAS_SELECT_WAIT_SECS = 2.0
 #: Quiet window per drain round while waiting for that select.
 _KAS_SELECT_POLL_SECS = 0.1
+
+
+async def kas_switch_off_unserved_auto(handle: AcpSessionHandle) -> None:
+    """The KAS arm of :func:`ensure_served_default`: leave an ``auto`` this account lacks.
+
+    Called by ``ensure_served_default``, and directly by a start's early pin task
+    (``kas_start_pin``), which makes the check the MCP wait left to it.
+    """
+    # ``_kas_auto_fallback`` was read off the select while the session sat on
+    # ``auto``; a session a pin or an earlier switch has since moved is not.
+    if handle.served_model not in ("", DEFAULT_MODEL):
+        return
+    fallback = handle._kas_auto_fallback
+    if not fallback:
+        return
+    logger.warning(
+        "KAS session %s defaults to auto, which its model select does not list; switching to %s",
+        handle._session_id,
+        fallback,
+    )
+    intent = handle._model
+    try:
+        await handle.set_model(fallback)
+    except (AcpError, AcpRequestTimeout) as exc:
+        # session/new already succeeded; a refused switch must not fail
+        # the session start. Stay on the backend default, the substitute
+        # path's own contract.
+        logger.warning(
+            "KAS session %s could not switch off auto: %s",
+            handle._session_id,
+            redact_log_via_context(str(exc)),
+        )
+    finally:
+        handle._model = intent
 
 
 async def settle_kas_model_select(self: AcpSessionHandle) -> None:
@@ -1109,29 +1260,15 @@ async def ensure_served_default(self: AcpSessionHandle, *, activated_model: str 
         # so moving to one is safe even if the list is incomplete. A concrete
         # current model is never judged against it, since a partial list would
         # move a session off a model the account can run.
-        fallback = self._kas_auto_fallback
-        if not fallback:
+        #
+        # While a start's early pin is out, its task makes this check itself once
+        # the write ends (``kas_start_pin``), so the switch never lands on top of
+        # the pin and is never sent twice. Waiting for that write here would
+        # deadlock: this runs inside the MCP wait whose end the write's answer may
+        # wait for.
+        if self.served_default_after_pin:
             return
-        logger.warning(
-            "KAS session %s defaults to auto, which its model select does not list; "
-            "switching to %s",
-            self._session_id,
-            fallback,
-        )
-        intent = self._model
-        try:
-            await self.set_model(fallback)
-        except (AcpError, AcpRequestTimeout) as exc:
-            # session/new already succeeded; a refused switch must not fail
-            # the session start. Stay on the backend default, the substitute
-            # path's own contract.
-            logger.warning(
-                "KAS session %s could not switch off auto: %s",
-                self._session_id,
-                redact_log_via_context(str(exc)),
-            )
-        finally:
-            self._model = intent
+        await kas_switch_off_unserved_auto(self)
     elif getattr(getattr(self._runtime, "_harness", None), "reasserts_reported_model", False):
         # An inheriting session is sent the model its adapter reports, as the
         # per-chat claude client does (``_reassert_adapter_resolved_model``):

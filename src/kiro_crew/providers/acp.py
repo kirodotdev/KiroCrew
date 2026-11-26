@@ -331,6 +331,9 @@ class AcpProvider(LLMProvider):
         # and bound to that model on every (re)start (``_bind_unbound_effort``).
         self._unbound_effort: str = unbound_effort or ""
         self._unbound_effort_drop_logged: bool = False
+        # Whether this start already pushed its effort right after its model
+        # write was answered (``kas_start_pin``); ``start`` then skips its own push.
+        self._start_effort_applied: bool = False
         # The crew/role/chat level a session with no slot pick resolves to,
         # carried only for a harness that clears effort live (the factory's
         # ``inherited_effort``): such a clear must land where a cold start does.

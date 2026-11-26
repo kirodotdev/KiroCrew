@@ -18,6 +18,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from acp_runtime_helpers import _answering_send_for_answer
 from test_acp_liveness import FakeProc, _Clock
 from test_acp_stale_recovery import _SilentQueue
 
@@ -659,6 +660,9 @@ async def test_a_runtime_session_records_the_spec_and_wire_launches():
     with ExitStack() as stack:
         stack.enter_context(patch.object(rt, "_send_and_await", _send_and_await))
         stack.enter_context(patch.object(rt, "send_request", _send_request))
+        stack.enter_context(
+            patch.object(rt, "send_request_for_answer", _answering_send_for_answer())
+        )
         stack.enter_context(
             patch.object(AcpSessionHandle, "_wait_for_response", _wait_for_response)
         )

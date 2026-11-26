@@ -1557,14 +1557,14 @@ class TestAcpSessionHandleCommands:
         req_counter = [300]
 
         async def capture_send(method, params, **_kw):
+            # The answer is the future the reader resolves, never a queue frame.
             sent_payloads.append((method, params))
-            req_id = req_counter[0]
             req_counter[0] += 1
-            resp_msg = JsonRpcMessage.from_dict({"id": req_id, "result": {}})
-            await q["s1"].put(resp_msg)
-            return req_id
+            answer = asyncio.get_running_loop().create_future()
+            answer.set_result({})
+            return answer
 
-        rt.send_request = capture_send
+        rt.send_request_for_answer = capture_send
         await handle.set_config_option("effort", "high")
         assert sent_payloads[0][0] == METHOD_SET_CONFIG_OPTION
         assert sent_payloads[0][1] == {
