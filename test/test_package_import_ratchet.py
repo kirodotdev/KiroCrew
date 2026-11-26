@@ -2,8 +2,9 @@
 
 The package reads each public name from its owner on first access, so a module or test
 that imports one small ``kiro_crew.acp`` module does not also load the client and
-everything under it. Imports are measured in a fresh interpreter: the test process has
-already imported most of the tree.
+everything under it. A fresh ``import kiro_crew.dashboard.state`` loads neither the ACP
+client nor its session handle. Imports are measured in a fresh interpreter: the test
+process has already imported most of the tree.
 """
 
 from __future__ import annotations
@@ -31,11 +32,23 @@ print("kiro_crew.acp.client" in sys.modules, callable(client_start._resolve_spaw
 """
 
 
-#: Each case must start before ``kas_permissions`` loads, and each one's import loads it,
-#: so each case runs in its own fresh interpreter.
+#: Neither module defines a name the dashboard state reads while it imports, and together
+#: they pull in a few hundred more that every test importing the state would then load.
+_STATE_UNLOADED = ("kiro_crew.acp.client", "kiro_crew.acp.session_handle")
+
+_STATE_CHILD = f"""\
+import sys
+import kiro_crew.dashboard.state
+print(" ".join(m for m in {_STATE_UNLOADED!r} if m in sys.modules))
+"""
+
+#: Each acp case must start before ``kas_permissions`` loads, and each one's import loads
+#: it, and the dashboard state must be its case's first import, so each case runs in its
+#: own fresh interpreter.
 _CHILDREN = {
     "import_orders": _CHILD,
     "tools_settings": "import kiro_crew.acp.kas_permissions_tools_settings",
+    "dashboard_state": _STATE_CHILD,
 }
 
 # Every child of this module starts on one worker, one after another (D8).
@@ -51,7 +64,7 @@ def children() -> dict[str, subprocess.CompletedProcess[str]]:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=default_timeout() / 2,  # flake-ok: two children share one setup, see above
+            timeout=default_timeout() / len(_CHILDREN),  # flake-ok: the children share one setup
         )
         for case, script in _CHILDREN.items()
     }
@@ -72,6 +85,14 @@ def test_the_toolssettings_translation_imports_before_kas_permissions(
 ) -> None:
     res = children["tools_settings"]
     assert res.returncode == 0, res.stderr
+
+
+def test_the_dashboard_state_loads_neither_the_acp_client_nor_the_session_handle(
+    children: dict[str, subprocess.CompletedProcess[str]],
+) -> None:
+    res = children["dashboard_state"]
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == "", "loaded with the dashboard state: " + res.stdout
 
 
 def test_every_public_name_is_read_from_its_owner(monkeypatch: pytest.MonkeyPatch) -> None:

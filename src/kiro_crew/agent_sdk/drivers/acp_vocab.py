@@ -25,7 +25,6 @@ the import this module replaces.
 
 from __future__ import annotations
 
-from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpSandboxInitFailed, AcpTimeoutError
 from kiro_crew.acp.engine_fallback import (
     EngineFallbackWalk,
     ModelFallbackNotice,
@@ -55,17 +54,23 @@ from kiro_crew.acp.raw_sdk_tasks import (
 from kiro_crew.acp.raw_sdk_tasks import live_card_ids as live_background_card_ids
 from kiro_crew.acp.raw_sdk_tasks import on_cards_lost as on_background_cards_lost
 from kiro_crew.acp.raw_sdk_workflow_cards import BackgroundCardRow
-from kiro_crew.acp.session_handle import (
+from kiro_crew.acp.session_handle_native_children import (
+    AUTO_REJECT_MISSING_SECURITY_CONTEXT,
+    AUTO_REJECT_STRANDED_BETWEEN_TURNS,
     NATIVE_CHILD_NOT_RESUMABLE,
+)
+from kiro_crew.acp.session_handle_runtime_contract import (
     AcpRequestTimeout,
     AcpRuntimeError,
     AcpScopeAdmissionTimeout,
 )
-from kiro_crew.acp.session_handle_native_children import (
-    AUTO_REJECT_MISSING_SECURITY_CONTEXT,
-    AUTO_REJECT_STRANDED_BETWEEN_TURNS,
-)
 from kiro_crew.acp.timed_out_continuation import continue_timed_out_calls, timed_out_continuation
+from kiro_crew.acp.transport_errors import (
+    AcpError,
+    AcpProcessDied,
+    AcpSandboxInitFailed,
+    AcpTimeoutError,
+)
 from kiro_crew.acp.types import (
     EVENT_HARNESS_NOTICE,
     EVENT_MODEL_FALLBACK,

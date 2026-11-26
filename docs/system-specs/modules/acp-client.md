@@ -9,7 +9,11 @@ The package itself (`acp/__init__.py`) imports none of these modules. Each name 
 access, through a module `__getattr__`, and nothing is cached, so importing one ACP
 module loads only what that module imports. `test/test_package_import_ratchet.py` holds
 `import kiro_crew.acp` to the `kiro_crew` and `kiro_crew.acp` modules in a fresh
-interpreter, so an eager import put back fails.
+interpreter, so an eager import put back fails. It also fails when a fresh
+`import kiro_crew.dashboard.state` loads `acp/client.py` or `acp/session_handle.py`: the
+agent SDK's vocabulary modules (`agent_sdk/drivers/acp_vocab.py`, `acp_turn_vocab.py`)
+read each name they re-export from the owner module that defines it, not through those
+two.
 
 Module-level code moved out of the two transports lives in the owner modules
 below: `acp/runtime_start.py` serves the runtime alone, the six host adapters
