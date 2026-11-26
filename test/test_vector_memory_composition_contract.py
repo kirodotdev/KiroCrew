@@ -276,7 +276,7 @@ _STORE_SIGNATURES = {
     "_decay_rate_for": "(self, raw_tags: 'str | list[str] | None') -> 'float'",
     "_delete_episodic_row": "(self, mem_id: 'str') -> 'None'",
     "_eligible_rows": "(self, rows, kind: 'str') -> 'list'",
-    "_embed_bulk_row": "(self, text: 'str', *, pace: 'bool') -> \"'list[float] | None'\"",
+    "_embed_bulk_row": "(self, text: 'str', *, pace: 'bool', should_stop: \"'Callable[[], bool] | None'\" = None) -> \"'list[float] | None'\"",
     "_embedding_config_guard": "(self, vector: 'list[float] | None')",
     "_embedding_current": "(self, vector: 'list[float] | None') -> 'bool'",
     "_embedding_token": "(self) -> 'tuple[str | None, str]'",

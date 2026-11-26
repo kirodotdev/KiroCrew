@@ -1390,6 +1390,9 @@ class VectorMemoryStore:
     #: Per-kind paging cursors of the bounded repair sweep, created on first use by
     #: ``vector_memory_runtime.embedding_repair.backfill_rows``.
     _backfill_cursors: dict[str, str]
+    #: Rows written without a vector that the bounded sweep serves first, per kind,
+    #: created on first use by ``embedding_repair.queue_fresh_vectors``.
+    _fresh_vectors: dict[str, dict[str, None]]
     #: The memory algorithm the open file runs (1 for V1, 2 for a member database), set
     #: by ``_init_database`` in ``vector_memory_lifecycle`` once the file is admitted.
     _memory_version: int
@@ -1572,9 +1575,11 @@ class VectorMemoryStore:
         """Extract key-value from preference text with better heuristics."""
         return _migration.parse_preference(text)
 
-    def _embed_bulk_row(self, text: str, *, pace: bool) -> "list[float] | None":
+    def _embed_bulk_row(
+        self, text: str, *, pace: bool, should_stop: "Callable[[], bool] | None" = None
+    ) -> "list[float] | None":
         """Embed one row of a corpus sweep, then optionally pace the loop."""
-        return _embedding.embed_bulk_row(self, text, pace=pace)
+        return _embedding.embed_bulk_row(self, text, pace=pace, should_stop=should_stop)
 
     @contextmanager
     def _vector_commit(self, vector: list[float] | None, *, best_effort: bool = False):
