@@ -126,6 +126,10 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/members/{slug}/held-limits/release"): RouteAccess(
         "members.held_limits.release", UNSTABLE
     ),
+    # Machine owner only (dashboard/handlers/yolo_ack.py); 403 for anyone else.
+    ("GET", "/api/chat/yolo-ack"): RouteAccess("chat.yolo_ack.read", UNSTABLE),
+    # Machine owner only; writes the owner's yolo_ack.json record.
+    ("PUT", "/api/chat/yolo-ack"): RouteAccess("chat.yolo_ack.set", UNSTABLE),
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
     ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),

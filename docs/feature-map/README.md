@@ -488,6 +488,10 @@ for a user to reach: it is the mechanism behind the tabs above, listed so its
 handler has an owner in this map. Its allowlist is explicit, so a preference
 absent from `DURABLE_PREF_KEYS` is still lost on an origin change, and a value
 that gates a safety confirmation (`mc-yolo-ack`) is deliberately excluded. The
+machine owner's copy of that acknowledgement is kept on the gateway instead, in
+an owner-only record the agent cannot write (`handlers/yolo_ack.py`,
+`GET`/`PUT /api/chat/yolo-ack`), which the chat footer's approval-mode picker
+(`components/ApprovalModePicker.tsx`) reads beside the browser copy. The
 contract is in
 [../system-specs/modules/config.md](../system-specs/modules/config.md).
 

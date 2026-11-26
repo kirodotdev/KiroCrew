@@ -2044,6 +2044,8 @@
       "approve_for_me_failed": "Approve for me could not be turned on. Try again.",
       "approve_for_me_busy": "Wait for the current reply to finish, then pick Approve for me again.",
       "approve_for_me_not_owners": "Approve for me is offered only in a chat you drive from here, not one linked to a channel, a schedule or an app.",
+      "yolo_ack_read_failed": "Couldn't check whether you turned this confirmation off, so it is showing. Enable still works.",
+      "yolo_ack_save_failed": "“Don't show again” was saved only in this browser, so other browsers will still ask before YOLO turns on. The switch to YOLO itself is not affected.",
       "approve_for_me_label": "Approve for me",
       "approve_for_me_desc": "KAS approves routine actions for you in this chat, shell commands and file edits included, and asks you when it isn't sure",
       "approve_for_me_details": "How Approve for me works",

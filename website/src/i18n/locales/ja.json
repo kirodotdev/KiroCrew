@@ -6288,6 +6288,8 @@
       "approve_for_me_failed": "「代わりに承認」をオンにできませんでした。もう一度お試しください。",
       "approve_for_me_busy": "いまの返答が終わるまで待ってから、もう一度 Approve for me を選んでください。",
       "approve_for_me_not_owners": "Approve for me は、ここから操作しているチャットでのみ使えます。チャネル、スケジュール、アプリにつながったチャットでは使えません。",
+      "yolo_ack_read_failed": "この確認をオフにしたかどうかを確認できなかったため、表示しています。「有効にする」はそのまま使えます。",
+      "yolo_ack_save_failed": "「二度と表示しない」はこのブラウザーにのみ保存されたため、ほかのブラウザーでは YOLO をオンにする前に引き続き確認されます。YOLO への切り替え自体には影響しません。",
       "approve_for_me_label": "代わりに承認",
       "approve_for_me_desc": "このチャットでは、KAS がシェルコマンドやファイル編集を含むふだんの操作をあなたの代わりに承認し、迷ったときはあなたに確認します",
       "approve_for_me_details": "Approve for me のしくみ",

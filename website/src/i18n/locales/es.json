@@ -6683,6 +6683,8 @@
       "approve_for_me_failed": "No se pudo activar «Aprobar por mí». Inténtalo de nuevo.",
       "approve_for_me_busy": "Espera a que termine la respuesta actual y vuelve a elegir Approve for me.",
       "approve_for_me_not_owners": "Approve for me solo se ofrece en un chat que llevas desde aquí, no en uno vinculado a un canal, una programación o una app.",
+      "yolo_ack_read_failed": "No se pudo comprobar si desactivaste esta confirmación, así que se muestra. «Activar» sigue funcionando.",
+      "yolo_ack_save_failed": "«No volver a mostrar» solo se guardó en este navegador, así que los demás navegadores seguirán preguntando antes de activar YOLO. El cambio a YOLO en sí no se ve afectado.",
       "approve_for_me_label": "Aprobar por mí",
       "approve_for_me_desc": "KAS aprueba por ti las acciones habituales en este chat, incluidos comandos de shell y cambios en archivos, y te pregunta cuando no está seguro",
       "approve_for_me_details": "Cómo funciona Approve for me",

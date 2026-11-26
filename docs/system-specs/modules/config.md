@@ -1684,6 +1684,11 @@ Contract:
   and enable full auto-approval — and the reason is that this file sits in the
   agent-writable data home, so a restorable ack is an ack an agent can forge for
   the user's next fresh origin. Convenience does not outrank a human gate.
+  The machine owner's ack is also kept on the gateway in the owner-only
+  `yolo_ack.json` keystone (written only by `PUT /api/chat/yolo-ack`), which the
+  picker reads beside the browser copy; `PUT /api/chat/yolo-ack
+  {"acknowledged": false}` re-arms the confirmation in any browser that does not
+  hold its own `mc-yolo-ack` copy.
 
 ## Settings import (dashboard Merge)
 

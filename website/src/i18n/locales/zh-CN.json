@@ -6329,6 +6329,8 @@
       "approve_for_me_failed": "无法开启“替我批准”。请重试。",
       "approve_for_me_busy": "请等当前回复结束，再选一次 Approve for me。",
       "approve_for_me_not_owners": "Approve for me 只在你从这里操作的对话中提供，与频道、定时任务或应用相连的对话中不提供。",
+      "yolo_ack_read_failed": "无法确认你是否已关闭此确认，所以它仍会显示。“启用”照常可用。",
+      "yolo_ack_save_failed": "“不再显示”只保存在了此浏览器中，所以其他浏览器在开启 YOLO 前仍会询问。切换到 YOLO 本身不受影响。",
       "approve_for_me_label": "替我批准",
       "approve_for_me_desc": "在此对话中，KAS 会替你批准日常操作，包括 shell 命令和文件编辑；拿不准时会问你",
       "approve_for_me_details": "Approve for me 如何工作",
