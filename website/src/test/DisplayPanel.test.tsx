@@ -1222,8 +1222,23 @@ describe('DisplayPanel – Scheduled mode location read failure', () => {
       retryScheduleLocation,
     }))
     renderPanel()
-    expect(screen.getByText(/Couldn't load the saved location/)).toBeInTheDocument()
+    // No valid location on this device: the notice names the two times.
+    expect(screen.getByText("Couldn't load the saved location. Using your Light from and Dark from times until you set one.")).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(retryScheduleLocation).toHaveBeenCalledTimes(1)
+  })
+
+  it('says the location below is in use when this device has a valid one', () => {
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      preference: 'schedule',
+      schedule: { light: '07:00', dark: '19:00', source: 'sun', location: '51.51, -0.13' },
+      setSchedule: vi.fn(),
+      scheduleLocationLoadFailed: true,
+      retryScheduleLocation: vi.fn(),
+    }))
+    renderPanel()
+    expect(screen.getByText("Couldn't load the saved location. Using the one below from this device.")).toBeInTheDocument()
+    expect(screen.queryByText(/Light from and Dark from times/)).not.toBeInTheDocument()
   })
 })

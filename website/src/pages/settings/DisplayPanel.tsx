@@ -1435,7 +1435,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                       would discard this panel's drafts. The button is the retry. */}
                   {scheduleLocationLoadFailed && (
                     <div className="flex flex-wrap items-center gap-2">
-                      <ErrorNotice variant="inline" message={i18nT('pages.settings.displayPanel.theme_schedule_location_load_failed')} />
+                      <ErrorNotice variant="inline" message={i18nT(parseLocation(schedule.location) ? 'pages.settings.displayPanel.theme_schedule_location_load_failed_local' : 'pages.settings.displayPanel.theme_schedule_location_load_failed_times')} />
                       <Btn type="button" disabled={scheduleLocationLoading} aria-busy={scheduleLocationLoading || undefined} onClick={retryScheduleLocation}>
                         {i18nT('pages.settings.displayPanel.theme_schedule_location_retry')}
                       </Btn>
