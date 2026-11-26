@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         DashboardState,
         KiroCrewConfig,
         _app_acquisition_conflict,
+        _app_hides_own_mode,
         _app_send_refused,
         _app_slot_acquisition_denial,
         _app_slot_acquisition_recheck,
@@ -544,13 +545,18 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # above: an app whose worker slot lives only in gateway memory repeats mode
     # on send(), so a slot recreated here after a gateway restart keeps its
     # non-"" surface and stays out of the chat sidebar's surface allowlist.
-    # Only creation-allowlisted values pass; anything else is dropped so
+    # Only a mode POST /api/chat/slots would accept from this same request passes:
+    # a creation-allowlisted one, or the creating app's own id while that app may
+    # hide its chats (the create route's own check). Anything else is dropped so
     # get_or_create_slot uses its default. Unlike memory_mode there is no
     # mismatch error: get_or_create_slot ignores mode for an already-existing
-    # slot.
-    requested_mode = body.get("mode")
-    if not isinstance(requested_mode, str) or requested_mode not in _CREATABLE_MODES:
-        requested_mode = ""
+    # slot, so the app check is asked only when this send would create one.
+    raw_mode = body.get("mode")
+    requested_mode = raw_mode if isinstance(raw_mode, str) else ""
+    if requested_mode not in _CREATABLE_MODES:
+        creates = not _requested_key or _requested_key not in state._slots
+        if not (creates and await _app_hides_own_mode(request, body, requested_mode)):
+            requested_mode = ""
 
     # member-* keys are RESERVED for member DM threads, which are born only
     # through POST /api/members/{slug}/thread. Auto-creating one here (e.g. a
