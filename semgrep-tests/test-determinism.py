@@ -103,6 +103,18 @@ def test_module_table_patches(monkeypatch, fake):
         pass
     # ruleid: kirocrew.test-sys-modules-patch-dict
     unittest.mock.patch.dict("sys.modules", {"pip": None}, clear=True)
+    # The call may span lines; the first argument is what is matched.
+    # ruleid: kirocrew.test-sys-modules-patch-dict
+    with patch.dict(
+        "sys.modules",
+        {"pip": None},
+    ):
+        pass
+    # ruleid: kirocrew.test-sys-modules-patch-dict
+    with mock.patch.dict(
+        sys.modules, {"pip": fake}
+    ):
+        pass
     # ruleid: kirocrew.test-sys-modules-patch-dict
     sys.modules.clear()
     # Key-by-key restores never empty the table (D11).

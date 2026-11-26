@@ -492,15 +492,14 @@ class TestParseSessions:
 class TestGetUsageCache:
     def test_returns_cache(self):
         mock_cache = {"credits_used": 42}
-        with patch.dict(
-            "sys.modules",
-            {"kiro_crew.dashboard.handlers.sessions": MagicMock(_usage_cache=mock_cache)},
+        with patched_sys_modules(
+            {"kiro_crew.dashboard.handlers.sessions": MagicMock(_usage_cache=mock_cache)}
         ):
             assert get_usage_cache() == {"credits_used": 42}
 
     def test_empty_cache(self):
-        with patch.dict(
-            "sys.modules", {"kiro_crew.dashboard.handlers.sessions": MagicMock(_usage_cache={})}
+        with patched_sys_modules(
+            {"kiro_crew.dashboard.handlers.sessions": MagicMock(_usage_cache={})}
         ):
             assert get_usage_cache() == {}
 
