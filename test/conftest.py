@@ -1926,4 +1926,45 @@ def no_ambient_kiro_api_key(monkeypatch):
     monkeypatch.delenv("KIRO_API_KEY", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _registry_trusted_git_on_this_host(monkeypatch, request):
+    """Pin the registry git resolver to the host git for every ``test/`` test.
+
+    ``registry_pipeline.checkout._trusted_git`` resolves through the fail-closed
+    ``_resolve_gh_git``: it returns the first git whose provenance walk validates,
+    and ``""`` when every candidate is refused, so the caller refuses the spawn
+    rather than running an untrusted binary. On this sandbox the host git is owned
+    by another uid, so the walk refuses it and a registry test that spawns git with
+    faked steps would otherwise get no git at all. CI's git validates, so this only
+    matters here; a test of the fail-closed contract itself (e.g.
+    test_apps_registry_private_github) patches ``_trusted_git``/``_resolve_gh_git``
+    after this and wins.
+    """
+    if request.node.get_closest_marker("real_git_resolver"):
+        # This test checks the resolver's own fail-closed behaviour; leave it real.
+        yield
+        return
+
+    import shutil as _shutil
+
+    git = _shutil.which("git")
+    if git:
+        from kiro_crew.apps.registry_pipeline import checkout as _checkout
+        from kiro_crew.apps.registry_pipeline import gh_credential as _gh
+
+        # Patch BOTH the defining module and the importer with the SAME object, so the
+        # "one namespace holds one object" composition contract still holds.
+        pinned = lambda: git  # noqa: E731 - a one-line stub is clearest here
+        monkeypatch.setattr(_gh, "_resolve_gh_git", pinned, raising=False)
+        monkeypatch.setattr(_checkout, "_resolve_gh_git", pinned, raising=False)
+        _checkout._TRUSTED_GIT.clear()
+    yield
+    try:
+        from kiro_crew.apps.registry_pipeline import checkout as _checkout
+
+        _checkout._TRUSTED_GIT.clear()
+    except Exception:  # noqa: BLE001 - teardown best-effort
+        pass
+
+
 seal_guards(globals())

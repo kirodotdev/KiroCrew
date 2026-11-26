@@ -516,14 +516,24 @@ class TestFetchAppManifest:
             owner_designated=True,
         )
         assert got == {"name": "demo"}
-        # Exactly the builder's env plus the network entries the git spawn may add,
-        # with the English locale the private-repo classifier reads git's output in.
-        assert seen_env == [
-            {
-                **registry._git_network_env({"SENTINEL": "owner"}, "https://github.com/o/demo.git"),
-                "LC_ALL": registry._GIT_CLONE_LOCALE,
-            }
-        ]
+        # Two spawns now: the network TRANSFER (``clone --no-checkout``) and the
+        # LOCAL checkout that materialises the tree. Only the first is isolated.
+        assert len(seen_env) == 2
+        env = dict(seen_env[0])
+        # Owner-designated keeps the REAL HOME (no isolated temp HOME/XDG overlay) so
+        # a ``credential.helper=store`` or ``.netrc`` the owner configured still
+        # authenticates; ``minimal_env`` carries no HOME here, so none appears. The
+        # builder's env plus the network isolation and the English locale the
+        # private-repo classifier reads in. The owner credential subset is empty
+        # because that mocked env has no HOME, so git reads no global config.
+        assert "HOME" not in env and "XDG_CONFIG_HOME" not in env
+        assert env == {
+            **registry._git_network_env({"SENTINEL": "owner"}, "https://github.com/o/demo.git"),
+            "LC_ALL": registry._GIT_CLONE_LOCALE,
+        }
+        # The LOCAL checkout runs under the NORMAL builder env, not the isolated
+        # transfer env: the smudge/filter drivers resolve from the operator's config.
+        assert seen_env[1] == {"SENTINEL": "owner", "LC_ALL": registry._GIT_CLONE_LOCALE}
         assert grants == ["fetch_app_manifest"]
 
     @pytest.mark.asyncio
@@ -551,15 +561,23 @@ class TestFetchAppManifest:
         await registry._fetch_app_manifest(
             "o/demo", "main", git_url="https://github.com/o/demo.git"
         )
-        # Exactly the builder's env plus the network entries the git spawn may add,
-        # with the English locale the private-repo classifier reads git's output in.
-        assert seen_env == [
-            {
-                **registry._git_network_env({"SENTINEL": "anon"}, "https://github.com/o/demo.git"),
-                "LC_ALL": registry._GIT_CLONE_LOCALE,
-            }
-        ]
-        assert modes == ["strict"]
+        # Two spawns now: the network TRANSFER (``clone --no-checkout``) and the
+        # LOCAL checkout that materialises the tree. Only the first is isolated.
+        assert len(seen_env) == 2
+        env = dict(seen_env[0])
+        # The network spawn also runs under an isolated empty HOME/XDG so the user's
+        # git config and credential helpers are out of scope; they are temp dirs.
+        assert "kirocrew-git-home-" in env.pop("HOME")
+        assert "kirocrew-git-xdg-" in env.pop("XDG_CONFIG_HOME")
+        assert env == {
+            **registry._git_network_env({"SENTINEL": "anon"}, "https://github.com/o/demo.git"),
+            "LC_ALL": registry._GIT_CLONE_LOCALE,
+        }
+        # The LOCAL checkout runs under the NORMAL (anonymous) env, not isolated.
+        assert seen_env[1] == {"SENTINEL": "anon", "LC_ALL": registry._GIT_CLONE_LOCALE}
+        # Both the network transfer and the local checkout are wrapped strict for
+        # an anonymous fetch (the default posture).
+        assert modes == ["strict", "strict"]
 
 
 # Manifest resolution / merge / enrichment

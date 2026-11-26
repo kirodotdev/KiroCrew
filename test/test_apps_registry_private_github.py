@@ -156,7 +156,8 @@ async def test_first_network_attempt_pins_the_classifier_locale(
     else:
         await registry._fetch_app_manifest(_URL, "main", owner_designated=True)
     first = fake_git.network_calls()[0]
-    expected_verb = "pull" if operation == "pull" else "clone"
+    # A reused checkout updates through a temp-repo ``fetch`` transfer, not ``pull``.
+    expected_verb = "fetch" if operation == "pull" else "clone"
     assert expected_verb in first["argv"]
     assert first["env"]["LC_ALL"] == registry._GIT_CLONE_LOCALE
 
@@ -391,6 +392,7 @@ def test_the_credential_env_refuses_a_relative_gh_path() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_git_resolver
 @pytest.mark.parametrize("failure", ["", "untrusted", "unreadable", "discovery"])
 def test_gh_git_resolution_uses_the_shared_trust_policy_and_fails_closed(
     failure: str,
@@ -492,14 +494,15 @@ async def test_the_gh_fetch_reads_the_gh_sign_in_and_no_other_credential_folder(
 async def test_a_private_app_without_a_trusted_git_never_runs_the_gh_fetch(
     fake_git: _FakeGit, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(registry, "_resolve_gh_git", lambda: "")
+    # Every registry git spawn now runs the one validated absolute git; with none
+    # resolvable, no spawn runs at all (the fetch fails closed before the network).
+    monkeypatch.setattr(registry, "_trusted_git", lambda: "")
     dest = tmp_path / "sources" / "private-app"
     with patch.object(registry, "_gh_access", new=AsyncMock(return_value=(_GH, ""))):
         err = await registry._git_clone_or_pull(_URL, "main", dest, [])
-    assert len(fake_git.network_calls()) == 1
+    assert fake_git.network_calls() == []
     assert err is not None and err["ok"] is False
-    # The retry stops at its first step: without a trusted git nothing runs.
-    assert err["error"] == "git init failed"
+    assert "no trusted git" in err["error"]
     assert not dest.exists()
 
 
@@ -511,12 +514,19 @@ async def test_an_existing_private_app_updates_through_an_isolated_gh_fetch(
     (dest / ".git").mkdir(parents=True)
     (dest / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     (dest / "local-changes.txt").write_text("preserved", encoding="utf-8")
+    # A clean HOME so the owner-config subset read finds no operator credential
+    # helper, keeping the non-gh transfer's env helper-free in this assertion.
+    clean_home = tmp_path / "clean-home"
+    clean_home.mkdir()
+    monkeypatch.setenv("HOME", str(clean_home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setattr(registry, "_proxy_env_has_credentials", lambda url: False)
     monkeypatch.setattr(registry, "_context_clone_sandbox_mode", lambda url: "strict")
 
     async def spawn(*argv: str, **kwargs: Any) -> _Proc:
         proc = await fake_git.spawn(*argv, **kwargs)
-        if list(argv) == ["git", "remote", "get-url", "origin"]:
+        # argv[0] is the validated ABSOLUTE git, so match on the subcommand.
+        if list(argv)[1:4] == ["remote", "get-url", "origin"]:
             return _Proc(0, (_URL + "\n").encode())
         return proc
 
@@ -528,16 +538,20 @@ async def test_an_existing_private_app_updates_through_an_isolated_gh_fetch(
         )
     assert err is None
     access.assert_awaited_once_with("acme/private-apps")
-    first, second = fake_git.network_calls()
-    assert "pull" in first["argv"] and "--ff-only" in first["argv"]
-    assert first["mode"] == "strict"
-    assert not _helper_of(first["env"])
-    assert "fetch" in second["argv"] and "pull" not in second["argv"]
-    assert second["mode"] == "strict"
-    assert second["visible"] == (str(Path.home() / ".config" / "gh"),)
-    assert _helper_of(second["env"]) == ["", _GH_HELPER]
+    calls = fake_git.network_calls()
+    # No single ``pull`` anywhere: the first attempt is the temp-repo transfer
+    # ``fetch``; on its private failure the checkout is moved aside and the gh
+    # retry fetches through the isolated split (``_git_fetch_branch``).
+    assert not any("pull" in c["argv"] for c in calls), calls
+    gh_calls = [c for c in calls if _helper_of(c["env"]) == ["", _GH_HELPER]]
+    assert gh_calls, "a gh-credentialed fetch ran"
+    assert "fetch" in gh_calls[0]["argv"]
+    assert gh_calls[0]["mode"] == "strict"
+    assert gh_calls[0]["visible"] == (str(Path.home() / ".config" / "gh"),)
+    # Only the gh fetch carries a credential helper; the clean HOME keeps the
+    # non-gh transfer helper-free.
     for call in fake_git.calls:
-        if call not in (first, second):
+        if call not in gh_calls:
             assert not _helper_of(call["env"]), call["argv"]
     assert pending_cleanup
     stale = pending_cleanup[0]

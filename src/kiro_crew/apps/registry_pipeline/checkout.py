@@ -9,6 +9,7 @@ timeouts and process-group kill every registry git spawn uses.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 import uuid
@@ -32,8 +33,10 @@ from kiro_crew.apps.registry_pipeline.gh_credential import (
 )
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _GIT_EXEC_NEUTRALIZER_PAIRS,
+    _GIT_NO_REDIRECTS_PAIR,
     _git_network_failure_hint,
     _git_output_is_auth_shaped,
+    _git_output_is_redirect,
     _git_output_is_ssh_name_unresolved,
     _git_target_is_unsupported,
     _git_transport_env,
@@ -51,10 +54,12 @@ from kiro_crew.apps.registry_pipeline.sources import (
 )
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
     _GIT_CLONE_LOCALE,
+    _git_network_env,
     _git_network_step_env,
     _proxy_env_has_credentials,
     anonymous_git_env,
     minimal_env,
+    transfer_home,
 )
 from kiro_crew.owner_only_files import ensure_directory as _ensure_directory
 from kiro_crew.sandbox import (
@@ -89,9 +94,12 @@ _CLONE_TIMEOUT = 60
 # non-directory OS device under which git finds no hook and into which no directory
 # can be created (the ``_HOOKS_SINK`` reasoning in ``dashboard/handlers/worktree.py``);
 # ``core.fsmonitor=false`` refuses a repo-named filesystem-monitor command git would
-# otherwise spawn on index reads.
+# otherwise spawn on index reads. ``http.followRedirects=false`` keeps each network
+# step on the host the clone-host check approved; it is inert on the local steps.
 _HOOKS_NEUTRALIZER_ARGV: tuple[str, ...] = tuple(
-    token for key, value in _GIT_EXEC_NEUTRALIZER_PAIRS for token in ("-c", f"{key}={value}")
+    token
+    for key, value in (*_GIT_EXEC_NEUTRALIZER_PAIRS, _GIT_NO_REDIRECTS_PAIR)
+    for token in ("-c", f"{key}={value}")
 )
 
 
@@ -122,6 +130,16 @@ def _with_network_hint(error: str, output: str, *, named: bool = False) -> str:
         # so say what was measured. A proxy-only network looks exactly like this.
         return f"{error}: timed out; {hint}"
     return f"{error}: could not reach the remote; {hint}"
+
+
+def _with_redirect_hint(error: str, output: str) -> str:
+    """*error*, plus what to do when *output* says git refused an HTTP redirect."""
+    if not _git_output_is_redirect(output):
+        return error
+    return (
+        f"{error}: the server redirects, and app fetches do not follow redirects; "
+        "list the repository's current URL in the registry"
+    )
 
 
 #: The slug and fixed sentence for a credential-free (index-originated) fetch of an
@@ -289,8 +307,11 @@ async def _clone_origin_url(dest: Path) -> str | None:
     """
     if not await asyncio.to_thread((dest / ".git").is_dir):
         return None
+    git_bin = await asyncio.to_thread(_trusted_git)
+    if not git_bin:
+        return None
     origin_cmd, _cleanup = await wrap_argv_async(
-        ["git", "remote", "get-url", "origin"],
+        [git_bin, "remote", "get-url", "origin"],
         mode="strict",  # credential-free read; ~/.ssh stays hidden
         _prepare=wrap_argv,
     )
@@ -318,6 +339,285 @@ async def _clone_origin_url(dest: Path) -> str | None:
     if proc.returncode != 0:
         return None
     return origin_out.decode(errors="replace").strip()
+
+
+#: Absolute git a registry/app-repo spawn runs, resolved once PER ``PATH`` value.
+#: Keyed on PATH so a test that points PATH at its own git resolves fresh and no
+#: path leaks into the next test.
+_TRUSTED_GIT: dict[str, str] = {}
+
+
+def _trusted_git() -> str:
+    """The validated, ABSOLUTE git a registry/app-repo spawn runs.
+
+    One resolver, shared with the gh sign-in path (:func:`_resolve_gh_git`): it
+    walks the well-known install dirs then ``PATH``, runs each candidate through
+    :func:`validate_provider_executable`, and returns the first ABSOLUTE path that
+    validates. Never a bare ``git`` that execvp would re-resolve on ``PATH`` at
+    spawn time, and never a binary the provenance walk refused: when every
+    candidate is refused it returns ``""``, and the caller fails the spawn closed
+    rather than running an untrusted git. Cached keyed on the current ``PATH``
+    value, so a test that points ``PATH`` at its own git is resolved fresh and
+    leaks nothing to the next test.
+    """
+    path_env = os.environ.get("PATH", "")
+    if path_env not in _TRUSTED_GIT:
+        _TRUSTED_GIT[path_env] = _resolve_gh_git()
+    return _TRUSTED_GIT[path_env]
+
+
+#: The exact scalar keys re-injected into an owner-designated transfer env so a
+#: host's system TLS still applies. NO ``http.<url>.*`` (that is where a
+#: followRedirects would live) and no proxy (env-var proxies still work).
+_OWNER_TLS_CONFIG_KEYS: tuple[str, ...] = ("http.sslCAInfo", "http.sslCAPath", "http.sslBackend")
+
+
+def _append_git_config_pairs(env: dict[str, str], pairs: list[tuple[str, str]]) -> dict[str, str]:
+    """Append *pairs* to *env*'s command-scope ``GIT_CONFIG_COUNT/KEY_n/VALUE_n``.
+
+    Command-scope config, never argv, so a value is never exposed in a process
+    listing or a sandbox diagnostic (the same channel :func:`_git_transport_env`
+    uses). Returns a copy.
+    """
+    if not pairs:
+        return dict(env)
+    out = dict(env)
+    try:
+        count = int(out.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        count = 0
+    count = max(count, 0)
+    for key, value in pairs:
+        out[f"GIT_CONFIG_KEY_{count}"] = key
+        out[f"GIT_CONFIG_VALUE_{count}"] = value
+        count += 1
+    out["GIT_CONFIG_COUNT"] = str(count)
+    return out
+
+
+def _read_owner_transfer_config(git_bin: str, clone_env: dict[str, str]) -> list[tuple[str, str]]:
+    """The vetted subset of the OPERATOR's real git config to re-inject into an
+    owner-designated transfer env.
+
+    Read with the validated git in the operator's NORMAL env (*clone_env*, which
+    keeps the global config in scope), from a non-repository cwd so only
+    system+global config is read, never some unrelated checkout's local config. The
+    subset is deliberately narrow: the credential helpers an owner configured
+    (``credential.helper`` and per-URL ``credential.<url>.helper`` / ``.username``)
+    and the host's system TLS (``http.sslCAInfo`` / ``sslCAPath`` / ``sslBackend``).
+    NOTHING else -- no ``http.<url>.followRedirects``, ``url.<x>.insteadOf``,
+    ``include`` / ``includeIf`` or git-config proxy -- so a redirect, an
+    insteadOf rewrite or an include can never reach the transfer. Best-effort:
+    returns ``[]`` on any failure. Index-originated fetches never call this.
+    """
+    import subprocess
+    import tempfile
+
+    from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+    if not git_bin:
+        return []
+    neutral_cwd = tempfile.gettempdir()
+    # Read the operator's PERSISTENT config only (the global and system files),
+    # never a command-scope ``GIT_CONFIG_*`` pair a caller layered onto
+    # *clone_env*. Those pairs are the gateway's own transient transport settings
+    # (hooks/fsmonitor/credential neutralizers and the like), not credentials an
+    # owner configured; re-reading them here would echo a neutralizer -- or any
+    # gateway-injected value -- back into the transfer as if it were owner intent.
+    read_env = {
+        key: value
+        for key, value in clone_env.items()
+        if key != "GIT_CONFIG_COUNT"
+        and not key.startswith("GIT_CONFIG_KEY_")
+        and not key.startswith("GIT_CONFIG_VALUE_")
+    }
+
+    def _config(*args: str) -> subprocess.CompletedProcess | None:
+        try:
+            return subprocess.run(
+                [git_bin, "config", *args],
+                capture_output=True,
+                env=read_env,
+                cwd=neutral_cwd,
+                timeout=10,
+                **UTF8_TEXT,
+            )
+        except Exception:  # noqa: BLE001 - a read failure just yields no subset
+            return None
+
+    pairs: list[tuple[str, str]] = []
+    for key in _OWNER_TLS_CONFIG_KEYS:
+        proc = _config("--get", key)
+        if proc is not None and proc.returncode == 0:
+            value = proc.stdout.strip()
+            if value:
+                pairs.append((key, value))
+    proc = _config("-z", "--get-regexp", r"^credential\.")
+    if proc is not None and proc.returncode == 0:
+        for record in proc.stdout.split("\0"):
+            if not record:
+                continue
+            key, _, value = record.partition("\n")
+            low = key.strip().lower()
+            if low == "credential.helper" or low.endswith(".helper") or low.endswith(".username"):
+                pairs.append((key.strip(), value))
+    return pairs
+
+
+async def _transfer_env(
+    clone_env: dict[str, str],
+    git_url: str,
+    credential_target: str,
+    *,
+    owner_designated: bool,
+    forward_applied: list[bool] | None = None,
+) -> dict[str, str]:
+    """Environment for a network TRANSFER (``clone --no-checkout`` / ``fetch``).
+
+    Isolated base (:func:`_git_network_step_env` -- system and global config off,
+    plus the empty HOME/XDG the caller layers on with :func:`isolated_git_home`),
+    the gateway's own transport credential rewrite (:func:`_git_transport_env`),
+    and -- for an OWNER-designated fetch only -- a vetted subset of the operator's
+    real config (:func:`_read_owner_transfer_config`). Index-originated fetches get
+    no subset. ``LC_ALL`` is pinned for the classifier.
+
+    *forward_applied* is the list the caller gave ``wrap_argv_async`` as
+    ``forward_ssh_auth_sock_out`` for the same spawn: the transfer keeps (and
+    repairs) the operator's ssh-agent socket only when the wrap actually applied
+    the forward, and starts with neither ``SSH_AUTH_SOCK`` nor ``SSH_AGENT_PID``
+    otherwise. Pass ``None`` to DEFER that decision to the caller (the reused-update
+    temp fetch wraps its own spawn through :func:`_run_registry_git`, which applies
+    the keep/scrub there); the socket is then left as *clone_env* named it.
+    """
+    base = _git_transport_env(credential_target, git_url, clone_env)
+    if forward_applied is None:
+        env = _git_network_env(base, git_url)
+    else:
+        env = await _git_network_step_env(base, git_url, forward_applied=forward_applied)
+    if owner_designated:
+        git_bin = await asyncio.to_thread(_trusted_git)
+        pairs = await asyncio.to_thread(_read_owner_transfer_config, git_bin, clone_env)
+        env = _append_git_config_pairs(env, pairs)
+    env["LC_ALL"] = _GIT_CLONE_LOCALE
+    return env
+
+
+async def _local_checkout(
+    git_bin: str,
+    git_url: str,
+    checkout_target: str,
+    dest: Path,
+    sandbox_mode: str,
+    clone_env: dict[str, str],
+    forward_ssh_auth_sock: bool,
+) -> tuple[int, str]:
+    """Force-check out *checkout_target* in *dest* under the NORMAL env (LOCAL step).
+
+    The transfer ran ``clone --no-checkout`` so the working tree is empty; this
+    materialises it and runs the Git LFS smudge and any filter driver, which
+    resolve from the operator's config because this step keeps *clone_env* rather
+    than the isolated transfer env. The LFS endpoint pin keeps a smudge on
+    *git_url*'s own host. Returns ``(exit_code, loggable_output)``.
+    """
+    checkout_cmd = [
+        git_bin,
+        *_HOOKS_NEUTRALIZER_ARGV,
+        *_lfs_endpoint_pin_argv(git_url),
+        "checkout",
+        "--force",
+        checkout_target,
+    ]
+    sandboxed, _cleanup = await wrap_argv_async(
+        checkout_cmd,
+        mode=sandbox_mode,
+        forward_ssh_auth_sock=forward_ssh_auth_sock,
+        _prepare=wrap_argv,
+    )
+    sandboxed = cgroup_scope_argv(sandboxed)
+    env = {**clone_env, "LC_ALL": _GIT_CLONE_LOCALE}
+    proc = await create_subprocess_limited(
+        *sandboxed,
+        cwd=str(dest),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+        env=env,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT)
+    except asyncio.TimeoutError:
+        await _kill_process_group(proc)
+        return 124, "local checkout timed out"
+    except asyncio.CancelledError:
+        await _kill_process_group(proc)
+        raise
+    return proc.returncode or 0, _loggable_git_transport_output(
+        out.decode(errors="replace").strip(), credentialed=False
+    )
+
+
+async def _run_registry_git(
+    git_bin: str,
+    argv: list[str],
+    *,
+    cwd: Path | None,
+    env: dict[str, str],
+    sandbox_mode: str,
+    timeout: int,
+    forward_ssh_auth_sock: bool = False,
+    isolate_home: bool = False,
+    git_url: str = "",
+    owner_designated: bool = False,
+) -> tuple[int, str]:
+    """Spawn one sandboxed git step ``[git_bin, <neutralizer>, *argv]`` under *env*.
+
+    ``isolate_home=True`` marks a network TRANSFER: the operator's ssh-agent socket
+    is kept and repaired only when the wrap actually applied the forward
+    (``_git_network_step_env`` on *git_url*), scrubbed otherwise, and the HOME/XDG
+    overlay follows :func:`transfer_home` -- empty for an index-originated transfer,
+    the real HOME for an owner-designated one (``owner_designated=True``) so its
+    ``credential.helper=store`` and ``.netrc`` still authenticate. A LOCAL step
+    omits both and runs under the normal *env*. Returns ``(exit_code,
+    stripped_output)``; the caller redacts credentialed output.
+    """
+    full = [git_bin, *_HOOKS_NEUTRALIZER_ARGV, *argv]
+    forward_applied: list[bool] = []
+    sandboxed, _cleanup = await wrap_argv_async(
+        full,
+        mode=sandbox_mode,
+        forward_ssh_auth_sock=forward_ssh_auth_sock,
+        forward_ssh_auth_sock_out=forward_applied if forward_ssh_auth_sock else None,
+        _prepare=wrap_argv,
+    )
+    sandboxed = cgroup_scope_argv(sandboxed)
+    with contextlib.ExitStack() as stack:
+        spawn_env = dict(env)
+        if isolate_home:
+            # A network transfer: apply the ssh-agent keep/scrub decision the wrap
+            # reported, then overlay HOME/XDG by credential posture.
+            spawn_env = await _git_network_step_env(
+                spawn_env, git_url, forward_applied=forward_applied
+            )
+            spawn_env.update(stack.enter_context(transfer_home(owner_designated)))
+        proc = await create_subprocess_limited(
+            *sandboxed,
+            cwd=str(cwd) if cwd else None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            env=spawn_env,
+        )
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            await _kill_process_group(proc)
+            return 124, "timed out"
+        except asyncio.CancelledError:
+            await _kill_process_group(proc)
+            raise
+    return proc.returncode or 0, out.decode(errors="replace").strip()
 
 
 async def _clone_origin_matches(dest: Path, git_url: str) -> bool:
@@ -457,11 +757,6 @@ async def _git_fetch_ref(
         credentialed_transport or bool(gh_path) or _proxy_env_has_credentials(git_url)
     )
 
-    # With a gh sign-in, EVERY step runs the validated git, init and checkout
-    # included: a git found on PATH could write `.git/config` (a URL rewrite to a
-    # remote helper) that the credentialed fetch would then honour.
-    trusted_git: list[str] = []
-
     async def run(
         argv: list[str],
         *,
@@ -469,19 +764,26 @@ async def _git_fetch_ref(
         timeout: int,
         network: bool = False,
     ) -> tuple[int, str]:
-        if gh_path:
-            if not trusted_git:
-                trusted_git.append(await asyncio.to_thread(_resolve_gh_git))
-            if not trusted_git[0]:
-                return 128, "no trusted git executable for the gh-credentialed fetch"
-            argv = [trusted_git[0], *argv[1:]]
+        # EVERY step runs the validated absolute git, never PATH git (init and
+        # checkout included): a git found on PATH could be a shim that writes
+        # `.git/config` (a URL rewrite to a remote helper, or a redirect-enabling
+        # entry) the credentialed fetch would then honour.
+        git_bin = await asyncio.to_thread(_trusted_git)
+        if not git_bin:
+            return 128, "no trusted git executable for the registry fetch"
+        argv = [git_bin, *argv[1:]]
         # Prepend the hooks/fsmonitor neutralizer to EVERY git spawn (network or
         # not): the init/checkout steps run with *clone_env*, which carries no such
         # override, so without this a repo-shipped ``post-checkout`` executes during
         # checkout. The ``-c`` overrides go right after the executable so they
         # precede the subcommand. The LFS pin keeps a smudge in the checkout on
         # *git_url*'s host whatever the repository's ``.lfsconfig`` names.
-        argv = [argv[0], *_HOOKS_NEUTRALIZER_ARGV, *_lfs_endpoint_pin_argv(git_url), *argv[1:]]
+        argv = [
+            argv[0],
+            *_HOOKS_NEUTRALIZER_ARGV,
+            *_lfs_endpoint_pin_argv(git_url),
+            *argv[1:],
+        ]
         fwd = forward_ssh_auth_sock and network  # the agent socket is for the network step only
         # The gh sign-in step keeps its tier and gets back `~/.config/gh` alone, the
         # one folder `gh` reads its sign-in from; every other credential folder the
@@ -505,16 +807,27 @@ async def _git_fetch_ref(
         )
         sandboxed = cgroup_scope_argv(sandboxed)
         if network:
-            process_env = await _git_network_step_env(
-                _git_transport_env(credential_target, git_url, clone_env),
+            # TRANSFER env: isolated, plus the owner-config subset for an
+            # owner-designated fetch (never for an index-originated one). The ssh
+            # agent socket is kept and repaired only when the wrap actually applied
+            # the forward (``forward_applied``). The LOCAL steps below keep
+            # *clone_env* so Git LFS and filter drivers still run.
+            process_env = await _transfer_env(
+                clone_env,
                 git_url,
+                credential_target,
+                owner_designated=not index_originated,
                 forward_applied=forward_applied,
             )
             if gh_path:
                 process_env = _gh_credential_env(process_env, gh_path)
-            # English output, whatever the operator's locale: the missing-ref retry
-            # and the network hint below classify it (see `_GIT_CLONE_LOCALE`).
-            process_env["LC_ALL"] = _GIT_CLONE_LOCALE
+                # Keep whatever explicit gh config dir ``_gh_credential_env``
+                # supplied; only resolve the default when none was given, since the
+                # isolated HOME below would otherwise hide ``~/.config/gh`` (the
+                # sandbox lifts that exact path back in via ``visible`` above).
+                process_env.setdefault(
+                    "GH_CONFIG_DIR", os.path.join(str(Path.home()), ".config", "gh")
+                )
         elif mask_local_git_config:
             # Prewarm only. The local steps (init, checkout, branch) need no
             # credential helper, so they run with system and global git config
@@ -532,23 +845,37 @@ async def _git_fetch_ref(
             }
         else:
             process_env = clone_env
-        proc = await create_subprocess_limited(
-            *sandboxed,
-            cwd=str(cwd) if cwd else None,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            start_new_session=platform_compat.IS_POSIX,
-            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-            env=process_env,
-        )
-        try:
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            await _kill_process_group(proc)
-            return 124, "timed out"
-        except asyncio.CancelledError:
-            await _kill_process_group(proc)
-            raise
+        # The network step reads none of the user's git config: an empty temp
+        # HOME/XDG (removed when this block exits) on top of the system/global
+        # disable in ``_git_network_env``. The local init/checkout steps keep
+        # *clone_env* so a legitimate install still resolves the operator's filter
+        # drivers and Git LFS.
+        with contextlib.ExitStack() as home_stack:
+            if network:
+                # Owner-designated keeps the real HOME (its credential store and
+                # .netrc still work); an index-originated transfer gets the empty
+                # HOME. Global/system config is off either way via _git_network_env.
+                process_env = {
+                    **process_env,
+                    **home_stack.enter_context(transfer_home(not index_originated)),
+                }
+            proc = await create_subprocess_limited(
+                *sandboxed,
+                cwd=str(cwd) if cwd else None,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                env=process_env,
+            )
+            try:
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except asyncio.TimeoutError:
+                await _kill_process_group(proc)
+                return 124, "timed out"
+            except asyncio.CancelledError:
+                await _kill_process_group(proc)
+                raise
         return (
             proc.returncode or 0,
             _loggable_git_transport_output(
@@ -671,7 +998,9 @@ async def _git_fetch_ref(
             return {
                 "ok": False,
                 "name": dest.name,
-                "error": _with_network_hint(f"git fetch failed (exit {code})", out),
+                "error": _with_redirect_hint(
+                    _with_network_hint(f"git fetch failed (exit {code})", out), out
+                ),
             }
 
         if tag_ref:
@@ -1147,79 +1476,152 @@ async def _git_clone_or_pull(
             # mismatched checkout was moved aside and never reused. Pull from the
             # current registry URL through the command-scoped rewrite, so rotated
             # credentials take effect without ever being persisted in origin.)
+            git_bin = await asyncio.to_thread(_trusted_git)
+            if not git_bin:
+                return {
+                    "ok": False,
+                    "name": dest.name,
+                    "error": "no trusted git executable for the registry update",
+                }
             log_lines.append(
                 f"Updating {_strip_git_target_userinfo(git_url)} (branch: {branch})..."
             )
-            # Route through wrap_argv (OS sandbox) THEN cgroup_scope_argv, matching
-            # the fresh-clone path below — the cgroup DoS ceiling is the outermost
-            # layer but must not replace the wrap_argv sandbox on this
-            # agent-influenced git spawn. The hooks/fsmonitor neutralizer is spliced
-            # right after ``git`` so a repo-shipped hook cannot run during the pull.
-            pull_applied: list[bool] = []
-            pull_cmd, _cleanup = await wrap_argv_async(
-                [
-                    "git",
-                    *_HOOKS_NEUTRALIZER_ARGV,
-                    *_lfs_endpoint_pin_argv(git_url),
-                    "pull",
-                    "--ff-only",
-                    git_url,
-                    branch,
-                ],
-                mode=sandbox_mode,
-                forward_ssh_auth_sock=forward_sock,
-                forward_ssh_auth_sock_out=pull_applied if forward_sock else None,
-                _prepare=wrap_argv,
+            local_env = {**clone_env, "LC_ALL": _GIT_CLONE_LOCALE}
+            # Update a REUSED checkout without its own ``.git/config`` ever reaching
+            # the network AND without any step that resolves a URL through that
+            # config. The network TRANSFER runs in a FRESH temp repo the gateway
+            # just created (only gateway-written config in scope); the objects then
+            # move into the checkout with NO URL at all (borrowed through
+            # ``GIT_ALTERNATE_OBJECT_DIRECTORIES`` + ``update-ref`` + ``merge
+            # --ff-only``, see below), so the checkout's ``url.<x>.insteadOf``
+            # cannot turn a local path into a network fetch. The temp repo copies
+            # the checkout's OBJECT FORMAT so a SHA-256 repo updates, and the
+            # checkout's ``core.*`` (filemode, symlinks, ignorecase) is left
+            # untouched. The temp fetch is full (not shallow) so the ff-merge can
+            # connect the new tip to the checkout's current commit.
+            fmt_code, fmt_out = await _run_registry_git(
+                git_bin,
+                ["rev-parse", "--show-object-format"],
+                cwd=dest,
+                env=local_env,
+                sandbox_mode=sandbox_mode,
+                timeout=15,
             )
-            pull_cmd = cgroup_scope_argv(pull_cmd)
-            pull_env = await _git_network_step_env(
-                _git_transport_env(credential_target, git_url, clone_env),
-                git_url,
-                forward_applied=pull_applied,
-            )
-            pull_env["LC_ALL"] = _GIT_CLONE_LOCALE
-            proc = await create_subprocess_limited(
-                *pull_cmd,
-                cwd=str(dest),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=platform_compat.IS_POSIX,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-                env=pull_env,
-            )
+            refspec_remote = f"+refs/heads/{branch}:refs/heads/{branch}"
+            tmp_transfer = await _mkdtemp_settled("kirocrew-xfer-")
             try:
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
-                pull_output = _loggable_git_transport_output(
-                    stdout.decode(errors="replace").strip(),
-                    credentialed=credentialed_transport,
+                init_argv = ["init", "--quiet", "--template="]
+                if fmt_code == 0 and fmt_out.strip():
+                    init_argv.append(f"--object-format={fmt_out.strip()}")
+                init_argv.append(tmp_transfer)
+                code, _out = await _run_registry_git(
+                    git_bin,
+                    init_argv,
+                    cwd=None,
+                    env=local_env,
+                    sandbox_mode=sandbox_mode,
+                    timeout=15,
                 )
-                log_lines.append(pull_output)
-                if proc.returncode != 0:
-                    # Fail closed: installing whatever the checkout happens to hold
-                    # while persisting the catalog URL as its provenance would
-                    # record a source the installed code was never fetched from.
-                    log_lines.append(f"git pull failed (exit {proc.returncode}) — aborting")
+                if code != 0:
+                    log_lines.append(f"update temp-repo init failed (exit {code}) — aborting")
+                    return {"ok": False, "error": "git update failed; not installing stale code"}
+                transfer_env = await _transfer_env(
+                    clone_env, git_url, credential_target, owner_designated=not index_originated
+                )
+                code, out = await _run_registry_git(
+                    git_bin,
+                    ["fetch", "--no-tags", git_url, refspec_remote],
+                    cwd=Path(tmp_transfer),
+                    env=transfer_env,
+                    sandbox_mode=sandbox_mode,
+                    forward_ssh_auth_sock=forward_sock,
+                    timeout=_CLONE_TIMEOUT,
+                    isolate_home=True,
+                    git_url=git_url,
+                    owner_designated=not index_originated,
+                )
+                out = _loggable_git_transport_output(out, credentialed=credentialed_transport)
+                log_lines.append(out)
+                if code != 0:
+                    # Fail closed: installing whatever the checkout holds while
+                    # persisting the catalog URL as its provenance would record a
+                    # source the installed code was never fetched from.
+                    log_lines.append(f"git fetch failed (exit {code}) — aborting")
                     if index_originated:
-                        refusal = _strict_ssh_route_failure(git_url, pull_output, dest.name)
+                        refusal = _strict_ssh_route_failure(git_url, out, dest.name)
                         if refusal is not None:
                             return refusal
                     return {
                         "ok": False,
-                        "error": _with_network_hint(
-                            f"git pull failed (exit {proc.returncode}); not installing stale code",
-                            pull_output,
+                        "error": _with_redirect_hint(
+                            _with_network_hint(
+                                f"git update failed (exit {code}); not installing stale code",
+                                out,
+                            ),
+                            out,
                         ),
                     }
-            except asyncio.TimeoutError:
-                await _kill_process_group(proc)
-                log_lines.append("git pull timed out — aborting")
-                return {
-                    "ok": False,
-                    "error": "git pull timed out; not installing stale code",
-                }
-            except asyncio.CancelledError:
-                await _kill_process_group(proc)
-                raise
+                # Import the fetched objects into the checkout with NO URL, so the
+                # checkout's own ``url.<x>.insteadOf`` cannot rewrite a path into a
+                # network address: borrow the temp repo's object store through
+                # ``GIT_ALTERNATE_OBJECT_DIRECTORIES`` (a plain path, never resolved
+                # as a remote), point the tracking ref at the sha the isolated
+                # transfer got with ``update-ref``, ``merge --ff-only`` under the
+                # normal env (the LFS smudge resolves there), then ``repack`` so the
+                # borrowed objects become local before the temp repo is removed.
+                sha_code, sha_out = await _run_registry_git(
+                    git_bin,
+                    ["rev-parse", "--verify", f"refs/heads/{branch}"],
+                    cwd=Path(tmp_transfer),
+                    env=local_env,
+                    sandbox_mode=sandbox_mode,
+                    timeout=15,
+                )
+                fetched_sha = sha_out.strip()
+                if sha_code != 0 or not fetched_sha:
+                    log_lines.append("could not read the transferred tip — aborting")
+                    return {"ok": False, "error": "git update failed; not installing stale code"}
+                alt_objects = os.path.join(tmp_transfer, ".git", "objects")
+                borrow_env = {**local_env, "GIT_ALTERNATE_OBJECT_DIRECTORIES": alt_objects}
+                tracking_ref = f"refs/remotes/origin/{branch}"
+                code, _out = await _run_registry_git(
+                    git_bin,
+                    ["update-ref", tracking_ref, fetched_sha],
+                    cwd=dest,
+                    env=borrow_env,
+                    sandbox_mode=sandbox_mode,
+                    timeout=15,
+                )
+                if code != 0:
+                    log_lines.append(f"update-ref failed (exit {code}) — aborting")
+                    return {"ok": False, "error": "git update failed; not installing stale code"}
+                code, _out = await _run_registry_git(
+                    git_bin,
+                    [*_lfs_endpoint_pin_argv(git_url), "merge", "--ff-only", tracking_ref],
+                    cwd=dest,
+                    env=borrow_env,
+                    sandbox_mode=sandbox_mode,
+                    timeout=30,
+                )
+                if code != 0:
+                    log_lines.append(f"git merge --ff-only failed (exit {code}) — aborting")
+                    return {
+                        "ok": False,
+                        "error": "git update failed (not a fast-forward); not installing stale code",
+                    }
+                # Copy the borrowed objects into the checkout's own store so dropping
+                # the temp repo below leaves nothing dangling. ``repack`` without
+                # ``--local`` includes objects reached through the alternate.
+                await _run_registry_git(
+                    git_bin,
+                    ["repack", "-a", "-d", "-q"],
+                    cwd=dest,
+                    env=borrow_env,
+                    sandbox_mode=sandbox_mode,
+                    timeout=_CLONE_TIMEOUT,
+                )
+            finally:
+                await _rmtree_force_settled(Path(tmp_transfer))
             return None
 
     # Fresh checkout.
@@ -1267,11 +1669,22 @@ async def _git_clone_or_pull(
 
         log_lines.append(f"Cloning {_strip_git_target_userinfo(git_url)} (branch: {branch})...")
         _ensure_directory(dest.parent)
+        git_bin = await asyncio.to_thread(_trusted_git)
+        if not git_bin:
+            return {
+                "ok": False,
+                "name": dest.name,
+                "error": "no trusted git executable for the registry clone",
+            }
+        # TRANSFER only: ``--no-checkout`` fetches the objects under the isolated
+        # transfer env (no user config, no smudge). The working tree is populated
+        # by a LOCAL checkout afterwards, under the normal env, so Git LFS and
+        # filter drivers resolve. No LFS pin on the transfer (it does not smudge).
         clone_cmd = [
-            "git",
+            git_bin,
             *_HOOKS_NEUTRALIZER_ARGV,
-            *_lfs_endpoint_pin_argv(git_url),
             "clone",
+            "--no-checkout",
             "--depth",
             "1",
             "--branch",
@@ -1289,20 +1702,12 @@ async def _git_clone_or_pull(
             _prepare=wrap_argv,
         )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-        transport_env = await _git_network_step_env(
-            _git_transport_env(credential_target, git_url, clone_env),
+        transport_env = await _transfer_env(
+            clone_env,
             git_url,
+            credential_target,
+            owner_designated=not index_originated,
             forward_applied=clone_applied,
-        )
-        transport_env["LC_ALL"] = _GIT_CLONE_LOCALE
-
-        proc = await create_subprocess_limited(
-            *sandboxed_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            start_new_session=platform_compat.IS_POSIX,
-            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-            env=transport_env,
         )
         # `rmtree_force`, never `shutil.rmtree(..., ignore_errors=True)`: what a
         # half-finished `git clone` leaves at *dest* is a git checkout, and git
@@ -1319,21 +1724,41 @@ async def _git_clone_or_pull(
         # takes the fast-forward branch instead -- `git pull` in a repo the clone
         # never finished, which fails, so every retry of that install fails too.
         clone_output = ""
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT)
-            clone_output = _loggable_git_transport_output(
-                stdout.decode(errors="replace").strip(),
-                credentialed=credentialed_transport,
+        # The clone reads none of the user's git CONFIG: the system/global disable
+        # in ``_git_network_env`` is independent of HOME. An index-originated clone
+        # also gets an empty temp HOME/XDG (removed when this block exits) so it
+        # offers no credential store; an owner-designated clone keeps the real HOME
+        # so a ``store`` helper or ``.netrc`` still authenticates. A fresh ``git
+        # clone`` writes the checkout's config itself, so there is no reused config
+        # file to read here.
+        with contextlib.ExitStack() as home_stack:
+            transport_env = {
+                **transport_env,
+                **home_stack.enter_context(transfer_home(not index_originated)),
+            }
+            proc = await create_subprocess_limited(
+                *sandboxed_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                env=transport_env,
             )
-            log_lines.append(clone_output)
-        except asyncio.TimeoutError:
-            await _kill_process_group(proc)
-            await _rmtree_force_settled(dest)
-            return {"ok": False, "name": dest.name, "error": "git clone timed out"}
-        except asyncio.CancelledError:
-            await _kill_process_group(proc)
-            await _rmtree_force_settled(dest)
-            raise
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT)
+                clone_output = _loggable_git_transport_output(
+                    stdout.decode(errors="replace").strip(),
+                    credentialed=credentialed_transport,
+                )
+                log_lines.append(clone_output)
+            except asyncio.TimeoutError:
+                await _kill_process_group(proc)
+                await _rmtree_force_settled(dest)
+                return {"ok": False, "name": dest.name, "error": "git clone timed out"}
+            except asyncio.CancelledError:
+                await _kill_process_group(proc)
+                await _rmtree_force_settled(dest)
+                raise
         if proc.returncode != 0:
             await _rmtree_force_settled(dest)
             if index_originated:
@@ -1388,7 +1813,7 @@ async def _git_clone_or_pull(
                 # Not auth-shaped: bare honest failure, with the redacted
                 # (allowlisted, constant) failure class when one is recognized.
                 failure_class = _redacted_git_failure_class(clone_output)
-                if failure_class:
+                if failure_class and not _git_output_is_redirect(clone_output):
                     return {
                         "ok": False,
                         "name": dest.name,
@@ -1402,13 +1827,30 @@ async def _git_clone_or_pull(
                     "ok": False,
                     "name": dest.name,
                     "code": "git_clone_failed",
-                    "error": _with_network_hint("git clone failed", clone_output),
+                    "error": _with_redirect_hint(
+                        _with_network_hint("git clone failed", clone_output), clone_output
+                    ),
                 }
             return {
                 "ok": False,
                 "name": dest.name,
                 "code": "git_clone_failed",
-                "error": _with_network_hint("git clone failed", clone_output),
+                "error": _with_redirect_hint(
+                    _with_network_hint("git clone failed", clone_output), clone_output
+                ),
+            }
+        # LOCAL checkout + LFS smudge under the normal env (see `_local_checkout`).
+        co_code, co_out = await _local_checkout(
+            git_bin, git_url, branch, dest, sandbox_mode, clone_env, forward_sock
+        )
+        if co_code != 0:
+            log_lines.append(co_out)
+            await _rmtree_force_settled(dest)
+            return {
+                "ok": False,
+                "name": dest.name,
+                "code": "git_checkout_failed",
+                "error": "git checkout of the fetched tree failed",
             }
         clone_succeeded = True
         return None

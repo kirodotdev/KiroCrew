@@ -396,6 +396,13 @@ _GIT_EXEC_NEUTRALIZER_PAIRS: tuple[tuple[str, str], ...] = (
     _GIT_NO_FSMONITOR_PAIR,
 )
 
+#: Refuses HTTP redirects on the gateway's registry fetches only
+#: (``checkout._HOOKS_NEUTRALIZER_ARGV``): the clone-host check vets only the URL
+#: git is given, so git must not follow a redirect to a host that check never saw.
+#: The operator's own ``kirocrew app install <url>`` has no such check and keeps
+#: git's default, so a renamed repository still installs there.
+_GIT_NO_REDIRECTS_PAIR: tuple[str, str] = ("http.followRedirects", "false")
+
 
 def _lfs_endpoint_pin_argv(git_url: str) -> tuple[str, ...]:
     """``-c lfs.url=<endpoint>`` that pins Git LFS to *git_url*'s own host.
@@ -678,6 +685,14 @@ def _is_ssh_auth_refusal(low: str) -> bool:
 #: the private-repository check in ``gh_credential`` can still read it.
 _GIT_REPOSITORY_NOT_FOUND_LABEL = "the repository was not found"
 
+#: libcurl's line for a redirect git refused to follow ("The requested URL returned
+#: error: 301"; ``http.followRedirects`` is off on every registry fetch), and the
+#: fixed label a redacted fetch keeps for it. :func:`_git_output_is_redirect` reads both.
+_GIT_REDIRECT_MARKERS: tuple[str, ...] = tuple(
+    f"returned error: {code}" for code in (301, 302, 303, 307, 308)
+)
+_GIT_REDIRECT_LABEL = "the server answered with a redirect"
+
 _GIT_FAILURE_CLASS_LABELS: tuple[tuple[str, str], ...] = (
     # libcurl's proxy phrasings ("Could not resolve proxy: …", "Received HTTP code
     # 407 from proxy after CONNECT", "CONNECT tunnel failed, response 407", "Proxy
@@ -720,11 +735,18 @@ _GIT_FAILURE_CLASS_LABELS: tuple[tuple[str, str], ...] = (
     ("ssl backend", "a TLS/SSL error occurred"),
     ("gnutls_handshake", "a TLS/SSL error occurred"),
     ("tls handshake", "a TLS/SSL error occurred"),
+    *((marker, _GIT_REDIRECT_LABEL) for marker in _GIT_REDIRECT_MARKERS),
     # GitHub's "remote: Repository not found." phrase contains spaces that no
     # repo URL path can match. Last so it cannot shadow a more specific failure;
     # deliberately not bare "not found" or git's URL-bearing fatal line.
     ("repository not found", _GIT_REPOSITORY_NOT_FOUND_LABEL),
 )
+
+
+def _git_output_is_redirect(text: str) -> bool:
+    """Whether git *text* (raw, or reduced to a fixed label) says it refused a redirect."""
+    low = text.lower()
+    return _GIT_REDIRECT_LABEL in low or any(marker in low for marker in _GIT_REDIRECT_MARKERS)
 
 
 def _git_output_is_auth_shaped(text: str) -> bool:

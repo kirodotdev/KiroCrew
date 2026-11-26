@@ -75,8 +75,15 @@ class TestStaleCloneOriginVerification:
             captured.setdefault("calls", []).append(list(args))
             # The origin read is sandbox-routed + shim-wrapped, so match on the
             # real argv rather than the raw prefix.
-            if _real_argv(args)[:4] == ["git", "remote", "get-url", "origin"]:
+            real = _real_argv(args)
+            if real[:4] == ["git", "remote", "get-url", "origin"]:
                 return _FakeProc(origin_url.encode() + b"\n")
+            # The reuse path reads the checkout's object format and the transferred
+            # tip with ``rev-parse``; answer each with the shape the import expects.
+            if "--show-object-format" in real:
+                return _FakeProc(b"sha1\n")
+            if "rev-parse" in real:
+                return _FakeProc(b"a" * 40 + b"\n")
             return _FakeProc()
 
         return _fake_exec
@@ -161,10 +168,13 @@ class TestStaleCloneOriginVerification:
         # URL, with the hooks/fsmonitor neutralizer spliced in after ``git`` -- read
         # the subcommand slot past the variable ``-c`` pairs.
         subcommands = [a[_git_subcommand_index(a)] for a in argvs if a and a[0] == "git"]
-        assert "pull" in subcommands, argvs
+        # The in-place update is a temp-repo transfer + a LOCAL fetch + a LOCAL
+        # ff-merge, not a single ``pull`` and not a fresh ``clone``.
+        assert "pull" not in subcommands, argvs
         assert "clone" not in subcommands, argvs
+        assert "merge" in subcommands, argvs
         assert any(
-            a[0] == "git" and a[_git_subcommand_index(a)] == "pull" and "--ff-only" in a
+            a[0] == "git" and a[_git_subcommand_index(a)] == "fetch" and vetted_url in a
             for a in argvs
         ), argvs
 
@@ -197,7 +207,8 @@ class TestManifestOriginGate:
 
         async def _spawn(*args, **kwargs):
             argv = list(args)
-            if argv[:4] == ["git", "remote", "get-url", "origin"]:
+            # argv[0] is the validated ABSOLUTE git, so match on the subcommand.
+            if argv[1:4] == ["remote", "get-url", "origin"]:
                 captured.setdefault("origin_reads", []).append(argv)
                 if origin_rc != 0:
                     return _Proc(b"", origin_rc)

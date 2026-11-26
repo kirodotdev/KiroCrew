@@ -92,6 +92,39 @@ class TestRegistrySubdirTraversalGate:
         assert "good-app" in names
         assert "evil-app" not in names
 
+    @pytest.mark.asyncio
+    async def test_a_refused_refresh_keeps_the_cached_index(self, cache_dir, monkeypatch):
+        # The index fetch returns the failure marker (None) when refused -- e.g.
+        # by the redirect-config guard -- so the refresh keeps the cached index
+        # rather than overwriting it with an empty list.
+        import kiro_crew.apps.registry as reg
+        from kiro_crew.apps.registry_pipeline.caches import (
+            _external_registry_cache_identity,
+            _read_external_registry_cache,
+            _write_external_registry_cache,
+        )
+
+        class _Reg:
+            name = "acme"
+            repo = "https://github.com/acme/apps"
+            branch = "main"
+
+        identity = _external_registry_cache_identity(_Reg())
+        cached = [{"name": "good-app", "repo": _Reg.repo, "_registry": "acme"}]
+        _write_external_registry_cache(identity, cached)
+
+        async def _refused(repo, branch):
+            return None  # what _fetch_external_registry_index returns on a refusal
+
+        monkeypatch.setattr(reg, "_fetch_external_registry_index", _refused)
+
+        result = await reg._fetch_and_cache_external_registry(_Reg())
+        assert result is None
+        # The cache was just written, so it is fresh and readable without bypassing TTL.
+        survived = _read_external_registry_cache(identity)
+        assert survived is not None
+        assert {e["name"] for e in survived} == {"good-app"}
+
     def test_cache_read_drops_unsafe_subdir_entry(self, cache_dir):
         # Even a hand-tampered cache file with an absolute subdirectory is
         # filtered on read (the single read chokepoint).

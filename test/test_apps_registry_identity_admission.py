@@ -24,8 +24,9 @@ from apps_registry_helpers import _identity_harness
 from kiro_crew import platform_compat
 from kiro_crew.apps import registry
 
-
 # Identity-refusal cleanup + provenance-signer freshness
+
+
 @pytest.mark.asyncio
 async def test_identity_refusal_preserves_preexisting_checkout(monkeypatch, tmp_path):
     """UPDATE path: a pull that brings a self-renaming manifest is refused
@@ -552,11 +553,20 @@ async def test_reused_checkout_pull_never_repoints_origin(monkeypatch, tmp_path)
         returncode = 0
         pid = 4242
 
+        def __init__(self, out=b""):
+            self._out = out
+
         async def communicate(self):
-            return b"", b""
+            return self._out, b""
 
     async def _fake_spawn(*argv, **kwargs):
         spawned.append(list(argv))
+        # The reuse path reads the checkout's object format and the transferred tip
+        # with ``rev-parse``; give each the shape it expects so the import proceeds.
+        if "--show-object-format" in argv:
+            return _Proc(b"sha1")
+        if "rev-parse" in argv:
+            return _Proc(b"a" * 40)
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
@@ -577,19 +587,20 @@ async def test_reused_checkout_pull_never_repoints_origin(monkeypatch, tmp_path)
 
     # ``git`` is argv[0]; the hooks/fsmonitor neutralizer ``-c`` pairs follow it,
     # then the ``pull --ff-only`` the reuse path has always run.
-    git_subs = [_subcommand(cmd) for cmd in spawned if cmd and cmd[0] == "git"]
-    assert git_subs == ["pull"], spawned
-    assert spawned[0][0] == "git" and spawned[0][-4:] == [
-        "pull",
-        "--ff-only",
-        "https://example.com/new-home.git",
-        "main",
-    ], spawned
+    def _is_git(cmd):
+        return bool(cmd) and os.path.basename(cmd[0]) == "git"
+
+    git_subs = [_subcommand(cmd) for cmd in spawned if _is_git(cmd)]
+    # The reuse path updates through a temp-repo transfer + a LOCAL fetch + a LOCAL
+    # ff-merge; it never runs a single `pull`, and it never repoints origin (no
+    # `remote` subcommand runs at all), so the fetched code and the persisted
+    # provenance URL name the same repository by construction.
+    assert "pull" not in git_subs, spawned
+    assert "merge" in git_subs, spawned
+    assert not any(_subcommand(cmd) == "remote" for cmd in spawned), spawned
     for cmd in spawned:
-        if cmd and cmd[0] == "git":
+        if _is_git(cmd):
             assert f"core.hooksPath={os.devnull}" in cmd, cmd
-    # Never repoints the origin remote.
-    assert not any(cmd[:3] == ["git", "remote", "set-url"] for cmd in spawned)
 
 
 @pytest.mark.asyncio
@@ -673,10 +684,9 @@ async def test_failed_pull_aborts_instead_of_installing_stale_code(monkeypatch, 
         async def communicate(self):
             return b"", b""
 
-    rcs = iter([1])  # the pull (first and only spawn) fails
-
     async def _fake_spawn(*argv, **kwargs):
-        return _Proc(next(rcs))
+        # Every git step of the temp-repo update fails; the update must abort.
+        return _Proc(1)
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
     monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))

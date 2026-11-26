@@ -844,9 +844,11 @@ class TestFetchGitBlobCredentialPosture:
         )
 
         assert ok is False  # the fake clone fails → graceful fallback
-        # Same-repo carve-out flips BOTH knobs together.
+        # Same-repo carve-out flips BOTH knobs together. The transfer env is built
+        # on minimal_env (the sentinel) and carries the network isolation on top.
         assert cap["mode"] == "context-mode"
-        assert cap["env"] == {"_env": "minimal"}
+        assert cap["env"]["_env"] == "minimal"
+        assert cap["env"]["GIT_CONFIG_NOSYSTEM"] == "1"
         # The privilege escalation left an SEL audit record for the URL cloned.
         assert cap["grants"] == [("app_blob_proxy", url)]
         # The threaded URL is the one actually cloned — decision and clone agree.
@@ -872,7 +874,8 @@ class TestFetchGitBlobCredentialPosture:
 
         assert ok is False
         assert cap["mode"] == "strict"
-        assert cap["env"] == {"_env": "anonymous"}
+        assert cap["env"]["_env"] == "anonymous"
+        assert cap["env"]["GIT_CONFIG_NOSYSTEM"] == "1"
         # The default (anonymous) path grants no credentials → no audit record.
         assert cap["grants"] == []
         assert cap["cloned_url"] == "ssh://forge.example/org/sibling.git"
@@ -930,8 +933,10 @@ class TestFetchGitBlobCredentialPosture:
         )
 
         assert ok is False  # the fake clone fails → graceful fallback
-        agent = {"SSH_AUTH_SOCK": live} if posture == "owner" else {}
-        assert cap["env"] == {"_env": "anonymous" if posture == "default" else "minimal", **agent}
+        assert cap["env"]["_env"] == ("anonymous" if posture == "default" else "minimal")
+        # Only the owner's clone whose wrap keeps the agent is handed the live socket;
+        # a default (anonymous) or refused clone starts with no socket.
+        assert cap["env"].get("SSH_AUTH_SOCK") == (live if posture == "owner" else None)
 
     @pytest.mark.asyncio
     async def test_injected_cloneurl_never_becomes_the_credentialed_clone_target(
@@ -976,7 +981,7 @@ class TestFetchGitBlobCredentialPosture:
         )
         assert ok is False
         assert cap["mode"] == "context-mode"
-        assert cap["env"] == {"_env": "minimal"}
+        assert cap["env"]["_env"] == "minimal"
         assert cap["grants"] == [("app_blob_proxy", url_a)]
         assert cap["cloned_url"] == url_a
         assert all(url_b not in grant for _op, grant in cap["grants"])
@@ -1342,7 +1347,7 @@ class TestBlobProxyOwnerDesignatedWiring:
         assert url_b not in captured["cloned_url"]
         # Owner credentials were granted for urlA — and the SEL grant names urlA,
         # so credentials never reached urlB.
-        assert captured["env"] == {"_env": "minimal"}
+        assert captured["env"]["_env"] == "minimal"
         assert captured["mode"] == "context-mode"
         assert grants == [("app_blob_proxy", url_a)]
         assert all(url_b not in g for _op, g in grants)
@@ -1426,7 +1431,7 @@ class TestBlobProxyOwnerDesignatedWiring:
         # Ambiguous provenance → anonymous + strict.  The load-bearing assertion:
         # owner credentials (minimal_env + context sandbox mode) are NEVER used,
         # so A's private repo is not cloned with a grant on a B-reachable request.
-        assert captured["env"] == {"_env": "anonymous"}
+        assert captured["env"]["_env"] == "anonymous"
         assert captured["mode"] == "strict"
         # No credential grant was made, so nothing is SEL-audited as an escalation.
         assert grants == []

@@ -359,9 +359,21 @@ class TestFetchExternalRegistryValidation:
         async def _run_fake_git(argv, **_kwargs):
             return [sys.executable, str(fake_git), *argv], None
 
+        # The LOCAL checkout step runs through the checkout module's own seams;
+        # the ``clone --no-checkout`` above already wrote the index, so the
+        # checkout only needs to exit 0 without touching the recorded argv.
+        async def _noop_checkout(argv, **_kwargs):
+            return [sys.executable, "-c", ""], None
+
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(
             "kiro_crew.apps.registry_pipeline.indexes.wrap_argv_async", _run_fake_git
+        )
+        monkeypatch.setattr(
+            "kiro_crew.apps.registry_pipeline.checkout.wrap_argv_async", _noop_checkout
+        )
+        monkeypatch.setattr(
+            "kiro_crew.apps.registry_pipeline.checkout.cgroup_scope_argv", lambda argv: argv
         )
         result = await _fetch_external_registry_index(
             "https://github.com/example/MyRepo.git", "feature/branch-name"
