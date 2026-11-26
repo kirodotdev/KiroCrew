@@ -278,8 +278,9 @@ def pin_mask_parents(launch):
     """Bind the folder of each app that declares a credential mask over itself, last.
 
     The same pin as :func:`pin_seal_parents`, for the same kernel rule, at the other end
-    of the stages. An update replaces ``apps/<app>`` from the gateway's namespace and
-    renames ``data/`` into the new folder. A mount stays on the mount it was placed
+    of the stages. A keep-data uninstall, and an install over the data it kept, replace
+    ``apps/<app>`` from the gateway's namespace and rename ``data/`` into the new folder.
+    A mount stays on the mount it was placed
     through, so a mask or a ``data/`` pin placed through a pin of the old folder would sit
     on a mount no later lookup reaches. Left unpinned until now, the app folder keeps
     those on the outer mount, which the rename keeps, and its recursive pin here only adds

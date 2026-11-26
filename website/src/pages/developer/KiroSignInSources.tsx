@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Info, Loader2 } from 'lucide-react'
-import { api, type KasLoginSourceAccount, type KasLoginSources } from '../../api/client'
+import { api, type KasBundleStatus, type KasLoginSourceAccount, type KasLoginSources } from '../../api/client'
 import { isPermissionRefusal } from '../../api/apiError'
 import { accountProviderLabel } from '../../components/kasProviderLabel'
 import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../../components/KiroAccountModal'
@@ -148,7 +148,8 @@ export function SignInStoreUnreadableErrors({ sources }: { sources: KasLoginSour
 
 /**
  * Says which account Kiro Agent runs as when kiro-cli is signed in too:
- * - nothing stored here: sessions use the kiro-cli sign-in, named;
+ * - nothing stored here: sessions use the kiro-cli sign-in, named, and whether
+ *   signing in here also moves new chats to the built-in engine;
  * - both stored for different accounts (or not provably the same): names both and
  *   offers to remove the one stored here, so sessions go back to kiro-cli's.
  * Removing asks once, in place, and is undone by signing in here again.
@@ -168,6 +169,13 @@ export function KiroSignInSourcesNotice({
   const [confirming, setConfirming] = useState(false)
   const remove = useKiroSignOut(identity)
   const [emailHidden] = usePersistedBool(KIRO_ACCOUNT_EMAIL_HIDDEN_KEY, true)
+  // The entry the chat's sign-in card reads (`KiroSignInPrompt`), so the two agree.
+  const moves = useQuery<KasBundleStatus>({
+    queryKey: ['kas-bundle'],
+    queryFn: () => api.kasBundleStatus(),
+    enabled: kind === 'using_kiro_cli',
+    retry: false,
+  }).data?.sign_in_moves_to_engine === true
   if (!sources || !kind) return null
   const cli = accountName(sources.kiro_cli, sources.name_pending, emailHidden)
   if (kind === 'using_kiro_cli') {
@@ -189,8 +197,12 @@ export function KiroSignInSourcesNotice({
           )}
           <p className={`${hideTitle ? '' : 'mt-0.5 '}text-[13px] leading-relaxed text-muted`}>
             {cli
-              ? i18nT('pages.developer.kiroSignInCard.using_kiro_cli_body', { account: cli })
-              : i18nT('pages.developer.kiroSignInCard.using_kiro_cli_body_unnamed')}
+              ? i18nT(moves
+                ? 'pages.developer.kiroSignInCard.using_kiro_cli_body_moves'
+                : 'pages.developer.kiroSignInCard.using_kiro_cli_body', { account: cli })
+              : i18nT(moves
+                ? 'pages.developer.kiroSignInCard.using_kiro_cli_body_unnamed_moves'
+                : 'pages.developer.kiroSignInCard.using_kiro_cli_body_unnamed')}
           </p>
           <AccountNameError sources={sources} besideChooser />
         </div>

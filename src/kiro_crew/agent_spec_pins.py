@@ -264,6 +264,21 @@ def broken_pin_message(agent: str, pin: str, file_names: Sequence[str]) -> str:
     )
 
 
+def held_spec_message(agent: str, held: Sequence[str], file_names: Sequence[str]) -> str:
+    """The refusal for a start whose same-name check could not read every spec.
+
+    *held* names every file that stayed held open past the read retry; *file_names*
+    are the readable files declaring *agent*, the names the pin commands take.
+    """
+    names = ", ".join(repr(item) for item in held)
+    return (
+        f"Kiro Crew could not read every spec file that may declare {agent!r}: something holds "
+        f"{names} open (another program, or a write still in progress), and a held file may be "
+        "a second spec for it, so the session was not started. Try again in a moment, or "
+        f"choose the file this agent runs with:\n{_command_lines(agent, file_names)}"
+    )
+
+
 def pick_spec_row(
     rows: Iterable[tuple[Any, Path]],
     agent: str,

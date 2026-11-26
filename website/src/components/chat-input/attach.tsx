@@ -1,25 +1,24 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { OverlayPortal } from '../overlayRoot'
-import { Crop, FileText, Loader2, PenLine, Plus, X } from 'lucide-react'
+import { Crop, FileText, PenLine, Plus } from 'lucide-react'
 import { useAnchorRemeasure } from '../../hooks/useAnchorRemeasure'
 import { usePressActivation } from '../../hooks/usePressActivation'
 import { isScreenSnipSupported } from '../../hooks/useScreenSnip'
 import { i18nT } from '../../i18n/t'
-import { fmtPercent } from '../../i18n/format'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import type { ComposerControl } from '../composerControl'
 import type { useComposerPickers } from '../../chat-core/composer/pickers'
 import type { ChatInputProps } from './props'
-import { useComposerUploadProgress } from '../../utils/composerSendHolds'
 import { IS_MAC, shortcutPlatform } from '../../hooks/useKeyboardShortcuts'
 import { chordMatchesEvent, shortcutEntry } from '../../lib/shortcutRegistry'
 
 /* The attach control at the head of the bottom row: the "+" drop-up (upload,
    screenshot, sketch, collapse, and the `/` `@` `$` shortcuts) on a pointer
    device and on a touch host that is not collapsible, a bare file-input label
-   on the collapsible touch host, and the cancel control that stands in for
-   either while an upload is in flight. */
+   on the collapsible touch host. It stays itself while uploads run: each
+   upload in flight is a chip of its own above the composer (UploadingStrip),
+   with its own status and cancel, so "+" and its menu stay usable. */
 
 /**
  * Where focus goes once the "+" -> Upload file picker closes.
@@ -71,9 +70,7 @@ function useUploadFocusReturn({ fileInputRef, plusBtnRef, composerControl, isTou
     }
     const onCancel = () => {
       const trigger = plusBtnRef.current
-      if (!trigger || !parked()) return
-      if (!trigger.disabled) trigger.focus()
-      else composerControlRef.current()?.focus()
+      if (trigger && parked()) trigger.focus()
     }
     input.addEventListener('change', onChange)
     input.addEventListener('cancel', onCancel)
@@ -164,39 +161,15 @@ export function isUploadFileChord(e: React.KeyboardEvent, ime: { isComposing: (e
   return !!chord && !ime.isComposing(e) && chordMatchesEvent(e, chord, platform)
 }
 
-/* Progress sits BESIDE the cancel control as text, not as a third button, so
-   the row keeps max-two-buttons-per-row. It subscribes here, in the leaf, so a
-   progress step re-renders this note and not the composer. The status span is
-   mounted empty with the control, so a stall is announced once when it is
-   written there; the percent is not announced on every step. */
-function UploadProgressNote({ slot }: { slot: string }) {
-  const { ratio, stalled } = useComposerUploadProgress(slot)
-  const stalledText = stalled ? i18nT('components.chatInput.upload_stalled') : ''
-  // `truncate`: on a narrow phone a long translation shortens instead of
-  // pushing the row's other controls onto each other.
-  return (
-    <span className="min-w-0 truncate text-[12px] tabular-nums" title={stalledText || undefined} data-testid="composer-upload-progress">
-      {!stalled && ratio !== null && <span className="text-muted">{fmtPercent(ratio)}</span>}
-      <span role="status" className="text-warn-text">{stalledText}</span>
-    </span>
-  )
-}
-
-export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, uploadSlot, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null, appActionRows = null, stashMenuRows }: {
+export function AttachMenu({ plus, onUploadFiles, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null, appActionRows = null, stashMenuRows }: {
   /** App composer actions (`composerActions.tsx`), a group of their own after
    *  the host's shortcuts so an app's row never sits among the host's. */
   appActionRows?: ReactNode
-  /** "Optimize prompt" while a turn runs (#23572), a menu row because the
-   *  busy send cluster is at its button cap. Null when idle: the cluster's
-   *  own Optimize button is back then. */
+  /** The "Optimize prompt" row, idle or mid-turn (#41795). Null where the
+   *  host opted out or the row lives in the ⋯ overflow instead. */
   optimizeRow?: ReactNode
   plus: ReturnType<typeof usePlusMenu>
   onUploadFiles?: (files: File[]) => void
-  uploading: boolean
-  onCancelUpload?: () => void
-  /** Uploads the cancel control aborts; above one, its label names the count. */
-  uploadCount: number
-  uploadSlot?: string | null
   directFilePicker: boolean
   fileInputId: string
   openPicker: (imageOnly: boolean) => void
@@ -217,79 +190,33 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
   // trigger's wrapper, so a press on it while open is a toggle. The menu moves
   // no focus on open, so the trigger takes focus as usual (no keepFocusOffTrigger).
   const bindPlusPress = usePressActivation()
-  /**
-   * The exit from an upload in flight, and the reason it REPLACES the attach
-   * control rather than sitting beside it.
-   *
-   * The bottom icon row is already at `max-two-buttons-per-row`: two blocking
-   * findings drove Sketch off it and into an overflow precisely to keep it at
-   * two (see `collapseMenuRowElement` in chat-input/collapse.tsx), so a third
-   * sibling here would regrow the
-   * row the same rule just shrank, on the narrowest viewport, in both layouts.
-   *
-   * Replacing costs nothing, because the attach control is already inert while
-   * `uploading`: its `htmlFor` is dropped and the pointer branch is `disabled`.
-   * So the slot holds no action to displace, and the thing the user is already
-   * looking at while they wait becomes the thing they press to stop.
-   *
-   * The spinner is kept, but BEHIND the glyph rather than as a second icon.
-   * A 9px X inside an 18px spinner read to a blind reviewer as "a 'lines'
-   * icon, the kind that usually means a menu", and they said they would press
-   * it to find out what it was, which discards minutes of a 512 MB upload with
-   * no undo. So the X carries the meaning at a legible size with a destructive
-   * hover tint, and the liveness is a faint ring that cannot be mistaken for
-   * the glyph. The tint matters on the pointer path for a second reason: this
-   * slot was inert mid-upload on main, so a click that used to do nothing now
-   * ends the transfer, and the control has to stop reading as the attach
-   * button's spot doing attach things.
-   */
-  // One press aborts EVERY upload in flight (paste, a drop and a Sketch insert
-  // all start one ungated), so with two or more the label says how many stop.
-  const cancelLabel = uploadCount > 1
-    ? i18nT('components.chatInput.cancel_n_uploads', { count: uploadCount })
-    : i18nT('components.chatInput.cancel_upload')
-  const uploadCancelControl = uploading && onCancelUpload ? (
-    <button
-      type="button"
-      onClick={onCancelUpload}
-      className="relative w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all bg-transparent border-none text-muted hover:text-danger-text hover:bg-danger/10"
-      aria-label={cancelLabel}
-      title={cancelLabel}
-    >
-      <Loader2 size={28} strokeWidth={1.5} className="animate-spin absolute inset-0 m-auto opacity-30" />
-      <X size={16} strokeWidth={2.5} />
-    </button>
-  ) : null
   return (
     <>
       {onUploadFiles && (
         <div className="relative shrink-0" ref={plusWrapRef}>
-          {uploadCancelControl || (directFilePicker ? (
-            /* Association is intentionally absent while uploads disable the control. */
+          {directFilePicker ? (
             <label
-              htmlFor={uploading ? undefined : fileInputId}
-              aria-disabled={uploading || undefined}
-              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all bg-transparent ${uploading ? 'opacity-30 cursor-default' : 'cursor-pointer text-muted hover:text-text hover:bg-bg-hover'}`}
+              htmlFor={fileInputId}
+              className="w-8 h-8 rounded-lg flex items-center justify-center transition-all bg-transparent cursor-pointer text-muted hover:text-text hover:bg-bg-hover"
               aria-label={i18nT('components.chatInput.attach_files')}
               title={i18nT('components.chatInput.attach_files')}
               {...uiLocation('composer.attach-files')}
             >
-              {uploading ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />}
+              <Plus size={18} />
             </label>
           ) : (
             <button
-              className={`w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all disabled:opacity-30 bg-transparent border-none ${plusOpen ? 'text-text bg-bg-hover' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all bg-transparent border-none ${plusOpen ? 'text-text bg-bg-hover' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
               {...bindPlusPress<HTMLButtonElement>(togglePlus)}
-              disabled={uploading}
               aria-haspopup="menu"
               aria-expanded={plusOpen}
               aria-label={i18nT('components.chatInput.add_files_options')}
               title={i18nT('components.chatInput.add_files_options')}
               {...uiLocation('composer.add-menu', plusBtnRef)}
             >
-              {uploading ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} className={`transition-transform ${plusOpen ? 'rotate-45' : ''}`} />}
+              <Plus size={18} className={`transition-transform ${plusOpen ? 'rotate-45' : ''}`} />
             </button>
-          ))}
+          )}
           {/* The drop-up's scope owner, outside its own open conditional. */}
           <GuideRevealScope id="menu:composer.add-menu" open={!directFilePicker && plusOpen}>
           {!directFilePicker && plusOpen && plusRect && <OverlayPortal>
@@ -408,7 +335,6 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
           </GuideRevealScope>
         </div>
       )}
-      {uploadCancelControl && uploadSlot && <UploadProgressNote slot={uploadSlot} />}
       {/* Touch path: `directFilePicker` (touch AND a collapsible host, see
           ChatInput) replaces the "+" drop-up with a bare file-input label,
           so the menu's Sketch and collapse rows never mount there. They hang

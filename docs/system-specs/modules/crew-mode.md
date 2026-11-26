@@ -2061,7 +2061,11 @@ first `DOCK_MATES_LIMIT` (3, in `website/src/lib/dockMates.ts`) behind the same
 is draggable, so a Bot starred late (sorted to the bottom) can be dragged into
 the top three. As with the Apps list's active app, the open Bot's row stays on
 screen while the group is folded, as a row that cannot be dragged or dropped
-on. The group sits between the rail's primary rows and its Apps header and
+on. On the expanded rail the group's header is a disclosure that puts every
+Bot row and the "N more" row away and keeps the header, persisted in
+`mc-dock-mates-section-open` (absent reads as open); the icon rail draws no
+header, so its rows ignore that key and only the fold applies, and the phone
+rail's tiles ignore it. The group sits between the rail's primary rows and its Apps header and
 does not scroll on its own: everything above the rail's bottom block (Agent
 Capabilities, Settings, the community row) is ONE scroll region, so the menu
 row, the primary rows, this group and the Apps list scroll together and the
@@ -2097,7 +2101,8 @@ waiting on the person puts no dot on the row either.
 person to every device; `PUT` refuses a non-integer or a value outside
 0..`STAR_ORDER_MAX` with `invalid_star_order`, and clears it whenever the crew
 is not starred, so a re-star lands at the bottom. While a docked Bot's chat is
-open its dock row is the lit one, not the Bots page row.
+open its dock row is the lit one, not the Bots page row; while the group is put
+away, the Bots page row is the lit one.
 On the expanded desktop rail each docked Bot's row carries a "..." menu
 (`website/src/shell/nav/mateRowMenu.tsx`), the twin of an installed app's rail
 row menu, with exactly two items
@@ -4428,8 +4433,14 @@ author line — no avatar, no name, no time row — and no avatar gutter: the ch
 is a 1:1 thread with one speaker besides the user, and the DM header's identity
 chip already names that speaker, so a per-run author line would be redundant; for assistive tech each message row is a `group`
 labelled with the Bot's name, which draws nothing. Every message is its
-own FILLED gray bubble (`.crewmate-bubble`, no border, `max-w-[72ch]`) in the full
-text column, left-aligned; the user's bubble opposite is filled with the theme
+own FILLED gray bubble (`.crewmate-bubble`, no border, `max-w-full`) in the full
+text column, left-aligned; in the transcript the bubble spans that column, which
+the transcript row clamps to `--mc-content-width`, so Settings → Chat → Content
+Width sets its maximum width as it sets the user's bubble's (#30200), and a
+Bot's change card or guide offer takes the same width (the reply-thread panel
+has no Content Width clamp, so its Bot column holds a 72ch reading measure at
+the bubble's 13px, and a long thread reply stops there); the user's bubble
+opposite is filled with the theme
 ACCENT (`bg-accent` / `text-accent-fg`, the `tone="accent"` variant of
 `UserMessage`), the iMessage pairing, so colour tells the two
 speakers apart before alignment does. The `user` entry that carries the tone is
@@ -5287,7 +5298,27 @@ for authorization, started with no tools (`mate_capability_catalog.unusable_line
 `dispatch.worker_unusable`; names
 only, never the failure text, which is the server's own output), and says a gap
 on one of them is not a missing capability, so the conductor tells the user what
-to fix instead of asking to add a server the worker has. A worker turn that ends
+to fix instead of asking to add a server the worker has. A mounted server named
+as waiting for authorization (only that bucket: a failed server with a credential
+reason may need a key or profile a chat sign-in does not start) also gets a
+sign-in line (`mate_capability_catalog.sign_in_line`, `worker_report.sign_in`),
+because a worker's sign-in link or notice shows only in the worker's own
+dashboard chat and the Bot's thread (and the Slack thread or Discord DM mirrored
+from it) shows only the Bot's reply: it tells the conductor to tell the user, in
+that reply, that the owner of the Crew opens the worker's chat and, when it shows
+no sign-in button, sends it a message naming the server. The chat is named by its
+dashboard link (`mate_thread_wakes._sign_in_where`, built off the loop like the
+code channel board's, `board.links.link_builder`: the configured origin or the
+opted-in tunnel, never a click token, since the reply can reach a thread other
+people read), or by its session key when no origin is configured; no sign-in URL
+is ever put in the prompt. Only a worker with a chat on this gateway gets the
+line (a scheduled run's report has none), only a server whose name is already in
+the summary's plain character set (the owner sends it verbatim and it is given
+whole), and the lines are built again when a report changed during the link
+read. Each
+server is named once per Bot thread (`_mate_sign_in_told`, in memory), across
+reports in one wake and across later wakes, until a worker report of that Bot
+lists it as `ready`, which makes a later sign-in news again. A worker turn that ends
 through an applied `nothing_to_do` and
 wrote no reply text (a quiet loop cycle; the turn's `_terminal_directive_applied`
 with an empty `_turn_full_reply_text`, carried as `_TurnOutcome.quiet_end`)
@@ -5597,7 +5628,18 @@ Other refusals: `not_a_mate_file`,
 `template_unreadable`, `template_required`, `revision_required`,
 `invalid_spec`, and `503 capabilities_unavailable` for a GET whose read did
 not finish in time. Each code reads as a localized sentence
-(`components/crew/workerKitErrors.ts`), never as the code. The surface is **Add
+(`components/crew/workerKitErrors.ts`), never as the code. A
+`template_restrictions_uncarried` whose `detail` is only the write tool's
+`fallbackAction` (any write spelling) offers **Add without auto-run writes**: a preview and
+apply that send `without_write_fallback: true` leave that key out of the bot's
+file (only a value the worker refuses; a carried deny stays), so a write no
+`allowedPaths` entry covers is answered by the bot's approval mode (it asks
+unless that mode skips asking), and list it in the preview's
+`left_out`, whose tool row reads "<tool> (without auto-run writes)". The agent's
+own file is not changed. A second line names the field to set to deny in the
+agent's file, whose path Customize > Custom agents shows (no dashboard screen
+edits `toolsSettings`), and the retry button reads **Try again after editing**.
+The surface is **Add
 abilities** in the editor's Abilities section (`components/crew/WorkerKitPane.tsx`,
 only for `mode: "mate"`): picking an agent previews at once. A `stale_revision`
 or `revision_required` apply makes a fresh preview for the same agent and keeps
@@ -5808,9 +5850,20 @@ moved notice still owed) and one bell note linking to its page
 limits are held and that the Bot keeps asking. A held hook on an event that sees no
 call (`NO_CALL`) never makes the Bot ask, so the chat notice names it apart as one
 that no longer runs, and it alone owes no bell note (`mate_held_rules.held_sentence`,
-`asks_for`). Nothing clears a hold: a save of
-the Bot's approval mode does not, since an `auto` cron's approval does not depend
-on that mode (a control to review and release held rules is #37321). Every read-modify-write of
+`asks_for`). A save of the Bot's approval mode does not clear a hold, since an
+`auto` cron's approval does not depend on that mode. The owner, or a Shared Crew
+teammate, ends all of a Bot's held limits from the "Asks you first" section of its
+Profile tab (`mate_held_rules.release_held`, under the ledger lock and only while they still
+equal the list the page showed; one SEL row). The page shows each text with its
+credentials redacted (`mate_held_rules._as_shown`, a registered `redaction_paths` sink),
+and the release compares the same redacted view. The release
+then removes the bare asks the hold wrote into a KAS Bot's own file, keeping any the
+old agent states (`mate_policy_repair._without_bare_asks`), and reloads the Bot's live
+workers onto the approvals the hold stripped (`dashboard/crewmate_worker_reload.py`).
+Otherwise a hold ends only when the
+move undoes one it just recorded because its repoint failed
+(`mate_restriction_carry._drop_hold`), or when the one-time recheck of a Bot held on
+every call, below, finds it no longer needed. Every read-modify-write of
 `migrated.json` runs under `mate_ledger_lock.ledger_lock` (a thread lock plus a
 `migrated.json.lock` file lock, since two gateways with their own data homes can
 share one Kiro home), so one writer cannot erase a hold another records. A Bot whose repoint fails stays on its old agent, which still

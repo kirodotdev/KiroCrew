@@ -767,6 +767,40 @@ describe('ChatInput context-usage popover', () => {
     expect(screen.getByText('200K')).toBeInTheDocument()
   })
 
+  it('shows a window no source knows as unknown, not a guessed total', () => {
+    // A pick no harness has reported on yet: no reading and no window (0).
+    renderWithProviders(
+      <ChatInput {...base} contextPct={0} contextUnknown contextWindowTokens={0} showContextPct />,
+    )
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(screen.getByText('Total').nextSibling).toHaveTextContent('—')
+  })
+
+  it('derives no percentage after a switch to a model whose window is unknown', () => {
+    // The switch shape (used kept, pct and window dropped) on a model no
+    // source knows: the measured used count stays, every figure needing the
+    // window reads unknown instead of 0% of nothing.
+    renderWithProviders(
+      <ChatInput {...base} contextPct={0} contextWindowTokens={0} contextUsedTokens={120_000} derivePctFromUsed showContextPct />,
+    )
+    const chip = screen.getByLabelText('Context usage')
+    expect(chip).toHaveTextContent('—')
+    expect(chip).not.toHaveTextContent('0%')
+    fireEvent.click(chip)
+    expect(screen.getByText('Used').nextSibling).toHaveTextContent('120K')
+    expect(screen.getByText('Remaining').nextSibling).toHaveTextContent('—')
+    expect(screen.getByText('Total').nextSibling).toHaveTextContent('—')
+    expect(screen.queryByText('0%')).toBeNull()
+  })
+
+  it('reads — for a tokens-only readout when the window is unknown', () => {
+    // A reported percentage but no window: there is no token segment to show.
+    renderWithProviders(
+      <ChatInput {...base} contextPct={40} contextWindowTokens={0} showContextPct={false} showContextTokens />,
+    )
+    expect(screen.getByLabelText('Context usage')).toHaveTextContent('—')
+  })
+
   it('renders a measured 0% as a reading, not as unknown', () => {
     renderWithProviders(<ChatInput {...base} contextPct={0} contextWindowTokens={200_000} showContextPct />)
     const chip = screen.getByLabelText('Context usage')

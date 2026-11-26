@@ -16,6 +16,11 @@ vi.mock('../../lib/resolveAskAfterSend', () => ({ resolveAskAfterSend }))
 // No shared-Crew revision read in these tests: the press-time base is simply unknown.
 vi.mock('../../hooks/sharedCrew/sendRevisionSeed', () => ({ baseRevisionForPress: async () => undefined }))
 vi.mock('mermaid', () => ({ default: { initialize: vi.fn(), render: vi.fn() } }))
+const announceSentIn = vi.hoisted(() => vi.fn())
+vi.mock('../../hooks/useTranscriptAnnouncement', async importActual => ({
+  ...await importActual<typeof import('../../hooks/useTranscriptAnnouncement')>(),
+  announceSentIn,
+}))
 
 const api = vi.hoisted(() => ({
   approveChatSlot: vi.fn(),
@@ -420,6 +425,8 @@ describe('NeedsMeHoverCard', () => {
     await screen.findByText('Sent.')
     expect(sendTurn).toHaveBeenCalledWith(expect.objectContaining({ message: 'push after the tests pass', slot: 'gate' }))
     expect(typeof sendTurn.mock.calls[0][0].race.idempotencyKey).toBe('string')
+    // Spoken in that session's transcript, as a composer send is.
+    expect(announceSentIn).toHaveBeenCalledWith('gate', 'push after the tests pass')
   })
 
   it('keeps text typed while the send was in flight', async () => {

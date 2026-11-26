@@ -1,11 +1,14 @@
 """Whether an installed builtin skill is an unchanged copy the sync installed, and whether it
 still matches the package: the tree fingerprint, the provenance marker, the ownership check,
-the doctor's currency verdicts, and deployed cron scripts judged against their skill assets.
+the doctor's currency verdicts, the app a packaged copy belongs to (kept after the copy
+leaves the package), and deployed cron scripts judged against their skill assets.
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import json
 import logging
 import os
 import stat
@@ -506,6 +509,39 @@ def _packaged_skill_app(src_file: Path) -> str:
     except (OSError, ValueError, FileTooLargeError):
         return ""
     return meta.get("app", "").strip()
+
+
+#: ``{"skills": {key: app}}``: every flat key ``builtin_skills/`` ships, or has shipped, with
+#: an ``app:`` line, and that app. Shipped data, so a key keeps its app after its copy is
+#: deleted from the package. ``test_released_builtin_skill_copies.py`` holds it to every
+#: packaged skill naming an app and every app it names to a pin row.
+_SKILL_APPS_PATH = Path(__file__).resolve().parent / "data" / "packaged_skill_apps.json"
+
+
+def _is_flat_name(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and value == value.strip() and "/" not in value
+
+
+@functools.lru_cache(maxsize=1)
+def _recorded_skill_apps() -> dict[str, str]:
+    """``{key: app}`` from :data:`_SKILL_APPS_PATH`, read once: the file ships in the wheel.
+
+    The packaged tree names a key's app only while the copy still ships there; this
+    table still names it once the copy is deleted, so the catalog keeps withholding a
+    host's installed copy of a released app's skill. An unreadable or malformed file
+    is an empty table and a malformed entry is dropped: that key then reads as one no
+    packaged copy claims.
+    """
+    try:
+        document = json.loads(_SKILL_APPS_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        logger.warning("packaged skill app table unreadable: %s", _SKILL_APPS_PATH, exc_info=True)
+        return {}
+    skills = document.get("skills") if isinstance(document, dict) else None
+    if not isinstance(skills, dict):
+        logger.warning("packaged skill app table has no 'skills' object: %s", _SKILL_APPS_PATH)
+        return {}
+    return {key: app for key, app in skills.items() if _is_flat_name(key) and _is_flat_name(app)}
 
 
 def _ships_for_released_app(src_file: Path, released: frozenset[str]) -> bool:

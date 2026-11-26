@@ -520,7 +520,18 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
    signature, expiry, and a grant that is still active and names the same
    `client_id`). The order of the checks is the credential's kind, its validity, where
    the request came from, then the tier:
-   - One that does not verify is not an app credential and gets the 401 of step 2.
+   - One that does not verify is not an app credential and gets the 401 of step 2,
+     with two exceptions, both only for a token this gateway signed and only on a
+     request that came straight from this machine
+     (`LocalAuthorization.refused_as`). One past its expiry is `401 invalid_token`
+     with the message "The access token has expired.". One still in date whose
+     grant's record says revoked is `401 token_revoked`. The signature is checked
+     first and the expiry second, and the grant record is read only after both, so
+     a token with any other signature gets the 401 of step 2, byte for byte. So
+     does a token in date whose grant has no record, or whose record cannot be
+     read. Each of the two
+     writes one `crew_api.app_credential` row (`denied`, `token-expired` or
+     `token-revoked`). The `WWW-Authenticate` challenge is the same on every 401.
    - A verified one that did not come straight from this machine (a forwarding header,
      a peer that is not loopback, or a request the relay delivered) gets that same
      401, byte for byte: only the audit row says why. Local authorization issues the
@@ -555,7 +566,9 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
      grant or an agent. The app list comes only from `models_for_grant`;
      it reads no owner catalog. It also holds `GET /v1/crew/grant`
      (`crew_api_grant_self`), which answers an app credential with the grant it
-     was issued for and no other. This is the one
+     was issued for and no other, and `GET /v1/crew/info` and
+     `GET /v1/crew/capabilities` (`crew_api_instance`), which answer it with the
+     instance and with what its grant can use. This is the one
      point where token auth lets an app credential through: it publishes the actor
      and calls the handler, and runs none of the later steps, which judge a session
      (the peer pin, the link exchange, the installed-app allowlist). A route joins
@@ -645,7 +658,10 @@ judged by the path alone (`test_app_scope_finds_a_templated_public_owner_route_b
 also passes `app_route`, so a verified app credential from local authorization is
 judged by the route's row in place of the owner gate. The app is served an empty
 list until a route lets an app run a Bot in its grant or an agent;
-`models_for_grant` builds that list without reading the owner's catalog. Any other
+`models_for_grant` builds that list without reading the owner's catalog.
+`GET /v1/crew/info` and `GET /v1/crew/capabilities` pass `app_route` the same way;
+their handlers ask for the machine owner only when the request carries no verified
+app credential. Any other
 caller, an installed app's token included, gets
 `403 owner_only`, including a valid app credential whose API allowlist excludes
 the path. Owner-tier paths under `/v1/crew/owner/` get the same refusal. These
@@ -692,11 +708,45 @@ serves `127.0.0.1` alone and starts. `dashboard.entry_port` is one value per dat
 home, so a second gateway started on the same data home (another `--port`) finds
 the entry port held by the first and does not start (`EntryPortError`).
 
-The entry port is for Linux and macOS only for now: on Windows any non-zero value
-stops the gateway's start (`EntryPortError`), because the entry port has no
-listener guard there and one failed accept would close it for good.
+On Windows one failed accept closes a listening socket for good, so each entry
+listener has a listener guard there (`_arm_entry_listener_guards` in
+`server_runtime/listener_claims.py`; none is armed on Linux and macOS). A guard
+rebinds the loopback address and port it read from the live socket, through
+`_bind_once`. Its probe sends no request, so it writes no row to the security event
+log: it checks that the listening socket is open and hears a failed accept from the
+event loop.
 
-The Windows rule and the values below stop the regular and the headless
+When a guard cannot rebind, the gateway closes the entry port and keeps running
+(`_close_entry_port`): it stops the entry guards, closes both entry listeners, and
+keeps serving its own listener, whose guard is unchanged. The owner is told in three
+places: a WARNING log line, a dashboard notification, and `GET /api/status`, whose
+`entry_port_closed` field holds the reason (empty while the port is open) and which
+`kirocrew status` prints as `Entry port: closed`. `GET /v1/crew/info` does not carry
+it. The gate stays set after the close: a request on an entry connection that is
+still open is still an entry request and is answered 503 `instance_unavailable`
+with `Connection: close`, and the gateway then closes that connection; it is never
+served as a request from this machine. Nothing reopens the port; a restart of the
+gateway does. The entry guards are stopped with `ListenerGuard.retire`, which does
+not cancel a rebind a guard had already begun: that rebind finishes after the
+close, and `_reclose_entry_listeners` closes its listener again (pinned by
+`test_a_rebind_that_lands_after_the_close_is_closed_again`). A request that
+reaches that listener before it is closed is answered 503 as well (pinned by
+`test_a_listener_reopened_after_the_close_still_refuses_as_the_entry_port`).
+
+The entry guards
+are armed right after the guard of the gateway's own listener, and the guards are
+stopped in the reverse of the order they were armed. The entry binds are awaits
+between a listener's start and its guard, so the start then asks whether the
+gateway's own listener or an entry listener is already closed
+(`_listener_closed_before_arming`). If one is, the start stops the guards, publishes
+nothing and releases what it holds. It then exits with status 69 for the gateway's
+own listener, and raises `EntryPortError` for an entry listener, as it does when the
+entry port cannot be bound. The port the gateway publishes and reports
+under `--port auto` is the port of the socket it reserved (`served_port`), not the
+first address of the runner, so another listener on the runner does not change it. A restart
+on Windows right after the entry port served requests may fail to bind it (#42255).
+
+The values below stop the regular and the headless
 `kirocrew gateway` only: the API-only server (`--slack-only`) does not check the
 value, logs its warning and starts.
 
@@ -772,7 +822,22 @@ For a request on the entry port it:
    gateway's own port; token auth chooses its branch by path, and no registered route sits at or
    under an internal `/v1` path other than the frozen one. Pinned by
    `test_a_wrong_method_on_a_crew_api_route_is_405_on_both_ports` and
-   `test_no_registered_route_sits_under_an_internal_v1_path`;
+   `test_no_registered_route_sits_under_an_internal_v1_path`. On either port that `405`
+   is the Crew API's own error body, `invalid_request_error` / `method_not_supported`,
+   with `X-Request-Id`, `Crew-API-Version` and the router's `Allow` value
+   (`crew_api_errors.method_not_supported`). `spa_fallback` makes it from the router's
+   `405`. The router raises that `405` only after every middleware has passed the
+   request on, so every check that refuses a caller has run first:
+   a caller with no credential is still `401`, an app credential is still refused as it
+   was (`403 owner_only` on the gateway's own port, `401` on the entry port), and
+   since no handler runs, `DELETE /v1/responses/{response_id}` answers the same whether
+   the id names a response. A route outside the contract (`/v1/chat/completions`, every
+   `/api/` route) keeps the router's `405`. Pinned by
+   `test_a_method_a_crew_api_route_does_not_serve_is_the_contracts_405`,
+   `test_a_caller_without_a_credential_is_refused_before_the_405`,
+   `test_an_app_credential_is_refused_before_the_405`,
+   `test_deleting_a_response_answers_the_same_whether_the_id_names_one` and
+   `test_a_route_outside_the_crew_api_contract_keeps_the_routers_405`;
 4. answers `400 invalid_request` unless `Host` names `127.0.0.1`, `[::1]` or `localhost`, so
    no web origin the gateway routes by host name, an app's backend included, is
    served on this port;

@@ -294,6 +294,7 @@ class DiscordDispatcher:
     _interaction_actionable = _interactions._interaction_actionable
     _interaction_reply = _interactions._interaction_reply
     _on_command_interaction = _interactions._on_command_interaction
+    _on_autocomplete_interaction = _interactions._on_autocomplete_interaction
 
     # transport_dispatch_midturn.py
     _handle_resumed_busy = _midturn._handle_resumed_busy
@@ -737,6 +738,7 @@ class DiscordDispatcher:
                 route.resumed_key or self._session_key(user_id, thread_id),
                 parse_command_argument(text),
                 reply=reply,
+                user_id=user_id,
             )
             return monitor_result
         if cmd == "agent":
@@ -940,11 +942,11 @@ class DiscordDispatcher:
         attachments_fetched: list[Any] = []
 
         async def _renderer(muted: bool) -> DiscordRenderer:
-            # Both render toggles are read PER TURN rather than off the boot-time
-            # config, so changing one in the dashboard takes effect on the next
-            # message instead of at the next restart. That matches Slack, which reads
-            # the same two fields per message, and it is why the settings API reports
-            # them as needing no restart.
+            # The render toggles are read PER TURN rather than off the boot-time
+            # config, so changing one takes effect on the next message instead of at
+            # the next restart. That matches Slack, which reads its own fields per
+            # message, and it is why the settings API reports them as needing no
+            # restart.
             # Off-loop: the per-turn read is a real config.json read plus schema
             # validation, so on the gateway's single loop it stalls every other chat
             # and heartbeat task on a slow disk. Reading fresh is the point of the
@@ -958,6 +960,7 @@ class DiscordDispatcher:
                 uploads_allowed=not await self._uploads_restricted(session_key),
                 reactions_enabled=render_cfg[0],
                 show_thinking=render_cfg[1],
+                show_timing_footer=render_cfg[2],
                 # The phase emoji goes on the USER'S OWN message, the way Slack's
                 # controller keys on the inbound `ts`: it is a progress marker on the
                 # thing that started the turn, so it costs no extra bubble. Without
@@ -1439,8 +1442,8 @@ class DiscordDispatcher:
         # Deny-by-default (interactions bypass transport.receive, so re-check).
         return bool(user_id) and bool(self._allowed) and user_id in self._allowed
 
-    def _render_config(self) -> tuple[bool, bool]:
-        """``(reactions_enabled, show_thinking)`` for the turn about to start.
+    def _render_config(self) -> tuple[bool, bool, bool]:
+        """``(reactions_enabled, show_thinking, show_timing_footer)`` for the turn about to start.
 
         May block (the fallback ``load()`` stats config.json and validates it),
         so callers run it off the event loop.
@@ -1450,15 +1453,19 @@ class DiscordDispatcher:
         expects the next message to be quiet, not the next restart. A failed read
         keeps the shipped defaults rather than failing the turn, because neither
         toggle is a security control: the loud default is the safe one to fall
-        back to for reactions, and the quiet default is the safe one for
-        reasoning.
+        back to for reactions and the footer, and the quiet default is the safe
+        one for reasoning.
         """
         try:
             discord_cfg = self._live_cfg().discord
-            return bool(discord_cfg.reactions_enabled), bool(discord_cfg.show_thinking)
+            return (
+                bool(discord_cfg.reactions_enabled),
+                bool(discord_cfg.show_thinking),
+                bool(discord_cfg.show_timing_footer),
+            )
         except Exception:
             logger.warning("discord: could not read the render toggles", exc_info=True)
-            return True, False
+            return True, False, True
 
     # ── Live config ────────────────────────────────────────────────────────
 

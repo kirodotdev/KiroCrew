@@ -585,6 +585,19 @@ class TestShippedScenarios:
         assert f'Click the "{workspace}" tab' in text
         assert '"Files"' not in text
 
+    def test_crewmate_chat_clean_finds_the_speaker_in_the_chat_header(self) -> None:
+        """A Bot's replies carry no author line; the chat header names the speaker.
+
+        The reply is drawn as the bubble alone (``CrewmateMessage``), so a
+        scenario that asks for an avatar and a name above each reply fails
+        every night whatever the product does.
+        """
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "crewmate-chat-clean.yaml")
+        speaker = [e for e in sc.expectations if "avatar" in e]
+        assert len(speaker) == 1
+        assert speaker[0].startswith("The header above the conversation shows")
+        assert "no avatar or name of their own" in speaker[0]
+
     def test_settings_security_scenarios_read_the_panes_as_they_render(self) -> None:
         """The Documentation and Layers scenarios quote what those panes draw.
 
@@ -625,6 +638,34 @@ class TestShippedScenarios:
         assert "info icon" in layers
         for retired in ("intro line", "six", "6 security layers"):
             assert retired not in layers, retired
+
+    def test_show_timestamps_scenario_reads_the_time_under_an_answer(self) -> None:
+        """The switch is found on the Transcript pane and read under the first answer.
+
+        Its description is the label's info tip, and once the transcript
+        scrolls the question above that answer is the pinned prompt, a card
+        whose "Jump to this turn" tooltip covers the row under it, so a
+        scenario that hovers that question fails a full run whatever the
+        product does.
+        """
+        root = Path(__file__).resolve().parents[2]
+        en = json.loads((root / "website/src/i18n/locales/en.json").read_text(encoding="utf-8"))
+        chat = en["pages"]["settings"]["chatPanel"]
+        fixture = root / "src/kiro_crew/tests_fixtures/rich/sessions/dashboard_starter.jsonl"
+        rows = [json.loads(line) for line in fixture.read_text(encoding="utf-8").splitlines()]
+        answer = next(r["content"] for r in rows if r.get("role") == "assistant")
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "settings-chat-toggle-show-timestamps.yaml")
+        steps = " ".join(sc.steps)
+        for key in ("transcript", "show_timestamps"):
+            assert f'"{chat[key]}"' in steps, key
+        assert chat["display_time_on_each_message"] not in steps
+        hovers = [s for s in sc.steps if "Move the mouse" in s]
+        assert len(hovers) == 2
+        for step in hovers:
+            assert "last sentence" in step, step
+            ending = step.split('it ends "', 1)[1].split('"', 1)[0]
+            assert answer.endswith(ending), step
+            assert "first message" not in step, step
 
     def test_scenarios_name_the_dormant_row_by_its_shipped_sentence(self) -> None:
         """The sleeping-session expander row is named by its shipped sentence.

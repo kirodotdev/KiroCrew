@@ -18,6 +18,7 @@ from typing import NamedTuple
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.beacon import distribution
 from kiro_crew.config.paths import data_home
+from kiro_crew.kiro_cli_bundle import powershell_single_quoted
 from kiro_crew.platform.update_capability import (
     EXTERNALLY_MANAGED_MESSAGES,
     MANAGED_BY_GIT,
@@ -120,8 +121,7 @@ def _running_interpreter_pip_prefix() -> str:
     :func:`kiro_crew.extras.pip_install_command_for` uses.
     """
     if os.name == "nt":
-        exe = sys.executable.replace("'", "''")
-        return f"& '{exe}' -m pip"
+        return f"& {powershell_single_quoted(sys.executable)} -m pip"
     return f"{shlex.quote(sys.executable)} -m pip"
 
 

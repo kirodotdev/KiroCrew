@@ -1097,11 +1097,17 @@ class TestRenderTogglesAreWiredPerTurn:
     @pytest.mark.asyncio
     async def test_the_dispatcher_reads_the_toggles_fresh_for_each_turn(self) -> None:
         d, _cli, _sess = _dispatcher({"u1"})
-        seen: list[tuple[bool, bool]] = []
+        seen: list[tuple[bool, bool, bool]] = []
         real = td_mod.DiscordRenderer
 
         def _spy(*args: Any, **kwargs: Any) -> Any:
-            seen.append((kwargs["reactions_enabled"], kwargs["show_thinking"]))
+            seen.append(
+                (
+                    kwargs["reactions_enabled"],
+                    kwargs["show_thinking"],
+                    kwargs["show_timing_footer"],
+                )
+            )
             return real(*args, **kwargs)
 
         # The dispatcher also reads `DiscordRenderer.channel_type` as a CLASS
@@ -1110,20 +1116,20 @@ class TestRenderTogglesAreWiredPerTurn:
 
         with (
             mock.patch.object(td_mod, "DiscordRenderer", _spy),
-            _live_discord(reactions_enabled=False, show_thinking=True),
+            _live_discord(reactions_enabled=False, show_thinking=True, show_timing_footer=False),
         ):
             await d.handle_message(_inbound("hi"))
         # Read per TURN, not off the boot config, so the dashboard toggle takes
         # effect on the next message instead of the next restart.
-        assert seen == [(False, True)]
+        assert seen == [(False, True, False)]
 
     def test_an_unreadable_config_keeps_the_shipped_defaults(self) -> None:
         """Neither toggle is a security control, so a failed load must not fail
-        the turn: reactions stay on (the loud default) and reasoning stays off
-        (the quiet one)."""
+        the turn: reactions and the timing footer stay on (the loud defaults) and
+        reasoning stays off (the quiet one)."""
         d, _cli, _sess = _dispatcher({"u1"})
         with mock.patch("kiro_crew.config.loader.KiroCrewConfig.load", side_effect=OSError):
-            assert d._render_config() == (True, False)
+            assert d._render_config() == (True, False, True)
 
 
 class TestGuildCommandRefusalsAreVisible:

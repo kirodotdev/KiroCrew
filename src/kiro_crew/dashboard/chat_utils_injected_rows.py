@@ -491,11 +491,10 @@ def app_inject_row(label: str) -> tuple[str, str, dict]:
 
     Both delivery paths (direct dispatch in ``handlers/mcp_apps.py`` and the
     queue drain in ``chat_runner.py``) call this, so the row cannot diverge
-    between them. ``cls`` is a plain CSS class — NEVER a JSON payload: a JSON
-    ``cls`` makes ``_prepare_messages`` replace the stored meta with the
-    cls-derived dict on the HTTP rebuild path, silently dropping
-    ``injectKind`` and with it the row's collapse/fold exemptions. The label
-    travels in ``meta`` only, and is never re-derived from the banner text.
+    between them. ``cls`` is a plain CSS class and the identity (``injectKind``,
+    the label) lives in ``meta``, which the HTTP rebuild sends for an
+    ``inject`` row merged over any ``cls`` meta. The label travels in
+    ``meta`` only, and is never re-derived from the banner text.
     """
     return "inject", "msg msg-inject", {"injectKind": "mcp_app", "appLabel": label}
 

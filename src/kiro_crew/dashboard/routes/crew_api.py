@@ -18,7 +18,9 @@ Public tier: ``/v1/models``, ``/v1/responses``, ``/v1/responses/{response_id}``,
 gate. ``/v1/models`` also serves a verified app
 credential with an empty list until a grant carries a Bot range or a route lets
 an app run an agent. The owner gets the full catalog; the three ``/v1/responses``
-routes serve the owner alone, and so do ``/v1/crew/capabilities`` and ``/v1/crew/info``.
+routes serve the owner alone. ``/v1/crew/capabilities`` and ``/v1/crew/info`` serve
+the machine owner and a verified app credential; the app's ``agents`` come from its
+grant alone.
 ``/v1/crew/grant`` is not behind ``owner_route``: it serves an app credential its own
 grant and answers a first-party session 404 (``crew_api_grant_self``).
 """

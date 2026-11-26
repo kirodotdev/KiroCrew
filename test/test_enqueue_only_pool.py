@@ -248,6 +248,7 @@ def test_a_pool_dropped_without_shutdown_stops_its_threads() -> None:
 #: thread then builds a new pool while the hook runs: its submit is refused, as the
 #: stdlib refuses one after interpreter shutdown, rather than left to a worker no one joins.
 _EXIT_CHILD = f"""
+import os
 import threading
 from kiro_crew.enqueue_only_pool import EnqueueOnlyThreadPoolExecutor as Pool
 
@@ -266,17 +267,23 @@ def shutdown(self, wait=True, *, cancel_futures=False):
 Pool.shutdown = shutdown
 
 
+def emit(line):
+    # One write(2) per line: print() writes the text and its newline separately, so
+    # two workers released by the same exit hook can interleave into "runningdropped".
+    os.write(1, (str(line) + "\\n").encode())
+
+
 def run_at_exit(entered, line):
     entered.set()
     if exiting.wait(BOUND):
-        print(line, flush=True)
+        emit(line)
 
 
 running = Pool(max_workers=1, thread_name_prefix="t-running")
 entered = threading.Event()
 running.submit(run_at_exit, entered, "running")
 assert entered.wait(BOUND)
-running.submit(print, "queued", flush=True)
+running.submit(emit, "queued")
 
 dropped = Pool(max_workers=1, thread_name_prefix="t-dropped")
 entered = threading.Event()
@@ -289,9 +296,9 @@ del dropped
 def late_submit():
     if exiting.wait(BOUND):
         try:
-            Pool(max_workers=1, thread_name_prefix="t-late").submit(print, "late", flush=True)
+            Pool(max_workers=1, thread_name_prefix="t-late").submit(emit, "late")
         except RuntimeError as exc:
-            print("refused" if "cannot schedule new futures" in str(exc) else exc, flush=True)
+            emit("refused" if "cannot schedule new futures" in str(exc) else exc)
 
 
 threading.Thread(target=late_submit).start()  # joined after the exit hooks

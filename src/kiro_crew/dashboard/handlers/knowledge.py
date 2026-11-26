@@ -188,6 +188,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_sync import _hand_off_under_gate  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _ingest_local_file_task  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _is_syncable  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sync import _remove_staged_file  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _resolved_is_sensitive  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _set_sync_status  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sync import _source_row  # noqa: F401

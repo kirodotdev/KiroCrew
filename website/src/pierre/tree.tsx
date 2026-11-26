@@ -2,12 +2,21 @@
  * Lazy boundary for the `@pierre/trees` workspace tree — keeps the trees
  * runtime out of the eager bundle, mirroring `./index` for `@pierre/diffs`.
  */
-import { Suspense, lazy } from 'react'
+import type { ComponentProps } from 'react'
+import { lazyRetry } from '../components/lazyRetry'
 import { i18nT } from '../i18n/t'
+import type { PierreWorkspaceTreeImpl as PierreWorkspaceTreeImplType } from './PierreWorkspaceTreeImpl'
 
-const TreeImpl = lazy(() =>
-  import('./PierreWorkspaceTreeImpl').then(m => ({ default: m.PierreWorkspaceTreeImpl })),
-)
+// A chunk that fails to load shows its notice where the tree would be, with Try
+// Again, while the rest of the Files tab or folder tab stays usable.
+// No hand-off: the chat composer and the open files beside the tree may hold
+// unsaved drafts.
+const TreeImpl = lazyRetry<ComponentProps<typeof PierreWorkspaceTreeImplType>>(() => import('./PierreWorkspaceTreeImpl').then(m => ({ default: m.PierreWorkspaceTreeImpl })), {
+  layout: 'block',
+  title: () => i18nT('pages.chat.activityViewer.workspace_load_failed'),
+  scope: 'workspace-tree',
+  askAgent: false,
+})
 
 /** Tree-shaped shimmer placeholder: [indent px, row width]. Varied depths and
  *  widths so the skeleton reads as a file tree, not a generic list. Shared by
@@ -82,8 +91,6 @@ export function PierreWorkspaceTree({ projectDir, onFileOpen, onAddToContext, on
   // keep the mode-only key, and with it their exact current behavior.
   const key = persistExpansion ? [mode ?? 'all', projectDir].join('\u0000') : (mode ?? 'all')
   return (
-    <Suspense fallback={<TreeSkeleton />}>
-      <TreeImpl key={key} projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} onUploadRequest={onUploadRequest} onNewFileRequest={onNewFileRequest} searchQuery={searchQuery} mode={mode} selectedPath={selectedPath} persistExpansion={persistExpansion} onOpenFolder={onOpenFolder} reveal={reveal} onRevealed={onRevealed} active={active} />
-    </Suspense>
+    <TreeImpl key={key} loading={<TreeSkeleton />} projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} onUploadRequest={onUploadRequest} onNewFileRequest={onNewFileRequest} searchQuery={searchQuery} mode={mode} selectedPath={selectedPath} persistExpansion={persistExpansion} onOpenFolder={onOpenFolder} reveal={reveal} onRevealed={onRevealed} active={active} />
   )
 }

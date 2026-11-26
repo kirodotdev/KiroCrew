@@ -153,6 +153,48 @@ async def test_a_headless_boot_listens_on_loopback_alone(tmp_path, monkeypatch) 
 
 
 @pytest.mark.asyncio
+async def test_under_port_auto_the_published_port_is_the_reserved_one(
+    tmp_path, monkeypatch
+) -> None:
+    """The real boot on a port the kernel picks: the same port as the first address."""
+    boot = startup._dashboard(tmp_path, monkeypatch, real_listener=True, headless=True)
+    async with boot as (runner, state, _spies):
+        first = next(address[1] for address in runner.addresses if address[0] == "127.0.0.1")
+        assert first != 0
+        assert runner.app["served_port"] == first
+        assert state._listener_bound_port == first
+
+
+@pytest.mark.asyncio
+async def test_the_published_port_does_not_follow_the_order_of_the_runner_sites(
+    tmp_path, monkeypatch
+) -> None:
+    """Another listener first on the runner, the gateway's own site re-added behind it.
+
+    That is the order a rebind of the gateway's own listener leaves while the entry
+    listeners are up. The published port stays the port the gateway reserved.
+    """
+
+    async def _another_listener_first(ref, runner, *args, **kwargs):
+        (own,) = runner.sites
+        await web.TCPSite(runner, "127.0.0.1", 0).start()
+        runner._unreg_site(own)
+        runner._reg_site(own)
+        return []
+
+    from kiro_crew.dashboard import entry_gate
+
+    monkeypatch.setattr(entry_gate, "start", _another_listener_first)
+    boot = startup._dashboard(tmp_path, monkeypatch, real_listener=True, headless=True)
+    async with boot as (runner, state, _spies):
+        ports = [address[1] for address in runner.addresses]
+        served = runner.app["served_port"]
+        assert ports[0] != served
+        assert served in ports[1:]
+        assert state._listener_bound_port == served
+
+
+@pytest.mark.asyncio
 async def test_an_ordinary_boot_keeps_the_override_and_the_tailnet_listener(
     tmp_path, monkeypatch
 ) -> None:

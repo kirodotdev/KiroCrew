@@ -204,7 +204,7 @@ Execution model:
   install <dir>`) copies and registers the app but does not run `onInstall`. Do
   any build step yourself while iterating locally.
 - An update of an enabled app re-runs `onEnable` once the new version is in
-  place. The update replaces the installed folder with a fresh copy that never
+  place. The update replaces the installed folder's files with a fresh copy that never
   carries `node_modules` or `.venv`, so an `onEnable` that installs them (for
   example `cd runtime && npm ci --omit=dev`) puts them back. Keep it idempotent.
   If it fails, the app stays enabled on the new version and the user is told

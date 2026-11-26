@@ -94,7 +94,7 @@ from kiro_crew.acp.session_mcp_crewmate import (
     _crewmate_worker_spec,
     crewmate_worker_switch_off_spec,
 )
-from kiro_crew.acp.session_mcp_env_refs import expand_entry_env
+from kiro_crew.acp.session_mcp_env_refs import expand_entry_env, with_app_policy_markers
 from kiro_crew.acp.session_mcp_restricted import session_mcp_restricted_servers
 from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-exported
     _NATIVE_NAMED_PATH_CHARS,
@@ -110,6 +110,7 @@ from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-export
     _named_path,
     _unreadable_reason,
 )
+from kiro_crew.acp.session_mcp_spec_check import refuse_contested_agent_spec  # noqa: F401
 from kiro_crew.acp.session_mcp_switch_offs import _project_restrictions, _with_restrictions
 from kiro_crew.acp.session_mcp_tools_allowlist import ToolsAllowlist, _tools_allowlist
 from kiro_crew.agent import (
@@ -581,42 +582,6 @@ def _user_agent_spec(agent: str) -> dict[str, Any] | None:
         )
         return None
     return _read_agent_spec(path, operation="session_mcp_servers", source="unknown")
-
-
-def refuse_contested_agent_spec(agent: str | None) -> None:
-    """Refuse a start when differing user-level specs declare *agent*. Blocking.
-
-    :func:`_user_agent_spec` answers such a contest with ``None``, so a host that
-    reads its servers from here would start on Crew's control plane alone. This is
-    the one start check for every host that does not resolve the spec itself
-    (kiro-cli's native projection and KAS already refuse): it asks the resolver KAS
-    starts from, :func:`~kiro_crew.agent_discovery.declared_spec_claim`, and lets
-    its :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError` propagate,
-    a pin that names none of the claimants included. That message names every
-    file and the pin command, and the start's caller wraps it so
-    ``ambiguity_meta`` finds it on the cause chain.
-
-    No refusal, the start goes on as before, for: one file, identical copies, a
-    pin that picks a claimant, no file at all, or a directory that cannot be read.
-    A checkout spec for *agent* is no exemption: a mirrored session never lets an
-    untrusted checkout pick its servers (:func:`_project_mcp_trusted`), so it still
-    reads the user level, and the contest would still drop its servers.
-    """
-    from kiro_crew.agent import is_registered_agent_name, kiro_agents_dir_path
-    from kiro_crew.agent_discovery import AmbiguousAgentSpecError, declared_spec_claim
-    from kiro_crew.config.paths import spec_dir_for
-
-    if not agent or not is_registered_agent_name(agent):
-        return
-    agents_dir = spec_dir_for(agent, kiro_agents_dir_path())
-    try:
-        declared_spec_claim(agents_dir, agent, operation="session_start_spec_check", source="acp")
-    except AmbiguousAgentSpecError as exc:
-        # No claimant on disk is the "no agent file" case, which is not refused here.
-        if exc.paths:
-            raise
-    except OSError:
-        return
 
 
 def _session_spec_and_snapshot_for(
@@ -1227,9 +1192,9 @@ def session_mcp_servers(
         servers.pop(name)
 
     out: list[dict[str, Any]] = []
-    for name in sorted(servers):
+    for name, entry in sorted(with_app_policy_markers(servers).items()):
         # The harness starts the element as written; kiro-cli parity (session_mcp_env_refs).
-        element = acp_server_element(name, expand_entry_env(name, servers[name]))
+        element = acp_server_element(name, expand_entry_env(name, entry))
         if element is not None:
             out.append(element)
     return out

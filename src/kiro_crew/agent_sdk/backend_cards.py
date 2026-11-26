@@ -519,13 +519,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "session it does not know"
     ),
     "ACP_BACKENDS_TOOL_TITLE_REFINEMENT": (
-        "which frame names a call on a Crew-spawned subagent's Subagents card -- the "
-        "tool_call_update that refines the call's first title for this set, the "
-        "tool_call and its permission request alone elsewhere. The card's tool list "
-        "is the same on every harness, so the membership selects a reader rather than "
-        "a feature someone choosing a harness gains. A wrong membership is a defect: "
-        "a member's card keeps a generic title, or a non-member's better title is "
-        "replaced by a bare tool name"
+        "which frame names a call on a Crew-spawned subagent's Subagents card and on a "
+        "channel turn's task card -- the tool_call_update that refines the call's first "
+        "title for this set, the tool_call (and, on the Subagents card, its permission "
+        "request) alone elsewhere. The card's tool list is the same on every harness, "
+        "so the membership selects a reader rather than a feature someone choosing a "
+        "harness gains. A wrong membership is a defect: a member's card keeps a generic "
+        "title, or a non-member's better title is replaced by a bare tool name"
     ),
     "ACP_BACKENDS_COMPACTION_SUMMARY": (
         "which frames carry a harness's compaction summary to the chat's compaction card "
@@ -846,6 +846,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
     "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS": (
         "whether an advertised <model>[<effort>] id is applied as two writes. The "
         "model switch either lands or is refused, which its own line already says"
+    ),
+    "ACP_BACKENDS_MODEL_PER_SESSION": (
+        "whether a sub-agent started on a model of its own takes a session on its "
+        "parent's process or a process of its own. It runs on that model either "
+        "way; a wrong membership leaves a shared sub-agent off the model it was "
+        "started on, which is a defect, not a feature a harness is picked by"
     ),
     "ACP_BACKENDS_SPEC_FILE_GRANTS": (
         "whether a start on a crew-bound spec Kiro Crew does not own is refused "

@@ -48,6 +48,9 @@ LOCAL_GRANTS_KIND = "local-grants"
 #: Stored on every request and grant. One fixed value today.
 NAMESPACE = "default"
 TOKEN_TYP = "kiro-crew-local+jwt"
+#: The two reasons ``LocalAuthorization.refused_as`` gives for a token this gateway signed.
+EXPIRED = "expired"
+REVOKED = "revoked"
 #: The scopes that need no entitlement; local authorization gives no others.
 SCOPES: tuple[str, ...] = (
     "responses:write",
@@ -758,6 +761,35 @@ class LocalAuthorization:
             )
         except (OSError, ValueError, KeyError, TypeError):
             return None
+
+    def refused_as(self, access_token: str) -> tuple[str, str]:
+        """Why :meth:`verify` refused a token this gateway signed: ``(reason, grant id)``.
+
+        The reason is :data:`EXPIRED` or :data:`REVOKED`, and ``("", "")`` for every
+        other token. It never admits anyone: a caller that gets a reason still refuses.
+
+        The order is :meth:`verify`'s. The signature is checked first, so a token
+        this gateway did not sign gets no reason and the record is not read for it.
+        The expiry is next, so a token past it is ``EXPIRED`` whatever became of its
+        grant. Only then is the grant read, and ``REVOKED`` needs a record that is
+        still kept and says so. A grant with no record, or a record that cannot be
+        read, gets no reason.
+        """
+        claims = self._claims(access_token)
+        if claims is None or not isinstance(claims.get("exp"), int):
+            return "", ""
+        grant_id = str(claims.get("grant_id"))
+        now = self._clock()
+        if claims["exp"] <= now:
+            return EXPIRED, grant_id
+        try:
+            with _LOCK:
+                grant = self._load()["grants"].get(grant_id)
+            if grant is not None and grant["status"] == "revoked" and grant["expires_at"] > now:
+                return REVOKED, grant_id
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        return "", ""
 
 
 def gateway_local_authorization() -> LocalAuthorization:

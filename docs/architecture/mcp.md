@@ -173,7 +173,9 @@ therefore updates the one mount instead of mounting the server again as
 two entries match apart from `disabledTools`
 (`mcp_aliases.raw_tools_project_onto_alias()`); any other pair keeps the normal
 collision handling. The merged entry is the one read, so a Kiro global guard on the
-raw key survives a store entry that omits the field.
+raw key survives a store entry that omits the field. `list_servers()` folds the raw
+and alias rows into one and applies the same predicate (`_alias_renders_raw`), so
+the row's `disabled_tools` is the list this reconcile mounts.
 
 **A raw store key adopts its own rendering.** Switching such a row off writes
 `disabled: true` onto the raw store entry, which then differs from the previous
@@ -1700,7 +1702,8 @@ approved again. A daemon's pong reports the part it was handed, and a gateway
 pinned to another part treats it as drift and replaces it rather than adopting
 it. Security detail:
 [security.md](../system-specs/modules/security.md#mcp-launch-authorization-leaves).
-An absent or empty store approves nothing. A stub
+An absent, empty, unreadable or undecodable store approves nothing, and a write
+refuses to replace a store whose bytes do not decode. A stub
 without a matching fingerprint stays on the session's unpooled, sandboxed launch
 path. A queued cold spawn reloads the store after admission and resolves the same
 command and environment identity again immediately before the fork, so revoking
@@ -6411,6 +6414,20 @@ managed servers: a pooled app server is not handed the token. KAS never reaches
 `kiro_control_plane_servers`; its hoist tokens the same app servers from the
 same manifest launch (`acp/kas_app_identity.py`, see
 [acp-client](../system-specs/modules/acp-client.md)).
+On a centrally governed host the per-session element Crew builds for such a
+server also carries the gateway's cache-only policy markers, as a managed
+server's does, because under a `cc` or `strict` agent tier the harness
+environment does not carry them: on kiro through the managed env the element is
+built with, on KAS in the tokened element `kas_app_identity.tokened_app_element`
+builds, and in the session-level array the other ACP harnesses receive through
+`session_mcp_env_refs.with_app_policy_markers`, which marks only an entry whose
+`command` and `args` are the shipped launch and drops that entry's own copies
+first (goose's `keep_env_references` matches such an element with the marker
+keys left out and keeps the element's own marker pairs, reading no gateway or
+manifest state, so a `${VAR}` reference still survives onto its disk). Two cases get no markers: a
+KAS hoist with no session token, which sends the app element as projected, and
+an array entry that is not on the pinned shipped launch. The registered entry
+never carries them: its declared env is part of a shared-launch approval.
 
 A server that is NOT Kiro Crew's code can opt into a much smaller grant: a session
 LABEL, never the token (`acp/session_label.py`). Its `mcpServers` entry carries

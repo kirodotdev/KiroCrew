@@ -62,7 +62,6 @@ import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import { isUnansweredRead } from '../../api/queryClient'
 import { CHAT_HISTORY_SEARCH_TAB_IDS } from './useChatHistorySearchTab'
 import {
-  cancelComposerUploads,
   composerUploadSlot,
   holdComposerSend,
   registerComposerUpload,
@@ -70,8 +69,8 @@ import {
   releaseComposerSend,
   reportComposerUploadProgress,
   unregisterComposerUpload,
-  useComposerUploadCount,
 } from '../../utils/composerSendHolds'
+import { runQueuedUpload } from '../../utils/uploadQueue'
 
 type MutableRef<T> = { current: T }
 
@@ -815,23 +814,6 @@ export function useChatPageResourcesController({
     return () => window.removeEventListener(PREVIEW_SNIP_EVENT, onSnip)
   }, [composerLockedRef, snipSlotRef, activeSlotRef, takeScreenshot, snipFrom])
 
-  // Each upload's controller is registered per slot in the shared
-  // composerSendHolds registry, not kept on this hook: the hold outlives a
-  // remount of the page, so a page remounted mid-upload must be able to cancel
-  // a request it did not start. The registry keeps EVERY live one: paste,
-  // drop and a Sketch insert all reach `uploadFiles` with no `uploading` gate,
-  // so two requests can be in flight and one cancel has to end both.
-  //
-  // Cancellable is read from the registry rather than from `uploading`. That
-  // flag is SHARED with takeScreenshot, which registers no controller, so a
-  // control gated on it would offer a cancel during a macOS `screencapture -i`
-  // with nothing to abort.
-  const uploadCount = useComposerUploadCount(activeSlot)
-  /** Abort every upload in flight for the ACTIVE slot, whichever host started it. */
-  const cancelUpload = useCallback(() => {
-    cancelComposerUploads(activeSlotRef.current)
-  }, [activeSlotRef])
-
   /** Upload files via browser File API (cross-platform) */
   // The client-side pre-checks that refuse a file set BEFORE anything is sent:
   // too many files, or one over the cap. Returns the hint to show, or null when
@@ -864,44 +846,57 @@ export function useChatPageResourcesController({
     const refusal = localUploadRefusal(files)
     if (refusal) { setUploadHint(refusal); return true }
     setUploading(true)
-    holdComposerSend(requestSlot)
-    const controller = new AbortController()
-    registerComposerUpload(requestSlot, controller)
-    let completedPaths: string[] = []
-    // Reported in `finally`, once the slot this upload lands in is known.
-    let failure = ''
-    try {
-      const res = await api.uploadFiles(files, controller.signal,
-        (loaded, total) => reportComposerUploadProgress(controller, loaded, total))
-      if (res.error) {
-        failure = i18nT('pages.chatPage.upload_failed_error', { error: res.error })
-      } else if (res.paths?.length) {
-        completedPaths = res.paths
+    // One request per file, each with its own AbortController, Send hold and
+    // registry entry (so its own chip, progress and cancel). Each controller
+    // is registered per slot in the shared composerSendHolds registry, not
+    // kept on this hook: the hold outlives a remount of the page, so a page
+    // remounted mid-upload still shows the chip and can cancel a request it
+    // did not start. Every hold is taken here, before the first await, so the
+    // snip hand-off in handleSnipComplete never leaves Send free.
+    const controllers = files.map(file => {
+      const controller = new AbortController()
+      holdComposerSend(requestSlot)
+      registerComposerUpload(requestSlot, controller, file.name)
+      return controller
+    })
+    await Promise.all(files.map(async (file, index) => {
+      const controller = controllers[index]
+      let completedPaths: string[] = []
+      // Reported in `finally`, once the slot this upload lands in is known.
+      let failure = ''
+      try {
+        // Through the shared in-flight limit: a file waiting its turn has sent
+        // nothing, and a cancel while it waits drops it unsent (an AbortError).
+        const res = await runQueuedUpload(controller.signal, () => api.uploadFiles([file], controller.signal,
+          (loaded, total) => reportComposerUploadProgress(controller, loaded, total)))
+        if (res.error) {
+          failure = i18nT('pages.chatPage.upload_failed_error', { error: res.error })
+        } else if (res.paths?.length) {
+          completedPaths = res.paths
+        }
+        if (!res.error && res.resizedByPath && Object.keys(res.resizedByPath).length) {
+          setResizedInfo(prev => ({ ...prev, ...res.resizedByPath }))
+        }
+      } catch (err) {
+        // A cancel the user asked for is not a failure. Without this branch the
+        // blanket message blames file type and a 50 MB cap for a 150 MB
+        // recording the user deliberately stopped.
+        if ((err as Error | undefined)?.name !== 'AbortError') {
+          failure = i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb')
+        }
+      } finally {
+        // Where THIS upload lives now: the replacement when a memory-mode switch
+        // handed it over (with its hold) while it ran, else where it started.
+        const landing = composerUploadSlot(controller) ?? requestSlot
+        if (failure) reportAttachmentFailure(failure, landing, m => setUploadError(m))
+        // Drop only THIS request's controller: its siblings keep their chips.
+        unregisterComposerUpload(landing, controller)
+        finishComposerAttachment(landing, completedPaths)
       }
-      if (!res.error && res.resizedByPath && Object.keys(res.resizedByPath).length) {
-        setResizedInfo(prev => ({ ...prev, ...res.resizedByPath }))
-      }
-    } catch (err) {
-      // A cancel the user asked for is not a failure. Without this branch the
-      // blanket message blames file type and a 50 MB cap for a 150 MB
-      // recording the user deliberately stopped.
-      if ((err as Error | undefined)?.name !== 'AbortError') {
-        failure = i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb')
-      }
-    } finally {
-      // Where THIS upload lives now: the replacement when a memory-mode switch
-      // handed it over (with its hold) while it ran, else where it started.
-      const landing = composerUploadSlot(controller) ?? requestSlot
-      if (failure) reportAttachmentFailure(failure, landing, m => setUploadError(m))
-      // Drop only THIS request's controller: the registry keeps Cancel offered
-      // while a sibling upload of the slot is still running.
-      unregisterComposerUpload(landing, controller)
-      finishComposerAttachment(landing, completedPaths)
-      // Unchanged from main, and still wrong for concurrent uploads: the first
-      // request to settle clears the shared flag while a sibling runs. Left
-      // alone deliberately -- the cancel control reads the registry, not this.
-      setUploading(false)
-    }
+    }))
+    // Once the whole set has settled. Still shared with a concurrent set or a
+    // screenshot, which can clear it first; Send reads the holds, not this.
+    setUploading(false)
     // The files were sent (a server-side refusal surfaces as an error above,
     // not a local pre-check hint), so no local-refusal hint was set.
     return false
@@ -1059,8 +1054,6 @@ export function useChatPageResourcesController({
     handleSnipCancel,
     uploadFiles,
     composerUploadFiles,
-    cancelUpload,
-    uploadCount,
     handleOptimizeResult,
     dragOver,
     dropTargetProps,

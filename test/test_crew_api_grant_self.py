@@ -114,7 +114,7 @@ async def test_a_revoked_grants_token_is_401_before_the_handler(store, clock) ->
     tokens = _grant(store, clock)
     assert store.revoke_grant(tokens["grant_id"], caller="U_HOST_OWNER") is True
     resp, _, ran = await _send(path=PATH, headers=_bearer(tokens["access_token"]))
-    _assert_401(resp, ran)
+    kit._assert_refused(resp, ran, "token_revoked", "The grant was revoked.")
 
 
 @pytest.mark.asyncio

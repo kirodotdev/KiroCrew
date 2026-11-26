@@ -681,9 +681,15 @@ class AppManifest:
                     refusal, f"contributes.messageActions entry {refusal}: {action.entry!r}"
                 )
         for link_open in self.contributes.linkOpen:
-            refusal = path_refusal(link_open.entry)
+            refusal = path_refusal(link_open.entry) if link_open.entry else ""
             if refusal:
                 report_path(refusal, f"contributes.linkOpen entry {refusal}: {link_open.entry!r}")
+            # The link opens on the app's own page, so there must be one (AppHost
+            # mounts ``ui.entry``; without it the page is a placeholder).
+            if link_open.page_param and not (self.ui.entry and self.ui.pages):
+                errors.append(
+                    f"contributes.linkOpen[{link_open.id}]: page needs ui.entry and ui.pages"
+                )
         # A composer-action entry is imported by the same frame bootstrap.
         for composer in self.contributes.composerActions:
             refusal = path_refusal(composer.entry)

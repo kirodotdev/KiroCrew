@@ -3492,7 +3492,12 @@ on an item that never started. The banner names that worker, that item and how
 many selected items the scheduler still queued, and says to re-run the shard;
 that worker's `session_end` progress record carries `channel_closed` to tell the
 two causes apart (other workers' channels close at teardown, so only its own
-record counts).
+record counts). One way a test closes its own worker's channel: rebinding
+`struct.unpack` on the stdlib module to a fake that raises. xdist's receiver
+thread decodes every frame from the controller with it, so a frame that lands
+while the patch holds ends that thread. Replace the module-under-test's own
+`struct` binding instead, as *Never rebind a stdlib clock* below shows for
+`time`.
 
 So any override that still runs MANY tests must carry
 `-n auto --dist loadgroup --max-worker-restart=2`, and keep `-p no:platformdirs`
@@ -5193,6 +5198,19 @@ gates the test names and leave `configured_kind_routing_mode()` (or any
 `configured_mode()`) reading config. Good: `monkeypatch.setattr(memory_kind_routing,
 "configured_kind_routing_mode", lambda: "off")` beside the other pins in the pass
 helper, so a default flip in another stage cannot change what this test compares.
+
+### Lines that several threads print to one pipe
+
+A child process whose threads each `print()` a line, compared line by line by the
+parent, races on the pipe. `print(x)` writes `x` and its newline as two writes, so two
+threads released by the same event can land as `runningdropped` plus an empty line.
+`test_a_normal_exit_finishes_running_and_queued_work_and_refuses_new_work` in
+`test/test_enqueue_only_pool.py` red this way on macOS runners, on five PRs over four
+bases, while every line was really printed. `flush=True` does not help: it flushes
+after both writes, not between them. Bad: `print(line, flush=True)` from a worker.
+Good: one `os.write(1, (line + "\n").encode())` per line, a single `write(2)` well under
+`PIPE_BUF`, so no other writer can land inside it; send every line through the same
+helper so no buffered `print` mixes in.
 
 ### A CI wait that runs out is infrastructure, not a red test
 

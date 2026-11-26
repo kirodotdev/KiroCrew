@@ -675,6 +675,15 @@ class DiscordConfig:
             tags=["discord"],
         ),
     )
+    show_timing_footer: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Timing Footer",
+            'Post the "Finished in … · ctx …%" line under each reply. Turn it off for a '
+            "cleaner chat; choice buttons still post.",
+            tags=["discord"],
+        ),
+    )
     session_folder: str = field(
         default="",
         metadata=_meta(

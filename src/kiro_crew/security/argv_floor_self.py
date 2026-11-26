@@ -298,6 +298,66 @@ def _self_token_frames(text_lower: str, literal_single_quotes: bool = True) -> "
     return [tokens for _source, tokens in _self_frames(text_lower, literal_single_quotes)]
 
 
+def _powershell_assignment(tokens: "list[str]", idx: int) -> "re.Match[str] | None":
+    """PowerShell's ``$name = value`` at *idx*, which opens a statement, as ``name=value``.
+
+    Words split on whitespace, so a spaced ``=`` arrives at a word's edge and the word
+    beside it joins on. It binds only as a whole statement: ``[ $t = v ]`` compares in
+    either shell, and ``$out = kirocrew doctor`` runs a command.
+    """
+    word, end = tokens[idx], idx + 1
+    if not word.startswith("$"):
+        return None
+    for nxt in tokens[end : idx + 3]:
+        if not (word.endswith("=") or ("=" not in word and nxt.startswith("="))):
+            break
+        word, end = word + nxt, end + 1
+    after = tokens[end][:1] if end < len(tokens) else ";"
+    if not word.endswith((";", "&", "|")) and after not in ";&|)}#":
+        return None
+    return _shell_normalizer._LOCAL_ASSIGN_RE.match(word[1:])
+
+
+def _powershell_tokens(text_lower: str) -> "list[str] | None":
+    """*text_lower* as PowerShell reads its variables, or ``None`` when it assigns none.
+
+    ``$name = '<literal>'`` or ``$name = $other`` binds the name and a later word that is
+    exactly ``$name`` / ``${name}`` reads it; bash's ``NAME=value`` is a command there.
+    """
+    if "$" not in text_lower or "=" not in text_lower:
+        return None
+    n = _shell_normalizer
+    # Words split on whitespace only, so ``$a='x';$t='y'`` is one word and its second
+    # statement opens nowhere; an unquoted ``;`` or newline is padded to its own word.
+    spaced = "".join(
+        " ; " if step.active and step.char in ";\n" else step.text
+        for step in n._iter_shell_chars(text_lower)
+    )
+    tokens = n._split_shell_words(spaced)
+    values: dict[str, str] = {}
+    out: list[str] = []
+    for idx, token in enumerate(tokens):
+        word = n._dequote_token(token)
+        use = n._VAR_USE_RE.fullmatch(word)
+        opens = not idx or tokens[idx - 1].endswith((";", "&", "|", "{", "("))
+        # An assignment's destination is written, never read, whatever its value.
+        if use and not (opens and "".join(tokens[idx + 1 : idx + 2]).startswith("=")):
+            word = values.get(use.group(1) or use.group(2), word)
+        out.append(word)
+        spoken = _powershell_assignment(tokens, idx) if opens else None
+        if spoken is None:
+            continue
+        raw = spoken.group(2).rstrip(";&|")
+        copy = n._VAR_USE_RE.fullmatch(raw)
+        other = (copy.group(1) or copy.group(2)) if copy else ""
+        # Only a quoted literal holds a string; a bare word after ``=`` runs a command.
+        if len(raw) > 2 and raw[0] in "\"'" and raw[-1] == raw[0] and "$" not in raw:
+            values[spoken.group(1)] = n._dequote_token(raw)
+        elif other in values:
+            values[spoken.group(1)] = values[other]
+    return out if values else None
+
+
 def _shell_payload_sources(text_lower: str) -> "list[str]":
     """*text_lower* plus the source text of every nested shell payload in it."""
     return [source for source, _tokens in _shell_payload_walk(text_lower)]
@@ -418,7 +478,14 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
     # next command's payload.
     submitted = raw_text if raw_text is not None else text_lower
     decoded_literals = _decoded_b64_literal_sources(submitted)
-    for tokens in _self_token_frames(text_lower):
+    readings = _self_token_frames(text_lower)
+    # PowerShell's reading of each source is judged BESIDE the bash one, never in its
+    # place: bash runs ``$T = v`` as a command and ``[ $T = v ]`` as a test.
+    for source, _tokens in _self_frames(text_lower):
+        spoken = _powershell_tokens(source)
+        if spoken is not None:
+            readings.append(spoken)
+    for tokens in readings:
         programs = _argv_programs(tokens)
         # The command-level half of ``_data_consumer_exempt`` reads only *tokens*, so its
         # answer is the same for every token in this frame.  Held here and computed at

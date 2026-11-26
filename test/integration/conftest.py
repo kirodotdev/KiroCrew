@@ -184,6 +184,10 @@ cross-home flake three tests later.
      sample (``DEFAULT_SAMPLE_SECS``) and ``debug_threads mode=now`` takes one
      on request, so whether a boot leaves entries depends on how long it ran;
      a fresh process has none.
+   * ``notifications.resource_pressure``'s published posture, its decline step
+     and the per-session growth marks -- the boot's notifier writes them from
+     live host memory and disk samples, so what a boot leaves depends on the
+     host's load; a fresh process has none.
    * ``platform.governance._CONFIRM_PATTERNS_MEMO`` -- the ``hooks.confirm_tools``
      patterns read from the home's config files, keyed on their fingerprint.
      Grant writers and gate checks fill it whenever no live snapshot is up,
@@ -911,6 +915,12 @@ def _reset_home_bound_globals() -> None:
     inventory_gauges.reset_for_testing()
     with diag_threads._prev_lock:
         diag_threads._prev_reading.clear()
+    resource_pressure._current_posture = None
+    resource_pressure._worsened = None
+    # Cleared in place, never rebound: the second-boot witness compares each
+    # container's identity.
+    resource_pressure._worker_growth.clear()
+    resource_pressure._session_marks.clear()
     agent_mod._main_spec_unreadable = False
     agent_mod._main_spec_episode_revision = 0
     agent_mod._main_spec_skip_generation = None

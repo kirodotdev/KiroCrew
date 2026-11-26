@@ -341,7 +341,8 @@ class TestThePlanHidesTheDeclaredLeaves:
     def test_namespace_pins_the_app_folder_after_the_masks(self, home, mode):
         """Only ``apps/<app>`` moves to the after-mask pins; every folder stays pinned.
 
-        An update replaces ``apps/<app>`` and renames ``data/`` into the new one, so a
+        A keep-data uninstall or an install over kept data replaces ``apps/<app>`` and
+        renames ``data/`` into the new one, so a
         mask or a ``data/`` pin placed through a pin of the old folder would be left
         behind. The app folder is pinned after the masks instead; the set of pinned
         folders is the same as with every pin bound before them.
@@ -740,20 +741,27 @@ class TestTheMasksOutliveTheManifestBesideTheData:
 
         self._install_app(tmp_path / "v1", ["secrets.json"])
         (app_home / "apps" / ".demo-credential-masks.json").unlink()
-        seen: list[tuple[bool, tuple[str, ...]]] = []
-        real_copy = manager._copy_app_tree
+        seen: list[tuple[bool, bool, tuple[str, ...]]] = []
+        real_move_in = manager._move_in_new_entries
 
-        def copy_and_look(source, dest):
-            staged = app_home / "apps" / ".demo-data-tmp"
-            seen.append((staged.is_dir(), credential_masks.declared_crew_leaves()))
-            real_copy(source, dest)
+        def look_and_move_in(new, dest, moved_in):
+            app = app_home / "apps" / "demo"
+            seen.append(
+                (
+                    (app / "app.json").exists(),
+                    (app / "data").is_dir(),
+                    credential_masks.declared_crew_leaves(),
+                )
+            )
+            real_move_in(new, dest, moved_in)
 
-        monkeypatch.setattr(manager, "_copy_app_tree", copy_and_look)
+        monkeypatch.setattr(manager, "_move_in_new_entries", look_and_move_in)
         source = _make_app_source(tmp_path / "v2", name="demo", version="2.0.0")
         assert update_app(source).ok
 
-        # While the old manifest is gone and the new one not yet copied, the data waits
-        # aside and is masked there; the new manifest declares nothing, so the record goes.
-        assert seen == [(True, _leaves("demo", "secrets.json"))]
+        # While the old manifest is gone and the new one not yet in, the data stays in
+        # place and is masked there; the new manifest declares nothing, so the record goes.
+        assert seen == [(False, True, _leaves("demo", "secrets.json"))]
+        assert not (app_home / "apps" / ".demo-data-tmp").exists()
         assert not (app_home / "apps" / ".demo-credential-masks.json").exists()
         assert credential_masks.declared_masks() == {}

@@ -17,8 +17,9 @@ to the test files that touched it.
     bundle  add the co-change history and the guard tier to a map and write
             the gzip selection file the scorer reads (below)
     check   describe a bundle file in one line (commit, build time, size, rows
-            per table) and exit 1 when it lacks a table: `test-map.yml`
-            publishes a bundle only after this passes
+            per table), count the tracked test files it has no entry for, and
+            exit 1 when it lacks a table: `test-map.yml` publishes a bundle
+            only after this passes
     select  given a diff (`--base B --head H`, or `--name-status FILE`) and a
             map or bundle, print the test files it would run, or fall back to
             the full suite and say why
@@ -57,6 +58,16 @@ two tables the verdict's `windows` block is chosen from
 
     "os_sensitive": {src file: "W1" | "W2"},
     "windows_targeting": [test file, ...]
+
+one table that says which test files the map's own run recorded no node from:
+
+    "unrecorded": [test file, ...]   # tracked under a test path at the map's
+                                     # commit, with no entry in "tests"
+
+(a file a lane other than the sharded suite runs, one that skips at import, one
+that holds no test). A test file with no entry in "tests" and not in this
+table is newer than the map. `check` prints both counts. A bundle without the
+table is whole: every unknown test file then reads as newer than the map;
 
 and when the `bundle` command wrote the file, which says how old those tables are:
 
@@ -148,6 +159,8 @@ FULL = 3
 CO_CHANGE_COMMITS = 2000
 GIT_LOG_TIMEOUT_SECS = 600.0
 BUNDLE_TABLES = ("cochange", "guard", "os_sensitive", "windows_targeting")
+# Written when it can be built and has rows; no reader refuses a bundle without it.
+UNRECORDED = "unrecorded"
 NO_GUARD = "corpus_gates found no guard test"
 
 # Where pytest collects (setup.cfg `testpaths`). A changed test file outside
@@ -489,6 +502,51 @@ def parse_ls_files(out: bytes) -> set[str]:
     return {name for name in out.decode("utf-8", "surrogateescape").split("\0") if name}
 
 
+def tracked_test_files(root: Path) -> list[str]:
+    """The test files git tracks under the paths pytest collects, in code point order."""
+    listed = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z", "--cached", "--", *TESTPATHS],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    return sorted(path for path in parse_ls_files(listed.stdout) if is_test_file(path))
+
+
+def unknown_tests(
+    tests: Iterable[str], counts: Mapping[str, Any], unrecorded: Iterable[str]
+) -> dict[str, list[str]]:
+    """The test files of `tests` the map has no entry for, by why.
+
+    `never_runs`: the map's run recorded no node from the file though it was in
+    the tree (`unrecorded`). `new`: every other one, a file newer than the map.
+    """
+    known = set(unrecorded)
+    absent = sorted(test for test in set(tests) if test not in counts)
+    return {
+        "new": [test for test in absent if test not in known],
+        "never_runs": [test for test in absent if test in known],
+    }
+
+
+def node_weights(counts: Mapping[str, int], unrecorded: Iterable[str]) -> Callable[[str], float]:
+    """What a test file weighs in a would-run share: its node ids in the map.
+
+    A file newer than the map weighs the map's mean per file, since its own count
+    is unknown and a new test file is not a small one; a file the map's run
+    recorded no node from weighs nothing. With no map every file weighs 1.
+    """
+    mean = sum(counts.values()) / len(counts) if counts else 1.0
+    none = set(unrecorded) if counts else set()
+
+    def weigh(test: str) -> float:
+        if test in counts:
+            return counts[test]
+        return 0.0 if test in none else mean
+
+    return weigh
+
+
 def tracked_tests(root: Path) -> set[str] | None:
     """The files under `test/` in git's index, or None for a tree with no `.git`."""
     if not (root / ".git").exists():
@@ -616,7 +674,8 @@ def bundle(
 
     A table the map already carries is not kept: it is built here or left out.
     """
-    doc: dict[str, Any] = {k: v for k, v in test_map.items() if k not in BUNDLE_TABLES}
+    built = (*BUNDLE_TABLES, UNRECORDED)
+    doc: dict[str, Any] = {k: v for k, v in test_map.items() if k not in built}
     absent: dict[str, str] = {}
     tables: tuple[tuple[str, Callable[[], Any], str, str], ...] = (
         (
@@ -637,6 +696,12 @@ def bundle(
             lambda: _os_tables_module.windows_targeting(root),
             "test scan failed",
             "the scan found no test file that targets Windows",
+        ),
+        (
+            UNRECORDED,
+            lambda: [t for t in tracked_test_files(root) if t not in test_map["tests"]],
+            "test file listing failed",
+            "the map has an entry for every tracked test file",
         ),
     )
     for name, build, failed, empty in tables:
@@ -659,16 +724,18 @@ def _cmd_bundle(args: argparse.Namespace) -> int:
     text = json.dumps(doc, separators=(",", ":"), sort_keys=True)
     data = gzip.compress(text.encode("utf-8"), mtime=0)
     Path(args.out).write_bytes(data)
-    tables = [t for t in BUNDLE_TABLES if t in doc]
+    tables = [t for t in (*BUNDLE_TABLES, UNRECORDED) if t in doc]
     print(f"bundle: tables {', '.join(tables) or 'none'}, {len(data) / 1e6:.2f} MB gzip")
     for table, why in sorted(absent.items()):
-        print(f"::warning::{table} left out: {why}")
+        # A map that has every test file is a whole bundle, not a short one.
+        level = "notice" if table == UNRECORDED else "warning"
+        print(f"::{level}::{table} left out: {why}")
     return 0
 
 
 def bundle_rows(doc: Mapping[str, Any]) -> dict[str, int]:
     """Rows in each table of a bundle; a table that is absent or empty has none."""
-    tables = {name: doc.get(name) for name in ("tests", "files", *BUNDLE_TABLES)}
+    tables = {name: doc.get(name) for name in ("tests", "files", *BUNDLE_TABLES, UNRECORDED)}
     return {n: len(t) if isinstance(t, (dict, list)) else 0 for n, t in tables.items()}
 
 
@@ -680,10 +747,27 @@ def _cmd_check(args: argparse.Namespace) -> int:
     built = f", built_at {doc['built_at']}" if "built_at" in doc else ""
     size = path.stat().st_size
     print(f"bundle: commit `{doc.get('commit', '')}`{built}, {size} bytes, rows: {counts}")
+    print(unknown_line(doc, Path(args.root).resolve()))
     missing = [name for name in BUNDLE_TABLES if not rows[name]]
     for name in missing:
         print(f"::error::the bundle has no {name} table")
     return 1 if missing else 0
+
+
+def unknown_line(doc: Mapping[str, Any], root: Path) -> str:
+    """One line for `check`: the tracked test files of `root` the bundle has no entry for."""
+    try:
+        tracked = tracked_test_files(root)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"unknown test files: not counted ({type(exc).__name__}: no tracked tree at {root})"
+    listed = doc.get(UNRECORDED)
+    unknown = unknown_tests(tracked, doc["tests"], listed if isinstance(listed, list) else ())
+    return (
+        f"unknown test files: {len(unknown['new']) + len(unknown['never_runs'])} of "
+        f"{len(tracked)} tracked have no entry in the map; {len(unknown['new'])} new since "
+        f"the map, {len(unknown['never_runs'])} the map's run recorded no node from "
+        "(they never run in the sharded backend lanes). Selection never skips either kind."
+    )
 
 
 def _cmd_build(args: argparse.Namespace) -> int:

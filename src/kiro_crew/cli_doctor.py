@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import __version__ as _mc_version
 from kiro_crew import agent as _agent
 from kiro_crew import (  # noqa: F401
+    agent_scratch,
     agent_state,
     dep_sync,
     diagnostics,
@@ -670,7 +671,7 @@ def _doctor(
         # traceback at the one moment the user is already trying to report a
         # failure, so fail with a readable message and a nonzero status instead.
         try:
-            result = diagnostics.collect_bundle(version_alignment=alignment)
+            result = diagnostics.collect_bundle(version_alignment=alignment, outside_gateway=True)
         except OSError as exc:
             print(f"  ❌ could not write the diagnostics bundle: {exc}")
             print("     Check that ~/.kiro/crew is writable and has free space.")

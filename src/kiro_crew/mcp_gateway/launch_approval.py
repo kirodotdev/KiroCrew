@@ -905,24 +905,72 @@ def _parse(raw: Any) -> LaunchApprovals:
     return approvals
 
 
-def load_approvals(path: Path | None = None) -> LaunchApprovals:
-    """Read the store. Absent, empty, unreadable, or malformed approves nothing."""
-    target = path or approvals_path()
+class ApprovalStoreUnreadable(OSError):
+    """The approval store cannot be the base of a rewrite, so a writer left it as it is.
+
+    The writers' contract: :func:`approve`, :func:`revoke`, :func:`restore` and
+    :func:`save_pass` raise this rather than rewrite a store they could not read.
+    It is an ``OSError``, so a caller that answers a failed store write answers
+    this the same way.
+    """
+
+
+def _read_store(target: Path, *, strict_decode: bool = False) -> tuple[str, str | None]:
+    """The store's text, or ``""`` and why it cannot be read.
+
+    The one read every approval reader shares, so a failure is classified once.
+    An absent store reads as ``""`` with no reason: it records nothing yet. With
+    *strict_decode*, bytes that are not UTF-8 raise :class:`ApprovalStoreUnreadable`.
+    """
     try:
-        text = target.read_text(encoding="utf-8")
+        return target.read_text(encoding="utf-8"), None
     except FileNotFoundError:
-        return LaunchApprovals()
-    except OSError:
-        logger.warning("mcp launch approvals: store unreadable; approving no launch")
+        return "", None
+    except UnicodeDecodeError as exc:
+        if strict_decode:
+            raise ApprovalStoreUnreadable(f"{target.name} is not valid UTF-8") from exc
+        return "", "not valid UTF-8"
+    except OSError as exc:
+        return "", f"unreadable ({type(exc).__name__})"
+
+
+def _load(target: Path, *, strict_decode: bool) -> LaunchApprovals:
+    text, problem = _read_store(target, strict_decode=strict_decode)
+    if problem:
+        logger.warning("mcp launch approvals: store %s; approving no launch", problem)
         return LaunchApprovals()
     if not text.strip():
         return LaunchApprovals()
     try:
         raw = json.loads(text)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except json.JSONDecodeError:
         logger.warning("mcp launch approvals: store is not valid JSON; approving no launch")
         return LaunchApprovals()
     return _parse(raw)
+
+
+def load_approvals(path: Path | None = None) -> LaunchApprovals:
+    """Read the store. Absent, empty, unreadable, or malformed approves nothing."""
+    return _load(path or approvals_path(), strict_decode=False)
+
+
+def _load_for_update(target: Path) -> LaunchApprovals:
+    """The base of a store rewrite: :func:`load_approvals`, except bytes that do
+    not decode raise :class:`ApprovalStoreUnreadable`, so the rewrite is abandoned
+    and the file is left as it is.
+
+    shortcut: an unreadable or non-JSON store still reads as empty here, the
+    lenient-read-then-rewrite shape; make it raise when that shape is tightened.
+    """
+    return _load(target, strict_decode=True)
+
+
+def check_store_rewritable(path: Path | None = None) -> None:
+    """Raise :class:`ApprovalStoreUnreadable` when a writer would refuse the store.
+
+    For a caller that must not change anything else before a store write fails.
+    """
+    _load_for_update(path or approvals_path())
 
 
 def approvals_store_problem(path: Path | None = None) -> str | None:
@@ -933,15 +981,9 @@ def approvals_store_problem(path: Path | None = None) -> str | None:
     wrong for a report: an unreadable store and an empty one look the same there.
     An absent or blank store is not a problem; it records nothing yet.
     """
-    target = path or approvals_path()
-    try:
-        text = target.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    except UnicodeDecodeError:
-        return "not valid UTF-8"
-    except OSError as exc:
-        return f"unreadable ({type(exc).__name__})"
+    text, problem = _read_store(path or approvals_path())
+    if problem:
+        return problem
     if not text.strip():
         return None
     try:
@@ -1139,7 +1181,7 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
         raise ValueError("a launch-resolution probe is not an approval store")
     target = path or approvals_path()
     with _STORE_LOCK:
-        current = load_approvals(target)
+        current = _load_for_update(target)
         changed = False
         withheld: dict[str, set[str]] = {}
         for stem, fps in approvals.captured.items():
@@ -1274,7 +1316,7 @@ def approve(launches: Mapping[str, Iterable[ResolvedLaunch]], path: Path | None 
     target = path or approvals_path()
     decided: dict[str, tuple[str, set[str], set[str]]] = {}
     with _STORE_LOCK:
-        current = load_approvals(target)
+        current = _load_for_update(target)
         for name, items in launches.items():
             if not isinstance(name, str) or not name:
                 continue
@@ -1343,7 +1385,7 @@ def revoke(names: Iterable[str], path: Path | None = None) -> ApprovalSnapshot:
         return snapshot
     target = path or approvals_path()
     with _STORE_LOCK:
-        current = load_approvals(target)
+        current = _load_for_update(target)
         snapshot.approved = {
             stem: set(current.approved[stem]) for stem in stems if stem in current.approved
         }
@@ -1379,7 +1421,7 @@ def restore(snapshot: ApprovalSnapshot, path: Path | None = None) -> None:
         return
     target = path or approvals_path()
     with _STORE_LOCK:
-        current = load_approvals(target)
+        current = _load_for_update(target)
         occupied = current._retained_stems()
         restore_stems = snapshot.stems - occupied
         current.approved.update(

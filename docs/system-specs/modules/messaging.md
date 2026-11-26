@@ -33,7 +33,7 @@ legacy metadata do not override a canonical execution.
                             │
  channel API      Layer 2b: Renderer (per channel)
   ◀────────────    on_text_chunk / on_thinking / on_tool_call / on_tool_result /
-                   on_prompt_choice / on_compaction / on_done
+                   on_tool_title / on_prompt_choice / on_compaction / on_done
 
  Layer 3 (cross-cutting): ChannelLink + session-key namespacing
    f"{channel_type}:{conversation_id}" ⇄ legacy bare Slack thread_ts
@@ -239,6 +239,7 @@ The dashboard does **not** flow through `TurnDriver`; it remains unchanged as th
 | `EVENT_THINKING_CHUNK` | `THINKING` |
 | `EVENT_STEER_CONSUMED` | paired with the inline frame so exactly one `STEER_CONSUMED` boundary reaches the renderer |
 | `EVENT_TOOL_CALL` | `TOOL_CALL` (uniform — each call completes the prior task + starts a new one); records the directive-tool identity when a `directive_consumer` is injected. The first text after a call opens with `\n\n` when neither the last text fed before it nor that text has whitespace at the join — the native Slack path's `tool_gap` rule — so a renderer that joins its chunks (Slack lays a message's appends end to end with the card in the plan) never reads `time.No` or a fence on the end of a prose line. The break is never fed to the `StreamRedactor`: the redactor scans the raw text joined, so a credential split by the call is still matched whole, and the break is inserted into its output right after the raw text it held at the call (the raw text fed minus what it had returned). When that output does not start with the held text verbatim, a redaction reached across the join and no break is inserted; a turn whose output an earlier redaction already changed gets no break. The held tail therefore still reaches the renderer after the card, but as its own `TEXT_CHUNK` with `continues_segment` set, ahead of the text after the call: the call carries `text_held` when the redactor held a run at it (a second call before any text keeps the first run), and the first output that opens with that run verbatim is split there (a release of only part of the run is kept back until the rest comes). When a redaction reaches across the join the continuation is empty and everything goes after the call. Joined, the chunks are byte-identical to the unsplit output, and the redactor's input is unchanged |
+| `EVENT_TOOL_CALL_UPDATE` | `TOOL_TITLE`, only on a backend whose capabilities say `refines_tool_call_titles` (claude, which names a call `Read` or `Terminal` before its input has streamed) and only for a call this turn announced. The title is derived as the call's was (`derive_tool_call_title`, from the update's redacted `tool_input`, never `raw_tool_params`, with the call's own identity, and its kind when the update carries none) and sent, with its `raw_title`, when it differs from the title the call was last sent with. kiro-cli stays out: its closing update names a failed call with the bare tool name. An update of a call never announced, or one that derives the same title, renders nothing |
 | `EVENT_TOOL_RESULT` | `TOOL_RESULT` when the result carries a terminal `tool_status` (`acp.types.TERMINAL_TOOL_STATUSES`) and a `tool_call_id`, carrying that status so a renderer can finalize the call's card honestly; a non-terminal update renders nothing. Also decodes + applies a session-directive marker via the injected `directive_consumer` (inert without one) |
 | `EVENT_PERMISSION_REQUEST` | `PROMPT_CHOICE` (interactive w/ decider only) then approve/reject; the PreToolUse script hooks gate it first (see Script hooks) |
 | `EVENT_COMPACTION_STATUS` | `COMPACTION`; a `completed` status also sets `TurnDriver.compaction_completed` (cleared at the start of each `run()`), which the dispatcher's settle reads to arm the one-shot re-injection flag |
@@ -691,7 +692,7 @@ not add a suspension point before the destination authorization check.
 
 ### `OutputEvent`
 
-Channel-neutral output event with a `kind` plus per-kind payload fields (`text`, `tool_call_id`, `title`, `tool_kind`, `tool_name`, `mcp_server`, `tool_purpose`, `tool_status`, `options`, `request_id`, `context_usage_pct`, `stop_reason`, `notice`); `to_dict()` serializes them. `title` is DISPLAY copy, what a person should read for the call (the backend's own description when it sent one, else the client-derived `List files in src` / `Git status` from `kiro_crew.tool_call_title`, else the raw command), and is never a tool's identity; `tool_name` is the trusted programmatic identity from `_meta.kiro` (empty when the backend sent none) and is what any behaviour keyed on *which tool ran* reads. On `PROMPT_CHOICE`, `tool_name` and `mcp_server` (`_meta.kiro.mcpServerName`, the server the call is routed to) name the tool the request asks about. The driver sets them only from a pair `trusted_mcp_identity` accepts, one the ACP layer marked `mcp_identity_trusted` that names a server, and leaves both `""` for a built-in, a shell call or an unproven identity. `Renderer.dispatch` exposes them as `prompt_mcp_identity`, a `(server, tool)` tuple, for that one `on_prompt_choice` call and clears it after, so a renderer can show WHERE a tool runs: `email_send` alone does not say which mail server sends it, and the model writes the title. The Slack, Teams, Webex, WhatsApp and Telegram prompts draw that line from ONE helper, `messaging.renderer.mcp_identity_line(server, tool, fmt)`: `""` when no server is named, so the prompt is then byte-identical to one with no identity; otherwise each name is stripped, scrubbed (`redact_exfiltration_urls`, then `redact_credentials`), cut to `MCP_IDENTITY_NAME_MAX` (200) and only THEN handed to the channel's `fmt`, so the cut never splits an escape, giving `MCP tool: <server> / <tool>` with a blank tool reading `unnamed tool`. The names are the trusted identity, not model text, so Slack, Teams and Telegram do not run their display-form scan over them, and each channel applies its own formatting: Slack bold plus `escape_mrkdwn`; the Teams card backticks like its title (a backtick in the name swapped for the look-alike `ˋ`, whitespace collapsed); Webex `_safe_tool_label` (markdown control characters stripped, then `webex_display_safe`) in a code span in the text prompt and `_card_tool_label(_safe_tool_label(name))` on the card; WhatsApp plain text after the `Tool:` line (`build_approval_prompt`), in a prompt `display_safe_text` screens whole; Telegram `html.escape` inside `<code>`. Feishu, WeCom, iMessage and Weixin run with no decider, so the driver never dispatches a prompt to them. The tool's arguments (`tool_input`) are a separate per-channel choice this line does not make. `Renderer.dispatch` exposes the current call's identity as `current_tool_name` before `on_tool_call` fires, and the Slack wait-stream rollover keys on it through `slack/format.is_wait_identity` (`wait`, `kirocrew-core___wait`, `mcp__kirocrew-core__wait`; not `wait_for_ci`) with the title equality kept only as the fallback for a transport that sends no identity. `notice` rides `DONE` alone: it is the driver's **empty-turn verdict** (see "The empty-turn verdict" under Layer 2), the sentence a renderer posts where its bare placeholder would otherwise go when the turn closed with no assistant text, and `""` for a turn that produced text or was cancelled. `Renderer.dispatch` exposes it as `empty_turn_notice` before `on_done` fires, the same way it exposes `current_tool_name`. Kinds: `TEXT_CHUNK`, `THINKING`, `TOOL_CALL`, `TOOL_RESULT`, `PROMPT_CHOICE`, `COMPACTION`, `DONE`; the full set is `OUTPUT_KINDS` (a `frozenset`). `tool_status` rides `TOOL_RESULT` alone: it is the call's terminal outcome as the ACP layer reported it (`acp.types.TERMINAL_TOOL_STATUSES`: `completed` is success, anything else did not succeed), `""` on every other kind, and lets a renderer finalize a per-call card honestly instead of marking every call complete. `prompt_choice` is a **first-class** event, not generic "permission text": each renderer maps it to its native interactive widget.
+Channel-neutral output event with a `kind` plus per-kind payload fields (`text`, `tool_call_id`, `title`, `tool_kind`, `tool_name`, `mcp_server`, `tool_purpose`, `tool_status`, `options`, `request_id`, `context_usage_pct`, `stop_reason`, `notice`); `to_dict()` serializes them. `title` is DISPLAY copy, what a person should read for the call (the backend's own description when it sent one, else the client-derived `List files in src` / `Git status` from `kiro_crew.tool_call_title`, else the raw command), and is never a tool's identity; `tool_name` is the trusted programmatic identity from `_meta.kiro` (empty when the backend sent none) and is what any behaviour keyed on *which tool ran* reads. On `PROMPT_CHOICE`, `tool_name` and `mcp_server` (`_meta.kiro.mcpServerName`, the server the call is routed to) name the tool the request asks about. The driver sets them only from a pair `trusted_mcp_identity` accepts, one the ACP layer marked `mcp_identity_trusted` that names a server, and leaves both `""` for a built-in, a shell call or an unproven identity. `Renderer.dispatch` exposes them as `prompt_mcp_identity`, a `(server, tool)` tuple, for that one `on_prompt_choice` call and clears it after, so a renderer can show WHERE a tool runs: `email_send` alone does not say which mail server sends it, and the model writes the title. The Slack, Teams, Webex, WhatsApp and Telegram prompts draw that line from ONE helper, `messaging.renderer.mcp_identity_line(server, tool, fmt)`: `""` when no server is named, so the prompt is then byte-identical to one with no identity; otherwise each name is stripped, scrubbed (`redact_exfiltration_urls`, then `redact_credentials`), cut to `MCP_IDENTITY_NAME_MAX` (200) and only THEN handed to the channel's `fmt`, so the cut never splits an escape, giving `MCP tool: <server> / <tool>` with a blank tool reading `unnamed tool`. The names are the trusted identity, not model text, so Slack, Teams and Telegram do not run their display-form scan over them, and each channel applies its own formatting: Slack bold plus `escape_mrkdwn`; the Teams card backticks like its title (a backtick in the name swapped for the look-alike `ˋ`, whitespace collapsed); Webex `_safe_tool_label` (markdown control characters stripped, then `webex_display_safe`) in a code span in the text prompt and `_card_tool_label(_safe_tool_label(name))` on the card; WhatsApp plain text after the `Tool:` line (`build_approval_prompt`), in a prompt `display_safe_text` screens whole; Telegram `html.escape` inside `<code>`. Feishu, WeCom, iMessage and Weixin run with no decider, so the driver never dispatches a prompt to them. The tool's arguments (`tool_input`) are a separate per-channel choice this line does not make. `Renderer.dispatch` exposes the current call's identity as `current_tool_name` before `on_tool_call` fires, and the Slack wait-stream rollover keys on it through `slack/format.is_wait_identity` (`wait`, `kirocrew-core___wait`, `mcp__kirocrew-core__wait`; not `wait_for_ci`) with the title equality kept only as the fallback for a transport that sends no identity. `notice` rides `DONE` alone: it is the driver's **empty-turn verdict** (see "The empty-turn verdict" under Layer 2), the sentence a renderer posts where its bare placeholder would otherwise go when the turn closed with no assistant text, and `""` for a turn that produced text or was cancelled. `Renderer.dispatch` exposes it as `empty_turn_notice` before `on_done` fires, the same way it exposes `current_tool_name`. Kinds: `TEXT_CHUNK`, `THINKING`, `TOOL_CALL`, `TOOL_RESULT`, `TOOL_TITLE`, `PROMPT_CHOICE`, `COMPACTION`, `DONE`; the full set is `OUTPUT_KINDS` (a `frozenset`). `TOOL_TITLE` names a call a `TOOL_CALL` already announced by its `tool_call_id` and carries its refined `title` and `raw_title` (see `on_tool_title`). `tool_status` rides `TOOL_RESULT` alone: it is the call's terminal outcome as the ACP layer reported it (`acp.types.TERMINAL_TOOL_STATUSES`: `completed` is success, anything else did not succeed), `""` on every other kind, and lets a renderer finalize a per-call card honestly instead of marking every call complete. `prompt_choice` is a **first-class** event, not generic "permission text": each renderer maps it to its native interactive widget.
 
 ### `Renderer` ABC
 
@@ -702,6 +703,7 @@ Constructed with a `TransportCapabilities`. `dispatch(event)` routes each kind t
 - `on_text_continuation(text)` — the held end of the text before the last tool call (a `TEXT_CHUNK` with `continues_segment`). Default: joined like any chunk (`on_text_chunk`, skipped when empty), so a renderer that lays text end to end sees exactly the text it saw before the split. The Slack renderer overrides it to finish the narration in that call's step. `self.tool_text_held` (set by `dispatch` from `OutputEvent.text_held` before `on_tool_call`) says a continuation is still to come for the text before that call.
 - `on_tool_call(tool_call_id, title, tool_kind="", tool_purpose="")` — abstract; mirrors native uniform tool-call semantics (each call marks the previous task complete and starts a new in-progress task). `title` is display copy (see `OutputEvent`); a renderer that needs the tool's identity reads `self.current_tool_name`, never the title.
 - `on_tool_result(tool_call_id, tool_status)` — default no-op; a renderer overrides it to record a call's terminal outcome (`TERMINAL_TOOL_STATUSES`) and finalize that call's card honestly — a failed/cancelled/refused card naming the exact outcome instead of a blanket complete — rather than letting the next `on_tool_call`/`on_done` stamp every card complete. Not abstract, like `on_steer_consumed`: a channel with nowhere to show an outcome owes nothing. The Slack renderer overrides it to drive its per-call outcome cards.
+- `on_tool_title(tool_call_id, title, raw_title="")` — default no-op; the refined title of a call already announced (`TOOL_TITLE`), with `raw_title` as on `TOOL_CALL`. A renderer that shows per-call titles renames that call's card in place and opens no new one; one that does not keeps the first title, as before. The Slack renderer overrides it to rename the open card (see [slack-gateway](slack-gateway.md)).
 - `on_prompt_choice(options, request_id, tool_title="", tool_purpose="", tool_input="")`: abstract; renders the interactive approval/choice prompt. The three tool fields ride the `PROMPT_CHOICE` event itself and are REDACTED like every other model-authored string. `tool_input` is the tool's own arguments, so a renderer can show WHAT is being approved; `""` means the provider sent no detail, never "no arguments". All three are defaulted, so an implementation that ignores them still satisfies the contract, but a renderer should PREFER them: the alternative is a name remembered from an earlier `TOOL_CALL`, which belongs to whichever call came last, so a permission request not immediately preceded by its own titled call names a different tool. Purpose is paired to title by `tool_call_id` rather than by recency, because the permission payload carries no purpose of its own and pairing by arrival order is what puts tool A's name beside tool B's purpose. The trusted MCP identity is not an argument: a renderer reads `self.prompt_mcp_identity`, and the shared `mcp_identity_line` (see `OutputEvent`) words it.
 - `on_compaction(context_usage_pct)`, `on_done(stop_reason="")` — abstract.
 - `on_steer_consumed(summary="")` — default no-op; Discord/Telegram seal the pre-steer segment and open the continuation with a native acknowledgement chip using the parsed summary, without receiving raw protocol text. Webex records the fold and notes it on the final answer instead, because a separate message per fold would bury the answer and it has no spare edit to spend on one.
@@ -1232,24 +1234,54 @@ storing a transport built from a superseded document. Shutdown cancels any recon
 before closing the handles. Slack is not in that loop — its socket is
 host-managed. See [slack-gateway](slack-gateway.md) § Live configuration.
 
+**A channel with an in-place reconnect is offered the change first.** A
+descriptor may also declare `reconnect` (an async call taking the orchestrator
+and returning whether it applied the change) and `reconnect_keys` (live config
+keys that change what it connects with). When a reload touches only that
+channel's credentials or `reconnect_keys`, and no `boot_keys`
+(`registry.reconnects_in_place`), the applier does NOT close the channel inline:
+the tracked background task calls `reconnect` first and falls back to
+`restart_channel` when it returns False or raises. A change to `reconnect_keys`
+alone never restarts the channel, even when the reconnect declines, because
+those keys were live before. Discord is the one channel that declares it
+(`discord.gateway.reconnect_discord`, `reconnect_keys` = `allowed_thread_ids`,
+`allowed_channel_ids`). Under a per-client lock it reads the current config and
+credentials and re-IDENTIFYs the running `DiscordClient` only when the token or
+the intents differ, or when a fatal close stopped it. The intents are `DIRECT_MESSAGES`, plus `GUILD_MESSAGES` and
+`MESSAGE_CONTENT` while an allow-list or a thread the transport admitted at
+runtime names a server thread. The dispatcher, the transport, running turns and
+the HTTP session are kept; the old WebSocket, heartbeat and Gateway loop task
+are closed and awaited first. A new token is checked with `GET /users/@me`
+before anything is touched. A 401 or 403 keeps the old connection and records
+the reason. A token for another bot, an unreachable or erroring Discord, a
+cleared token, Discord turned off and a `channels` policy denial each return
+False, which means a restart. A refused thread intent (close 4014) reconnects
+DM-only and records the refusal, and a client that never reached READY gets its
+slash-menu publish and owner-DM reopen scheduled again.
+
 **`restart_required` is answered from schema metadata.** A channel save's
 response does not guess: `dashboard/channel_folders.py::channel_restart_required`
 asks `kiro_crew.config.schema.requires_restart(path)`, which reads the `restart`
 flag on that field's `_meta(...)` in its `config/sections_*.py` owner. A field nothing marks
 is live, so the settings page tells the truth instead of promising a restart the
 user does not need — which is how a panel trains people to restart for
-everything. A `.env` write always reports `True`, because the credential file is
-not watched.
+everything. A `.env` write reports `True` on a save that passes it as
+`env_updates`. Discord's passes none while the config watcher runs, because the
+watcher applies the token through the reconnect above or a channel restart.
+Slack's never passes it and answers `reconnect_required` instead.
 
 **The exceptions**, and they are the whole list:
 
 - **`whatsapp.db_path`** — the linked-device session store is opened once by the
   `neonize` client. Marked `restart=True`.
 - **Credentials in `config_dir/.env`** — bot tokens, app passwords and secrets
-  are not in `config.json` and the watcher does not read that file, so a
-  credential save reports a restart even for a channel whose config fields are
-  all live. A channel whose token also lives in a legacy `config.json` fallback
-  restarts through `boot_keys` when that copy changes.
+  are not in `config.json`. The watcher dispatches a `.env` change as a
+  synthetic `credentials.<KEY>` path (see [config](config.md)), but a channel
+  save that passes the write as `env_updates` still reports a restart for it.
+  Discord's reports one only when no config watcher runs, and Slack's answers
+  `reconnect_required` instead. A channel
+  whose token also lives in a legacy `config.json` fallback restarts through
+  `boot_keys` when that copy changes.
 
 ## Proactive sends (`send_message`'s `channel_type`)
 
@@ -4054,8 +4086,10 @@ owner-only grant, `slack.shared_access`, with its own routes
 
 **Transport (`kiro_crew/discord/`).** A concrete `MessagingTransport` over a
 pure-aiohttp Discord Gateway WebSocket client (`client_gateway.py`): identify with
-`DIRECT_MESSAGES` for DM-only installs; when `allowed_thread_ids` is non-empty,
-also request `GUILD_MESSAGES` and privileged `MESSAGE_CONTENT`. Heartbeat uses
+`DIRECT_MESSAGES` for DM-only installs; when `allowed_thread_ids` or
+`allowed_channel_ids` is non-empty, also request `GUILD_MESSAGES` and privileged
+`MESSAGE_CONTENT`. A later change to either list re-IDENTIFYs the live client
+in place (§ Connection fields restart ONE channel). Heartbeat uses
 the server interval with jitter (a missing, non-finite or non-positive interval
 takes Discord's 41.25s; the rest is clamped to 1-300s),
 resume via `resume_gateway_url`/sequence tracking, exponential-backoff
@@ -4211,7 +4245,12 @@ without rolling back the completed in-memory rotation.
 
 Every turn closes with a **one-line footer** as Discord subtext (`-#`) on the
 final segment, rendered by the shared `format_turn_status` (see "Turn-status
-surfacing" above): elapsed time plus the context-usage chip. The clock starts when
+surfacing" above): elapsed time plus the context-usage chip. With
+`discord.show_timing_footer` false (read per turn by `_render_config`, like
+Slack's `slack.show_timing_footer`) `_with_turn_footer` returns the text unchanged:
+no footer is posted, the components still ride the last segment, and `_limit()`
+still holds back the footer's headroom, so a long reply splits at the same places
+either way. The clock starts when
 the renderer is constructed rather than at `on_turn_start`, because the cold start
 that spawns and handshakes a session is time the user waited. The usage figure is
 read at turn END from the session provider the dispatcher hands over
@@ -4337,11 +4376,39 @@ until the owner writes into the DM.
 `steer` are deliberately absent from the menu: they are message PREFIXES, and a
 menu tap sends the bare token with no message body to act on.
 
-The client accepts interaction types `APPLICATION_COMMAND` and
-`MESSAGE_COMPONENT` (`_HANDLED_INTERACTIONS`); PING, autocomplete and modal
+The client accepts interaction types `APPLICATION_COMMAND`, `MESSAGE_COMPONENT`
+and `APPLICATION_COMMAND_AUTOCOMPLETE` (`_HANDLED_INTERACTIONS`); PING and modal
 submit are dropped at the dispatch boundary, since each needs its own callback
 shape inside Discord's ~3s deadline and a handler that received one without
-knowing how to answer would leave the client spinning. Every command reply is
+knowing how to answer would leave the client spinning.
+
+**Autocomplete.** The `agent`, `model`, `sessions` and `bot` options carry
+`autocomplete: true` (`_COMMAND_OPTIONS`). Discord then sends a type-4
+interaction per keystroke, naming the focused option (`focused_option`), whose
+only valid answer is callback 8 (`APPLICATION_COMMAND_AUTOCOMPLETE_RESULT`) with at
+most 25 choices, within the same ~3s: no deferral, no message. `on_interaction`
+hands it to `_on_autocomplete_interaction` before every other gate, because the
+REST admission lookup, the governance read and the guild refusal MESSAGE that
+follow could each break that answer; only the DM pairing write (an allowed caller in a DM) runs ahead of it, so the answer's rate-limit re-check can admit the DM. Its own gates are the command's, read without
+the REST re-admission of a thread not yet on the roster: an allowed caller, a DM or
+an allow-listed thread Discord confirms is a thread, the inbound ceiling, then the
+outbound ceiling before a non-empty answer, all inside a 2s budget
+(`_AUTOCOMPLETE_BUDGET_SECS`), then the rosters once more with no await before the
+POST. `sessions` and `bot` suggest only to the owner and only in a DM, from the
+same eligibility their pickers apply (`DiscordSessionResume.suggestions`), and each
+lookup is SEL-audited like a picker listing. EVERY refusal is an empty choice list:
+a denied caller, a denied channel, a governance deny, a failed or slow lookup. An
+empty answer names no destination (it discloses nothing); a non-empty one names the
+channel and passes the caller check as `caller_permitted`, so a rate-limit wait
+re-reads the owner rule too. A `sessions`/`bot` choice's value is
+`session-key:<key>` rather than its title, because the title is shortened and
+redacted for display and the shortened text does not match the search it came from;
+`show_picker` and `show_bot_picker` resolve that key against the picker's own
+eligible list (a `!bot` key binds at once, a `!sessions` key offers that one
+session) and never echo it. A suggestion only fills the option in: the command
+that is then sent runs every gate below.
+
+Every command reply is
 private, because a slash command is invocable from an approved thread every member
 can read, and these replies carry runtime state or a model list. The first response
 is `DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE` (5) with the EPHEMERAL flag (`1 << 6`), so a
@@ -4386,9 +4453,15 @@ credential-issuance audit path -- there is nothing to gate. Do not add them for
 parity's sake: parity is measured against what a channel should be able to do,
 not against the widest channel's command list.
 
-`model` is button-only and takes the same sink, so `/model` posts a picker only
-its caller can see and press, in a thread as in a DM; `!model` posts it in the
-channel. A press is acked with `DEFERRED_UPDATE_MESSAGE` as every press is, and its
+`model` takes the same sink, so `/model` posts a picker only its caller can see
+and press, in a thread as in a DM; `!model` posts it in the channel. A typed
+argument (`!model <name>`, or a `/model` suggestion) switches only when it exactly
+names a row of this session's advertised list, by id or label with case ignored,
+or `auto` for the Auto row (`_named_model`); anything else shows the picker with a
+line saying the name was not on it, so a guessed id never reaches `set_model`.
+Admission ran before routing's awaits, so the typed switch re-reads the inbound
+ceiling and then the caller and thread rosters immediately before `_apply_model`,
+and records `discord.set_model` in the SEL either way. A press is acked with `DEFERRED_UPDATE_MESSAGE` as every press is, and its
 result edits the picker through the PRESS's own token
 (`PATCH /webhooks/{app}/{press token}/messages/@original`, whose original is the
 message the button sits on): the one route that reaches an ephemeral message, so
@@ -4430,7 +4503,7 @@ to it:
 | `discord/transport_dispatch_origin.py` | `_QueuedOrigin`, its sender key, owner token and queue-entry spelling, `_CHANNEL` and `_CHAT_TYPE_THREAD` |
 | `discord/transport_dispatch_model_picker.py` | the `!model` picker: `_model_choices`, the `_ModelPicker` record and its prune, `_handle_model` and `_apply_model` (the tables stay on the dispatcher) |
 | `discord/transport_dispatch_commands.py` | `!link`, `!unlink`, `!compact` and `!status`, the step that applies `!temporary` / `!incognito` through `privacy_mode` (`_apply_privacy_mode`, which refuses a mode that would tighten the execution record of a conversation that ran in its dashboard tab) and its refusals, the channel reply sink and the single-reply command router |
-| `discord/transport_dispatch_interactions.py` | `on_interaction` (every button prefix and the slash-command gate), `_interaction_actionable`, `_on_command_interaction` and its ephemeral reply sink: every interaction response, and the one DM-pairing write |
+| `discord/transport_dispatch_interactions.py` | `on_interaction` (every button prefix and the slash-command gate), `_interaction_actionable`, `_on_command_interaction` and its ephemeral reply sink, `_on_autocomplete_interaction` (slash-option type-ahead, answered with callback 8 before every other gate): every interaction response, and the one DM-pairing write |
 | `discord/transport_dispatch_midturn.py` | `_handle_busy`: steer or queue a mid-turn message; `_handle_resumed_busy`: hand a message into a busy RESUMED dashboard session to that slot's own machinery |
 | `discord/transport_dispatch_spawn_approval.py` | `deliver_spawn_approval` and its destination and actionability checks |
 | `discord/transport_dispatch_ledger.py` | `_record_turn` and `_persist_turn` (the shared pipeline's `record` adapter), `_session_restricted` (its `restricted` adapter), `_blocks_memory_reads` (its `blocks_reads` adapter) and `_uploads_restricted` (the upload ceiling `handle_message`'s renderer reads) |
@@ -4468,7 +4541,7 @@ byte for byte as it did in one module. New work of an owner's kind goes to that 
 |---|---|
 | `renderer_text.py` | the text transforms applied to model output: the `[OPTIONS:]` and steering-marker strips, the delivered form a cut is graded through, the buried-image-reference check, subtext, the steer-chip neutralizer and the platform-cap slicer |
 | `renderer_components.py` | Discord message components: the button styles and layout limits, `build_option_components` and `build_model_components` (the dispatcher's model picker and spawn-approval prompt build from here too) |
-| `renderer_approval.py` | `DiscordApprovalDecider` and `_APPROVAL_TIMEOUT_S`: the wait an Approve or Deny press ends |
+| `renderer_approval.py` | `DiscordApprovalDecider` and `_APPROVAL_TIMEOUT_S`: the wait an Approve or Deny press ends, `agent.tool_approval_timeout_secs` through `dashboard.turn_dispatch.tool_approval_timeout_secs` (as Slack reads it) unless a test pins a number |
 | `renderer_status.py` | the typing indicator, the phase ladder's emoji vocabulary and `_MessageReactionSink`, the reasoning gate, the tool footer and the turn footer |
 | `renderer_live.py` | chunk intake: steer-marker detection (each complete marker is handed to `on_steer_consumed`), the steer chip, table conversion for delivery, the canonical `[OPTIONS:]` take and the segment text |
 | `client_rest.py` | the REST request ladder (`_api_request`): bucket pre-emption, the GLOBAL hold, the 429 and 5xx back-offs, the invalid-request breaker, the route key, `DiscordApiResult` and the shared session |
@@ -4581,9 +4654,16 @@ re-link carrying a refreshed admission is left in place.
   `config.json` under `discord`. Every field applies live, so
   `restart_required` is false for a config-only save: the allow-lists are pushed
   into the transport by `DiscordTransport.reconfigure` and the render toggles and
-  thresholds are re-read per turn, while a token change reconnects the Discord
-  channel alone rather than the gateway. Promising a restart the user does not
-  need is how a settings page trains people to restart for everything.
+  thresholds are re-read per turn, while a token change reconnects the running
+  Discord client in place (§ Connection fields restart ONE channel), so a token
+  save reports `restart_required: false` too while the config watcher runs.
+  After the write the save runs `discord.gateway.reconcile_after_save` outside
+  the config lock, bounded at 20s, so a save that changed nothing on disk still
+  retries intents Discord refused earlier. The response then carries
+  `reconnect_error`: what the running bot could not take (a rejected token,
+  refused thread intents), never a token value, rendered by `DiscordPanel` as a
+  partial `ErrorNotice`. Promising a restart the user does not need is how a
+  settings page trains people to restart for everything.
   Setting OR clearing the token also purges the legacy `discord.bot_token`
   field from `config.json`, and the commit order is config.json FIRST then
   `.env`, matching the Telegram and Webex saves: the gateway falls back to that

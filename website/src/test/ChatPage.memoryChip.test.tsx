@@ -74,6 +74,7 @@ import { __resetComposerSendHoldsForTests, isComposerSendHeld, takeComposerArriv
 // same reason the app does. (The miss degrades safely to the surface-free
 // sentence, which is what the unregistered-surface case below asserts.)
 import '../surfaces/builtins'
+import { clickOptimizeAsync } from './optimizeRow'
 
 beforeEach(() => {
   // runMemorySwitch records each hand-over; a chain left by an earlier test
@@ -241,7 +242,7 @@ describe('memory chip above the composer', () => {
       const store = await renderWith({ messages: [] })
       const composer = () => screen.getAllByRole('textbox').at(-1)! as HTMLTextAreaElement
       fireEvent.change(composer(), { target: { value: 'rough prompt' } })
-      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' })) })
+      await clickOptimizeAsync()
 
       // While the optimize runs the chip is inert: a switch now would carry
       // 'rough prompt' and send the rewrite to the session it deletes.

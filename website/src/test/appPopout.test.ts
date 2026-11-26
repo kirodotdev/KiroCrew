@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { matchRoutes } from 'react-router-dom'
-import { popoutWindowName, buildPopoutUrl, openPopout, __resetForTests } from '../utils/appPopout'
+import { popoutWindowName, buildPopoutUrl, navigatePopout, openPopout, registerPopout, __resetForTests } from '../utils/appPopout'
 import {
   APP_POPOUT_PREFIX,
   appRouteOf,
@@ -186,5 +186,35 @@ describe('popoutWindowName', () => {
   it('does not collide with the chat, artifact or terminal pop-out names', () => {
     expect(popoutWindowName('/chat')).not.toMatch(/^mc-popout-/)
     expect(popoutWindowName('/artifact')).not.toMatch(/^mc-artifact-popout-/)
+  })
+})
+
+describe('navigatePopout', () => {
+  it('hands the path to the pop-out registered for that route, and to no other', () => {
+    __resetForTests()
+    const channels: { posted: unknown[]; onmessage: ((e: { data: unknown }) => void) | null }[] = []
+    vi.stubGlobal('BroadcastChannel', class {
+      posted: unknown[] = []
+      onmessage: ((e: { data: unknown }) => void) | null = null
+      constructor() { channels.push(this) }
+      postMessage(msg: unknown) { this.posted.push(msg) }
+      close() {}
+    })
+    try {
+      const onNavigate = vi.fn()
+      const unregister = registerPopout('/apps/tickets', onNavigate)
+      navigatePopout('/apps/tickets', '/apps/tickets?url=x')
+      const [ch] = channels
+      expect(ch.posted).toContainEqual({ t: 'navigate', id: '/apps/tickets', path: '/apps/tickets?url=x' })
+      // The channel does not deliver to its sender: replay what another window posts.
+      ch.onmessage?.({ data: { t: 'navigate', id: '/apps/other', path: '/apps/other?url=x' } })
+      expect(onNavigate).not.toHaveBeenCalled()
+      ch.onmessage?.({ data: { t: 'navigate', id: '/apps/tickets', path: '/apps/tickets?url=x' } })
+      expect(onNavigate).toHaveBeenCalledWith('/apps/tickets?url=x')
+      unregister()
+    } finally {
+      __resetForTests()
+      vi.unstubAllGlobals()
+    }
   })
 })

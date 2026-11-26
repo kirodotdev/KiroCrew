@@ -1213,9 +1213,7 @@ async def _start_next_queued_turn(
         row_cls = json.dumps({"cronLabel": cron_label})
     elif is_app_message:
         # The ONE row shape both delivery paths share (`app_inject_row`):
-        # plain CSS cls, identity in meta — a JSON cls would make
-        # `_prepare_messages` replace the stored meta on HTTP rebuild,
-        # dropping `injectKind` and the row's collapse/fold exemptions.
+        # plain CSS cls, identity in meta.
         row_cls = app_inject_row(app_label or "app")[1]
     elif is_resource_wake:
         row_cls = resource_inject_row("", "")[1]

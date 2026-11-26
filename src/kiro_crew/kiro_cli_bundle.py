@@ -71,6 +71,20 @@ KIRO_CLI_LOGIN_COMMAND = f"kiro-cli{_LOGIN_TAIL}"
 # wrong tier and only discover it when models are missing.
 KIRO_CLI_SSO_LOGIN_COMMAND = f"kiro-cli{_SSO_LOGIN_TAIL}"
 
+# Every character PowerShell's tokenizer reads as a single quote: the ASCII apostrophe
+# and the four typographic ones (U+2018 to U+201B). Any of them ends a single-quoted
+# string, and a doubled one is that character once.
+_POWERSHELL_SINGLE_QUOTES = frozenset("'\u2018\u2019\u201a\u201b")
+
+
+def powershell_single_quoted(text: str) -> str:
+    """*text* as a PowerShell single-quoted string, each single-quote character doubled.
+
+    It lives in this stdlib-only leaf so :func:`login_commands` can use it as well.
+    """
+    body = "".join(ch * 2 if ch in _POWERSHELL_SINGLE_QUOTES else ch for ch in text)
+    return f"'{body}'"
+
 
 def bundled_kiro_cli_entry(platform_name: str) -> str:
     """Return the executable staged for *platform_name*.
@@ -170,10 +184,9 @@ def login_commands(
             # bundled exe. ``Set-Item`` rather than ``$env:`` because an outer
             # interactive PowerShell interpolates ``$env:`` inside the double
             # quotes before powershell.exe ever sees it.
-            quoted = binary.replace("'", "''")
             prefix = (
                 'powershell.exe -NoProfile -Command "Set-Item Env:KIRO_NO_AUTO_UPDATE 1; '
-                f"& '{quoted}'"
+                f"& {powershell_single_quoted(binary)}"
             )
             suffix = '"'
         else:

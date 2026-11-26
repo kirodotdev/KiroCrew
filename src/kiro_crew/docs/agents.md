@@ -225,6 +225,11 @@ its button reads **Add** and the server's name **to this project**. Only a Kiro 
 loads, so the agent is told to use Kiro Crew's own list instead. On Linux, the sandbox seals only a file that already exists when the chat
 starts.
 
+An agent cannot write an installed app's `app.json` either
+(`~/.kiro/crew/apps/<name>/app.json`): its file tools refuse it and the
+sandbox holds it read-only. Only installing or updating the app changes it, and an
+agent that needs a server asks with `request_server`.
+
 If a server's tools are missing from sessions, check that tab first. A server
 whose program is not found on this computer is dropped from the spec at the
 rebuild, and the gateway log names it (`Dropping MCP server ...: command not

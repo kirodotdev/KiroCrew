@@ -1538,7 +1538,7 @@ _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/mcp_gateway/session_servers.py": [("mcp_overlay_pin", "unknown")],
     # The start refusal for a contested name on the hosts that read their servers
     # from the session MCP read (R-SPEC-13).
-    "kiro_crew/acp/session_mcp.py": [("session_start_spec_check", "acp")],
+    "kiro_crew/acp/session_mcp_spec_check.py": [("session_start_spec_check", "acp")],
     # The spawn roster's tool-less mark, judged on the claimant a spawn of the name runs.
     "kiro_crew/mcp_tools/spawn_parts/schemas.py": [("spawn_roster", "subagent")],
 }

@@ -755,10 +755,16 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
     )
     # When --port auto was requested, read the OS-assigned ephemeral port
     # back from the runner so subsequent URL building and the READY line
-    # use the real bound port.
+    # use the real bound port. It is the port the gateway reserved
+    # (``served_port``), not the runner's first address: the runner holds other
+    # listeners too, in an order a rebind changes.
     if dashboard_port == 0 and self._dashboard_runner is not None:
+        app = getattr(self._dashboard_runner, "app", None)
+        served = app.get("served_port") if app is not None else None
         addresses = self._dashboard_runner.addresses
-        if addresses:
+        if isinstance(served, int) and served:
+            self._dashboard_port = served
+        elif addresses:
             self._dashboard_port = addresses[0][1]
     if self.slack and self.dashboard_state:
         self.dashboard_state.slack_client = self.slack

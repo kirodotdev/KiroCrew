@@ -382,6 +382,8 @@ function ChatSidebarBody({
   const recentRank = useMemo(() => computeRecentRank(localSlots, recentTintCount), [localSlots, recentTintCount])
   // Settings → Display → Sidebar. Only a literal `false` hides the per-row dot.
   const showUnreadDot = mcCfg?.dashboard?.show_unread_dot !== false
+  // Same page. Only a literal `true` starts each row's linked-items strip open.
+  const expandLinkedItems = mcCfg?.dashboard?.expand_linked_items === true
 
   const {
     folderSortRead, folderSortMode, folderCompare: folderModeCompare, folderReorderable: folderModeReorderable,
@@ -942,13 +944,13 @@ function ChatSidebarBody({
   const guideView = useGuide()?.view
   const guideOnRowControl = guideStepOnRowControl(guideView?.ownedHere && !guideView.needsEnter ? guideView.step : null)
   const rowShell: RowShell = useMemo(() => ({
-    connected, mode, defaultAgent, installedAgents: tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot,
+    connected, mode, defaultAgent, installedAgents: tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot, expandLinkedItems,
     // A session row on any touch screen (an iPad too) gets the single ⋯ menu,
     // not the overlay cluster.
     isMobile: isMobile || isTouchDevice,
     dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort, manualReorderOff, guideOnRowControl,
   }), [
-    connected, mode, defaultAgent, tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot,
+    connected, mode, defaultAgent, tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount, showUnreadDot, expandLinkedItems,
     isMobile, isTouchDevice, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex,
     manualSort, manualReorderOff, guideOnRowControl,
   ])

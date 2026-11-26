@@ -171,7 +171,7 @@ def _parse_env_file(path: str) -> dict[str, str]:
         return {}
     try:
         raw = Path(path).read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         logger.warning("stub --env-file unreadable; dropping env block")
         return {}
     return _parse_env_json(raw)

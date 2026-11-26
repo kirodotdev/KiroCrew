@@ -191,7 +191,8 @@ def declaring_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
 
 
 def _gateway_moves_the_app_data(crew: Path) -> None:
-    """What an app update does from the gateway's namespace: a new app folder, same data."""
+    """What a keep-data uninstall or an install over kept data does from the gateway's
+    namespace: a new app folder, same data (an update leaves the folder in place)."""
     apps = crew / "apps"
     (apps / "demo").rename(apps / ".demo-update-old")
     (apps / "demo").mkdir()

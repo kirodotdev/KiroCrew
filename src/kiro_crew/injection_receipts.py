@@ -576,7 +576,11 @@ def write_line(line: dict[str, Any]) -> None:
             try:
                 line = _cap_stage_fields(line, stamp.astimezone(timezone.utc))
             except Exception:  # noqa: BLE001 -- an unbounded field is never written
-                logger.warning("injection receipt: stage log unreadable", exc_info=True)
+                logger.warning(
+                    "injection receipt: could not read or rewrite the stage log; dropped %s",
+                    ", ".join(k for k in _CAPPED_KINDS if k in line),
+                    exc_info=True,
+                )
                 line = {k: v for k, v in line.items() if k not in _CAPPED_KINDS}
         if line.get("phase") in OUTCOME_KINDS and line["phase"] not in line:
             return
@@ -586,7 +590,11 @@ def write_line(line: dict[str, Any]) -> None:
         with open(path, "a", encoding="utf-8", opener=owner_only_opener_for(path)) as fh:
             fh.write(text + "\n")
     except Exception:  # noqa: BLE001 -- an observation must never fail the turn
-        logger.warning("injection receipt: could not append the line", exc_info=True)
+        logger.warning(
+            "injection receipt: could not append the %s line",
+            line.get("phase") or "receipt",
+            exc_info=True,
+        )
 
 
 def schedule_write(line: dict[str, Any] | None) -> None:

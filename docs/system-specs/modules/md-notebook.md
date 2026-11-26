@@ -128,7 +128,7 @@ masks nothing in any build, so nothing waits there. While one is alive the token
 off; every later start of the backend checks again. Spawn prep runs only the first move
 (`sandbox_staging._migrate_md_notebook_legacy_state`) and, until the second seals, creates
 the empty `data/state/` before each spawn so that every sandbox of this build masks it. It
-never makes a `data/` while an install, update or keep-data uninstall holds the tree at
+never makes a `data/` while an install or keep-data uninstall holds the tree at
 `apps/.md-notebook-data-tmp/` (the restore's rename would land inside it); the generic
 materialiser makes `state/` inside the moved-aside tree then, and the move itself waits.
 Adoption waits too: APPLY swaps the record onto its repository only once the move has

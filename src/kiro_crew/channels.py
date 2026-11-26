@@ -50,7 +50,7 @@ from kiro_crew.config.loader import (
     CRED_WECOM_SECRET,
     CRED_WEIXIN_TOKEN,
 )
-from kiro_crew.discord.gateway import maybe_start_discord
+from kiro_crew.discord.gateway import maybe_start_discord, reconnect_discord
 from kiro_crew.feishu.gateway import maybe_start_feishu
 from kiro_crew.imessage.gateway import maybe_start_imessage
 from kiro_crew.messaging.registry import ChannelDescriptor
@@ -92,6 +92,11 @@ def builtin_channel_descriptors() -> tuple[ChannelDescriptor, ...]:
             boot_keys=frozenset({"enabled", "bot_token"}),
             credentials=(CRED_DISCORD_BOT_TOKEN,),
             credential_fallbacks=((CRED_DISCORD_BOT_TOKEN, "bot_token"),),
+            # A new .env token, and an allow-list change that moves the bot
+            # between DM-only and server-thread intents, re-IDENTIFY the live
+            # client instead of restarting the channel.
+            reconnect=reconnect_discord,
+            reconnect_keys=frozenset({"allowed_thread_ids", "allowed_channel_ids"}),
         ),
         ChannelDescriptor(
             channel_type="webex",

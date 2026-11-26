@@ -908,7 +908,7 @@ def ui_auto_tier() -> UiAutoTier:
     well-formed single-step plan are kept; ``search-only`` and ``deny`` ones are
     never guidable.
     """
-    from kiro_crew.ui_index_load import parse_index_text
+    from kiro_crew.ui_index import parse_index_text
 
     empty = UiAutoTier("", {}, {})
     try:
