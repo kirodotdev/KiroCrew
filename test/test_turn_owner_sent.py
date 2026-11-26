@@ -591,6 +591,30 @@ def _conversation(state, key: str = "s1"):
     return slot
 
 
+def _rewinds_own_row(slot):
+    """A middleware that makes *slot*'s first row the requester's own.
+
+    Only a row's author may rewind to it (``shared_crew.edit_rule``), so each
+    caller rewinds a row it wrote. The harness's owner publishes no actor, so the
+    owner's local operator principal is published for it, as token auth does.
+    """
+    from kiro_crew.shared_crew.contracts import ACTOR_REQUEST_KEY, ActorContext, Transport
+    from kiro_crew.shared_crew.identity import local_operator_principal, viewer_principal
+
+    @web.middleware
+    async def _mw(request: web.Request, handler):
+        if ACTOR_REQUEST_KEY not in request:
+            request[ACTOR_REQUEST_KEY] = ActorContext(
+                principal=local_operator_principal(request["user"]),
+                request_id="req",
+                transport=Transport.HTTP,
+            )
+        slot.messages[0]["meta"]["author"] = viewer_principal(request).to_public_dict()
+        return await handler(request)
+
+    return _mw
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("subject", "expected"), [(None, True), (TEAMMATE, True), (RELAY_TEAMMATE_KIND, True)]
@@ -633,8 +657,10 @@ async def test_a_rewind_passes_the_mark_to_its_dispatch(
     state = _make_state(tmp_path)
     slot = _conversation(state)
     state.sessions._session_map.get = MagicMock(return_value="")
+    app = _app(state, subject)
+    app.middlewares.append(_rewinds_own_row(slot))
 
-    async with TestClient(TestServer(_app(state, subject))) as client:
+    async with TestClient(TestServer(app)) as client:
         resp = await client.post(
             "/api/chat/slots/s1/rewind",
             json={"at_message_index": 0, "content": "edited first question"},
