@@ -855,11 +855,12 @@ test("no stale warning when the port belongs to a configured remote crew", async
 });
 
 // A gateway this app found already serving and adopted, as it is when a desktop
-// update relaunches over a gateway it did not spawn. `command` is what ps reports
-// for the listener; under /virtual/resources/backend-dist it runs from this
-// app's own bundle. `shutdownStatus` is what POST /api/shutdown answers. When
-// the gateway accepts the stop it releases the port and exits; `rebindPid`
-// models a service manager starting it again from the same files.
+// update relaunches over a gateway it did not spawn. `command` is what ps (on
+// Windows, PowerShell, with netstat naming the listener) reports for it;
+// under /virtual/resources/backend-dist it runs from this app's own bundle.
+// `shutdownStatus` is what POST /api/shutdown answers. When the gateway
+// accepts the stop it releases the port and exits; `rebindPid` models a
+// service manager starting it again from the same files.
 function adoptedGatewayHarness({
   command = "/virtual/resources/backend-dist/bin/python -m kiro_crew gateway",
   gatewayVersion = "0.7.0",
@@ -966,6 +967,9 @@ function adoptedGatewayHarness({
         callback(null, "n/virtual/kirocrew-home/gateway.lock\n", "");
       } else if (file.endsWith("lsof")) {
         callback(null, listenerProbe(), "");
+      } else if (file.endsWith("netstat.exe")) {
+        const rows = listenerProbe().split("\n").filter(Boolean);
+        callback(null, rows.map((pid) => `  TCP    127.0.0.1:5476    0.0.0.0:0    LISTENING    ${pid}\r\n`).join(""), "");
       } else if (args.includes("ppid=")) {
         callback(null, String(parentPid), "");
       } else {
@@ -1063,6 +1067,28 @@ test("an adopted bundled gateway its service manager starts again fails the upda
 
   assert.equal(state.shutdowns.length, 1);
   assert.deepStrictEqual(state.listenPids, [456], "the restarted gateway runs from the same files");
+});
+
+test("on Windows the update stop asks an adopted gateway from this app's bundle to stop, and refuses while it runs", async () => {
+  const executable = "/virtual/resources/backend-dist/kirocrew-backend/python.exe";
+  const { supervisor, state } = adoptedGatewayHarness({
+    platform: "win32",
+    command: `"${executable}" ${executable} -m kiro_crew gateway --no-open --port 5476`,
+    shutdownStatus: 403,
+  });
+  assert.equal(await supervisor.start(), true);
+  assert.equal(state.dialogs.length, 0, "the launch's stale check still cannot tell on Windows");
+
+  await assert.rejects(supervisor.stopForUpdate(), {
+    code: "gateway-still-running",
+    stopCommand: "kirocrew stop --port 5476",
+  });
+
+  assert.deepStrictEqual(state.shutdowns, [
+    { method: "POST", path: "/api/shutdown", secret: "boot-secret" },
+  ]);
+  assert.deepStrictEqual(state.signals, [], "Windows has no pid-pinned stop");
+  assert.deepStrictEqual(state.listenPids, [123], "the gateway is left running");
 });
 
 test("an adopted gateway from another install is left alone by the update stop", async () => {
