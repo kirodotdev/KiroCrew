@@ -276,20 +276,17 @@ _MEMBER_BRIEFING_ITEM_NO_FILE_TOOLS = _prompt("conductor.briefing_item_no_file_t
 # Item 7 — the crewmate's own Dashboard page, appended to EVERY briefing variant:
 # the gateway renders the tab from the instance store, independent of layer 4.
 #
-# The SUBAGENT name is a WIRE STRING (kiro-cli reads ``<agents dir>/<name>.json``);
-# a mismatch fails the turn. It is spelled out rather than read from
-# ``agent_files.DASHBOARD_MANAGER_AGENT_NAME`` because owners here import no Kiro
-# Crew module at module scope (``TestPlacement``); a test guards it:
-# ``test_dashboard_manager_agent.py::test_the_base_prompt_names_the_agent_the_installer_writes``
-#
-# THE CREWMATE drives its own page: ``_MEMBER_PANEL_GRANTS`` grants it every tool
-# this item names. The crewmate is also the only one of the two whose identity the
-# panel's tools can resolve: they go through ``mcp_core.require_strict_session_key``,
+# THE CREWMATE drives its own page, in its own thread: ``_MEMBER_PANEL_GRANTS``
+# grants it every tool this item names, and it is the only caller whose identity the
+# panel's tools can resolve. They go through ``mcp_core.require_strict_session_key``,
 # which resolves the CALLING session and never a parent through a ``/proc`` walk,
 # because that walk is how a subagent would reach a page that is not its own. A
-# member DM session has that identity; a subagent is a weaker place to stand. So the
-# subagent is extra capacity for a long page job, and the crewmate's own hands are
-# the path.
+# member DM session has that identity. A subagent has no dashboard slot, so the
+# gateway refuses each of its dashboard calls (``no_dashboard_slot``,
+# ``agent_panel_publish._resolve_publishing_crew``). The item therefore names no
+# subagent for page work, the ``kirocrew-dashboard-manager`` one included; a test
+# guards it:
+# ``test_dashboard_manager_agent.py::test_no_bot_prompt_sends_a_page_job_to_a_subagent``
 _MEMBER_DASHBOARD_ITEM = _prompt("conductor.dashboard_item")
 
 
