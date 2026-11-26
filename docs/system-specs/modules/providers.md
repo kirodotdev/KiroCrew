@@ -1656,7 +1656,10 @@ A delivery holds one envelope per slot, each with its own acknowledgment. A turn
 that carries member essentials binds those (`ESSENTIALS_SLOT`, the default). Any
 turn that carries the `[REPLY FORMAT RULES]` block, on a provider that reports its
 compaction (`LLMProvider.reports_compaction`), binds the block in `RULES_SLOT`, so
-the engine is not sent the rules on every message, in a member's chat too. A
+the engine is not sent the rules on every message, in a member's chat too. The
+same turn binds its `[RUNTIME]` line in `RUNTIME_SLOT` and its `[PROJECT]` line
+in `PROJECT_SLOT`; a build that does not bind one withdraws its candidate
+(`EssentialDelivery.withdraw`), keeping the acknowledgments. A
 forced bind drops only its own slot's acknowledgment; invalidation and a failed
 attempt drop every slot's. The rules bind is forced only by `needs_reinjection` (see
 [context-management](../../architecture/context-management.md)). It shares the

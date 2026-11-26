@@ -350,12 +350,12 @@ it adds:
 
 | Block | Source | When |
 |---|---|---|
-| `[RUNTIME]` refresh | trusted `runtime_source` | every follow-up; a channel turn also re-asserts the diff-block mandate |
+| `[RUNTIME]` refresh | trusted `runtime_source` | every follow-up; a channel turn also re-asserts the diff-block mandate. At the wire the line is sent as the reply-format rules are (below), in `RUNTIME_SLOT`: a turn on another surface changes its text, so it goes out; the diff-block mandate goes out on every channel turn |
 | `[ACTIVE MODEL]` refresh | the live provider's `served_model` | every follow-up on a goose session that reports a model, because a live `set_model` keeps the conversation and the session-start line would name the old model. Inside one turn, a retry loop that switches the model before re-sending the prompt it built (`stream_and_collect`, the sub-agent ladder) sends it through `ActiveModelLine` (`llm_helpers_parts/model_fallback.py`), which rewrites the line to the model now serving. The dashboard restates it the same way after its start-of-turn restore probe and Jev routing (`_turn_dispatch_gates`); its throttle swap re-queues the user's text, so that prompt is rebuilt |
 | Channel history | `channel_history.context_for` | group-channel turns, except a thread turn that carries `[SLACK THREAD REPLIES]` |
 | `[SLACK THREAD CONTEXT]` | thread parent / metadata | Slack threads |
 | `[SLACK THREAD REPLIES]` | `slack/thread_replies.py`, fenced as untrusted | a Slack thread turn with replies it has not seen |
-| `[PROJECT]` | the slot's project dir | every turn, `project` group |
+| `[PROJECT]` | the slot's project dir (`turn.project_line`) | every turn, `project` group. At the wire the line is sent as the reply-format rules are (below), in `PROJECT_SLOT`: another project changes its text, so it goes out |
 | `[BOARD]` | slot board tags, sanitized ids | slot carries tags |
 | `[DASHBOARD]` | `dashboard_agentic.root_session_dashboard_block` → `session_turn_block`, the Bot block keyed by the session's own store key: the page line (and, on a board page, the board lines), no field-write lines (no `kirocrew-panel`) | a dashboard chat that is a ROOT session (`is_root_session`) running the conductor template (conductor mode; not a Bot, `agent_kind != "member"`), not a Bot DM, and whose page has been ADOPTED (a Bot's block rides in its member section instead) |
 | `[RESOURCES]` | `resource_status.probe` | host memory tight/critical, or the agent slice within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`, or a macOS kernel memory-pressure level of WARN or worse |
@@ -398,6 +398,7 @@ after the client is ready.
 | `/clear`, `/compact`, a compaction Kiro Crew starts, a cancel | invalidated before the send (`prepare_command`, `invalidate`) |
 | a native clear, a compaction or an agent switch seen on a turn's stream | `RECEIPT_INVALIDATING_EVENTS` |
 | the rules' text changed | another digest |
+| for `[RUNTIME]` and `[PROJECT]`: another surface or project | another digest |
 | a compaction in a turn the agent started by itself | the bind is forced (below) |
 
 In a chat with a crew member the two slots are acknowledged apart and voided
@@ -406,6 +407,14 @@ both, and a forced bind
 drops only its own slot, so re-sending the member's essentials on a resume of
 the same conversation does not re-send the rules, as it would not in a chat with
 no member.
+
+The `[RUNTIME]` and `[PROJECT]` lines are bound beside the rules, each in its own
+slot (`RUNTIME_SLOT`, `PROJECT_SLOT`, because a slot takes out one contiguous
+span), on the same turns and with the same forcing, so a warm follow-up on the
+dashboard is 416 bytes plus the project path shorter. A build that binds no line (a turn that is
+not interactive, a harness outside the set) withdraws the slot's candidate, so
+the line goes out as built. `[ACTIVE MODEL]` is not bound: its one harness,
+goose, is outside the set.
 
 The bind is forced for one event only, the one the delivery cannot see: a
 compaction in a turn the agent started by itself. Kiro Crew reads that turn with
