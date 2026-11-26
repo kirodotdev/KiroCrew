@@ -484,14 +484,16 @@ def _stamp(moment: datetime) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _listed(root: Path, query: str, start: datetime | None, end: datetime) -> Iterator[Row]:
+def _listed(
+    root: Path, query: str, start: datetime | None, end: datetime, cut: list[str] | None = None
+) -> Iterator[Row]:
     """The runs `query` names that were created from `start` to `end`, newest first.
 
     A window GitHub will not list whole is read as its later half, then its
     earlier half: the halves share no second and leave none out. A window that
     cannot be halved further (one minute, or no `start`) is listed as far as
-    GitHub goes, and the runs past that are named on stderr, never dropped in
-    silence.
+    GitHub goes, and the runs past that are named on stderr and in `cut`, never
+    dropped in silence.
     """
     created = f"&created={_stamp(start)}..{_stamp(end)}" if start else ""
     url = f"repos/{shadow.REPO}/actions/workflows/ci.yml/runs?{query}&per_page=100"
@@ -504,14 +506,16 @@ def _listed(root: Path, query: str, start: datetime | None, end: datetime) -> It
         if start and (end - start).total_seconds() > MIN_LISTING_SECS:
             middle = start + (end - start) / 2
             middle = middle.replace(microsecond=0)
-            yield from _listed(root, query, middle + timedelta(seconds=1), end)
-            yield from _listed(root, query, start, middle)
+            yield from _listed(root, query, middle + timedelta(seconds=1), end, cut)
+            yield from _listed(root, query, start, middle, cut)
             return
-        print(
+        short = (
             f"the listing holds {total} runs and GitHub gives {MAX_LISTED_RUNS}: "
-            f"the {total - MAX_LISTED_RUNS} oldest are not read; narrow it with --since",
-            file=sys.stderr,
+            f"the {total - MAX_LISTED_RUNS} oldest are not read"
         )
+        if cut is not None:
+            cut.append(short)
+        print(f"{short}; narrow it with --since", file=sys.stderr)
     page = 1
     while runs:
         yield from runs
@@ -525,11 +529,13 @@ def _listed(root: Path, query: str, start: datetime | None, end: datetime) -> It
             raise ValueError("the run listing is not a page of runs")
 
 
-def list_runs(root: Path, since: str | None, query: str = "event=pull_request") -> Iterator[Row]:
+def list_runs(
+    root: Path, since: str | None, query: str = "event=pull_request", cut: list[str] | None = None
+) -> Iterator[Row]:
     """Completed `CI` runs that `query` names, newest first, since the UTC day `since`."""
     start = datetime.fromisoformat(since).replace(tzinfo=timezone.utc) if since else None
     end = datetime.now(timezone.utc).replace(microsecond=0)
-    yield from _listed(root, f"{query}&status=completed", start, end)
+    yield from _listed(root, f"{query}&status=completed", start, end, cut)
 
 
 def ran_full_suite(job: Row) -> bool:
@@ -825,14 +831,17 @@ def examine(
     return verdict, read_run(run, root, parse, listing)
 
 
-def runs_to_read(root: Path, args: argparse.Namespace) -> Iterator[Row]:
+def runs_to_read(
+    root: Path, args: argparse.Namespace, cut: list[str] | None = None
+) -> Iterator[Row]:
     """The pull_request runs and (with Windows on) the failed push runs on `main`.
 
     A push run selects nothing, so it can never show a miss: only a failed one
     is read, for the files it says failed elsewhere than on a pull request.
     Merged newest first, so a backlog of one event never keeps the other out of a pass.
+    `cut` takes a line for each listing GitHub would not give whole.
     """
-    prs = list_runs(root, args.since)
+    prs = list_runs(root, args.since, cut=cut)
     if not args.windows:
         yield from prs
         return
@@ -844,6 +853,7 @@ def runs_to_read(root: Path, args: argparse.Namespace) -> Iterator[Row]:
             "event=push&branch=main&status=failure",
             datetime.fromisoformat(args.since).replace(tzinfo=timezone.utc) if args.since else None,
             datetime.now(timezone.utc).replace(microsecond=0),
+            cut,
         )
         if _dict(run).get("head_branch") == "main"
     )
@@ -1000,15 +1010,7 @@ def _each_run(
     verdicts = Verdicts(root, args.artifact)
     taken = 0
     on_linux, on_windows = recorded
-    for run in runs_to_read(root, args):
-        if taken >= args.limit:
-            saw.left.append(f"the pass recorded its {args.limit} run attempts")
-            break
-        ended = budget.ended()
-        if ended:
-            saw.left.append(ended)
-            print(f"stopped early: {ended}; a later pass reads the rest", file=sys.stderr)
-            break
+    for run in runs_to_read(root, args, saw.left):
         if _dict(run).get("conclusion") in _NOT_YET:
             continue  # not final: it costs no call, and is listed again when it is
         key = run_key(_dict(run))
@@ -1022,6 +1024,15 @@ def _each_run(
         need_windows = args.windows and key["attempt"] > on_windows.get(key["run"], 0)
         if not (need_linux or need_windows):
             continue
+        # Only a run that still needs reading is left unread by the limit or the budget.
+        if taken >= args.limit:
+            saw.left.append(f"the pass recorded its {args.limit} run attempts")
+            break
+        ended = budget.ended()
+        if ended:
+            saw.left.append(ended)
+            print(f"stopped early: {ended}; a later pass reads the rest", file=sys.stderr)
+            break
         listing = functools.cache(functools.partial(shadow.run_jobs, key["run"], root=root))
         verdict, seen = examine(run, args, root, parse, listing, verdicts)
         if seen == NO_VERDICT and args.verdict_dir:
@@ -1552,10 +1563,12 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     if args.windows:
         on_windows = classify_windows(rows, args.window_days, notes)
         status = windows_status(rows, on_windows, now)
-        if args.limit > 0:
-            notes = _keep_notes(
-                notes_path, notes, now, not saw.left, status["windows_selection_ok"]
-            )
+        if args.limit > 0 and notes_path:
+            # `--since` narrows this report; the answer a later pass may hold is of
+            # the whole ledger, like the report that reads the notes.
+            whole = current(ledger + new, None)
+            kept = windows_status(whole, classify_windows(whole, args.window_days, notes), now)
+            notes = _keep_notes(notes_path, notes, now, not saw.left, kept["windows_selection_ok"])
         if notes_path:
             status = causes.settle(status, notes, now)
         text += "\n\n" + summarize_windows(rows, on_windows, status)

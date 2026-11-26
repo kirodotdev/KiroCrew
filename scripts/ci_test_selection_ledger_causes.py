@@ -22,7 +22,9 @@ own checks; an issue or a field that does not read as one adds no span.
 
 `settled`. A pass reads newest runs first and stops at its budget, so the
 evidence that clears a failure may sit in a run it has not reached. A pass is
-settled when it left no listed run unread. On an unsettled pass the Windows
+settled when GitHub listed its runs whole and it left none that still needed
+reading unread; a run the ledger already holds leaves nothing. The answer a
+pass keeps is of the whole ledger, whatever days it listed. On an unsettled pass the Windows
 auto-off line holds what the newest settled pass said, when that pass is no
 older than `SETTLED_WITHIN`; with none that recent it is judged on the rows as
 they stand, so a ledger that never settles cannot keep selection on.

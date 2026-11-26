@@ -508,6 +508,64 @@ def test_an_unreadable_run_leaves_the_pass_unsettled(gh: FakeGh, tmp_path: Path)
     assert [note["settled"] for note in _notes(tmp_path, "pass")] == [False]
 
 
+def test_the_answer_a_pass_keeps_is_of_the_whole_ledger_not_of_the_days_it_listed(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    # Two misses three days old, on two branches and two files, and twenty trials a day old.
+    win_run(gh, 201, 7, [MISS], date=_day(16))
+    win_run(gh, 202, 8, ["test/test_other.py"], date=_day(16, 1))
+    for run_id in range(301, 321):
+        win_run(gh, run_id, run_id, [], date=_day(18))
+    assert _pass(tmp_path, now=NOW - timedelta(hours=2)) == 0
+
+    # The nightly pass lists two days: its own report holds neither miss.
+    assert _pass(tmp_path, "--since", "2026-11-17") == 0
+
+    assert "Windows misses caused by the diff: 0; on fork runs, not counted: 0." in summary(
+        tmp_path
+    )
+    kept = [(note["settled"], note["ok"]) for note in _notes(tmp_path, "pass")]
+    assert kept == [(True, False), (True, False)]
+    # A later pass that leaves a run unread holds that answer: both misses are inside 14 days.
+    win_run(gh, 401, 9, [], date=_day(18, 5))
+    win_run(gh, 402, 10, [], date=_day(18, 6))
+    assert _pass(tmp_path, "--limit", "1", now=NOW + timedelta(hours=1)) == 0
+    status = _status(tmp_path)
+    assert (status["settled"], status["windows_selection_ok"]) == (False, False)
+    assert status["held_from"] == causes.stamp(NOW) and status["diff_caused_windows_misses"] == 2
+
+
+def test_a_run_the_ledger_already_holds_does_not_leave_a_full_pass_unsettled(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    for run_id in range(101, 120):
+        win_run(gh, run_id, run_id, [], date=_day(10))
+    assert _pass(tmp_path) == 0
+    first = _status(tmp_path)
+    assert (first["settled"], first["windows_selection_ok"], first["trials"]) == (True, False, 19)
+    win_run(gh, 120, 120, [], date=_day(18))
+
+    # The limit is reached at the twentieth trial; every older run is in the ledger.
+    assert _pass(tmp_path, "--limit", "1", now=NOW + timedelta(hours=1)) == 0
+
+    status = _status(tmp_path)
+    assert (status["settled"], status["windows_selection_ok"], status["trials"]) == (True, True, 20)
+    assert "held_from" not in status
+
+
+def test_a_listing_github_cut_short_leaves_the_pass_unsettled(
+    gh: FakeGh, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ledger, "MAX_LISTED_RUNS", 2)
+    for run_id in range(1, 5):
+        win_run(gh, run_id, run_id, [], date=_day(18))
+
+    # With no `--since` there is no window to halve.
+    assert _pass(tmp_path) == 0
+
+    assert [note["settled"] for note in _notes(tmp_path, "pass")] == [False]
+
+
 def test_a_report_reads_the_notes_and_adds_none(gh: FakeGh, tmp_path: Path) -> None:
     _twenty_trials(gh)
     assert _pass(tmp_path) == 0
