@@ -176,9 +176,10 @@ describe('Surface 3 — outgoing (this session sent a message)', () => {
     expect(screen.getByTestId('session-card-recipient').textContent).toBe('@Planner')
     expect(screen.getByTestId('session-card-body').textContent).toContain('plan is ready')
     // The sender is named "This session", never by its own title, which in its
-    // own chat reads as some other sender; the title stays on hover.
+    // own chat reads as some other sender; the title is its description.
     expect(screen.getByTestId('session-card-title').textContent).toBe('This session')
-    expect(screen.getByTestId('session-card-title')).toHaveAttribute('title', 'Health card')
+    expect(screen.getByTestId('session-card-title')).toHaveAttribute('title', '')
+    expect(screen.getByTestId('session-card-title')).toHaveAccessibleDescription('Health card')
   })
 
   it('a host that withholds the session roster (offline) gets a plain @tag, not a dead link', () => {

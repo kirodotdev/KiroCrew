@@ -398,6 +398,7 @@ from conftest_resets_managed_env import (  # noqa: E402,F401 -- bound for pytest
     _reset_managed_env_shared_client,
 )
 from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_backend_tmp_socket_room_warnings,
     _fresh_kas_env_left_out_marks,
     _reset_managed_server_tool_spellings,
     _reset_mcp_probe_same_process_locks,

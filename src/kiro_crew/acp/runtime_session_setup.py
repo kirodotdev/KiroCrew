@@ -63,6 +63,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CREW_OAUTH_BRIDGE,
 )
 from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
+from kiro_crew.agent_sdk.project_mcp_holds import hold_project_servers
 from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
 from kiro_crew.config import live
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token, send_claim
@@ -390,6 +391,23 @@ def _refuse_if_loader_unreachable(self: AcpRuntime, active_agent: str, kas_agent
         f"agent {active_agent!r} grants no tool_search loader, but this process "
         f"(spawned for {self._agent!r}) runs with MCP Tool Search deferral on; "
         "its MCP tools would be unreachable -- create a runtime for the agent"
+    )
+
+
+async def _hold_project_servers(
+    self: AcpRuntime,
+    mcp_servers: list[dict[str, Any]],
+    agent: str,
+    work_dir: str | Path,
+    registered_agents: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """*mcp_servers* with this session's held project servers added.
+
+    The check reads the chat folder's project MCP file off the event loop: a thread hop
+    before the request goes out, bound as a method like the ceiling check.
+    """
+    return await hold_project_servers(
+        self, mcp_servers, agent, work_dir, registered_agents=registered_agents
     )
 
 

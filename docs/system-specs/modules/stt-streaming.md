@@ -154,8 +154,10 @@ Neither the gateway nor the user's AWS account keeps dictation audio, and
 picker, with the detail in its info tip (`pages/settings/SttRetentionNote.tsx`).
 
 - **Gateway.** The live socket never writes PCM to disk. The batch endpoint
-  streams an upload to a temp file that its `finally` unlinks on every exit path,
-  and a remuxed temp is unlinked the same way (`transcribe_aws._transcribe_aws`).
+  streams an upload to a temp file that its `finally` unlinks on every exit path.
+  The temp name takes the upload's suffix stripped to ASCII letters and digits,
+  or `.webm` when nothing is left (`messaging.attachments.safe_suffix`); on
+  Windows a colon there would name an NTFS stream that the unlink misses. A remuxed temp is unlinked the same way (`transcribe_aws._transcribe_aws`).
   A decoder temp the OS refuses to remove (on Windows, a scanner or indexer
   holding it) is left with a warning naming it, and the caller still gets its
   transcript, or None after a real failure (`transcribe_ffmpeg._unlink_if_exists`).

@@ -19,6 +19,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     tighten_live_slot_memory_mode,
 )
+from kiro_crew.dashboard.project_mcp_cards import offer_project_mcp_cards
 from kiro_crew.dashboard.slot_queue_repository import UNREADABLE_SOURCE_CHANNEL
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.llm_helpers import _billing_stats
@@ -1453,6 +1454,9 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         await _notice_seed_declined(state, slot, client)
         await _notice_unresolved_control_plane(state, slot, client)
         await _notice_unread_prompt_file(state, slot, client, turn)
+        await offer_project_mcp_cards(
+            state, slot, client, session_key, kiro_agent or slot.agent or ""
+        )
     # A member DM's first turn carries the four-layer member section as
     # session-start context. Record that it is at stake HERE — the moment
     # the session client exists — not at the context build: every early

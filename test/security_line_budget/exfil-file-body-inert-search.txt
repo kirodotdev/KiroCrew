@@ -1,0 +1,12 @@
++68
+The `data-exfil-curl-file-body` row stops a false refusal of a read-only `grep`
+search whose quoted PATTERN merely names curl's `-d @` / `--data @` flag. The
+substring tier already carved out an inert `grep`/`date` search; this change adds
+the shared `_file_body_line_is_inert` predicate and the catalog pattern
+`_FILE_BODY_PATTERN` in `exfil_bash`, and `deny_gate` gains `_file_body_narrows`
+so the catalog-regex tier honours that same carve-out (it had none), wired into
+both passes and the exception-mechanism label. `_file_body_narrows` returns False
+on Windows (cmd.exe reads the line differently) so the regex tier stays
+fail-closed there. The shared predicate reads past one `Running: ` display prefix
+(as `_exception_applies` does) so the search is allowed on the permission-title
+path too. No deny pattern or rule is removed.
