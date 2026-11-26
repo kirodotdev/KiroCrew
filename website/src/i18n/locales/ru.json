@@ -15807,6 +15807,7 @@
       "return_to_split_view": "Вернуться к разделённому виду",
       "scroll_to_bottom": "Прокрутить вниз",
       "send_failed": "Не удалось отправить",
+      "mcp_sign_in_message": "Войти в {{name}}",
       "send_failed_connection": "Не удалось отправить — проверьте подключение и попробуйте снова.",
       "session_not_found": "Сессия «{{name}}» не найдена",
       "no_session_named": "Нет сеанса с именем {{name}}. Проверь ссылку или начни новый чат.",

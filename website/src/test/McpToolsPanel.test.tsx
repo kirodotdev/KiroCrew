@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest'
+import type { ReactNode } from 'react'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import McpToolsPanel, { SESSION_DOT_CLASS } from '../pages/chat/McpToolsPanel'
 
@@ -200,5 +201,62 @@ describe('McpToolsPanel', () => {
       />,
     )
     expect(screen.queryByText(/start a new session to load/)).toBeNull()
+  })
+
+  // A server waiting for a sign-in gets a way in for as long as it waits: the chat
+  // notice naming it shows once per gateway run.
+  describe('Sign in on a server waiting for a sign-in', () => {
+    const waiting = (signInByName?: boolean) => ({
+      configured: [],
+      ready: ['other-mcp'],
+      failed: [],
+      awaiting_auth: ['entra-mcp'],
+      failures: {},
+      ...(signInByName === undefined ? {} : { sign_in_by_name: signInByName }),
+    })
+    const renderPanel = (report: ReturnType<typeof waiting>, renderSignIn?: (name: string) => ReactNode) =>
+      render(
+        <McpToolsPanel
+          servers={[{ name: 'entra-mcp', enabled: true }, { name: 'other-mcp', enabled: true }]}
+          toolsByServer={{}}
+          loaded={new Set()}
+          toolSearchOn={false}
+          loading={false}
+          sessionReport={report}
+          renderSignIn={renderSignIn}
+        />,
+      )
+    const control = (name: string) => <span data-testid="sign-in-control">{name}</span>
+
+    it("draws the host's Sign in control on the waiting server alone", () => {
+      const renderSignIn = vi.fn(control)
+      renderPanel(waiting(true), renderSignIn)
+      expect(screen.getAllByTestId('sign-in-control').map(el => el.textContent)).toEqual(['entra-mcp'])
+      expect(renderSignIn).toHaveBeenCalledWith('entra-mcp')
+      expect(renderSignIn).not.toHaveBeenCalledWith('other-mcp')
+    })
+
+    it('draws Sign in for a waiting server absent from the configured list without counting it', () => {
+      const renderSignIn = vi.fn(control)
+      renderPanel({ ...waiting(true), awaiting_auth: ['entra-mcp', 'session-mcp', 'session-mcp'] }, renderSignIn)
+      expect(screen.getAllByTestId('sign-in-control').map(el => el.textContent)).toEqual(['entra-mcp', 'session-mcp'])
+      expect(screen.getByText('session-mcp', { selector: 'code' })).toBeInTheDocument()
+      expect(renderSignIn).toHaveBeenCalledWith('session-mcp')
+      expect(renderSignIn).not.toHaveBeenCalledWith('other-mcp')
+      expect(screen.getByText('MCP Servers (2/2 enabled)')).toBeInTheDocument()
+    })
+
+    it.each([
+      ['a session whose message starts nothing', waiting(false)],
+      ['an older gateway that does not say', waiting()],
+    ])('draws nothing on %s', (_label, report) => {
+      renderPanel(report, control)
+      expect(screen.queryByTestId('sign-in-control')).toBeNull()
+    })
+
+    it('draws nothing where the host has no control to offer', () => {
+      renderPanel(waiting(true))
+      expect(screen.queryByTestId('sign-in-control')).toBeNull()
+    })
   })
 })

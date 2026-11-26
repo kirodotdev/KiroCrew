@@ -15441,6 +15441,7 @@
       "return_to_split_view": "Torna alla vista divisa",
       "scroll_to_bottom": "Scorri in fondo",
       "send_failed": "Invio non riuscito",
+      "mcp_sign_in_message": "Accedi a {{name}}",
       "send_failed_connection": "Invio non riuscito: controlla la connessione e riprova.",
       "session_not_found": "Sessione \"{{name}}\" non trovata",
       "no_session_named": "Nessuna sessione si chiama {{name}}. Controlla il link o avvia una nuova chat.",

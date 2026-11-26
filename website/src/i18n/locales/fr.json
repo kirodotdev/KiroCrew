@@ -15441,6 +15441,7 @@
       "return_to_split_view": "Revenir à la vue divisée",
       "scroll_to_bottom": "Aller en bas",
       "send_failed": "Échec de l’envoi",
+      "mcp_sign_in_message": "Se connecter à {{name}}",
       "send_failed_connection": "Envoi impossible — vérifiez votre connexion et réessayez.",
       "session_not_found": "Session « {{name}} » introuvable",
       "no_session_named": "Aucune session ne s’appelle {{name}}. Vérifie le lien ou démarre une nouvelle discussion.",

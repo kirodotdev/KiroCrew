@@ -243,6 +243,59 @@ class TestPublish:
         acp.mcp_session_report.return_value = {"ready": ["a"]}
         assert _session_mcp_report(acp) is None
 
+    @pytest.mark.parametrize(
+        ("starts", "stamped"),
+        [(True, True), (False, False), (RuntimeError("boom"), False)],
+    )
+    def test_says_when_naming_a_waiting_server_starts_its_sign_in(self, starts, stamped):
+        # The chat's MCP view offers Sign in on a server waiting for a
+        # sign-in only where the message it sends starts one (a KAS session).
+        slot = _ChatSlot("s1")
+        report = McpSessionReport()
+        report.record_frame(_ready_frame("a"), owned=True)
+        acp = MagicMock()
+        acp.mcp_session_report.return_value = report
+        if isinstance(starts, Exception):
+            acp.starts_mcp_sign_in_when_named.side_effect = starts
+        else:
+            acp.starts_mcp_sign_in_when_named.return_value = starts
+
+        _publish_session_mcp_report(MagicMock(), slot, acp)
+
+        payload = slot.mcp_report_payload()
+        assert payload is not None
+        assert ("sign_in_by_name" in payload) is stamped
+        if stamped:
+            assert payload["sign_in_by_name"] is True
+
+    def test_a_provider_without_the_answer_is_not_stamped(self):
+        slot = _ChatSlot("s1")
+        report = McpSessionReport()
+        report.record_frame(_ready_frame("a"), owned=True)
+        provider = SimpleNamespace(mcp_session_report=lambda: report)
+
+        _publish_session_mcp_report(MagicMock(), slot, provider)
+
+        assert slot.mcp_report_payload() == report.payload()
+
+
+@pytest.mark.parametrize("live", [True, False])
+def test_the_shared_runtime_session_starts_a_named_sign_in_only_on_a_live_host(live):
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.providers.acp import AcpProvider
+    from kiro_crew.providers.base import LLMProvider
+
+    session = SimpleNamespace(_runtime=SimpleNamespace(reattempts_mcp_servers=live))
+    assert AcpSessionProvider.starts_mcp_sign_in_when_named(session) is live  # type: ignore[arg-type]
+    wrapped = AcpProvider.__new__(AcpProvider)
+    wrapped._client = MagicMock(spec=AcpSessionProvider)
+    wrapped._client.starts_mcp_sign_in_when_named.return_value = live
+    assert wrapped.starts_mcp_sign_in_when_named() is live
+    # The dedicated client and every other provider start no named sign-in.
+    wrapped._client = MagicMock(spec=AcpClient)
+    assert wrapped.starts_mcp_sign_in_when_named() is False
+    assert LLMProvider.starts_mcp_sign_in_when_named(MagicMock()) is False
+
 
 class TestLiveEvents:
     def test_late_initialized_event_moves_a_failed_server(self):

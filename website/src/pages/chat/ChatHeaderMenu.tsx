@@ -1,9 +1,11 @@
 import { useId, useMemo, useState } from 'react'
 import type React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, MessageSquarePlus, Plug, Rows2, Save } from 'lucide-react'
+import { ChevronDown, ChevronRight, KeyRound, MessageSquarePlus, Plug, Rows2, Save } from 'lucide-react'
 
 import { api } from '../../api/client'
+import { sendTurn } from '../../chat-core/transport/sendTurn'
+import { sendFailureCopy } from '../../chat-core/transport/receiptCopy'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../components/ErrorNotice'
 import SessionActionsMenu from '../../components/SessionActionsMenu'
 import SearchMenuRow from '../../components/chatHistorySearch/SearchMenuRow'
@@ -85,7 +87,10 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   // submenu enables the server read again and asks afresh.
   const onMenuOpenChange = (next: boolean) => {
     setOpen(next)
-    if (!next) setMcpOpen(false)
+    if (!next) {
+      setMcpOpen(false)
+      setSignInFailure('')
+    }
   }
   // Tool Search mode for this session's MCP tools (shared ['kirocrewConfig']
   // cache). When on, tool specs are deferred (search-and-call), so every server
@@ -120,6 +125,47 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   // agent's configuration and this answers one about this session.
   const sessionReport = useAppSelector(
     s => (activeSlot ? s.dashboard.slots?.find(sl => sl.key === activeSlot)?.mcp_report : null) ?? null,
+  )
+  // Sign in from the MCP view sends the chat message that starts a waiting
+  // server's sign-in, as the person would type it: the gateway reads only a
+  // person's own message for that ask. The Authorize card then arrives in the
+  // chat, so the menu closes once the message is accepted.
+  const [signInPending, setSignInPending] = useState(false)
+  const [signInFailure, setSignInFailure] = useState('')
+  const signIn = (name: string) => {
+    if (!activeSlot || signInPending) return
+    setSignInPending(true)
+    setSignInFailure('')
+    // The gateway matches the server's name, not the words around it, so the
+    // sentence is in the reader's language.
+    void sendTurn({ slot: activeSlot, message: i18nT('pages.chatPage.mcp_sign_in_message', { name }) }).then(receipt => {
+      setSignInPending(false)
+      // A refusal or a lost connection is named in place, in the words every
+      // send surface uses (the server's reason when it gave one), and the item
+      // stays for another try: a second ask while the first sign-in is live
+      // starts nothing (`mcp_sign_in_holds`). An accepted send, or one whose
+      // answer came back unreadable or late, closes the menu.
+      if (receipt.status === 'refused' || receipt.status === 'transport-error') {
+        setSignInFailure(sendFailureCopy(receipt.status === 'refused' ? receipt.reason : undefined, false))
+      } else setOpen(false)
+    })
+  }
+  const signInErrorId = useId()
+  // A menu item, not a bare button: the menu's keyboard navigation reaches only
+  // its own items. Selecting it keeps the menu open until the send is answered.
+  const renderSignIn = (name: string) => (
+    <DropdownMenuItem
+      data-testid="mcp-session-sign-in"
+      disabled={signInPending}
+      onSelect={event => {
+        event.preventDefault()
+        signIn(name)
+      }}
+    >
+      <KeyRound size={13} className="shrink-0 text-muted" aria-hidden="true" />
+      {i18nT('pages.overview.mcpTab.sign_in')}
+      <span className="sr-only">{name}</span>
+    </DropdownMenuItem>
   )
 
   return (
@@ -194,7 +240,18 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
                   toolSearchOn={toolSearchOn}
                   loading={serversQ.isPending}
                   sessionReport={sessionReport}
+                  renderSignIn={renderSignIn}
                 />
+                {signInFailure && (
+                  <>
+                    <ErrorNotice id={signInErrorId} variant="inline" className="mt-2" message={signInFailure} />
+                    <ErrorNoticeMenuItem
+                      Item={DropdownMenuItem}
+                      message={signInFailure}
+                      describedBy={signInErrorId}
+                    />
+                  </>
+                )}
                 {/* An answer with no servers says so, in McpInfoButton's words,
                     rather than leaving the heading over nothing. */}
                 {serversQ.isSuccess && servers.length === 0 && (

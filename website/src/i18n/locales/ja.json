@@ -14709,6 +14709,7 @@
       "return_to_split_view": "分割表示に戻す",
       "scroll_to_bottom": "一番下へスクロール",
       "send_failed": "送信に失敗しました",
+      "mcp_sign_in_message": "{{name}} にサインイン",
       "send_failed_connection": "送信できませんでした — 接続を確認してから、もう一度お試しください。",
       "session_not_found": "セッション「{{name}}」が見つかりません",
       "no_session_named": "{{name}} という名前のセッションはありません。リンクを確認するか、新しいチャットを開始してください。",

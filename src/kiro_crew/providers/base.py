@@ -1163,6 +1163,15 @@ class LLMProvider(ABC):
         """
         return False
 
+    def starts_mcp_sign_in_when_named(self) -> bool:
+        """Whether a user message naming a server that waits for a sign-in starts it.
+
+        True on a KAS session, where that message is the one trigger
+        (``AcpSessionHandle.want_mcp_sign_in_named``). A provider with no such
+        trigger answers False.
+        """
+        return False
+
     def note_user_message(self, text: str) -> None:
         """Hand the user's own message, as typed, to the MCP sign-in trigger.
 

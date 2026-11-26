@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Zap, ChevronRight, TriangleAlert } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import { fmtList } from '../../i18n/format'
@@ -88,6 +88,7 @@ export default function McpToolsPanel({
   toolSearchOn,
   loading,
   sessionReport,
+  renderSignIn,
 }: {
   servers: McpServerLite[]
   toolsByServer: Record<string, McpToolsInfo>
@@ -95,6 +96,11 @@ export default function McpToolsPanel({
   toolSearchOn: boolean
   loading: boolean
   sessionReport?: McpSessionReport | null
+  /** The control that starts the sign-in of a server this session reports
+   *  waiting for one, drawn by the host (the chat menu draws a menu item, so the
+   *  keyboard reaches it). Drawn only where the report says a message naming the
+   *  server starts it (`sign_in_by_name`). */
+  renderSignIn?: (name: string) => ReactNode
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const toggle = (name: string) =>
@@ -109,6 +115,12 @@ export default function McpToolsPanel({
   const hasSessionReport = mcpSessionHasReport(sessionReport)
   const extraServers = hasSessionReport
     ? mcpSessionExtraServers(servers.map(s => s.name), sessionReport)
+    : []
+  // A server the session waits on that the configured list does not hold (one
+  // the session got at spawn) still gets its Sign in row, outside the count.
+  const configuredNames = new Set(servers.map(s => s.name))
+  const extraAwaitingAuth = renderSignIn && sessionReport?.sign_in_by_name === true
+    ? [...new Set(sessionReport.awaiting_auth ?? [])].filter(name => !configuredNames.has(name))
     : []
   const extraNoTools = hasSessionReport
     ? mcpSessionExtraNoTools(servers.map(s => s.name), sessionReport)
@@ -194,6 +206,7 @@ export default function McpToolsPanel({
           const sessionLabel = i18nT(SESSION_LABEL_KEY[sessionState])
           const gaveNoTools = hasSessionReport && mcpSessionGaveNoTools(s.name, sessionReport)
           const needsRestart = hasSessionReport && mcpSessionNeedsRestart(s.name, sessionReport)
+          const canSignIn = !!renderSignIn && sessionState === 'awaiting_auth' && sessionReport?.sign_in_by_name === true
           // With a report in hand the mark answers "did this start HERE" and is
           // drawn as a ring. Without one the configured `enabled` flag is a read of
           // mcp.json, so painting it `ok` claimed a session nobody had measured.
@@ -281,6 +294,12 @@ export default function McpToolsPanel({
                   )}
                 </div>
               )}
+              {/* A server waiting for a sign-in gets the one action that starts it,
+                  for as long as the session reports it waiting: the chat notice
+                  naming it shows once per gateway run, so a later chat had only
+                  this ring. The button sends the message the notice tells the
+                  person to type. */}
+              {hasSessionReport && canSignIn && <div className="ml-3.5 mb-1">{renderSignIn?.(s.name)}</div>}
               {/* Started, yet gave this session no tools: most often a tool name
                   that clashes with another server's, which the backend resolves
                   by silently dropping one server's whole set. Text, not just a
@@ -325,6 +344,12 @@ export default function McpToolsPanel({
           )
         })
       )}
+      {extraAwaitingAuth.map(name => (
+        <div key={name} className="mt-1 text-[12px]">
+          <code className="text-text block truncate">{name}</code>
+          <div className="ml-3.5 mb-1">{renderSignIn?.(name)}</div>
+        </div>
+      ))}
       {extraServers.length > 0 && (
         // Session truth the configured list structurally cannot show: the backend
         // starts the agent spec's own servers as well as the ones Kiro Crew
