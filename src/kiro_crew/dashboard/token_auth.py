@@ -1688,6 +1688,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.token_auth_paths import (  # noqa: F401
         _403_HTML,
+        _403_SCRIPT,
+        _403_SCRIPT_HASH,
         _APP_WINDOW_EXCLUDED_PATHS,
         _APPS_SPA_EXCLUDED_RE,
         _BYPASS_EXACT_METHODS,
@@ -1705,6 +1707,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SPA_FALLBACK_EXCLUDED_PREFIXES,
         TEAMS_WEBHOOK_PATH,
         UPDATE_REVALIDATE_PATH,
+        _403_csp,
         _credential_fingerprint,
         is_csrf_exempt,
         register_app_window_paths,
