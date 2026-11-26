@@ -36,6 +36,7 @@ import DashedOutline from './DashedOutline'
 import { shapeLook, swatchStyle, textInk } from './shapeLook'
 import TextToolbar from './TextToolbar'
 import ShapeToolbar from './ShapeToolbar'
+import { textBoxType, useFittedCanvas } from './textFit'
 import {
   SIDES, connectorRoute, movedSegment, pointBox, segmentDrag, sideAnchor, sideNear, type SegmentDrag, type Side,
 } from './connectorGeometry'
@@ -178,9 +179,13 @@ export interface CanvasEditorProps {
   epoch?: number
 }
 
-export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch = 0 }: CanvasEditorProps) {
+export default function CanvasEditor({ canvas: stored, onChange: save, readOnly = false, epoch = 0 }: CanvasEditorProps) {
   const { t } = useTranslation()
   const root = useRef<HTMLDivElement>(null)
+  // Everything here works on the canvas as shown, each text box at the height its
+  // text takes; what goes out, and into the undo history, is what the file says.
+  const { canvas, toFile } = useFittedCanvas(stored, root)
+  const onChange = useCallback((next: Canvas) => save(toFile(next)), [save, toFile])
   const [view, setView] = useState<View>({ x: 120, y: 100, zoom: 1 })
   const [tool, setTool] = useState<Tool>('select')
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -217,10 +222,11 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
 
   const commit = useCallback((next: Canvas, before: Canvas = canvasRef.current) => {
     liveColour.current = false
-    undo.current = [...undo.current, { before, after: next }].slice(-HISTORY_CAP)
+    const after = toFile(next)
+    undo.current = [...undo.current, { before: toFile(before), after }].slice(-HISTORY_CAP)
     redo.current = []
-    onChange(next)
-  }, [onChange])
+    save(after)
+  }, [save, toFile])
 
   // Going read-only (a past version opened, say) drops whatever was mid-edit.
   useEffect(() => {
@@ -368,7 +374,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
   }
 
   const editStart = useRef<Canvas | null>(null)
-  useEffect(() => { if (editing) editStart.current = canvasRef.current }, [editing])
+  useEffect(() => { if (editing) editStart.current = toFile(canvasRef.current) }, [editing, toFile])
   /**
    * Ends the text edit and returns the document it leaves. A handler that goes on
    * to read the canvas reads this, since the render that carries it comes later.
@@ -380,18 +386,21 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
     if (!id) return b
     const shape = b.shapes.find(s => s.id === id)
     // An empty text box is nothing: it goes, the way it does in FigJam.
-    const next = shape && shape.kind === 'text' && !shape.text.trim() ? removeShapes(b, new Set([id])) : b
+    const removed = !!shape && shape.kind === 'text' && !shape.text.trim()
+    const shown = removed ? removeShapes(b, new Set([id])) : b
+    // Compared as the file says it: a box fitted on screen but not edited is no change.
+    const next = toFile(shown)
     const top = undo.current[undo.current.length - 1]
-    if (next !== b && top && JSON.stringify(top.before) === JSON.stringify(next)) {
+    if (removed && top && JSON.stringify(top.before) === JSON.stringify(next)) {
       // A new text box left empty: the canvas is back where it was before the box
       // was made, so the step that made it goes rather than a second step being
       // added, and one undo never brings back an empty placeholder box.
       undo.current.pop()
-      onChange(next)
+      save(next)
     } else if (editStart.current && JSON.stringify(editStart.current) !== JSON.stringify(next)) commit(next, editStart.current)
-    else if (next !== b) onChange(next)
+    else if (removed) save(next)
     editStart.current = null
-    return next
+    return shown
   }
 
   const removeShapes = (b: Canvas, ids: Set<string>): Canvas => ({
@@ -448,9 +457,9 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
   /** Live colours replace one history entry, retaining the gesture's first state. */
   const restyleLive = (patch: Partial<Pick<Shape, 'hex' | 'borderHex' | 'inkHex'>>, final: boolean, fresh: boolean) => {
     const b = canvasRef.current
-    const next = { ...b, shapes: b.shapes.map(s => (selected.has(s.id) ? { ...s, ...patch } : s)) }
+    const next = toFile({ ...b, shapes: b.shapes.map(s => (selected.has(s.id) ? { ...s, ...patch } : s)) })
     const top = liveColour.current && !fresh ? undo.current.pop() : undefined
-    const before = top?.before ?? b
+    const before = top?.before ?? toFile(b)
     undo.current = [...undo.current, { before, after: next }].slice(-HISTORY_CAP)
     redo.current = []
     liveColour.current = !final
@@ -472,9 +481,9 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
   }, [epoch])
 
   /**
-   * A new text size for every selected shape that holds text. A text box grows to
-   * fit its lines at the new size and never shrinks below what was drawn, so
-   * nothing is cut off; a shape keeps its size and its text reflows inside it.
+   * A new text size for every selected shape that holds text. A text box takes
+   * the height its text needs at the new size (see `textFit.ts`) and widens to
+   * hold a few characters; a shape keeps its size and its text reflows inside it.
    */
   const resizeText = (size: number) => {
     const b = canvasRef.current
@@ -486,12 +495,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
         const { fontSize: _was, ...plain } = s
         void _was
         if (s.kind !== 'text') return { ...plain, ...fontSizeOf(s.kind, px) }
-        const lines = Math.max(1, s.text.split('\n').length)
-        const h = Math.max(s.h * px / (s.fontSize ?? defaultFontSize(s.kind)), Math.ceil(lines * px * 1.3 + 8))
-        const w = Math.max(s.w, Math.ceil(px * 4))
-        const { fontSize: _old, ...rest } = s
-        void _old
-        return { ...rest, ...(px !== DEFAULT_TEXT_SIZE ? { fontSize: px } : {}), w: Math.round(w), h: Math.round(h) }
+        return { ...plain, ...(px !== DEFAULT_TEXT_SIZE ? { fontSize: px } : {}), w: Math.round(Math.max(s.w, px * 4)) }
       }),
     })
   }
@@ -526,15 +530,15 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
     liveColour.current = false
     const prev = undo.current.pop()
     if (!prev) return
-    redo.current.push({ before: prev.before, after: canvasRef.current })
-    onChange(prev.before)
+    redo.current.push({ before: prev.before, after: toFile(canvasRef.current) })
+    save(prev.before)
   }
   const doRedo = () => {
     liveColour.current = false
     const next = redo.current.pop()
     if (!next) return
-    undo.current.push({ before: canvasRef.current, after: next.after })
-    onChange(next.after)
+    undo.current.push({ before: toFile(canvasRef.current), after: next.after })
+    save(next.after)
   }
 
   // ---- pointer gestures ------------------------------------------------------------
@@ -642,9 +646,10 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
         const on = !e.ctrlKey
         const left = corner.includes('w')
         const top = corner.includes('n')
-        // An edge moves one side only; a corner moves both.
+        // An edge moves one side only; a corner moves both. A text box's height
+        // follows its text, so every handle on one sets its width alone.
         const movesX = corner !== 'n' && corner !== 's'
-        const movesY = corner !== 'e' && corner !== 'w'
+        const movesY = corner !== 'e' && corner !== 'w' && box0.kind !== 'text'
         // The dragged side lands on the grid; the opposite side stays put.
         const cx = snap((left ? box0.x : box0.x + box0.w) + world.x - drag.start.x, on)
         const cy = snap((top ? box0.y : box0.y + box0.h) + world.y - drag.start.y, on)
@@ -921,7 +926,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
       })}
       {/* Edges of the selected shape: hover one and drag to move just that side.
           Drawn before the corner handles, so a corner still wins where they meet. */}
-      {showFrame && selShapes.length === 1 && !editing && !selShapes[0].locked && (['n', 'e', 's', 'w'] as const).map(c => {
+      {showFrame && selShapes.length === 1 && !editing && !selShapes[0].locked && (selShapes[0].kind === 'text' ? ['e', 'w'] as const : ['n', 'e', 's', 'w'] as const).map(c => {
         const r = screenBox(selShapes[0])
         const th = 10
         const pos = c === 'n' ? { left: r.x, top: r.y - th / 2, width: r.w, height: th }
@@ -1242,10 +1247,7 @@ function ShapeView({ shape: s, editing, zoom, onText, onEndEdit }: { shape: Shap
   const text: CSSProperties = s.kind === 'sticky'
     ? { fontSize: s.fontSize ?? defaultFontSize(s.kind), lineHeight: 1.35, color: look.ink, textAlign: s.align ?? defaultAlign(s.kind), padding: 16 }
     : s.kind === 'text'
-      ? {
-        fontSize: s.fontSize ?? defaultFontSize(s.kind), lineHeight: 1.3, color: textInk(s), textAlign: s.align ?? defaultAlign(s.kind), padding: '4px 2px',
-        fontWeight: s.bold ? 700 : 500, textDecoration: s.strike ? 'line-through' : undefined,
-      }
+      ? { ...textBoxType(s), color: textInk(s), textAlign: s.align ?? defaultAlign(s.kind), textDecoration: s.strike ? 'line-through' : undefined }
       : { fontSize: s.fontSize ?? defaultFontSize(s.kind), lineHeight: 1.35, color: look.ink, textAlign: s.align ?? defaultAlign(s.kind), padding: s.kind === 'diamond' ? '18% 22%' : 14 }
   // Each shape is its own stacking context, so its text (raised over its own
   // paint) never shows through a shape stacked above it.
@@ -1308,7 +1310,7 @@ function ShapeView({ shape: s, editing, zoom, onText, onEndEdit }: { shape: Shap
           onFocus={e => e.currentTarget.select()}
           onKeyDown={e => { e.stopPropagation(); if (e.key === 'Escape') e.currentTarget.blur() }}
           onPointerDown={e => e.stopPropagation()}
-          style={{ ...text, position: 'relative', zIndex: 1, width: '100%', height: centred ? undefined : '100%', maxHeight: '100%', resize: 'none', border: 'none', outline: 'none', background: 'transparent', font: 'inherit', fontSize: text.fontSize, fontWeight: text.fontWeight, textDecoration: text.textDecoration, overflow: 'hidden' }}
+          style={{ ...text, position: 'relative', zIndex: 1, width: '100%', height: centred ? undefined : '100%', maxHeight: '100%', resize: 'none', border: 'none', outline: 'none', background: 'transparent', fontFamily: 'inherit', fontSize: text.fontSize, fontWeight: text.fontWeight, textDecoration: text.textDecoration, overflow: 'hidden' }}
         />
       ) : (
         // A text box's text spans the box, so its alignment has room to act; in the
