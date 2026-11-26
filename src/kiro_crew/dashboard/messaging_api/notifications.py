@@ -258,8 +258,12 @@ async def api_notification_channel_settings(request: web.Request) -> web.Respons
     the bridge route. Protected channels reject mute and priority-lowering, and
     an unknown transport or floor is refused, with 400.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
     from kiro_crew.notifications.settings import ChannelSettingsError
 
+    denied = await require_owner_for_dashboard_caller(request, "notifications.channel_settings")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()

@@ -65,6 +65,26 @@ def stt_background(monkeypatch) -> set:
     return tasks
 
 
+@pytest.fixture
+def as_the_owner(_floor_monkeypatch) -> None:
+    """Every request is the owner's own: prepare, prewarm and the decoder fetch ask
+    the owner gate, which reads the caller's subject against the gateway's owner."""
+    import sys
+
+    module = sys.modules[__name__]
+
+    def owner(build):
+        def request(*args, **kwargs):
+            kwargs.setdefault("user", "local-app")
+            kwargs.setdefault("app", {"state": SimpleNamespace(owner_id="")})
+            return build(*args, **kwargs)
+
+        return request
+
+    _floor_monkeypatch.setattr(module, "_req", owner(_req))
+    _floor_monkeypatch.setattr(module, "_json_req", owner(_json_req))
+
+
 def _availability(ok: bool, code: str = "", detail: str = ""):
     """Build the shape ``availability_detail`` returns, without probing the host."""
     return core_mod.stt.Availability(ok, code, detail)
@@ -306,6 +326,7 @@ class TestSttStatus:
         assert resp.status == 403
 
 
+@pytest.mark.usefixtures("as_the_owner")
 class TestSttPrepare:
     """``POST /api/stt/prepare`` starts, or joins, the one-time model download."""
 
@@ -413,6 +434,7 @@ class TestSttPrepare:
         assert self.requested == []
 
 
+@pytest.mark.usefixtures("as_the_owner")
 class TestSttResolveStaysOffTheLoop:
     """Neither STT handler may resolve a model name on the gateway's event loop.
 
@@ -469,6 +491,7 @@ class TestSttResolveStaysOffTheLoop:
         assert all(t is not loop_thread for t in resolved_on), resolved_on
 
 
+@pytest.mark.usefixtures("as_the_owner")
 class TestSttFfmpegDownload:
     """``POST /api/stt/ffmpeg/download`` fetches the audio decoder into the store.
 
@@ -596,6 +619,7 @@ class TestSttFfmpegDownload:
         assert ("POST", "/api/stt/ffmpeg/download") in paths
 
 
+@pytest.mark.usefixtures("as_the_owner")
 class TestSttPrewarm:
     """``POST /api/stt/prewarm`` pays the load while the user is still speaking."""
 
