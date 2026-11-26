@@ -526,6 +526,28 @@ def terminal_decision_for_outcome(outcome: MonitorOutcome | None) -> MonitorDeci
     return None
 
 
+def _spend_bounds(state: MonitorState, *, now: float) -> tuple[tuple[str, int, int], ...]:
+    """Each spend bound a watch is stopped by, as ``(stop reason, used, bound)``.
+
+    The stop rule and the budget line both read this, so they cannot disagree. The
+    order is the stop rule's. Unlimited turns (``max_agent_turns`` of zero) have no
+    entry. The runtime used is whole seconds: the bound is a whole number and
+    ``created_ts`` is finite and non-negative, so truncating changes no comparison.
+    """
+    budgets = state.budgets
+    bounds = [
+        (
+            MONITOR_STOP_RUNTIME_BUDGET,
+            max(0, int(now - state.created_ts)),
+            budgets.max_runtime_secs,
+        )
+    ]
+    if budgets.max_agent_turns > 0:
+        bounds.append((MONITOR_STOP_AGENT_TURN_BUDGET, state.agent_turns, budgets.max_agent_turns))
+    bounds.append((MONITOR_STOP_TOKEN_BUDGET, state.total_tokens, budgets.max_tokens))
+    return tuple(bounds)
+
+
 def monitor_budget_reason(state: MonitorState, *, now: float) -> str:
     """Return the first exhausted hard bound in stable policy order.
 
@@ -533,14 +555,10 @@ def monitor_budget_reason(state: MonitorState, *, now: float) -> str:
     skipped rather than compared. Comparing it would make the bound true of a
     monitor that has run no turns at all, retiring every watch on its first wake.
     """
-    budgets = state.budgets
-    if now - state.created_ts >= budgets.max_runtime_secs:
-        return MONITOR_STOP_RUNTIME_BUDGET
-    if budgets.max_agent_turns > 0 and state.agent_turns >= budgets.max_agent_turns:
-        return MONITOR_STOP_AGENT_TURN_BUDGET
-    if state.total_tokens >= budgets.max_tokens:
-        return MONITOR_STOP_TOKEN_BUDGET
-    if state.provider_error_count >= budgets.max_provider_errors:
+    for reason, used, bound in _spend_bounds(state, now=now):
+        if used >= bound:
+            return reason
+    if state.provider_error_count >= state.budgets.max_provider_errors:
         return MONITOR_STOP_PROVIDER_ERROR_BUDGET
     return ""
 
@@ -548,31 +566,29 @@ def monitor_budget_reason(state: MonitorState, *, now: float) -> str:
 def monitor_budget_note(state: MonitorState, *, now: float, pct: int) -> str:
     """One line naming a watch's used budget once a bound reaches *pct* percent.
 
-    The line states facts and asks for nothing. It names the agent turns only when
-    they are bounded, the tokens only when the usage is known (never a count the
-    provider did not report), and the runtime always. It is empty when *pct* is
-    not a whole number from 1 to 99 or when no named bound has reached the share,
-    so a wake with the setting off is the one main sends. Every comparison is
-    whole-number arithmetic: the runtime is truncated to whole seconds first.
+    The line states facts and asks for nothing. It reads the bounds the stop rule
+    compares: the agent turns only when they are bounded, the tokens always (``at
+    least`` when a turn's usage went unreported, because the stop rule compares the
+    same reported count), and the runtime always. It is empty when *pct* is not a
+    whole number from 1 to 99 or when no bound has reached the share, so a wake with
+    the setting off is the one main sends. Every comparison is whole-number
+    arithmetic.
     """
     if type(pct) is not int or not 1 <= pct <= 99:
         return ""
-    budgets = state.budgets
-    parts: list[str] = []
-    reached = False
-    if budgets.max_agent_turns > 0:
-        parts.append(f"{state.agent_turns} of {budgets.max_agent_turns} agent turns used")
-        reached = reached or state.agent_turns * 100 >= pct * budgets.max_agent_turns
-    if state.token_usage_known:
-        parts.append(f"{state.total_tokens} of {budgets.max_tokens} tokens used")
-        reached = reached or state.total_tokens * 100 >= pct * budgets.max_tokens
-    elapsed = max(0, int(now - state.created_ts))
-    parts.append(
-        f"{max(0, budgets.max_runtime_secs - elapsed)}s of {budgets.max_runtime_secs}s runtime left"
-    )
-    reached = reached or elapsed * 100 >= pct * budgets.max_runtime_secs
-    if not reached:
+    bounds = _spend_bounds(state, now=now)
+    if not any(used * 100 >= pct * bound for _, used, bound in bounds):
         return ""
+    parts: list[str] = []
+    # The line reads turns, tokens, runtime; the stop rule's order starts with runtime.
+    for reason, used, bound in bounds[1:] + bounds[:1]:
+        if reason == MONITOR_STOP_RUNTIME_BUDGET:
+            parts.append(f"{max(0, bound - used)}s of {bound}s runtime left")
+        elif reason == MONITOR_STOP_AGENT_TURN_BUDGET:
+            parts.append(f"{used} of {bound} agent turns used")
+        else:
+            floor = "" if state.token_usage_known else "at least "
+            parts.append(f"{floor}{used} of {bound} tokens used")
     return f"Budget: {', '.join(parts)}; {pct}% or more used."
 
 

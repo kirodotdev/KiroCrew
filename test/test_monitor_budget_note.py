@@ -18,7 +18,7 @@ from monitor_controller_helpers import _armed, _result
 
 from kiro_crew.config.section_builders import _build_monitoring_config
 from kiro_crew.monitoring.controller import format_monitor_wake
-from kiro_crew.monitoring.decision import monitor_budget_note
+from kiro_crew.monitoring.decision import monitor_budget_note, monitor_budget_reason
 from kiro_crew.monitoring.limits import budget_notice_pct, coerce_budget_notice_pct
 from kiro_crew.monitoring.models import (
     MonitorBudgets,
@@ -61,12 +61,29 @@ def test_note_names_turns_tokens_and_runtime_at_the_threshold():
     assert monitor_budget_note(_state(), now=_NOW, pct=80) == _LINE
 
 
-def test_unknown_token_usage_omits_the_token_part():
+def test_unknown_token_usage_reads_at_least_the_reported_count():
     note = monitor_budget_note(_state(token_usage_known=False), now=_NOW, pct=80)
 
     assert note == (
-        "Budget: 8 of 10 agent turns used, 2400s of 14400s runtime left; 80% or more used."
+        "Budget: 8 of 10 agent turns used, at least 212000 of 250000 tokens used, "
+        "2400s of 14400s runtime left; 80% or more used."
     )
+
+
+@pytest.mark.parametrize(
+    ("changes", "now", "reason"),
+    [
+        ({}, 15_400.0, "runtime_budget"),
+        ({"agent_turns": 10}, _NOW, "agent_turn_budget"),
+        ({"input_tokens": 250_000}, _NOW, "token_budget"),
+        ({"input_tokens": 250_000, "token_usage_known": False}, _NOW, "token_budget"),
+    ],
+)
+def test_the_stop_and_the_line_agree_at_each_bound(changes, now, reason):
+    state = _state(**{"agent_turns": 0, "input_tokens": 0, "output_tokens": 0, **changes})
+
+    assert monitor_budget_reason(state, now=now) == reason
+    assert monitor_budget_note(state, now=now, pct=99) != ""
 
 
 def test_unlimited_turns_omit_the_turn_part():

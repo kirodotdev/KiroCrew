@@ -96,8 +96,9 @@ runtime has one more line above `Next action`:
 Budget: 8 of 10 agent turns used, 212000 of 250000 tokens used, 2400s of 14400s runtime left; 80% or more used.
 ```
 
-The turns part appears only when the watch bounds its turns, the tokens part only
-when the token usage is known, and the runtime part always. The line states facts
+The turns part appears only when the watch bounds its turns; the tokens and the
+runtime parts always do, and the tokens read `at least` when a turn's usage went
+unreported, because the stop rule compares that same count. The line states facts
 and asks for nothing. It passes through the same redaction and 4,096-character cap
 as the rest of the envelope. With the setting at 0 the envelope is unchanged.
 
