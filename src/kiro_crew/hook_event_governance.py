@@ -17,6 +17,8 @@ so with no policy nothing changes.
 from __future__ import annotations
 
 import logging
+from collections import Counter
+from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,20 @@ def event_refusal(session_key: str, event: str) -> "str | None":
     return None
 
 
+def _spec_place(hook: object) -> "tuple[str, int] | None":
+    """``(<agent>/<Event>, n)`` for an agent spec's own hook, else ``None``."""
+    hook_id = str(getattr(hook, "id", "") or "")
+    if getattr(hook, "spec_origin", "") and hook_id.startswith("spec:"):
+        # The id is ``spec:<agent>:<Event>:<index>`` (``agent_sdk.spec_hooks._hook``);
+        # the agent part may hold ``:``, the event and index never do.
+        parts = hook_id[len("spec:") :].rsplit(":", 2)
+        if len(parts) == 3:
+            agent, event, index = parts
+            if agent and event and index.isascii() and index.isdigit():
+                return f"{agent}/{event}", int(index) + 1
+    return None
+
+
 def hook_policy_name(hook: object) -> str:
     """The name the ``hooks`` ruleset knows *hook* by.
 
@@ -67,47 +83,96 @@ def hook_policy_name(hook: object) -> str:
     hook runs: a listed hook still meets the shell deny list and the sandbox, so
     a hook that borrows a listed name can do no more than the turn's own shell.
     """
-    hook_id = str(getattr(hook, "id", "") or "")
-    if getattr(hook, "spec_origin", "") and hook_id.startswith("spec:"):
-        # The id is ``spec:<agent>:<Event>:<index>`` (``agent_sdk.spec_hooks._hook``);
-        # the agent part may hold ``:``, the event and index never do.
-        parts = hook_id[len("spec:") :].rsplit(":", 2)
-        if len(parts) == 3:
-            agent, event, index = parts
-            if agent and event and index.isascii() and index.isdigit():
-                return f"{agent}/{event}/{int(index) + 1}"
-    return str(getattr(hook, "name", "") or hook_id).strip()
+    place = _spec_place(hook)
+    if place is not None:
+        return f"{place[0]}/{place[1]}"
+    return str(getattr(hook, "name", "") or getattr(hook, "id", "") or "").strip()
+
+
+def hook_stable_name(hook: object) -> str:
+    """The other name the ``hooks`` ruleset knows *hook* by, or ``""``.
+
+    An agent spec's hook document with a name of its own (``spec_name``, set in
+    memory only by ``agent_sdk.spec_hooks`` through :func:`with_stable_names`) is
+    also ``<agent>/<Event>/<name>``, which a reorder of the spec's hooks does not move.
+    """
+    place = _spec_place(hook)
+    spec_name = str(getattr(hook, "spec_name", "") or "")
+    return f"{place[0]}/{spec_name}" if place is not None and spec_name else ""
+
+
+def with_stable_names(docs: Sequence[dict]) -> "list[tuple[dict, str]]":
+    """Each normalized hook document with the name :func:`hook_stable_name` takes, or ``""``.
+
+    ``""`` for a name that could read as a hook's number, a glob, or more than one
+    document: the ``<trigger>-<n>`` the normalizer gives a nameless document, an
+    all-digit name, one holding ``/`` or ``\\`` (where ``agent/*/1``, written for
+    numbers, would meet it; Windows matching folds the two) or ``*``, ``?`` or
+    ``[``, and one that two documents share as the ruleset compares names.
+    """
+    names: list[str] = []
+    for doc in docs:
+        name = str(doc.get("name") or "").strip()
+        numbered = name.removeprefix(f"{doc.get('trigger')}-").isdigit()
+        names.append("" if numbered or set(name) & set("/\\*?[") else name)
+    uses = Counter(name.casefold() for name in names)
+    return [(doc, name if uses[name.casefold()] == 1 else "") for doc, name in zip(docs, names)]
+
+
+def _binds(decision: object) -> bool:
+    """A refusal the hook's other name cannot lift.
+
+    An explicit deny, or an LTS build's fail-closed answer to an evaluation
+    error, the one refusal ruled ``default`` (``governance_permits``).
+    """
+    if getattr(decision, "permitted", False):
+        return False
+    return bool(getattr(decision, "explicit_deny", False)) or (
+        getattr(decision, "rule", "") == "default"
+    )
 
 
 def hook_refusal(session_key: str, hook: object) -> "str | None":
     """Why the policy's ``hooks`` list refuses *hook*; ``None`` when it permits.
 
     Asked as ``hooks:<name>`` (:func:`hook_policy_name`) on *session_key*, after
-    :func:`event_refusal`. A list the policy does not name permits every hook.
-    Errors follow :func:`event_refusal`. Blocking: call off the event loop.
+    :func:`event_refusal`, and, for a hook with a :func:`hook_stable_name`, as
+    ``hooks:<that name>`` too. Each name is judged by the policy and the profile
+    together. A refusal of either name that :func:`_binds` refuses; short of
+    that, a permit of either name admits the hook. A list the policy does not
+    name permits every hook. Errors follow :func:`event_refusal`. Blocking:
+    call off the event loop.
     """
     from kiro_crew.edition_locks import locked_off
     from kiro_crew.platform.context import PlatformCompositionError
 
     name = hook_policy_name(hook)
+    stable = hook_stable_name(hook)
     lts = locked_off()
     try:
         from kiro_crew.platform.governance_profiles import vet_and_audit
 
-        # Audited both ways: a grant on this list is a permission decision too.
-        decision = vet_and_audit(
-            SCRIPT_HOOKS_SCOPE,
-            f"hooks:{name}",
-            session_key=session_key,
-            tool_name=f"run_script_hook:{name}",
-            log_warning=False,
-            fail_closed=lts,
-        )
+        # Audited both ways, once per name: a grant on this list is a permission
+        # decision too, and the outcome is read from exactly these answers.
+        decisions = [
+            vet_and_audit(
+                SCRIPT_HOOKS_SCOPE,
+                f"hooks:{asked}",
+                session_key=session_key,
+                tool_name=f"run_script_hook:{asked}",
+                log_warning=False,
+                fail_closed=lts,
+            )
+            for asked in ((name, stable) if stable else (name,))
+        ]
     except PlatformCompositionError:
         raise
     except Exception:
         logger.debug("hook name governance unavailable", exc_info=True)
         return "script_hooks governance unavailable (fail-closed)" if lts else None
-    if not getattr(decision, "permitted", False):
-        return f"hook {name!r} is not in the security policy's hooks list"
+    if any(_binds(d) for d in decisions) or not any(
+        getattr(d, "permitted", False) for d in decisions
+    ):
+        also = f" (also {stable!r})" if stable else ""
+        return f"hook {name!r}{also} is not in the security policy's hooks list"
     return None

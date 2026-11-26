@@ -99,6 +99,7 @@ from kiro_crew.agent_sdk.spec_hooks_reproject import (  # noqa: E402,F401
     reproject_claimed_session,
     reproject_unattended_claim,
 )
+from kiro_crew.hook_event_governance import with_stable_names
 from kiro_crew.hooks import (
     _HOOK_STREAM_CAP_BYTES,
     HOOK_EVENT_AGENT_SPAWN,
@@ -742,7 +743,7 @@ def _from_documents(
         )
     out: list[ScriptHook] = []
     index = -1
-    for doc in normalize_spec_hooks(hooks, matcher_ok=_matcher_ok):
+    for doc, spec_name in with_stable_names(normalize_spec_hooks(hooks, matcher_ok=_matcher_ok)):
         trigger = doc.get("trigger")
         raw_action = doc.get("action")
         action: dict = raw_action if isinstance(raw_action, dict) else {}
@@ -784,7 +785,7 @@ def _from_documents(
             # appended, so cap, break and kept list match ``_convert``'s no-counter path.
             if cap_overflow is not None and len(out) >= _MAX_SPEC_HOOKS:
                 cap_overflow.append(index)
-            out.append(hook)
+            out.append(dataclasses.replace(hook, spec_name=spec_name))
     return out
 
 
