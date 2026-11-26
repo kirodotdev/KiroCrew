@@ -880,8 +880,8 @@ class TestSttTranscribe:
         [
             ("rec.webm:x", ".webm"),
             ("rec.webm::$DATA", ".webm"),
-            ("rec.ogg:x.part", ".webm"),
-            ("..\\..\\evil.exe", ".webm"),
+            ("rec.ogg:x.part", ".part"),
+            ("..\\..\\evil.exe", ".exe"),
             ("../../evil.webm", ".webm"),
             ("rec.WEBM", ".webm"),
             ("rec.mp4", ".mp4"),
@@ -890,13 +890,17 @@ class TestSttTranscribe:
             ("rec.wave", ".wave"),
             ("rec.caf", ".caf"),
             ("rec.mkv", ".mkv"),
+            ("rec.3gp", ".3gp"),
+            ("rec.m4b", ".m4b"),
+            ("rec.abcdefghi", ".webm"),
+            ("rec.wébm", ".webm"),
             ("rec", ".webm"),
             ("rec.", ".webm"),
             (".webm", ".webm"),
             ("rec.web m", ".webm"),
         ],
     )
-    async def test_temp_name_takes_only_a_known_audio_suffix(
+    async def test_temp_name_takes_only_a_plain_suffix(
         self, monkeypatch, filename, suffix
     ) -> None:
         """The client's filename must not shape the temp path: on Windows a colon
