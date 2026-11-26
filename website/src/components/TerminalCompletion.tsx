@@ -535,13 +535,15 @@ export default function TerminalCompletion({ term, sessionId, active, onOpenSear
       // The user's "Clear terminal" chord (TERMINAL_FOCUS_PANEL_TOGGLE_IDS).
       // `clear()` keeps the prompt row at fresh buffer coordinates and drops the
       // scrollback. Re-keying its marker keeps command parsing on that row; the
-      // shell is not told, and an open menu closes because its rows went away.
+      // shell is not told, and cancelling the pending listing keeps an old-row
+      // response from reopening the menu.
       if ((e.metaKey || e.ctrlKey || e.altKey)
           && safeGetItem(SHORTCUTS_ENABLED_KEY) !== '0'
           && isTerminalClearEvent(e)) {
         const buf = term.buffer.active
         const promptOffset = markers.current.get(buf.baseY + buf.cursorY)
         close()
+        setReq(null)
         term.clear()
         markers.current.clear()
         const cleared = term.buffer.active

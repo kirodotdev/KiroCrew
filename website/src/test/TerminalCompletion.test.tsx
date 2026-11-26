@@ -1483,6 +1483,38 @@ describe('TerminalCompletion — Clear terminal chord', () => {
     expect(h.clears()).toBe(2)
   })
 
+  it('does not reopen completion when a pending listing resolves after clear', async () => {
+    bindClear({ key: 'k', mod: true })
+    let release!: () => void
+    const fetchMock = vi.fn(() => new Promise(resolve => {
+      release = () => resolve({
+        ok: true,
+        json: async () => ({
+          entries: [{ name: 'docs', dir: true }],
+          prefix: 'doc',
+          dir: '/work',
+          truncated: false,
+        }),
+      })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const line = `${PROMPT}cd doc`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+
+    await act(async () => { h.moveCursor(); await vi.advanceTimersByTimeAsync(100) })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await act(async () => { h.key({ key: 'k', code: 'KeyK', metaKey: true }) })
+    await act(async () => {
+      release()
+      for (let i = 0; i < 3; i += 1) await vi.advanceTimersByTimeAsync(1)
+    })
+
+    expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
+    expect(h.key({ key: 'ArrowDown' })).toEqual({ passedThrough: true, prevented: false })
+    expect(h.key({ key: 'Tab' })).toEqual({ passedThrough: true, prevented: false })
+  })
+
   it('keeps the OSC prompt boundary after clearing a high scrollback row', async () => {
     bindClear({ key: 'k', mod: true })
     const exotic = 'diwm@host ~/work ⟩⟩ '
