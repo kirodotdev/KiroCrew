@@ -871,7 +871,9 @@ def prune_synced_crewmates(
     finds the marker. The wait never gives up: every :data:`PRUNE_LOCK_WAIT_S`
     it logs one WARNING (counted in ``lock_waits``) and tries again, since a
     pass that returned with the lock still held would open its barrier while
-    the holder can still delete. A holder's death releases the lock. Between
+    the holder can still delete. Only a held lock is waited on again; any
+    other lock error (a filesystem with no lock service) is raised and
+    nothing is deleted. A holder's death releases the lock. Between
     tries the marker is checked without the lock: it is written last, under
     the lock, so its presence means every delete is done. Blocking; never
     call on the event loop thread (``file_lock`` refuses to poll there).
@@ -896,6 +898,12 @@ def prune_synced_crewmates(
                 held.enter_context(file_lock(lock_fd, exclusive=True, timeout=PRUNE_LOCK_WAIT_S))
                 break
             except OSError as exc:
+                if exc.errno is not None:
+                    # A real lock error (no lock service, a bad descriptor),
+                    # not a held lock: ``file_lock`` builds the one that means
+                    # "still held after the wait" with no errno. Waiting would
+                    # retry at once for ever, so it surfaces to the caller.
+                    raise
                 # Held by another process. That process owns the pass; this
                 # one must not return while it can still delete, because the
                 # caller settles its request barrier on return and a session
