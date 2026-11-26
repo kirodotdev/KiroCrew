@@ -17,9 +17,12 @@ superseded-by: []
 **Status:** draft (proposed; awaiting team review). Nothing here is on main.
 The maintainer (@buluoray) approved the design on 2026-11-26. It builds on the
 strength view in [#43075](https://github.com/kirodotdev/KiroCrew/pull/43075)
-and on a usage side table that counts recalls outside the store (the "used /
-never used" table proposed with the memory index work,
-[#42927](https://github.com/kirodotdev/KiroCrew/pull/42927)). Every
+and on the usage side table `memory_usage(ident, last_used_at, uses)`, planned
+as the fifth PR of the memory index series: recall use is counted in memory and
+flushed in batches by the maintenance loop, in a table of its own, so recall
+never writes the memory rows. The index RFC
+([#42916](https://github.com/kirodotdev/KiroCrew/pull/42916)) lists usage
+tracking as that separate change. Every
 `file:line` was read at `af18ace5afb` (branch `crew/slack/memory-decay`), since
 the strength view is not on main yet.
 
@@ -29,7 +32,7 @@ the strength view is not on main yet.
 |---|---|---|
 | 1 | A recall that puts an experience into a session's context makes it fade more slowly from then on, and starts its fade again from that day. | changed ranking |
 | 2 | An edit to an experience starts its fade again from the edit day. | changed ranking |
-| 3 | Recall counts live in a side table the gateway writes in the background, never on the recall path. | new derived table |
+| 3 | Recall counts live in the planned `memory_usage` table, which the gateway writes in the background, never on the recall path. | uses a planned derived table |
 | 4 | Existing memories score exactly as today until they are next recalled or edited. | migration |
 
 This is a V1 change. V2 recall does not decay (`memory_v2.rank_score`) and stays
@@ -57,8 +60,8 @@ For one V1 experience:
 - `b = 0.7 + 0.3 × importance` (unchanged).
 - `S₀ = 1 / rate` days, from the tag rate as today (`decay_rule_for`). A rate of
   0 means `S₀ = ∞`: the row never fades, as today.
-- `n` = counted recalls (section 3), read from the side table; 0 when the row
-  has none.
+- `n` = counted recalls (section 3): `memory_usage.uses`; 0 when the row has
+  no usage entry.
 - `S = min(S₀ × (1 + G)ⁿ, S_MAX)`, with `G = 0.5` and `S_MAX = 365` days.
 - `t₀` = the latest of: written, last counted recall, last edit
   (`memory_record_meta.updated_at` at revision > 1).
@@ -91,15 +94,19 @@ once-a-day rule keeps one long session from stacking counts.
 
 ## 4. The side table
 
-`memory_usage(record_id TEXT PRIMARY KEY, recalls INTEGER, last_recalled_at TEXT)`
-in the store's own database. It is derived: dropping it returns every row to
-today's score, and nothing reads it as the truth about a memory.
+This RFC uses the memory index series' usage table as planned,
+`memory_usage(ident, last_used_at, uses)`, in the store's own database.
+`ident` is the index's row identity (`('episodic', id)` on V1), `uses` is `n`
+and `last_used_at` is the last counted recall. It is derived: dropping it
+returns every row to today's score, and nothing reads it as the truth about a
+memory. What this RFC adds is the rule for which uses count (section 3); the
+table, its counter and its flush are that PR's.
 
 - **Recall path.** After `get_episodic_context` picks its rows (at most
-  `memory.episodic_max_results`, default 8), the gateway adds their ids to an
-  in-process set keyed by `(store, day)`. No SQLite write.
+  `memory.episodic_max_results`, default 8), the gateway adds their idents to
+  an in-process set keyed by `(store, day)`. No SQLite write.
 - **Flush.** The existing maintenance loop writes the set in one transaction,
-  one `INSERT ... ON CONFLICT DO UPDATE` per touched row, then patches the
+  one `INSERT ... ON CONFLICT DO UPDATE` per touched ident, then patches the
   resident scoring set (`_EpisodicScoringSet`) in place.
 - **Today's `last_accessed_at` touch** (`_touch_last_accessed`, debounced 60 s)
   stays as it is. It counts every search, so it is not used as a recall count
@@ -155,6 +162,6 @@ today's score, and nothing reads it as the truth about a memory.
 
 | Phase | Change | Exit criteria |
 |---|---|---|
-| P1 | Side table, recall-path set, flush | A test recalls a row twice on one day and once the next: the table holds 2 counts. Dashboard search and Test recall add none. |
+| P1 | The counting rule on `memory_usage` (needs the index series' usage PR) | A test recalls a row twice on one day and once the next: its `uses` is 2. Dashboard search and Test recall add none. |
 | P2 | `S` and `t₀` in all three scoring sites and `recall_weight` | With an empty table, every recall-ranking test passes unchanged. A test asserts the shown strength equals recall's score after a recall, on both scoring paths. |
 | P3 | Memory page and graph | The detail panel shows the recall count and the jump in the curve; the old line is gone. |
