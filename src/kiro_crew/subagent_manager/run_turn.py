@@ -555,6 +555,8 @@ async def _run_inner_impl(
     # Text streamed since the run's last tool call: the final segment the
     # leaked-tool-call check reads at the end (see ``leaked_tool_call``).
     _final_segment = ""
+    # Where the prompt in flight began streaming into ``result_text``.
+    _prompt_text_start = 0
     turns = 0
     turn_limit = self._manager._effective_turn_limit(info)
     # Separate volume bound for child-origin permission escalations —
@@ -765,7 +767,7 @@ async def _run_inner_impl(
         Non-transient errors and exhausted budgets propagate unchanged
         (handled by _run's generic exception arm → error tombstone).
         """
-        nonlocal _final_segment
+        nonlocal _final_segment, _prompt_text_start
         attempts = 0
 
         def _report_if_landed(ended: object) -> None:
@@ -869,6 +871,7 @@ async def _run_inner_impl(
                 # The completion that ends this prompt, if the stream sent one.
                 _ended: LLMEvent | None = None
                 _prompt = _active_line.current() if msg is full_message else msg
+                _prompt_text_start = len(result_text)
                 # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
                 stream = drop_echo(
                     client.stream(_prompt)
@@ -1164,7 +1167,13 @@ async def _run_inner_impl(
     # waited for this turn.
     _turn_t0 = time.monotonic()
     _row_t0[0] = _turn_t0
-    from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_MODEL_FALLBACK, engine_served_model
+    from kiro_crew.agent_sdk.drivers.acp_vocab import (
+        EVENT_MODEL_FALLBACK,
+        STOP_REASON_REFUSAL,
+        engine_served_model,
+    )
+
+    _refused_text = ""  # what a refusal hop dropped, until a model answers after it
 
     # The harness the run is on: opencode names a Crew tool only in its title.
     _harness = getattr(getattr(client, "client", None), "backend", None)
@@ -1263,6 +1272,8 @@ async def _run_inner_impl(
                         )
             result_text += event.text
             _final_segment += event.text
+            if event.text.strip():
+                _refused_text = ""  # a model answered after a refusal hop
             if not _attempt_has_text:
                 # The in-memory partial a stop or a cancel delivers. It
                 # keeps growing when the file cannot be written, which is
@@ -1455,6 +1466,24 @@ async def _run_inner_impl(
                     logger.debug(
                         "Failed to persist engine fallback model for %s", info.id, exc_info=True
                     )
+            _notice = event.model_fallback
+            if (
+                _notice is not None
+                and not _notice.promoted
+                and _notice.cause == "refused"
+                and _final_segment
+            ):
+                # The text this prompt streamed since the last tool call is the
+                # refused model's, not the answer: it leaves the result, the live
+                # partial and result.txt. An earlier prompt's preserved partial stays.
+                _cut = min(len(_final_segment), len(result_text) - _prompt_text_start)
+                if _cut > 0:
+                    if result_text[-_cut:].strip():
+                        _refused_text = result_text[-_cut:]
+                    result_text = result_text[:-_cut]
+                    _final_segment = _final_segment[:-_cut]
+                    info.streaming_text = cap_streaming_text(_redact(result_text))
+                    _result_file_started = await self._manager._start_result_file(info, result_text)
         elif event.kind == EVENT_AGENT_SWITCHED:
             # A mid-run mode switch runs a different agent, so ITS spec hooks gate
             # the permission requests that follow, not the previous agent's. An
@@ -1610,6 +1639,12 @@ async def _run_inner_impl(
     from kiro_crew.messaging.driver import strip_steering_markers
     from kiro_crew.session_directive import strip_quoted_markers
 
+    if _refused_text and getattr(_complete_event, "stop_reason", "") == STOP_REASON_REFUSAL:
+        result_text += _refused_text  # nothing answered: keep the provider's words
+        if _result_file_started:
+            # The hop cut them from result.txt, which a refused ending never rewrites.
+            # On the loop, like the warning below: no await before the ending.
+            write_result_chunk(info.id, _refused_text)
     result_text = strip_quoted_markers(strip_steering_markers(result_text))
     # Strip [OPTIONS: ...] tags and redact sensitive content
     cleaned, _ = extract_options(result_text) if result_text else (result_text, [])
