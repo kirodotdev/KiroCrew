@@ -210,6 +210,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         resolve_ollama_settings,
     )
     from kiro_crew.embeddings_settings import (  # noqa: F401
+        _BACKLOG_BULK_DUTY,
         _CHILD_CALL_BASE_SECS,
         _CHILD_CALL_SECS_PER_TEXT,
         _CHILD_LOAD_TIMEOUT_SECS,
@@ -267,10 +268,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         PRIORITY_INTERACTIVE,
         PRIORITY_NORMAL,
         EmbeddingWork,
+        _backlog_boost,
+        _backlog_boost_allowed,
         _embed_threads,
         _read_memory_config,
         _small_host_cache,
         _work_for_priority,
+        bulk_backlog_boost,
         bulk_duty_cycle,
         bulk_embed_threads,
         bulk_pace_delay,

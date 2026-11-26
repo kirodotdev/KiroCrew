@@ -321,6 +321,21 @@ def has_pending_embeddings(store: VectorMemoryStore) -> bool:
     )
 
 
+def pending_rows_at_least(store: VectorMemoryStore, count: int) -> bool:
+    """True when at least *count* live rows wait for a vector. Reads no more than that."""
+    found = 0
+    for relation in ("episodic_memories", "semantic_memory"):
+        row = store._fetch_one_locked(
+            f"SELECT count(*) FROM (SELECT 1 FROM {relation} "
+            "WHERE is_deleted = 0 AND embedding IS NULL LIMIT ?)",
+            (count - found,),
+        )
+        found += row[0] if row else 0
+        if found >= count:
+            return True
+    return False
+
+
 def _resolve_member_lesson_dedup(
     store: VectorMemoryStore, should_stop: "Callable[[], bool] | None"
 ) -> None:

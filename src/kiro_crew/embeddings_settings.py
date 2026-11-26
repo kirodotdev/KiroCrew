@@ -17,7 +17,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Iterator
+from typing import Callable, Iterator
 
 from kiro_crew.config.loader import read_config_text  # noqa: F401 - facade surface
 from kiro_crew.config.loader import config_local_path, config_path, read_merged_config_files
@@ -272,6 +272,11 @@ _DEFAULT_BULK_DUTY = 0.2
 # Floor on the duty cycle. A typo of 0.001 would otherwise turn a multi-hour
 # sweep into a multi-week one, which is indistinguishable from it never running.
 _MIN_BULK_DUTY = 0.05
+# Duty a big repair backlog may use while the host is idle (bulk_backlog_boost):
+# it drains about 2.5x faster than the default and still idles half the time.
+_BACKLOG_BULK_DUTY = 0.5
+# The idle test the active boost asks before each paced row, or None.
+_backlog_boost: "Callable[[], bool] | None" = None
 # Cap on a single pace sleep. This exists ONLY so one pathological row (a
 # 6,000-character blob whose inference takes seconds) cannot park the sweep for
 # minutes; it must stay well ABOVE the delay an ordinary row produces at the
@@ -494,7 +499,39 @@ def bulk_duty_cycle() -> float:
         duty = _DEFAULT_BULK_DUTY
     if duty >= 1.0:
         return 1.0
+    # Only the shipped duty is raised; any other value the operator chose is kept.
+    # A config that spells out 0.2 reads the same as the default and is boosted.
+    if duty == _DEFAULT_BULK_DUTY and _backlog_boost_allowed():
+        return _BACKLOG_BULK_DUTY
     return max(_MIN_BULK_DUTY, duty)
+
+
+def _backlog_boost_allowed() -> bool:
+    allowed = _backlog_boost
+    if allowed is None:
+        return False
+    try:
+        return bool(allowed())
+    except Exception:  # noqa: BLE001 - an idle probe that fails reads as busy
+        logger.debug("Backlog boost idle probe failed; keeping the default duty", exc_info=True)
+        return False
+
+
+@contextmanager
+def bulk_backlog_boost(allowed: "Callable[[], bool]") -> Iterator[None]:
+    """Pace bulk work at :data:`_BACKLOG_BULK_DUTY` inside this block while *allowed*.
+
+    For a repair visit that found a big backlog. *allowed* is asked again on every
+    paced row (the sweep's own pause and the inference worker's pause between bulk
+    jobs), so the duty falls back to the default the moment the host gets busy.
+    Process-wide while active, so other bulk work paces the same way meanwhile.
+    """
+    global _backlog_boost
+    _backlog_boost = allowed
+    try:
+        yield
+    finally:
+        _backlog_boost = None
 
 
 def bulk_pace_delay(elapsed: float) -> float:

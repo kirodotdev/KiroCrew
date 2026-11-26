@@ -78,6 +78,7 @@ _REBOUND_GLOBALS = {
     "_sync_embed_cache_backend": "kiro_crew.embeddings_shared",
     "_download_manager": "kiro_crew.embeddings_download",
     "_download_task": "kiro_crew.embeddings_download",
+    "_backlog_boost": "kiro_crew.embeddings_settings",
 }
 
 

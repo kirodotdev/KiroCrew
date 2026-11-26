@@ -4105,7 +4105,15 @@ one (`wait_for_cold_shared_embedder`, at most 120 s), so a backlog row that
 never embeds cannot keep the model resident. A sweep row whose
 `PRIORITY_BULK` embed found the shared model unloaded (that embed only starts
 the load) waits for the load once, up to 120 s, and embeds again instead of
-counting the row failed. The visit shares the
+counting the row failed. A visit to a store with at least 500 rows waiting
+for a vector (`embedding_repair.pending_rows_at_least`) runs its sweep inside
+`embeddings.bulk_backlog_boost`: while the shipped `memory.embedding_bulk_duty`
+(0.2) is in effect, bulk pacing uses 0.5 for as long as the host is idle, which
+is asked again before every paced row (no chat turn running per
+`memory_dream.person_turn_running`, and a one-minute load average under 0.5
+per core; no load average, as on Windows, reads as busy). It drops back to 0.2
+the moment either stops holding. A duty set to any value other than the shipped 0.2 is never changed (a written 0.2 cannot be told from the shipped one, so it is boosted too).
+The visit shares the
 normal bounded embedding worker, pauses during model replacement and checks
 shutdown before committing. Global joins the rotation only after its boot
 migration and full repair sweep finish, and the loop never opens a store. Seeded
