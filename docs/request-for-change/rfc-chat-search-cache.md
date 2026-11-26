@@ -1,12 +1,12 @@
 ---
 title: A per-chat SQLite FTS5 search index for "Search this chat", built only when someone searches
-status: accepted
+status: implemented
 author: buluoray
 created: 2026-11-25
 last-audited: 2026-11-26
-audited-at: 867ca8eab20
+audited-at: 05202bda8d
 doc-pr: 42880
-implementation-prs: []
+implementation-prs: [43118]
 tracking-issues: [42872]
 supersedes: []
 superseded-by: []
@@ -14,14 +14,19 @@ superseded-by: []
 
 # RFC: A per-chat search index for "Search this chat"
 
-**Status:** accepted. Accepted at team review, 2026-11-26 (maintainer Ray Xu). The document merged in
+**Status:** implemented. Accepted at team review, 2026-11-26 (maintainer Ray Xu). The document merged in
 [#42880](https://github.com/kirodotdev/KiroCrew/pull/42880). It is an RFC because it adds a file format that stays on users'
 machines (CONTRIBUTING.md, "a one-way door"). The repository owner (buluoray) ruled on
 2026-11-25 that the per-chat index is a SQLite FTS5 table with the `trigram`
 tokenizer rather than a format of our own; this revision records that. The implementation for
-[#42872](https://github.com/kirodotdev/KiroCrew/issues/42872) is being written
-now. Every main-side reference
-was read at `867ca8eab20`.
+[#42872](https://github.com/kirodotdev/KiroCrew/issues/42872) is on main from
+[#43118](https://github.com/kirodotdev/KiroCrew/pull/43118) (`05202bda8d`):
+`src/kiro_crew/chat_search_cache.py` builds and keeps the per-chat cache, and
+`dashboard/chat_history_cached.py` answers the search and counts routes from it. The
+window already shows the server's whole-chat counts, so phase 2 needs no separate change.
+As built, each chat's file is `<sessions>/.search-cache/<stem>.db`
+(`chat_search_cache.CACHE_DIR`); §5.6 and §8 name that path. The other main-side
+references in §2 were read at `867ca8eab20` and describe main before the build.
 
 **Where this belongs.** Neither existing search RFC is the right home.
 [rfc-session-semantic-search.md](rfc-session-semantic-search.md) ranks whole
@@ -167,8 +172,8 @@ Crew writes such an edit today. The code carries a `shortcut:` comment for it.
 
 ### 5.6 The file format
 
-- **Where:** `<sessions>/.search-index/<safe_key>.sqlite3`, beside the existing
-  `.page-index/` folder. `<safe_key>` is the same name the transcript uses.
+- **Where:** `<sessions>/.search-cache/<stem>.db`, beside the existing
+  `.page-index/` folder. `<stem>` is the same name the transcript uses.
 - **Permissions:** owner-only (`0600`, folder created owner-only), like the
   transcript. A full build writes a temp file and renames it into place.
 - **Tables:**
@@ -241,7 +246,7 @@ redundant.
 
 ## 8. How to undo it
 
-- **For a user:** delete `<sessions>/.search-index/`. It is safe at any time,
+- **For a user:** delete `<sessions>/.search-cache/`. It is safe at any time,
   even with the gateway running: the next search rebuilds what it needs. No
   transcript, pin or setting is stored there.
 - **For the project:** revert the implementation PR. The leftover folder is
