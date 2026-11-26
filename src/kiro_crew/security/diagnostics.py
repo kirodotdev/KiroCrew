@@ -242,3 +242,59 @@ def refusal_rule_id(text: str) -> str:
                 return "" if value == _UNNAMED else value
         return ""
     return ""
+
+
+#: A shell name where it is expanded (``$S``, ``${S``, ``${#S``, ``${!S``) or
+#: assigned at the start of a word (``S=``, ``S+=``).
+_SHELL_NAME_SITE_RE = re.compile(
+    r"(?P<ref>\$\{?[#!]?)(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+    r"|(?<![^\s;&|()`])(?P<lhs>[A-Za-z_][A-Za-z0-9_]*)(?=\+?=)"
+)
+
+#: Ceiling on how much of a command :func:`case_distinct_names` reads, so the
+#: hint check never costs more than one more floor read of a bounded command.
+_MAX_NAME_SCAN_CHARS = 65536
+
+#: Extra sentence for an ssh-to-self or git/tar-to-self refusal that the deny gate
+#: traces to shell names that differ only in case (``refused_for_case_names``).
+#: Fixed text: it names no variable, so no command bytes reach the refusal.
+CASE_NAME_HINT = (
+    " This command was refused because two shell variable names differ only in"
+    " case (such as `S` and `s`): rename one of them and retry."
+)
+
+
+def case_distinct_names(command: str) -> "str | None":
+    """*command* with shell names that differ only in case renamed apart, or None
+    when it has no such names (or is longer than ``_MAX_NAME_SCAN_CHARS``).
+
+    Only ``$name`` / ``${name`` / ``name=`` sites are renamed; each name other than
+    the first spelling of its group gets a ``_kc<n>`` suffix no name in *command*
+    has. Presentation only: the deny gate reads this copy to decide whether a
+    refusal carries :data:`CASE_NAME_HINT`, never whether a command is refused.
+    """
+    if len(command) > _MAX_NAME_SCAN_CHARS:
+        return None
+    spellings: "dict[str, list[str]]" = {}
+    for match in _SHELL_NAME_SITE_RE.finditer(command):
+        name = match.group("name") or match.group("lhs")
+        seen = spellings.setdefault(name.lower(), [])
+        if name not in seen:
+            seen.append(name)
+    renamed: "dict[str, str]" = {}
+    taken = set(spellings)
+    for lowered, names in spellings.items():
+        n = 1
+        for name in names[1:]:
+            while f"{lowered}_kc{n}" in taken:
+                n += 1
+            renamed[name] = f"{lowered}_kc{n}"
+            taken.add(renamed[name])
+    if not renamed:
+        return None
+
+    def _rename(match: "re.Match[str]") -> str:
+        name = match.group("name") or match.group("lhs")
+        return (match.group("ref") or "") + renamed.get(name, name)
+
+    return _SHELL_NAME_SITE_RE.sub(_rename, command)

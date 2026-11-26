@@ -1,0 +1,7 @@
++88
+The ssh-to-self and git/tar-to-self refusals add one fixed sentence, asking the
+agent to rename a variable and retry, only when the refusal is caused by shell
+variable names that differ only in case: with those names renamed apart no floor
+refuses the command, and the command names no self host. diagnostics.py holds the
+bounded rename and the sentence; deny_gate.py holds the refused_for_case_names
+flag. No refusal decision changes.
