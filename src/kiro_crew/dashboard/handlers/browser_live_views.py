@@ -26,6 +26,7 @@ slot's own tabs (``LiveHub.targets_of``) that the browser still lists, else 404
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Any
 
@@ -34,6 +35,8 @@ from aiohttp import web
 from kiro_crew.browser_harness import live_hub_views
 from kiro_crew.browser_harness.live_hub import LiveHub
 from kiro_crew.dashboard.handlers import browser_live
+
+logger = logging.getLogger(__name__)
 
 #: A CDP target id: hex in Chromium, bounded either way.
 _TAB_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
@@ -138,6 +141,9 @@ async def api_browser_live_views_open(request: web.Request) -> web.Response:
             )
         except LookupError as exc:
             return _error(str(exc) or "not_agent_tab", "that tab cannot be shown in a view", 404)
+        except Exception:
+            logger.debug("start_view failed for tab %s", tab_id, exc_info=True)
+            return _error("tab_gone", "that tab cannot be shown in a view", 409)
         if stream is None:
             return _error("live_off", "the live view is turned off", 409)
         view_sess = hub._sessions.get(view_key)

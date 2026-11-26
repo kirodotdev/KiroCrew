@@ -514,6 +514,28 @@ async def test_an_open_whose_stream_fails_frees_its_key(monkeypatch: pytest.Monk
     assert new_key.startswith(f"{SLOT}#view")
 
 
+async def test_open_returns_tab_gone_when_stream_raises_a_non_lookup_error(
+    grant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A RuntimeError from start_view (e.g. target closed) returns 409 tab_gone.
+
+    One-line change that turns this test red: remove the ``except Exception``
+    clause from ``api_browser_live_views_open`` in ``browser_live_views.py``.
+    Without it aiohttp answers a bare 500 with no JSON ``code``.
+    """
+    await _browsing()
+
+    class FailingStream(FakeStream):
+        async def start(self) -> None:
+            raise RuntimeError("target closed")
+
+    monkeypatch.setattr(lh, "LiveStream", FailingStream)
+    async with TestClient(TestServer(_app())) as client:
+        status, body = await _open(client, "a")
+    assert status == 409, f"expected 409 tab_gone, got {status} {body}"
+    assert body.get("code") == "tab_gone"
+
+
 async def test_a_view_nobody_looks_at_is_reaped_at_the_next_open(grant) -> None:
     """A reloaded page runs no cleanup: its view is ended once idle, so reloads
     never fill the cap; a view that was looked at lately is kept."""
