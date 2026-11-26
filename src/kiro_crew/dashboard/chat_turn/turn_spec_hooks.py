@@ -1551,12 +1551,15 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
         await _deliver_cross_surface_reply(state, session_key, _xs_reply, slot=slot)
 
 
-async def _fallback_turn_project(turn_project: str, session_cwd: Any) -> str:
+async def _fallback_turn_project(
+    turn_project: str, session_cwd: Any, session_key: str, backend_override: str | None
+) -> str:
     """The folder a turn runs in when its start fell back from a hidden scratch folder.
 
     The chat keeps storing the earlier run's scratch folder, so the turn's own project
     still names it while the session runs in the default folder. Returns that folder,
-    or ``""`` when the turn's project is the one the session runs in.
+    or ``""`` when the turn's project is the one the session runs in. *session_key*
+    and *backend_override* are the ones the turn's claim started the session with.
     """
     if not turn_project or not isinstance(session_cwd, str) or not session_cwd:
         return ""
@@ -1564,7 +1567,9 @@ async def _fallback_turn_project(turn_project: str, session_cwd: Any) -> str:
         return ""
     from kiro_crew.session_allocation_parts.get_or_create import _stored_cwd_is_hidden_scratch
 
-    if await asyncio.to_thread(_stored_cwd_is_hidden_scratch, turn_project, None):
+    if await asyncio.to_thread(
+        _stored_cwd_is_hidden_scratch, turn_project, None, session_key, backend_override
+    ):
         return session_cwd
     return ""
 

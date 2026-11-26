@@ -182,7 +182,9 @@ def _resume_would_move_the_session(provider: Any, stored_cwd: str) -> bool:
     return os.path.normpath(stored_cwd) != os.path.normpath(cwd)
 
 
-def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bool:
+def _stored_cwd_is_hidden_scratch(
+    stored_cwd: str, shared_scratch: object, session_key: str, backend_override: str | None
+) -> bool:
     """Whether a resumed session's recorded cwd is a scratch tree its new process cannot read.
 
     Each process gets its own directory under the scratch root, and the sandbox hides
@@ -190,8 +192,11 @@ def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bo
     that directory as its cwd, but its next process gets a fresh tree, so the old one
     is hidden from it and the child cannot read its own working directory (kiro-cli
     exits at start-up with ``EPERM ... uv_cwd`` on macOS). The tree the spawn shares
-    (``shared_scratch``) is re-exposed to it, so a cwd inside that one is kept. With the
-    sandbox off (after the governance floor) nothing is hidden, so the cwd is kept too.
+    (``shared_scratch``) is re-exposed to it, so a cwd inside that one is kept. A session
+    that starts unsandboxed hides nothing, so its cwd is kept too: its tier is
+    ``agent.sandbox`` after the governance floor, raised to the ``agent.harness_sandbox``
+    floor of the backend the provider factory selects for *session_key* and
+    *backend_override*.
     Native Windows applies no scratch-root mask at all: a Kiro spawn is delegated to
     Kiro's own sandbox and Crew has no Windows sandbox backend, so the cwd is kept there.
     On every platform a cwd that is not a directory (the scratch sweep removed or
@@ -199,6 +204,10 @@ def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bo
     """
     from kiro_crew import platform_compat
     from kiro_crew.agent_scratch import scratch_root
+    from kiro_crew.agent_sdk.tool_gate import harness_sandbox_mode
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.crewmate_harness import crewmate_backend_pin
+    from kiro_crew.members import select_provider_backend
     from kiro_crew.sandbox_tiers import _clamp_sandbox_mode, configured_sandbox_mode
 
     path = Path(os.path.realpath(stored_cwd))
@@ -209,11 +218,24 @@ def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bo
     if platform_compat.IS_WINDOWS:
         return False
     try:
-        if _clamp_sandbox_mode(configured_sandbox_mode()) == "off":
-            return False
+        mode = _clamp_sandbox_mode(configured_sandbox_mode())
+        # A floor only raises a tier, so only an "off" tier needs the session's backend.
+        if mode == "off":
+            cfg = KiroCrewConfig.load()
+            backend = select_provider_backend(
+                session_key,
+                cfg.agent.member_acp_backend,
+                cfg.agent.acp_backend,
+                backend_override=backend_override,
+                crew_backend=(
+                    crewmate_backend_pin(cfg, session_key) if backend_override is None else None
+                ),
+            )
+            if harness_sandbox_mode(backend, mode, cfg.agent.harness_sandbox) == "off":
+                return False
     except Exception:
-        # An unreadable floor counts as masked: the session then starts in its
-        # default directory, which it can always read.
+        # An unreadable config or backend counts as masked: the session then starts
+        # in its default directory, which it can always read.
         pass
     if shared_scratch is not None and path.is_relative_to(os.path.realpath(str(shared_scratch))):
         return False
@@ -938,6 +960,8 @@ async def _get_or_create_impl(
             _stored_cwd_is_hidden_scratch,
             str(effective_cwd),
             readable_scratch,
+            key,
+            extra_factory_kwargs.get("backend_override"),
         )
     if cwd_is_hidden:
         cwd_kept_by_recorded_tree = False
@@ -954,7 +978,13 @@ async def _get_or_create_impl(
             return False
         if extra_factory_kwargs.get("shared_scratch") is not None:
             return False
-        if not await asyncio.to_thread(_stored_cwd_is_hidden_scratch, str(effective_cwd), None):
+        if not await asyncio.to_thread(
+            _stored_cwd_is_hidden_scratch,
+            str(effective_cwd),
+            None,
+            key,
+            extra_factory_kwargs.get("backend_override"),
+        ):
             return False
         _skip_hidden_cwd()
         # The project profile came from the dropped cwd; the default directory

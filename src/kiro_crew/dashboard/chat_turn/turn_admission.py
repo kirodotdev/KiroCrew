@@ -1246,7 +1246,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # Held but not yet marked acquired: release it if this await is cancelled, like
     # the reprojection above.
     try:
-        _fallback = await _fallback_turn_project(_turn_project, getattr(client, "cwd", None))
+        _fallback = await _fallback_turn_project(
+            _turn_project,
+            getattr(client, "cwd", None),
+            session_key,
+            _allocation_kwargs.get("backend_override"),
+        )
     except BaseException:
         state.sessions.release(session_key)
         raise

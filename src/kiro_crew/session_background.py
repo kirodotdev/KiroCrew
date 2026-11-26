@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from kiro_crew.agent_discovery import warm_agent_specs
 from kiro_crew.agent_scratch import SharedScratchJoinError
 from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
+from kiro_crew.agent_sdk.tool_gate import harness_sandbox_mode
 from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
 from kiro_crew.kiro_prerequisite import (
     identity_park_grace_remaining,
@@ -565,6 +566,20 @@ class BackgroundSessionRuntime:
         backend = self._owner._configured_bg_backend_raw()
         return backend if backend is not None else self._unreadable_backend()
 
+    def _configured_bg_tier(self) -> str:
+        """The tier a fresh background process starts at: ``agent.sandbox`` raised to its floor.
+
+        The ``agent.harness_sandbox`` floor of the configured background backend, so a
+        raised floor detaches a looser background process as a stricter ``agent.sandbox``
+        does.
+        """
+        agent = self._owner._cfg.agent
+        return harness_sandbox_mode(
+            self._owner._configured_bg_backend(),
+            agent.sandbox,
+            getattr(agent, "harness_sandbox", {}),
+        )
+
     def _bg_backend_supports_runtime(self) -> bool:
         """Whether the configured backend can use the multiplexed runtime."""
         return self._owner._configured_bg_backend() in self._deps.runtime_backends()
@@ -861,7 +876,7 @@ class BackgroundSessionRuntime:
         def spawned_looser() -> bool:
             entry = self._owner._sessions.get(self._deps.background_key)
             return entry is not None and sandbox_tier_tightened(
-                entry.provider.sandbox_mode, self._owner._cfg.agent.sandbox
+                entry.provider.sandbox_mode, self._configured_bg_tier()
             )
 
         if spawned_looser():
@@ -876,7 +891,7 @@ class BackgroundSessionRuntime:
             raise RuntimeError("background session unavailable for non-kiro _bg provider")
         handle = self._deps.provider_bg_session_factory(sess)
         handle.looser_than_configured = lambda: sandbox_tier_tightened(
-            sess.provider.sandbox_mode, self._owner._cfg.agent.sandbox
+            sess.provider.sandbox_mode, self._configured_bg_tier()
         )
         return handle
 
@@ -957,9 +972,7 @@ class BackgroundSessionRuntime:
                             cached_backend,
                             configured_backend_raw,
                         )
-                    elif sandbox_tier_tightened(
-                        runtime.sandbox_mode, self._owner._cfg.agent.sandbox
-                    ):
+                    elif sandbox_tier_tightened(runtime.sandbox_mode, self._configured_bg_tier()):
                         # Parked, busy or idle: its in-flight sessions finish on it.
                         mark_identity_parked(runtime, time.monotonic())
                         await self._detach_bg_runtime_locked(
@@ -1012,7 +1025,12 @@ class BackgroundSessionRuntime:
                     def build_runtime(shared_scratch: Path | None) -> Any:
                         return AcpRuntime(
                             agent=self._deps.runtime_agent,
-                            sandbox_mode=getattr(agent_cfg, "sandbox", "auto"),
+                            # Chosen once with its backend, as the provider factory does.
+                            sandbox_mode=harness_sandbox_mode(
+                                configured_backend,
+                                getattr(agent_cfg, "sandbox", "auto"),
+                                getattr(agent_cfg, "harness_sandbox", {}),
+                            ),
                             acp_backend=configured_backend,
                             expect_mcp_reports=False,
                             shared_scratch=shared_scratch,
@@ -1239,7 +1257,7 @@ class BackgroundSessionRuntime:
             ) and not self._owner._bg_backend_supports_runtime()
             pct = provider.context_usage_pct()
             post_compaction = pct == 0.0 and self._deps.context_pct_is_unknown(provider)
-            if sandbox_tier_tightened(provider.sandbox_mode, self._owner._cfg.agent.sandbox):
+            if sandbox_tier_tightened(provider.sandbox_mode, self._configured_bg_tier()):
                 reason = "agent.sandbox is stricter than its spawn tier"
             elif overflowed:
                 reason = f"prompt too long for the model window (context reported at {pct:.0f}%)"
