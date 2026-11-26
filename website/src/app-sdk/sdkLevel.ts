@@ -14,5 +14,12 @@
  * and `SessionChanges` and `DiffView`. Level 13 adds `useBrowserSites`: the app's
  * browsing list (declared sites and the ones the owner added), and the owner's edits
  * through `/api/apps/<name>/browser-sites`, where adding a site asks the owner first.
+ * Level 14 adds backend SDK names, one batch: `canonical_file_path`, the gateway's file
+ * path gate (the UNC and link screens and the sensitive-path list, answered as the
+ * canonical path or None); and `vet_public_url`, `UrlRejectedError` and
+ * `address_is_not_public`, the gateway's outbound public-address check for a URL, or a
+ * resolved address, an app's backend fetches.
+ * Level 14 also adds `sniff_raster_mime` and `RASTER_SNIFF_BYTES`: the gateway's
+ * raster sniffer, by reference.
  */
-export const APP_SDK_LEVEL = 13
+export const APP_SDK_LEVEL = 14

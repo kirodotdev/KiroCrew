@@ -58,6 +58,10 @@ vi.mock('../pages/developer/KasBundleCard', async importOriginal => ({
 vi.mock('../pages/developer/StrandsSetupCard', () => ({
   StrandsSetupCard: () => <div data-testid="strands-setup-card" />,
 }))
+// And for the DeepSeek key card, pinned in DeepSeekKeyCard.test.tsx.
+vi.mock('../pages/developer/DeepSeekKeyCard', () => ({
+  DeepSeekKeyCard: () => <div data-testid="deepseek-key-card" />,
+}))
 
 import { AgentBackendTab } from '../pages/developer/AgentBackendTab'
 import {
@@ -1121,5 +1125,18 @@ describe('AgentBackendTab Strands setup', () => {
     expect(detail().contains(screen.getByTestId('strands-setup-card'))).toBe(true)
     highlight('Claude Code')
     expect(screen.queryByTestId('strands-setup-card')).toBeNull()
+  })
+})
+
+describe('AgentBackendTab DeepSeek key', () => {
+  it('renders the provider key card inside the DeepSeek Harness detail only', async () => {
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'kas', 'strands', 'deepseek']))
+    wrap()
+    await waitFor(() => expect(row('DeepSeek Harness')).toBeInTheDocument())
+    expect(screen.queryByTestId('deepseek-key-card')).toBeNull()
+    highlight('DeepSeek Harness')
+    expect(detail().contains(screen.getByTestId('deepseek-key-card'))).toBe(true)
+    highlight('Strands')
+    expect(screen.queryByTestId('deepseek-key-card')).toBeNull()
   })
 })

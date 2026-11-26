@@ -22,6 +22,7 @@ import { KiroAccountStatusLine } from './KiroAccountStatusLine'
 import { KasBundleCard, KasEngineDeepLink } from './KasBundleCard'
 import { OrchestratorMemoryDeepLink, OrchestratorMemoryToggle } from './OrchestratorMemoryToggle'
 import { StrandsSetupCard } from './StrandsSetupCard'
+import { DeepSeekKeyCard } from './DeepSeekKeyCard'
 import { MCP_SERVERS_HREF } from '../connections/connectionsLinks'
 import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
 import { HarnessLogo } from '../../components/HarnessLogo'
@@ -40,6 +41,7 @@ const KIRO = ACP_BACKEND_KIRO
 const CLAUDE = 'claude'
 const KAS = ACP_BACKEND_KAS
 const STRANDS = 'strands'
+const DEEPSEEK = 'deepseek'
 
 
 /**
@@ -393,6 +395,7 @@ export function AgentBackendTab() {
    */
   const applyBackendSwitchSideEffects = () => {
     qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+    qc.invalidateQueries({ queryKey: ['kas-login-sources'] })
     // The model list is the NEW backend's now. `/api/models` re-reads
     // `agent.acp_backend` on every call, so the server side needs no restart;
     // only the frontend cache did, because `['available-models']` is refetched
@@ -1039,8 +1042,8 @@ export function AgentBackendTab() {
     if (row?.installed === 'unknown')
       return (
         <>
-          {/* No hand-off: this detail can also hold the Strands setup card,
-              whose model and sign-in drafts are not saved yet, and the
+          {/* No hand-off: this detail can also hold the Strands setup card or
+              the DeepSeek key card, whose drafts are not saved yet, and the
               hand-off's navigation to the chat would discard them. */}
           <ErrorNotice
             message={i18nT('pages.developer.agentBackendTab.install_check_failed_can_still_switch')}
@@ -1559,6 +1562,11 @@ export function AgentBackendTab() {
                     {value === STRANDS && (
                       <ErrorBoundary scope="developer-strands-setup" fallback={null}>
                         <StrandsSetupCard />
+                      </ErrorBoundary>
+                    )}
+                    {value === DEEPSEEK && (
+                      <ErrorBoundary scope="developer-deepseek-key" fallback={null}>
+                        <DeepSeekKeyCard />
                       </ErrorBoundary>
                     )}
                     {facts(value)}

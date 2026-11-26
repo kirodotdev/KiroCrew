@@ -1520,6 +1520,8 @@ _EXPECTED_DECLARED_ENTRY_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 
 
 _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    # The KAS session start's held-file refusal, under the projection's label.
+    "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
     # The kiro-cli view's source for a contested name, and the launch refusal for
     # handing kiro-cli the authored name of one.
     "kiro_crew/acp/skill_projection_parts/preparation.py": [("native_skill_projection", "acp")],

@@ -48,6 +48,7 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_MCP_INSTALL,
     KIND_MCP_SERVER,
     KIND_MCP_TOGGLE,
+    KIND_PROJECT_MCP_SERVER,
     KIND_SCHEDULE_CREATE,
     KIND_SCHEDULE_UPDATE,
     KIND_SECRET_SAVE,
@@ -66,6 +67,7 @@ from kiro_crew.change_card_catalog_kinds import (
     workflow_save_slug,
 )
 from kiro_crew.config.sections import (
+    DASHBOARD_KEYED_ENV_MAPS,
     DEFAULT_MODEL,
     MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE,
     MEMBER_APPROVAL_MODES,
@@ -419,13 +421,15 @@ def build_preview(
         label = snapshot.get("label") or p.get("setting_id") or p.get("path")
         if snapshot.get("store") == STORE_DASHBOARD and snapshot.get("key") in DASHBOARD_LIST_KEYS:
             raise _fail("list_setting", f"'{label}' is a list; pass 'op' and one 'item'")
-        if _setting_risk_key(p, snapshot) == "agent.strands_env":
+        risk_key = _setting_risk_key(p, snapshot)
+        if risk_key in DASHBOARD_KEYED_ENV_MAPS:
             # Its PATCH is a keyed change, not a replacement, so a card's whole-map
             # after and its whole-map undo would not do what the card shows. Set
             # in Settings > Agent Harness, one variable at a time.
             raise _fail(
                 "setting_not_editable",
-                "agent.strands_env is set in Settings > Agent Harness > Strands, one key at a time",
+                f"{risk_key} is set in Settings > Agent Harness > "
+                f"{DASHBOARD_KEYED_ENV_MAPS[risk_key]}, one key at a time",
             )
         if before == p["value"]:
             raise _fail("no_change", f"'{label}' already has that value")
@@ -919,6 +923,10 @@ def build_preview(
         from kiro_crew.change_card_mcp_server import build_preview as _mcp_server_preview
 
         _mcp_server_preview(p, snapshot, out)
+    elif kind == KIND_PROJECT_MCP_SERVER:
+        from kiro_crew.change_card_project_mcp import build_preview as _project_mcp_preview
+
+        _project_mcp_preview(p, snapshot, out)
     elif kind == KIND_MCP_TOGGLE:
         if not snapshot.get("exists"):
             raise _fail("not_found", "that MCP server is not configured")
@@ -1277,6 +1285,7 @@ def offers_no_undo(kind: str, params: dict[str, Any]) -> bool:
         KIND_MCP_INSTALL,
         KIND_MCP_ADD_CUSTOM,
         KIND_MCP_SERVER,
+        KIND_PROJECT_MCP_SERVER,
         KIND_CONNECTION_CONNECT,
         KIND_TRUST_APP,
         KIND_SCHEDULE_UPDATE,

@@ -318,6 +318,18 @@ export interface KasLoginSources {
   same_account: boolean | null
   /** Removing this app's own sign-in would put sessions on kiro-cli's. */
   can_use_kiro_cli: boolean
+  /**
+   * The main harness is Kiro CLI (kiro-cli's own launch), which runs only on
+   * kiro-cli's sign-in: this app's own is used by Kiro Agent alone. Absent from
+   * a gateway that predates the field, which reads as false.
+   */
+  kiro_cli_harness?: boolean
+  /**
+   * A Kiro Agent session with no sign-in stored here would run on kiro-cli's.
+   * Asked on every harness. Absent from a gateway that predates the field, which
+   * reads as false.
+   */
+  relay_runs_on_kiro_cli?: boolean
 }
 
 export interface KasLoginDeviceSession {

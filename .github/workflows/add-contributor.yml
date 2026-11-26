@@ -76,16 +76,31 @@ jobs:
     # "Larger runners for the review lanes and CodeQL" in
     # docs/ci/ci-and-reviews.md.
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
-    timeout-minutes: 10
+    # The collect step pages through every merged pull request and every
+    # default-branch commit, 100 a page, so its time grows with the repository:
+    # about 7 minutes at 22,000 of each, near 0.8 s a page. The limit leaves
+    # room for that growth and for a slow clone. A job that reaches it ends
+    # `cancelled`, which the failure-issue step below does not see, so a limit
+    # set close to the real run time fails with no signal.
+    # shortcut: the sweeps are not incremental, so the limit is reached at
+    # roughly four times that history; give them a cursor then.
+    timeout-minutes: 30
     steps:
       # Check out the default branch. github.event.repository is absent on
       # schedule/workflow_dispatch payloads, so fall back to github.ref_name
       # (the default branch on both triggers). We only read/write tracked files.
       # persist-credentials retained: add / "Open or update the contributors PR" runs git fetch + git push --force-with-lease against origin
+      #
+      # fetch-depth: 0 because the collect step walks the commit graph
+      # (`git rev-list`). filter: blob:none because the graph is all it needs
+      # from history: an unfiltered fetch also brings every old version of
+      # every file on every branch, 6 GB and 2.5 to 7 minutes on this runner.
+      # The files of the checked-out commit are still fetched.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || github.ref_name }}
           fetch-depth: 0
+          filter: blob:none
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -147,8 +162,9 @@ jobs:
           # adds no cost. The commit sweep below uses it to tell which
           # default-branch commits landed through a merged PR.
           #
-          # Each sweep is ~130 pages. One 5xx page (GitHub answers an HTML error
-          # page, which gh reports as "invalid character '<'") would fail the
+          # Each sweep is one page per 100 rows, ~220 pages in 2026-11. One 5xx
+          # page (GitHub answers an HTML error page, which gh reports as
+          # "invalid character '<'") would fail the
           # whole run, so a sweep is retried from the start, with its output
           # file truncated on every attempt so a partial page set never survives.
           sweep() {
@@ -207,9 +223,8 @@ jobs:
           # for a PR merged with a merge commit, every commit that merge brought
           # in (`git rev-list <oid>^1..<oid>`, from the full-history checkout).
           # Asking GraphQL per commit (`associatedPullRequests`) gave the same
-          # answer but cost ~50 ms per commit: ~11 minutes for this repository's
-          # history, past the job's 10-minute limit, with the heaviest pages
-          # timing out as 5xx. That per-commit question is now asked only for
+          # answer but cost ~50 ms per commit, ~18 minutes for 22,000 commits,
+          # with the heaviest pages timing out as 5xx. That per-commit question is now asked only for
           # the commits the oid set misses (see below). This is the boundary
           # the PR-author and issue-reporter paths already use, and it is what the
           # README promises: a merged PR is a public contribution, whereas a raw

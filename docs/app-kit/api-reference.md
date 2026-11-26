@@ -327,6 +327,12 @@ app's page, so uninstalling the app gives it a fresh start: the agent does not r
 it. Its transcript stays, as for every conversation an app leaves behind, and the
 session stays the person's: the record grants your app nothing.
 
+While the embed is on screen in a focused window, the rows it shows count as
+read, so the session's unread badge clears on every device up to the newest of
+those rows. A newer row, such as a tool approval the embed has not loaded yet,
+keeps its badge. An embed out of sight (`display: none`, collapsed,
+scrolled out of view, or in a host tab that is not active) reads nothing.
+
 | Prop | Type | Default | What it does |
 |---|---|---|---|
 | `slotKey` | `string` | required | The chat slot (session) the embed reads and sends to. |
@@ -2569,9 +2575,13 @@ adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browse
 dashboard's `appWebOriginStatus(name)`, and level 12 adds
 `permissions.kiroOperations` with its route and `ctx.kiro_call` ([Kiro calls](#kiro-calls)) and the dashboard's
 [`SessionChanges` and `DiffView`](#session-changes-and-diff-view), and level 13 adds
-[`useBrowserSites`](#browser-sites) and `/api/apps/<name>/browser-sites`; each level
-includes every level below it. Several seams share level 7, three share level 8, and
-level 10 is shared by the seams of the batch it opens, so an app that needs one
+[`useBrowserSites`](#browser-sites) and `/api/apps/<name>/browser-sites`, and level 14
+adds the [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk)'s `canonical_file_path`,
+its outbound URL check (`vet_public_url`, `UrlRejectedError` and
+`address_is_not_public`) and its raster sniff (`sniff_raster_mime` and
+`RASTER_SNIFF_BYTES`); each level includes every level below it. Several seams
+share level 7, three share level 8, level 10 is shared by the seams of the batch it
+opens, and level 14 by the backend SDK names of its batch, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
@@ -2580,11 +2590,12 @@ The dashboard exports the same number as `APP_SDK_LEVEL`.
 ### Backend SDK (`kiro_crew.apps.backend_sdk`)
 
 The host controls your backend's own Python may call when no `ctx` seam fits: a
-sensitive-path check, a no-follow read, an atomic write, outbound redaction, an audit
-row, a sandboxed child process and the cross-platform process and lock helpers. Each
-name calls the control the Gateway itself enforces, so a check tightened in a later
-release reaches your app with the upgrade. Use these instead of a private `kiro_crew`
-name: a private name moves between releases, and these do not.
+sensitive-path check, the file path gate, a no-follow read, an atomic write, outbound
+redaction, an audit row, a sandboxed child process, the cross-platform process and
+lock helpers, the public-address check for a URL your backend fetches and a media-type
+sniff. Each name calls the control the Gateway itself enforces, so a check tightened in
+a later release reaches your app with the upgrade. Use these instead of a private
+`kiro_crew` name: a private name moves between releases, and these do not.
 
 It works the same in a hooks backend (in the Gateway process) and in an `entryPoint`
 backend the Gateway spawns on its own interpreter. A backend on its own venv
@@ -2613,6 +2624,7 @@ def read_attachment(path: str, root: str) -> bytes | None:
 | `is_sensitive_path(path)` | `True` when `path` is inside a location the Gateway never reads or writes (credential homes, its own policy files). Refuse on `True`. |
 | `contains_sensitive_path(directory)` | `True` when such a location lies under `directory`. Check it before a bulk operation rooted there (`git add -A`, an archive, a recursive copy). |
 | `read_bytes_nofollow(path, *, within_root=None, max_bytes=None, within_root_is_canonical=False)` | The file's bytes, or `None` when refused: a link at the last component, a hardlinked or non-regular file, a sensitive path, or a file whose opened descriptor resolves outside `within_root`. Raises `FileTooLargeError` past `max_bytes`. |
+| `canonical_file_path(path)` | Level 14. The canonical path of `path`, every link followed, or `None` when the Gateway's file path gate refuses it: an empty path, a Windows UNC path outside the trusted roots, a Windows link the Gateway refuses, or a path whose real target is sensitive. It judges the name, not the file, so read the bytes with `read_bytes_nofollow` or through a descriptor you opened and checked, never a plain `open()` of the answer. It blocks: call it off the event loop. A host below level 14 has the package without this name, so look it up with `getattr(sdk, "canonical_file_path", None)` and refuse the path when it is `None`. |
 | `atomic_write(path, content, *, fsync=False, mode=None, newline=None, restrict_to_owner=False)` | Writes through a temp file and one rename, so a reader never sees a torn file. `restrict_to_owner=True` makes the file owner-only on every platform. |
 | `ensure_owner_only_dir(path)` | `mkdir -p`, owner-only (`0700`) inside the data home and a plain `mkdir -p` elsewhere. |
 | `scrub_outbound(text)` | The same pass as [`ctx.scrub.outbound`](#content-scrubbing-ctxscrub), with the same rules: send only `.text`, and do not send when it raises. |
@@ -2625,10 +2637,15 @@ def read_attachment(path: str, root: str) -> bytes | None:
 | `rmtree_force(path)` | Removes a tree, read-only files included; `True` when it is gone. Never raises. |
 | `file_lock(fd, *, exclusive=True, required=False, wait=True, timeout=None)` | An advisory lock for a `with` block. It raises rather than run the block unlocked, so call it from a worker thread when it may wait. |
 | `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_POSIX` | The platform flags. |
+| `vet_public_url(url)` | Level 14. The Gateway's check for a URL your backend is about to fetch: `http` or `https`, no user name or password, port 80 or 443, a host that is not a `.onion` or `.local` name, and every address the name resolves to public (an alternate or tunnel spelling of an address is unwrapped first). Returns the vetted URL, whose attributes are `url` (normalized, fragment stripped), `scheme`, `host` (for TLS and the `Host` header), `wire_host` (the name your HTTP client hands its resolver), `port`, `ip` (the first address), `addresses` (every approved address, in resolver order, without repeats) and `domain` (`host` without a leading `www.`); its class is not an SDK name, so read the attributes and never import it. Raises `UrlRejectedError` otherwise, and when the name does not resolve. It performs one DNS lookup and opens no connection, so call it from a worker thread, never on the event loop. It pins nothing: connect only to `.addresses`, through a resolver keyed on `.wire_host` that answers with them, because resolving the name again at connect time would dial an address the check never saw. A host below level 14 has the package without this name, so look it up with `getattr(sdk, "vet_public_url", None)` and refuse the URL when it is `None`. |
+| `UrlRejectedError` | Level 14. Raised by `vet_public_url`. `.code` is `"invalid_url"` (not an absolute `http(s)` URL, or one carrying credentials) or `"blocked_url"` (a well-formed URL the address, port or host rule refused, or one that did not resolve). |
+| `address_is_not_public(address)` | Level 14. `True` when an address you resolved yourself (a redirect hop, say) must be refused: anything that is not a globally reachable unicast address, an IPv4-mapped or 6to4 spelling included. A value that is not an IP literal also answers `True`. |
+| `sniff_raster_mime(head)`, `RASTER_SNIFF_BYTES` | Level 14. The raster type a file's leading bytes start with (`"image/png"`, `"image/jpeg"`, `"image/gif"`, `"image/webp"` or `"image/bmp"` today), or `None`. It decides from the bytes, never from a filename or a declared type: SVG is never an answer, and a RIFF file that is not WebP (a WAVE, say) is `None`. Pass at least `RASTER_SNIFF_BYTES` leading bytes; a longer buffer answers the same. The answer says what the bytes are, not what to accept: check it against your own allowlist, so a type the Gateway learns to sniff later does not widen what your app takes. On a gateway without it, refuse the file rather than trust its name. |
 
 The sandbox has no option to show a hidden directory or open a sealed one for
-writing: those choices are the Gateway's. None of these names needs a permission,
-because none of them adds reach. Your manifest declares nothing for them.
+writing, and the URL check has no option to allow another port or a private address:
+those choices are the Gateway's. None of these names needs a permission, because none
+of them adds reach. Your manifest declares nothing for them.
 
 ### Lessons
 

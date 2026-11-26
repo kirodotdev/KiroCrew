@@ -657,8 +657,9 @@ class AmbiguousAgentSpecError(ValueError):
     paths disclose the account name and on-disk layout there. Empty when the
     raiser did not supply them; the message is then the only record.
 
-    The session start check also raises it with no ``paths`` when a file it could
-    not read because something held it open may be a second claimant.
+    A session start also raises it with no ``paths`` (:func:`held_spec_refusal`)
+    when a file it could not read because something held it open may be a second
+    claimant.
 
     ``agent`` is the declared name the files share, and ``packages`` maps each
     path to the package that installed it (``agent_spec_pins.spec_package``), or
@@ -941,6 +942,34 @@ def declared_spec_claim(
             redact_log_via_context(names),
         )
     return DeclaredSpecClaim(match_paths[0], match, tuple(match_paths), divergent, False)
+
+
+def held_spec_refusal(
+    agent_id: str,
+    claim: DeclaredSpecClaim | None,
+    held: Sequence[Path],
+    pins: Mapping[str, str] | None = None,
+) -> AmbiguousAgentSpecError | None:
+    """The refusal for a session start whose claim lost a read to a hold, or ``None``.
+
+    *claim* and *held* are one :func:`declared_spec_claim` walk's answer and the files
+    it found held. With a claimant found, a file held and no pin for *agent_id*, the
+    start is refused: the held file may be a second, differing claimant that a later
+    read sees. The error names each held file and the pin command for each readable
+    claimant, and carries no ``paths``, so no chooser card replaces its text: which
+    agent a held file declares is unknown. Any pin waives the check, and a start
+    that found no claimant keeps its own outcome.
+    """
+    from kiro_crew import agent_spec_pins
+
+    if claim is None or not held or agent_spec_pins.spec_pin_for(agent_id, pins) is not None:
+        return None
+    return AmbiguousAgentSpecError(
+        agent_spec_pins.held_spec_message(
+            agent_id, [str(path) for path in held], [path.name for path in claim.claimants]
+        ),
+        agent=agent_id,
+    )
 
 
 def iter_declared_specs(

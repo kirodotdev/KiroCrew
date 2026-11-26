@@ -45,19 +45,24 @@ def test_the_override_anchored_credential_spellings_are_masked_too(tmp_path) -> 
     assert os.path.join(resolved, ".env") in hidden
 
 
-def test_the_remedy_names_the_vault_and_the_mapping_not_a_file() -> None:
-    """The operator's action changed, so the standing advice had to change with it.
+def test_the_remedy_names_the_provider_key_field_and_the_vault_not_a_file() -> None:
+    """Both strings send the user to the one dashboard place that saves the key.
 
     Telling this operator to "save a key in the harness's configuration" would send
-    them to a file the child mask now hides. Both strings name the two steps that do
-    work: store the secret, then map it.
+    them to a file the child mask hides, and a config key alone has no dashboard
+    path. Both strings name the Provider key field, which saves the secret and maps
+    it, and Settings > Secrets, where the saved entry is listed.
     """
     from kiro_crew.agent_sdk import host_auth
 
     declaration = host_auth.declaration_for(ACP_BACKEND_DEEPSEEK)
     for text in (declaration.sign_in_remedy, declaration.signed_out_message):
+        assert "Agent Harness" in text
+        assert "DeepSeek Harness" in text
+        assert "Provider key" in text
         assert "Secrets" in text
-        assert "deepseek_env" in text
+    # The field is THE fix: the short message never sends the user to a config key.
+    assert "deepseek_env" not in declaration.signed_out_message
     # A locally served model needs no key at all, so the standing remedy still
     # states the action and asserts no state.
     assert "needs no key" in declaration.sign_in_remedy

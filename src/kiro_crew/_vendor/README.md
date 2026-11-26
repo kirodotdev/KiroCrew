@@ -126,8 +126,10 @@ closure still contains that dylib.
 
 `GGML_NATIVE=OFF` avoids `-march=native`, but the enabled upstream x86 CPU
 kernels still require AVX, AVX2, BMI2, F16C, FMA, SSE3, and SSSE3. The loader
-checks that baseline before using the bundled Linux x86_64 or macOS x86_64
-runtime and degrades to keyword search when the host cannot execute it. An operator-set
+checks that baseline before using the bundled Linux x86_64, macOS x86_64 or
+Windows x64 runtime and degrades to keyword search when the host cannot execute it
+(on Windows through `IsProcessorFeaturePresent`, which has no FMA or F16C id, so
+AVX2 stands in for BMI2, F16C and FMA). An operator-set
 `LLAMA_CPP_LIB_PATH` bypasses that bundled-runtime gate so a compatible custom
 build remains usable.
 `LLAMA_BUILD_COMMON=OFF` + the OpenSSL/curl switches drop llama-common (not

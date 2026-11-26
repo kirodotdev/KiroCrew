@@ -71,6 +71,10 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
         self._claude_held_asks: tuple[str, ...] = ()
         # Whether those held limits cover MCP, so the session runs strictMcpConfig.
         self._claude_held_mcp = False
+        # Project-file holds are read off-loop before each session envelope.
+        self._claude_held_project_servers: tuple[str, ...] = ()
+        # Whether that file exists but cannot be read, so the session runs strictMcpConfig.
+        self._claude_project_mcp_unreadable = False
         # True once this session has CREATED <work_dir>/.claude/settings.local.json
         # itself. Only then does reset remove it, and only then does a re-seed
         # overwrite it. The writer refuses a path that already holds a file it did

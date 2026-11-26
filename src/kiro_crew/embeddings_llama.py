@@ -37,12 +37,14 @@ from kiro_crew.embeddings_model import (
 )
 from kiro_crew.embeddings_native import _load_llama_class
 from kiro_crew.embeddings_preempt import PreemptFlag, install_preempt_flag
+from kiro_crew.embeddings_rest import rest_if_idle, wake_embedder
 from kiro_crew.embeddings_settings import (
     _COLD_LOAD_WAIT_SECS,
     _DEFAULT_DIM,
     _EMBED_WAIT_LOG_MS,
     _ENCODER_ARCHITECTURES,
     _EVICT_POLL_MAX_SECS,
+    _IDLE_REST_SECS,
     _INFER_STOP_TIMEOUT_SECS,
     _INTERACTIVE_QUEUE_RESERVE,
     _LLM_LOAD_RETRY_SECS,
@@ -361,6 +363,14 @@ class EmbeddingBackend(abc.ABC):
         """
         self.prefetch()
 
+    def wake(self) -> None:
+        """Vectors are about to be needed: undo an idle rest now. Never blocks.
+
+        The default does nothing; a backend that rests an idle model starts
+        bringing back what the rest gave up. Called by
+        ``embeddings_shared.warm_embedder_for_person``.
+        """
+
     @abc.abstractmethod
     def embed(self, text: str, *, priority: int = PRIORITY_NORMAL) -> "list[float] | None":
         """Embed one text, or None when unavailable.
@@ -547,6 +557,10 @@ class LlamaCppEmbedder(EmbeddingBackend):
         self._last_used = time.monotonic()
         self._evict_thread: threading.Thread | None = None
         self._evict_wake = threading.Event()
+        # Idle rest (see _IDLE_REST_SECS and kiro_crew.embeddings_rest): the loaded
+        # model's weight pages were given back, and the next wake maps them in.
+        self._rested = False
+        self._rest_unsupported = False
         # The background text inside the model right now, while a person's embed
         # may stop it (kiro_crew.embeddings_preempt). Read and written under
         # _dispatch_lock only.
@@ -619,6 +633,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
             return
         if self._llm is not None:
             self._last_used = time.monotonic()
+            self.wake()
             if self._llm is not None:
                 return
             # The evictor retired it between the two reads: load it again.
@@ -863,6 +878,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
             # worker; both are single plain-attribute accesses (GIL-atomic), and
             # the only cost of racing is one redundant set_n_threads call.
             self._applied_threads = None
+            self._rested = False
             self._last_used = time.monotonic()
             if self._published_stamp is None:
                 self._published_stamp = stamp
@@ -1344,6 +1360,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
             # whose vectors would be in a space the store has not reconciled to.
             return None
         self._last_used = time.monotonic()
+        self.wake()
         llm = self._llm
         if llm is None:
             self._kick_background_load()
@@ -1472,15 +1489,21 @@ class LlamaCppEmbedder(EmbeddingBackend):
         """
         while True:
             secs = embedding_idle_evict_secs()
-            self._evict_wake.wait(
+            wait = (
                 min(_EVICT_POLL_MAX_SECS, max(1.0, secs / 4)) if secs > 0 else _EVICT_POLL_MAX_SECS
             )
+            if not self._rested and not self._rest_unsupported:
+                rest_due = self._last_used + _IDLE_REST_SECS
+                wait = min(wait, max(1.0, rest_due - time.monotonic()))
+            self._evict_wake.wait(wait)
             if self._closed or self._llm is None or self._evict_wake.is_set():
                 return
-            if secs <= 0 or time.monotonic() - self._last_used < secs:
-                continue
-            if self.evict_if_idle(secs):
+            if secs > 0 and time.monotonic() - self._last_used >= secs and self.evict_if_idle(secs):
                 return
+            rest_if_idle(self, _IDLE_REST_SECS)
+
+    def wake(self) -> None:
+        wake_embedder(self)
 
     def evict_if_idle(self, idle_secs: float) -> bool:
         """Unload the model when nothing used it for ``idle_secs``. Returns True if unloaded.

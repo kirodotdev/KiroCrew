@@ -17,10 +17,11 @@ callback and ``DashboardState``:
   ``{updates: [{id, slot, ...merged extras}, ...]}`` broadcast to all clients.
   A tool-title refinement never merges with a frame of another call: it renames
   the buffered call it refines, or the buffered entry is sent first.
-  ``subagent_chunk`` text is buffered per agent (append-concatenated, bounded)
-  and flushed on the same tick as ONE ``subagent_batch_chunks`` frame
-  ``{chunks: [{id, slot, text}, ...]}`` to subagent subscribers only —
-  preserving the existing heavy-data routing split.
+  ``subagent_chunk`` text, and ``subagent_thinking`` reasoning beside it, is
+  buffered per agent (append-concatenated, bounded) and flushed on the same
+  tick as ONE ``subagent_batch_chunks`` frame
+  ``{chunks: [{id, slot, text, thinking?}, ...]}`` to subagent subscribers only
+  — preserving the existing heavy-data routing split.
 - **Lifecycle events are NEVER coalesced**: ``subagent_spawn``,
   ``subagent_done``, ``subagent_recovering``, ``subagent_injection_failed``,
   ``spawn_batch_started``, and ``batch_finished`` always pass through
@@ -67,7 +68,7 @@ class SubagentEventCoalescer:
         self._tick_secs = tick_secs
         # id -> {"slot": str, **latest extras}  (latest state wins)
         self._updates: dict[str, dict] = {}
-        # id -> {"slot": str, "text": str}  (append-concatenated)
+        # id -> {"slot": str, "text": str, "thinking": str}  (append-concatenated)
         self._chunks: dict[str, dict] = {}
         self._tick_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._closed = False
@@ -89,17 +90,20 @@ class SubagentEventCoalescer:
         forward it immediately (pass-through)."""
         if self._closed:
             return False
-        if etype == "subagent_chunk":
+        if etype in ("subagent_chunk", "subagent_thinking"):
             if self._active() <= self._threshold:
                 self._flush_if_pending()
                 return False
             buf = self._chunks.setdefault(
-                payload.get("id", ""), {"slot": payload.get("slot", ""), "text": ""}
+                payload.get("id", ""),
+                {"slot": payload.get("slot", ""), "text": "", "thinking": ""},
             )
-            text = buf["text"] + str(payload.get("text", ""))
+            # The agent's reasoning rides beside its text, never inside it.
+            field = "text" if etype == "subagent_chunk" else "thinking"
+            text = buf[field] + str(payload.get("text", ""))
             if len(text) > _CHUNK_BUF_CAP:
                 text = "…(truncated)\n" + text[-(_CHUNK_BUF_CAP - 100) :]
-            buf["text"] = text
+            buf[field] = text
             self._ensure_tick()
             return True
         if etype in _COALESCABLE:
@@ -109,6 +113,9 @@ class SubagentEventCoalescer:
             aid = payload.get("id", "")
             if etype == "subagent_tool":
                 payload = self._fit_tool_frame(aid, payload)
+            elif etype == "subagent_retrying" and aid in self._chunks:
+                # This agent's older chunk item would clear the retrying flag.
+                self._flush_if_pending()
             entry = self._updates.setdefault(aid, {"slot": payload.get("slot", "")})
             # Latest state wins; merge so a tool update and a stalled update
             # for the same agent ride one entry. Incompatible fields are
@@ -186,8 +193,9 @@ class SubagentEventCoalescer:
         if self._chunks:
             chunks = [
                 {"id": aid, "slot": buf["slot"], "text": buf["text"]}
+                | ({"thinking": buf["thinking"]} if buf["thinking"] else {})
                 for aid, buf in self._chunks.items()
-                if buf["text"]
+                if buf["text"] or buf["thinking"]
             ]
             self._chunks.clear()
             if chunks:

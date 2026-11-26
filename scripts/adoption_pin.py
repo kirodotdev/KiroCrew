@@ -11,6 +11,11 @@ the adoption tree checks against the shipped built-in of the same name. The
 ``legacyNav`` route and icon are read from the shipped built-in's first page.
 ``verify`` does the same for every row and fails on any difference.
 
+A pin row can outlive its wheel copy: the copy is deleted and the row kept. For such
+a name the tree checks run with no shipped built-in, as the gateway runs them, and
+``legacyNav`` is carried from the name's current row. A name that is neither shipped
+nor pinned is refused.
+
 ``minAppSdkLevel`` is ``--min-sdk-level`` (default 1); the tool never raises it on
 its own. The tree is scanned for the App Kit seams above level 1 it uses
 (``_seam_level_uses``), and a level below the highest one found is refused by both
@@ -84,6 +89,19 @@ _BACKEND_SDK_MODULE = backend_sdk.__name__
 _BACKEND_SDK_ROOT = _BACKEND_SDK_MODULE.split(".", 1)[0]
 _BACKEND_SDK_LEAF = re.compile(r"\b%s\b" % re.escape(_BACKEND_SDK_MODULE.rsplit(".", 1)[1]))
 
+#: The backend SDK names published above the package's own level, with each one's
+#: level (``backend_sdk._EXPORT_LEVELS``). A tree imports the package in one file and
+#: calls its names in others, so a name counts in any scanned file once some scanned
+#: file names the package.
+_BACKEND_SDK_LATER_NAMES = dict(backend_sdk._EXPORT_LEVELS)
+#: Those names as whole words; ``None`` while there are none, since an empty
+#: alternation would match at every word boundary.
+_BACKEND_SDK_LATER_NAME = (
+    re.compile(r"\b(%s)\b" % "|".join(re.escape(name) for name in sorted(_BACKEND_SDK_LATER_NAMES)))
+    if _BACKEND_SDK_LATER_NAMES
+    else None
+)
+
 #: Directories a backend never imports from, so a test fake's ``ctx.turns`` is no use.
 _UNSCANNED_DIRS = frozenset({"tests", "test", "node_modules", ".git"})
 
@@ -137,9 +155,11 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     ``contributes.memoryProviders`` at level 8, and at level 10
     ``permissions.chatLaunch`` and any ``credentialMasks`` again, where the agent tool
     gate fences an installed app's masks as it fences the built-ins'), the context
-    seams any non-test ``.py`` file reaches, and the backend SDK package (level 7) any
-    of them names. A miss lets a pin adopt on a host without the seam, so the scan errs
-    wide: a false hit only asks for a higher ``--min-sdk-level``.
+    seams any non-test ``.py`` file reaches, the backend SDK package (level 7) any of
+    them names, and, once one of them names the package, each backend SDK name
+    published above level 7 that any of them mentions, at that name's level. A miss
+    lets a pin adopt on a host without the seam, so the scan errs wide: a false hit
+    only asks for a higher ``--min-sdk-level``.
     """
     raw = json.loads((tree / "app.json").read_text(encoding="utf-8"))
     permissions = raw.get("permissions")
@@ -184,6 +204,7 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
         uses["app.json credentialMasks tool gate"] = 10
     if "chatLaunch" in permissions:
         uses["app.json permissions.chatLaunch"] = 10
+    later_sdk_names: set[str] = set()
     for dirpath, dirnames, filenames in os.walk(tree):
         dirnames[:] = sorted(d for d in dirnames if d not in _UNSCANNED_DIRS)
         for filename in sorted(filenames):
@@ -197,6 +218,11 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
                 uses.setdefault(f"ctx.{seam}", _CONTEXT_SEAMS[seam])
             if _BACKEND_SDK_ROOT in source and _BACKEND_SDK_LEAF.search(source):
                 uses.setdefault(_BACKEND_SDK_MODULE, backend_sdk.BACKEND_SDK_LEVEL)
+            if _BACKEND_SDK_LATER_NAME is not None:
+                later_sdk_names.update(m.group(1) for m in _BACKEND_SDK_LATER_NAME.finditer(source))
+    if _BACKEND_SDK_MODULE in uses:
+        for name in sorted(later_sdk_names):
+            uses[f"{_BACKEND_SDK_MODULE}.{name}"] = _BACKEND_SDK_LATER_NAMES[name]
     return uses
 
 
@@ -219,6 +245,14 @@ def _shipped(name: str) -> tuple[Path, dict[str, Any]] | None:
         if manifest_name == name:
             return root, json.loads((root / "app.json").read_text(encoding="utf-8"))
     return None
+
+
+def _current_legacy_nav(name: str) -> dict[str, str]:
+    """*name*'s ``legacyNav`` in the shipped table, its only record once the wheel copy is gone."""
+    current = parse_adoption_pins(json.loads(_PINS_PATH.read_text(encoding="utf-8"))).get(name)
+    if current is None:
+        raise SystemExit(f"{name}: no shipped built-in and no pin row of that name")
+    return {"route": current.legacy_route, "icon": current.legacy_icon}
 
 
 def _clone(repository: str, commit: str, dest: Path) -> None:
@@ -281,20 +315,17 @@ def _measure(pin: AdoptionPin, work: Path) -> dict[str, Any]:
     manifest = AppManifest.from_json_file(extracted / "app.json")
     shipped = _shipped(pin.name)
     if shipped is None:
-        raise SystemExit(f"{pin.name}: no shipped built-in of that name")
-    shipped_root, shipped_raw = shipped
-    refusal = pinned_tree_refusal(
-        pin,
-        manifest,
-        extracted,
-        shipped_manifest=AppManifest.from_json_file(shipped_root / "app.json"),
-    )
+        page = _current_legacy_nav(pin.name)
+        shipped_manifest = None
+    else:
+        page = (shipped[1].get("ui", {}).get("pages") or [{}])[0]
+        shipped_manifest = AppManifest.from_json_file(shipped[0] / "app.json")
+    refusal = pinned_tree_refusal(pin, manifest, extracted, shipped_manifest=shipped_manifest)
     if refusal:
         raise SystemExit(f"{pin.name}: the pinned tree is refused: {refusal}")
     sdk_refusal = _sdk_level_refusal(pin.name, pin.min_app_sdk_level, _seam_level_uses(extracted))
     if sdk_refusal:
         raise SystemExit(sdk_refusal)
-    page = (shipped_raw.get("ui", {}).get("pages") or [{}])[0]
     return {
         "name": pin.name,
         "repository": pin.repository,

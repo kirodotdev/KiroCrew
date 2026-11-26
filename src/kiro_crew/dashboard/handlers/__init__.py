@@ -1127,6 +1127,7 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     api_kirocrew_config_patch,
     api_live,
     api_logout,
+    api_logout_link,
     api_ready,
     api_security_posture,
     api_security_stats,

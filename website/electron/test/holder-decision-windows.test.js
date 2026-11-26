@@ -4,7 +4,7 @@
 // foreign port owner. resolveGatewayConflict offers a stop only once it is
 // proven to be this data folder's Kiro Crew gateway.
 
-const fs = require("node:fs");
+const nodeFs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
@@ -26,6 +26,7 @@ function windowsHolder({
   health = { app: "kirocrew", version: "0.11.0" },
   commandAfterDialog = null,
   snapshotGatewayPortPids = async () => pids,
+  fs = null,
 } = {}) {
   const dialogs = [];
   const stops = [];
@@ -38,6 +39,7 @@ function windowsHolder({
     dialog: {
       async showMessageBox(options) { dialogs.push(options); dialogShown = true; return { response }; },
     },
+    fs,
     path: path.win32,
     processObj: { platform: "win32", resourcesPath: "C:\\New\\resources", env: {} },
     port: 5476,
@@ -102,7 +104,7 @@ test("a gateway of the other release family is offered no Use it", async () => {
 function netstatSnapshot(failures) {
   let runs = 0;
   const holders = createPortHolders({
-    fs, os, path,
+    fs: nodeFs, os, path,
     execFile(file, _args, _options, callback) {
       if (!String(file).toLowerCase().includes("netstat")) {
         callback(new Error(`unexpected command: ${file}`));
@@ -195,4 +197,24 @@ test("only a command line that opens with a quoted, non-empty path names an exec
     assert.deepStrictEqual(await decision.resolveGatewayConflict(), FOREIGN_HOLDER);
     assert.strictEqual(dialogs.length, 0);
   }
+});
+
+test("the update stop's bundle check reads the listener's executable on Windows, without case", async () => {
+  const executable = "c:\\new\\Resources\\backend-dist\\kirocrew-backend\\python.exe";
+  const own = `"${executable}" ${executable} -m kiro_crew gateway --no-open --port 5476`;
+  const { decision } = windowsHolder({ command: own });
+  assert.strictEqual(await decision.isCurrentBundleGatewayForUpdate(), true);
+  assert.strictEqual(await decision.isCurrentBundleGateway(), false, "every other caller keeps the Windows answer");
+  const sibling = "C:\\New\\resources\\backend-dist-old\\python.exe";
+  for (const command of [OLD_COMMAND, `"${sibling}" ${sibling} -m kiro_crew gateway --no-open --port 5476`]) {
+    assert.strictEqual(await windowsHolder({ command }).decision.isCurrentBundleGatewayForUpdate(), false, command);
+  }
+  // A Toolbox-style install: the app runs through a `current` junction and
+  // Windows reports the gateway by the version folder it resolved to.
+  const resolvedExe = "C:\\Toolbox\\0.12.0\\resources\\backend-dist\\kirocrew-backend\\python.exe";
+  const junction = windowsHolder({
+    command: `"${resolvedExe}" ${resolvedExe} -m kiro_crew gateway --no-open --port 5476`,
+    fs: { realpathSync: { native: () => "C:\\Toolbox\\0.12.0\\resources" } },
+  });
+  assert.strictEqual(await junction.decision.isCurrentBundleGatewayForUpdate(), true);
 });

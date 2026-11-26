@@ -1413,6 +1413,7 @@ class KasHarness(MembershipHarness):
 
                 spec, prompt_dir = merge_at_spawn(agent, bound), agents_dir
             else:
+                kas_agents_mod.refuse_held_spec(paths_mod.spec_dir_for(agent, agents_dir), agent)
                 try:
                     spec, prompt_dir = resolve_projected_spec(
                         agents_dir,
