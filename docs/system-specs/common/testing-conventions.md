@@ -1001,7 +1001,7 @@ def test_a_deep_nest_is_refused_without_an_exception():
 
 def test_the_ssh_floor_refuses_at_its_reading_bound():
     depth = ssh._MAX_SSH_READING_DEPTH
-    assert depth <= deny_gate._MAX_SUBSTITUTION_DEPTH, "the gate cap would answer first"
+    assert depth <= deny_gate_nesting._MAX_SUBSTITUTION_DEPTH, "the gate cap would answer first"
     assert _denied_by(_nested_double_quoted(depth, "true; echo ssh")) == "sandbox-escape-ssh-self"
     assert _denied_by(_nested_double_quoted(depth - 1, "true; echo ssh")) is None
 ```

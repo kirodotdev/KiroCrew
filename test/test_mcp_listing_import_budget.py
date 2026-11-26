@@ -118,11 +118,15 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: the git grammar it reads a git argv with into the owner ``security.argv_floor_git_grammar``,
 #: which the facade imports with the rest of its owners; the module count rose by that one
 #: file and nothing new loads.
+#: Raised by 1 for each server: the line-cap split of ``security.deny_gate`` moved its
+#: substitution-nesting cap into ``security.deny_gate_nesting``, which the deny gate imports
+#: when the security package loads; the module count rose by that one file and nothing new
+#: loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 503,
-    "mcp-cron": 370,
-    "mcp-guide": 364,
-    "mcp-mate": 366,
+    "mcp-core": 504,
+    "mcp-cron": 371,
+    "mcp-guide": 365,
+    "mcp-mate": 367,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
