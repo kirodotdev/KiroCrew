@@ -126,9 +126,13 @@ async def test_hidden_job_cannot_name_a_chat(tmp_path, session_member):
     assert jobs == []
 
 
-def _job(target: str) -> SimpleNamespace:
+def _job(target: str, *, job_id: str = "abcd1234") -> SimpleNamespace:
     return SimpleNamespace(
-        id="abcd1234", name="later", target_session_key=target, last_run_ts=0, timezone=""
+        id=job_id,
+        name="later",
+        target_session_key=target,
+        last_result_stamp=" · Nov 26, 2026, 12:00:00 AM UTC",
+        last_result_ts=1795651200.123456,
     )
 
 
@@ -154,6 +158,59 @@ async def test_result_is_posted_into_the_target_chat_once(monkeypatch):
     # The same result again does not stack a second copy.
     assert await cron_inject.post_result_to_target_session(state, job, "hello") is False
     assert len(posted) == 1
+
+
+@pytest.mark.asyncio
+async def test_existing_pending_target_loads_window_before_reading_messages(monkeypatch):
+    class PendingChat:
+        linked_session_key = ""
+        window_pending = True
+
+        def __init__(self):
+            self._messages = []
+
+        @property
+        def messages(self):
+            assert self.window_pending is False
+            return self._messages
+
+    chat = PendingChat()
+    loaded = []
+
+    async def _load_window(slot):
+        loaded.append(slot)
+        slot.window_pending = False
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.load_window_off_loop", _load_window)
+    monkeypatch.setattr(cron_inject, "append_and_surface", lambda *args: None)
+    state = MagicMock()
+    state.get_slot = lambda name: {"chat-1": chat}.get(name)
+
+    assert await cron_inject.post_result_to_target_session(state, _job("dashboard:chat-1"), "hello")
+    assert loaded == [chat]
+
+
+@pytest.mark.asyncio
+async def test_same_named_jobs_post_identical_results_to_one_chat(monkeypatch):
+    posted = []
+
+    def _append(_state, slot, _role, content, _cls):
+        posted.append(content)
+        slot.messages.append({"content": content})
+
+    monkeypatch.setattr(cron_inject, "append_and_surface", _append)
+    chat = _chat()
+    state = MagicMock()
+    state.get_slot = lambda name: {"chat-1": chat}.get(name)
+
+    first = _job("dashboard:chat-1", job_id="job-one")
+    second = _job("dashboard:chat-1", job_id="job-two")
+    assert await cron_inject.post_result_to_target_session(state, first, "same result")
+    assert await cron_inject.post_result_to_target_session(state, second, "same result")
+
+    assert len(posted) == 2
+    assert "<!-- cron-run:job-one:1795651200.123456 -->" in posted[0]
+    assert "<!-- cron-run:job-two:1795651200.123456 -->" in posted[1]
 
 
 @pytest.mark.asyncio

@@ -1049,19 +1049,23 @@ async def post_result_to_target_session(
     if slot is None:
         # Body-scope: chat_persistence imports this module's neighbours at load.
         from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
-        from kiro_crew.dashboard.state import load_window_off_loop
 
         slot = await rehydrate_slot_from_history_async(state, slot_name)
         if slot is None:
             return False
-        if getattr(slot, "window_pending", False) is True:
-            await load_window_off_loop(slot)
+    if getattr(slot, "window_pending", False) is True:
+        from kiro_crew.dashboard.state import load_window_off_loop
+
+        await load_window_off_loop(slot)
     linked = getattr(slot, "linked_session_key", "") or ""
     if (linked and linked != key) or _app_owned(slot):
         return False
     safe_result, _ = redact_exfiltration_urls(result_text)
     safe_result, _ = redact_credentials(safe_result)
-    content = f"# Cron Job Result: {_safe_job_name(job)}{run_stamp(job)}\n\n{safe_result}"
+    content = (
+        f"# Cron Job Result: {_safe_job_name(job)}{run_stamp(job)}{run_marker(job)}\n\n"
+        f"{safe_result}"
+    )
     if any(msg.get("content") == content for msg in slot.messages):
         return False
     append_and_surface(state, slot, "assistant", content, "msg msg-a")
