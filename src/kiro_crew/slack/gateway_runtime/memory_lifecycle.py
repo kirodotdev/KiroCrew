@@ -437,9 +437,31 @@ def _repair_store_once(self: GatewayOrchestrator, name: str, store: Any, *, fres
         return False
     if store.embed_fn is None:
         store.embed_fn = make_sync_embed_fn()
-    store.backfill_missing_embeddings(
-        max_rows_per_kind=16, should_stop=self._memory_repair_stop.is_set
-    )
+    import contextlib
+    import os
+
+    from kiro_crew.embeddings import bulk_backlog_boost
+    from kiro_crew.memory_dream import person_turn_running
+    from kiro_crew.resource_status import _read_load_per_cpu
+    from kiro_crew.vector_memory_runtime.embedding_repair import pending_rows_at_least
+
+    # A store with 500+ rows waiting drains at the backlog duty while the host
+    # is idle: no chat turn and under half a runnable task per core, asked again
+    # before every paced row (no load average, as on Windows, reads as busy).
+    def host_idle() -> bool:
+        load = _read_load_per_cpu(os.cpu_count() or 1)
+        return load is not None and load < 0.5 and not person_turn_running(self)
+
+    try:
+        backlog = pending_rows_at_least(store, 500)
+    except Exception:  # noqa: BLE001 - the boost is optional; the sweep still runs
+        logger.debug("Backlog count failed; sweeping at the default duty", exc_info=True)
+        backlog = False
+    boost = bulk_backlog_boost(host_idle) if backlog else contextlib.nullcontext()
+    with boost:
+        store.backfill_missing_embeddings(
+            max_rows_per_kind=16, should_stop=self._memory_repair_stop.is_set
+        )
     return True
 
 
