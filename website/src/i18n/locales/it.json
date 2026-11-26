@@ -14281,7 +14281,11 @@
         "more_running_normally_count_many": "altri {{count}} in esecuzione normale…",
         "more_running_normally_count_other": "altri {{count}} in esecuzione normale…",
         "engine_stops_with_answer": "I sub-agent che girano nella chat si fermano quando fermi la risposta.",
-        "stop_all_and_answer": "Arresta tutti e la risposta"
+        "stop_all_and_answer": "Arresta tutti e la risposta",
+        "older_runs_not_shown_one": "+{{count}} precedente non mostrato",
+        "older_runs_not_shown_many": "+{{count}} precedenti non mostrati",
+        "older_runs_not_shown_other": "+{{count}} precedenti non mostrati",
+        "some_finished_runs_not_shown": "Alcune esecuzioni completate non mostrate"
       },
       "subagentQueued": {
         "low_memory": "in attesa di avvio — richiede {{required}} di memoria libera, ora {{available}} liberi; libera memoria per continuare",

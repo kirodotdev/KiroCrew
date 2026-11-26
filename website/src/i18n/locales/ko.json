@@ -13629,7 +13629,9 @@
         "chip_stalled_other": "에이전트 {{count}}개 멈춤 가능성",
         "more_running_normally_count_other": "나머지 {{count}}개는 정상 실행 중…",
         "engine_stops_with_answer": "채팅 안에서 실행되는 하위 에이전트는 응답을 중지하면 함께 중지됩니다.",
-        "stop_all_and_answer": "모두와 응답 중지"
+        "stop_all_and_answer": "모두와 응답 중지",
+        "older_runs_not_shown_other": "이전 실행 {{count}}개 표시 안 됨",
+        "some_finished_runs_not_shown": "완료된 실행 일부 표시 안 됨"
       },
       "subagentQueued": {
         "low_memory": "시작 대기 중 — 여유 메모리 {{required}} 필요, 현재 {{available}} 여유. 계속하려면 메모리를 확보하세요",

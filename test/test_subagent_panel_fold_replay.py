@@ -1199,3 +1199,168 @@ class TestAFailedUnitSearchIsNotReadAsNoObligation:
 
         monkeypatch.setattr(ledger, "_excluded_units", lambda slot_key: frozenset({"acp-deleted"}))
         assert unit_holding_child("chat-1", "a-1") == ""
+
+
+@contextlib.contextmanager
+def _ticking_clock():
+    """Give every append its own envelope stamp, one millisecond apart, so the
+    cap's newest-first order is the order the test wrote, whatever the host clock's
+    granularity. Starts a minute back so every row is inside the age window."""
+    from kiro_crew.crew_log import store
+
+    real = store.now_ms
+    start = real() - 60_000
+    ticks = iter(range(start, start + 10_000_000))
+    store.now_ms = lambda: next(ticks)
+    try:
+        yield
+    finally:
+        store.now_ms = real
+
+
+def _read_cut(units, *, keep: int, admit=None, now=None):
+    cut: dict = {}
+    records, overflow = read_fold_subagent_records(
+        list(units),
+        keep=keep,
+        max_age_secs=DAY,
+        exclude_ids=(),
+        admit=admit if admit is not None else (lambda _record: True),
+        now=now,
+        cut=cut,
+    )
+    return records, overflow, cut
+
+
+def _small_retain_limit(monkeypatch) -> int:
+    """Shrink the fold's retain limit on every owner: past the real one a unit is ~1k
+    records, which the product fold reads cold, over the CI read budget."""
+    from kiro_crew.crew_log import projection
+
+    monkeypatch.setattr(projection, "OPEN_RETAIN_LIMIT", 4)
+    return 4
+
+
+class TestWhatTheCapCutIsCountedPerSlot:
+    """The per-slot tally the dashboard's chip reads: each cut record counts under
+    its OWN slot, whether it was never pushed or was displaced from the heap."""
+
+    def test_one_slot_past_the_cap_gets_the_exact_count(self):
+        with _ticking_clock():
+            handle = _log("acp-1")
+            for index in range(5):
+                _spawn(handle, f"a-{index}")
+                _done(handle, f"a-{index}", ms=5)
+
+        _records, overflow, cut = _read_cut([("chat-1", "acp-1")], keep=2)
+        assert overflow == 3
+        assert cut == {"chat-1": {"n": 3, "at_least": False}}
+
+    @pytest.mark.parametrize("older_first", [True, False], ids=["displaced", "never-pushed"])
+    def test_a_slot_within_the_cap_on_its_own_is_cut_when_the_shared_cap_says_so(self, older_first):
+        """Read older-first, the old slot's records are pushed and then displaced;
+        read newer-first, they are never pushed. Either way the cut is theirs."""
+        with _ticking_clock():
+            old = _log("acp-old", slot="chat-old")
+            new = _log("acp-new", slot="chat-new")
+            for index in range(3):
+                _spawn(old, f"old-{index}")
+                _done(old, f"old-{index}", ms=5)
+            for index in range(3):
+                _spawn(new, f"new-{index}")
+                _done(new, f"new-{index}", ms=5)
+        units = [("chat-old", "acp-old"), ("chat-new", "acp-new")]
+        if not older_first:
+            units.reverse()
+
+        records, overflow, cut = _read_cut(units, keep=4)
+        assert [r["id"] for r in records] == ["new-2", "new-1", "new-0", "old-2"]
+        assert cut == {"chat-old": {"n": 2, "at_least": False}}
+        assert sum(entry["n"] for entry in cut.values()) == overflow
+
+    def test_two_slots_each_get_their_own_cut_and_together_the_total(self):
+        with _ticking_clock():
+            first = _log("acp-a", slot="chat-a")
+            second = _log("acp-b", slot="chat-b")
+            for index in range(4):
+                for handle, name in ((first, "a"), (second, "b")):
+                    _spawn(handle, f"{name}-{index}")
+                    _done(handle, f"{name}-{index}", ms=5)
+
+        _records, overflow, cut = _read_cut([("chat-a", "acp-a"), ("chat-b", "acp-b")], keep=4)
+        assert cut == {"chat-a": {"n": 2, "at_least": False}, "chat-b": {"n": 2, "at_least": False}}
+        assert overflow == 4
+
+    def test_nothing_past_the_cap_tallies_nothing(self):
+        handle = _log("acp-1")
+        _spawn(handle, "a-1")
+        _done(handle, "a-1", ms=5)
+
+        _records, overflow, cut = _read_cut([("chat-1", "acp-1")], keep=2)
+        assert (overflow, cut) == (0, {})
+
+    def test_a_unit_past_the_folds_retain_limit_makes_its_slot_a_floor_even_at_no_cut(
+        self, monkeypatch
+    ):
+        """The fold keeps the FIRST dispatches past its limit, so the newest runs, the
+        finished one included, are neither replayed nor counted: the tally is a lower bound."""
+        limit = _small_retain_limit(monkeypatch)
+
+        handle = _log("acp-1")
+        for index in range(limit + 1):
+            _spawn(handle, f"a-{index}")
+        _done(handle, "a-0", ms=5)
+        _done(handle, f"a-{limit}", ms=5)
+
+        records, overflow, cut = _read_cut([("chat-1", "acp-1")], keep=50)
+        assert [r["id"] for r in records] == ["a-0"]
+        assert overflow == 0
+        assert cut == {"chat-1": {"n": 0, "at_least": True}}
+
+    def test_a_unit_past_the_limit_whose_cut_dispatch_still_runs_is_not_a_floor(self, monkeypatch):
+        """A cut run still in flight is not a finished run the replay left out."""
+        limit = _small_retain_limit(monkeypatch)
+
+        handle = _log("acp-1")
+        for index in range(limit + 1):
+            _spawn(handle, f"a-{index}")
+        _done(handle, "a-0", ms=5)
+
+        records, overflow, cut = _read_cut([("chat-1", "acp-1")], keep=50)
+        assert [r["id"] for r in records] == ["a-0"]
+        assert overflow == 0
+        assert cut == {}
+
+    @pytest.mark.parametrize("bound", ["older-than-the-window", "refused-by-admit"])
+    def test_a_unit_past_the_limit_with_no_admitted_row_is_not_a_floor(self, bound, monkeypatch):
+        """Only an admitted row puts the cap's cut dispatches inside the window and
+        the caller's own bounds. Marked anyway, an old unit gets a note on every
+        reload and a refused one tells the caller about a unit it may not see."""
+        from kiro_crew.dashboard.subagent_replay_scope import UNIT_ROWS
+
+        limit = _small_retain_limit(monkeypatch)
+        handle = _log("acp-1")
+        for index in range(limit + 1):
+            _spawn(handle, f"a-{index}")
+        _done(handle, "a-0", ms=5)
+        _done(handle, f"a-{limit}", ms=5)
+        _app, rows, capped = UNIT_ROWS.rows_and_cap("acp-1")
+        assert capped, "precondition: the fold's cap cut the unit"
+        if bound == "older-than-the-window":
+            # Two days past the newest kept dispatch, read back rather than assumed.
+            newest_ms = max(float(row["started_ms"]) for row in rows.values())
+            bounds = {"now": newest_ms / 1000.0 + 2 * DAY}
+        else:
+            bounds = {"admit": lambda _record: False}
+
+        assert _read_cut([("chat-1", "acp-1")], keep=50, **bounds) == ([], 0, {})
+
+    def test_a_unit_at_the_limit_with_nothing_omitted_is_not_a_floor(self, monkeypatch):
+        limit = _small_retain_limit(monkeypatch)
+
+        handle = _log("acp-1")
+        for index in range(limit):
+            _spawn(handle, f"a-{index}")
+        _done(handle, "a-0", ms=5)
+
+        assert _read_cut([("chat-1", "acp-1")], keep=50)[2] == {}
