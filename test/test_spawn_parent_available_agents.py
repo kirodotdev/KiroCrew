@@ -730,6 +730,27 @@ class TestToolDescriptionRoster:
         assert "availableAgents" in listing and "every installed agent is refused" in listing
         assert "Available agents:" not in listing
 
+    def test_an_alias_spelled_allowlist_is_named_by_the_setting(
+        self, triage_fixture: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A spec that wrote ``use_subagent`` is told about ``availableAgents``, a
+        key it contains, never ``toolsSettings.subagent``, which it does not."""
+        _write_spec(
+            triage_fixture,
+            "aliased",
+            toolsSettings={"use_subagent": {"availableAgents": ["agent1"]}},
+        )
+        agent_discovery.clear_list_agents_cache()
+        monkeypatch.setattr(spawn_tools, "_parent_template_for_roster", lambda: "aliased")
+        denial = _vet("aliased", "rogue")
+        hint = spawn_tools._agent_roster_hint()
+        with patch.object(spawn_tools.mcp_core, "_get", return_value={"agents": []}):
+            listing = spawn_tools.spawn_list("spawn_list", {})
+        assert denial is not None
+        for text in (denial, hint, listing):
+            assert "availableAgents" in text
+            assert "toolsSettings.subagent" not in text
+
     def test_unreadable_parent_leaves_the_roster_alone(
         self, triage_fixture: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
