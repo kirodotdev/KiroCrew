@@ -6708,7 +6708,7 @@
       "default_colour": "Default colour",
       "delete": "Delete",
       "delete_connector": "Delete connector",
-      "empty_hint": "Pick a sticky from the dock, or double-click anywhere to add one.",
+      "empty_hint": "Pick a sticky from the dock, or press S, then click the canvas to add one.",
       "add_text": "Add text",
       "align": "Alignment",
       "align_center": "Align centre",

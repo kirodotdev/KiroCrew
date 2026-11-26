@@ -12141,7 +12141,7 @@
       "delete": "Supprimer",
       "delete_connector": "Supprimer le connecteur",
       "edge_white": "Blanc (par défaut)",
-      "empty_hint": "Choisis une note dans le dock, ou double-clique n’importe où pour en ajouter une.",
+      "empty_hint": "Choisis une note dans le dock, ou appuie sur S, puis clique sur le canevas pour en ajouter une.",
       "empty_title": "Un canevas vierge",
       "eyedropper": "Pipette",
       "eyedropper_label": "Prélever une couleur à l’écran",

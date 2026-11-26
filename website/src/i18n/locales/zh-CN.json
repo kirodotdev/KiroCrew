@@ -11595,7 +11595,7 @@
       "delete": "删除",
       "delete_connector": "删除连接线",
       "edge_white": "白色（默认）",
-      "empty_hint": "从停靠栏选取便签，或在任意位置双击来添加。",
+      "empty_hint": "从停靠栏选取便签，或按 S 后点击画布来添加。",
       "empty_title": "空白画布",
       "eyedropper": "取色器",
       "eyedropper_label": "从屏幕取色",

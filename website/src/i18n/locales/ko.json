@@ -11595,7 +11595,7 @@
       "delete": "삭제",
       "delete_connector": "연결선 삭제",
       "edge_white": "흰색(기본값)",
-      "empty_hint": "도크에서 스티커 메모를 선택하거나 아무 곳이나 더블클릭해 추가하세요.",
+      "empty_hint": "도크에서 스티커 메모를 선택하거나 S를 누른 다음 캔버스를 클릭해 추가하세요.",
       "empty_title": "빈 캔버스",
       "eyedropper": "스포이트",
       "eyedropper_label": "화면에서 색상 선택",

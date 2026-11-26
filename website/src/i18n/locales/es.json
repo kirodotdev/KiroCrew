@@ -12141,7 +12141,7 @@
       "delete": "Eliminar",
       "delete_connector": "Eliminar conector",
       "edge_white": "Blanco (predeterminado)",
-      "empty_hint": "Elige una nota adhesiva del dock o haz doble clic en cualquier lugar para agregar una.",
+      "empty_hint": "Elige una nota adhesiva del dock o pulsa S y luego haz clic en el lienzo para agregar una.",
       "empty_title": "Un lienzo en blanco",
       "eyedropper": "Cuentagotas",
       "eyedropper_label": "Tomar un color de la pantalla",

@@ -11595,7 +11595,7 @@
       "delete": "削除",
       "delete_connector": "コネクターを削除",
       "edge_white": "白（デフォルト）",
-      "empty_hint": "ドックから付箋を選ぶか、任意の場所をダブルクリックして追加します。",
+      "empty_hint": "ドックから付箋を選ぶか、S を押してからキャンバスをクリックして追加します。",
       "empty_title": "空白のキャンバス",
       "eyedropper": "スポイト",
       "eyedropper_label": "画面から色を取得",

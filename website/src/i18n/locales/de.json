@@ -11868,7 +11868,7 @@
       "delete": "Löschen",
       "delete_connector": "Verbindung löschen",
       "edge_white": "Weiß (Standard)",
-      "empty_hint": "Wähle eine Haftnotiz aus dem Dock oder doppelklicke irgendwo, um eine hinzuzufügen.",
+      "empty_hint": "Wähle eine Haftnotiz aus dem Dock oder drücke S und klicke dann auf die Leinwand, um eine hinzuzufügen.",
       "empty_title": "Ein leerer Canvas",
       "eyedropper": "Pipette",
       "eyedropper_label": "Farbe vom Bildschirm aufnehmen",
