@@ -43,14 +43,33 @@
  * permanent ghost. Unmounting on failure (which a caller's own latch would do)
  * drops the observer, and the refetch has nobody to draw for.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
-import { LottieRenderer } from './LottieRenderer'
 import { SpriteRenderer } from './SpriteRenderer'
 import { packSlotUrl } from '../../lib/appearancePacks/library'
 import { resolveSlot, spriteRowFor, type PackDetail } from '../../lib/appearancePacks/detail'
 import { usePackDetail } from '../../hooks/usePackDetail'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
+
+/** Stands in for the player when its chunk will not load: reports it as the
+ *  load failure it is, so the crew gets its fallback face instead of a blank box. */
+function LottieLoadFailed({ onError }: { onError?: () => void }) {
+  useEffect(() => {
+    onError?.()
+  }, [onError])
+  return null
+}
+
+// Loaded on demand, off the first load: lottie-web is ~330 KB, and only a pack
+// whose art is a Lottie clip draws with it.
+// shortcut: lazy() caches a failed load, so every Lottie avatar shows its
+// fallback until the page reloads; use lazyRetry-style re-loading if that bites.
+const LottieRenderer = lazy(() =>
+  import('./LottieRenderer').then(
+    (m) => ({ default: m.LottieRenderer }),
+    () => ({ default: LottieLoadFailed }),
+  ),
+)
 
 export interface PackAvatarProps {
   /** The pack id from the crew's `avatar` record — already validated by
@@ -206,17 +225,20 @@ export default function PackAvatar({ id, state, size, className = '', onError, f
       data-pack-playing={playing ? 'true' : 'false'}
     >
       {art.format === 'lottie' ? (
-        <LottieRenderer
-          animationData={art.content}
-          width={size}
-          height={size}
-          loop
-          autoplay={playing}
-          // Malformed art is a load failure like a missing file: the importer only
-          // checks that a pack's `.json` is non-empty, so a clip this player
-          // cannot parse reaches here and must fall back rather than draw nothing.
-          onError={reportFailed}
-        />
+        // The box above holds the avatar's size while the player loads.
+        <Suspense fallback={null}>
+          <LottieRenderer
+            animationData={art.content}
+            width={size}
+            height={size}
+            loop
+            autoplay={playing}
+            // Malformed art is a load failure like a missing file: the importer only
+            // checks that a pack's `.json` is non-empty, so a clip this player
+            // cannot parse reaches here and must fall back rather than draw nothing.
+            onError={reportFailed}
+          />
+        </Suspense>
       ) : art.format === 'sprite' ? (
         <SpriteRenderer
           // The sheet as an IMAGE, from the slot route — which base64-decodes it

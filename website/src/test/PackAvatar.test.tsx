@@ -140,7 +140,7 @@ describe('PackAvatar format dispatch', () => {
     render(<PackAvatar id="aurora" state="idle" size={40} />)
 
     await screen.findByTestId('pack-avatar-lottie')
-    const stub = screen.getByTestId('lottie-stub')
+    const stub = await screen.findByTestId('lottie-stub')
     expect(stub.getAttribute('data-bytes')).toBe('13')
     expect(stub.getAttribute('data-loop')).toBe('true')
   })
@@ -382,7 +382,7 @@ describe('PackAvatar animation is bounded by visibility', () => {
     // No observer callback has fired, so nothing is known to be visible yet.
     const box = await screen.findByTestId('pack-avatar-lottie')
     expect(box.getAttribute('data-pack-playing')).toBe('false')
-    expect(screen.getByTestId('lottie-stub').getAttribute('data-autoplay')).toBe('false')
+    expect((await screen.findByTestId('lottie-stub')).getAttribute('data-autoplay')).toBe('false')
   })
 
   it('plays once the avatar scrolls into view, and stops when it leaves', async () => {
@@ -428,7 +428,7 @@ describe('PackAvatar animation is bounded by visibility', () => {
       // preference this would be playing.
       const box = await screen.findByTestId('pack-avatar-lottie')
       expect(box.getAttribute('data-pack-playing')).toBe('false')
-      expect(screen.getByTestId('lottie-stub').getAttribute('data-autoplay')).toBe('false')
+      expect((await screen.findByTestId('lottie-stub')).getAttribute('data-autoplay')).toBe('false')
 
       // The preference is a live system setting: flipping it resumes the timeline.
       reduce = false
@@ -505,7 +505,7 @@ describe('PackAvatar animation is bounded by visibility', () => {
     const box = await screen.findByTestId('pack-avatar-lottie')
     // The suite's observer stub reports intersecting immediately.
     expect(box.getAttribute('data-pack-playing')).toBe('false')
-    expect(screen.getByTestId('lottie-stub').getAttribute('data-autoplay')).toBe('false')
+    expect((await screen.findByTestId('lottie-stub')).getAttribute('data-autoplay')).toBe('false')
 
     rerender(
       <QueryClientProvider client={qc}>
