@@ -473,6 +473,17 @@ describe('SubagentProgressBar — why the queued agents wait', () => {
     expect(line.textContent).not.toMatch(/free now|not enough free memory/)
   })
 
+  it('says the memory reading did not answer, not that memory is short, when the read timed out', () => {
+    const store = makeStore(['a1'])
+    store.dispatch(sseSubagentQueued({
+      slot: SLOT, queued: 1, reason: 'low_memory', required_gb: 8.3, cause: 'host_read_unanswered',
+    }))
+    renderBar(store)
+    const line = screen.getByTestId('subagent-wait-reason')
+    expect(line.textContent).toContain('the memory reading did not answer in time')
+    expect(line.textContent).not.toMatch(/free now|not enough free memory|free up memory/)
+  })
+
   it('renders no extra line for a bare count (older gateway) or the capacity wait', () => {
     const store = makeStore(['a1'])
     store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 2 }))
