@@ -1,0 +1,2 @@
++52
+The production StreamRedactor in text_redaction hides only the rest of a Cookie line that the structured detectors decide past their hold bound (one tag, output hidden to the line break, the text still read), instead of dropping the rest of the segment, keeps that hide across a flush at a display boundary until the line break, and joins a chunk that only extends a held Cookie line to the next feed so it is not read again on each small chunk (#38129, #39803).
