@@ -523,14 +523,22 @@ class HeadingAwareChunker:
         if current or current_title is not None:
             slides.append((current_title, current_start, current))
 
-        results = [
-            {
-                "content": "\n".join(body).strip(),
-                "section_title": title,
-                "chunk_index": i,
-                "line_start": start,
-                "line_end": start + len(body) - 1,
-            }
-            for i, (title, start, body) in enumerate(slides)
-        ]
+        results = []
+        for i, (title, start, body) in enumerate(slides):
+            # A marker line is not part of its body, so a marked slide's text
+            # starts on the line below it. The reported end is the last line
+            # holding text, or the marker itself when the slide has none.
+            line_end = start
+            for lineno, line in enumerate(body, start if title is None else start + 1):
+                if line.strip():
+                    line_end = lineno
+            results.append(
+                {
+                    "content": "\n".join(body).strip(),
+                    "section_title": title,
+                    "chunk_index": i,
+                    "line_start": start,
+                    "line_end": line_end,
+                }
+            )
         return _fit_cap(results)
