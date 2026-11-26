@@ -437,6 +437,32 @@ def test_a_scan_error_in_a_names_pass_keeps_the_rows_and_retries(indexed, monkey
     _assert_same(log)
 
 
+def test_the_status_listing_is_incomplete_until_a_failed_names_pass_succeeds(
+    indexed, monkeypatch
+) -> None:
+    log, d = indexed.log, indexed.dir
+    assert log.list_sessions_status() == (ConversationLog(base_dir=d).list_sessions(), True)
+    log.append("dashboard:chat-8-8", "user", "a new chat")
+    failed = _fail_scandir_once(monkeypatch, d)
+    assert log.list_sessions_status() == ([], False)
+    assert failed
+    assert log.list_sessions_status() == (ConversationLog(base_dir=d).list_sessions(), True)
+
+
+def test_over_a_bound_the_status_listing_is_the_direct_scan(indexed, monkeypatch) -> None:
+    log, d = indexed.log, indexed.dir
+    monkeypatch.setattr(history_listing_index, "MAX_ROWS", 1)
+    scan = ConversationLog(base_dir=d)._catalog_projection.list_sessions_status
+    with patch.object(
+        log._catalog_projection,
+        "list_sessions_status",
+        wraps=log._catalog_projection.list_sessions_status,
+    ) as direct:
+        assert log.list_sessions_status() == scan()
+    assert direct.call_count == 1
+    assert indexed.index._built is False
+
+
 def test_a_missing_directory_empties_the_index(indexed) -> None:
     assert indexed.log.list_sessions_indexed()
     indexed.dir.rename(indexed.dir.with_name("moved"))
