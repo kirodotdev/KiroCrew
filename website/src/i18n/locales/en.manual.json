@@ -11792,7 +11792,6 @@
       "import_refused_mcp": "This file brings MCP servers, which can't be imported yet.",
       "import_refused_user_template": "This file names a custom dashboard only its sender has.",
       "import_refused_text": "This file holds text that looks like a password or key, so it can't be imported.",
-      "import_refused_agent_files_off": "This is an agent definition file. Turn on dashboard.import_agent_files to import it.",
       "import_keep_hint": "Decide later keeps this import waiting here until it expires. Don't import throws it away.",
       "import_later": "Decide later",
       "profile_harness": "Agent harness",

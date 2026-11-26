@@ -188,9 +188,10 @@ def _json_part(name: str, blob: bytes) -> Any:
 def read_crewmate_file(data: bytes, *, allow_agent_file: bool = False) -> CrewmateFile:
     """Vet and parse one ``.crewmate`` file. Raises :class:`catalog.CardCatalogError`.
 
-    A file that is not a zip but opens with a front matter fence is an agent
-    definition file (:mod:`kiro_crew.crewmate_agent_file`): read as one only when
-    *allow_agent_file* (``dashboard.import_agent_files``), else refused by name.
+    With *allow_agent_file* (``dashboard.import_agent_files``) a file that is not a
+    zip but opens with a front matter fence is read as an agent definition file
+    (:mod:`kiro_crew.crewmate_agent_file`); without it, it is refused like any file
+    that is not a zip.
     """
     from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory_bytes
 
@@ -201,15 +202,11 @@ def read_crewmate_file(data: bytes, *, allow_agent_file: bool = False) -> Crewma
     try:
         vet_zip_inventory_bytes(bytes(data), max_members=ENTRY_MAX)
     except ZipInventoryRejected as exc:
-        from kiro_crew import crewmate_agent_file
+        if allow_agent_file and exc.reason != "too_many_members":
+            from kiro_crew import crewmate_agent_file
 
-        if exc.reason != "too_many_members" and crewmate_agent_file.opens_agent_file(data):
-            if not allow_agent_file:
-                raise _refuse(
-                    "agent_files_off",
-                    "turn on dashboard.import_agent_files to import an agent file",
-                ) from None
-            return crewmate_agent_file.read_agent_file(data)
+            if crewmate_agent_file.opens_agent_file(data):
+                return crewmate_agent_file.read_agent_file(data)
         code = "too_many_entries" if exc.reason == "too_many_members" else "invalid_bundle"
         raise _refuse(code, "this is not a .kirobot file") from None
     try:

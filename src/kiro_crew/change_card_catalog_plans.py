@@ -1447,10 +1447,9 @@ def _import_preview(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, An
     if bundled != {s["name"] for s in carried.get("skills") or ()}:
         raise _fail("invalid_param", "each bundled skill needs its files")
     out: dict[str, Any] = {"risk": RISK_NORMAL, "title": f"Import Bot “{p['name']}”"}
-    changes: list[dict[str, Any]] = [
-        {"field": "name", "label": "Name", "after": p["name"]},
-        {"field": "sender", "label": "From", "after": p.get("sender", "")},
-    ]
+    changes: list[dict[str, Any]] = [{"field": "name", "label": "Name", "after": p["name"]}]
+    if p.get("sender"):
+        changes.append({"field": "sender", "label": "From", "after": p["sender"]})
     for key, label in (("description", "Description"), ("model_hint", "Model")):
         if p.get(key):
             changes.append({"field": key, "label": label, "after": p[key]})

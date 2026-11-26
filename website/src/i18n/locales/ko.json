@@ -22734,7 +22734,6 @@
       "import_refused_mcp": "이 파일에는 MCP 서버가 있는데, 아직 가져올 수 없습니다.",
       "import_refused_user_template": "이 파일은 보낸 사람만 가진 사용자 지정 대시보드를 가리킵니다.",
       "import_refused_text": "이 파일에는 비밀번호나 키처럼 보이는 텍스트가 있어 가져올 수 없습니다.",
-      "import_refused_agent_files_off": "에이전트 정의 파일입니다. 가져오려면 dashboard.import_agent_files 옵션을 켜세요.",
       "slug_collision": "이 Bot은 ‘{{name}}’와(과) 짧은 이름이 같아 채팅이 이미 그쪽에서 사용 중입니다. 이름을 변경해도 짧은 이름은 바뀌지 않습니다. ‘{{self}}’을(를) 삭제하고 짧은 이름이 다른 이름으로 다시 만드세요. ‘{{name}}’은(는) 그대로 두세요.",
       "thread_open_failed": "이 Bot의 채팅을 열 수 없습니다.",
       "owner_check_failed": "여기서 Bot을 가져올 수 있는지 확인하지 못해 ‘파일에서 가져오기’를 숨겼어요.",

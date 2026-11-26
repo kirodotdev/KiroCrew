@@ -1,9 +1,8 @@
 """``dashboard.import_agent_files``: one agent definition file through the Bot import card.
 
-An agent definition file is Markdown: a front matter block, then the prompt.
-With the setting on, ``POST /api/members/import`` turns one into the same
-``crewmate.import`` card a ``.kirobot`` file raises; with it off (the default)
-such a file is refused by name, and every other file keeps its refusal.
+An agent definition file is Markdown: a front matter block, then the prompt. With the setting
+on, ``POST /api/members/import`` raises the same card a ``.kirobot`` file does; with it off
+(the default) such a file gets main's refusal, as every file that is not a zip does.
 """
 
 from __future__ import annotations
@@ -36,17 +35,15 @@ AGENT_FILE = (
     "description: Reviews a change for bugs before it merges.\n"
     "model: sonnet\n"
     "tools: Read, Grep, Bash\n"
-    "hooks:\n"
-    "  PreToolUse:\n"
-    "    - command: ./guard.sh\n"
+    "hooks: {PreToolUse: [./guard.sh]}\n"
     "color: blue\n"
     "---\n"
-    "\n"
     "Read the diff first.\n"
     "Name each bug with its file and line.\n"
 )
 RULES = "Read the diff first.\nName each bug with its file and line."
 ZIP = {"Content-Type": "application/zip"}
+REFUSAL = (400, {"error": "this is not a .kirobot file", "code": "invalid_bundle"})
 
 
 async def _no_sweep(store) -> None:
@@ -61,10 +58,9 @@ def _home(tmp_path, _floor_monkeypatch):
 
 
 def _setting(tmp_path, on: bool) -> None:
-    home = tmp_path / "home"
-    home.mkdir(parents=True, exist_ok=True)
-    config = {"dashboard": {"import_agent_files": on}}
-    (home / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    (tmp_path / "home").mkdir(parents=True, exist_ok=True)
+    config = json.dumps({"dashboard": {"import_agent_files": on}})
+    (tmp_path / "home" / "config.json").write_text(config, encoding="utf-8")
 
 
 def _kirobot() -> bytes:
@@ -118,7 +114,9 @@ def test_with_the_setting_on_an_agent_file_raises_one_card(world, monkeypatch, t
     assert params["description"] == "Reviews a change for bugs before it merges."
     assert params["rules"] == RULES
     assert params["model_hint"] == "sonnet"
-    assert params["sender"] == "an agent file"
+    # No sender: a file of this form names no person, so no "From" row and no saved label.
+    assert not params.get("sender")
+    assert "sender" not in {row["field"] for row in store.get(body["id"])["changes"]}
     assert params["bundle_sha256"] == hashlib.sha256(data).hexdigest()
     # The tool list, the hooks and the colour are not carried: no grant reaches the card.
     for key in ("skills", "crons", "carried", "goal", "not_imported"):
@@ -127,10 +125,11 @@ def test_with_the_setting_on_an_agent_file_raises_one_card(world, monkeypatch, t
     assert not crewmate_stage.stage_dir().exists()
 
 
-def test_with_the_setting_off_an_agent_file_is_refused_by_name(world, monkeypatch, tmp_path):
+def test_with_the_setting_off_an_agent_file_is_refused_as_a_non_zip(world, monkeypatch, tmp_path):
     status, body, store = _post(world, monkeypatch, tmp_path, AGENT_FILE.encode())
-    assert (status, body["code"]) == (400, "agent_files_off")
-    assert "dashboard.import_agent_files" in body["error"]
+    assert (status, body) == REFUSAL
+    # A file that is not an agent file at all gets the identical answer.
+    assert _post(world, monkeypatch, tmp_path, b"# just markdown\n")[:2] == REFUSAL
     assert store.pending(None) == []
 
 
@@ -146,16 +145,10 @@ def test_a_kirobot_file_imports_the_same_either_way(world, monkeypatch, tmp_path
 @pytest.mark.parametrize(
     "data",
     [b"# just markdown\n", b"PK\x03\x04not a zip", b"--- \nname: x\n---\n", b"\xff---\n"],
-    ids=["no-fence", "zip-signature", "fence-with-space", "not-utf8"],
 )
 def test_every_other_file_keeps_its_refusal(world, monkeypatch, tmp_path, on, data):
     _setting(tmp_path, on)
-    status, body, _ = _post(world, monkeypatch, tmp_path, data)
-    assert (status, body["code"], body["error"]) == (
-        400,
-        "invalid_bundle",
-        "this is not a .kirobot file",
-    )
+    assert _post(world, monkeypatch, tmp_path, data)[:2] == REFUSAL
 
 
 def test_an_app_token_still_gets_403(world, monkeypatch, tmp_path):
@@ -194,17 +187,8 @@ def test_only_a_body_becomes_rules():
         ("---\nname: x\n---\n" + "a" * 4001, "invalid_bundle"),
         (b"---\nname: x\n---\n\xff\n", "invalid_text"),
     ],
-    ids=[
-        "no-name",
-        "name-not-text",
-        "unclosed-fence",
-        "not-a-mapping",
-        "over-64-kib",
-        "credential",
-        "control-character",
-        "rules-over-cap",
-        "not-utf8",
-    ],
+    ids="no-name name-not-text unclosed-fence not-a-mapping over-64-kib credential control-char "
+    "rules-over-cap not-utf8".split(),
 )
 def test_a_bad_agent_file_reuses_the_card_refusals(text, code):
     with pytest.raises(CardCatalogError) as caught:

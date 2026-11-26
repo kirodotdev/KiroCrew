@@ -1,18 +1,9 @@
 """One agent definition file as the parts of a ``.kirobot`` bundle.
 
-An agent definition file is Markdown: a front matter block, then the prompt
-(the markdown agent spec form :mod:`kiro_crew.agent_spec_format` reads). With
-``dashboard.import_agent_files`` on, the Bot import card takes one in place of a
-``.kirobot`` zip (:func:`kiro_crew.crewmate_bundle.read_crewmate_file`).
-
-The mapping is fixed: ``name``, ``description`` and ``model`` become the
-manifest's name, description and model hint (a hint the card shows, never
-applies), and the body becomes the Bot's rules. Nothing else is carried: a
-``tools`` list, hooks, MCP servers and any other field are dropped, so
-``agent.json`` is empty and a card raised from the file has no grant. The parts
-then go through :func:`kiro_crew.crewmate_bundle.crewmate_import_params` like a
-zip's, so every rule of the card runs on them, and the owner's press on the
-card is still the only thing that creates the Bot.
+An agent definition file is Markdown: a front matter block, then the prompt. With
+``dashboard.import_agent_files`` on, the Bot import card takes one in place of a zip.
+``name``, ``description`` and ``model`` fill the manifest (shown, never applied) and the body
+becomes the Bot's rules. Nothing else is carried, so the card has no grant and no sender.
 """
 
 from __future__ import annotations
@@ -22,9 +13,6 @@ from typing import Any
 
 from kiro_crew import agent_spec_format
 from kiro_crew.crewmate_bundle import CREWMATE_FORMAT, JSON_MAX_BYTES, CrewmateFile, _refuse
-
-#: Where the card says the Bot came from.
-SENDER_LABEL = "an agent file"
 
 
 def opens_agent_file(data: bytes) -> bool:
@@ -51,12 +39,7 @@ def read_agent_file(data: bytes) -> CrewmateFile:
     name = spec.get("name")
     if not isinstance(name, str) or not name:
         raise _refuse("invalid_bundle", "the agent file has no name")
-    manifest: dict[str, Any] = {
-        "format": CREWMATE_FORMAT,
-        "formatVersion": 1,
-        "name": name,
-        "sender": {"label": SENDER_LABEL},
-    }
+    manifest: dict[str, Any] = {"format": CREWMATE_FORMAT, "formatVersion": 1, "name": name}
     for key, field in (("description", "description"), ("model", "modelHint")):
         value = spec.get(key)
         if isinstance(value, str) and value.strip():
