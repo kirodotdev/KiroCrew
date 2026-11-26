@@ -266,7 +266,7 @@ BASE_SURFACE: dict[str, str] = {
     "_user_dir": "callable _user_dir() -> 'Path'",
     "_user_overrides_path": "callable _user_overrides_path() -> 'Path'",
     "_user_prompt_path": "callable _user_prompt_path() -> 'Path'",
-    "_valid_override_home": "callable _valid_override_home() -> 'Path | None'",
+    "_valid_override_home": "callable _valid_override_home(env: 'Mapping[str, str] | None' = None) -> 'Path | None'",
     "_validate_hook_command": "callable _validate_hook_command(command: 'str', event: 'str') -> 'str | None'",
     "_warn_declined_home_once": "callable _warn_declined_home_once(arm: 'str', target: 'Path', msg: 'str', *args: 'object') -> 'None'",
     "_whole_server_ref": "callable _whole_server_ref(ref: 'str') -> 'str | None'",

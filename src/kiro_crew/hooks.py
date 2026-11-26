@@ -200,6 +200,7 @@ from kiro_crew.hook_runtime.safe_reads import (  # noqa: F401
 from kiro_crew.hook_runtime.script_hooks import (  # noqa: F401
     ScriptHookResult,
     ScriptHookStore,
+    _hook_path,
     _hook_subprocess_env,
     _script_hook_enabled_from,
     run_script_hook,
@@ -1300,6 +1301,28 @@ _HOOK_BASE_ENV_KEYS: frozenset[str] = frozenset(
         "SSL_CERT_FILE",
         "NO_PROXY",
         "no_proxy",
+    }
+)
+
+#: Every variable ``kiro_crew.env.augmented_path`` and its helpers read to build
+#: a hook's PATH. ``_hook_subprocess_env`` reads these and ``_HOOK_BASE_ENV_KEYS``
+#: in one snapshot and builds the PATH from it, so the PATH and the env a hook
+#: sees come from one read. Only the allowlisted ones reach the hook.
+#: ``test_hook_path_input_keys_cover_every_key_the_chain_reads`` keeps it whole.
+_HOOK_PATH_INPUT_KEYS: frozenset[str] = frozenset(
+    {
+        "HOME",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "KIROCREW_HOME",
+        "KIROCREW_NODE_BIN_DIR",
+        "MISE_DATA_DIR",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "ProgramFiles",
     }
 )
 

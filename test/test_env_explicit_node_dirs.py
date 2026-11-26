@@ -159,7 +159,7 @@ class TestOverrideLeads:
         install's dir must stay ahead of it on the second pass as on the first.
         """
         own = _node_bin(home / "own" / "bin")
-        monkeypatch.setattr(env_mod, "_own_kirocrew_dirs", lambda: [str(own)])
+        monkeypatch.setattr(env_mod, "_own_kirocrew_dirs", lambda env=None: [str(own)])
         once = augmented_path(_service_style_base(home))
         twice = augmented_path(once).split(os.pathsep)
         assert _index(twice, own) < _index(twice, override) < _index(twice, _nvm22(home))

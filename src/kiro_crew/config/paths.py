@@ -95,9 +95,46 @@ _config_dir_memo: tuple[str | None, Path | None, Path] | None = None
 _HOME_CREATE_MODE = 0o777 if sys.platform == "win32" else 0o700
 
 
-def _default_home() -> Path:
+def user_home(env: Mapping[str, str] | None = None) -> str:
+    """The user's home dir as ``os.path.expanduser("~")`` gives it.
+
+    With *env* given, it is read from that mapping instead of ``os.environ``
+    (``HOME``; on Windows ``USERPROFILE``, then ``HOMEDRIVE`` + ``HOMEPATH``), as
+    the stdlib reads it. On POSIX a mapping without ``HOME`` falls back to the
+    password database for this process's uid (the effective one, through
+    ``platform_compat``; a gateway is never setuid, so it is the real one too),
+    which is what ``expanduser`` does with ``HOME`` unset, and a uid with no
+    entry there gives ``"~"``, as ``expanduser`` does.
+    """
+    if env is None:
+        return os.path.expanduser("~")
+    if sys.platform == "win32":
+        if "USERPROFILE" in env:
+            return env["USERPROFILE"]
+        if "HOMEPATH" in env:
+            return env.get("HOMEDRIVE", "") + env["HOMEPATH"]
+        return "~"
+    if "HOME" in env:
+        home = env["HOME"]
+    else:
+        import pwd
+
+        from kiro_crew import platform_compat
+
+        uid = platform_compat.effective_uid()
+        if uid is None:
+            return "~"
+        try:
+            home = pwd.getpwuid(uid).pw_dir
+        except KeyError:  # no passwd entry: expanduser leaves "~" as is
+            return "~"
+    return home.rstrip("/") or "/"
+
+
+def _default_home(env: Mapping[str, str] | None = None) -> Path:
     """Resolve the default (non-override) data root: ``~/.kiro/crew``."""
-    return Path.home() / KIRO_BASE_DIR_NAME / CONFIG_DIR_LEAF
+    home = Path.home() if env is None else Path(user_home(env))
+    return home / KIRO_BASE_DIR_NAME / CONFIG_DIR_LEAF
 
 
 def _legacy_home() -> Path:
@@ -341,7 +378,7 @@ def run_with_data_home(home: Path, target: Callable[..., object], *args: object)
         del _pinned_homes[ident]
 
 
-def _valid_override_home() -> Path | None:
+def _valid_override_home(env: Mapping[str, str] | None = None) -> Path | None:
     """Return the resolved ``KIROCREW_HOME`` override iff it is set AND valid.
 
     A filesystem/drive root (``/`` on POSIX, ``C:\\`` on Windows) or a known
@@ -349,9 +386,21 @@ def _valid_override_home() -> Path | None:
     ``config_dir()`` ignores it and falls back to the default home. Shared by
     ``config_dir()`` and ``data_home()`` so both agree on when an override is
     actually selected. Resolved once per distinct raw value; see
-    :data:`_override_home_pin`.
+    :data:`_override_home_pin`. With *env* given, the override is read from that
+    mapping and a ``~`` or ``~/...`` form expands from its home, and the pin is
+    neither read nor written. A ``~user`` form keeps the stdlib lookup (the
+    password database on POSIX, the live profile variables on Windows): the one
+    deliberate exception, since the mapping cannot answer it.
     """
     global _override_home_pin
+    if env is not None:
+        raw = env.get("KIROCREW_HOME")
+        if not raw:
+            return None
+        if raw == "~" or raw.startswith(("~/", "~" + os.sep)):
+            raw = user_home(env) + raw[1:]
+        found = Path(raw).expanduser().resolve()
+        return None if _is_unsafe_home(found) else found
     override = os.environ.get("KIROCREW_HOME")
     if not override:
         return None
@@ -874,7 +923,7 @@ def data_home() -> Path:
     return config_dir()
 
 
-def peek_data_home() -> Path:
+def peek_data_home(env: Mapping[str, str] | None = None) -> Path:
     """Where the data home IS, without creating or maintaining it.
 
     :func:`config_dir` and :func:`data_home` both create the home on first
@@ -891,13 +940,14 @@ def peek_data_home() -> Path:
     first real resolution would skip the maintenance it owes the process start
     (the ``mkdir`` and the recovery breadcrumb). That matters because the
     owner-only file helpers peek on every write that might be in the data home.
+    *env* replaces ``os.environ`` for the override and the default home.
     """
     if _pinned_homes and (pinned := _pinned_homes.get(threading.get_ident())) is not None:
         return pinned
-    override = _valid_override_home()
+    override = _valid_override_home(env)
     if override is not None:
         return override
-    return _resolved_home if _resolved_home is not None else _default_home()
+    return _resolved_home if _resolved_home is not None else _default_home(env)
 
 
 def ensure_data_home() -> Path:

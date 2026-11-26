@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import peek_data_home
@@ -28,7 +28,9 @@ OWN_KIROCREW_DIR = "kirocrew-bin"
 WINDOWS_FORWARDER_NAME = "kirocrew.cmd"
 
 
-def own_kirocrew_dirs(validate: Callable[[str], str | None]) -> list[str]:
+def own_kirocrew_dirs(
+    validate: Callable[[str], str | None], env: Mapping[str, str] | None = None
+) -> list[str]:
     """The directory whose only entry is this install's ``kirocrew``, ahead of ``~/.local/bin``.
 
     An agent shelling out to ``kirocrew`` must reach its own gateway's CLI. A
@@ -41,7 +43,7 @@ def own_kirocrew_dirs(validate: Callable[[str], str | None]) -> list[str]:
     directory or a dangling link is skipped by every PATH lookup.
     """
     try:
-        root = peek_data_home() / OWN_KIROCREW_DIR
+        root = peek_data_home(env) / OWN_KIROCREW_DIR
     except Exception:
         logger.debug("could not resolve the own-kirocrew directory", exc_info=True)
         return []

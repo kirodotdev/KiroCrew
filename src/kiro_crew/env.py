@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import env_node_pins, env_node_windows, env_own_kirocrew, platform_compat
-from kiro_crew.config.paths import data_home
+from kiro_crew.config.paths import data_home, user_home
 from kiro_crew.env_krb5_keyring import (  # noqa: F401  (re-exported from env)
     KRB5_KEYRING_REMEDY,
     _warn_keyring_ccache_once,
@@ -312,24 +312,25 @@ _NODE_BIN_DIR_MARKER = "node-bin-dir"
 _NODE_BIN_DIR_ENV = "KIROCREW_NODE_BIN_DIR"
 
 
-def mise_data_dir(home: str) -> str:
+def mise_data_dir(home: str, env: Mapping[str, str] | None = None) -> str:
     """mise's data dir, honouring ``MISE_DATA_DIR`` then ``XDG_DATA_HOME``."""
-    explicit = os.environ.get("MISE_DATA_DIR")
+    env = os.environ if env is None else env
+    explicit = env.get("MISE_DATA_DIR")
     if explicit:
         return explicit
-    xdg = os.environ.get("XDG_DATA_HOME")
+    xdg = env.get("XDG_DATA_HOME")
     base = xdg if xdg else os.path.join(home, ".local", "share")
     return os.path.join(base, "mise")
 
 
-def _xdg_config_dir(home: str) -> str:
+def _xdg_config_dir(home: str, env: Mapping[str, str] | None = None) -> str:
     """The XDG config dir: ``XDG_CONFIG_HOME`` when absolute, else ``~/.config``.
 
     A relative value is ignored, as the XDG Base Directory spec requires: taken
     as given it would glob against the gateway's cwd and could put a
     cwd-relative entry on a spawned subprocess's PATH.
     """
-    xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    xdg = (os.environ if env is None else env).get("XDG_CONFIG_HOME", "")
     return xdg if os.path.isabs(xdg) else os.path.join(home, ".config")
 
 
@@ -781,12 +782,14 @@ def git_build_info() -> tuple[str, str]:
     )
 
 
-def _own_kirocrew_dirs() -> list[str]:
+def _own_kirocrew_dirs(env: Mapping[str, str] | None = None) -> list[str]:
     """This install's ``kirocrew`` directory (:func:`env_own_kirocrew.own_kirocrew_dirs`)."""
-    return env_own_kirocrew.own_kirocrew_dirs(_validated_bin_dir)
+    return env_own_kirocrew.own_kirocrew_dirs(_validated_bin_dir, env)
 
 
-def _windows_toolbox_root(resolved_home: str, pinned_home: str | None) -> str | None:
+def _windows_toolbox_root(
+    resolved_home: str, pinned_home: str | None, env: Mapping[str, str] | None = None
+) -> str | None:
     """Builder Toolbox's Windows root, ``%LOCALAPPDATA%\\Toolbox``.
 
     The Windows counterpart of ``~/.toolbox``: its ``bin`` directory
@@ -795,12 +798,15 @@ def _windows_toolbox_root(resolved_home: str, pinned_home: str | None) -> str | 
     ``LOCALAPPDATA`` names the account running this process, so a caller that
     pinned another account's *pinned_home* gets that home's ``AppData\\Local``.
     """
-    local = os.environ.get("LOCALAPPDATA", "") if pinned_home is None else ""
+    source = os.environ if env is None else env
+    local = source.get("LOCALAPPDATA", "") if pinned_home is None else ""
     base = local or os.path.join(resolved_home, "AppData", "Local")
     return _validated_bin_dir(os.path.join(base, "Toolbox"))
 
 
-def _windows_toolbox_bin_dir(resolved_home: str, pinned_home: str | None) -> str | None:
+def _windows_toolbox_bin_dir(
+    resolved_home: str, pinned_home: str | None, env: Mapping[str, str] | None = None
+) -> str | None:
     """Builder Toolbox's Windows bin dir, ``%LOCALAPPDATA%\\Toolbox\\bin``.
 
     On Windows Toolbox does not use ``~/.toolbox/bin``: its install guide puts
@@ -811,7 +817,7 @@ def _windows_toolbox_bin_dir(resolved_home: str, pinned_home: str | None) -> str
 
     It is ``bin`` under :func:`_windows_toolbox_root`, which resolves the account.
     """
-    root = _windows_toolbox_root(resolved_home, pinned_home)
+    root = _windows_toolbox_root(resolved_home, pinned_home, env)
     return os.path.join(root, "bin") if root else None
 
 
@@ -863,7 +869,9 @@ _SYSTEM_BIN_DIRS = frozenset(
 )
 
 
-def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
+def augmented_path(
+    base_path: str = "", *, home: str | None = None, env: Mapping[str, str] | None = None
+) -> str:
     """Return *base_path* prepended with well-known MCP binary directories.
 
     A gateway under systemd, launchd or another non-login shell inherits a
@@ -903,16 +911,22 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     :func:`~kiro_crew.service.common.service_path` ``PATH`` keeps its order.
     Windows lists ``System32`` first, so there every extra is prepended.
     Matching uses ``normcase(normpath(...))`` as :func:`_dedup_dirs` does.
+
+    *env* replaces ``os.environ`` for every variable this function and its
+    helpers read (``HOME`` and the other home, XDG, mise, node-pin, data-home
+    and Windows roots), so a caller holding one snapshot gets a PATH built from
+    that snapshot alone. The interpreter dirs come from ``sysconfig``, which
+    describes this Python rather than the environment, and are not read from it.
     """
-    resolved_home = home or os.path.expanduser("~")
-    mise_data = mise_data_dir(resolved_home)
+    resolved_home = home or user_home(env)
+    mise_data = mise_data_dir(resolved_home, env)
     own = home is None
     # Absolute-only (_validated_bin_dir): a relative MISE_DATA_DIR would put a
     # relative shims entry on PATH, re-resolved against the CHILD's cwd, so a
     # work-dir-relative executable could shadow the configured command.
-    extra = _own_kirocrew_dirs() if own else []
+    extra = _own_kirocrew_dirs(env) if own else []
     pinned = (
-        env_node_pins.override_bin_dirs(_NODE_BIN_DIR_ENV, _validated_bin_dir, _has_node)
+        env_node_pins.override_bin_dirs(_NODE_BIN_DIR_ENV, _validated_bin_dir, _has_node, env)
         if own
         else []
     )
@@ -923,17 +937,17 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     extra += pinned
     extra += user_tool_bin_dirs(resolved_home)
     if platform_compat.IS_WINDOWS and (
-        toolbox_bin := _windows_toolbox_bin_dir(resolved_home, home)
+        toolbox_bin := _windows_toolbox_bin_dir(resolved_home, home, env)
     ):
         extra.append(toolbox_bin)
-    extra += env_node_windows.manager_dirs(resolved_home, home)
+    extra += env_node_windows.manager_dirs(resolved_home, home, env)
     if own:
         extra += env_node_pins.data_home_tree_dirs(
-            _NODE_TREE_DATA_HOME_DIRS, _validated_bin_dir, _has_node
+            _NODE_TREE_DATA_HOME_DIRS, _validated_bin_dir, _has_node, env
         )
-    windows_globs = env_node_windows.manager_globs(resolved_home, home)
+    windows_globs = env_node_windows.manager_globs(resolved_home, home, env)
     extra += _node_all_bin_dirs(
-        resolved_home, mise_data, _xdg_config_dir(resolved_home), windows_globs
+        resolved_home, mise_data, _xdg_config_dir(resolved_home, env), windows_globs
     )
     # No anchors on Windows: System32 comes first there and _SYSTEM_BIN_DIRS never
     # matches, so anchoring would push every extra behind System32.
