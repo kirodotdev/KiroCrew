@@ -1691,6 +1691,10 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   beside the gate because tests patch them, and the `SecurityEventLog` and
   `maintenance_executor` they read, on the package; each write lands here, where every
   reader of it is.
+  - `deny_gate_nesting.py` — the substitution-nesting cap `is_denied` checks before any
+    floor runs: the depth bound, its refusal key and note, and the one linear scan
+    (`_nested_past_cap`). It reads no other module; `deny_gate.py` imports the three names
+    it uses from it.
 - `text_redaction.py` — the redaction entry points that compose `redaction.py` with
   `exfil.py`: `redact`, `redact_with_findings`, `redact_and_truncate`, and the
   `StreamRedactor` with the holdback bounds it reads.
