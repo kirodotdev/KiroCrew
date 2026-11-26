@@ -701,6 +701,21 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
 })
 
 describe('AgentBackendTab switching', () => {
+  it('invalidates sign-in sources only after the harness switch commits', async () => {
+    const { qc } = wrapWithClient()
+    qc.setQueryData(['kas-login-sources'], { kiro_cli_harness: true, active: 'kiro_cli' })
+    let commitSwitch!: (value: object) => void
+    patchConfigMock.mockImplementationOnce(() => new Promise(resolve => { commitSwitch = resolve }))
+    await waitFor(() => expect(row('Kiro CLI')).toHaveAttribute('aria-current', 'true'))
+    highlight('Kiro Agent')
+    fireEvent.click(useButton('Kiro Agent'))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', 'kas'))
+    expect(qc.getQueryState(['kas-login-sources'])?.isInvalidated).toBe(false)
+
+    await act(async () => { commitSwitch({}) })
+    await waitFor(() => expect(qc.getQueryState(['kas-login-sources'])?.isInvalidated).toBe(true))
+  })
+
   it('saves the highlighted backend when Use is pressed', async () => {
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())

@@ -21,6 +21,7 @@ import { signInLapsed } from './kiroSignInState'
 import {
   SignInStoreUnreadableErrors,
   KiroSignInSourcesNotice,
+  noticeLeadsCard,
   SOURCES_QUERY_KEY,
   sourcesNotice,
   useKiroSignInSources,
@@ -308,7 +309,7 @@ export function KiroSignInCard() {
           {i18nT('pages.developer.kiroSignInCard.takes_effect_next_process')}
         </p>
       ) : null}
-      {notice === 'using_kiro_cli' ? (
+      {noticeLeadsCard(notice) ? (
         <KiroSignInSourcesNotice sources={sources} identity="" onRemoved={() => undefined} />
       ) : null}
       {/* No hand-off: the embedded Company SSO form can hold an unsaved portal URL and region. */}
@@ -323,7 +324,7 @@ export function KiroSignInCard() {
       <SignInBody
         renderSignedIn={(status, reauth) => (
           <>
-            {notice !== 'using_kiro_cli' ? (
+            {!noticeLeadsCard(notice) ? (
               <KiroSignInSourcesNotice
                 sources={sources}
                 identity={status.identity ?? ''}
