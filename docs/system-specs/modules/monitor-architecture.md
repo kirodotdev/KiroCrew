@@ -417,6 +417,17 @@ to the ceiling and bound-checks only a budget the caller supplied.
 Explicit stops remain available.
 Quarantine remains inspectable even below the ordinary four-hour default.
 
+`monitoring.budget_notice_pct` (0, the default, is off; 1 to 99 turns it on, and
+any other value reads as 0 through `coerce_budget_notice_pct`) lets a structured
+watch's wake name its spend before a budget stops it. `budget_notice_pct()` reads
+only the live config snapshot, on every wake, so no restart is needed. When the
+agent turns, tokens or runtime have reached that share,
+`decision.monitor_budget_note` builds one `Budget:` line with each bound's used and
+total (the runtime as time left, the tokens as `at least` when a turn's usage went
+unreported), and `format_monitor_wake` places it above the next action. Below the
+share, or with the setting off, the envelope is unchanged. The line format is in
+[injected-messages](../common/injected-messages.md).
+
 `_timer` stops a prompt loop on a spent runtime budget only when it wakes, so
 `_arm_from_deadline` wakes it just after (`_BUDGET_WAKE_SLACK_SECS`) a budget that
 runs out before the next deadline, not an interval later; the slack keeps a timer
