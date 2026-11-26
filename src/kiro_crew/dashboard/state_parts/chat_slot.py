@@ -89,6 +89,7 @@ class _ChatSlot:
         "_crew_log_pending_channel",
         "_reasoning_effort",
         "_effort_pick_gen",
+        "_effort_overlay_clear",
         "mode",
         "workspace",
         "memory_store",
@@ -481,6 +482,7 @@ class _ChatSlot:
     served_model: str
     _engine_promoted_model: str
     _effort_pick_gen: int
+    _effort_overlay_clear: bool
     _reasoning_effort: str
     memory_store: str
     _memory_assignment_from_history: bool

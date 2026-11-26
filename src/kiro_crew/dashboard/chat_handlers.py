@@ -601,6 +601,7 @@ from kiro_crew.dashboard.deny_override import (  # noqa: F401
     DENY_OVERRIDE_ACTIONS,
     is_deny_override_card,
 )
+from kiro_crew.dashboard.effort_overlay_mark import set_effort_overlay_clear_mark  # noqa: F401
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _SLOT_SCOPED_TRUST_MODES,
     _owner_denial_response,
