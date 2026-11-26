@@ -9,6 +9,7 @@
  * chip's accessible name, its hint and the switcher menu.
  */
 
+import type { ReactNode } from 'react'
 import { CircleAlert, Square } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 
@@ -134,8 +135,11 @@ function BadgeStateMark({ state }: { state?: string }) {
  * corner pip (see `BadgeStateMark`). Every style keeps the same 1px width, so the
  * badge is the same size in every state. Decorative: the chip's `aria-label`
  * names the crew and its state.
+ *
+ * It holds the crew's initials, or, passed as `children`, the crew's icon
+ * (`crewIcons.tsx`), which then takes the letters' place in the same disc.
  */
-export function CrewLetterBadge({ letters, state }: { letters: string; state?: string }) {
+export function CrewLetterBadge({ letters = '', state, children }: { letters?: string; state?: string; children?: ReactNode }) {
   const live = state === 'connected'
   return (
     <span
@@ -143,13 +147,14 @@ export function CrewLetterBadge({ letters, state }: { letters: string; state?: s
       data-testid="crew-letter-badge"
       data-state={state || 'disconnected'}
       className={
-        'relative inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full text-[10px] leading-4 font-bold shrink-0 ' +
+        'relative inline-flex items-center justify-center min-w-[16px] h-4 rounded-full text-[10px] leading-4 font-bold shrink-0 ' +
+        (children ? 'px-0 ' : 'px-1 ') +
         (live
           ? `${stateDotCls(state)} text-[var(--ok-fg)]`
           : `border border-current ${badgeOutlineCls(state)} ${stateTextCls(state)}`)
       }
     >
-      {letters}
+      {children ?? letters}
       <BadgeStateMark state={state} />
     </span>
   )

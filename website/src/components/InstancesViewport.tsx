@@ -48,6 +48,7 @@ import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm, type RelayTab, type WarmConn } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs, chainRows, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
+import { crewIconOf, useCrewIcons } from './crewIcons'
 import { isEmbeddableLoopbackOrigin, parseLoopbackOriginPort, resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import {
   CURSOR_AWAY_CANCEL_TYPE,
@@ -233,6 +234,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // bar does. Reactive like the pins: a change re-broadcasts the model, and an
   // embedded toggle routes back here via `mc-set-stable-order`.
   const [stableOrder] = useCrewSwitcherStableOrder()
+  // Each crew's icon, relayed per tab for the same reason: a pane cannot read this realm's store.
+  const crewIcons = useCrewIcons()
   // Relayed in the host model (`HostModel.chatCompleteNotify`).
   const chatCompleteNotify = useChatCompleteNotify()
   // Focus mode is a property of the WINDOW, not of one pane: a remote crew shown
@@ -1423,6 +1426,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           pathParent: parentName,
           brokenAt,
           transport: i.connection_method === 'fargate' ? 'fargate' as const : usesSsmTransport(i) ? 'ssm' as const : 'ssh' as const,
+          icon: crewIconOf(crewIcons, i.id),
         }),
       )
       const selfInst = insts.find(i => i.id === id)
@@ -1455,7 +1459,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         crewPopout: CREW_POPOUT_VERSION,
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, winInset, linuxInset, winCaptionReserve, focusMode, pinnedCrews, relayCrews, relayCrewsFailed, relayTabs, relayActive, stableOrder, chatCompleteNotify],
+    [instancesQuery.data, warm, unread, activeId, macInset, winInset, linuxInset, winCaptionReserve, focusMode, pinnedCrews, crewIcons, relayCrews, relayCrewsFailed, relayTabs, relayActive, stableOrder, chatCompleteNotify],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback
@@ -1512,7 +1516,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // to a loopback frame.
   useEffect(() => {
     for (const id of Object.keys(warm)) postModelTo(id)
-  }, [warm, activeId, unread, macInset, winInset, linuxInset, winCaptionReserve, instancesQuery.data, postModelTo, pinnedCrews, stableOrder, chatCompleteNotify])
+  }, [warm, activeId, unread, macInset, winInset, linuxInset, winCaptionReserve, instancesQuery.data, postModelTo, pinnedCrews, crewIcons, stableOrder, chatCompleteNotify])
 
   // Keep warm iframes mounted across Local<->remote switches (hide-not-unmount).
   // Also render when the active tab is a remote instance with no warm iframe

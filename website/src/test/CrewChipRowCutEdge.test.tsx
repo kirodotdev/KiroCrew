@@ -78,10 +78,10 @@ describe('pinned chips adapt to their own track', () => {
     // row squeezes the chip past its own content and the name paints outside the
     // border. Both spellings are literal so Tailwind's content scan sees them.
     expect(t, 'a shrinkable chip declares a 5ch-based floor').toMatch(
-      /min-w-\[calc\(5ch\+30px\)\]/,
+      /min-w-\[calc\(5ch\+36px\)\]/,
     )
     expect(t, 'the floor accounts for the unread badge').toMatch(
-      /min-w-\[calc\(5ch\+54px\)\]/,
+      /min-w-\[calc\(5ch\+60px\)\]/,
     )
     expect(t, 'the chip must not be shrinkable below its own content').not.toMatch(
       /shrinkable\s*\?\s*'min-w-0/,

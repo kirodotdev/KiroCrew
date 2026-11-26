@@ -65,6 +65,16 @@ import {
 import type { SigninNotice } from './remoteCrewPanelModel'
 import { SigninPromptBlock } from './RemoteCrewPanelLaunch'
 import { TunnelErrorWhy } from './remoteCrewTunnelError'
+import { lazyRetry } from '../../components/lazyRetry'
+import { isEmbeddedPane } from '../../lib/embedded'
+
+// Loaded on demand: the picker's icon names and option grid are needed only here,
+// so they stay off the dashboard's first load.
+const CrewIconPicker = lazyRetry(() => import('../../components/crewIconPicker'), {
+  layout: 'inline',
+  title: () => i18nT('components.crewIcons.picker_load_failed'),
+  scope: 'crew-icon-picker',
+})
 
 // The badges compress to acronyms (EC2 / SSM / SSH) a first-time reader may
 // not know; the hover title spells out what each one means.
@@ -578,6 +588,13 @@ export function CrewRow({
           {/* A chained row's port is the crew's own gateway port, not what
               this dashboard forwards to, so it is not shown as a target. */}
           {!reportedOnly && detailRow(i18nT('pages.settings.remoteCrewPanel.detail_port'), inst.remote_port)}
+          {/* Only a crew with a dashboard has a switcher chip to wear the icon. Inside an
+              embedded pane the switcher draws the icons the host relays, so a pick
+              made in this pane would change nothing on screen. */}
+          {hasDashboardPane(inst) && !isEmbeddedPane() && detailRow(
+            i18nT('components.crewIcons.detail_label'),
+            <CrewIconPicker id={inst.id} name={inst.name} loading={<span className="inline-block w-7 h-7" aria-hidden />} />,
+          )}
           {/* The switch's own text names it ("Connections: On"), so it spans the
               row rather than repeating the word in a label cell. */}
           {/* The switch takes no `title`, so its offline reason sits on this
