@@ -115,6 +115,17 @@ def test_a_momentary_refusal_is_retryable_and_a_wrapped_one_is_found() -> None:
     assert hsr.host_sandbox_refusal(RuntimeError("something else")) is None
 
 
+def test_a_transient_refusal_whose_userns_cap_reads_zero_is_not_retryable() -> None:
+    from kiro_crew.sandbox import REMEDY_USERNS_CAP_ZERO
+
+    capped = SandboxUnavailableError(
+        _DIAGNOSTIC, kind="transient", detail="unshare failed", remedy=REMEDY_USERNS_CAP_ZERO
+    )
+    meta = hsr.row_meta(capped)
+    assert meta["code"] == hsr.HOST_SANDBOX_UNAVAILABLE
+    assert "retryable" not in meta
+
+
 def test_the_background_start_stop_row_is_typed_and_loses_its_detail_for_a_non_owner() -> None:
     from kiro_crew.dashboard.chat_turn.eager_spawn import (
         _EAGER_SPAWN_FAILURE_CAP,

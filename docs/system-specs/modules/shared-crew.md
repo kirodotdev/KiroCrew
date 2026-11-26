@@ -730,7 +730,9 @@ for want of an OS sandbox, whatever the switch reads: no backend
 host (the probe's errno, the kernel sysctl, the OS family, the launcher's stderr,
 `kirocrew service install`, the owner's config key), so `_on_error`, the ACP error
 card and the background-start stop row type it: `meta.code` `host_sandbox_unavailable` with the
-failure time `meta.at` (and `meta.retryable` for a momentary refusal), and the
+failure time `meta.at` (and `meta.retryable` for a momentary refusal, which a
+user-namespace cap read as 0 is not: it is reported transient, yet only the owner
+can fix it), and the
 content prefix `host_sandbox_unavailable: `, which the chat SSE stream carries
 since it sends no row meta. An error row a build without that typing stored is
 read as the same row when its content holds either raiser's fixed wording, "Sandbox backend unavailable" (every `SandboxUnavailableError`) or
