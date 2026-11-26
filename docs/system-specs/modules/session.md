@@ -44,6 +44,14 @@ walks every dashboard symbol and pins each direct or shared-helper reader by
 `(module, symbol)` to the predicate it uses; the same census enumerates every
 non-null `slot.task` publisher so a new unguarded admission site fails the test.
 
+A dashboard turn also says which Bot it runs as. Once `_turn_admit` has settled the
+turn's execution (after the memory mode is tightened), it calls
+`running_bot_turns.begin(turn, execution)`, and the `finally` of `_run_chat` calls
+`running_bot_turns.end(turn)` as its first statement, so every way out of an
+admitted turn clears the note. Neither call raises. `GET /v1/crew/bots` reads the
+table to report a Bot `busy`
+([learn-cron-dashboard.md](learn-cron-dashboard.md)).
+
 Continue and Project requests retain the slot object they originally authorized.
 They reject a same-name replacement after lock acquisition and each pre-commit
 suspension: Continue's child probe, and Project's body read, workspace validation

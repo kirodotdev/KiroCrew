@@ -33,6 +33,7 @@ from kiro_crew.dashboard import crew_api_bots as bots
 from kiro_crew.dashboard import crew_api_grant_requests as grant_requests
 from kiro_crew.dashboard import crew_api_grant_self as grant_self
 from kiro_crew.dashboard import local_authorization as la
+from kiro_crew.dashboard import running_bot_turns
 from kiro_crew.dashboard.crew_api_scopes import CREDENTIAL_KEY, ROUTES
 from kiro_crew.dashboard.handlers import members_app
 from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
@@ -384,17 +385,60 @@ def _slot(
 async def test_a_turn_outside_the_bots_own_thread_reads_idle(
     world, store, clock, key, slot
 ) -> None:
-    """Today's limit, tracked in https://github.com/kirodotdev/KiroCrew/issues/42996: a
-    slot's ``agent`` is the label it was picked under, not what the turn runs on, so
-    only the Bot's own thread is read. In every other session a running turn on the
-    Bot leaves it idle, a ``POST /v1/responses`` turn with the Bot as ``model``
-    included, and so does one that has no slot at all (a scheduled run with no tab, a
-    subagent)."""
+    """A slot's ``agent`` is the label it was picked under, not what the turn runs as,
+    so no slot but the Bot's own thread is read. A session that names the Bot and
+    runs a turn leaves it idle unless that turn's admission noted the Bot
+    (``running_bot_turns``), and so does a turn that has no slot at all."""
     tokens = _grant(store, clock, [WRITER])
     _, body = await _list(_as_app(_request(slots={key: slot}), store, tokens))
     assert [row["status"] for row in body["data"]] == ["idle"]
     _, body = await _list(_as_app(_request(slots={}), store, tokens))
     assert [row["status"] for row in body["data"]] == ["idle"]
+
+
+def _noted(*member_ids: str) -> None:
+    """A dashboard turn admitted as each of these Bots, as ``_turn_admit`` notes it."""
+    for member_id in member_ids:
+        running_bot_turns.begin(
+            SimpleNamespace(), SimpleNamespace(selection_kind="member", member_id=member_id)
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_bot_with_a_turn_admitted_as_it_is_busy_whatever_the_session(
+    world, store, clock
+) -> None:
+    """The turn runs in no thread of the Bot's and in no slot this list reads: a
+    ``POST /v1/responses`` turn, a dashboard chat. Its admission noted the member id."""
+    tokens = _grant(store, clock, [WRITER, REVIEWER, PLANNER])
+    _noted(f"{REVIEWER}-1")
+    status, body = await _list(_as_app(_request(), store, tokens))
+    assert status == 200
+    _valid(body)
+    assert [(row["id"], row["status"]) for row in body["data"]] == [
+        (WRITER, "idle"),
+        (REVIEWER, "busy"),
+        (PLANNER, "idle"),
+    ]
+    # Busy or idle is all the app is told: which turn, and the member id, are not.
+    assert all(set(row) == FIELDS for row in body["data"])
+    assert f"{REVIEWER}-1" not in [value for row in body["data"] for value in row.values()]
+    # The machine owner reads the same.
+    _, body = await _list(_request())
+    assert {row["id"] for row in body["data"] if row["status"] == "busy"} == {REVIEWER}
+
+
+@pytest.mark.asyncio
+async def test_a_bot_made_again_under_the_name_is_idle_while_the_old_one_runs(world) -> None:
+    """A turn admitted as the Bot that held the name before runs on. The Bot that
+    holds the name now has another member id, and reads idle."""
+    world.cfg = _cfg(**{WRITER: _bot(WRITER, "made again", member_id=f"{WRITER}-9f2c")})
+    _noted(f"{WRITER}-1")
+    _, body = await _list(_request())
+    assert [row["status"] for row in body["data"] if row["id"] == WRITER] == ["idle"]
+    _noted(f"{WRITER}-9f2c")
+    _, body = await _list(_request())
+    assert [row["status"] for row in body["data"] if row["id"] == WRITER] == ["busy"]
 
 
 @pytest.mark.asyncio
@@ -414,8 +458,10 @@ async def test_a_turn_on_a_bot_outside_the_grant_changes_nothing_for_the_app(
         "cron-4": _slot(f"{PRIVATE}-1", running=False, linked=True),
         "task-review-5": _slot(PRIVATE, running=True),
     }
+    # Their admissions noted both Bots the app was not given.
+    _noted(f"{PRIVATE}-1", f"{PLANNER}-1")
     while_running = await bots.api_bots(_as_app(_request(slots=slots), store, tokens))
-    assert json.loads(while_running.body) == json.loads(quiet.body)
+    assert while_running.body == quiet.body
     assert PRIVATE not in while_running.body.decode("utf-8")
     assert [row["status"] for row in json.loads(quiet.body)["data"]] == ["idle", "idle"]
 
@@ -441,9 +487,20 @@ async def test_a_bot_whose_name_is_another_bots_member_id_does_not_make_it_busy(
         "chat-2": _slot("alpha", running=True, agent_kind="member"),
         "cron-3": _slot("alpha", running=False, linked=True),
     }
+    # The turn on ``alpha`` is noted under that Bot's own member id.
+    _noted("alpha-7c1e")
     while_running = await bots.api_bots(_as_app(_request(slots=slots), store, tokens))
-    assert json.loads(while_running.body) == json.loads(quiet.body)
+    assert while_running.body == quiet.body
     assert json.loads(quiet.body)["data"][0]["status"] == "idle"
+    # A turn admitted as ``Alpha`` is noted as ``alpha``, its member id: only the
+    # Bot that holds that id is busy, not the Bot of that name.
+    running_bot_turns._RUNNING.clear()
+    _noted("alpha")
+    _, granted = await _list(_as_app(_request(), store, tokens))
+    assert [(row["id"], row["status"]) for row in granted["data"]] == [("Alpha", "busy")]
+    _, everyone = await _list(_request())
+    by_name = {row["id"]: row["status"] for row in everyone["data"]}
+    assert (by_name["Alpha"], by_name["alpha"]) == ("busy", "idle")
 
 
 # ── which Bot a granted name is ──────────────────────────────────────────────
