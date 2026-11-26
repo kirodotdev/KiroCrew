@@ -84,7 +84,7 @@ export default function MemoryPageShell({ id, label, botName, switcher, notices,
   const [linkedTab, setLinkedTab] = useState(initialTab)
   if (linkedTab !== initialTab) { setLinkedTab(initialTab); open(initialTab) }
   const [jump, setJump] = useState<MemoryJump | null>(null)
-  const jumpTo = (refs: string[], record?: MemoryJump['open']) => { setJump(old => ({ refs, open: record, seq: (old?.seq || 0) + 1 })); open('memories') }
+  const jumpTo = (refs: string[], record?: MemoryJump['open'], box?: MemoryJump['box']) => { setJump(old => ({ refs, box, open: record, seq: (old?.seq || 0) + 1 })); open('memories') }
   const created = (message: string) => {
     setCreating(false); setSaved(message)
     void client.invalidateQueries({ queryKey: ['memory-records'] })

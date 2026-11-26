@@ -17629,23 +17629,19 @@
         "tools_count_other": "{{n}} 個のツール"
       },
       "memoryGraphTab": {
-        "all_count": "すべて（{{count}}）",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "すべての {{productName}} メモリの GPU レンダリング可視化。ノードはタイプ別に色分けされています。ズームインしてラベルを表示、ノードをクリックして検査、フィルターを使用してフォーカス。",
-        "group_history_count": "履歴（{{count}}）",
-        "group_lessons_count": "レッスン（{{count}}）",
-        "group_preferences_count": "優先設定（{{count}}）",
-        "group_projects_count": "プロジェクト（{{count}}）",
-        "group_semantic_count": "セマンティック（{{count}}）",
         "loading_graph_data": "グラフデータを読み込み中…",
         "memory_graph": "メモリグラフ",
         "no_memory_data_to_visualize_add_preferences_proj": "可視化するメモリデータがありません。まず優先設定、プロジェクト、またはレッスンを追加してください。",
-        "partial_notice": "ここにはメモリの一部だけが表示されているため、検索ではこれらのノードしか見つかりません。",
         "refresh": "更新",
         "search_memory_nodes": "メモリノードを検索",
         "search_nodes": "ノードを検索…",
         "load_failed": "メモリグラフを読み込めませんでした",
         "load_failed_unknown": "理由が示されないまま読み込みに失敗しました。",
-        "retry": "再試行"
+        "retry": "再試行",
+        "canvas_unavailable": "このブラウザーではグラフを描画できません。検索と「記憶」タブは引き続き使えます。",
+        "fit_view": "全体を表示",
+        "keyboard_hint": "矢印キーでメモリー間を移動し、Enter キーで開きます。",
+        "hold_space_to_pan": "Space キーを押したままで移動"
       },
       "memoryTab": {
         "actions": "アクション",
@@ -24045,6 +24041,7 @@
     "scope_all_repos": "すべてのリポジトリ",
     "search_filters": "フィルターを検索",
     "scroll_more": "スクロールして続きを表示",
+    "graph_changed": "この枠を描いた後にグラフが変わりました。枠を描き直してください。",
     "graph_selected": "{{formatted}} 件を選択",
     "show_in_memories": "メモリーで表示",
     "filters_width": "フィルター欄の幅",

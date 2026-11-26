@@ -36,6 +36,7 @@ from kiro_crew import memory_record_metadata
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.config.loader import config_dir
 from kiro_crew.memory import INDEX_DB_FILE
+from kiro_crew.memory_graph_files import is_graph_layout_file
 from kiro_crew.memory_stores import MEMORY_DB_FILE, named_store_product_file
 
 # Suffixes read as text. Everything else is either a database (handled through SQL) or
@@ -83,7 +84,12 @@ def _named_store_role(rel: str) -> str:
 
 
 def _is_derived_index(rel: str) -> bool:
-    return rel in _DERIVED_INDEXES or _named_store_role(rel) == INDEX_DB_FILE
+    # The memory graph's layout file is rebuilt from the store on the next graph read.
+    return (
+        rel in _DERIVED_INDEXES
+        or _named_store_role(rel) == INDEX_DB_FILE
+        or is_graph_layout_file(PurePosixPath(rel).parts)
+    )
 
 
 def _is_product_database(rel: str) -> bool:

@@ -26,6 +26,7 @@ from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Callable
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.memory_graph_files import is_graph_layout_file
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
 from kiro_crew.snapshot_components import (
     COMPONENTS,
@@ -819,7 +820,9 @@ def _staging_ignore(tree: str, root: Path) -> Callable[[str, list[str]], set[str
         rel = os.path.relpath(directory, root_str)
         below = () if rel == os.curdir else Path(rel).parts
         for name in contents:
-            if _is_host_local((*tree_parts, *below, name)):
+            parts = (*tree_parts, *below, name)
+            # Derived layouts must not reach SQLite backup: a hot journal needs a write.
+            if _is_host_local(parts) or is_graph_layout_file(parts):
                 skipped.add(name)
         return skipped
 

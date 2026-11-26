@@ -7,6 +7,8 @@ import { useInfiniteQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Lightbulb, ShieldCheck, History } from 'lucide-react'
 import { api } from '../../api/client'
+import { apiErrorCode } from '../../api/apiError'
+import { i18nT } from '../../i18n/t'
 import { sliceCodePoints } from '../../utils/codePoints'
 import { Badge, Btn, Card, PanelSectionHeader } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -20,7 +22,7 @@ export const MEMORY_RECORD_LABELS = { fact: 'memoryV2.fact', directive: 'memoryV
 export const recordIdentity = (row: { kind: string; id: string }) => `${row.kind}:${row.id}`
 // A button names the value it brings back; a long value is cut so the label stays one line.
 export const shortBody = (text: string) => { const flat = text.replace(/\s+/g, ' ').trim(); return flat.length > 40 ? `${sliceCodePoints(flat, 0, 39)}…` : flat }
-export const errorText = (error: unknown) => error instanceof Error ? error.message : error ? String(error) : ''
+export const errorText = (error: unknown) => apiErrorCode(error) === 'stale_memory_box' ? i18nT('memoryPage.graph_changed') : error instanceof Error ? error.message : error ? String(error) : ''
 export const decodedRecordValue = (row: MemoryRecord): unknown => {
   if (typeof row.value_json !== 'string') return row.value_json
   try { return JSON.parse(row.value_json) } catch { return row.value_json }

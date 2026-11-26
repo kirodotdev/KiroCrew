@@ -410,6 +410,10 @@ from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and imp
 from conftest_resets_memory_edit import (  # noqa: E402,F401 -- bound for pytest and importers
     _isolate_memory_edit_caches,
 )
+from conftest_resets_memory_graph import (  # noqa: E402,F401 -- bound for pytest and importers
+    _forget_memory_graph_redactions,
+    _forget_memory_graphs,
+)
 from conftest_resets_relay_client import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_unsaved_relay_instance_ids,
 )

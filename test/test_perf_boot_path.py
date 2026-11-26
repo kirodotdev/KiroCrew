@@ -283,6 +283,21 @@ class TestDashboardImportIsLeaf:
         assert result["mcp_apps"] is False, "mcp_apps must load on first request, not at boot"
         assert result["backend"] is False, "the gateway backend must not ride dashboard boot"
 
+    def test_server_boot_leaves_the_memory_graph_and_numpy_unloaded(self) -> None:
+        """The memory graph's layout code imports numpy; its routes register at boot,
+        so the handler imports the service on the first graph request instead
+        (no-new-work-on-gateway-boot-path)."""
+        result = _probe(
+            "import json, sys\n"
+            "import kiro_crew.dashboard.server\n"
+            "print(json.dumps({\n"
+            "    'service': 'kiro_crew.memory_graph_service' in sys.modules,\n"
+            "    'layout': 'kiro_crew.memory_graph_layout' in sys.modules,\n"
+            "    'numpy': 'numpy' in sys.modules,\n"
+            "}))\n"
+        )
+        assert result == {"service": False, "layout": False, "numpy": False}
+
     def test_importing_origin_pulls_no_handler_tree(self) -> None:
         result = _probe(
             "import json, sys\n"
