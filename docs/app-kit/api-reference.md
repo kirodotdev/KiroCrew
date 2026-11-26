@@ -801,6 +801,10 @@ logs a console warning and stops switching back, showing no chat, until it gets 
 <ChatPanel slotKey="coder-abc123" conversationOnly />
 ```
 
+A mounted panel counts its session as on screen, so a reply there is not badged unread, only
+while the panel can be seen. A panel your page mounts hidden (for example under `display: none`,
+to load a chat ahead of time) leaves its session badged unread until you show it; showing it reads the session.
+
 Set `expandSteps` when the user watches a long run and the agent's work should be readable
 without a click per row. The panel's transcript then reads as if the user had turned on **Show
 Thinking Inline**, **Tool calls start expanded** and **Reasoning starts expanded** in Settings:
