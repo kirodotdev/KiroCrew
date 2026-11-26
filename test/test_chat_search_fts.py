@@ -15,6 +15,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import chat_search_cache as csc
+from kiro_crew import history_files
 from kiro_crew._sqlite_compat import fts5_available
 from kiro_crew.dashboard import chat_history_cached as chc
 from kiro_crew.dashboard import chat_history_search as shs
@@ -341,6 +342,47 @@ def test_a_dropped_cache_is_not_written_back_by_its_build(log):
     with pytest.raises(csc.CacheDropped):
         _cached(log, snap, "plum")
     assert not _store(log).path(KEY).exists()
+
+
+def _cached_then_rotated(log, monkeypatch) -> list:
+    """A cache built while ``tamarind`` was live, then a rotation that archives it."""
+    log.append(KEY, "user", "tamarind is the word only the first message holds")
+    _update(log)
+    monkeypatch.setattr("kiro_crew.history._SESSION_MAX_BYTES", 400)
+    monkeypatch.setattr("kiro_crew.history._SESSION_KEEP_LINES", 3)
+    for i in range(20):
+        log.append(KEY, "user", f"filler message number {i:02d} with enough text to rotate")
+    # The rotation's archive write starts the hourly sweep on its own thread.
+    sweep = history_files._cleanup_thread
+    if sweep is not None:
+        sweep.join(FALLBACK_TIMEOUT_SECS)
+        assert not sweep.is_alive()
+    segments = sorted((log._dir / "archive").glob(f"{csc._safe_key(KEY)}__*.jsonl"))
+    assert any(b"tamarind" in seg.read_bytes() for seg in segments), "fixture must rotate"
+    assert all("tamarind" not in m.get("content", "") for m in _rows(log))
+    assert _holding(_store(log), "tamarind")
+    for seg in segments:
+        os.utime(seg, (1_000_000, 1_000_000))
+    monkeypatch.setattr(history_files, "_last_cleanup", 0.0)
+    return segments
+
+
+def test_retention_drops_the_cache_that_holds_the_rows_it_expired(log, monkeypatch):
+    segments = _cached_then_rotated(log, monkeypatch)
+
+    assert history_files._cleanup_old_archives(retention_days=7, base=log._dir) == len(segments)
+
+    assert not any(seg.exists() for seg in segments)
+    assert _holding(_store(log), "tamarind") == []
+
+
+def test_a_cache_that_cannot_be_dropped_keeps_the_expired_segments(log, monkeypatch):
+    segments = _cached_then_rotated(log, monkeypatch)
+    monkeypatch.setattr(csc.ChatSearchCache, "drop", lambda self, names, trashed=False: False)
+
+    assert history_files._cleanup_old_archives(retention_days=7, base=log._dir) == 0
+
+    assert all(seg.exists() for seg in segments)
 
 
 def _app(log, key: str = KEY) -> web.Application:

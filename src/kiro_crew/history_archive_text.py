@@ -111,12 +111,13 @@ def remove_expired_segments(
 
     *expired* maps a transcript stem to its segments older than *cutoff*. For
     each stem, under ``_locked(stem)`` (the lock ``index_session`` and
-    ``chunk_session`` hold from stat to sync), the chat's search index and
-    semantic chunk rows are dropped FIRST, under every spelling the chat's
-    caches know it by (as ``delete_session`` drops them), and the segments
-    still older than *cutoff* are unlinked only once both drops succeeded. A
-    drop that fails keeps the segments, so the next sweep retries the whole
-    purge; unlinking first would leave nothing to retry from while the text
+    ``chunk_session`` hold from stat to sync), the chat's search index rows,
+    semantic chunk rows and history search cache (``chat_search_cache``, with
+    every cache whose tab chain reads the chat) are dropped FIRST, under every
+    spelling the chat's caches know it by (as ``delete_session`` drops them),
+    and the segments still older than *cutoff* are unlinked only once all three
+    drops succeeded. A drop that fails keeps the segments, so the next sweep
+    retries the whole purge; unlinking first would leave nothing to retry from while the text
     stays indexed. An indexer that already read a segment syncs before the
     purge, never after it, and a row it wrote is dropped.
 
@@ -129,6 +130,7 @@ def remove_expired_segments(
     shortcut: a long-lived second process keeps its own warm fold memo of a
     purged chat until its next write to that chat.
     """
+    from kiro_crew import chat_search_cache
     from kiro_crew.history import ConversationLog, HistoryLockTimeout
     from kiro_crew.history_index import INDEX_FILENAME, SessionSearchIndex
     from kiro_crew.history_vectors_index import vector_store_for
@@ -156,6 +158,13 @@ def remove_expired_segments(
                         continue
                     if index is not None and not index.drop(names):
                         _LOGGER.warning("Expired archive of %s kept: index row not dropped", stem)
+                        continue
+                    # A cache built before a rotation still holds the rows the
+                    # rotation moved into these segments.
+                    if not chat_search_cache.drop(sessions_dir, names):
+                        _LOGGER.warning(
+                            "Expired archive of %s kept: search cache not dropped", stem
+                        )
                         continue
                     removed += _unlink_all(due)
                     log._invalidate_cache(stem)

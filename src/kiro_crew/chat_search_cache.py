@@ -43,7 +43,10 @@ recently searched go first (a search touches its file's mtime at most once every
 ``TOUCH_EVERY_SECS``). A chat whose file alone passes the cap after any commit
 of an update (a new page, re-read rows or a reset) is removed and not built again in the process (:class:`CacheTooLarge`): its
 search stays the paged scan. A chat's file is removed when the chat is deleted or
-moved to trash (:func:`drop`), together with every cache whose chain of
+moved to trash, or when archive retention expires its segments
+(``history_archive_text.remove_expired_segments``: a cache built before a size
+rotation still holds the rows that moved into them), always by :func:`drop` and
+before the source is unlinked, together with every cache whose chain of
 transcripts reads it. Closing a chat keeps its file, since a closed chat can be
 reopened and searched; the disk cap bounds the folder. No build starts while the
 chat's delete is in flight, nor on a chain that reads a chat moved to the trash
