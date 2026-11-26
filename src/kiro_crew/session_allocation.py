@@ -1652,6 +1652,7 @@ class SessionAllocationService:
 #: The allocation owner modules, lowest layer first.
 _ALLOCATION_OWNERS: tuple[str, ...] = (
     "kiro_crew.session_allocation_parts.errors",
+    "kiro_crew.session_allocation_parts.cold_start_reads",
     "kiro_crew.session_allocation_parts.companions",
     "kiro_crew.session_allocation_parts.memory_policy",
     "kiro_crew.session_allocation_parts.eviction",
