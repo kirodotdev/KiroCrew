@@ -231,6 +231,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GGUF_SHA256,
         _HTTP_CHUNK_BYTES,
         _HTTP_TIMEOUT_SECS,
+        _IDLE_REST_SECS,
         _INFER_STOP_TIMEOUT_SECS,
         _INTERACTIVE_QUEUE_RESERVE,
         _LARGE_HOST_EMBED_THREADS,
@@ -361,6 +362,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.embeddings_preempt import (  # noqa: F401
         PreemptFlag,
         install_preempt_flag,
+    )
+    from kiro_crew.embeddings_rest import (  # noqa: F401
+        rest_if_idle,
+        wake_embedder,
     )
     from kiro_crew.metrics.provider import (  # noqa: F401
         get_recorder,
