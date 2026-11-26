@@ -6071,11 +6071,10 @@ for channel agents at the prompt and at dispatch.
 **Assignment is still not authorization.** Being unreferenced by default keeps a
 capability cheap and deliberate; it does not prove the user consented to reach the
 agent does not otherwise have. For that, `config.json` is the WRONG home —
-`security.py` spells out why, and the keystone leaves (`computer_use.json`,
-`browser-mode-enabled`, the Ops Mission Control mode) exist because each grants
-something outside Kiro Crew (desktop input synthesis, the operator's logged-in
-browser, writes against production incident tooling) or is the security floor
-itself.
+`security.py` spells out why, and the keystone leaves (`computer_use.json`, the
+Ops Mission Control mode) exist because each grants something outside Kiro Crew
+(desktop input synthesis, writes against production incident tooling) or is the
+security floor itself.
 
 The test is blast radius, not wording: ask what the agent gains that it did not
 already have. Folder tools grant no new read (`list_sessions` already returns every

@@ -45,10 +45,10 @@ read the agent does not already have (``list_sessions`` in ``kirocrew-core`` is
 always available and already returns every session's title and key), they cannot
 delete a conversation or a folder that holds anything, and the worst outcome is
 a sidebar the user has to tidy. Contrast the keystone leaves in ``security.py``
-(``computer_use.json``, ``browser-mode-enabled``, the Ops Mission Control mode):
-each grants reach OUTSIDE Kiro Crew — desktop input synthesis, the operator's
-logged-in browser, writes against production incident tooling — or is the
-security floor itself, and each is therefore stored where the agent cannot write.
+(``computer_use.json``, the Ops Mission Control mode): each grants reach OUTSIDE
+Kiro Crew — desktop input synthesis, writes against production incident tooling —
+or is the security floor itself, and each is therefore stored where the agent
+cannot write.
 
 The rule that follows, and the reason the tool set is ratcheted in
 ``test_mcp_dashboard_registration.py``: a capability whose blast radius DOES
