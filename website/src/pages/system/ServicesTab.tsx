@@ -13,7 +13,6 @@ import { AlertTriangle } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { Uptime } from '../../components/Uptime'
 import { api } from '../../api/client'
-import { useProvider } from '../../providers'
 import { Card, CardTitle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import McpGatewayCard from '../McpGatewayCard'
@@ -134,23 +133,19 @@ export default function ServicesTab() {
     refetchInterval: 2000,
   })
   const status = useAppSelector(s => s.dashboard.status)
-  const providerAdapter = useProvider()
 
   const d = data ?? null
 
   // The breakdown is ONE interpolated catalog string, not a template literal:
-  // the separators and the word order between the counts are translatable copy,
-  // and the provider label is spelled by the active provider adapter rather than
-  // hardcoded, so a non-kiro backend does not read as "kiro".
+  // the separators and the word order between the counts are translatable copy.
+  // The middle count is the gateway's kiro-cli SIGNATURE scan, independent of
+  // the active backend, so its label is the product name, not an adapter id.
   const mcpBreakdown = (() => {
     if (d?.mcp_total == null) return '—'
     const s = d.mcp_processes?.sandbox ?? 0
     const k = d.mcp_processes?.kiro_cli ?? 0
     const m = d.mcp_processes?.builder_mcp ?? 0
-    const providerLabel =
-      providerAdapter.labels.processCountLabel === 'kiro_cli'
-        ? 'kiro'
-        : providerAdapter.labels.processCountLabel
+    const providerLabel = 'kiro'
     const unique = s + k + m > d.mcp_total
     return i18nT(
       unique
