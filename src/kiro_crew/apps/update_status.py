@@ -48,6 +48,7 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
     _entry_git_url,
     _public_registry_name,
     _same_git_target,
+    _same_git_url_text,
 )
 from kiro_crew.apps.registry_pipeline.sources import (
     _effective_registries,
@@ -207,6 +208,23 @@ def _recorded_source(record: dict[str, Any]) -> tuple[str, str] | None:
     return url, registry if isinstance(registry, str) else ""
 
 
+def _seed_respelled_catalog_claim(claims: list[_Claim], seed_claim: _Claim) -> _Claim | None:
+    """The bundled catalog claim that superseded *seed_claim* in the resolver's set.
+
+    Mirrors ``_seed_respelled_by_catalog``: a bundled catalog claim (registry "",
+    not a seed) whose URL loosely equals the seed's is the row the update installs
+    from, so the badge must read its version even though its URL text differs.
+    """
+    for claim in claims:
+        if (
+            claim.registry == ""
+            and not claim.seed
+            and _same_git_target(claim.git_url, seed_claim.git_url)
+        ):
+            return claim
+    return None
+
+
 def _pinned_claim(claims: list[_Claim], url: str, registry: str) -> _Claim | None:
     """The row ``_pinned_registry_entry`` would update from.
 
@@ -215,13 +233,21 @@ def _pinned_claim(claims: list[_Claim], url: str, registry: str) -> _Claim | Non
     ``_pinned_registry_entry`` follows.
     """
     for claim in claims:
-        if not _same_git_target(claim.git_url, url):
+        if not _same_git_url_text(claim.git_url, url):
             continue
         if claim.registry != registry and not _same_git_target(claim.registry, registry):
             continue
+        # A bundled seed install the catalog respelled updates from the catalog
+        # row (``_seed_respelled_by_catalog``), so the badge reads that row's
+        # version, not the seed's empty one. Only for a bundled source (registry
+        # ""); external registries stay an exact match.
+        if registry == "" and claim.seed:
+            catalog = _seed_respelled_catalog_claim(claims, claim)
+            if catalog is not None:
+                return catalog
         return claim
     for claim in claims:
-        if _same_git_target(claim.git_url, url) and _is_pinned_registry_move(
+        if _same_git_url_text(claim.git_url, url) and _is_pinned_registry_move(
             registry, claim.registry
         ):
             return claim

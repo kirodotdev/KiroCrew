@@ -41,7 +41,7 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
     _lfs_endpoint_pin_argv,
     _loggable_git_transport_output,
     _redacted_git_failure_class,
-    _same_git_target,
+    _same_git_url_text,
     _strip_git_target_userinfo,
 )
 from kiro_crew.apps.registry_pipeline.recovery import _move_checkout_aside
@@ -325,12 +325,13 @@ async def _clone_origin_matches(dest: Path, git_url: str) -> bool:
 
     Fails closed: an unreadable origin, a missing remote, or an empty
     *git_url* to compare against all return False. Embedded userinfo is transport
-    authentication rather than identity, so credential rotation remains a match.
+    authentication rather than identity, so credential rotation remains a match;
+    any other difference in the URL text (a ``.git`` suffix included) does not.
     """
     if not git_url:
         return False
     origin = await _clone_origin_url(dest)
-    return origin is not None and _same_git_target(origin, git_url)
+    return origin is not None and _same_git_url_text(origin, git_url)
 
 
 _KILL_GRACE_PERIOD = 5  # seconds to wait after SIGTERM before SIGKILL
@@ -943,10 +944,11 @@ async def _git_clone_or_pull(
         # (e.g. a registry replaced with the same app name leaves the old
         # clone behind). Never run a credentialed pull against an unverified
         # remote: require the existing origin to resolve to the same clone
-        # target as the vetted git_url. Userinfo is deliberately ignored here:
+        # URL as the vetted git_url. Userinfo is deliberately ignored here:
         # credential rotation must not turn the same repository into a rebind.
-        # Any other mismatch moves the stale clone aside and re-clones from the
-        # URL the posture decision was actually made for.
+        # Any other mismatch (a ``.git`` suffix included, since a server may serve
+        # another repository there) moves the stale clone aside and re-clones
+        # from the URL the posture decision was actually made for.
         #
         # The same origin check gates the manifest that admission ran on (see
         # _fetch_app_manifest), so the re-clone below cannot swap in code that
@@ -976,7 +978,7 @@ async def _git_clone_or_pull(
                     f"Remove or fix it manually at {dest} and retry the install."
                 ),
             }
-        if not _same_git_target(existing_origin, git_url):
+        if not _same_git_url_text(existing_origin, git_url):
             # Parity with the branch-mismatch path below: say WHY the checkout
             # is being replaced before doing it, naming the mismatched origin,
             # so the install log records the re-clone reason instead of a bare
@@ -1141,7 +1143,7 @@ async def _git_clone_or_pull(
             # Already cloned from the verified origin AND branch (or the branch
             # state was unknown and re-convergence was skipped) — fetch and
             # fast-forward. (The origin-mismatch gate above guarantees this
-            # checkout's origin is the same normalized target as git_url: a
+            # checkout's origin is the same URL as git_url apart from userinfo: a
             # mismatched checkout was moved aside and never reused. Pull from the
             # current registry URL through the command-scoped rewrite, so rotated
             # credentials take effect without ever being persisted in origin.)
