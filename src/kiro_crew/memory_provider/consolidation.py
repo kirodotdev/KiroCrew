@@ -166,9 +166,22 @@ async def publish(
                 return refused
             return None
         # The lesson origin gate and tier policy Crew's own write path applies, on the
-        # rows the model read, before any lesson becomes a provider item.
+        # rows the model read, before any lesson becomes a provider item. The tier
+        # policy's quotes are scored with Crew's own embedder when one is open; with none, no
+        # quote backs its rule. Nothing is logged here, so shadow sends no quote call.
+        quotes = None
+        if _tier_policy.quotes_in_answer(tier_mode):
+            crew_store = getattr(consolidator, "_vector_store", None)
+            quotes = await _tier_policy.gather_quotes(
+                result,
+                rows,
+                ask=None,
+                embed=getattr(crew_store, "embed_lesson", None),
+            )
         result = gate_consolidation_lessons(result, rows, _origin_mode(), session_key=key).result
-        result = _tier_policy.apply_tier_policy(result, rows, tier_mode, session_key=key).result
+        result = _tier_policy.apply_tier_policy(
+            result, rows, tier_mode, session_key=key, quotes=quotes
+        ).result
         extracted = extracted_items(result)
         from kiro_crew.history_consolidation import _lesson_extraction_disabled
 
