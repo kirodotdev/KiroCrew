@@ -119,9 +119,6 @@ export default function AppDetailPage() {
   const reconsentInGrantsBox = !!reconsentMsg && !!app?.installed && !app.enabled && hasStagedGrants
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
-  const enableLabel = app?.sessionApprovalConsentPending
-    ? i18nT('pages.appDetailPage.enable_and_allow_chat_control')
-    : i18nT('pages.appDetailPage.enable')
   const clearError = useCallback(() => {
     setError('')
   }, [])
@@ -1474,7 +1471,7 @@ export default function AppDetailPage() {
                        store row / feature card keep the badge alone (the decision
                        does not happen there). */
                     <>
-                    <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
+                    <Btn {...uiLocation('apps.detail.enable-builtin')} onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {app.sessionApprovalConsentPending ? i18nT('pages.appDetailPage.enable_and_allow_chat_control') : i18nT('pages.appDetailPage.enable')}</Btn>
                     {desktopOnly && (
                     <span className="text-[13px] text-muted flex items-center gap-1.5">
                       <Monitor size={14} /> {i18nT('pages.appDetailPage.desktop_app_hint')}
@@ -1501,7 +1498,7 @@ export default function AppDetailPage() {
                        branches. Update and Uninstall move into one overflow
                        menu so the row stays at two controls. */
                     <>
-                      <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
+                      <Btn {...uiLocation('apps.detail.enable-self-managed')} onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {app.sessionApprovalConsentPending ? i18nT('pages.appDetailPage.enable_and_allow_chat_control') : i18nT('pages.appDetailPage.enable')}</Btn>
                       {((app.updateAvailable && !updateHidden) || canUninstall) && (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -1541,7 +1538,7 @@ export default function AppDetailPage() {
                        where store rows land, so it was the common path. Same
                        pattern as AppListRow / FeaturedSpotlight rows. */
                     <>
-                    <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
+                    <Btn {...uiLocation('apps.detail.enable')} onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {app.sessionApprovalConsentPending ? i18nT('pages.appDetailPage.enable_and_allow_chat_control') : i18nT('pages.appDetailPage.enable')}</Btn>
                     {desktopOnly && (
                     /* The consequence is VISIBLE here, not only in `title`. A
                        hover tooltip does not exist on touch and is not reachable

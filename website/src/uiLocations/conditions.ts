@@ -84,6 +84,9 @@ export const UI_CONDITIONS = {
   open_app_syncable: 'the open app is a regular installed app with no newer version waiting; Sync reloads its installed files and does not install a new release',
   open_app_update_available: 'the open app is a regular installed app and a newer version is waiting (Update stands where Sync otherwise is)',
   open_app_removable: 'the open app is a regular installed app (not a built-in or independently managed one) that is not locked against removal',
+  open_app_disabled: 'the open app is a regular installed app (not a built-in or independently managed one) and is turned off (Disable stands in this place while it is on)',
+  open_app_builtin_disabled: 'the open app is a built-in app that ships with this dashboard and is turned off (some, such as AWS Control, start off)',
+  open_app_self_managed_disabled: 'the open app is an independently managed app and is turned off',
   // Schedule
   job_not_running: 'the open job is not running now (while it runs, Cancel Run stands in this place)',
   // Shell
@@ -261,6 +264,7 @@ export const UI_CONDITION_OPPOSITES = [
   ['session_open', 'no_active_session'],
   ['response_running', 'no_response_running'],
   ['job_running', 'job_not_running'],
+  ['open_app_enabled', 'open_app_disabled'],
   ['job_enabled', 'job_paused'],
   ['sessions_board_view', 'sessions_list_view'],
   ['mouse_input', 'touch_input'],
