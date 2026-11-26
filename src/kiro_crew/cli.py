@@ -1310,7 +1310,14 @@ def main() -> None:
     elif args.command == "logout":
         from kiro_crew.cli_server import _logout, resolve_client_port
 
-        _logout(resolve_client_port(args.port))
+        # An omitted --link (None) revokes everything and a given one, blank
+        # included, is passed on for `_logout` to judge, so the two stay apart.
+        link = getattr(args, "link", None)
+        port = resolve_client_port(args.port)
+        if link is None:
+            _logout(port)
+        else:
+            _logout(port, link)
     elif args.command == "status":
         from kiro_crew.cli_server import _status
 
