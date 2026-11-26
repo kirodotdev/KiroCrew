@@ -26,7 +26,7 @@ async def configure_provider_memory(
     # The agent SDK loads ACP transports that depend on the session layer.
     from kiro_crew.agent_sdk import kas_memory
 
-    kas_backend = bool(getattr(provider, "is_kas_backend", False))
+    kas_backend = bool(getattr(provider, "is_kas_backend", False))  # harness-ok: kas_memory plan
     cloud_session = kas_backend and await asyncio.to_thread(_cloud_session, session_key)
     personal_execution = (
         kas_backend

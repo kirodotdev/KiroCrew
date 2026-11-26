@@ -132,7 +132,7 @@ async def _card_owns_sign_in(client: Any, server_name: str, managed: frozenset[s
     """Whether *server_name*'s card owns its consent: membership, and on KAS a Connect on KAS."""
     if not server_name or server_name not in managed:
         return False
-    if capabilities_of(client).backend == ACP_BACKEND_KAS:
+    if capabilities_of(client).backend == ACP_BACKEND_KAS:  # harness-ok: KAS Connect sign-in
         return await asyncio.to_thread(_card_signs_in_on_kas, server_name)
     return True
 

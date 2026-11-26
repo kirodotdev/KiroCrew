@@ -1465,7 +1465,7 @@ def post_tool_matchers_no_builtin_meets(provider: object, hooks: Sequence[Script
     from kiro_crew.acp.harness_tool_names import CODEX_TOOL_IDS_BY_KIRO_TOOL
     from kiro_crew.acp_backends import ACP_BACKEND_CODEX
 
-    if capabilities_of(provider).backend == ACP_BACKEND_CODEX:
+    if capabilities_of(provider).backend == ACP_BACKEND_CODEX:  # harness-ok: codex tool-id table
         codex_names = {n for ids in CODEX_TOOL_IDS_BY_KIRO_TOOL.values() for n in ids}
         unmet = {
             name
@@ -1692,7 +1692,7 @@ async def turn_spec_hooks(
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
     from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth, sends_mcp_client_secret
 
-    on_kas = capabilities_of(provider).backend == ACP_BACKEND_KAS
+    on_kas = capabilities_of(provider).backend == ACP_BACKEND_KAS  # harness-ok: kas_engine flags
     try:
         hooks, lost, _unconfirmable = await asyncio.to_thread(
             functools.partial(

@@ -18,7 +18,8 @@ from kiro_crew.agent_sdk.capabilities import capabilities_of
 
 def is_finished_child_call(event: Any, provider: Any) -> bool:
     """Whether *event*, on *provider*'s session, is a KAS child's marked finished call."""
-    return capabilities_of(provider).backend == ACP_BACKEND_KAS and _marked(event)
+    on_kas = capabilities_of(provider).backend == ACP_BACKEND_KAS  # harness-ok: KAS wire marker
+    return on_kas and _marked(event)
 
 
 __all__ = ["is_finished_child_call"]
