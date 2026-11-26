@@ -14,7 +14,9 @@ An agent able to edit this list could allow the host it wants to send
 conversation data to, so the file lives in the ``redaction-allow`` directory,
 which the sandbox seals read-only (``sandbox._CREW_READONLY_LEAVES``): only the
 gateway's own routes write it. Every failure to read degrades to "no host
-allowed", which means more links blocked, the safe direction.
+allowed", which means more links blocked, the safe direction; a file that is
+there but unreadable, not valid JSON or not a JSON object is logged and
+SEL-audited with its reason.
 """
 
 from __future__ import annotations
@@ -159,9 +161,16 @@ def _read_for_write() -> dict[str, list[str]]:
 def _load(path: Path) -> dict[str, list[str]]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        _report_unloaded(path, "unreadable", exc)
+        return {}
+    except ValueError as exc:
+        _report_unloaded(path, "not valid JSON", exc)
         return {}
     if not isinstance(raw, dict):
+        _report_unloaded(path, "not an object", type(raw).__name__)
         return {}
     out: dict[str, list[str]] = {}
     dropped: list[dict[str, str]] = []
@@ -205,6 +214,29 @@ def _report_dropped(path: Path, count: int, dropped: list[dict[str, str]]) -> No
         "redaction.allowed_hosts.dropped_invalid",
         "redaction_allow_load",
         ",".join(sorted({d["host"] for d in dropped})),
+        lambda: meta,
+        outcome="removed",
+    )
+
+
+# A file that is there but cannot be loaded is reported once per reason per
+# process, on the same terms. A missing file is the normal state before the first
+# Allow.
+# process-cache-ok: keyed by the file's path, and each test's data home is its own.
+_UNLOADED_REPORTED: set[tuple[Path, str]] = set()
+
+
+def _report_unloaded(path: Path, reason: str, detail: object) -> None:
+    """Log and SEL-audit a list that loaded as empty, so the narrowing is visible."""
+    if (path, reason) in _UNLOADED_REPORTED:
+        return
+    _UNLOADED_REPORTED.add((path, reason))
+    logger.warning("allowed-hosts list %s is %s (%s); no host is allowed", path, reason, detail)
+    meta = {"reason": reason}
+    _log_operator_list_use(
+        "redaction.allowed_hosts.load_failed",
+        "redaction_allow_load",
+        str(path),
         lambda: meta,
         outcome="removed",
     )
