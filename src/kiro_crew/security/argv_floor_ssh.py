@@ -566,6 +566,7 @@ def _ssh_family_verb(token: str) -> "str | None":
 def _frame_verb_choices(
     tokens: "list[str]",
     executed: "set[int]",
+    run_globs: "set[int]",
     bound: "dict[str, tuple[str, ...]]",
     case_patterns: "set[int]",
 ) -> "Iterator[tuple[int, str, str | None, bool]]":
@@ -575,6 +576,7 @@ def _frame_verb_choices(
     does not run that ends its command (``git add *;``) is an operand. ``glob_verb``
     marks a bare glob bash RUNS (``s?h``, ``env s?h``): its operands keep host glob
     matching, while the same glob as an operand, or a lone ``*``, is a file name.
+    That test reads *run_globs*, *executed* plus the glued-split run positions.
     A ``case`` arm's pattern word (*case_patterns*) is never a verb.
     """
     for i, token in enumerate(tokens):
@@ -589,7 +591,7 @@ def _frame_verb_choices(
             bool(verbs)
             and globbed
             and not any(sep in token for sep in "/\\")
-            and (i not in executed or not token.strip("*"))
+            and (i not in run_globs or not token.strip("*"))
         )
         if not verbs and bound:
             stripped = token.strip("\"'")
@@ -1441,6 +1443,11 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
         # when every case in the frame is plainly written, judged on the words as
         # the user wrote them; any other shape reads every word as a possible verb.
         case_patterns = _plain_case_pattern_indices(tokens, written_source)
+        # Bash runs ``s?h`` in ``cd tmp;s?h``. The glued-split reading only adds
+        # run positions, and only the glob verb test reads them.
+        run_globs = executed | _argv_rules._executed_program_indices(
+            tokens, cased_tokens, glue_split=True
+        )
         # Only a submitted line that is one simple ``git add`` gets this reading.
         file_operands = (
             _argv_rules._file_operand_indices(tokens, cased_tokens)
@@ -1458,7 +1465,7 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
         # Once per FRAME, not once per verb token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
         for i, token, verb, glob_verb in _frame_verb_choices(
-            tokens, executed, bound_program_verbs, case_patterns
+            tokens, executed, run_globs, bound_program_verbs, case_patterns
         ):
             # A plain ``git add`` operand glob (``_file_operand_indices``) is a file name:
             # the words after it skip the DNS lookup, never the own-name/loopback checks.
