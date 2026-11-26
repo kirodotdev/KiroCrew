@@ -779,11 +779,14 @@ event loop.
 When a guard cannot rebind, the gateway closes the entry port and keeps running
 (`_close_entry_port`): it stops the entry guards, closes both entry listeners, and
 keeps serving its own listener, whose guard is unchanged. The owner is told in three
-places: a WARNING log line, a dashboard notification, and `GET /api/status`, whose
+places: a WARNING log line, a critical dashboard notification that carries a key, so
+the bell holds one, and `GET /api/status`, whose
 `entry_port_closed` field holds the reason (empty while the port is open) and which
 `kirocrew status` prints as `Entry port: closed`. `GET /v1/crew/info` does not carry
-it. The gate stays set after the close: a request on an entry connection that is
-still open is still an entry request and is answered 503 `instance_unavailable`
+it. The next start removes that notification once it is past the entry port's
+start, whether the port opened or is set to `0` (`entry_gate.clear_closed_note`);
+no other notification is touched. The gate stays set after the close: a request
+on an entry connection that is still open is still an entry request and is answered 503 `instance_unavailable`
 with `Connection: close`, and the gateway then closes that connection; it is never
 served as a request from this machine. Nothing reopens the port; a restart of the
 gateway does. The entry guards are stopped with `ListenerGuard.retire`, which does

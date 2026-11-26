@@ -42,6 +42,7 @@ import logging
 import socket
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from aiohttp import web
 
@@ -55,6 +56,7 @@ from kiro_crew.dashboard.crew_api_errors import (
 from kiro_crew.dashboard.kiro_relay.limits import LOCAL_CREDENTIAL_HEADERS
 from kiro_crew.dashboard.listener_guard import release_site
 from kiro_crew.dashboard.origin import ENTRY_REQUEST_KEY, _split_authority, is_proxied_request
+from kiro_crew.notifications.bus import NotificationPayload
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,11 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 #: Said where the port is announced: many proxies pass the client's ``Host`` through,
 #: and the entry port answers 400 to a ``Host`` outside :data:`_LOOPBACK_HOSTS`.
 HOST_HINT = "the proxy must send a Host that names 127.0.0.1, [::1] or localhost"
+#: The bell note for a port closed while the gateway runs. It carries a key, so the
+#: bell holds one, and the next start removes it (:func:`clear_closed_note`).
+CLOSED_SOURCE = "system"
+CLOSED_CHANNEL = "system.agent"
+CLOSED_KEY = "entry-port-closed"
 #: What the owner is told when the entry port is closed while the gateway runs.
 CLOSED_TITLE = "Entry port closed"
 CLOSED_BODY = (
@@ -149,12 +156,12 @@ class GateRef:
 
     def close(
         self, sites: Iterable[web.TCPSite | web.SockSite], reason: str
-    ) -> tuple[str, str] | None:
+    ) -> NotificationPayload | None:
         """Close the entry port for the rest of this run; the gateway keeps serving.
 
-        Stops every entry listener in *sites* and records *reason*. Returns the title
-        and the text the owner is told, ``None`` when the port was closed already.
-        Nothing reopens the port: a restart of the gateway does. Call it on the loop.
+        Stops every entry listener in *sites* and records *reason*. Returns the note
+        the owner is told with, ``None`` when the port was closed already. Nothing
+        reopens the port: a restart of the gateway does. Call it on the loop.
         """
         if self.closed:
             return None
@@ -162,7 +169,42 @@ class GateRef:
         for site in sites:
             release_site(site)
         port = self.gate.port if self.gate is not None else 0
-        return CLOSED_TITLE, CLOSED_BODY.format(port=port)
+        return NotificationPayload(
+            source=CLOSED_SOURCE,
+            channel=CLOSED_CHANNEL,
+            # Callers on other machines are cut off until the gateway restarts.
+            priority="critical",
+            title=CLOSED_TITLE,
+            body=CLOSED_BODY.format(port=port),
+            key=CLOSED_KEY,
+        )
+
+
+async def clear_closed_note(state: Any) -> bool:
+    """Remove the note of an earlier run that said the entry port was closed.
+
+    Call it once the start is past the entry port: the port is open again, or the
+    owner turned it off, so what the note says is untrue. Only the note this module
+    publishes is removed (``CLOSED_SOURCE`` and ``CLOSED_KEY``). Returns whether one
+    was removed; a removal that could not be stored is logged and returns ``False``,
+    and the start goes on.
+    """
+    held = any(
+        note.get("source") == CLOSED_SOURCE and note.get("key") == CLOSED_KEY
+        for note in getattr(state, "_notification_log", ())
+    )
+    if not held:
+        return False
+    try:
+        removed, persisted = await state.dismiss_notification(source=CLOSED_SOURCE, key=CLOSED_KEY)
+    except Exception:
+        logger.warning(
+            "The entry-port-closed note of an earlier run was not removed", exc_info=True
+        )
+        return False
+    if not persisted:
+        logger.warning("The entry-port-closed note of an earlier run was not removed")
+    return bool(removed and persisted)
 
 
 def configured_port(value: object, dashboard_port: int, ssm_port: int | None = None) -> int:
