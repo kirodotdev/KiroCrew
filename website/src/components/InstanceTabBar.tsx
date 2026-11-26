@@ -36,6 +36,8 @@ import { embeddedTeamCrewsGroups } from './embeddedTeamCrewsGroups'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
 import { crewTransportLabel, hasDashboardPane } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
+import { useIsMobile } from '../hooks/useIsMobile'
+import { CrewLetterBadge, crewBadgeLetters, stateDotCls, stateLabel, stateTextCls } from './crewStateMark'
 import { isRelayHostOffline } from '../utils/relayHostOffline'
 import { useOutageFailure } from '../hooks/useOutageFailure'
 import ErrorNotice from './ErrorNotice'
@@ -410,47 +412,6 @@ function fmtDuration(secs: number): string {
   const m = Math.floor((secs % 3600) / 60)
   // `dropZero` drops a leading `0h` and a trailing `0m`.
   return fmtDurationParts([[h, 'hour'], [m, 'minute']], { dropZero: true })
-}
-
-/**
- * Localized name for a live tunnel state. The raw values are backend enum
- * words, so they are mapped rather than interpolated: they reach the user in a
- * row's accessible name and its tooltip.
- */
-function stateLabel(state?: string): string {
-  if (state === 'connected') return i18nT('components.instanceTabBar.connected')
-  if (state === 'connecting') return i18nT('components.instanceTabBar.connecting')
-  if (state === 'error') return i18nT('components.instanceTabBar.tunnel_error')
-  // A stopped tunnel is not the same as one that was never opened: the crew's
-  // own machine may be running while the forward is down.
-  if (state === 'stopped') return i18nT('components.instanceTabBar.stopped')
-  return i18nT('components.instanceTabBar.disconnected')
-}
-
-/** Map a live tunnel state to its status-dot color. */
-function stateDotCls(state?: string): string {
-  return state === 'connected'
-    ? 'bg-[var(--ok)]'
-    : state === 'error'
-      ? 'bg-[var(--danger)]'
-      : state === 'connecting'
-        ? 'bg-[var(--warn)]'
-        : 'bg-[var(--muted)]'
-}
-
-/**
- * Text colour for the visible state word, mirroring :func:`stateDotCls`. The word
- * carries the state on its own — the colour is reinforcement, which is the point:
- * remove the colour and the row still says what it is.
- */
-function stateTextCls(state?: string): string {
-  return state === 'connected'
-    ? 'text-[var(--ok)]'
-    : state === 'error'
-      ? 'text-[var(--danger)]'
-      : state === 'connecting'
-        ? 'text-[var(--warn)]'
-        : 'text-muted'
 }
 
 /** Clamped badge text, so an unbounded count cannot stretch the trigger. */
@@ -870,10 +831,17 @@ function SwitcherChip({
   shrinkable = false,
   buttonRef,
   menuOpen,
+  compact = false,
+  badge = '',
 }: {
   entry: SwitcherEntry
   active: boolean
   onSelect: () => void
+  /** The phone form: icon-only, with `badge` in place of a remote crew's dot
+   *  (see `crewStateMark.tsx`). The name stays in `aria-label` and the hint. */
+  compact?: boolean
+  /** The crew's initials from `crewBadgeLetters`; `''` keeps the dot. */
+  badge?: string
   /** Extra classes for the caller's own layout hooks (see `tb-crew-active-chip`). */
   className?: string
   buttonRef?: React.Ref<HTMLButtonElement>
@@ -939,6 +907,8 @@ function SwitcherChip({
         <Home className="lucide-inline shrink-0" />
       ) : entry.connecting ? (
         <Loader2 className="lucide-inline shrink-0 animate-spin" />
+      ) : compact && badge ? (
+        <CrewLetterBadge letters={badge} state={entry.state} />
       ) : (
         <span
           className={`w-1.5 h-1.5 rounded-full shrink-0 ${stateDotCls(entry.state)}`}
@@ -966,8 +936,11 @@ function SwitcherChip({
           The crew's name is capped too, at the box minus the separator and its two
           gaps, so a name longer than the whole box ellipsises inside it. Uncapped,
           a `shrink-0` name overflows the 140px box and paints under the unread
-          badge and past the chip's border; its full text is in the hint. */}
-      {entry.pathParent ? (
+          badge and past the chip's border; its full text is in the hint.
+
+          The phone form (`compact`) draws no name at all: its bar shares one row
+          with the page's controls, and the badge stands in for the name. */}
+      {compact ? null : entry.pathParent ? (
         <span className="tb-drop-crew-name flex items-center gap-1 max-w-[140px] min-w-0">
           <span className="truncate min-w-0">{entry.pathParent}</span>
           {/* Inline, not a catalog key: a letterless value is not prose, and the
@@ -992,8 +965,10 @@ function SwitcherChip({
         />
       ) : null}
       {/* Only non-ok state gets a visible word, so a connected chip stays compact
-          while an errored/connecting one is spottable without colour or hover. */}
-      {entry.state && entry.state !== 'connected' ? (
+          while an errored/connecting one is spottable without colour or hover.
+          The phone form has no room for a word: its badge is filled only while
+          the tunnel is live, and the menu row names the state in words. */}
+      {!compact && entry.state && entry.state !== 'connected' ? (
         <span className={`shrink-0 text-[11px] ${stateTextCls(entry.state)}`}>
           {stateLabel(entry.state)}
         </span>
@@ -1124,11 +1099,15 @@ function CrewChipRow({
   activeId,
   onSelect,
   onClippedChange,
+  compact,
+  badges,
 }: {
   chips: SwitcherEntry[]
   activeId: string | null
   onSelect: (id: string | null) => void
   onClippedChange: (clipped: Set<string>) => void
+  compact: boolean
+  badges: Map<string, string>
 }) {
   const rowRef = useRef<HTMLDivElement>(null)
   const ids = useMemo(() => chips.map(c => c.id ?? LOCAL_VALUE), [chips])
@@ -1155,11 +1134,14 @@ function CrewChipRow({
           entry={entry}
           active={(entry.id ?? null) === activeId}
           onSelect={() => onSelect(entry.id)}
+          compact={compact}
+          badge={badges.get(entry.id ?? LOCAL_VALUE)}
           // A chip showing a state WORD ("error", "connecting") is not shrinkable:
           // that word is text of unknown width, so the chip's declared floor —
           // which is arithmetic over fixed parts — would not hold for it, and it is
-          // the chip a user most needs to read whole anyway.
-          shrinkable={!entry.state || entry.state === 'connected'}
+          // the chip a user most needs to read whole anyway. A phone chip has no
+          // name to give up, so it is not shrinkable either.
+          shrinkable={!compact && (!entry.state || entry.state === 'connected')}
         />
       ))}
     </div>
@@ -1261,6 +1243,13 @@ function Switcher({
   )
   const activeIsChip = chips.some(e => (e.id ?? null) === activeId)
   const showLeadingActive = !stableOrder || !activeIsChip
+  const compact = useIsMobile()
+  // Every remote crew the switcher lists, so a badge holds still when another connects.
+  const badges = useMemo(() => {
+    const remote = entries.filter(e => e.id !== null)
+    const letters = crewBadgeLetters(remote.map(e => e.name))
+    return new Map(remote.map((e, i) => [e.id as string, letters[i]]))
+  }, [entries])
   return (
     // `tb-crew-grow` is a top-bar layout hook, on every wrapper between the
     // identity group and the pinned row: the desktop top bar (index.css,
@@ -1277,6 +1266,8 @@ function Switcher({
           className="tb-crew-active-chip"
           buttonRef={chipRef}
           menuOpen={menuOpen}
+          compact={compact}
+          badge={badges.get(active.id ?? LOCAL_VALUE)}
         />
       ) : null}
       {chips.length > 0 ? (
@@ -1285,6 +1276,8 @@ function Switcher({
           activeId={activeId}
           onSelect={onSelect}
           onClippedChange={setClippedPinned}
+          compact={compact}
+          badges={badges}
         />
       ) : null}
       <SwitcherMenu

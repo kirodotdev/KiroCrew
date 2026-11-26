@@ -68,8 +68,9 @@ describe('pinned chips adapt to their own track', () => {
    */
   it('lets a pinned chip give up name width, down to a legible floor', async () => {
     const t = await tsx()
+    // Off the phone: a phone chip is icon-only and has no name to give up.
     expect(t, 'the pinned row asks for shrinkable chips').toMatch(
-      /shrinkable=\{!entry\.state \|\| entry\.state === 'connected'\}/,
+      /shrinkable=\{!compact && \(!entry\.state \|\| entry\.state === 'connected'\)\}/,
     )
     // The floor has to sit on the CHIP: a flex item's `min-width:auto` resolves to
     // its content-based minimum, which for nowrap text is the full name, so leaving

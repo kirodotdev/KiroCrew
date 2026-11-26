@@ -2468,9 +2468,16 @@ edge it overlaps by 4px. The chip holds the name and the activity line,
 centred. The whole stack is the one button. In the phone shell bar it leaves
 the bar's grid (`fixed`, centred on the viewport, an empty cell holding the
 middle column), keeps its face inside the 42px bar and hangs its chip below it.
-There it is capped to the viewport's width less 6rem a side
-(`max-w-[calc(100vw-12rem)]`), so a long name or activity line truncates
-instead of reaching the side controls, and the button passes input through
+There its width is capped by what the bar's two side groups leave either side
+of the viewport's centre (`useBarStackCap.ts`): the nearer side's innermost
+control, counted at its 44px touch target, sets the room on both sides, less
+4px. The side groups are not equal: a remote crew puts the crew switcher before
+the drawer toggle, and the trail holds the search and panel openers. The cap
+never goes below the chip's 7rem floor. It is measured again when the bar or a
+control in it changes size, when a control comes or goes, and on a resize, and
+`max-w-[calc(100vw-12rem)]` holds only until the first measurement. A long name
+or activity line truncates instead of reaching the side controls, and the button
+passes input through
 (`pointer-events-none`) with only the face and the chip catching it. The bar's
 two side cells (the drawer toggle; the channel chip and panel opener) sit above
 the stack (`relative z-40`, passing input through to their controls only), so
