@@ -426,6 +426,10 @@ async def test_a_bot_with_a_turn_admitted_as_it_is_busy_whatever_the_session(
     # The machine owner reads the same.
     _, body = await _list(_request())
     assert {row["id"] for row in body["data"] if row["status"] == "busy"} == {REVIEWER}
+    # A Bot's scheduled run reads the same way.
+    running_bot_turns.begin_scheduled(SimpleNamespace(), f"{WRITER}-1")
+    _, body = await _list(_as_app(_request(), store, tokens))
+    assert [row["status"] for row in body["data"]] == ["busy", "busy", "idle"]
 
 
 @pytest.mark.asyncio
@@ -458,8 +462,10 @@ async def test_a_turn_on_a_bot_outside_the_grant_changes_nothing_for_the_app(
         "cron-4": _slot(f"{PRIVATE}-1", running=False, linked=True),
         "task-review-5": _slot(PRIVATE, running=True),
     }
-    # Their admissions noted both Bots the app was not given.
+    # Their admissions noted both Bots the app was not given, and one runs its
+    # schedule too.
     _noted(f"{PRIVATE}-1", f"{PLANNER}-1")
+    running_bot_turns.begin_scheduled(SimpleNamespace(), f"{PRIVATE}-1")
     while_running = await bots.api_bots(_as_app(_request(slots=slots), store, tokens))
     assert while_running.body == quiet.body
     assert PRIVATE not in while_running.body.decode("utf-8")

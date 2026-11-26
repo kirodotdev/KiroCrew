@@ -82,6 +82,22 @@ def test_a_turn_that_does_not_run_as_a_bot_itself_is_not_noted(execution) -> Non
     running_bot_turns.end(turn)
 
 
+@pytest.mark.parametrize("member_id", [None, "", 7, ["writer-1"]])
+def test_a_scheduled_run_that_names_no_bot_is_not_noted(member_id) -> None:
+    turn = _turn()
+    running_bot_turns.begin_scheduled(turn, member_id)
+    assert not running_bot_turns._RUNNING
+    running_bot_turns.end(turn)
+
+
+def test_a_scheduled_run_is_noted_by_the_member_id_it_is_given() -> None:
+    turn = _turn()
+    running_bot_turns.begin_scheduled(turn, "writer-1")
+    assert running_bot_turns.running_member_ids() == {"writer-1"}
+    running_bot_turns.end(turn)
+    assert not running_bot_turns._RUNNING
+
+
 def test_a_bot_with_two_turns_is_running_until_both_end() -> None:
     first, second = _turn(), _turn()
     running_bot_turns.begin(first, _as_member("writer-1"))
@@ -151,6 +167,7 @@ def test_a_fault_in_the_table_is_logged_and_never_raised(monkeypatch, caplog, br
     monkeypatch.setattr(running_bot_turns, broken, _raises if broken == "_home" else _BrokenTable())
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         running_bot_turns.begin(turn, _as_member("writer-1"))
+        running_bot_turns.begin_scheduled(turn, "writer-1")
         running_bot_turns.end(turn)
         assert running_bot_turns.running_member_ids() == frozenset()
     said = [record.getMessage() for record in caplog.records if record.name == LOGGER]

@@ -19,7 +19,7 @@ Each row is the contract's ``Bot`` and nothing else, built by the function that
 builds the installed apps' rows (``handlers.members_app``): the free text leaves
 through the roster mask, ``avatar_url`` is null because the gateway has no image
 address for a Bot, and ``status`` is ``busy`` while a turn runs in the Bot's own
-thread or a dashboard turn runs as the Bot (``_list_bots`` says which turns those
+thread or a turn noted as the Bot's runs (``_list_bots`` says which turns those
 are). ``id`` is the Bot's name, the value ``model`` takes, where an installed app is
 given the slug.
 """
@@ -168,13 +168,15 @@ async def _list_bots(request: web.Request) -> web.Response:
     # only where the turn is known to run as this Bot; a turn that cannot be tied to
     # it is not counted, so one Bot's work is never shown as another's. Two turns
     # are known: one in the Bot's own thread, found by the thread's binding as the
-    # installed apps' list reads it, and a dashboard turn whose admission settled on
-    # this Bot's member id (``running_bot_turns``): a chat, a ``POST /v1/responses``
-    # or ``/v1/chat/completions`` turn, a task review.
-    # shortcut: a turn that does not pass that admission reads idle (a channel, a
-    # scheduled or a webhook turn), and so does a helper that carries the Bot's
-    # member id (a subagent, a workflow or task step, a Bot's worker session);
-    # counting the first three needs the same note where those turns start.
+    # installed apps' list reads it, and a turn noted under this Bot's member id
+    # (``running_bot_turns``): a dashboard turn (a chat, a ``POST /v1/responses`` or
+    # ``/v1/chat/completions`` turn, a task review), a scheduled run of one agent,
+    # a webhook turn that runs the registered agent.
+    # shortcut: a channel turn reads idle, since it picks its agent by name and
+    # holds no member id known to be the one it runs as. So does a helper that
+    # carries the Bot's member id (a subagent, a workflow or task step, a Bot's
+    # worker session outside its own schedule), an agent sequence, and a webhook
+    # request that names another agent.
     slots = state._slots if state is not None else {}
     running = running_bot_turns.running_member_ids()
     data: list[dict[str, Any]] = []
