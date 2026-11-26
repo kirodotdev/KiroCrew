@@ -622,8 +622,8 @@ def _switched_off_tools(server: str) -> frozenset[str]:
     global ``~/.kiro/settings/mcp.json``, where the dashboard's tool-off action
     writes. A source that cannot be read switches nothing off. The keys are
     compared through :func:`kiro_crew.mcp_utils.mcp_server_alias`, as the KAS path
-    compares them, because the tool-off action writes the key under the alias
-    discovery shows (``playwright-mcp`` for ``npm:@playwright/mcp``). The entries
+    compares them, because the tool-off action writes either the raw key the Kiro
+    global holds (``npm:@playwright/mcp``) or the alias discovery shows. The entries
     are returned as written; :func:`_tool_is_switched_off` matches them.
     """
     # Deferred: an import at module scope here is a name the cron_script facade
