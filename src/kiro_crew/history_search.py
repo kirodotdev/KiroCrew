@@ -23,6 +23,7 @@ import os
 import sys as _sys
 import time as _time
 from collections.abc import Callable, Container, Iterable, Iterator
+from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
@@ -163,6 +164,7 @@ from kiro_crew.jsonl_util import bounded_records
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
     from kiro_crew.history_vectors import SessionVectorStore
+    from kiro_crew.history_vectors_search import Routed, VectorLeg
 
 
 SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
@@ -245,17 +247,34 @@ class SearchRows(list[dict]):
     one that is also ``title:``-scoped counts the caller's own title matches).
     Neither count includes incognito or temporary sessions, nor depends on how
     many of them the window holds.
+
+    *semantic*, when the meaning leg answered, is ``{"complete": bool}``: whether every
+    visible session in the scan window has every chunk embedded (RFC
+    ``rfc-session-semantic-search`` 8.3 and 12). ``None`` otherwise. It carries no
+    count: beside *searched*, the scan window's size, a count of visible window
+    sessions would give away how many private sessions the window holds.
     """
 
-    def __init__(self, rows: Iterable[dict] = (), *, searched: int = 0, eligible: int = 0):
+    def __init__(
+        self,
+        rows: Iterable[dict] = (),
+        *,
+        searched: int = 0,
+        eligible: int = 0,
+        semantic: dict[str, bool] | None = None,
+    ):
         super().__init__(rows)
         self.searched = searched
         self.eligible = eligible
+        self.semantic = semantic
 
     def copy_rows(self) -> "SearchRows":
         """A copy with its own row dicts, keeping the counts."""
         return SearchRows(
-            (dict(row) for row in self), searched=self.searched, eligible=self.eligible
+            (dict(row) for row in self),
+            searched=self.searched,
+            eligible=self.eligible,
+            semantic=dict(self.semantic) if self.semantic is not None else None,
         )
 
 
@@ -324,6 +343,19 @@ def search_coverage_note(rows: object) -> str:
     )
 
 
+def semantic_incomplete(rows: object) -> bool:
+    """Whether the meaning index behind *rows* answered while still being built."""
+    semantic = rows.semantic if isinstance(rows, SearchRows) else None
+    return semantic is not None and semantic.get("complete") is False
+
+
+def semantic_coverage_note(rows: object) -> str:
+    """One line saying the meaning index is still being built, or ``""`` once it is complete."""
+    if not semantic_incomplete(rows):
+        return ""
+    return "Meaning search is still indexing some sessions."
+
+
 def _copy_rows(rows: list[dict]) -> list[dict]:
     """A private copy of a search result, keeping its coverage counts."""
     if isinstance(rows, SearchRows):
@@ -359,6 +391,7 @@ class SessionCatalogProjection:
         self._log = log
         self._index: "SessionSearchIndex | None" = None
         self._vectors: "SessionVectorStore | None" = None
+        self._vector_leg: "VectorLeg | None" = None
         #: ``digest + needle key -> (count, cost)`` over the folded text of a
         #: session the index vouches for, and ``digest + repr(snippet tiers) ->
         #: (snippet, cost)`` for the same sessions; each ``None`` when switched
@@ -397,6 +430,15 @@ class SessionCatalogProjection:
 
             self._vectors = vector_store_for(self._log._dir)
         return self._vectors
+
+    @property
+    def vector_leg(self) -> "VectorLeg":
+        """The meaning leg over :attr:`vector_store`; it loads nothing until a meaning query."""
+        if self._vector_leg is None:
+            from kiro_crew.history_vectors_search import VectorLeg
+
+            self._vector_leg = VectorLeg(self.vector_store)
+        return self._vector_leg
 
     @staticmethod
     def _canonical_key(key: str) -> str:
@@ -615,12 +657,22 @@ class SessionCatalogProjection:
         *,
         keys: Container[str] | None = None,
         snippets: bool = True,
+        by_meaning: bool = True,
+        meaning_accept: Callable[[dict], bool] | None = None,
     ) -> list[dict]:
         """Return session metadata for files whose message content matches *query*.
 
         Ranking, gating and *keys* are documented on :meth:`_search_sessions`.
         ``snippets=False`` skips the per-row excerpt read for a caller that
-        builds its own excerpts for the rows it keeps.
+        builds its own excerpts for the rows it keeps; a row the meaning leg found
+        still carries its chunk, which the caller has no offsets to rebuild.
+        ``by_meaning=False`` keeps
+        the keyword ranking for a caller that lists where the query's own words
+        occur, so the meaning leg (:mod:`kiro_crew.history_vectors_search`) never
+        reorders or crowds its rows. *meaning_accept* is a caller's own filter on the
+        window rows it will keep: the meaning leg fills its ``SEMANTIC_MAX_ROWS`` from those
+        alone, so a hit the caller would keep is never cut for ones it drops. It does
+        not filter keyword rows.
 
         Unrestricted callers asking the same *query* and *limit* while one such
         search is running wait for it and get its rows, rather than each paying
@@ -628,9 +680,17 @@ class SessionCatalogProjection:
         has landed in this process since the running search began, so a search
         that starts after a write never returns rows computed before it.
         """
-        if keys is not None or not query or limit <= 0:
-            return self._search_sessions(query, limit, keys=keys, snippets=snippets)
-        slot = (str(self._log._dir), query, limit, snippets)
+        if keys is not None or meaning_accept is not None or not query or limit <= 0:
+            # A filter is a callable, so two calls cannot be told to ask the same thing.
+            return self._search_sessions(
+                query,
+                limit,
+                keys=keys,
+                snippets=snippets,
+                by_meaning=by_meaning,
+                meaning_accept=meaning_accept,
+            )
+        slot = (str(self._log._dir), query, limit, snippets, by_meaning)
         epoch = self._log._dir_write_epoch()
         with _flights_lock:
             running = _flights.get(slot)
@@ -642,9 +702,9 @@ class SessionCatalogProjection:
             running.done.wait()
             if running.result is not None:
                 return _copy_rows(running.result)
-            return self._search_sessions(query, limit, snippets=snippets)
+            return self._search_sessions(query, limit, snippets=snippets, by_meaning=by_meaning)
         try:
-            rows = self._search_sessions(query, limit, snippets=snippets)
+            rows = self._search_sessions(query, limit, snippets=snippets, by_meaning=by_meaning)
             # A private copy, so a caller editing the rows it was handed cannot
             # change what a waiting caller receives.
             flight.result = _copy_rows(rows)
@@ -676,6 +736,8 @@ class SessionCatalogProjection:
         *,
         keys: Container[str] | None = None,
         snippets: bool = True,
+        by_meaning: bool = True,
+        meaning_accept: Callable[[dict], bool] | None = None,
     ) -> list[dict]:
         """Return session metadata for files whose message content matches *query*.
 
@@ -828,6 +890,8 @@ class SessionCatalogProjection:
                 gate,
                 title_filter,
                 snippets=snippets,
+                by_meaning=by_meaning,
+                meaning_accept=meaning_accept,
             )
 
     def _search_titles(
@@ -868,6 +932,8 @@ class SessionCatalogProjection:
         title_filter: Callable[[str], bool] | None = None,
         *,
         snippets: bool = True,
+        by_meaning: bool = True,
+        meaning_accept: Callable[[dict], bool] | None = None,
     ) -> list[dict]:
         """The scoring and snippet half of :meth:`_search_sessions`.
 
@@ -1062,20 +1128,54 @@ class SessionCatalogProjection:
         picked = [
             (meta, needs_snippet and snippets) for _v, _s, _r, meta, needs_snippet in scored[:limit]
         ]
+        if by_meaning and title_filter is None:
+            from kiro_crew.history_vectors_search import meaning_route
+
+            meaning = meaning_route(self, query, needles, window, scored, limit, meaning_accept)
+            if meaning is not None:
+                routed, semantic = meaning
+                needs = {meta["key"]: needs_snippet for *_rest, meta, needs_snippet in scored}
+                return SearchRows(
+                    self._result_rows(
+                        [
+                            (r.meta, r.hit is None and needs.get(r.meta["key"], False) and snippets)
+                            for r in routed
+                        ],
+                        keys,
+                        query,
+                        routed={r.meta["key"]: r for r in routed},
+                    ),
+                    searched=searched,
+                    eligible=eligible,
+                    semantic=semantic if keys is None else None,
+                )
         return SearchRows(
             self._result_rows(picked, keys, query), searched=searched, eligible=eligible
         )
 
     def _result_rows(
-        self, picked: list[tuple[dict, bool]], keys: Container[str] | None, query: str
+        self,
+        picked: list[tuple[dict, bool]],
+        keys: Container[str] | None,
+        query: str,
+        *,
+        routed: "dict[str, Routed] | None" = None,
     ) -> list[dict]:
         """The output rows for ranked *picked* ``(meta, needs_snippet)`` pairs.
 
         A row flagged for a snippet gets the excerpt of *query* from its transcript.
         With *keys*, each row is re-judged under its transcript lock first.
+
+        With *routed* (the meaning leg answered), every row carries ``match``, and a
+        row the vector leg found carries its chunk as the snippet, read under the
+        transcript lock through the derivation guard: a session whose privacy now
+        refuses the read is dropped, as the chunk pass drops it.
         """
+        if routed is not None:
+            from kiro_crew.history_vectors_search import meaning_snippet
         out: list[dict] = []
         for meta, needs_snippet in picked:
+            entry = routed.get(meta["key"]) if routed is not None else None
             if keys is not None:
                 # Scoring-time folds may race ownership and affect ranking/inclusion
                 # only; the lock-held re-judge keeps foreign rows/snippets out of output.
@@ -1088,14 +1188,31 @@ class SessionCatalogProjection:
                         if not current:
                             continue
                         meta = current[0]
-                        snippet = (
-                            self._log._content_snippet(meta["key"], query) if needs_snippet else ""
-                        )
+                        if entry is not None and entry.hit is not None:
+                            snippet = meaning_snippet(self._log, meta["key"], entry.hit)
+                            if snippet is None:
+                                continue
+                        else:
+                            snippet = (
+                                self._log._content_snippet(meta["key"], query)
+                                if needs_snippet
+                                else ""
+                            )
                 except _history_lock_timeout():
+                    continue
+            elif entry is not None and entry.hit is not None:
+                snippet = meaning_snippet(self._log, meta["key"], entry.hit)
+                if snippet is None:
                     continue
             else:
                 snippet = self._log._content_snippet(meta["key"], query) if needs_snippet else ""
-            out.append({**meta, "snippet": snippet} if snippet else meta)
+            if entry is None:
+                out.append({**meta, "snippet": snippet} if snippet else meta)
+                continue
+            row = {**meta, "match": entry.match}
+            if snippet:
+                row["snippet"] = snippet
+            out.append(row)
         return out
 
     def index_session(self, key: str) -> bool:
@@ -1500,7 +1617,9 @@ class SessionCatalogProjection:
         )
         return (sum(len(t) for t in texts), fold_texts(texts))
 
-    def _iter_message_texts(self, key: str) -> Iterator[str]:
+    def _iter_message_texts(
+        self, key: str, *, roles: AbstractSet[str] | None = None
+    ) -> Iterator[str]:
         """Yield each message's non-empty string ``content`` from *key*'s files.
 
         One definition of "what counts as searchable text in a session file",
@@ -1509,7 +1628,8 @@ class SessionCatalogProjection:
         texts (:func:`~kiro_crew.history_archive_text.iter_rotated_texts`), then
         the live file's, in file order; skips blank lines,
         unparseable lines, non-object lines, the metadata header and a host-sandbox
-        refusal row.
+        refusal row. With *roles*, a row whose ``role`` is not in it is skipped too:
+        the meaning leg reads only what ``search_chat_history`` may show.
 
         A generator rather than a list so a caller can stop early — closing it
         closes the file — which is what lets :meth:`_content_snippet` read only as
@@ -1523,7 +1643,7 @@ class SessionCatalogProjection:
 
         # The size-rotated head first: it is older than every row the live file
         # still holds, and the chat's own paging corpus serves it too.
-        yield from iter_rotated_texts(self._log._dir, key)
+        yield from iter_rotated_texts(self._log._dir, key, roles=roles)
         path = self._log._path(key)
         with open(path, "rb") as handle:
             for line in bounded_records(handle, path, label="history_search"):
@@ -1537,6 +1657,8 @@ class SessionCatalogProjection:
                 if not isinstance(data, dict) or data.get("_type") == "metadata":
                     continue
                 if is_refusal_row(data):
+                    continue
+                if roles is not None and str(data.get("role", "")).lower() not in roles:
                     continue
                 content = data.get("content")
                 if isinstance(content, str) and content:

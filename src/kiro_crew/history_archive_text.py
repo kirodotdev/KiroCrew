@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from pathlib import Path
 
 from kiro_crew.jsonl_util import RECORD_CAP, bounded_records
@@ -63,8 +64,13 @@ def rotated_segment_paths(base_dir: Path, key: str) -> list[Path]:
         raise OSError(f"rotated archive for {key} could not be enumerated") from exc
 
 
-def iter_rotated_texts(base_dir: Path, key: str) -> Iterator[str]:
+def iter_rotated_texts(
+    base_dir: Path, key: str, *, roles: AbstractSet[str] | None = None
+) -> Iterator[str]:
     """Yield the string ``content`` of *key*'s ``rotate`` segments, oldest first.
+
+    With *roles*, a row whose ``role`` is not in it is skipped, as
+    ``_iter_message_texts`` skips it in the live file.
 
     The same rows ``read_rotated_messages`` serves: other archive reasons hold
     text the product discarded (a rewind, a regenerate), so they stay out.
@@ -98,6 +104,8 @@ def iter_rotated_texts(base_dir: Path, key: str) -> Iterator[str]:
                 except (ValueError, RecursionError):
                     continue
                 if not isinstance(row, dict) or "_type" in row or is_refusal_row(row):
+                    continue
+                if roles is not None and str(row.get("role", "")).lower() not in roles:
                     continue
                 content = row.get("content")
                 if isinstance(content, str) and content:

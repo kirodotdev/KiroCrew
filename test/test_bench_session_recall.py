@@ -14,8 +14,11 @@ import types
 from pathlib import Path
 
 import pytest
+from session_meaning_helpers import _DIM, install_leg
 
 from kiro_crew import history, history_search
+from kiro_crew import history_vectors_index as chunking
+from kiro_crew import history_vectors_search as meaning
 from kiro_crew.cli_bench import bench_cmd
 from kiro_crew.eval.bench import session_recall
 from kiro_crew.eval.bench.session_recall import (
@@ -124,6 +127,15 @@ class TestRun:
         assert results["q-miss"].ranked_session_ids == ()
         assert report.by_class(10)["no_answer"] == {"n": 1.0, "queries_with_rows": 0.0}
 
+    def test_every_keyword_row_is_kept_whatever_k_is(self, tmp_path: Path) -> None:
+        """The partial-coverage orders fuse all keyword rows, as the search does."""
+        golden = SessionGoldenSet.from_json(_write(tmp_path, _planted()))
+
+        report = run_session_recall(golden, k_values=(1,))
+
+        assert _by_id(report)["q-second"].ranked_session_ids == ("a", "b")
+        assert _by_id(report)["q-second"].recall_any[1] == 0.0
+
     def test_a_no_answer_query_counts_once_however_many_rows(self, tmp_path: Path) -> None:
         raw = _planted()
         raw["queries"].append(_query("q-two", "no_answer", "uploader", []))
@@ -195,9 +207,115 @@ class TestRun:
         assert "no_answer" in text and "queries with rows: 0" in text
 
 
+def _meaning_set() -> dict:
+    return {
+        "name": "meaning",
+        "sessions": [
+            _session("db", 1, "We moved the schema to postgres and ran the migration."),
+            _session("ship", 2, "The rollout went through the pipeline and the release shipped."),
+            _session("food", 3, "We ordered pizza for lunch and talked about dinner."),
+            _session("ticket", 4, "Ticket ZX-4411-QQ needs the pizza order fixed."),
+        ],
+        "queries": [
+            _query("q-lit", "literal", "ZX-4411-QQ needs", ["ticket"]),
+            # No word of it is in the transcript: only the vector leg can find it.
+            _query("q-para", "paraphrase", "deploy", ["ship"]),
+            # Its session is the third newest, so a half-built index has not reached it.
+            _query("q-short", "short", "lunch", ["food"]),
+            _query("q-none", "no_answer", "kubernetes readiness probe", []),
+        ],
+    }
+
+
+def _ranked(report: session_recall.SessionRecallReport, ranker: str) -> dict:
+    return {r.query_id: r.ranked_session_ids for r in report._ranked(ranker)}
+
+
+class TestMeaning:
+    """RFC ``rfc-session-semantic-search`` 10, phase 3: vector, routed, coverage and cost."""
+
+    def test_each_ranker_scores_the_same_queries(self, tmp_path: Path, monkeypatch) -> None:
+        install_leg(monkeypatch)
+        # The run holds the flag on itself, whatever the config says.
+        monkeypatch.setattr(chunking, "configured_semantic_search", lambda: False)
+        golden = SessionGoldenSet.from_json(_write(tmp_path, _meaning_set()))
+
+        report = run_session_recall(golden, meaning=True)
+
+        keyword, vector = _ranked(report, "keyword"), _ranked(report, "vector")
+        routed = _ranked(report, "routed")
+        assert keyword["q-para"] == () and vector["q-para"][0] == routed["q-para"][0] == "ship"
+        assert routed["q-lit"][0] == keyword["q-lit"][0] == "ticket"
+        assert report.answerable(1, "routed")["recall_any"] == 1.0
+        assert set(report.rankers) == {
+            "vector",
+            "routed",
+            *(
+                f"{order}@{share:.2f}"
+                for share in (0.5, 0.75, 0.9)
+                for order in ("keyword-first", "meaning-first")
+            ),
+        }
+        assert meaning._SEMANTIC_SEARCH_OVERRIDE is None, "the flag is put back"
+
+    def test_a_session_written_now_is_embedded(self, tmp_path: Path, monkeypatch) -> None:
+        """The live chunk pass's quiet period does not apply to the fixture."""
+        install_leg(monkeypatch)
+        raw = _meaning_set()
+        raw["sessions"][0]["age_days"] = 0
+        golden = SessionGoldenSet.from_json(_write(tmp_path, raw))
+
+        report = run_session_recall(golden, meaning=True)
+
+        assert report.resources["chunks"] == 4
+
+    def test_partial_coverage_scores_both_orders(self, tmp_path: Path, monkeypatch) -> None:
+        install_leg(monkeypatch)
+        golden = SessionGoldenSet.from_json(_write(tmp_path, _meaning_set()))
+
+        report = run_session_recall(golden, meaning=True)
+
+        # The newest half is db and ship: the food session is not embedded yet.
+        assert _ranked(report, "keyword-first@0.50")["q-short"][0] == "food"
+        assert _ranked(report, "meaning-first@0.50")["q-short"][0] != "food"
+        assert _ranked(report, "meaning-first@0.75")["q-short"][0] == "food"
+
+    def test_the_cost_is_measured_at_the_chunk_count(self, tmp_path: Path, monkeypatch) -> None:
+        install_leg(monkeypatch)
+        golden = SessionGoldenSet.from_json(_write(tmp_path, _meaning_set()))
+
+        resources = run_session_recall(golden, meaning=True).resources
+
+        assert resources["chunks"] == 4 and resources["dim"] == _DIM
+        assert resources["matrix_bytes"] == 4 * _DIM * 4
+        assert resources["bytes_per_chunk"] == _DIM * 4
+        assert resources["load_peak_bytes"] >= resources["matrix_bytes"]
+        assert resources["query_cpu_ms_median"] >= 0.0
+
+    def test_a_host_without_the_model_is_refused(self, tmp_path: Path, monkeypatch) -> None:
+        install_leg(monkeypatch)
+        monkeypatch.setattr(chunking, "load_tokenizer", lambda: None)
+        golden = SessionGoldenSet.from_json(_write(tmp_path, _meaning_set()))
+
+        with pytest.raises(SessionGoldenSetError, match="in-process embedding model"):
+            run_session_recall(golden, meaning=True)
+        assert meaning._SEMANTIC_SEARCH_OVERRIDE is None
+
+    def test_the_report_lists_the_rankers(self, tmp_path: Path, monkeypatch) -> None:
+        install_leg(monkeypatch)
+        golden = SessionGoldenSet.from_json(_write(tmp_path, _meaning_set()))
+
+        text = format_session_report(run_session_recall(golden, meaning=True))
+
+        assert "MEANING, R@1 BY CLASS (keyword / vector / routed):" in text
+        assert "  coverage 0.50  R@1=" in text and " | R@1=" in text
+        assert "  chunks: 4 at dim " in text
+        assert "MEANING" not in format_session_report(run_session_recall(golden))
+
+
 class TestCli:
     def test_the_packaged_set_returns_zero(self, capsys: pytest.CaptureFixture[str]) -> None:
-        assert bench_cmd(_Args(bench_action="session-recall", golden=None)) == 0
+        assert bench_cmd(_Args(bench_action="session-recall", golden=None, meaning=False)) == 0
         assert "Session recall eval: session_golden_v1" in capsys.readouterr().out
 
     def test_a_missing_set_is_refused(
@@ -205,5 +323,14 @@ class TestCli:
     ) -> None:
         missing = str(tmp_path / "absent.json")
 
-        assert bench_cmd(_Args(bench_action="session-recall", golden=missing)) == 1
+        assert bench_cmd(_Args(bench_action="session-recall", golden=missing, meaning=False)) == 1
         assert "refusing to read the golden set" in capsys.readouterr().err
+
+    def test_meaning_runs_the_meaning_rankers(
+        self, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        install_leg(monkeypatch)
+        golden = str(_write(tmp_path, _meaning_set()))
+
+        assert bench_cmd(_Args(bench_action="session-recall", golden=golden, meaning=True)) == 0
+        assert "MEANING, R@1 BY CLASS" in capsys.readouterr().out

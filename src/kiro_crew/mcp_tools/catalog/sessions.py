@@ -25,12 +25,13 @@ def schemas() -> list[dict[str, Any]]:
                 "the verbatim evidence behind a conclusion memory_recall gave you. "
                 "For what was decided or learned, call memory_recall first: it "
                 "searches the memory store bound to this session by meaning. "
-                "Search like a human: try a query, read the snippets, then re-search "
-                "with different keywords if the first hit isn't right. Returns "
+                "If the first hit isn't right, re-search with other keywords. When "
+                "meaning search is on you may also describe the thread in your own "
+                "words; a hit marked meaning match need not contain them. Returns "
                 "metadata + a short snippet per session (NOT full transcripts) — "
                 "call get_chat_session with a returned session_key to read the full "
-                "thread once a hit looks promising. Scoped to your current workspace "
-                "by default. This is a READ — it never modifies memory or history."
+                "thread once a hit looks promising. Read-only; scoped to your current "
+                "workspace by default."
             ),
             "inputSchema": {
                 "type": "object",

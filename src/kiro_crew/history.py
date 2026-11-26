@@ -747,8 +747,17 @@ class ConversationLog:
         *,
         keys: Container[str] | None = None,
         snippets: bool = True,
+        by_meaning: bool = True,
+        meaning_accept: Callable[[dict], bool] | None = None,
     ) -> list[dict]:
-        return self._catalog_projection.search_sessions(query, limit, keys=keys, snippets=snippets)
+        return self._catalog_projection.search_sessions(
+            query,
+            limit,
+            keys=keys,
+            snippets=snippets,
+            by_meaning=by_meaning,
+            meaning_accept=meaning_accept,
+        )
 
     def warm_search(self) -> None:
         self._catalog_projection.warm_search()
@@ -767,8 +776,10 @@ class ConversationLog:
     ) -> tuple[int, str] | None:
         return self._catalog_projection._build_folded(key, identity, gen)
 
-    def _iter_message_texts(self, key: str) -> Iterator[str]:
-        return self._catalog_projection._iter_message_texts(key)
+    def _iter_message_texts(
+        self, key: str, *, roles: AbstractSet[str] | None = None
+    ) -> Iterator[str]:
+        return self._catalog_projection._iter_message_texts(key, roles=roles)
 
     _SNIPPET_LEAD = SessionCatalogProjection._SNIPPET_LEAD
     _SNIPPET_TRAIL = SessionCatalogProjection._SNIPPET_TRAIL

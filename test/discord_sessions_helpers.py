@@ -334,7 +334,7 @@ class _ConversationLog:
     def list_sessions_indexed(self) -> list[dict]:
         return self.list_sessions()
 
-    def search_sessions(self, query: str, limit: int = 50) -> list[dict]:
+    def search_sessions(self, query: str, limit: int = 50, **_kwargs) -> list[dict]:
         """Mirror KiroCrewHistory.search_sessions' FIELD COVERAGE and phrase
         semantics: one casefolded phrase matched against title OR message
         content, title hits ranked first. Deliberately not a reimplementation of
