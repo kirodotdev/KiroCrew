@@ -201,12 +201,11 @@ class HostBinding:
     ) -> RelayCaller | None:
         """The caller for *kiro_user_id*, or ``None`` when this Crew does not honor them.
 
-        *kiro_user_id* is the ID the relay client stamped. When the relay's message
-        carried the person's access token, it is that token's ``sub``, which the
-        relay client checked against Kiro's signature, this Crew's endpoint and kind,
-        and the frame's user before stamping it; a frame whose token failed is never
-        stamped. A frame with no token is stamped as the relay named it, until the
-        relay sends the token on every frame (``relay_client.ingress``).
+        *kiro_user_id* is the ID the relay client stamped: the ``sub`` of the
+        person's access token from the relay's message, which the relay client
+        checked against Kiro's signature, this Crew's endpoint and kind, and the
+        frame's user before stamping it. A frame with no token, or whose token
+        failed, is never stamped (``relay_client.ingress``).
 
         A personal Crew honors the ID only for its signed-in owner. A team Crew makes
         the person a teammate: Kiro minted their token only after checking their

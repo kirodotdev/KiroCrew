@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from relay_client_helpers import ACCESS_ISSUER, ACCESS_SCOPE
 from token_auth_helpers import clear_nonces  # noqa: F401 -- the autouse fixture registers by import
 
 from kiro_crew.dashboard.kiro_relay.caller import (
@@ -207,11 +208,20 @@ async def test_the_redirect_reaches_the_relay_through_the_loopback_hand_off() ->
         server.port or 0,
         gateway=gateway,
         max_ws_message_bytes=WS_MESSAGE_MAX_BYTES,
+        verifier=ACCESS_ISSUER.verifier(),
     )
+    handoff.bind_host(crew_kind="personal", owner_user_id=OWNER, access_scope=ACCESS_SCOPE)
     try:
         for path, query, status in (("/", "", 302), ("/", "a=b", 200), ("/chat", "", 200)):
             response = await handoff.open_http(
-                RelayedRequest(method="GET", path=path, query=query, headers=(), user=OWNER),
+                RelayedRequest(
+                    method="GET",
+                    path=path,
+                    query=query,
+                    headers=(),
+                    user=OWNER,
+                    access_token=ACCESS_ISSUER.token(OWNER),
+                ),
                 None,
             )
             try:

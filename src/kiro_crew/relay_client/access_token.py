@@ -2,10 +2,10 @@
 
 The relay verifies a person's Kiro access token, then names that person in the
 ``user`` field of the frame it sends down the host connection. Taking that field
-on trust means trusting every relay task with every Crew's callers. So when a
-``request`` or ``ws-upgrade`` frame also carries the token itself
-(``accessToken``), the relay client checks it here before the caller is stamped,
-and refuses the request when any check fails.
+on trust means trusting every relay task with every Crew's callers. So every
+``request`` and ``ws-upgrade`` frame must also carry the token itself
+(``accessToken``): the relay client checks it here before the caller is stamped,
+and refuses the request when it is missing or any check fails.
 
 Kiro signs the token, and the relay holds only the public keys, so a relay that
 cannot mint a token cannot invent a caller. The checks: ES256 under a key from

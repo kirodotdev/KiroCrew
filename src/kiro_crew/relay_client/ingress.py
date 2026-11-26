@@ -24,12 +24,11 @@ own connection, never reused; and the path is sent exactly as the relay named it
 A body is held to the length its head declared (``HttpStream``), so the web server
 reads exactly that request and nothing after it.
 
-Before the caller is stamped, a frame that carries the person's Kiro access token
-has it checked (:mod:`kiro_crew.relay_client.access_token`): the stamp then names
-the token's verified ``sub``, and a token that fails any check refuses the request
-(:class:`IngressForbidden`). A frame with no token is still handed over as the relay
-named it, counted in :attr:`LoopbackIngress.tokenless_frames` with a rate-limited
-warning, until the relay sends the token on every frame.
+Before the caller is stamped, the person's Kiro access token from the frame is
+checked (:mod:`kiro_crew.relay_client.access_token`): the stamp then names the
+token's verified ``sub``. A frame with no token, or with one that fails any check,
+is refused (:class:`IngressForbidden`) and never reaches the web server, so the
+caller is never taken from the relay's word alone.
 """
 
 from __future__ import annotations
@@ -93,8 +92,8 @@ _RESPONSE_FRAMING = frozenset({"connection", "keep-alive", "transfer-encoding", 
 #: server being unreachable, so the viewer hears it at once rather than waiting
 #: out the relay's own timeout. A refused WebSocket upgrade is caught before this.
 _HANDOFF_FAILURES = (aiohttp.ClientError, asyncio.TimeoutError, OSError)
-#: The shortest gap between two warnings about frames with no access token, or
-#: between two about refused tokens: either can arrive on every request.
+#: The shortest gap between two warnings about refused access tokens: one can
+#: arrive on every request.
 TOKEN_WARNING_INTERVAL_SECONDS = 600.0
 
 
@@ -121,7 +120,8 @@ class RelayedRequest:
     user_email: str = ""
     user_name: str = ""
     #: The person's Kiro access token from the relay's message, or ``None`` when it
-    #: sent none. Checked before the caller is stamped; never logged.
+    #: sent none, which refuses the request. Checked before the caller is stamped;
+    #: never logged.
     access_token: Optional[str] = field(default=None, repr=False)
     #: True when the body is under request-body credit: the ingress then asks for
     #: each next piece only once every earlier byte has left this process for the
@@ -152,7 +152,7 @@ class IngressUnavailable(Exception):
 
 
 class IngressForbidden(IngressUnavailable):
-    """The relay's message carried an access token that does not admit the request."""
+    """The relay's message carried no access token, or one that does not admit the request."""
 
 
 class IngressRefused(Exception):
@@ -198,9 +198,9 @@ class CrewIngress(Protocol):
         """Start honouring hand-offs for the host connection the lease describes.
 
         *access_scope* is what a valid access token for this Crew names, read from
-        its host token; ``None`` when the host token names none, so every frame that
-        carries a token is refused. Raises :class:`IngressUnavailable` when the
-        gateway will not honour hand-offs.
+        its host token; ``None`` when the host token names none, so every frame is
+        refused. Raises :class:`IngressUnavailable` when the gateway will not honour
+        hand-offs.
         """
         ...
 
@@ -387,11 +387,8 @@ class LoopbackIngress:
         self._verifier = verifier or AccessTokenVerifier()
         self._monotonic = monotonic
         self._scope: Optional[AccessScope] = None
-        #: Frames handed over with no access token, since this ingress was built.
-        self.tokenless_frames = 0
-        #: Frames refused because their access token did not verify.
+        #: Frames refused because their access token was missing or did not verify.
         self.refused_tokens = 0
-        self._tokenless_warned: Optional[float] = None
         self._refused_warned: Optional[float] = None
 
     def bind_host(
@@ -415,22 +412,14 @@ class LoopbackIngress:
         return last is None or self._monotonic() - last >= TOKEN_WARNING_INTERVAL_SECONDS
 
     async def _verified_user(self, user: str, token: Optional[str], path: str) -> str:
-        """The user to stamp: the token's verified ``sub``, or *user* for a frame with none.
+        """The user to stamp: the token's verified ``sub``, which equals *user*.
 
-        Raises :class:`IngressForbidden` for a token that fails any check.
+        Raises :class:`IngressForbidden` when there is no token or it fails any check.
         """
-        if token is None:
-            self.tokenless_frames += 1
-            if self._due(self._tokenless_warned):
-                self._tokenless_warned = self._monotonic()
-                logger.warning(
-                    "relay_access_check=absent frames=%d: the relay named the caller "
-                    "with nothing to check; handed over as named until it sends proof",
-                    self.tokenless_frames,
-                )
-            return user
         scope = self._scope
         try:
+            if token is None:
+                raise AccessTokenRefused("missing")
             if scope is None:
                 raise AccessTokenRefused("no_scope")
             return await self._verifier.verify(token, scope=scope, user=user)

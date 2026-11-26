@@ -438,6 +438,38 @@ async def test_a_refused_websocket_upgrade_closes_with_4502() -> None:
             await stop(client, ingress)
 
 
+async def test_a_frame_with_no_access_token_is_refused_and_never_reaches_the_crew() -> None:
+    """A relay that names a caller with no token gets a refusal on that stream alone."""
+    async with FakeRelay() as relay, FakeCrew() as crew:
+        client, _, ingress = make_client(relay, crew)
+        await client.start()
+        try:
+            leg = await relay.next_leg()
+            await leg.handshake()
+            head = valid_message("frames/request", path="/api/sessions", query="", headers={})
+            await leg.send(head, with_access_token=False)
+            await leg.send({"type": "request-end", "id": head["id"]})
+            error = await leg.recv_type("error")
+            assert error["code"] == "crew_unreachable" and error["id"] == head["id"]
+            assert "missing" in error["message"]
+            upgrade = valid_message("frames/ws-upgrade", path="/ws", query="")
+            await leg.send(upgrade, with_access_token=False)
+            close = await leg.recv_type("ws-close")
+            assert close["id"] == upgrade["id"] and close["code"] == 4502
+            assert close["reason"] == "Crew refused the access token"
+            # The same connection still serves a frame that carries the token.
+            served = valid_message("frames/request", path="/api/sessions", query="", headers={})
+            served["id"] = upgrade["id"] + 2
+            await leg.send(served)
+            await leg.send({"type": "request-end", "id": served["id"]})
+            response, _ = await leg.read_response(served["id"])
+            assert response["status"] == 200
+        finally:
+            await stop(client, ingress)
+        assert [seen["path"] for seen in crew.seen] == ["/api/sessions"]
+        assert ingress.refused_tokens == 2
+
+
 async def test_a_crew_that_drops_the_request_reports_crew_unreachable() -> None:
     async with FakeRelay() as relay, FakeCrew() as crew:
         client, _, ingress = make_client(relay, crew)
