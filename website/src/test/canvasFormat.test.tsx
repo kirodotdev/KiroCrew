@@ -53,6 +53,7 @@ describe('the canvas file format', () => {
     // Obsidian set preset "3" (yellow) and left `swatch: "lavender"` behind.
     expect(shape(c, 'stk1')).toMatchObject({ kind: 'sticky', color: 'yellow', text: 'Ship the canvas updated', x: -220, y: 355 })
     expect(shape(c, 'stk1').hex).toBeUndefined()
+    expect(shape(c, 'stk1').bold).toBe(true)
     // A card made in Obsidian has no `shape`: a rectangle, coloured preset "4".
     expect(shape(c, '36a799c3db668637')).toMatchObject({ kind: 'rect', color: 'green', text: 'heyhkejn' })
   })

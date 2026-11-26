@@ -1050,6 +1050,130 @@ describe('the canvas', () => {
     expect(reread(serializeCanvas(latest())).shapes[0]).toMatchObject({ fontSize: 64, bold: true, strike: true, align: 'right' })
   })
 
+  it('a shape or sticky styles all its text from the toolbar and by chord, each style kept in the file', () => {
+    const rect: Shape = { id: 'r', kind: 'rect', x: 0, y: 0, w: 240, h: 120, text: 'Done', color: 'blue' }
+    const note = sticky('s', 400, 0, 'Later')
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [rect, note] }} />)
+    press(20, 20)
+    release(20, 20)
+    // Bold and strikethrough have buttons; italic and underline only chords.
+    expect(screen.queryByLabelText('Italic')).toBeNull()
+    expect(screen.queryByLabelText('Underline')).toBeNull()
+    fireEvent.click(screen.getByLabelText('Bold'))
+    fireEvent.click(screen.getByLabelText('Strikethrough'))
+    act(() => { fireEvent.keyDown(canvas(), { key: 'i', code: 'KeyI', metaKey: true }) })
+    act(() => { fireEvent.keyDown(canvas(), { key: 'u', code: 'KeyU', ctrlKey: true }) })
+    expect(latest().shapes[0]).toMatchObject({ bold: true, italic: true, underline: true, strike: true })
+    expect(latest().shapes[1].bold).toBeUndefined()
+    const shown = screen.getByText('Done') as HTMLElement
+    expect(shown.style.fontWeight).toBe('700')
+    expect(shown.style.fontStyle).toBe('italic')
+    expect(shown.style.textDecoration).toBe('underline line-through')
+    expect(reread(serializeCanvas(latest())).shapes[0]).toMatchObject({ bold: true, italic: true, underline: true, strike: true })
+    // The same chord again turns the style off, and the file drops it.
+    act(() => { fireEvent.keyDown(canvas(), { key: 'i', code: 'KeyI', metaKey: true }) })
+    expect(latest().shapes[0].italic).toBeUndefined()
+    expect(reread(serializeCanvas(latest())).shapes[0].italic).toBeUndefined()
+    act(() => { fireEvent.keyDown(canvas(), { key: 'x', code: 'KeyX', metaKey: true, shiftKey: true }) })
+    expect(latest().shapes[0].strike).toBeUndefined()
+  })
+
+  it('a style chord restyles the whole box while typing in it', () => {
+    const rect: Shape = { id: 'r', kind: 'rect', x: 0, y: 0, w: 240, h: 120, text: 'Draft', color: 'blue' }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [rect] }} />)
+    press(20, 20)
+    release(20, 20)
+    act(() => { fireEvent.keyDown(canvas(), { key: 'Enter' }) })
+    const editor = screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement
+    act(() => { fireEvent.keyDown(editor, { key: 'u', code: 'KeyU', metaKey: true }) })
+    expect(latest().shapes[0].underline).toBe(true)
+    expect(editor.style.textDecoration).toBe('underline')
+    expect(screen.getByTestId('canvas-shape-editor')).toBe(editor)
+  })
+
+  it('a chord while typing keeps the typed text and the style as two undo steps, in order', () => {
+    const rect: Shape = { id: 'r', kind: 'rect', x: 0, y: 0, w: 240, h: 120, text: 'Before', color: 'blue' }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [rect] }} />)
+    press(20, 20)
+    release(20, 20)
+    act(() => { fireEvent.keyDown(canvas(), { key: 'Enter' }) })
+    const editor = screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement
+    fireEvent.change(editor, { target: { value: 'After' } })
+    act(() => { fireEvent.keyDown(editor, { key: 'b', code: 'KeyB', metaKey: true }) })
+    act(() => { editor.blur() })
+    expect(latest().shapes[0]).toMatchObject({ text: 'After', bold: true })
+    // Ending the edit adds no step of its own: undo first drops the bold, then the text.
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes[0].text).toBe('After')
+    expect(latest().shapes[0].bold).toBeUndefined()
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes[0].text).toBe('Before')
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes[0].text).toBe('Before')
+  })
+
+  it('the field being typed in keeps the box\'s bold and italic', () => {
+    const rect: Shape = { id: 'r', kind: 'rect', x: 0, y: 0, w: 240, h: 120, text: 'Styled', color: 'blue', bold: true, italic: true }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [rect] }} />)
+    press(20, 20)
+    release(20, 20)
+    act(() => { fireEvent.keyDown(canvas(), { key: 'Enter' }) })
+    const editor = screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement
+    expect(editor.style.fontWeight).toBe('700')
+    expect(editor.style.fontStyle).toBe('italic')
+  })
+
+  it('a chord in a new text box left empty leaves no undo step behind', () => {
+    render(<Harness initial={emptyCanvas()} />)
+    fireEvent.click(screen.getByTestId('tool-text'))
+    press(200, 200)
+    release(200, 200)
+    expect(latest().shapes).toHaveLength(1)
+    const editor = screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement
+    act(() => { fireEvent.keyDown(editor, { key: 'b', code: 'KeyB', metaKey: true }) })
+    expect(latest().shapes[0].bold).toBe(true)
+    act(() => { editor.blur() })
+    expect(latest().shapes).toHaveLength(0)
+    // Nothing to undo: no empty box comes back.
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes).toHaveLength(0)
+  })
+
+  it('the field being typed in re-measures its height when a chord makes the text bold', () => {
+    const rect: Shape = { id: 'r', kind: 'rect', x: 0, y: 0, w: 240, h: 120, text: 'Wraps when bold', color: 'blue' }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [rect] }} />)
+    press(20, 20)
+    release(20, 20)
+    act(() => { fireEvent.keyDown(canvas(), { key: 'Enter' }) })
+    const editor = screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement
+    // jsdom lays nothing out, so stand in a taller wrapped height for bold text.
+    Object.defineProperty(editor, 'scrollHeight', { configurable: true, get: () => (editor.style.fontWeight === '700' ? 44 : 22) })
+    act(() => { fireEvent.change(editor, { target: { value: 'Wraps when bold!' } }) })
+    expect(editor.style.height).toBe('22px')
+    act(() => { fireEvent.keyDown(editor, { key: 'b', code: 'KeyB', metaKey: true }) })
+    expect(editor.style.height).toBe('44px')
+  })
+
+  it('a toggle or chord applies to every selected shape, and reads on when all have it and mixed when some do', () => {
+    const a: Shape = { id: 'a', kind: 'rect', x: 0, y: 0, w: 200, h: 100, text: 'one', color: 'blue', bold: true, italic: true }
+    const b: Shape = { id: 'b', kind: 'rect', x: 0, y: 200, w: 200, h: 100, text: 'two', color: 'blue' }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [a, b] }} />)
+    press(-50, -50)
+    moveTo(300, 400)
+    release(300, 400)
+    // One of the two is bold: the button reads mixed, and a click makes both bold.
+    expect(screen.getByLabelText('Bold').getAttribute('aria-pressed')).toBe('mixed')
+    expect(screen.getByLabelText('Bold').querySelector('[data-testid="toggle-mixed-bar"]')).not.toBeNull()
+    expect(screen.getByLabelText('Strikethrough').querySelector('[data-testid="toggle-mixed-bar"]')).toBeNull()
+    expect(screen.getByLabelText('Strikethrough').getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(screen.getByLabelText('Bold'))
+    expect(latest().shapes.map(s => s.bold)).toEqual([true, true])
+    expect(screen.getByLabelText('Bold').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByLabelText('Bold').querySelector('[data-testid="toggle-mixed-bar"]')).toBeNull()
+    act(() => { fireEvent.keyDown(canvas(), { key: 'i', code: 'KeyI', metaKey: true }) })
+    expect(latest().shapes.map(s => s.italic)).toEqual([true, true])
+  })
+
   it('a shape shows text alignment and size only once it has text, and centres its text by default', () => {
     const empty: Shape = { id: 'r', kind: 'rect', x: 0, y: 0, w: 240, h: 120, text: '', color: 'blue' }
     render(<Harness initial={{ ...emptyCanvas(), shapes: [empty] }} />)

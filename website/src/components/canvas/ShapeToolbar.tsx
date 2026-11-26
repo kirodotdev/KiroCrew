@@ -3,11 +3,11 @@
  * with the shape type, the fill and colour, the outline and its weight, and delete.
  */
 
-import { AlignCenter, AlignLeft, AlignRight, Ban, ChevronDown, Circle, Diamond, Ellipsis, Menu as LinesIcon, Slash, Square, SquareDashed, SquareSlash, StickyNote, Trash2 } from 'lucide-react'
+import { AlignCenter, AlignLeft, AlignRight, Ban, Bold, ChevronDown, Circle, Diamond, Ellipsis, Menu as LinesIcon, Slash, Square, SquareDashed, SquareSlash, StickyNote, Strikethrough, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { defaultAlign, defaultFontSize, type BorderStyle, type FillMode, type Shape, type ShapeKind, type StrokeWeight, type Swatch, type TextAlign } from './canvasModel'
+import { defaultAlign, defaultFontSize, type BorderStyle, type EmphasisStyle, type FillMode, type Shape, type ShapeKind, type StrokeWeight, type Swatch, type TextAlign } from './canvasModel'
 import { STROKE_WIDTH } from './shapeLook'
 import { FLOAT_SHADOW, TOOLBAR_PANEL } from './canvasPaint'
 import SwatchPicker, { type PickerMode } from './SwatchPicker'
@@ -56,6 +56,39 @@ export function Item({ label, selected, onClick, children }: { label: string; se
   )
 }
 
+/** A toggle; `'mixed'` is a selection where only some elements have the style. */
+function Toggle({ on, label, onClick, children }: { on: boolean | 'mixed'; label: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <button type="button" aria-label={label} title={label} aria-pressed={on} onClick={onClick}
+      className={`relative rounded-lg p-1.5 ${on === 'mixed' ? 'bg-accent-subtle text-accent' : picked(on)}`}>
+      {children}
+      {on === 'mixed' && <span aria-hidden="true" data-testid="toggle-mixed-bar" className="absolute inset-x-2 bottom-1 h-0.5 rounded-full bg-accent" />}
+    </button>
+  )
+}
+
+/**
+ * Bold and strikethrough toggles; a style reads on when every shape has it and
+ * mixed when only some do, and a click on mixed turns it on for all of them.
+ * Italic and underline have no button and are reached by their chords.
+ */
+export function EmphasisToggles({ shapes, onEmphasis }: { shapes: Shape[]; onEmphasis: (style: EmphasisStyle, on: boolean) => void }) {
+  const { t } = useTranslation()
+  const styles: { style: EmphasisStyle; label: string; icon: ReactNode }[] = [
+    { style: 'bold', label: t('components.canvas.bold'), icon: <Bold size={16} /> },
+    { style: 'strike', label: t('components.canvas.strikethrough'), icon: <Strikethrough size={16} /> },
+  ]
+  return (
+    <>
+      {styles.map(({ style, label, icon }) => {
+        const all = shapes.length > 0 && shapes.every(s => s[style])
+        const state = all ? true : shapes.some(s => s[style]) ? 'mixed' : false
+        return <Toggle key={style} on={state} label={label} onClick={() => onEmphasis(style, !all)}>{icon}</Toggle>
+      })}
+    </>
+  )
+}
+
 interface Props {
   shapes: Shape[]
   onColor: (c: Swatch) => void
@@ -69,10 +102,11 @@ interface Props {
   onBorderHex: (hex: string, final: boolean, fresh: boolean) => void
   onAlign: (a: TextAlign) => void
   onSize: (px: number) => void
+  onEmphasis: (style: EmphasisStyle, on: boolean) => void
   onDelete: () => void
 }
 
-export default function ShapeToolbar({ shapes, onColor, onFill, onKind, onWeight, onBorder, onBorderColor, onHex, onBorderHex, onAlign, onSize, onDelete }: Props) {
+export default function ShapeToolbar({ shapes, onColor, onFill, onKind, onWeight, onBorder, onBorderColor, onHex, onBorderHex, onAlign, onSize, onEmphasis, onDelete }: Props) {
   const { t } = useTranslation()
   const kinds: { kind: ShapeKind; label: string; icon: ReactNode }[] = [
     { kind: 'rect', label: t('components.canvas.tool_rect'), icon: <Square size={16} /> },
@@ -169,6 +203,8 @@ export default function ShapeToolbar({ shapes, onColor, onFill, onKind, onWeight
             ))}
           </Menu>
           <TextSizeMenu size={size} onSize={onSize} />
+          {rule}
+          <EmphasisToggles shapes={texted} onEmphasis={onEmphasis} />
           {rule}
         </>
       )}

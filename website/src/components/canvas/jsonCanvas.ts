@@ -23,7 +23,7 @@
 
 import { toHex } from './colorMath'
 import {
-  CANVAS_KIND, CANVAS_SCHEMA, DEFAULT_SIZE, SWATCH_STYLE, SWATCHES, alignOf, fontSizeOf, lookOf, newId, textStyleOf, toSwatch,
+  CANVAS_KIND, CANVAS_SCHEMA, DEFAULT_SIZE, SWATCH_STYLE, SWATCHES, alignOf, fontSizeOf, lookOf, emphasisOf, newId, textStyleOf, toSwatch,
   type Canvas, type Connector, type ConnectorArrows, type ConnectorLine, type ConnectorSide, type Shape, type ShapeKind, type Swatch,
 } from './canvasModel'
 
@@ -96,6 +96,7 @@ function readShape(o: Obj, id: string): Shape {
     ...(o.locked === true ? { locked: true } : {}),
     ...look,
     ...(kind === 'text' ? textStyleOf(o) : {}),
+    ...(kind === 'section' ? {} : emphasisOf(o)),
     ...alignOf(kind, o.align),
     ...fontSizeOf(kind, o.fontSize),
   }
@@ -217,6 +218,8 @@ function writeShape(s: Shape): Obj {
     ...(s.inkHex ? { inkHex: s.inkHex } : {}),
     ...(s.fontSize !== undefined ? { fontSize: s.fontSize } : {}),
     ...(s.bold ? { bold: true } : {}),
+    ...(s.italic ? { italic: true } : {}),
+    ...(s.underline ? { underline: true } : {}),
     ...(s.strike ? { strike: true } : {}),
     ...(s.align ? { align: s.align } : {}),
     ...(s.locked ? { locked: true } : {}),
