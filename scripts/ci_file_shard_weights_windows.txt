@@ -291,7 +291,6 @@
 0.048 src/kiro_crew/apps/builtins/pptx_maker/tests/test_spawn_scope_layers.py
 0.087 src/kiro_crew/apps/builtins/pptx_maker/tests/test_venv_paths.py
 0.051 src/kiro_crew/apps/builtins/pptx_maker/tests/test_windows_extended_prefix.py
-1.188 src/kiro_crew/apps/builtins/project_scaffolder/tests/test_manifest.py
 0.063 src/kiro_crew/apps/builtins/spec_builder/tests/test_conftest_windows_gaps_cov80.py
 0.046 src/kiro_crew/apps/builtins/spec_builder/tests/test_host_parity.py
 3.297 src/kiro_crew/apps/builtins/spec_builder/tests/test_orchestration_composition_contract.py

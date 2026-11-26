@@ -64,7 +64,7 @@ describe('BUILTIN_COMPONENT_REGISTRY', () => {
 
   // One case per route, not one loop in one test: a cold CI runner pays Vite's
   // transform cost for whichever route's subtree lands first, and a single case
-  // carrying all 21 modules puts that whole bill against ONE per-test timeout.
+  // carrying every module puts that whole bill against ONE per-test timeout.
   // Timeout raised past the 15s default because the bill is runner-speed-bound,
   // not assertion-bound — locally every case is comfortably sub-2s.
   it.each(CORE_ROUTES)(

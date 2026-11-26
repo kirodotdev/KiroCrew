@@ -1509,12 +1509,6 @@
         "font_specimen": "Aa"
       }
     },
-    "projectScaffolder": {
-      "projectScaffolderPage": {
-        "n_already_set_up": "{{n}} already set up",
-        "root_already_exists_nothing_to_create": "This directory already has its sidebar folder, so there is nothing left to create."
-      }
-    },
     "designCritique": {
       "askLayer": {
         "answer_failed_ask_again_below": "Answer failed — ask again below",

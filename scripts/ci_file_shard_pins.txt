@@ -292,7 +292,6 @@
 3 src/kiro_crew/apps/builtins/pptx_maker/tests/test_spawn_scope_layers.py
 5 src/kiro_crew/apps/builtins/pptx_maker/tests/test_venv_paths.py
 5 src/kiro_crew/apps/builtins/pptx_maker/tests/test_windows_extended_prefix.py
-3 src/kiro_crew/apps/builtins/project_scaffolder/tests/test_manifest.py
 7 src/kiro_crew/apps/builtins/spec_builder/tests/test_conftest_windows_gaps_cov80.py
 7 src/kiro_crew/apps/builtins/spec_builder/tests/test_host_parity.py
 6 src/kiro_crew/apps/builtins/spec_builder/tests/test_orchestration_composition_contract.py
