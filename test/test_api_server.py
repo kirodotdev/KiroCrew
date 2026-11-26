@@ -238,6 +238,16 @@ class TestApiServerSpawn:
             assert data["status"] == "spawned"
 
     @pytest.mark.asyncio
+    async def test_the_owners_spawn_keeps_its_approval_mode(self, tmp_path):
+        mock_mgr = MagicMock()
+        mock_mgr.spawn.return_value = MagicMock(id="test-auto", done=False, error="")
+        state = _make_state(tmp_path, subagents=mock_mgr)
+        async with TestClient(TestServer(_make_api_app(state))) as client:
+            resp = await client.post("/api/spawn", json={"task": "hi", "approval_mode": "auto"})
+            assert resp.status == 200
+            assert mock_mgr.spawn.call_args.kwargs.get("approval_mode") == "auto"
+
+    @pytest.mark.asyncio
     async def test_spawn_passes_max_turns(self, tmp_path):
         mock_mgr = MagicMock()
         mock_mgr.spawn.return_value = MagicMock(id="test-456", done=False, error="")

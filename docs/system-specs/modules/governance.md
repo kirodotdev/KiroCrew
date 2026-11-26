@@ -4482,7 +4482,7 @@ and none of them gates it on `yolo_policy_permits()`:
 | Entry point | Whose prompts its `auto` skips | What it asks instead |
 |---|---|---|
 | a cron job's `approval_mode: "auto"` (`cron_service.fields`) | the job's runs | the `trust` deny, when the job is written and when it fires |
-| the `approval_mode` field of `POST /api/spawn` (the `spawn_run` tool forwards a cron job's `auto` here) | the spawned run | the `trust` deny, in the spawn admission gate |
+| the `approval_mode` field of `POST /api/spawn` (the `spawn_run` tool forwards a cron job's `auto` here; an internal-secret caller keeps `auto` only when its own session already has it: a trusted parent, a cron job set to `auto`, or a sub-agent running `auto`, else the run keeps its session's mode) | the spawned run | the `trust` deny, in the spawn admission gate |
 | a spawn's `approval_mode: "auto"` (`subagent_manager/admission/gate.py`; an app's background spawn always passes it) | the spawned run | the `trust` deny |
 | config `agent.approval_mode` (default `auto`) | the messaging transports' turns for the owner | nothing; only its subagent fallback asks the `trust` deny |
 
