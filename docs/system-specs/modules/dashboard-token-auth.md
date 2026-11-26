@@ -96,7 +96,7 @@ sequenceDiagram
     MW->>App: forward request
 ```
 
-> **Token→session exchange (CWE-613).** The one-time link token that appears in
+> **Token→session exchange (CWE-613).** The sign-in link token that appears in
 > URLs / Slack DMs / terminal history / access logs is NEVER reused as the
 > long-lived session cookie. On first (query-param) auth the middleware mints a
 > **separate** session token (fresh nonce, same identity, same remaining
@@ -235,7 +235,7 @@ a prompt nor Slack context does not route a session.
 
 `kind` is `"session"` only on a token minted as a session: the middleware's
 link→session exchange and the refresh rotation pass `generate_token(...,
-session=True)`. Every other dashboard-user token omits it and is a one-time link.
+session=True)`. Every other dashboard-user token omits it and is a sign-in link.
 It is reserved, so `extra` can neither set nor strip it
 (`test_the_session_claim_cannot_be_set_or_stripped_through_extra`;
 `test_skipping_nonce_registration_does_not_make_a_session`).
@@ -567,7 +567,7 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
    judged by `crew_api_auth.verify_bearer`, the one place a bearer credential is
    verified. Today it accepts what the session cookie carries: a token this gateway
    signed with `kind=session` (or an app token), checked for signature, `session_exp`,
-   the revocation counter and the logout list. A one-time link is refused as not a
+   the revocation counter and the logout list. A sign-in link is refused as not a
    session. A `Bearer` header with no credential is refused, and a cookie sent
    beside a refused header is not read.
 3. With no `Bearer` header the session cookie is read as on any other path, which
