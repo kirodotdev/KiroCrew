@@ -25463,7 +25463,13 @@
       "ssh_failed_hint": "देखो कि तुम {{path}} बदल सकते हो।",
       "launch_fix_name": "शुरू करने के लिए क्रू का नाम ठीक करो।",
       "ssh_preview": "जोड़ी जाने वाली पंक्तियाँ देखो",
-      "ssh_preview_why": "ये लाइनें Crew को तुम्हारे Kiro साइन-इन से तुम्हारे Kiro Managed Environments ({{hosts}} से शुरू होने वाले नाम) से जोड़ती हैं, और तुम्हारे बाकी ssh होस्ट जैसे हैं वैसे रहते हैं।"
+      "ssh_preview_why": "ये लाइनें Crew को तुम्हारे Kiro साइन-इन से तुम्हारे Kiro Managed Environments ({{hosts}} से शुरू होने वाले नाम) से जोड़ती हैं, और तुम्हारे बाकी ssh होस्ट जैसे हैं वैसे रहते हैं।",
+      "others_title": "कहीं और बने तुम्हारे environments",
+      "others_note": "ये तुमने Kiro या किसी दूसरे Crew में बनाए थे। ऊपर वाले नाम से इनमें से एक को अपने क्रू में जोड़ो। Crew इसे रोक और फिर चला सकता है, पर मिटाएगा नहीं।",
+      "add": "जोड़ो",
+      "add_needs_ssh": "इस कंप्यूटर को जुड़ने दो, फिर जोड़ो।",
+      "add_needs_name": "जोड़ने के लिए ऊपर क्रू का नाम लिखो।",
+      "add_failed": "environment जोड़ा नहीं जा सका"
     },
     "row": {
       "stop": "Environment रोको",
@@ -25480,10 +25486,12 @@
       "state_deleting": "Environment हटाया जा रहा है",
       "state_error": "Environment में गड़बड़ी",
       "state_error_hint": "सर्विस इस environment को {{status}} बता रही है। इसे मिटाओ और फिर से लॉन्च करो, या एजेंट से जाँच करवाओ।",
-      "managed_by": "Kiro Managed Environments · हटाओ चुनने से क्रू इस सूची से निकल जाती है, पर environment बना रहता है। उसे मिटाने के लिए Environment हटाओ इस्तेमाल करो।",
+      "managed_by": "Kiro Managed Environments · हटाओ चुनने से क्रू इस सूची से निकल जाती है, पर environment बना रहता है।",
       "stop_failed": "{{name}} का environment रोका नहीं जा सका",
       "resume_failed": "{{name}} का environment फिर से शुरू नहीं हो सका",
-      "delete_failed": "{{name}} का environment हटाया नहीं जा सका"
+      "delete_failed": "{{name}} का environment हटाया नहीं जा सका",
+      "add_again": "तुम्हारा Kiro साइन-इन बदल गया है, इसलिए Crew इस environment तक नहीं पहुँच सकता। लॉन्च फ़ॉर्म से इसे फिर जोड़ो, या क्रू को हटाओ।",
+      "added_no_delete": "इस Crew के बाहर बना है। जहाँ बनाया था, वहीं मिटाओ।"
     }
   }
 }

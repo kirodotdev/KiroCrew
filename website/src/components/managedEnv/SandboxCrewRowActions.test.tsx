@@ -159,6 +159,112 @@ describe('the launch form', () => {
     expect(screen.getByText("Couldn't add the ssh settings")).toBeInTheDocument()
   })
 
+  it('adds an environment another client made as the typed crew, once the name and ssh are ready', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const adoptSpy = vi.spyOn(managedEnvApi, 'adopt').mockImplementation(async () => ({ status: 'RUNNING' }))
+    listed = [
+      item('RUNNING'),
+      item('RUNNING', { sandbox_id: 'env-002', own: false, adopted: true }),
+      item('DELETING', { sandbox_id: 'env-003', own: false, ssh_host: undefined }),
+      item('STOPPED', { sandbox_id: 'env-004', own: false, ssh_host: undefined, display_name: 'from-kiro-web' }),
+    ]
+    render(
+      <QueryClientProvider client={qc}>
+        <SandboxLaunchForm provisioner={provisioner} launch={vi.fn()} launching={false} disabled={false} activeJob={null} />
+      </QueryClientProvider>,
+    )
+    const others = await screen.findByTestId('managed-env-others')
+    // Only the one neither own, added nor on its way out.
+    expect(others.querySelectorAll('li')).toHaveLength(1)
+    expect(others.textContent).toContain('from-kiro-web')
+    const add = screen.getByRole('button', { name: /^Add$/ })
+    expect(add).toBeDisabled()
+    expect(screen.getByText('Enter a crew name above to add.')).toBeInTheDocument()
+    await userEvent.type(screen.getByRole('textbox'), 'crew-b')
+    await waitFor(() => expect(add).toBeEnabled())
+    await userEvent.click(add)
+    await waitFor(() => expect(adoptSpy).toHaveBeenCalledWith('env-004', 'crew-b'))
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['instances'] }))
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''))
+  })
+
+  it('keeps a name typed while an Add is in flight', async () => {
+    let finish: (v: { status: string }) => void = () => {}
+    vi.spyOn(managedEnvApi, 'adopt').mockImplementation(
+      () => new Promise((resolve) => { finish = resolve }),
+    )
+    listed = [item('RUNNING', { own: false, ssh_host: undefined, display_name: 'from-kiro-web' })]
+    wrap(<SandboxLaunchForm provisioner={provisioner} launch={vi.fn()} launching={false} disabled={false} activeJob={null} />)
+    await userEvent.type(screen.getByRole('textbox'), 'crew-a')
+    const add = await screen.findByRole('button', { name: /^Add$/ })
+    await waitFor(() => expect(add).toBeEnabled())
+    await userEvent.click(add)
+    await userEvent.clear(screen.getByRole('textbox'))
+    await userEvent.type(screen.getByRole('textbox'), 'crew-b')
+    finish({ status: 'RUNNING' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(screen.getByRole('textbox')).toHaveValue('crew-b')
+  })
+
+  it('offers an added environment again once its crew row is gone', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    qc.setQueryData(['instances'], { instances: [] })
+    listed = [item('RUNNING', { own: false, adopted: true, display_name: 'added-earlier' })]
+    render(
+      <QueryClientProvider client={qc}>
+        <SandboxLaunchForm provisioner={provisioner} launch={vi.fn()} launching={false} disabled={false} activeJob={null} />
+      </QueryClientProvider>,
+    )
+    expect((await screen.findByTestId('managed-env-others')).textContent).toContain('added-earlier')
+  })
+
+  it('shows a failed List refresh over the rows it already has', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    listed = [item('RUNNING', { own: false, ssh_host: undefined, display_name: 'from-kiro-web' })]
+    render(
+      <QueryClientProvider client={qc}>
+        <SandboxLaunchForm provisioner={provisioner} launch={vi.fn()} launching={false} disabled={false} activeJob={null} />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('from-kiro-web')
+    listSpy.mockImplementation(async () => {
+      throw new Error('ListSandboxes failed (HTTP 502)')
+    })
+    await qc.refetchQueries({ queryKey: ['managed-env-list'] })
+    expect(await screen.findByText('ListSandboxes failed (HTTP 502)')).toBeInTheDocument()
+    expect(screen.getByText('from-kiro-web')).toBeInTheDocument()
+  })
+
+  it('says why no environment can be added when the List fails', async () => {
+    listSpy.mockImplementation(async () => {
+      throw new Error('ListSandboxes failed (HTTP 502)')
+    })
+    wrap(<SandboxLaunchForm provisioner={provisioner} launch={vi.fn()} launching={false} disabled={false} activeJob={null} />)
+    expect(await screen.findByText('ListSandboxes failed (HTTP 502)')).toBeInTheDocument()
+    expect(screen.getByText("Couldn't read your managed environments.")).toBeInTheDocument()
+  })
+
+  it('holds Add until the ssh settings are there, and shows a refused add', async () => {
+    sshPresent = false
+    vi.spyOn(managedEnvApi, 'adopt').mockImplementation(async () => {
+      throw new Error('Your sign-in does not list that environment as one Crew can add.')
+    })
+    vi.spyOn(managedEnvApi, 'addSshConfig').mockImplementation(async () => ({ present: true, path: '/home/u/.ssh/config' }))
+    listed = [item('RUNNING', { own: false, ssh_host: undefined })]
+    wrap(<SandboxLaunchForm provisioner={provisioner} launch={vi.fn()} launching={false} disabled={false} activeJob={null} />)
+    await userEvent.type(screen.getByRole('textbox'), 'crew-b')
+    const add = await screen.findByRole('button', { name: /^Add$/ })
+    expect(add).toBeDisabled()
+    expect(screen.getByText('Allow this computer to connect, then add.')).toBeInTheDocument()
+    await screen.findByTestId('managed-env-ssh-preview') // the ssh state has loaded
+    await userEvent.click(screen.getByRole('button', { name: /Allow this computer to connect/ }))
+    await waitFor(() => expect(add).toBeEnabled())
+    await userEvent.click(add)
+    expect(await screen.findByText("Couldn't add the environment")).toBeInTheDocument()
+    expect(screen.getByText(/does not list that environment/)).toBeInTheDocument()
+  })
+
   it.each([
     ['crew-a', true],
     ['a', false],
@@ -255,11 +361,25 @@ describe('row actions', () => {
     expect(await screen.findByText('ListSandboxes failed (HTTP 503)')).toBeInTheDocument()
   })
 
-  it('gives another client environment no action', async () => {
-    listed = [item('RUNNING', { own: false })]
+  it('gives another client environment no action, and says to add it again', async () => {
+    // Listed for this sign-in but not added under it (added under an earlier sign-in, say).
+    listed = [item('RUNNING', { own: false, ssh_host: undefined })]
     row()
-    expect(await screen.findByText(/no longer in your managed environments/)).toBeInTheDocument()
+    expect(await screen.findByText(/Add it again from the launch form/)).toBeInTheDocument()
     expect(actions()).toEqual([])
+  })
+
+  it('gives an added environment Stop and Resume but never Delete', async () => {
+    listed = [item('RUNNING', { own: false, adopted: true })]
+    const view = row()
+    expect(await screen.findByText('Environment running')).toBeInTheDocument()
+    expect(actions()).toEqual(['Stop environment'])
+    expect(screen.getByText(/Delete it where you made it/)).toBeInTheDocument()
+    view.unmount()
+    listed = [item('STOPPED', { own: false, adopted: true })]
+    row()
+    await screen.findByText('Environment stopped')
+    expect(actions()).toEqual(['Resume environment'])
   })
 
   it('draws nothing, calls no route and keeps the default Managed by line while the preview is off', async () => {

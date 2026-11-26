@@ -24849,7 +24849,13 @@
       "ssh_failed_hint": "{{path}} を編集できるか確認してください。",
       "launch_fix_name": "起動するにはクルー名を修正してください。",
       "ssh_preview": "追加される行を見る",
-      "ssh_preview_why": "これらの行で、Crew は Kiro のサインインを使ってあなたの Kiro Managed Environments（名前が {{hosts}} で始まるもの）に接続し、ほかの ssh ホストはそのまま残ります。"
+      "ssh_preview_why": "これらの行で、Crew は Kiro のサインインを使ってあなたの Kiro Managed Environments（名前が {{hosts}} で始まるもの）に接続し、ほかの ssh ホストはそのまま残ります。",
+      "others_title": "ほかの場所で作った環境",
+      "others_note": "これらは Kiro やほかの Crew で作った環境です。上の名前でクルーに追加できます。Crew は停止と再開はできますが、削除はしません。",
+      "add": "追加",
+      "add_needs_ssh": "このコンピューターからの接続を許可してから追加します。",
+      "add_needs_name": "追加するには上でクルー名を入力してください。",
+      "add_failed": "環境を追加できませんでした"
     },
     "row": {
       "stop": "環境を停止",
@@ -24866,10 +24872,12 @@
       "state_deleting": "環境を削除中",
       "state_error": "環境でエラーが発生しました",
       "state_error_hint": "サービスはこの環境を {{status}} と報告しています。削除して、もう一度起動するか、エージェントに調べてもらってください。",
-      "managed_by": "Kiro Managed Environments · 「取り除く」を選ぶとこの一覧からクルーが外れますが、環境は残ります。環境を削除するには「環境を削除」を使ってください。",
+      "managed_by": "Kiro Managed Environments · 「取り除く」を選ぶとこの一覧からクルーが外れますが、環境は残ります。",
       "stop_failed": "{{name}} の環境を停止できませんでした",
       "resume_failed": "{{name}} の環境を再開できませんでした",
-      "delete_failed": "{{name}} の環境を削除できませんでした"
+      "delete_failed": "{{name}} の環境を削除できませんでした",
+      "add_again": "Kiro のサインインが変わったため、Crew はこの環境に接続できません。起動フォームからもう一度追加するか、クルーを取り除いてください。",
+      "added_no_delete": "この Crew の外で作られた環境です。作った場所で削除してください。"
     }
   }
 }

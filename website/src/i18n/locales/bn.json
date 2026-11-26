@@ -25463,7 +25463,13 @@
       "ssh_failed_hint": "দেখো তুমি {{path}} বদলাতে পারো কি না।",
       "launch_fix_name": "চালু করতে ক্রু-এর নাম ঠিক করো।",
       "ssh_preview": "যোগ হওয়া লাইনগুলো দেখো",
-      "ssh_preview_why": "এই লাইনগুলো দিয়ে Crew তোমার Kiro সাইন-ইনের মাধ্যমে তোমার Kiro Managed Environments-এ ({{hosts}} দিয়ে শুরু হওয়া নাম) যুক্ত হয়, আর তোমার অন্য ssh হোস্ট যেমন আছে তেমনই থাকে।"
+      "ssh_preview_why": "এই লাইনগুলো দিয়ে Crew তোমার Kiro সাইন-ইনের মাধ্যমে তোমার Kiro Managed Environments-এ ({{hosts}} দিয়ে শুরু হওয়া নাম) যুক্ত হয়, আর তোমার অন্য ssh হোস্ট যেমন আছে তেমনই থাকে।",
+      "others_title": "অন্য জায়গায় তৈরি তোমার environment",
+      "others_note": "এগুলো তুমি Kiro বা অন্য কোনো Crew-তে তৈরি করেছ। ওপরের নামে একটি তোমার ক্রু-তে যোগ করো। Crew এটি থামাতে ও আবার চালু করতে পারে, কিন্তু মুছবে না।",
+      "add": "যোগ করো",
+      "add_needs_ssh": "এই কম্পিউটারকে যুক্ত হতে দাও, তারপর যোগ করো।",
+      "add_needs_name": "যোগ করতে ওপরে ক্রু-এর নাম লেখো।",
+      "add_failed": "environment যোগ করা গেল না"
     },
     "row": {
       "stop": "Environment থামাও",
@@ -25480,10 +25486,12 @@
       "state_deleting": "Environment মোছা হচ্ছে",
       "state_error": "Environment-এ ত্রুটি",
       "state_error_hint": "সার্ভিস এই environment-কে {{status}} বলছে। এটি মুছে ফেলো এবং আবার চালু করো, অথবা এজেন্টকে দেখতে বলো।",
-      "managed_by": "Kiro Managed Environments · সরাও বেছে নিলে ক্রু এই তালিকা থেকে সরে যায়, কিন্তু environment থেকে যায়। সেটি মুছতে Environment মুছে ফেলো ব্যবহার করো।",
+      "managed_by": "Kiro Managed Environments · সরাও বেছে নিলে ক্রু এই তালিকা থেকে সরে যায়, কিন্তু environment থেকে যায়।",
       "stop_failed": "{{name}}-এর environment থামানো গেল না",
       "resume_failed": "{{name}}-এর environment আবার চালু করা গেল না",
-      "delete_failed": "{{name}}-এর environment মোছা গেল না"
+      "delete_failed": "{{name}}-এর environment মোছা গেল না",
+      "add_again": "তোমার Kiro সাইন-ইন বদলেছে, তাই Crew এই environment-এ পৌঁছাতে পারছে না। লঞ্চ ফর্ম থেকে আবার যোগ করো, অথবা ক্রু-কে সরাও।",
+      "added_no_delete": "এই Crew-এর বাইরে তৈরি। যেখানে তৈরি করেছ, সেখানে মুছো।"
     }
   }
 }

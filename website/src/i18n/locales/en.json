@@ -13021,7 +13021,13 @@
       "ssh_failed_hint": "Check that you can edit {{path}}.",
       "launch_fix_name": "Fix the crew name to launch.",
       "ssh_preview": "See the lines it adds",
-      "ssh_preview_why": "These lines let Crew connect to your Kiro Managed Environments (names starting with {{hosts}}) through your Kiro sign-in, and they leave your other ssh hosts as they are."
+      "ssh_preview_why": "These lines let Crew connect to your Kiro Managed Environments (names starting with {{hosts}}) through your Kiro sign-in, and they leave your other ssh hosts as they are.",
+      "others_title": "Your environments from elsewhere",
+      "others_note": "You made these in Kiro or another Crew. Add one to your crews under the name above. Crew can stop and resume it, but won't delete it.",
+      "add": "Add",
+      "add_needs_ssh": "Allow this computer to connect, then add.",
+      "add_needs_name": "Enter a crew name above to add.",
+      "add_failed": "Couldn't add the environment"
     },
     "row": {
       "stop": "Stop environment",
@@ -13038,10 +13044,12 @@
       "state_deleting": "Environment being deleted",
       "state_error": "Environment failed",
       "state_error_hint": "The service reports this environment as {{status}}. Delete it and launch again, or ask the agent to look into it.",
-      "managed_by": "Kiro Managed Environments · Remove takes the crew off this list but keeps the environment. To delete it, use Delete environment.",
+      "managed_by": "Kiro Managed Environments · Remove takes the crew off this list but keeps the environment.",
       "stop_failed": "Couldn't stop the environment of {{name}}",
       "resume_failed": "Couldn't resume the environment of {{name}}",
-      "delete_failed": "Couldn't delete the environment of {{name}}"
+      "delete_failed": "Couldn't delete the environment of {{name}}",
+      "add_again": "Your Kiro sign-in changed, so Crew can't reach this environment. Add it again from the launch form, or remove the crew.",
+      "added_no_delete": "Made outside this Crew. Delete it where you made it."
     }
   }
 }

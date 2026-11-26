@@ -26077,7 +26077,13 @@
       "ssh_failed_hint": "Verifique se você pode editar {{path}}.",
       "launch_fix_name": "Corrija o nome da crew para iniciar.",
       "ssh_preview": "Ver as linhas adicionadas",
-      "ssh_preview_why": "Estas linhas deixam o Crew se conectar aos seus Kiro Managed Environments (nomes que começam com {{hosts}}) pelo seu login do Kiro, e mantêm seus outros hosts ssh como estão."
+      "ssh_preview_why": "Estas linhas deixam o Crew se conectar aos seus Kiro Managed Environments (nomes que começam com {{hosts}}) pelo seu login do Kiro, e mantêm seus outros hosts ssh como estão.",
+      "others_title": "Seus ambientes de outros lugares",
+      "others_note": "Você os criou no Kiro ou em outra Crew. Adicione um às suas crews com o nome acima. A Crew pode pará-lo e retomá-lo, mas não vai excluí-lo.",
+      "add": "Adicionar",
+      "add_needs_ssh": "Permita que este computador se conecte e depois adicione.",
+      "add_needs_name": "Digite um nome de crew acima para adicionar.",
+      "add_failed": "Não foi possível adicionar o ambiente"
     },
     "row": {
       "stop": "Parar ambiente",
@@ -26094,10 +26100,12 @@
       "state_deleting": "Ambiente sendo excluído",
       "state_error": "Erro no ambiente",
       "state_error_hint": "O serviço informa este ambiente como {{status}}. Exclua-o e inicie de novo, ou peça ao agente para verificar.",
-      "managed_by": "Kiro Managed Environments · Remover tira a crew desta lista, mas mantém o ambiente. Para excluí-lo, use Excluir ambiente.",
+      "managed_by": "Kiro Managed Environments · Remover tira a crew desta lista, mas mantém o ambiente.",
       "stop_failed": "Não foi possível parar o ambiente de {{name}}",
       "resume_failed": "Não foi possível retomar o ambiente de {{name}}",
-      "delete_failed": "Não foi possível excluir o ambiente de {{name}}"
+      "delete_failed": "Não foi possível excluir o ambiente de {{name}}",
+      "add_again": "Seu login no Kiro mudou, então a Crew não alcança este ambiente. Adicione-o de novo pelo formulário de início ou remova a crew.",
+      "added_no_delete": "Criado fora desta Crew. Exclua-o onde você o criou."
     }
   }
 }

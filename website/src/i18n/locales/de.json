@@ -25463,7 +25463,13 @@
       "ssh_failed_hint": "Prüfe, ob du {{path}} bearbeiten darfst.",
       "launch_fix_name": "Korrigiere den Crew-Namen, um zu starten.",
       "ssh_preview": "Die Zeilen ansehen, die hinzugefügt werden",
-      "ssh_preview_why": "Mit diesen Zeilen verbindet sich Crew über deine Kiro-Anmeldung mit deinen Kiro Managed Environments (Namen, die mit {{hosts}} beginnen), und deine anderen ssh-Hosts bleiben, wie sie sind."
+      "ssh_preview_why": "Mit diesen Zeilen verbindet sich Crew über deine Kiro-Anmeldung mit deinen Kiro Managed Environments (Namen, die mit {{hosts}} beginnen), und deine anderen ssh-Hosts bleiben, wie sie sind.",
+      "others_title": "Deine Umgebungen von anderswo",
+      "others_note": "Diese hast du in Kiro oder einer anderen Crew erstellt. Füge eine unter dem Namen oben zu deinen Crews hinzu. Crew kann sie stoppen und fortsetzen, löscht sie aber nicht.",
+      "add": "Hinzufügen",
+      "add_needs_ssh": "Erlaube diesem Computer die Verbindung, dann füge hinzu.",
+      "add_needs_name": "Gib oben einen Crew-Namen ein, um hinzuzufügen.",
+      "add_failed": "Die Umgebung konnte nicht hinzugefügt werden"
     },
     "row": {
       "stop": "Umgebung anhalten",
@@ -25480,10 +25486,12 @@
       "state_deleting": "Umgebung wird gelöscht",
       "state_error": "Fehler in der Umgebung",
       "state_error_hint": "Der Dienst meldet diese Umgebung als {{status}}. Lösche sie und starte neu, oder bitte den Agenten, es sich anzusehen.",
-      "managed_by": "Kiro Managed Environments · Entfernen nimmt die Crew aus dieser Liste, die Umgebung bleibt aber bestehen. Zum Löschen nutze Umgebung löschen.",
+      "managed_by": "Kiro Managed Environments · Entfernen nimmt die Crew aus dieser Liste, die Umgebung bleibt aber bestehen.",
       "stop_failed": "Die Umgebung von {{name}} konnte nicht gestoppt werden",
       "resume_failed": "Die Umgebung von {{name}} konnte nicht fortgesetzt werden",
-      "delete_failed": "Die Umgebung von {{name}} konnte nicht gelöscht werden"
+      "delete_failed": "Die Umgebung von {{name}} konnte nicht gelöscht werden",
+      "add_again": "Deine Kiro-Anmeldung hat sich geändert, daher erreicht Crew diese Umgebung nicht. Füge sie im Startformular erneut hinzu oder entferne die Crew.",
+      "added_no_delete": "Außerhalb dieser Crew erstellt. Lösche sie dort, wo du sie erstellt hast."
     }
   }
 }
