@@ -509,6 +509,16 @@ def _adoption_pin_names() -> frozenset[str]:
         return frozenset()
 
 
+def builtin_approved_grants(grants: dict[str, list[str]] | None) -> dict[str, list[str]]:
+    """The approved set a built-in stores at every start: everything its copy declares.
+
+    *grants* is ``point_grants.grant_source`` of the wheel copy. A record adopted once
+    that copy is gone is carried from the same set of the copy its pin row froze
+    (``builtin_adoption_baseline``), so both paths end with the same grants.
+    """
+    return _declared_grant_entries(grants)
+
+
 def _app_declares_backend(app_data: dict[str, Any]) -> bool:
     """Whether a manifest declares a backend the gateway proxy can reach.
 
@@ -811,7 +821,7 @@ def register_builtin_apps() -> int:
             # A built-in approves what it SHIPS, stored here at every start so the set
             # follows an upgrade: the app.json copy below is agent-writable and grants
             # nothing it adds.
-            _write_approved_grants(name, _declared_grant_entries(grant_source(app_data)))
+            _write_approved_grants(name, builtin_approved_grants(grant_source(app_data)))
             _write_installed(name, existing)
         else:
             # Use defaultEnabled from definition (defaults to True for backward compat)
@@ -853,7 +863,7 @@ def register_builtin_apps() -> int:
             # A built-in approves what it ships (see the branch above). Stored with the
             # first record, so one registered after the one-time import is not left
             # approving nothing.
-            _write_approved_grants(name, _declared_grant_entries(grant_source(app_data)))
+            _write_approved_grants(name, builtin_approved_grants(grant_source(app_data)))
             _write_installed(name, meta)
 
         # Persist manifest so dashboard can show full info
