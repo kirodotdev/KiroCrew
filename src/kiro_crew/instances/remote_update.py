@@ -10,6 +10,11 @@ This module owns only the bookkeeping -- one latest job per instance, its phase
 and outcome, and the task refs that keep a running job from being collected.
 What the job runs, and on which transport, is
 :meth:`SshTunnelManager._update_then_restart`'s business.
+
+While the crew is busy the job keeps its counts and, best-effort, the work the
+crew's CLI named on the line before its busy marker (:func:`read_gate_answer`).
+Those names reach only the route's answer to the hub's owner: no log line and
+no error sentence carries one.
 """
 
 from __future__ import annotations
@@ -21,6 +26,8 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+
+from kiro_crew.work_holders import read_payload
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +56,8 @@ STATE_FAILED = "failed"
 
 PHASE_UPDATING = "updating"
 #: The update is installed and the crew still runs work a restart would stop:
-#: the job asks again until it is idle. ``waiting`` carries the last counts.
+#: the job asks again until it is idle. ``waiting`` carries the last counts
+#: and the work the crew named.
 PHASE_WAITING_FOR_IDLE = "waiting_for_idle"
 PHASE_RESTARTING = "restarting"
 PHASE_VERIFYING = "verifying"
@@ -86,6 +94,9 @@ _GATE_REFUSED_MARKER = "kirocrew-restart-gate-refused"
 #: The busy marker is this prefix, one space, then a JSON object with the
 #: counts: ``kirocrew-restart-busy {"turns":2,"background":1}``.
 _GATE_BUSY_MARKER = "kirocrew-restart-busy"
+#: The line just before the busy marker on stdout names the work, best-effort:
+#: this prefix, one space, then ``{"holders":[...],"holders_more":N}``.
+_GATE_HOLDERS_MARKER = "kirocrew-restart-holders"
 #: Where the runner joins the stdout tail onto the stderr head
 #: (``token_mint._with_stdout_tail``).
 _STDOUT_TAIL_JOIN = " | stdout tail: "
@@ -104,6 +115,10 @@ class GateAnswer:
     outcome: str
     turns: int = 0
     background: int = 0
+    #: The work a busy crew named (``work_holders.payload`` entries), and how
+    #: many it left out. Best-effort: empty whenever the line was unreadable.
+    holders: tuple[dict[str, object], ...] = ()
+    holders_more: int = 0
 
 
 def _read_busy_counts(err: str) -> tuple[int, int] | None:
@@ -138,13 +153,42 @@ def _read_busy_counts(err: str) -> tuple[int, int] | None:
     return turns, background
 
 
+def _read_busy_holders(err: str) -> tuple[list[dict[str, object]], int] | None:
+    """The holders named on the line just before the busy marker, or ``None``.
+
+    Read only from the stdout tail (after the runner's join): a line before it
+    is stderr, which a login banner or a proxy controls. The line must be
+    exactly the prefix, a space and one JSON object whose entries
+    ``work_holders.read_payload`` accepts; it re-cleans each kind and name and
+    keeps at most ``work_holders.LIST_CAP`` entries.
+    """
+    _, join, tail = (err or "").rpartition(_STDOUT_TAIL_JOIN)
+    if not join:
+        return None
+    lines = tail.strip().splitlines()
+    if len(lines) < 2:
+        return None
+    line = lines[-2].strip()
+    prefix = _GATE_HOLDERS_MARKER + " "
+    if not line.startswith(prefix):
+        return None
+    try:
+        body = json.loads(line[len(prefix) :])
+    except ValueError:
+        return None
+    if not isinstance(body, dict) or set(body) != {"holders", "holders_more"}:
+        return None
+    return read_payload(body["holders"], body["holders_more"])
+
+
 def read_gate_answer(rc: int, err: str) -> GateAnswer:
     """Classify the exit status and message of a remote idle-gated restart.
 
     *err* is the runner's message with its stdout tail (``stdout_tail=True``):
     the marker is the CLI's last stdout line, so an SSH banner that fills the
     head of stderr cannot hide it. A busy exit whose marker cannot be read is
-    ``refused``: the crew restarted nothing, and its counts are unknown.
+    ``refused``: the crew restarted nothing, and its counts are unknown. The
+    names before the marker never change the outcome: unreadable ones are none.
     """
     if rc == 0:
         return GateAnswer("restarted")
@@ -152,7 +196,9 @@ def read_gate_answer(rc: int, err: str) -> GateAnswer:
         counts = _read_busy_counts(err)
         if counts is None:
             return GateAnswer("refused")
-        return GateAnswer("busy", counts[0], counts[1])
+        named = _read_busy_holders(err)
+        holders, more = named if named is not None else ([], 0)
+        return GateAnswer("busy", counts[0], counts[1], tuple(holders), more)
     if rc in (_GATE_EXIT_UNSUPPORTED, _ARGPARSE_USAGE_EXIT):
         return GateAnswer("unsupported")
     if rc == _GATE_EXIT_REFUSED and _GATE_REFUSED_MARKER in (err or ""):
@@ -237,6 +283,9 @@ class RemoteUpdateJob:
     #: The crew's last in-flight counts while ``waiting_for_idle``.
     waiting_turns: int = 0
     waiting_background: int = 0
+    #: The work the crew named behind those counts, and how many it left out.
+    waiting_holders: tuple[dict[str, object], ...] = ()
+    waiting_holders_more: int = 0
     #: Whether this job restarts without waiting for the crew to go idle.
     force: bool = False
 
@@ -248,12 +297,20 @@ class RemoteUpdateJob:
         if self.running:
             self.phase = phase
 
-    def wait_for_idle(self, turns: int, background: int) -> None:
+    def wait_for_idle(
+        self,
+        turns: int,
+        background: int,
+        holders: tuple[dict[str, object], ...] = (),
+        holders_more: int = 0,
+    ) -> None:
         """Record that the crew is still busy, with what it reported."""
         if self.running:
             self.phase = PHASE_WAITING_FOR_IDLE
             self.waiting_turns = max(0, turns)
             self.waiting_background = max(0, background)
+            self.waiting_holders = tuple(holders)
+            self.waiting_holders_more = max(0, holders_more)
 
     def finish(self, state: str, *, version_after: str = "") -> None:
         """End the job in a non-failed outcome (succeeded/unchanged/unverified)."""
@@ -290,7 +347,12 @@ class RemoteUpdateJob:
             "version_before": self.version_before,
             "version_after": self.version_after,
             "code": self.code,
-            "waiting": {"turns": self.waiting_turns, "background": self.waiting_background},
+            "waiting": {
+                "turns": self.waiting_turns,
+                "background": self.waiting_background,
+                "holders": [dict(h) for h in self.waiting_holders],
+                "holders_more": self.waiting_holders_more,
+            },
             "force": self.force,
         }
 

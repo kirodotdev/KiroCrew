@@ -582,8 +582,11 @@ export interface RemoteUpdateJob {
    *  that it is idle). All are retried with `force`. Else "". Absent
    *  from a gateway that predates it. */
   code?: '' | 'still_busy' | 'peer_cannot_wait' | 'idle_check_failed'
-  /** The crew's last in-flight counts while `waiting_for_idle`. */
-  waiting?: { turns: number; background: number }
+  /** The crew's last in-flight counts while `waiting_for_idle`, and the work
+   *  it named behind them (`{kind, name, since_secs, count}` entries, and how
+   *  many it left out). The names are absent from an older hub and empty when
+   *  the crew named none. */
+  waiting?: { turns: number; background: number; holders?: unknown[]; holders_more?: number }
   /** Whether the job restarts without waiting for in-flight work. */
   force?: boolean
   /** The crew's version before the update and after its restart; "" when it

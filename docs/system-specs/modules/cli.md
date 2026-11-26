@@ -2644,7 +2644,22 @@ asks again every 10s, for up to `--max-wait` (default 600s; `0` checks once).
 When its stdout is a terminal and the gateway names the work (`holders` in the
 answer), it adds the sessions and jobs the counts are, for example
 `(nightly-sync script (21 s))`, cleaned and redacted again on this side. A
-captured run prints the counts alone, and so does the busy marker line.
+captured run prints the counts alone in its sentences, and so does the busy
+marker line. On a busy exit whose stdout is not a terminal, from a process that
+is not one Kiro Crew started for an agent (`cloud.aws._in_agent_session`: the
+session key, the runtime-agent and sandbox-launch markers, the agent cgroup),
+and only when the gateway named holders, the command prints one more line, on
+stdout only and immediately before the marker:
+`kirocrew-restart-holders {"holders":[...],"holders_more":N}` (compact JSON,
+the gateway's `{kind, name, since_secs, count}` entries; `holders_more` counts
+the holders left out). Its budget is the Remote Crew hub's stdout handling, as
+this build has it: entries are dropped from the end, each added to
+`holders_more`, until `instances.token_mint._redacted_output_tail` of that line
+and the marker returns them unchanged, which covers the hub's 300-character tail
+and its credential redaction (an armour-shaped job name would otherwise redact
+the marker away) on a hub of the same build. When no entry passes, no line is
+printed. The hub reads it best-effort (see
+[instances](instances.md), `GET /api/instances/{id}/update`).
 An idle answer is asked a second time at once, before the restart, with `commit`: the
 gateway then pauses and fences new turns like the dashboard restart, so a turn admitted
 after the first answer reads busy on the second and is waited on (or, past `--max-wait`,

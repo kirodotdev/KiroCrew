@@ -177,6 +177,37 @@ describe('RemoteUpdateControl', () => {
     ).toBeInTheDocument()
   })
 
+  it('lists the work a waiting crew named under the waiting line, as text', async () => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: {
+        ...RUNNING,
+        phase: 'waiting_for_idle',
+        waiting: {
+          turns: 0,
+          background: 1,
+          holders: [{ kind: 'script', name: '<b>nightly-sync</b>', since_secs: 120, count: 1 }],
+          holders_more: 1,
+        },
+      },
+    })
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    const line = await screen.findByTestId('remote-update-waiting-on')
+    expect(line).toHaveTextContent('Running now: <b>nightly-sync</b> (scheduled job, 2m 0s) and 1 more.')
+    expect(line.querySelector('b')).toBeNull()
+  })
+
+  it('shows exactly the waiting line when the crew named no work', async () => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, phase: 'waiting_for_idle', waiting: { turns: 2, background: 3, holders: [], holders_more: 0 } },
+    })
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    await screen.findByText(/Waiting for Old box/)
+    expect(screen.queryByTestId('remote-update-waiting-on')).toBeNull()
+    expect(screen.getByTestId('remote-update-control')).toHaveTextContent(
+      /^Waiting for Old box to finish its running work before it restarts \(chat turns: 2, background tasks: 3\)…$/,
+    )
+  })
+
   it.each([
     ['still_busy', /still running work after 10 minutes, so it was not restarted/],
     ['peer_cannot_wait', /cannot report its running work, so it was not restarted\. Update it from its own dashboard/],

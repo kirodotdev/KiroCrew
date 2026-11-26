@@ -850,7 +850,11 @@ take the hold in `cli.main` after argument parsing.
     and the "Restart refused" log line).
     `kirocrew restart --when-idle` prints the names after the counts only when
     its stdout is a terminal; a captured run (Remote Crew over SSH or SSM, whose
-    output tail the calling dashboard relays) prints the counts alone.
+    output tail the calling dashboard relays) prints the counts alone in its
+    sentences. Outside a process Kiro Crew started for an agent, a captured busy
+    exit relays the names on one stdout-only line before the busy marker, for the
+    Remote Crew hub's update job, which only that hub's machine owner reads (see
+    [cli](cli.md) and [instances](instances.md), `GET /api/instances/{id}/update`).
   - **What a name may contain.** A name can be text an agent or a remote party
     chose (a cron job name, a session key). `Holder.__post_init__` cleans every
     one where it is made (`work_holders.clean_name`:
