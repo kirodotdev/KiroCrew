@@ -2,10 +2,10 @@
 
 An app backend that needs a host control with no ``ctx`` seam (a sensitive-path
 check, the file path gate, a no-follow read, outbound redaction, an audit row, a
-sandboxed child, a process or file-lock helper) otherwise looks up a private
-``kiro_crew`` name by string. Those names move between releases, so each lookup is a
-gap that keeps a wheel copy alive. This package is the stable spelling of the
-most-used of them.
+sandboxed child, a process or file-lock helper, the public-address check for a URL it
+fetches) otherwise looks up a private ``kiro_crew`` name by string. Those names move
+between releases, so each lookup is a gap that keeps a wheel copy alive. This package
+is the stable spelling of the most-used of them.
 
 **Reachable from both backend kinds.** An in-process app (``backend.hooks``) and a
 spawned one (``backend.entryPoint`` on the gateway's interpreter, the default once
@@ -17,7 +17,8 @@ absent, exactly as it treats an older gateway.
 gateway itself enforces, looked up at call time, so a check tightened in a later
 release reaches the app with the wheel. Nothing here is a copy, and no name adds
 reach: a spawn is wrapped in the same OS sandbox and can only keep or tighten its
-tier, a read refuses exactly what the private read refuses.
+tier, a read refuses exactly what the private read refuses, and the URL check only
+refuses: it opens no connection.
 
 **Level-gated.** ``SDK_LEVEL`` is the App Kit seam level of this build
 (``ctx.sdk_level`` for an in-process app); the package exists from level 7. A name
@@ -68,6 +69,11 @@ if TYPE_CHECKING:
         sandboxed_argv,
         sandboxed_argv_async,
     )
+    from kiro_crew.apps.backend_sdk.urls import (  # noqa: F401
+        UrlRejectedError,
+        address_is_not_public,
+        vet_public_url,
+    )
 
 #: The App Kit seam level this gateway provides; the package exists from level 7.
 SDK_LEVEL: int = APP_SDK_LEVEL
@@ -101,6 +107,9 @@ _LAZY_EXPORTS: dict[str, str] = {
     "run_sandboxed_async": "spawn",
     "sandboxed_argv": "spawn",
     "sandboxed_argv_async": "spawn",
+    "UrlRejectedError": "urls",
+    "address_is_not_public": "urls",
+    "vet_public_url": "urls",
 }
 
 #: Public name -> the App Kit seam level that publishes it, for each name added after
@@ -109,6 +118,9 @@ _LAZY_EXPORTS: dict[str, str] = {
 #: at this level, so a host older than the name keeps the wheel copy.
 _EXPORT_LEVELS: dict[str, int] = {
     "canonical_file_path": 14,
+    "UrlRejectedError": 14,
+    "address_is_not_public": 14,
+    "vet_public_url": 14,
 }
 
 __all__ = sorted({"SDK_LEVEL", "BACKEND_SDK_LEVEL", *_LAZY_EXPORTS})
