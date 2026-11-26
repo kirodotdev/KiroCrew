@@ -332,6 +332,11 @@ async def api_stt_polish(request: web.Request) -> web.Response:
     denied = _deny_app_token(request, "stt.polish")
     if denied is not None:
         return denied
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "stt.polish")
+    if owner_denied is not None:
+        return owner_denied
     cfg = KiroCrewConfig.load()
     if not cfg.stt.polish:
         # Refused rather than silently passed through: the setting is the consent.
@@ -436,8 +441,12 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
     import uuid
 
     from kiro_crew.dashboard import part_stream
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
     from kiro_crew.transcribe import transcribe_audio  # noqa: F811
 
+    owner_denied = await require_owner_for_dashboard_caller(request, "stt.transcribe")
+    if owner_denied is not None:
+        return owner_denied
     cfg = KiroCrewConfig.load()
     # Off the loop: every provider branch of the probe reaches the filesystem, and
     # `local` and `transcribe` each import an optional extra the first time.
@@ -462,9 +471,14 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
             {"error": "missing audio field", "code": _CODE_STT_MISSING_AUDIO}, status=400
         )
 
-    # Use uploaded filename extension (recording.webm / .mp4 / .ogg)
+    from kiro_crew.messaging.attachments import safe_suffix
+
+    # Use uploaded filename extension (recording.webm / .mp4 / .ogg), stripped to
+    # letters and digits: the client's text must not shape the temp path (a
+    # colon names an NTFS stream on Windows). An unknown suffix is kept, so the
+    # decoder still detects its container from the content.
     fname = getattr(field, "filename", None) or "recording.webm"
-    ext = os.path.splitext(fname)[1] or ".webm"
+    ext = safe_suffix(os.path.splitext(fname)[1][1:], default="webm")
     # A fresh unpublished path: stream_part_to_file writes to a sibling temp
     # off the event loop and publishes here atomically, so no exit path (413,
     # backend failure, cancellation) can leave a partial file at this name.

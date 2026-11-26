@@ -92,6 +92,8 @@ export interface WorkerKitView {
   unenforced_denies?: string[]
   /** The file's blocked commands only the gate checks, in a simple command or plain chain; the worker refuses any other non-read-only command while one is left. */
   conditional_denies?: string[]
+  /** Set on an add whose new gateway-routed MCP server the gateway serves only after a restart. */
+  gateway_restart_required?: boolean
 }
 export interface WorkerKitChange {
   /** `disabledTools` / `disabledServers`: a limit on a server the worker base declares. */

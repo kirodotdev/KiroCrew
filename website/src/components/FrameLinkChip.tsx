@@ -3,6 +3,7 @@ import { ExternalLink } from 'lucide-react'
 
 import { Btn } from './ui'
 import { OverlayPortal, useCloseWhenCrewHidden } from './overlayRoot'
+import { usePreviewScrollDismiss } from './usePreviewScrollDismiss'
 import { i18nT } from '../i18n/t'
 
 /** The chip's place: the asking frame's top right corner, kept on screen. */
@@ -21,8 +22,9 @@ function placeOf(frame: HTMLIFrameElement): { top: number; right: number } {
  * it makes borrows nobody's. The full URL is the title, so it shows on hover, as
  * on the link itself. The button takes focus when it appears, so a keyboard user
  * presses Enter again to open. It has no timer, so a slow reader does not lose
- * it: it stays until Escape, any other click or key, a scroll or a resize (it is
- * placed by the frame, so it cannot follow a scroll), or its Crew being hidden.
+ * it: it stays until Escape, any other click or key, a scroll that moves the frame
+ * or a resize (it is placed by the frame, so it cannot follow either), or its Crew
+ * being hidden.
  */
 export function FrameLinkChip({ url, frame, onOpen, onDismiss }: {
   url: string
@@ -38,6 +40,9 @@ export function FrameLinkChip({ url, frame, onOpen, onDismiss }: {
   // link asked for on this Crew must not open from there: the button goes.
   useCloseWhenCrewHidden(true, onDismiss)
   useLayoutEffect(() => { setPlace(placeOf(frame)) }, [frame, url])
+  // A chat transcript beside the frame scrolls on every streamed line, so only a
+  // scroll that moves the frame (or a resize) takes the button away.
+  usePreviewScrollDismiss(true, () => frame, onDismiss)
   useEffect(() => {
     ref.current?.focus({ preventScroll: true })
     const dismiss = () => dismissRef.current()
@@ -47,13 +52,9 @@ export function FrameLinkChip({ url, frame, onOpen, onDismiss }: {
     const opts = { capture: true, passive: true } as const
     window.addEventListener('pointerdown', elsewhere, opts)
     window.addEventListener('keydown', elsewhere, opts)
-    window.addEventListener('scroll', dismiss, opts)
-    window.addEventListener('resize', dismiss, opts)
     return () => {
       window.removeEventListener('pointerdown', elsewhere, opts)
       window.removeEventListener('keydown', elsewhere, opts)
-      window.removeEventListener('scroll', dismiss, opts)
-      window.removeEventListener('resize', dismiss, opts)
     }
   }, [url])
   const host = new URL(url).host

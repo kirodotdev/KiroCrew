@@ -97,10 +97,12 @@ not the callers the lists name. A change that opens a served route to apps chang
 `x-crew-available-to` in the same change.
 
 An available operation whose spec describes more than the gateway serves also carries
-`x-crew-not-served-yet`. Today four operations carry it: `POST /v1/responses`, which the
+`x-crew-not-served-yet`. Today six operations carry it: `POST /v1/responses`, which the
 test below checks in full, and `GET /v1/models`, for its response headers, which the
 same test file checks; `GET /v1/responses/{response_id}` and its `input_items`, for
-their response headers, which `test/test_crew_api_response_reads.py` checks. Each check
+their response headers, which `test/test_crew_api_response_reads.py` checks; and
+`POST /v1/conversations` and `GET /v1/conversations/{conversation_id}`, for their
+headers, which `test/test_crew_api_conversations.py` checks. Each check
 sends the request as the owner; none sends one with an app credential. No test
 compares the other available operations with their handlers field by field.
 

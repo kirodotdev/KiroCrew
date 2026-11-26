@@ -126,6 +126,10 @@ def _empty() -> dict[str, Any]:
     }
 
 
+class StateUnreadableError(OSError):
+    """The state file exists but cannot be read or parsed, so it is not rewritten."""
+
+
 def load_state() -> dict[str, Any]:
     state = _read_state()
     return _empty() if state is None else state
@@ -133,13 +137,32 @@ def load_state() -> dict[str, Any]:
 
 def _read_state() -> dict[str, Any] | None:
     """The stored state, or ``None`` when the file is missing, unreadable or invalid."""
+    try:
+        return _read_state_strict()
+    except OSError:
+        return None
+
+
+def _read_state_strict() -> dict[str, Any] | None:
+    """The stored state, or ``None`` only when the file is missing.
+
+    Raises :class:`StateUnreadableError` for any other read failure or an
+    invalid file, so a rewrite never starts from an empty state that would
+    erase what the file holds.
+    """
     path = root() / STATE_FILE
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise StateUnreadableError(f"{STATE_FILE} is unreadable") from exc
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise StateUnreadableError(f"{STATE_FILE} is not valid JSON") from exc
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
-        return None
+        raise StateUnreadableError(f"{STATE_FILE} has an unknown shape")
     out = _empty()
     out.update({k: v for k, v in data.items() if k in out})
     for key in ("invites", "members", "display"):
@@ -159,9 +182,15 @@ def save_state(state: dict[str, Any]) -> None:
 
 
 def update_state(mutate: Any) -> dict[str, Any]:
-    """Read, apply *mutate* in place, write; one writer at a time in this process."""
+    """Read, apply *mutate* in place, write; one writer at a time in this process.
+
+    Raises :class:`StateUnreadableError`, writing nothing, when the file exists
+    but cannot be read or parsed.
+    """
     with _LOCK:
-        state = load_state()
+        state = _read_state_strict()
+        if state is None:
+            state = _empty()
         mutate(state)
         save_state(state)
         return state

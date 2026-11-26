@@ -366,6 +366,7 @@ async def _handle_dashboard(self: WebexDispatcher, inbound: "WebexInbound") -> N
     from kiro_crew.dashboard.token_auth import (
         MAX_SESSION_TTL_SECS,
         generate_token,
+        owner_mint_extra,
         parse_duration,
     )
     from kiro_crew.dashboard.urls import dashboard_origin, parse_dashboard_url
@@ -393,7 +394,28 @@ async def _handle_dashboard(self: WebexDispatcher, inbound: "WebexInbound") -> N
     ttl_secs = min(parse_duration(_ttl_spec(arg)) or _DEFAULT_TTL_SECS, MAX_SESSION_TTL_SECS)
     caller = f"webex:{inbound.person_email}"
     try:
-        token = generate_token(inbound.person_email, ttl_seconds=ttl_secs)
+        # The owner's own link carries the owner's dashboard session, as the
+        # owner's Slack link does: the sender must be the address the owner
+        # named as theirs (``webex.owner_email``, the KIROCREW_OWNER_ID of this
+        # channel), read live so a removed owner stops at once, and compared
+        # case-insensitively as the allow-list is. The subject is the one the
+        # dashboard's owner gate admits (its owner id, else ``local-app``), so
+        # the link needs the dashboard attached. Every other link stays under
+        # the sender's own address, which the owner's chat refuses.
+        owner_email = self._live_cfg().webex.owner_email
+        state = getattr(self, "dashboard_state", None)
+        if (
+            state is not None
+            and isinstance(owner_email, str)
+            and owner_email.strip()
+            and inbound.person_email.lower() == owner_email.strip().lower()
+        ):
+            from kiro_crew.shared_crew.owner import DEFAULT_OWNER_SUBJECT
+
+            subject = str(getattr(state, "owner_id", "") or "") or DEFAULT_OWNER_SUBJECT
+            token = generate_token(subject, ttl_seconds=ttl_secs, extra=owner_mint_extra())
+        else:
+            token = generate_token(inbound.person_email, ttl_seconds=ttl_secs)
         origin = dashboard_origin(self.cfg.dashboard.url)
         if not origin:
             # No configured dashboard.url: fall back to the local port

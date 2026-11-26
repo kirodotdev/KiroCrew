@@ -233,7 +233,7 @@ describe('ChatInput prompt stash on touch', () => {
     addStashEntry('chat-1', makeStashEntry('kept', []))
     renderWithProviders(<Host />)
     const count = await screen.findByTestId('prompt-stash-count')
-    expect(count).toHaveAttribute('title', 'Stashed drafts for this chat. Ctrl+S in an empty message input restores the latest.')
+    expect(count).toHaveAttribute('title', 'Stashed drafts for this chat. Ctrl+S in an empty message input brings one back.')
     expect(count.getAttribute('title')).not.toContain('⋯')
   })
 })

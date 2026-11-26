@@ -247,6 +247,30 @@ def register_restart_parser(sub: _Commands) -> None:
     )
 
 
+def register_resume_parser(sub: _Commands) -> None:
+    resume_parser = cli_help.add_command(sub, "resume")
+    resume_parser.add_argument(
+        "sessions",
+        nargs="*",
+        metavar="SESSION",
+        help=(
+            "Session ids to resume (the ?sid= value), as each tab's Resume button. "
+            "Without any, resume the chats the last gateway stop cut."
+        ),
+    )
+    resume_parser.add_argument(
+        "--all",
+        action="store_true",
+        help='Resume every interrupted session, as the sidebar\'s "Resume N sessions".',
+    )
+    resume_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Dashboard port (default: resolved from KIROCREW_PORT env or dashboard.url config).",
+    )
+
+
 def register_gateway_pid_parser(sub: _Commands) -> None:
     # gateway-pid — read-only: print the PID holding this home's gateway.lock as
     # JSON, resolved through the same socket-independent lock_holder oracle that
@@ -437,6 +461,17 @@ def register_logout_parser(sub: _Commands) -> None:
         type=int,
         default=None,
         help="Dashboard port (default: resolved from KIROCREW_PORT env or dashboard.url config)",
+    )
+    # ``None`` is "no --link was given", which is a different ask from a given
+    # value: omitting it revokes every session, so an empty default would make
+    # ``--link ""`` indistinguishable from omitting it and sign everyone out.
+    logout_parser.add_argument(
+        "--link",
+        default=None,
+        help=(
+            "Revoke only this dashboard link (the URL or its token): the link, every "
+            "session it opened and their refresh chains. Other sessions stay signed in."
+        ),
     )
 
 

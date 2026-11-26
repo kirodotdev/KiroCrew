@@ -101,9 +101,9 @@ def _thread_reply_row(raw: dict) -> dict[str, Any] | None:
         if not isinstance(value, str):
             return None
         row[key] = value
-    if not THREAD_REPLY_ID_RE.match(row["id"]) or row["role"] not in _THREAD_REPLY_ROLES:
+    if not THREAD_REPLY_ID_RE.fullmatch(row["id"]) or row["role"] not in _THREAD_REPLY_ROLES:
         return None
-    if row["ts"] and not _THREAD_REPLY_TS_RE.match(row["ts"]):
+    if row["ts"] and not _THREAD_REPLY_TS_RE.fullmatch(row["ts"]):
         return None
     row["content"] = row["content"][:THREAD_REPLY_CONTENT_MAX_CHARS]
     if row["role"] == "assistant":
@@ -235,7 +235,7 @@ def read_threads(self: ConversationLog, key: str) -> dict[str, list[dict[str, An
     for mid, replies in threads.items():
         if budget <= 0:
             break
-        if not isinstance(mid, str) or not THREAD_MID_RE.match(mid):
+        if not isinstance(mid, str) or not THREAD_MID_RE.fullmatch(mid):
             continue
         if not isinstance(replies, list):
             continue

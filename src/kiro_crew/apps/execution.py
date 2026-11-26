@@ -374,6 +374,11 @@ def builtin_app_agents(adopted: frozenset[str] = frozenset()) -> dict[str, str]:
     identity (fail-closed). Filesystem I/O (manifest + one read per declared
     agent file); callers run it off the event loop. A source, manifest, or
     agent file that fails to read is skipped, never widening the mapping.
+
+    An app in *adopted* whose wheel copy a release deleted maps the agent names its
+    pin row froze from that copy (``builtin_adoption_baseline.AGENT_NAMES_KEY``, what
+    :func:`declared_agent_names` read there), under the same ambiguity rule; with no
+    frozen names it maps none.
     """
     # Deferred import: manager imports this module at load time (see
     # builtin_app_names), so the reverse edge resolves lazily.
@@ -382,6 +387,14 @@ def builtin_app_agents(adopted: frozenset[str] = frozenset()) -> dict[str, str]:
     mapping: dict[str, str] = {}
     ambiguous: set[str] = set()
     owned: dict[str, bool] = {}
+    shipped: set[str] = set()
+
+    def _map(app: str, agent_name: str) -> None:
+        for key in (agent_name, f"{app}--{agent_name}"):
+            if mapping.get(key, app) != app:
+                ambiguous.add(key)
+            mapping[key] = app
+
     for source in _builtin_manifest_sources():
         try:
             entries = sorted(source.iterdir())
@@ -401,39 +414,61 @@ def builtin_app_agents(adopted: frozenset[str] = frozenset()) -> dict[str, str]:
             if not isinstance(manifest, dict):
                 continue
             name = manifest.get("name")
-            agents = manifest.get("agents")
-            if not (isinstance(name, str) and name and isinstance(agents, list)):
+            if isinstance(name, str) and name:
+                shipped.add(name)
+            if not (isinstance(name, str) and name and isinstance(manifest.get("agents"), list)):
                 continue
             if name not in owned:
                 owned[name] = name in adopted or builtin_owns_installed(name)
             if not owned[name]:
                 continue
-            for rel in agents:
-                if not isinstance(rel, str) or not rel:
-                    continue
-                try:
-                    # Confine the declared path to the app root: a manifest is
-                    # immutable shipped data, but resolving before the
-                    # containment check keeps a symlinked entry from reading an
-                    # agent file outside the app it claims to ship.
-                    agent_path = (root / rel).resolve(strict=True)
-                    if not agent_path.is_file() or not agent_path.is_relative_to(root):
-                        continue
-                    agent_doc = json.loads(agent_path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeError, ValueError):
-                    continue
-                if not isinstance(agent_doc, dict):
-                    continue
-                agent_name = agent_doc.get("name")
-                if not (isinstance(agent_name, str) and agent_name):
-                    continue
-                for key in (agent_name, f"{name}--{agent_name}"):
-                    if mapping.get(key, name) != name:
-                        ambiguous.add(key)
-                    mapping[key] = name
+            for agent_name in declared_agent_names(root, manifest):
+                _map(name, agent_name)
+    if adopted - shipped:
+        from kiro_crew.apps.builtin_adoption_baseline import AGENT_NAMES_KEY
+        from kiro_crew.apps.builtin_adoption_pins import adoption_pin, frozen_limit_input
+
+        for name in sorted(adopted - shipped):
+            frozen = frozen_limit_input(adoption_pin(name), AGENT_NAMES_KEY)
+            for agent_name in frozen if isinstance(frozen, list) else ():
+                if isinstance(agent_name, str) and agent_name:
+                    _map(name, agent_name)
     for key in ambiguous:
         mapping.pop(key, None)
     return mapping
+
+
+def declared_agent_names(root: Path, manifest: dict[str, object]) -> list[str]:
+    """The ``name`` of each agent file *manifest*'s ``agents`` lists, read inside *root*.
+
+    *root* is the resolved app root the manifest ships in. What
+    :func:`builtin_app_agents` maps for a shipped app, and what a pin row freezes from
+    a wheel copy a release deletes (``builtin_adoption_baseline.freeze_deleted_copy``).
+    An entry that is not a file inside *root*, or does not read as an object with a
+    name, names nothing.
+    """
+    agents = manifest.get("agents")
+    names: list[str] = []
+    for rel in agents if isinstance(agents, list) else ():
+        if not isinstance(rel, str) or not rel:
+            continue
+        try:
+            # Confine the declared path to the app root: a manifest is
+            # immutable shipped data, but resolving before the
+            # containment check keeps a symlinked entry from reading an
+            # agent file outside the app it claims to ship.
+            agent_path = (root / rel).resolve(strict=True)
+            if not agent_path.is_file() or not agent_path.is_relative_to(root):
+                continue
+            agent_doc = json.loads(agent_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            continue
+        if not isinstance(agent_doc, dict):
+            continue
+        agent_name = agent_doc.get("name")
+        if isinstance(agent_name, str) and agent_name:
+            names.append(agent_name)
+    return names
 
 
 def shipped_builtin_module_path(app_name: str, module_name: str) -> Path | None:

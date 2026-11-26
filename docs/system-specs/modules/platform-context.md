@@ -1391,6 +1391,15 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   mark apps `defaultInstall` for a one-time install and trust grant on first
   boot. Honoured only for a pinned row in force at the `owner` tier; contract in
   [app-kit-platform](app-kit-platform.md) §15.1.
+  A row may also carry `appNamespace: "<namespace>"`. An app installed from that
+  registry then has the public app id `<namespace>.<name>` in `kirocrew.app.*`
+  metrics instead of `private` (`apps/store_origin.py`). Read only from a pinned
+  build row that is still served (a name an operator registry also claims is
+  served by neither, so stays `private`), and only when that registry's cached
+  index lists the app at the clone target its install record names. An id that
+  does not match `^[a-z0-9][a-z0-9._-]{0,63}$` stays
+  `private`. A destination sees these names only when it lists
+  the namespace in `OtlpDestination.named_entity_namespaces`; otherwise it gets `private`.
 - `TelemetryProvider.otlp_destinations(cfg) -> Sequence[OtlpDestination]` — the
   OTLP collectors this edition sends telemetry to. Read by
   `metrics/provider.py::_otlp_destinations` once per recorder build (through
@@ -1661,8 +1670,13 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `extra_mcp_servers()` entry this host supplies to the spec a custom agent's
   session runs, at spawn and never in the user's file, built as
   `mcp_sources.seed_edition_servers` builds it and without `autoApprove`, under
-  the custom-agent opt-outs; not while a wildcard of the agent's own
-  `allowedTools` reaches it, and not for a Crew Mode conductor. An edition check
+  the custom-agent opt-outs, and not for a Crew Mode conductor. Where a wildcard
+  of the agent's own `allowedTools` reaches it, kiro-cli does not get it. KAS
+  adds an `ask` rule for `<server>/*` whenever `allowedTools` is a non-empty
+  list, unless it names the server and no wildcard reaches it after trimming
+  entries. Its calls still prompt otherwise, and a KAS agent that grants no
+  tools gets it too. A `permissions` block that would not carry the required
+  rule keeps it out there as well. An edition check
   that reports where it is mounted judges the spec
   `default_crew_servers.session_spec_on(backend, agent, spec)` returns, the one
   list of the spawns that add it, so it never counts the server where a spawn

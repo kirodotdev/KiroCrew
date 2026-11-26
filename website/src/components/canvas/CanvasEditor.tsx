@@ -48,7 +48,7 @@ const EDGE_CURSOR: Record<'n' | 'e' | 's' | 'w', string> = { n: 'ns-resize', s: 
 
 type Drag =
   | { kind: 'pan'; sx: number; sy: number; view0: View }
-  | { kind: 'move'; start: Pt; origin: Map<string, Pt>; snapshot: Canvas; moved: boolean }
+  | { kind: 'move'; start: Pt; origin: Map<string, Pt>; snapshot: Canvas; moved: boolean; copy: boolean; sel: Set<string> }
   | { kind: 'resize'; id: string; corner: Corner; start: Pt; box0: Shape; snapshot: Canvas }
   | { kind: 'marquee'; sx: number; sy: number; cx: number; cy: number; base: Set<string> }
   // A new connector from a shape; `fromSide` is the connect dot it was dragged from.
@@ -149,7 +149,7 @@ export function dotSpacing(zoom: number): number {
   return gap * 2 ** halvings
 }
 
-/** Snap a world coordinate to the snap grid; Alt held during a drag turns it off. */
+/** Snap a world coordinate to the snap grid; Ctrl held during a drag turns it off. */
 const snap = (v: number, on: boolean) => (on ? Math.round(v / SNAP) * SNAP : Math.round(v))
 
 const TOOL_KEYS: { tool: Tool; key: string }[] = [
@@ -254,6 +254,11 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
   const byId = useMemo(() => new Map(canvas.shapes.map(s => [s.id, s])), [canvas.shapes])
   const selShapes = canvas.shapes.filter(s => selected.has(s.id))
   const selBox = boundsOf(selShapes)
+  // The selection toolbar acts on shapes of one kind: a single shape, or several
+  // of the same kind so ten cards take a colour at once. Kinds mixed together
+  // share no controls, so the toolbar stays away; such a selection still moves,
+  // deletes and copies as one.
+  const oneKind = selShapes.length > 0 && selShapes.every(s => s.kind === selShapes[0].kind)
   const hoveredShape = hovered ? byId.get(hovered) : undefined
   // Connect dots: on the hovered shape or the one selected, never on a section, and not
   // when zoomed out so far that you are looking at the overall picture, not joining things.
@@ -595,7 +600,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
       const carried = new Set(next)
       for (const s of doc.shapes) if (s.kind === 'section' && next.has(s.id)) sectionMembers(doc.shapes, s).forEach(m => carried.add(m.id))
       const origin = new Map(doc.shapes.filter(s => carried.has(s.id)).map(s => [s.id, { x: s.x, y: s.y }]))
-      setDrag({ kind: 'move', start: world, origin, snapshot: doc, moved: false })
+      setDrag({ kind: 'move', start: world, origin, snapshot: doc, moved: false, copy: e.altKey, sel: next })
       return
     }
     const r = root.current!.getBoundingClientRect()
@@ -607,7 +612,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
     if (!drag) return
     const move = (e: PointerEvent) => {
       const world = toWorld(e.clientX, e.clientY)
-      const b = canvasRef.current
+      let b = canvasRef.current
       if (drag.kind === 'pan') {
         setView({ ...drag.view0, x: drag.view0.x + e.clientX - drag.sx, y: drag.view0.y + e.clientY - drag.sy })
       } else if (drag.kind === 'move') {
@@ -615,15 +620,26 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
         const dy = world.y - drag.start.y
         if (!drag.moved && Math.hypot(dx, dy) * viewRef.current.zoom < 3) return
         drag.moved = true
+        if (drag.copy) {
+          // Option at the start of the drag: the originals stay, and the
+          // dragged selection becomes copies of the carried shapes (a
+          // section's contents included). Connectors are not copied.
+          drag.copy = false
+          const ids = new Map<string, string>()
+          const copies = b.shapes.filter(s => drag.origin.has(s.id)).map(s => { const id = newId(); ids.set(s.id, id); return { ...s, id } })
+          drag.origin = new Map([...drag.origin].map(([id, o]) => [ids.get(id)!, o]))
+          setSelected(new Set([...drag.sel].map(id => ids.get(id)!)))
+          b = { ...b, shapes: [...b.shapes, ...copies] }
+        }
         // The grabbed group moves as one: snapping its first shape decides the
         // step, so shapes keep their spacing relative to each other.
         const lead = drag.origin.values().next().value
-        const sdx = lead ? snap(lead.x + dx, !e.altKey) - lead.x : Math.round(dx)
-        const sdy = lead ? snap(lead.y + dy, !e.altKey) - lead.y : Math.round(dy)
+        const sdx = lead ? snap(lead.x + dx, !e.ctrlKey) - lead.x : Math.round(dx)
+        const sdy = lead ? snap(lead.y + dy, !e.ctrlKey) - lead.y : Math.round(dy)
         onChange({ ...b, shapes: b.shapes.map(s => { const o = drag.origin.get(s.id); return o ? { ...s, x: o.x + sdx, y: o.y + sdy } : s }) })
       } else if (drag.kind === 'resize') {
         const { box0, corner } = drag
-        const on = !e.altKey
+        const on = !e.ctrlKey
         const left = corner.includes('w')
         const top = corner.includes('n')
         // An edge moves one side only; a corner moves both.
@@ -660,13 +676,13 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
         setDrag({ ...drag, at: world })
       } else if (drag.kind === 'segment') {
         const { seg } = drag
-        const value = snap(seg.points[seg.seg][seg.axis] + world[seg.axis] - drag.start[seg.axis], !e.altKey)
+        const value = snap(seg.points[seg.seg][seg.axis] + world[seg.axis] - drag.start[seg.axis], !e.ctrlKey)
         const route = movedSegment(seg, value)
         onChange({ ...b, connectors: b.connectors.map(c => (c.id === drag.id ? { ...c, route } : c)) })
       } else if (drag.kind === 'create') {
         // Below a few screen pixels it is still a click, not a drag.
         if (!drag.id && Math.hypot(world.x - drag.start.x, world.y - drag.start.y) * viewRef.current.zoom < 4) return
-        const box = dragBox(drag.shape, drag.start, world, e.altKey)
+        const box = dragBox(drag.shape, drag.start, world, e.ctrlKey)
         if (!drag.id) {
           drag.id = newId()
           const shape: Shape = { id: drag.id, kind: drag.shape, ...box, text: '', color: defaultColor(drag.shape) }
@@ -997,9 +1013,8 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
         }} />
       )}
 
-      {/* The selection toolbar: kind, colours, outline, delete. It is for one
-          shape only; a selection of several moves, deletes and copies as one. */}
-      {showChrome && selShapes.length === 1 && selBox && !editing && (() => {
+      {/* The selection toolbar: kind, colours, outline, delete, over the whole selection. */}
+      {showChrome && oneKind && selBox && !editing && (() => {
         const r = screenBox(selBox)
         return (
           <ToolbarPlace narrow={narrow} at={toolbarAt(r.x + r.w / 2, r.y, r.y + r.h)}>
@@ -1119,7 +1134,9 @@ function ToolbarPlace({ at, narrow, children }: { at: { style: CSSProperties; be
       mutations.disconnect()
       for (const panel of panels) { panel.style.left = ''; panel.style.maxWidth = '' }
     }
-  }, [at, narrow, widths])
+    // The numbers, not the object: React can replay a queued width update and
+    // hand back an equal but new object, which would re-measure without end.
+  }, [at, narrow, widths.canvas, widths.toolbar])
   const half = widths.toolbar / 2
   const left = widths.canvas ? Math.max(12 + half, Math.min(Number(at.style.left), widths.canvas - 12 - half)) : at.style.left
   return (

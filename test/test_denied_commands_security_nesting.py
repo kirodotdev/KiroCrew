@@ -16,7 +16,7 @@ from kiro_crew.security import shell_normalizer_walk as _walk
 
 pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
 
-_CAP = 32  # deny_gate._MAX_SUBSTITUTION_DEPTH, spelled out so main collects
+_CAP = 32  # deny_gate_nesting._MAX_SUBSTITUTION_DEPTH, spelled out so main collects
 _DEPTH_REFUSAL = "substitution nesting deeper than 32"
 
 

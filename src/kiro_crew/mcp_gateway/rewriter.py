@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection
 
 from kiro_crew import __version__, _facade_mirror, platform_compat
-from kiro_crew.agent_spec_format import iter_agent_spec_files
+from kiro_crew.agent_spec_format import iter_agent_spec_files, iter_agent_spec_files_strict
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.env import mcp_search_path, resolved_command_casing
 from kiro_crew.mcp_gateway.launch_approval import LaunchApprovals, filter_target_env
@@ -81,7 +81,11 @@ from kiro_crew.mcp_gateway.rewriter_overlay import (
     _stat_sig,
     env_sidecar_dir_for_stubs,
 )
-from kiro_crew.mcp_gateway.rewriter_spec import _injectable_settings_servers, _rewrite_single_spec
+from kiro_crew.mcp_gateway.rewriter_spec import (
+    _injectable_settings_servers,
+    _note_declared,
+    _rewrite_single_spec,
+)
 from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
@@ -116,7 +120,8 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # (one with a ``secret://`` reference gets a refusing stub in any other agent),
 # and ``useLegacyMcpJson: false`` (kiro-cli's alias) also gets none.
 # 15: an agent's own server is wrapped only when its ``tools`` names it.
-_FINGERPRINT_SCHEMA = 15
+# 16: unchanged launches inherit their pre-fold approval instead of a cached refusal.
+_FINGERPRINT_SCHEMA = 16
 
 # The fingerprint inputs of the latest pass into each overlay directory, kept so
 # a caller can read the settings a pass was built from without a second scan.
@@ -247,11 +252,7 @@ def _load_fingerprint(path: Path) -> dict[str, Any] | None:
     inputs = data.get("inputs")
     outputs = data.get("outputs")
     which = data.get("which")
-    if not (
-        isinstance(inputs, dict)
-        and isinstance(outputs, dict)
-        and isinstance(which, dict)
-    ):
+    if not (isinstance(inputs, dict) and isinstance(outputs, dict) and isinstance(which, dict)):
         return None
     overlays = outputs.get("overlays")
     sidecars = outputs.get("sidecars")
@@ -281,8 +282,7 @@ def _load_fingerprint(path: Path) -> dict[str, Any] | None:
         if not _valid_sig(sig):
             return None
     if not all(
-        isinstance(k, str) and _WHICH_KEY_SEP in k and isinstance(v, str)
-        for k, v in which.items()
+        isinstance(k, str) and _WHICH_KEY_SEP in k and isinstance(v, str) for k, v in which.items()
     ):
         return None
     return data
@@ -413,8 +413,7 @@ def _cached_rewrite_result(
                 for entry in servers.values()
                 if isinstance(entry, dict)
                 and (
-                    entry.get(_WRAPPER_MARKER) is True
-                    or entry.get(_WRAPPER_MARKER_LEGACY) is True
+                    entry.get(_WRAPPER_MARKER) is True or entry.get(_WRAPPER_MARKER_LEGACY) is True
                 )
             )
             if wrapped:
@@ -459,9 +458,7 @@ def _store_fingerprint(
     }
     wrote = False
     try:
-        fd, tmp = tempfile.mkstemp(
-            prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent)
-        )
+        fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent))
         fd_owned = True
         try:
             platform_compat.fchmod_safe(fd, 0o600)
@@ -488,9 +485,7 @@ def _store_fingerprint(
         )
 
 
-def _relock_legacy_settings_overlay(
-    overlay_dir: Path, stored: dict[str, Any] | None
-) -> None:
+def _relock_legacy_settings_overlay(overlay_dir: Path, stored: dict[str, Any] | None) -> None:
     """Re-assert owner-only protection on the leftover legacy settings
     overlay — the ONE guard this pass keeps for that file.
 
@@ -730,9 +725,7 @@ def rewrite_agents(
     # ACL when the stored fingerprint vouches for it.
     _relock_legacy_settings_overlay(overlay_dir, stored)
     if stored is not None and stored.get("inputs") == current_inputs:
-        cached = _cached_rewrite_result(
-            stored, overlay_dir=overlay_dir, stubs_dir=stubs_dir
-        )
+        cached = _cached_rewrite_result(stored, overlay_dir=overlay_dir, stubs_dir=stubs_dir)
         if cached is not None and approvals is not None:
             # The overlays and sidecars behind the cache are files an agent can
             # edit along with the fingerprint that vouches for them, so the
@@ -794,9 +787,13 @@ def rewrite_agents(
     if kiro_settings_json.is_file():
         try:
             loaded = loads_user_json(kiro_settings_json.read_text(encoding="utf-8"))
+            _note_declared(
+                approvals, loaded.get("mcpServers", {}) if isinstance(loaded, dict) else None
+            )
             if isinstance(loaded, dict):
                 settings_poolable = _injectable_settings_servers(
-                    loaded, stub_set,
+                    loaded,
+                    stub_set,
                     pooling_enabled=pooling_enabled,
                     forward_env=forward_env,
                     identity_keys=identity_keys,
@@ -812,9 +809,11 @@ def rewrite_agents(
             notes.source_read_failed = True
             settings_read_transient = True
             logger.warning("failed to read global mcp.json: %s", exc)
+            _mark_declared_incomplete(approvals)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             # Content problem — cacheable; a fix changes the stat signature.
             logger.warning("failed to read global mcp.json: %s", exc)
+            _mark_declared_incomplete(approvals)
     else:
         # ``is_file()`` answers False for a missing file AND for a stat fault
         # whose errno pathlib chooses to swallow, so it cannot be read as
@@ -840,6 +839,9 @@ def rewrite_agents(
             notes.source_read_failed = True  # unknown: keep and retry
             settings_read_transient = True
             logger.warning("failed to stat global mcp.json: %s", exc)
+            _mark_declared_incomplete(approvals)
+        else:
+            _mark_declared_incomplete(approvals)
         # A path that stats fine but is not a regular file (e.g. a directory
         # in its place) is a permanent misconfiguration, deterministic like
         # bad content: cacheable, nothing to inject.
@@ -901,7 +903,16 @@ def rewrite_agents(
     # skipped for bad content claims nothing, so it cannot cost its valid twin
     # the overlay (and the pruning of the twin's stale one) below.
     overlay_keys_claimed: dict[str, str] = {}
-    for path in with_conductor_source(iter_agent_spec_files(source_dir), mate_source_dir):
+    sources = iter_agent_spec_files(source_dir)
+    if approvals is not None:
+        try:
+            # The ordinary glob can silently treat an unreadable folder as empty.
+            sources = iter_agent_spec_files_strict(source_dir)
+        except FileNotFoundError:
+            pass  # confirmed deletion does not make the census incomplete
+        except OSError:
+            _mark_declared_incomplete(approvals)
+    for path in with_conductor_source(sources, mate_source_dir):
         # The overlay is JSON whatever the source: ``session_servers`` resolves
         # ``<agent>.json``. The fingerprint's ``sources`` stays keyed by the
         # SOURCE name, so a markdown edit invalidates its overlay.
@@ -918,13 +929,12 @@ def rewrite_agents(
                 overlay_name,
                 first_claim,
             )
+            _mark_declared_incomplete(approvals)
             continue
         if (
             injection_unknown
             and (overlay_dir / overlay_name).is_file()
-            and _overlay_inputs_unchanged(
-                stored, current_inputs, source_name=path.name
-            )
+            and _overlay_inputs_unchanged(stored, current_inputs, source_name=path.name)
             and _kept_overlay_vouched(stored, overlay_dir=overlay_dir, name=overlay_name)
         ):
             # Keep without classifying: the spec is not read on this path, so a
@@ -933,6 +943,7 @@ def rewrite_agents(
             # next boot reads that source and prunes its overlay then.
             overlay_keys_claimed.setdefault(overlay_key, overlay_name)
             transient_keep.add(overlay_name)
+            _mark_declared_incomplete(approvals)
             continue
         try:
             # The hardened reader keeps the transient/deterministic split the
@@ -962,6 +973,7 @@ def rewrite_agents(
                 path.name,
                 exc,
             )
+            _mark_declared_incomplete(approvals)
             continue
         except ValueError as exc:
             # Deterministic: the CONTENT is bad (JSON, frontmatter, encoding, a
@@ -969,8 +981,10 @@ def rewrite_agents(
             # stat signature, which invalidates the fingerprint — so this skip
             # is safe to cache.
             logger.warning("skipping agent %s: %s", path.name, exc)
+            _mark_declared_incomplete(approvals)
             continue
         if not isinstance(spec, dict):
+            _mark_declared_incomplete(approvals)
             continue
         # Guarantee a non-empty agent identity. The rewriter reads
         # ``~/.kiro/agents/*.json`` directly, and a user- or tool-dropped file
@@ -999,6 +1013,7 @@ def rewrite_agents(
                 spec["name"],
                 MATE_IDENTITY_PREFIX,
             )
+            _mark_declared_incomplete(approvals)
             continue
         # Parsed and taken: this source owns the destination for the rest of
         # the pass. A source skipped above claims nothing, like one skipped for
@@ -1183,6 +1198,8 @@ def rewrite_agents(
         mate_pass = MatePass(incomplete=True)
     if mate_source_dir is not None:
         results.update(mate_pass.results)
+        if mate_pass.incomplete or mate_pass.declared_incomplete:
+            _mark_declared_incomplete(approvals)
         if approvals is not None and mate_pass.incomplete:
             # A crewmate this pass could not establish was never admitted, so the
             # live set is missing its launches: none may be retired as unseen.
@@ -1423,6 +1440,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         launch_fingerprint,
         target_stem,
     )
+    from kiro_crew.mcp_gateway.launch_approval_heal import prefold_digests  # noqa: F401
     from kiro_crew.mcp_gateway.manager import is_credential_env_key  # noqa: F401
     from kiro_crew.mcp_gateway.rewriter_env import (  # noqa: F401
         _ENV_NAMES_CASE_INSENSITIVE,
@@ -1491,3 +1509,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_utils import mcp_server_alias  # noqa: F401
     from kiro_crew.sandbox import scrub_agent_denied_env  # noqa: F401
     from kiro_crew.security import is_sensitive_path  # noqa: F401
+
+
+def _mark_declared_incomplete(approvals: LaunchApprovals | None) -> None:
+    """This pass skipped a source, so it cannot tell that a server is gone."""
+    if approvals is not None:
+        approvals.declared_incomplete = True

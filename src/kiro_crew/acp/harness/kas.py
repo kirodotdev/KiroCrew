@@ -464,7 +464,7 @@ def resolve_projected_spec(
         # A user-level custom agent gets Crew's default servers, through the helper
         # the kiro-cli skill view applies too, so the two paths cannot drift. Added
         # first, so the checkout's switch-offs reach them as well.
-        spec = with_default_crew_servers(agent, spec)
+        spec = with_default_crew_servers(agent, spec, edition_ask_rules=True)
         if isinstance(project, dict):
             spec = _with_project_switch_offs(spec, project)
         return spec, agents_dir
@@ -499,7 +499,7 @@ def resolve_projected_spec(
     if not declared:
         try:
             spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
-            return with_default_crew_servers(agent, spec), agents_dir
+            return with_default_crew_servers(agent, spec, edition_ask_rules=True), agents_dir
         except KasAgentTranslationError as exc:
             # Asked again after the read failed, so a spec that appeared meanwhile
             # and cannot be read keeps its own reason.
@@ -1413,6 +1413,7 @@ class KasHarness(MembershipHarness):
 
                 spec, prompt_dir = merge_at_spawn(agent, bound), agents_dir
             else:
+                kas_agents_mod.refuse_held_spec(paths_mod.spec_dir_for(agent, agents_dir), agent)
                 try:
                     spec, prompt_dir = resolve_projected_spec(
                         agents_dir,

@@ -314,7 +314,7 @@ _OWNS_AND_GRANTS = {**_OWNS, "name": "owns-and-grants", "allowedTools": _GRANTS}
 _GENEROUS = {**_BASE, "name": "generous", "allowedTools": _GRANTS}
 _OWN_SPEC = "Blocked by this agent's spec: "
 _NOT_ALLOWLISTED = (
-    _OWN_SPEC + "toolsSettings.execute_bash.denyByDefault is set and the command matches "
+    _OWN_SPEC + "its shell settings set denyByDefault and the command matches "
     "none of its allowedCommands"
 )
 
@@ -345,7 +345,7 @@ def _own_limit_calls() -> dict[str, Any]:
 
 #: The run's OWN denyByDefault list refusing a command, not a parent's limit.
 _OWN_LIST_TIER = "spec-shell-allowlist"
-_OWN_LIST_TEXT = "toolsSettings.execute_bash.denyByDefault is set"
+_OWN_LIST_TEXT = "its shell settings set denyByDefault"
 
 
 def _verdicts(batch: list[dict], agent: str) -> dict[str, tuple[str, str, str]]:

@@ -76,6 +76,12 @@ async def _validate_discord_token(token: str) -> str | None:
 
 async def api_discord_config_get(request: web.Request) -> web.Response:
     """GET /api/discord/config — read Discord config + masked secret status."""
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "discord.config.read")
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_DISCORD_BOT_TOKEN,
         KiroCrewConfig,
@@ -90,6 +96,22 @@ async def api_discord_config_get(request: web.Request) -> web.Response:
     token = creds.get(CRED_DISCORD_BOT_TOKEN, "") or cfg.discord.bot_token
     dc = cfg.discord
     state: DashboardState = request.app["state"]
+    # The bot's invite links, built from the application id READY gave the live
+    # client. Read off the transport the channel lifecycle keeps registered (it
+    # drops a closed or superseded start's, by identity), so the links name the
+    # running bot and none other. The id is remote input: build_install_url
+    # refuses anything but a snowflake. No secret in them.
+    from kiro_crew.discord.install_url import build_install_url
+
+    install_url = install_url_dm_only = ""
+    transport = (getattr(state, "channel_transports", None) or {}).get("discord")
+    app_id = str(getattr(getattr(transport, "client", None), "application_id", "") or "")
+    if app_id:
+        try:
+            install_url = build_install_url(app_id)
+            install_url_dm_only = build_install_url(app_id, dm_only=True)
+        except ValueError:
+            install_url = install_url_dm_only = ""
     return web.json_response(
         {
             # True only when the Gateway WebSocket transport actually started
@@ -111,8 +133,11 @@ async def api_discord_config_get(request: web.Request) -> web.Response:
             "auto_thread": bool(dc.auto_thread),
             "reactions_enabled": bool(dc.reactions_enabled),
             "show_thinking": bool(dc.show_thinking),
+            "show_timing_footer": bool(dc.show_timing_footer),
             "soft_threshold_pct": int(dc.soft_threshold_pct),
             "session_folder": dc.session_folder,
+            "install_url": install_url,
+            "install_url_dm_only": install_url_dm_only,
         }
     )
 
@@ -327,16 +352,20 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 
-    # Both render toggles are read per turn by the dispatcher, not at boot, so a
+    # The render toggles are read per turn by the dispatcher, not at boot, so a
     # change takes effect on the next message. `channel_restart_required` keeps
     # `restart_required` honest about that; promising a restart the user does not
     # need is how a settings page trains people to restart for everything.
-    for toggle in ("reactions_enabled", "show_thinking"):
+    # Each maps to its DiscordConfig default. A stored value compares as the
+    # loader reads it: absent or wrong-typed (a hand-edited null) is the default,
+    # so a save that differs from what GET showed is never dropped as unchanged.
+    render_toggles = {"reactions_enabled": True, "show_thinking": False, "show_timing_footer": True}
+    for toggle, default in render_toggles.items():
         if toggle in body:
             val = body.get(toggle)
             if not isinstance(val, bool):
                 return _deny(f"{toggle} must be a boolean")
-            if val != bool(dc_cfg.get(toggle, toggle == "reactions_enabled")):
+            if val != coerce_config_field(dc_cfg, toggle, bool, default):
                 staged[toggle] = val
                 applied.append(toggle)
 

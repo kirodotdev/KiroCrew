@@ -4,7 +4,7 @@
  * rather than an error. Live updates arrive as socket frames (./sharedCrewSocket) into these
  * same cache entries.
  */
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { api } from '../../api/client'
 import { noteSendRevision } from '../../api/sendRace'
@@ -57,9 +57,10 @@ export function useSharedCrewPeople(enabled = true, { fetchOnMount = true }: { f
  *  `owner` is the fail-closed reading for a surface that writes owner-only
  *  state: true only once the gateway said this tab clears the owner gate.
  *  `failed` is a read that failed with no answer yet: a refetch that fails after
- *  one answered keeps that answer (react-query holds `data`), so it is not. */
-export function useViewerIsNotOwner() {
-  const query = useQuery({ queryKey: [...sharedCrewKeys.viewer, 'owner-ok'], queryFn: () => api.viewerOwnerOk(), staleTime: 60_000, retry: false })
+ *  one answered keeps that answer (react-query holds `data`), so it is not.
+ *  `client` names the cache for a caller that may render outside the provider. */
+export function useViewerIsNotOwner(client?: QueryClient) {
+  const query = useQuery({ queryKey: [...sharedCrewKeys.viewer, 'owner-ok'], queryFn: () => api.viewerOwnerOk(), staleTime: 60_000, retry: false }, client)
   return { notOwner: query.data === false, owner: query.data === true, failed: query.data === undefined && !!query.error, error: query.error, retry: query.refetch }
 }
 

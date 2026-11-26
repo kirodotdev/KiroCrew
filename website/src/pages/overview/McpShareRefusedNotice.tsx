@@ -1,19 +1,19 @@
 /**
- * The notice the MCP servers list shows when a server config asks to share is
- * not shared, because the gateway refused its launch until it is approved.
+ * The line the MCP servers list shows when a server set to share is not shared
+ * and the approval card above it does not list it (it cannot be approved there).
  *
- * The approval itself stays on the MCP Servers page's Sharing view: that page reads
- * the exact launch and the approve write is checked against it. This notice only
- * makes the refusal visible where people look, and links to that page, which the
- * router serves for anyone, with or without Developer Mode.
+ * The Sharing view shows each such server's reason and its Remove button. This
+ * line only makes the servers visible on the Servers view, and links to the
+ * Sharing view, which the router serves for anyone, with or without Developer Mode.
  */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { api } from '../../api/client'
+import { api, type McpManagedServer } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-import type { GatewayStatus } from '../settings/mcpManagementModel'
+import { waitingForApproval, type GatewayStatus } from '../settings/mcpManagementModel'
 import { MCP_GATEWAY_STATUS_QUERY_KEY, STATUS_POLL_MS, isPermanentRefusal, refusedShares } from './mcpShareRefusedQuery'
 
 /** Customize → MCP Servers on its Sharing view, where a refused launch is approved. */
@@ -43,6 +43,10 @@ export default function McpShareRefusedNotice({
     retry: (count, err) => !isPermanentRefusal(err) && count < 1,
     refetchInterval: query => (isPermanentRefusal(query.state.error) ? false : STATUS_POLL_MS),
   })
+  const { data: servers } = useQuery<{ servers: McpManagedServer[] }>({
+    queryKey: ['mcpGatewayServers'],
+    queryFn: () => api.mcpGatewayServers(),
+  })
   if (isError && !isPermanentRefusal(error)) {
     return (
       <ErrorNotice
@@ -53,21 +57,23 @@ export default function McpShareRefusedNotice({
       />
     )
   }
-  const names = refusedShares(status)
+  // A server the approval card above lists (an approvable launch) is answered
+  // there; naming it again here only repeats the card. The rest (too many
+  // launches, a launch with no approvable identity, a name the card cannot
+  // match) is said once, and the Sharing view shows each one's own reason.
+  const waiting = new Set(waitingForApproval(servers?.servers ?? [], status?.launch_refused).map(s => s.name))
+  const names = refusedShares(status).filter(name => !waiting.has(name))
   if (names.length === 0) return null
   const review = i18nT('pages.overview.mcpTab.share_refused_review')
-  // A refused share is a launch the gateway rejected, so it is an error surface:
-  // the hand-off is on unless the host page holds staged edits not applied yet.
+  // Nothing failed: the gateway is keeping these servers inside each chat, so
+  // this is a warning, not an error.
   return (
-    <ErrorNotice
+    <StatusNotice
       className={className}
       message={i18nT('pages.overview.mcpTab.share_refused', { count: names.length, names: fmtList(names, { style: 'narrow' }) })}
-      askAgent={!stagedChanges}
-      actionPlacement="below"
       testId="mcp-share-refused"
       footer={
-        <span className="text-muted">
-          {i18nT('pages.overview.mcpTab.share_refused_restart')}{' '}
+        <span className="block">
           {stagedChanges ? (
             <Link to={MCP_MANAGEMENT_PATH} className="text-accent hover:underline" target="_blank" rel="noopener noreferrer">
               {review}

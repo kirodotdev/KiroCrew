@@ -103,6 +103,7 @@ import logging
 import os
 import re
 import stat
+import sys
 import threading
 from pathlib import Path
 from typing import NamedTuple
@@ -136,6 +137,12 @@ STAGED_DATA_SUFFIX = "-data-tmp"
 RECORD_SUFFIX = "-credential-masks.json"
 #: A manifest larger than this declares nothing (no shipped manifest comes close).
 _MAX_MANIFEST_BYTES = 1024 * 1024
+#: The pin table's loader, its file (which ships beside this module) and that file's
+#: harness override: ``builtin_adoption_pins`` (``_PINS_PATH``, ``HARNESS_PINS_ENV``),
+#: read raw here only by :func:`pin_table_may_freeze`. A test pins the two equal.
+_PIN_LOADER = "kiro_crew.apps.builtin_adoption_pins"
+_PIN_TABLE = Path(__file__).resolve().parent / "adoption-pins.json"
+_HARNESS_PIN_TABLE_ENV = "KIROCREW_HARNESS_ADOPTION_PINS"
 
 _APP_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _FORBIDDEN_CHARS_RE = re.compile(r"[\x00-\x1f\x7f\\:\ud800-\udfff]")
@@ -426,6 +433,79 @@ def _builtin_manifests() -> list[tuple[str, Path]]:
     ]
 
 
+def builtin_package_entries(
+    package_root: Path, kind: DeclarationKind = CREDENTIAL_MASKS
+) -> tuple[str, ...]:
+    """The entries the built-in leg reads from the package directory *package_root*.
+
+    Its ``app.json`` under the name the directory spells, ``_`` as ``-``, exactly as
+    :func:`declared_masks` reads a package :func:`_builtin_manifests` lists: what a pin
+    row freezes from a wheel copy a release deletes
+    (``builtin_adoption_baseline.freeze_deleted_copy``).
+    """
+    name = package_root.name.replace("_", "-")
+    if package_root.name.startswith(("_", ".")) or not _APP_NAME_RE.fullmatch(name):
+        return ()
+    return _read_entries(package_root / "app.json", name, kind)
+
+
+def pin_table_may_freeze(key: str) -> bool:
+    """Whether a pin row could carry a deleted copy's frozen limit input under *key*.
+
+    The readers of a frozen input that run before every stdio MCP server lists its
+    tools (this module's built-in leg, which the ``security`` import reads for its
+    static rows, and the ``agentTools`` deny universe) would otherwise load the pin
+    table's loader in each of those processes while no row froze such an input. So the
+    table's file is read raw first, as ``adoption_pin.py`` writes it with ``json.dumps``:
+    a key its text never names is in no row, and only a table that names it is loaded
+    and validated, which then decides. Once this process has the loader (the gateway's
+    adoption, a test that repoints the table) it decides at once.
+    """
+    if _PIN_LOADER in sys.modules:
+        return True
+    return _pin_table_names(os.environ.get(_HARNESS_PIN_TABLE_ENV) or str(_PIN_TABLE), key)
+
+
+@functools.lru_cache(maxsize=32)
+def _pin_table_names(path: str, key: str) -> bool:
+    """Whether the pin table at *path* holds the JSON key *key*; it ships immutable."""
+    try:
+        return json.dumps(key) in Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        # The loader reads such a table as empty, so it froze nothing either.
+        return False
+
+
+def _frozen_builtin_declarations(kind: DeclarationKind) -> list[tuple[str, tuple[str, ...]]]:
+    """``(name, entries)`` a pin row froze for a pinned built-in whose package has no manifest.
+
+    The built-in leg of an app whose wheel copy a release deleted: what that copy's
+    manifest gave :func:`builtin_package_entries` (the row's ``deletedCopy``, under the
+    manifest key), so its masks and seals stay as the last shipped copy left them
+    (app-kit-platform.md § 33, row 9). A package whose ``app.json`` is there is read
+    from it, and a frozen value beside it is never read. The ``security`` import reads
+    this for its static rows, so the table is loaded only when it can freeze this
+    declaration (:func:`pin_table_may_freeze`), and it never raises: a failure is logged
+    and freezes nothing, which leaves the installed leg, as with no frozen value.
+    """
+    if not pin_table_may_freeze(kind.key):
+        return []
+    try:
+        from kiro_crew.apps.builtin_adoption_pins import frozen_limit_input, load_adoption_pins
+
+        root = _builtins_root()
+        found: list[tuple[str, tuple[str, ...]]] = []
+        for name, pin in sorted(load_adoption_pins().items()):
+            frozen = frozen_limit_input(pin, kind.key)
+            if not frozen or os.path.lexists(_builtin_manifest_path(root, name.replace("-", "_"))):
+                continue
+            found.append((name, valid_entries(frozen, kind=kind)))
+        return found
+    except Exception:
+        logger.warning("could not read the frozen built-in %s", kind.key, exc_info=True)
+        return []
+
+
 def _installed_manifests(
     kind: DeclarationKind = CREDENTIAL_MASKS, *, strict: bool = False
 ) -> list[tuple[str, Path]]:
@@ -465,17 +545,36 @@ def declared_masks(
 
     Only apps that declare at least one entry appear. A built-in and an installed tree
     under the same name contribute the union, since both masks protect the same
-    directory. *builtin* and *installed* choose which manifests are read.
+    directory. *builtin* and *installed* choose which manifests are read; the built-in
+    leg holds, for a pinned app whose wheel copy is deleted, the declaration its pin row
+    froze (:func:`_frozen_builtin_declarations`).
     """
-    sources = [
-        *(_builtin_manifests() if builtin else ()),
-        *(_installed_manifests(kind) if installed else ()),
+    return _declared_masks(builtin=builtin, frozen=builtin, installed=installed, kind=kind)
+
+
+def _declared_masks(
+    *, builtin: bool, frozen: bool, installed: bool, kind: DeclarationKind
+) -> dict[str, tuple[str, ...]]:
+    """:func:`declared_masks`, with the frozen part of the built-in leg chosen on its own.
+
+    In declaration order: the shipped packages, a deleted copy's frozen declaration in
+    its place, then the installed trees and records.
+    """
+    declarations = [
+        *(
+            (name, _read_entries(path, name, kind))
+            for name, path in (_builtin_manifests() if builtin else ())
+            if _APP_NAME_RE.fullmatch(name)
+        ),
+        *(_frozen_builtin_declarations(kind) if frozen else ()),
+        *(
+            (name, _read_entries(path, name, kind))
+            for name, path in (_installed_manifests(kind) if installed else ())
+            if _APP_NAME_RE.fullmatch(name)
+        ),
     ]
     out: dict[str, dict[str, None]] = {}
-    for name, path in sources:
-        if not _APP_NAME_RE.fullmatch(name):
-            continue
-        entries = _read_entries(path, name, kind)
+    for name, entries in declarations:
         if entries:
             out.setdefault(name, {}).update(dict.fromkeys(entries))
     return {name: tuple(entries) for name, entries in sorted(out.items())}
@@ -528,14 +627,17 @@ def declared_crew_leaves_for(
 
     *builtin* reads the shipped package's manifest, otherwise the installed tree's: the
     caller names the code it runs, so a backend gets back what its own manifest declared.
+    A deleted copy's frozen declaration is not read: no code of that copy runs.
     """
-    masks = declared_masks(builtin=builtin, installed=not builtin, kind=kind)
+    masks = _declared_masks(builtin=builtin, frozen=False, installed=not builtin, kind=kind)
     return tuple(crew_leaf(app, entry) for entry in masks.get(app, ()))
 
 
 def declared_crew_dir_leaves_for(app: str, *, builtin: bool) -> frozenset[str]:
     """The directory entries among :func:`declared_crew_leaves_for`, from the same source."""
-    masks = declared_masks(builtin=builtin, installed=not builtin)
+    masks = _declared_masks(
+        builtin=builtin, frozen=False, installed=not builtin, kind=CREDENTIAL_MASKS
+    )
     return frozenset(crew_leaf(app, e) for e in masks.get(app, ()) if is_directory_entry(e))
 
 

@@ -943,8 +943,9 @@ describe('AboutPanel gateway update check', () => {
   })
 
   it('carries both deep-link anchors from the first paint, before the saved value is read', async () => {
-    // `key:auto_update` (the agent's route) resolves on the key, the palette's id
-    // form on the registry label; a search that probes once must find the row.
+    // `key:auto_update` (the agent's route) and the palette's id form both resolve
+    // on the key; the registry label is the row's other anchor. Both are on the
+    // row before the saved value is read.
     stubFetch({}, { config: () => new Promise(() => {}) })
     pushStatus({ update_auto_effect: 'install' })
     mountWeb()

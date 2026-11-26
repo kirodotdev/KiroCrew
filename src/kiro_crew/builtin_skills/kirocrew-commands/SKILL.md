@@ -70,7 +70,8 @@ Signs in and runs without kiro-cli: `kas` installs Kiro Crew's own engine bundle
 | `kirocrew gateway --test-mode` | Alias for `--port auto --no-open --json-ready --no-tunnel --approval reads` |
 | `kirocrew stop` | Stop a running gateway |
 | `kirocrew stop --port 9999` | Stop gateway on specific port |
-| `kirocrew restart` | Restart gateway (service-aware) |
+| `kirocrew restart` | Restart gateway (service-aware); names `kirocrew resume` when its stop cut chats, resumes none |
+| `kirocrew resume` | Resume the chats the last stop cut (a stop never resumes them itself); `SESSION...` presses each named session's own tab Resume, `--all` resumes every interrupted one |
 | `kirocrew status` | Show runtime stats (uptime, sessions, crons, lessons) |
 | `kirocrew usage` | Recent credit spend per day; `--by model\|agent\|channel\|session`, `--days N` / `--since YYYY-MM-DD`, `--json` |
 | `kirocrew trace show KEY` | Print one traced turn as a waterfall of its model calls, tool calls and sub-agents, read from the local span files (written while `telemetry.traces_enabled` is on); `KEY` is a turn id, session key or id, ACP session id or trace id |
@@ -122,7 +123,7 @@ url, scenarios).
 | `kirocrew chat` | Interactive chat (REPL mode) |
 | `kirocrew chat -m "message"` | Single message (non-interactive); `-m -` reads it from a piped stdin (up to 1 MiB) |
 | `kirocrew chat --model MODEL_ID` | Use a specific model (default from config; `kirocrew models` lists the names) |
-| `kirocrew chat --headless -m "task"` | Run one unattended task on this data home's running gateway and exit with a result code; never reads the terminal. `--message-file PATH` reads the seed from a file, `--mode conductor`, `--approval-mode trust`, `--until-done` (with `--idle-grace SECS`, default 900), `--cwd DIR`, `--timeout SECS` (exit 4), `--budget CREDITS` (exit 5), `--json`. A request for a person ends the run (exit 3). Refused (exit 2) inside an agent session: run it from a normal terminal, or use `spawn_run` |
+| `kirocrew chat --headless -m "task"` | Run one unattended task on this data home's running gateway and exit with a result code; never reads the terminal. `--message-file PATH` reads the seed from a file, `--mode conductor`, `--approval-mode trust`, `--until-done` (with `--idle-grace SECS`, default 900), `--cwd DIR`, `--timeout SECS` (exit 4; default 6 hours, 0 = no cap), `--budget CREDITS` (exit 5), `--json`. A request for a person ends the run (exit 3). Refused (exit 2) inside an agent session: run it from a normal terminal, or use `spawn_run` |
 
 When `kirocrew chat` asks to run a tool, answer `y` to allow that call once or
 `n` to deny it, the same keys `kiro-cli chat` uses. `o` denies it and lets you

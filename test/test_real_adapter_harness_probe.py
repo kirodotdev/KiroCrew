@@ -330,7 +330,7 @@ def test_the_codex_session_waits_for_every_mcp_server_before_its_turn(monkeypatc
         },
         "a",
     )
-    # A resumed session is not a fresh mount: only session/new waits.
+    # The driver's wrapper raises the cap on session/new only.
     load, _ = harness.session_request("session/load", {"cwd": "w"}, "a", agent_capabilities={})
     assert load == {"cwd": "w", "_meta": {"own": 1}}
     assert calls == ["session/new", "session/load"]

@@ -868,6 +868,16 @@ def _redacted_output_tail(stdout: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
     return safe.strip()[-limit:]
 
 
+def output_tail_keeps(text: str) -> bool:
+    """Whether :func:`_redacted_output_tail` returns *text* exactly as it is.
+
+    For a remote CLI deciding what it may print on stdout for this hub to read:
+    a line that the tail's length or redaction would change could take the
+    lines after it with it.
+    """
+    return _redacted_output_tail(text) == text
+
+
 def _with_stdout_tail(primary: str, safe_stdout: str) -> str:
     """Append the redacted stdout tail to *primary* when there is one.
 

@@ -148,6 +148,11 @@ async def api_upload(request: web.Request) -> web.Response:
     run with the gateway's environment and outside the sandbox. ``None`` is a
     refusal, never a fallback to the bare name — that would reinstate the hazard.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "upload.picker")
+    if denied is not None:
+        return denied
     if sys.platform != "darwin":
         return web.json_response({"error": "File picker is only available on macOS"}, status=400)
 

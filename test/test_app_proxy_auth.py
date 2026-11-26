@@ -83,6 +83,18 @@ def test_stale_timestamp_fails():
     assert not verify_proxy_request(hdr, method="GET", target="/api/read", body=b"", secret=SECRET)
 
 
+@pytest.mark.parametrize("ts", [chr(0x00B2), chr(0x2460), "1" * 4400], ids=["superscript", "circled", "4400-digits"])
+def test_a_timestamp_that_int_cannot_read_is_a_refusal_not_a_crash(ts: str):
+    """A timestamp made of digits ``int`` refuses is a ``False`` verdict like any other.
+
+    ``str.isdigit`` passes a superscript or a circled digit, and a run of more than 4,300
+    digits trips ``int``'s size limit; both raised ``ValueError`` out of the verifier, so
+    the caller never reached its 401 answer or its ``proxy_auth_failed`` record.
+    """
+    header = f"{ts}:abc"
+    assert verify_proxy_request(header, method="GET", target="/x", body=b"", secret=SECRET, now=1000.0) is False
+
+
 @pytest.mark.parametrize("codepoint", [0x00E9, 0x63D0, 0x1F600, 0xDCFF])
 def test_a_non_ascii_signature_is_a_clean_refusal_not_a_crash(codepoint: int):
     """A non-ASCII signature must be refused like any other wrong one.

@@ -12,9 +12,9 @@
 #   ``usage_store`` -- the shard store, the reporting window, slot categories, row readers
 #   ``usage_spend`` -- a slot's spend, the per-day credits, one slot's per-turn usage
 #   ``usage_context`` -- context-window occupancy and a session's context trace
+#   ``usage_sessions`` -- the Usage page's kiro-cli and KAS session activity and its cached parse
 #   ``usage_cost`` -- the Telemetry panel's spend breakdown
 #   ``usage_history`` -- the Usage page's per-day token history
-#   ``usage_sessions`` -- the Usage page's kiro-cli and KAS session activity and its cached parse
 
 from __future__ import annotations
 
@@ -785,9 +785,9 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.usage_store",
     "kiro_crew.dashboard.handlers.usage_spend",
     "kiro_crew.dashboard.handlers.usage_context",
+    "kiro_crew.dashboard.handlers.usage_sessions",
     "kiro_crew.dashboard.handlers.usage_cost",
     "kiro_crew.dashboard.handlers.usage_history",
-    "kiro_crew.dashboard.handlers.usage_sessions",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -822,6 +822,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _COST_CACHE_TTL,
         _COST_MIN_GROWTH_TURNS,
         _COST_TOP_CONVOS,
+        _purpose_of,
         cost_breakdown,
     )
     from kiro_crew.dashboard.handlers.usage_history import (  # noqa: F401

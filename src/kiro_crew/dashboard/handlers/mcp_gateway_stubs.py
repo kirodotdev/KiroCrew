@@ -11,6 +11,7 @@ module too (:mod:`kiro_crew._facade_mirror`). This module never imports the faca
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -45,10 +46,12 @@ from kiro_crew.mcp_gateway.launch_approval import (
     display_launches,
     load_approvals,
     refused_servers,
+    refused_share_records,
     restore,
     revoke,
     target_stem,
 )
+from kiro_crew.mcp_gateway.launch_approval_heal import forget_trust
 from kiro_crew.mcp_gateway.rewriter import records_dir
 from kiro_crew.sel import sel
 
@@ -297,6 +300,85 @@ async def api_mcp_gateway_server_launches(request: web.Request) -> web.Response:
     return web.json_response({"launches": previews, "errors": errors})
 
 
+def _trust_refusal(request: web.Request, name: str, code: str, error: str) -> web.Response:
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation=f"mcp_stub_rejected_{code}",
+        outcome="denied",
+        source="dashboard",
+        resources=f"code={code} names={name}"[:256],
+    )
+    return web.json_response({"error": error, "code": code}, status=409)
+
+
+async def _grant_trust_from_row(request: web.Request, name: str) -> web.Response:
+    """Turn "Always trust changes to this server" on from the Sharing row.
+
+    Called past the owner gate. Only for a server that is shared now and whose
+    current launch the store approves with no refusal pending: the grant then
+    records those same launches through :func:`approve`, as the Review press
+    does, so it trusts later changes and approves nothing the owner has not.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        launches = await asyncio.to_thread(launch_resolve.resolve_launches, [name])
+    except Exception as exc:
+        logger.warning("mcp launch resolution failed: %s", exc)
+        return web.json_response(
+            {"error": "could not resolve the launch", "code": "launch_resolve_failed"},
+            status=503,
+        )
+    async with _MCP_GATEWAY_APPLY_LOCK:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if name not in set(cfg.mcp_gateway.stub_servers):
+            return _trust_refusal(
+                request, name, "trust_needs_shared", "share this server before trusting changes"
+            )
+        current = launches.get(name) or []
+        approvals = await asyncio.to_thread(load_approvals)
+        refused = await asyncio.to_thread(refused_servers)
+        stem = target_stem(name)
+        approved_now = (
+            bool(current)
+            and name not in launches.over_cap
+            and display_launches(name, current)["complete"]
+            and not refused_share_records([name], refused)
+            and all(
+                launch.approval_identities
+                and all(
+                    approvals.admits_launch(stem, *pair.split(":", 1))
+                    for pair in launch.approval_identities
+                )
+                for launch in current
+            )
+        )
+        if not approved_now:
+            return _trust_refusal(
+                request,
+                name,
+                "trust_needs_approved_launch",
+                "approve this server's launch in Review before trusting changes",
+            )
+        try:
+            await asyncio.to_thread(functools.partial(approve, {name: current}, trusted=[name]))
+        except OSError as exc:
+            logger.warning("mcp launch approval store write failed: %s", exc)
+            return web.json_response(
+                {"error": "could not record the launch approval", "code": "approval_write_failed"},
+                status=503,
+            )
+    # The same record the Review press's grant writes.
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="mcp_gateway_set_stub",
+        outcome="ok",
+        source="dashboard",
+        resources=f"name={name} stub=True trust_changes=True",
+    )
+    return web.json_response({"ok": True, "name": name, "trust_changes": True})
+
+
 async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     """POST /api/mcp-gateway/servers/stub — toggle servers' stub flag.
 
@@ -429,6 +511,41 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 {"error": "this server is not asked", "code": "cwd_use_not_asked"},
                 status=400,
             )
+    # ``trust_changes: false`` sent alone is the Sharing row's "stop trusting
+    # changes": it only takes the choice off, so the next changed launch asks.
+    if stub is None and cwd_answer is None and body.get("trust_changes") is False and not batch:
+        async with _MCP_GATEWAY_APPLY_LOCK:
+            try:
+                await asyncio.to_thread(forget_trust, names)
+            except OSError as exc:
+                logger.warning("mcp launch approval store write failed: %s", exc)
+                sel().log_api_access(
+                    caller=request.get("user", "dashboard"),
+                    operation="mcp_gateway_trust_changes",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=f"name={name} code=approval_write_failed"[:256],
+                )
+                return web.json_response(
+                    {
+                        "error": "could not record the launch approval",
+                        "code": "approval_write_failed",
+                    },
+                    status=503,
+                )
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="mcp_gateway_trust_changes",
+            outcome="ok",
+            source="dashboard",
+            resources=f"name={name} trust_changes=False"[:256],
+        )
+        return web.json_response({"ok": True, "name": name, "trust_changes": False})
+    # ``trust_changes: true`` sent alone is the Sharing row's tick: the owner's
+    # click turns the choice back on for a server that is shared and whose
+    # current launch the store already approves, so it approves no new launch.
+    if stub is None and cwd_answer is None and body.get("trust_changes") is True and not batch:
+        return await _grant_trust_from_row(request, name)
     if (stub is None and cwd_answer is None) or (stub is not None and not isinstance(stub, bool)):
         return web.json_response({"error": "stub must be a boolean"}, status=400)
     if batch and stub:
@@ -492,6 +609,22 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             {
                 "error": "expected_launch is only valid as a string for one stub approval",
                 "code": "expected_launch_invalid",
+            },
+            status=400,
+        )
+
+    # "Always trust changes to this server": only the Review dialog's press sends
+    # it, with the launch it shows. A card (``expected_entry``), which an agent
+    # proposes, never carries it.
+    trust_changes = body.get("trust_changes", False)
+    if not isinstance(trust_changes, bool) or (
+        trust_changes and (expected_launch is None or "expected_entry" in body)
+    ):
+        _log_stub_rejection("trust_changes_invalid")
+        return web.json_response(
+            {
+                "error": "trust_changes is only valid on one approval of a launch shown here",
+                "code": "trust_changes_invalid",
             },
             status=400,
         )
@@ -595,7 +728,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             )
 
         if expected_entry is not None and not await asyncio.to_thread(
-            launch_resolve.matches_entry, expected_entry, launches.get(name, [])
+            launch_resolve.matches_entry, expected_entry, launches.get(name, []), server=name
         ):
             _log_stub_rejection("launch_differs_from_card")
             return web.json_response(
@@ -685,6 +818,15 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 except OSError as exc:
                     # The response already names the failure that led here.
                     logger.warning("mcp launch approval restore failed: %s", exc)
+
+        # Finish withdrawing trust before writing config, so a failure only
+        # needs to restore the approval rows revoked above.
+        if stub is False:
+            try:
+                await asyncio.to_thread(forget_trust, names)
+            except OSError as exc:
+                await _restore_revoked()
+                return _approval_write_failed(exc)
 
         # A stub on writes the config before it records the approval, so a store
         # the approval write would refuse is refused first, with nothing written.
@@ -904,7 +1046,10 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         if stub and decided:
             approved = {n: launches[n] for n in decided if launches.get(n)}
             try:
-                await asyncio.to_thread(approve, approved)
+                if trust_changes:
+                    await asyncio.to_thread(functools.partial(approve, approved, trusted=decided))
+                else:
+                    await asyncio.to_thread(approve, approved)
             except OSError as exc:
                 return _approval_write_failed(exc)
 
@@ -955,7 +1100,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         operation="mcp_gateway_set_stub",
         outcome="ok",
         source="dashboard",
-        resources=f"{audited} stub={stub}",
+        resources=f"{audited} stub={stub} trust_changes={trust_changes}",
     )
     subject: dict[str, Any] = {"names": names} if batch else {"name": name}
     outcome: dict[str, Any] = {}

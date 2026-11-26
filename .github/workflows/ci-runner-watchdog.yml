@@ -396,5 +396,7 @@ jobs:
         # wrong, exactly what a hand dispatch on a PR branch did on 2026-09-25.
         # The kick's job stays green whatever the step did; the step's own status,
         # its log and its summary still carry the verdict, and the scheduled
-        # ticks, which run on the default branch, keep failing loudly.
+        # ticks, which run on the default branch, keep failing loudly. A kick that
+        # exits 1 writes an `::error::` line and a summary section saying that it
+        # failed and that its green job is by design.
         continue-on-error: ${{ github.event_name == 'workflow_run' }}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, type MutableRefObject } from 'react'
 import { type QueryClient, useQueries } from '@tanstack/react-query'
 
-import type { useDeleteTerminalSession } from '../../../components/CliPanel'
+import type { useDeleteTerminalSession } from '../../../components/terminalSessions'
 import { normalizeUrl, setSessionPreviewPending } from '../../../components/WebPreviewPanel'
 import type { ComposeSendOutcome, ComposeSendResult } from '../../../components/chat/GrillCard'
 import { addTab as addDockTerminal } from '../../../hooks/useBottomTerminal'

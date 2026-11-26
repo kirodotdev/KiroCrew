@@ -507,7 +507,7 @@ def _resolve_slot(
 def _valid_mid(mid: str) -> bool:
     """A minted row id (``mint_row_mid``) and nothing else -- the one shape a
     thread key may have, at the route and in the store alike."""
-    return bool(THREAD_MID_RE.match(mid or ""))
+    return bool(THREAD_MID_RE.fullmatch(mid or ""))
 
 
 async def _read_threads(
@@ -620,7 +620,7 @@ async def api_chat_thread_reply(request: web.Request) -> web.Response:
         )
     reply_id = body.get("reply_id")
     if reply_id is not None and not (
-        isinstance(reply_id, str) and THREAD_REPLY_ID_RE.match(reply_id)
+        isinstance(reply_id, str) and THREAD_REPLY_ID_RE.fullmatch(reply_id)
     ):
         return web.json_response(
             {"error": "invalid reply_id", "code": "invalid_reply_id"}, status=400

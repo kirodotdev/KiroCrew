@@ -111,6 +111,7 @@ _LISTING_IMPORTS = (
     "browser_harness/__init__.py",
     "browser_harness/ops.py",
     "browser_harness/quick_ask.py",
+    "change_card_memory.py",
     "conductor_patrol.py",
     "config/__init__.py",
     "config/loader.py",

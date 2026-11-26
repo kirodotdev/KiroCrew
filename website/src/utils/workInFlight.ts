@@ -6,7 +6,8 @@
  * gateway's 409 has no holders). Nothing started and nothing was cut; the
  * person is shown what is running and decides.
  * `force: true` is sent only after they confirm (see `api/client/updates.ts`,
- * the one place that asks).
+ * the one place that asks). A Remote Crew update waiting on a busy crew lists
+ * the holders that crew named with the same words (`runningNowLine`).
  */
 import { ApiError } from '../api/apiError'
 import { fmtElapsed, fmtList, fmtNumber } from '../i18n/format'
@@ -85,6 +86,21 @@ function describeHolder(h: WorkHolder): string {
   return age ? i18nT('components.updateFoundModal.work_holder_age', { kind, age }) : kind
 }
 
+/** The holder entries of an answer's `holders` list; anything else reads as none. */
+export function asWorkHolders(list: unknown): WorkHolder[] {
+  return Array.isArray(list) ? list.flatMap(asHolder) : []
+}
+
+/** `Running now: nightly-sync (scheduled job, 21s) and 2 more.`, or "" with no holders. */
+export function runningNowLine(holders: WorkHolder[], more: number): string {
+  if (holders.length === 0) return ''
+  const listed = holders.map(describeHolder)
+  if (more > 0) {
+    listed.push(i18nT('components.updateFoundModal.work_holders_more', { count: more, n: fmtNumber(more) }))
+  }
+  return i18nT('components.updateFoundModal.work_running_now', { holders: fmtList(listed) })
+}
+
 /** The running work an answer reports, or `null` for any other answer. */
 export function asWorkInFlight(answer: unknown): WorkInFlight | null {
   if (typeof answer !== 'object' || answer === null) return null
@@ -93,7 +109,7 @@ export function asWorkInFlight(answer: unknown): WorkInFlight | null {
   return {
     busy: wholeNumber(a.busy),
     quietRemainingSecs: Math.max(wholeNumber(a.quiet_remaining_secs), wholeNumber(a.settle_remaining_secs)),
-    holders: Array.isArray(a.holders) ? a.holders.flatMap(asHolder) : [],
+    holders: asWorkHolders(a.holders),
     holdersMore: wholeNumber(a.holders_more),
   }
 }
@@ -103,12 +119,8 @@ export function workInFlightNotice(w: WorkInFlight): string {
   if (w.busy > 0) {
     const busy = i18nT('components.updateFoundModal.work_running_busy', { active: w.busy })
     if (w.holders.length === 0) return busy
-    const listed = w.holders.map(describeHolder)
-    if (w.holdersMore > 0) {
-      listed.push(i18nT('components.updateFoundModal.work_holders_more', { count: w.holdersMore, n: fmtNumber(w.holdersMore) }))
-    }
     // On its own line, under the count.
-    return [busy, i18nT('components.updateFoundModal.work_running_now', { holders: fmtList(listed) })].join('\n')
+    return [busy, runningNowLine(w.holders, w.holdersMore)].join('\n')
   }
   return i18nT('components.updateFoundModal.work_running_quiet', {
     minutes: Math.max(1, Math.ceil(w.quietRemainingSecs / 60)),

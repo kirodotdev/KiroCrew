@@ -115,7 +115,7 @@ const MINIMIZE_TO_TRAY_LOCKED_NOTE_ID = 'minimize-to-tray-locked-note'
 
 export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const ime = useImeGuard()
-  const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed, catalogFailed: langCatalogFailed } = useLanguage()
+  const { language, resolved: resolvedLanguage, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed, catalogFailed: langCatalogFailed } = useLanguage()
   const { zoom, zoomSupported, zoomIn, zoomOut, setZoom, family, setFontFamily, customFontFamily, setCustomFontFamily, customFontLigatures, setCustomFontLigatures } = useZoomCtx()
   // Shortcut label for the zoom hint/description: ⌘ on macOS, Ctrl elsewhere.
   const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
@@ -254,7 +254,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     accessSupported: customFontAccessSupported,
     lastResult: customFontDetectResult,
     enumerate: enumerateCustomFonts,
-  } = useFontOptions('all')
+  } = useFontOptions('all', resolvedLanguage)
   const customFontPreview = (fam: string) => ({ previewFontFamily: proportionalFontStack(fam) })
   const customFontOptions = useMemo(
     () => customFontFamilies.map(fam => ({ value: fam, label: fam, ...customFontPreview(fam) })),

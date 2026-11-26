@@ -1162,11 +1162,15 @@ def _resolve_spec_command(
     cmd: str,
     env: dict | None,
     resolve_command: Callable[[str, dict | None], tuple[str | None, str]],
+    *,
+    server: str | None = None,
 ) -> tuple[str | None, str]:
     # Resolution must search the same home/login-expanded values the spec emits.
     if isinstance(cmd, str):
-        cmd = expand_spec_args([cmd])[0]
-    return resolve_command(cmd, _expand_env_values(env) if isinstance(env, dict) else env)
+        cmd = expand_spec_args([cmd], server=server)[0]
+    return resolve_command(
+        cmd, _expand_env_values(env, server=server) if isinstance(env, dict) else env
+    )
 
 
 def emit_mcp_entry(
@@ -1182,7 +1186,7 @@ def emit_mcp_entry(
     returned unchanged so rebuild diagnostics name the directories it consulted.
     """
     resolved, searched = _resolve_spec_command(
-        spec.get("command", ""), spec.get("env"), resolve_command
+        spec.get("command", ""), spec.get("env"), resolve_command, server=server
     )
     if not resolved:
         return None, searched

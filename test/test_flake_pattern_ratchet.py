@@ -323,6 +323,8 @@ def _restores_sys_modules(fn: ast.AST) -> bool:
                     return True
         if isinstance(node, ast.Call):
             name = _dotted(node.func)
+            if name.endswith("patched_sys_modules"):
+                return True
             if name.endswith(("setitem", "patch.dict", "delitem")) and node.args:
                 if _dotted(node.args[0]) == "sys.modules":
                     return True
@@ -1232,7 +1234,8 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         ),
         # A restore in the same function, and the reload the reload rule refuses.
         "import importlib\nimport sys\ndef test_x(monkeypatch):\n    del sys.modules['m']\n"
-        "    sys.modules['m'] = saved\ndef test_y():\n    importlib.reload(mod)\n",
+        "    sys.modules['m'] = saved\ndef test_y():\n    importlib.reload(mod)\n"
+        "def test_z():\n    with patched_sys_modules():\n        del sys.modules['m']\n",
     ),
     "K6-raw-environ-write": (
         ("import os\ndef test_x():\n    os.environ['A'] = '1'\n",),

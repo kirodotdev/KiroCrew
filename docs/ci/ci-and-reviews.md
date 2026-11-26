@@ -667,8 +667,16 @@ both with `read` permissions only; it opens no issue and posts no comment.
   `scripts/ci_red_cause_census.py --last-days 1`, which gives every red job of
   yesterday (UTC) one cause, writes the day's summary and the script's call
   counts to the job summary, and uploads `red-jobs.csv`, `ci-pushes.csv`,
-  `summary.md`, `summary.json` and the printed output as the artifact
-  `ci-red-census-day`, kept 90 days.
+  `workflows.csv`, `summary.md`, `summary.json` and the printed output as the
+  artifact `ci-red-census-day`, kept 90 days. It lists `CI`'s runs, then the
+  runs of every other workflow, and then reads the check suites of `CI`'s
+  runs to their end before the workers start on any other workflow's suites,
+  in the same calls, so a night the
+  budget cuts short after that still has every `CI` row: the first and third
+  numbers are counted from those alone. A stop while the other workflows' runs
+  are still being listed leaves every check suite unread, `CI`'s included. A
+  partial summary says whether `CI` was read in full and how many workflows
+  were; `workflows.csv` names each one with `yes` or `no`.
 - **`week`, on Sunday after that night's read**: runs
   `scripts/ci_red_census_week.py`, which takes the day its own run has just
   read with `actions/download-artifact` and the six days before it from the
@@ -2648,6 +2656,9 @@ Details worth knowing:
     run carries the triggering run's head, so the kick's step runs with
     `continue-on-error` and never reds an unrelated pull request's checks; its
     verdict is in the step log and summary, and the scheduled ticks stay loud.
+    A kicked tick that exits 1 therefore shows a green job, so it says so itself:
+    one `::error::` line and a "Kicked tick failed" section of the step summary
+    name the failed outcomes and state that the green is by design.
     It lists the queued and in-progress runs
     REPO-WIDE — one paginated `GET /repos/{repo}/actions/runs?status=…` per
     status returns runs of every workflow at once — and keeps only those whose
@@ -3763,7 +3774,7 @@ ref; see app-kit-platform.md § Former built-in adoption). The same step holds a
 that adds or changes a pin row to a `Wheel-copy base: <name>@<sha>` line per changed
 row, naming the core commit the pinned app-repo commit was ported from, and fails it
 while that app's non-test wheel copy at the base tip differs from the one at the
-base. The base tip is the one at the PR's last event: nothing re-runs the check when
+base; a row whose app ships no wheel copy at the base tip needs no line. The base tip is the one at the PR's last event: nothing re-runs the check when
 main moves, so whoever approves a pin PR edits its body (or pushes) right before
 approving, which re-runs it against the current tip. Last, a
   `fix`/`revert` PR is checked for a `## Sibling sweep` section listing the other

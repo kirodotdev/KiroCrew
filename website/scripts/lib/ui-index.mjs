@@ -50,7 +50,9 @@ import {
   GUIDE_DENY_IDS,
   guidePlanFor,
 } from './ui-index-guide.mjs'
+import { APP_PAGE_PREFIX, BUILTIN_APP_ARM } from './ui-index-apps.mjs'
 // Every name the owners serve callers, re-exported: import them from here.
+export { APP_PAGE_PREFIX, appPagesFromManifests, BUILTIN_APP_ARM } from './ui-index-apps.mjs'
 export {
   collectKeyMap,
   collectNavItemPaths,
@@ -105,7 +107,7 @@ export {
 export const SCHEMA_VERSION = 1
 
 /** Prefixes owned by generated locations; a registered id may not use them. */
-const RESERVED_PREFIXES = ['page.', 'tab.', 'settings.', 'setting:']
+const RESERVED_PREFIXES = ['page.', 'tab.', 'settings.', 'setting:', APP_PAGE_PREFIX]
 const LOCATION_ID_RE = /^[a-z0-9]+(?:[.-][a-z0-9]+)+$/
 /** What the auto tier covers, said in the full index's scope and the auto artifact's. */
 export const AUTO_SCOPE = 'auto-indexed controls (label and page proven from source, exact place and prerequisites unknown)'
@@ -235,6 +237,8 @@ export function buildUiIndex(inputs) {
     locations.set(loc.id, loc)
   }
   const sourceKey = (s) => (s.key !== undefined ? s.key : `${LITERAL_PREFIX}${s.literal}`)
+  /** `key` when the English catalog holds exactly `text` under it, else `text` as a literal. */
+  const catalogKeyFor = (key, text) => (key && english[key] === text ? key : `${LITERAL_PREFIX}${text}`)
 
   // Pages ------------------------------------------------------------------
   const previewRequires = (flag, origin) => {
@@ -312,6 +316,42 @@ export function buildUiIndex(inputs) {
   }
   for (const k of Object.keys(legacy)) {
     if (!inputs.extraPages.some((p) => p.key === k)) errors.push(`LEGACY_PAGE_CANONICAL names unknown extra page '${k}'`)
+  }
+  // Pages of the apps that ship in the package (`appPages`, read from their
+  // manifests by ui-index-apps.mjs): a rail row while the app is on. A page
+  // whose route a core page already has is left to that page.
+  const pageRoutes = new Set([...locations.values()].flatMap((l) => l.placements.map((p) => p.route)))
+  const appPageRoutes = new Set()
+  const hasAppArm = routeTable.some((r) => r.path === BUILTIN_APP_ARM)
+  for (const a of inputs.appPages ?? []) {
+    if (pageRoutes.has(a.route) || surfaceIds.has(a.app)) continue
+    const where = `app page '${a.id}' (${a.rel})`
+    if (!hasAppArm) {
+      errors.push(`${where}: the route table has no '${BUILTIN_APP_ARM}' arm to serve '${a.route}'`)
+      continue
+    }
+    const hit = matchRoute(routeTable, a.route)
+    if (hit) {
+      errors.push(`${where}: route '${a.route}' lands on the dashboard's own '${hit.path}' route, not '${BUILTIN_APP_ARM}'`)
+      continue
+    }
+    surfaceIds.add(a.app)
+    appPageRoutes.add(`/${a.route.split('?')[0].split('/').filter(Boolean)[0] ?? ''}`)
+    addLocation({
+      id: a.id,
+      kind: 'page',
+      // The rail shows a built-in app's localised copy, so its catalog key is the
+      // label wherever the catalog holds the manifest's own words; otherwise the
+      // manifest text, which the rail shows as is.
+      label_key: catalogKeyFor(a.labelKey, a.label),
+      // The app's name searches its page too, when the rail label is shorter.
+      ...(a.appLabel !== a.label ? { alias_keys: [catalogKeyFor(a.appLabelKey, a.appLabel)] } : {}),
+      app: a.appLabel,
+      placements: [{
+        surface_id: a.app, route: a.route, parent_ids: [], entry_kind: 'rail',
+        requires: [{ kind: 'condition', id: 'app_enabled' }],
+      }],
+    }, 'app page')
   }
 
   // Tabs -------------------------------------------------------------------
@@ -446,7 +486,7 @@ export function buildUiIndex(inputs) {
 
   // Every route a location hands out must be one the router renders ------------
   if (!Array.isArray(inputs.routes) || inputs.routes.length === 0) errors.push('no route table: pass the routes read from App.tsx')
-  const appRoutes = new Set(inputs.surfaces.filter((s) => s.appOnly).map((s) => pathOf(s.route)))
+  const appRoutes = new Set([...inputs.surfaces.filter((s) => s.appOnly).map((s) => pathOf(s.route)), ...appPageRoutes])
   const checkRoute = (url, where) => {
     if (typeof url !== 'string' || !url.startsWith('/')) {
       errors.push(`${where}: route '${url ?? ''}' is empty or not an absolute path`)
@@ -777,7 +817,7 @@ export function buildUiIndex(inputs) {
         continue
       }
       const v = cat[key]
-      if (typeof v === 'string' && v.trim()) out[key] = v.replaceAll('{{productName}}', inputs.productName)
+      if (typeof v === 'string' && v.trim()) out[key] = searchableLabel(v, inputs.productName)
       else if (locale !== 'en') (missing[locale] ??= []).push(key)
     }
     labels[locale] = out
@@ -999,6 +1039,17 @@ function buildAutoLocations(inputs, locations, errors, addLocation) {
 const MAX_TERMS_PER_LOCALE = 16
 const MAX_TERM_CHARS = 60
 
+/**
+ * A catalog value as the index stores and searches it: the product name filled
+ * in, and any other placeholder left out. That one is a value only the running
+ * dashboard knows (the top-bar search button's `{{shortcut}}`), so find_ui
+ * searches the words around it, never the placeholder's own name.
+ */
+function searchableLabel(text, productName) {
+  const filled = text.replaceAll('{{productName}}', productName)
+  return /\{\{\w+\}\}/.test(filled) ? filled.replace(/\{\{\w+\}\}/g, '').trim() : filled
+}
+
 /** Approximates the search's normalization (NFKC, casefold, punctuation as space). */
 function foldTerm(text) {
   return text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ').trim()
@@ -1026,7 +1077,7 @@ function settingTermsFromKeywords(inputs, locations, claimed, errors) {
   const formsOf = (loc) => [loc.label_key, ...(loc.alias_keys ?? [])]
     .map((k) => (k.startsWith(LITERAL_PREFIX) ? k.slice(LITERAL_PREFIX.length) : en[k]))
     .filter((v) => typeof v === 'string')
-    .map((v) => foldTerm(v.replaceAll('{{productName}}', inputs.productName)))
+    .map((v) => foldTerm(searchableLabel(v, inputs.productName)))
   const namedBy = new Map()
   for (const loc of locations.values()) {
     for (const f of formsOf(loc)) (namedBy.get(f) ?? namedBy.set(f, new Set()).get(f)).add(loc.id)
@@ -1133,7 +1184,7 @@ function validateTerms(id, terms, origin, loc, inputs, errors) {
       [loc.label_key, ...(loc.alias_keys ?? [])]
         .map((k) => (k.startsWith(LITERAL_PREFIX) ? k.slice(LITERAL_PREFIX.length) : cat[k]))
         .filter((v) => typeof v === 'string')
-        .map((v) => foldTerm(v.replaceAll('{{productName}}', inputs.productName))),
+        .map((v) => foldTerm(searchableLabel(v, inputs.productName))),
     )
     const seen = new Set()
     const kept = []

@@ -1146,18 +1146,19 @@ export default function CrewEditorNextDialog({
                         </span>
                       )}
                     </div>
+                    {/* Filled, with the strong edge: the plain edge vanishes on the tint. */}
                     <div ref={confirmRef} className="flex items-center gap-2">
                       {confirmDelete ? (
                         <>
-                          <Btn onClick={() => setConfirmDelete(false)} data-testid="next-cancel-delete-crew">
+                          <Btn className="border-border-strong bg-bg-elevated" onClick={() => setConfirmDelete(false)} data-testid="next-cancel-delete-crew">
                             {i18nT('pages.kiroCrewAgentsPage.cancel')}
                           </Btn>
-                          <Btn danger onClick={deleteCrew} disabled={sheetBusy} data-testid="next-confirm-delete-crew">
+                          <Btn danger className="border-border-strong bg-bg-elevated" onClick={deleteCrew} disabled={sheetBusy} data-testid="next-confirm-delete-crew">
                             {i18nT('pages.kiroCrewAgentsPage.yes_delete_it')}
                           </Btn>
                         </>
                       ) : (
-                        <Btn danger onClick={() => setConfirmDelete(true)} disabled={sheetBusy} data-testid="next-delete-crew" {...uiLocation('agents.delete')}>
+                        <Btn danger className="border-border-strong bg-bg-elevated" onClick={() => setConfirmDelete(true)} disabled={sheetBusy} data-testid="next-delete-crew" {...uiLocation('agents.delete')}>
                           {i18nT('pages.kiroCrewAgentsPage.delete_crew')}
                         </Btn>
                       )}

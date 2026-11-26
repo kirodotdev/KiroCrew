@@ -399,6 +399,7 @@ export default function SessionsSidebarChrome({
         onPromote={onPromote}
         promoting={promoting}
         onOpenSearch={onOpenSearch}
+        personSlots={personSlots}
         dispatch={dispatch}
       />
 

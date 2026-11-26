@@ -1476,6 +1476,17 @@ class TestOwnerSourceStatusTransport:
         result = await dashboard_ws.api_ws(Request())  # type: ignore[arg-type]
         await asyncio.sleep(0)
 
+        if not owner_request and not claims.get("app"):
+            # A dashboard session that is neither the owner nor a teammate is
+            # refused before the upgrade: no socket, no frame, and no provider
+            # work, since both refreshes run the operator's credentials.
+            assert result is not fake_ws
+            assert result.status == 403
+            assert json.loads(result.body)["code"] == "owner_only"
+            state.register_ws.assert_not_called()
+            refresh.assert_not_called()
+            vis_refresh.assert_not_called()
+            return
         assert result is fake_ws
         state.register_ws.assert_called_once_with(fake_ws, owner=owner_request)
         initial_frame = fake_ws.sent[0]
@@ -1484,7 +1495,11 @@ class TestOwnerSourceStatusTransport:
             assert initial_slots[0]["source_links"][0]["ci"] == "passed"
             refresh.assert_called_once_with([source_url], state.push_slots_update)
             vis_refresh.assert_called_once_with([source_url], state.push_slots_update)
-        elif claims.get("app"):
+            # The connect-time frame is what populates the sidebar on a cold
+            # load, so a dashboard user MUST receive the folder tree here — this
+            # is the frame that fixes the first-paint flicker.
+            assert initial_frame["folders"] == [{"id": "f1", "name": "Work", "order": 0}]
+        else:
             # App token: the per-app WS scope gate filters the initial push, so
             # an app that declared no slots:* scope sees no slots at all — a
             # stronger guarantee than merely withholding check status. No
@@ -1494,22 +1509,6 @@ class TestOwnerSourceStatusTransport:
             vis_refresh.assert_not_called()
             # Folders never ride an app-token frame (apps don't render the tree).
             assert "folders" not in initial_frame
-        else:
-            # Non-owner dashboard user: connect frame carries NO status (this
-            # test seeds no visibility, so the public gate fails closed), and the
-            # connection MUST drive NEITHER refresh — both the status read and
-            # the visibility probe run the operator's credentials, so only the
-            # owner's connection may trigger them. A non-owner
-            # renders the owner-populated caches read-only; it spawns no provider
-            # work of its own.
-            assert "ci" not in str(initial_slots)
-            assert "state" not in initial_slots[0]["source_links"][0]
-            refresh.assert_not_called()
-            vis_refresh.assert_not_called()
-            # The connect-time frame is what populates the sidebar on a cold
-            # load, so a dashboard user MUST receive the folder tree here — this
-            # is the frame that fixes the first-paint flicker.
-            assert initial_frame["folders"] == [{"id": "f1", "name": "Work", "order": 0}]
         state.unregister_ws.assert_called_once_with(fake_ws)
 
     @pytest.mark.asyncio
@@ -1517,8 +1516,8 @@ class TestOwnerSourceStatusTransport:
         """A non-owner dashboard connection drives NEITHER a status refresh NOR
         a visibility probe, even when a confirmed-public repo is present — both
         run the operator's credentials, so only the owner's connection may
-        trigger them. The non-owner renders the owner-populated
-        caches read-only."""
+        trigger them. A session that is neither the owner nor a teammate is
+        refused before the upgrade, so it never reaches either."""
         from kiro_crew.dashboard import ws as dashboard_ws
         from kiro_crew.dashboard import ws_event_scope
         from kiro_crew.dashboard.handlers import source_providers
@@ -1598,7 +1597,8 @@ class TestOwnerSourceStatusTransport:
         result = await dashboard_ws.api_ws(Request())  # type: ignore[arg-type]
         await asyncio.sleep(0)
 
-        assert result is fake_ws
+        assert result is not fake_ws and result.status == 403
+        state.register_ws.assert_not_called()
         # Owner-only model: a non-owner triggers NO provider work at all — not a
         # status refresh and not a visibility probe — regardless of whether a
         # repo would read public. The owner's connection populates the caches.

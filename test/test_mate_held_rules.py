@@ -348,6 +348,8 @@ def test_a_claude_worker_asks_for_the_built_ins_a_held_limit_covers(ledger, monk
             memory_mode="persistent",
             _session_key="k",
             _session_mcp_cache=[{"name": "gh"}, {"name": "dot.probe"}],
+            _agent=None,
+            _work_dir=None,
         )
         # The ledger is read off the loop before the envelope is built.
         asyncio.run(_prepare_claude_held_asks(client))

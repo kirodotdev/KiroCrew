@@ -5,7 +5,7 @@
  * depend on any terminal component being mounted.
  */
 import { onTerminalExit } from './terminalRegistry'
-import { disposeTerminalSession } from '../components/CliPanel'
+import { disposeTerminalSession } from '../components/terminalSessions'
 import { hasTab, removeTab } from '../hooks/useBottomTerminal'
 import { hasPanelTerminalTab, closePanelTerminalTabs } from '../hooks/usePanelTabs'
 

@@ -373,7 +373,9 @@ def _split_commands(tokens: "list[str]", glue_split: bool = False) -> "list[list
     return [*out, *(sub for argv in out for sub in _find_exec_argvs(argv))]
 
 
-def _executed_program_indices(tokens: "list[str]", cased: "list[str] | None" = None) -> "set[int]":
+def _executed_program_indices(
+    tokens: "list[str]", cased: "list[str] | None" = None, glue_split: bool = False
+) -> "set[int]":
     """Indices in *tokens* that bash runs as a program, wrappers and ``VAR=x`` stepped over.
 
     One per command and per ``case`` arm body: program position, or the program a wrapper in
@@ -382,17 +384,19 @@ def _executed_program_indices(tokens: "list[str]", cased: "list[str] | None" = N
     program position is a ``case`` arm pattern (``s*)``) or a subshell close,
     not a program.  ``find -exec`` commands are not marked (their words keep no
     index).  *cased* is *tokens* in the case they were written in, read for the
-    wrapper option words (see :func:`_program_index`).
+    wrapper option words (see :func:`_program_index`).  *glue_split* is
+    forwarded to :func:`_split_commands_indexed` and :func:`_case_arm_pattern_indices`.
     """
     executed: set[int] = set()
-    case_patterns, arm_bodies = _case_arm_pattern_indices(tokens)
-    for command in _split_commands_indexed(tokens):
+    case_patterns, arm_bodies = _case_arm_pattern_indices(tokens, glue_split)
+    lowered = [] if cased is None else [original.lower() for original in cased]
+    for command in _split_commands_indexed(tokens, glue_split):
         command = _without_redirections(command)
         words = [word for _, word in command]
         # A word cut off a glued separator (``-H;``) keeps its lowered reading.
         options = None
         if cased is not None:
-            options = [cased[j] if cased[j].lower() == word else word for j, word in command]
+            options = [cased[j] if lowered[j] == word else word for j, word in command]
         # A case arm body's first word (``x) s?h …``, or ``x) >f s?h``) starts a command too.
         bodies = [
             k
@@ -509,7 +513,9 @@ def _without_redirections(command: "list[tuple[int, str]]") -> "list[tuple[int, 
     return out
 
 
-def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]":
+def _case_arm_pattern_indices(
+    tokens: "list[str]", glue_split: bool = False
+) -> "tuple[set[int], set[int]]":
     """Indices in *tokens* that sit in a ``case`` arm's pattern list, and the
     index of each arm body's first word.
 
@@ -525,14 +531,28 @@ def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]
     ``id;;``) are read off the token. Only a ``case`` in command position opens
     one (``echo case in x`` does not): a command's first word, a word after a
     :data:`_COMPOUND_OPENERS` word in command position, or an arm body's first word.
+    With *glue_split*, each word is read as its :func:`_expand_glued_boundaries`
+    pieces, each keeping the word's index.
     """
     patterns: set[int] = set()
     bodies: set[int] = set()
     stack: list[str] = []  # per open case: "await_in", "pattern" or "body"
-    starts = {command[0][0] for command in _split_commands_indexed(tokens)}
+    commands = _split_commands_indexed(tokens, glue_split)
+    starts = {command[0][0] for command in commands}
+    # A word whose first piece an earlier command runs into: only its pieces
+    # after a glued operator start a command (``echo case;true`` opens none).
+    joined = {b for command in commands for (a, _), (b, _) in zip(command, command[1:]) if a < b}
     program_position = False
-    for i, tok in enumerate(tokens):
-        here, program_position = program_position or i in starts, False
+    # Read once per word, not once per piece the glue split cuts from it.
+    fall_through = {i for i, whole in enumerate(tokens) if ";&" in whole}
+    pieces = (
+        (i, k, piece)
+        for i, whole in enumerate(tokens)
+        for k, piece in enumerate(_expand_glued_boundaries(whole) if glue_split else [whole])
+    )
+    for i, k, tok in pieces:
+        here = program_position or i in starts and (k > 0 or i not in joined)
+        program_position = False
         if tok.rstrip(";&| ") == "esac":
             if stack:
                 stack.pop()
@@ -553,9 +573,10 @@ def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]
                     stack[-1] = "body"
                     program_position = True
                     bodies.add(i + 1)
-        elif state == "body" and (";;" in tok or ";&" in tok):
+        elif state == "body" and (";;" in tok or ";&" in tok or tok == ";" and i in fall_through):
             # ``;;``, ``;;&`` and ``;&`` (fall through) each end an arm, so the
-            # next word opens the next arm's pattern list.
+            # next word opens the next arm's pattern list. The glue split cuts
+            # ``;&`` into ``;`` and ``&``.
             stack[-1] = "pattern"
     return patterns, bodies
 

@@ -172,6 +172,36 @@ def test_each_apps_location_has_its_exact_path_route_and_requirements(loc_id: st
     assert _path(zh["placements"][0]) == zh_path
 
 
+_ENABLE_IDS = {
+    "apps.detail.enable": "open_app_disabled",
+    "apps.detail.enable-builtin": "open_app_builtin_disabled",
+    "apps.detail.enable-self-managed": "open_app_self_managed_disabled",
+}
+
+
+@pytest.mark.parametrize(
+    ("query", "lang", "path"),
+    [
+        ("enable an app", "en", ["Library", "Details", "Enable"]),
+        ("turn on an app", "en", ["Library", "Details", "Enable"]),
+        ("启用应用", "zh-CN", ["库", "详情", "启用"]),
+    ],
+)
+def test_turning_an_app_on_names_each_enable_site(query: str, lang: str, path: list[str]) -> None:
+    # The detail page draws Enable in three branches (regular, built-in,
+    # independently managed); one shows, by the kind of app, so find_ui names
+    # all three as alternatives, each with the state that draws it.
+    d = ui_index.find_ui(query, lang)
+    assert d["status"] == "ok", d
+    by_id = {r["id"]: r for r in d["results"][:3]}
+    assert set(by_id) == set(_ENABLE_IDS), [r["id"] for r in d["results"]]
+    for loc_id, cond in _ENABLE_IDS.items():
+        (placement,) = by_id[loc_id]["placements"]
+        assert _path(placement) == path
+        assert placement["route"] == "/apps/library"
+        assert _conditions(placement) == ["app_tile_menu_open", cond]
+
+
 def test_where_is_the_app_store_lands_on_discover() -> None:
     # No page-level term on `page.apps` yet (that is SEARCH_TERMS in
     # descriptors.ts, outside this batch), so the store question reaches the

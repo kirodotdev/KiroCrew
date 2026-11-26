@@ -46,7 +46,9 @@
  * their render-site markers and curated search terms (`SEARCH_TERMS` for
  * generated locations), the shared prerequisite vocabulary in
  * `src/uiLocations/conditions.ts`, the guide registry when a descriptor carries
- * a guide binding, and the 12 shipped catalogs. The pure logic is
+ * a guide binding, the 12 shipped catalogs, and the `ui.pages` of every app
+ * manifest packaged under `src/kiro_crew/apps/builtins/` (one `apppage.*`
+ * location each, see scripts/lib/ui-index-apps.mjs). The pure logic is
  * `scripts/lib/ui-index.mjs` and the owners it re-exports.
  *
  * `--check` regenerates in memory and byte-compares the COMMITTED index only;
@@ -71,6 +73,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   AUDITED_PRIMITIVES,
+  appPagesFromManifests,
   AUTO_ARTIFACT_NAME,
   autoSiteIds,
   autoStampManifest,
@@ -340,7 +343,21 @@ for (const abs of walkSources(SRC)) {
   sources.set(rel(abs), { abs, sf, edges: scanImports(sf), candidates: scanCandidates(text, abs, rel(abs), sf) })
 }
 
-for (const f of ['scripts/gen-ui-index.mjs', 'scripts/lib/ui-index.mjs', 'scripts/lib/i18n-key-resolve.mjs']) read(path.join(ROOT, f))
+for (const f of ['scripts/gen-ui-index.mjs', 'scripts/lib/ui-index.mjs', 'scripts/lib/ui-index-apps.mjs', 'scripts/lib/i18n-key-resolve.mjs']) read(path.join(ROOT, f))
+
+// The pages of the apps that ship in the package, from their manifests: every
+// `app.json` one level under the built-ins folder, whatever it is called.
+const BUILTIN_APPS = path.join(REPO, 'src/kiro_crew/apps/builtins')
+const manifests = fs.readdirSync(BUILTIN_APPS, { withFileTypes: true })
+  .filter((e) => e.isDirectory() && fs.existsSync(path.join(BUILTIN_APPS, e.name, 'app.json')))
+  .map((e) => e.name)
+  .sort()
+  .map((dir) => {
+    const abs = path.join(BUILTIN_APPS, dir, 'app.json')
+    return { rel: path.relative(REPO, abs).split(path.sep).join('/'), text: read(abs) }
+  })
+const appPagesRead = appPagesFromManifests(manifests)
+errors.push(...appPagesRead.errors)
 
 const surfaces = [
   ...Object.values(BUILTIN_SURFACE_NAV),
@@ -350,6 +367,7 @@ const indexInputs = {
   surfaces,
   extraPages: EXTRA_PAGES,
   extraTitleKeys: EXTRA_PAGE_TITLE_KEY,
+  appPages: appPagesRead.pages,
   capabilityTabs,
   pageTabs,
   settingsTabs,

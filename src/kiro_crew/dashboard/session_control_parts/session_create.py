@@ -74,10 +74,10 @@ from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     SlotOrigin,
     _safe_folder_tree,
+    bot_member,
     count_restored_workers,
     creator_slot_cap_refusal,
     note_new_worker,
-    own_worker_member,
 )
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.execution_context import (
@@ -838,7 +838,7 @@ async def create_session(
         raise SessionControlError(
             "selected execution context is unavailable", code="memory_unavailable"
         ) from None
-    if own_worker_member(child_execution):
+    if bot_member(child_execution):
         await count_restored_workers(state)
 
     # ONE authorization for the child's PRIVATE binding, at the single point where

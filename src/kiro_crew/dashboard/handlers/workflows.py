@@ -293,6 +293,14 @@ async def _run_scope_refusal(
     refusal = await _private_memory_refusal(request, "workflow.access")
     if refusal is not None:
         return refusal
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    # ``authorize_run`` below takes a dashboard session as the owner, and a run
+    # snapshot carries its script source, so the session must be the owner's or a
+    # teammate's first. Internal callers stay under their run binding.
+    owner_denied = await require_owner_for_dashboard_caller(request, "workflow.access")
+    if owner_denied is not None:
+        return owner_denied
     svc = _svc(request)
     registry = getattr(svc, "registry", None)
     handle = registry.get(run_id) if registry is not None else None
@@ -322,6 +330,12 @@ def _lineage(value: Any) -> Optional[dict[str, Any]]:
 
 async def api_workflow_definitions(request: web.Request) -> web.Response:
     """GET /api/workflows/definitions — list or locally search saved workflows."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    # Each definition carries its full script source.
+    owner_denied = await require_owner_for_dashboard_caller(request, "workflow_definition_list")
+    if owner_denied is not None:
+        return owner_denied
     svc = _svc(request)
     if svc is None:
         return _error("workflows not available", "workflows_unavailable", 503)
@@ -403,6 +417,12 @@ async def api_workflow_definitions_create(request: web.Request) -> web.Response:
 
 async def api_workflow_definition_get(request: web.Request) -> web.Response:
     """GET /api/workflows/definitions/{ref} — resolve by id or slug."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    # The definition carries its full script source, as the list does.
+    owner_denied = await require_owner_for_dashboard_caller(request, "workflow_definition_get")
+    if owner_denied is not None:
+        return owner_denied
     svc = _svc(request)
     if svc is None:
         return _error("workflows not available", "workflows_unavailable", 503)
@@ -947,6 +967,12 @@ async def api_workflow_runs(request: web.Request) -> web.Response:
     refusal = await _private_memory_refusal(request, "workflow.list")
     if refusal is not None:
         return refusal
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    # Refused once here rather than once per run in the scope check below.
+    owner_denied = await require_owner_for_dashboard_caller(request, "workflow.list")
+    if owner_denied is not None:
+        return owner_denied
     runs = []
     for snapshot in svc.list_runs():
         if await _run_scope_refusal(request, snapshot["run_id"]) is None:

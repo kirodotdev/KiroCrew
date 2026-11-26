@@ -278,7 +278,7 @@ def _restored_mode(raw: object) -> str:
 
 
 def _restore_model_fields(slot: Any, meta: dict, *, cfg: Any, effort_marker: bool = False) -> bool:
-    """Apply the persisted ``model`` and ``reasoning_effort`` to *slot*.
+    """Apply the persisted ``model``, ``reasoning_effort`` and ``effort_overlay_clear`` to *slot*.
 
     Shared by every path that hydrates a slot from a transcript -- the two
     restart reads (through :func:`apply`), History resume, and channel surfacing
@@ -311,4 +311,8 @@ def _restore_model_fields(slot: Any, meta: dict, *, cfg: Any, effort_marker: boo
         slot.reasoning_effort = cp._validate_reasoning_effort(
             meta["reasoning_effort"], persisted_marker=effort_marker
         )
+    # Only a literal true: the line is agent-writable, and a forged mark can do no
+    # more than clear one start's workspace level before the slot's own is written.
+    if meta.get("effort_overlay_clear") is True:
+        slot._effort_overlay_clear = True
     return has_model

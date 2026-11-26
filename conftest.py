@@ -270,8 +270,10 @@ from conftest_floor_configure import (  # noqa: E402,F401 -- bound for pytest an
     _AsyncFixtureScanGate,
     _gate_pytest_asyncio_fixture_scan,
     _hide_the_hosts_companion_plugins,
+    _mirror_path,
     _pin_crew_log_off_for_the_process,
     _pin_the_profile_standalone_for_the_process,
+    _prune_bytecode_mirror_of_gone_checkouts,
     _put_the_real_node_first_on_path,
     _put_the_tree_under_test_first_on_child_paths,
     _redirect_bytecode_cache,
@@ -315,6 +317,7 @@ from conftest_floor_git import (  # noqa: E402,F401 -- bound for pytest and for 
     _git_maintenance_off_entries,
     _git_vars_to_strip,
     _load_git_maintenance_helpers,
+    _no_gateway_checkout_from_the_source_tree,
 )
 
 # The fixtures that run the per-test floors; ``seal_floor_guards`` at the end of
@@ -1820,11 +1823,7 @@ def _prune_bytecode_mirror_of_this_runs_temp_roots(session: pytest.Session) -> N
             absolute = os.path.abspath(root)
         except OSError:  # pragma: no cover - unreadable cwd
             continue
-        # The mirror path is the prefix plus the source's absolute path with its leading
-        # separator dropped; on Windows the drive colon is replaced the same way CPython
-        # does, so the join is done from the parts rather than by string surgery.
-        drive, tail = os.path.splitdrive(absolute)
-        mirrored = os.path.join(prefix, drive.replace(":", "") + tail.lstrip(os.sep))
+        mirrored = _mirror_path(absolute)
         if os.path.isdir(mirrored):
             shutil.rmtree(mirrored, ignore_errors=True)
 
@@ -1856,6 +1855,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
     _remove_short_tmp_root()
     _prune_bytecode_mirror_of_this_runs_temp_roots(session)
+    rootpath = getattr(session.config, "rootpath", None)
+    if rootpath is not None and not hasattr(session.config, "workerinput"):
+        _prune_bytecode_mirror_of_gone_checkouts(str(rootpath))
 
     # ── Windows ProactorEventLoop teardown cleanup (#4764) ─────────────────
     # On Windows + Python 3.12, asyncio.run() creates and closes a

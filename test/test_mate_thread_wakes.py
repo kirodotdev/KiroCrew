@@ -74,7 +74,7 @@ class _State:
 def dispatched(monkeypatch):
     calls: list[tuple[str, str]] = []
 
-    def dispatch(state, slot, prompt, *, human_seen, heartbeat=False):
+    def dispatch(state, slot, prompt, *, human_seen, heartbeat=False, actor="gateway"):
         calls.append((slot.key, prompt))
 
     monkeypatch.setattr("kiro_crew.dashboard.mate_welcome.dispatch_hidden_turn", dispatch)
@@ -185,6 +185,196 @@ async def test_a_report_held_without_a_turn_task_waits_for_the_threads_next_turn
     await _settle(state)
 
     assert [key for key, _ in dispatched] == ["member-atlas"]
+
+
+def _hold_one(state: _State, mate: _Slot, worker: _Slot, source: str) -> str:
+    """Make *source* pending on *mate*'s thread; the envelope its turn opens with."""
+    if source == "worker_report":
+        wakes.note_turn_end(state, worker, "first finding")
+        return wakes.WORKER_REPORT_PREFIX
+    if source == "user_action":
+        wakes.queue_user_action(state, mate.key, "- the user ran your command")
+        return "[User action]"
+    if source == "app_wake":
+        wakes.app_wakes(state)[mate.key] = {"mail": ["ref-1"]}
+        wakes.schedule_flush(state, mate.key)
+        return "[App wake"
+    if source == "rebind_notice":
+        wakes.offer_rebind_notice(state, mate, "atlas-2", "atlas")
+        return wakes.REBIND_NOTICE_PREFIX
+    wakes._kept_notices(state)[mate.key] = "[Kept] the notice"
+    wakes.schedule_flush(state, mate.key)
+    return "[Kept]"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source", ["worker_report", "user_action", "app_wake", "rebind_notice", "kept_notice"]
+)
+async def test_after_a_persons_stop_nothing_held_starts_until_the_next_turn_ends(
+    dispatched, monkeypatch, source
+):
+    monkeypatch.setattr("kiro_crew.dashboard.app_bot_wake.still_granted", lambda _s, wakes: wakes)
+    mate, worker = _crewmate(), _worker()
+    turn = asyncio.get_running_loop().create_future()
+    mate.task = turn
+    state = _State(mate, worker)
+    envelope = _hold_one(state, mate, worker, source)
+
+    wakes.hold_after_stop(state, mate)
+    turn.set_result(None)
+    wakes.note_turn_end(state, mate, None)
+    await _settle(state)
+    # A worker still running after the Stop ends another turn.
+    wakes.note_turn_end(state, worker, "second finding")
+    await _settle(state)
+    assert dispatched == []
+
+    wakes.release_stop_hold(state, mate.key)
+    wakes.note_turn_end(state, mate, "Sure.")
+    await _settle(state)
+    # An app wake waits behind a report: it goes at the end of the report's turn.
+    wakes.note_turn_end(state, mate, "Noted.")
+    await _settle(state)
+
+    prompts = [prompt for _, prompt in dispatched]
+    reports = [p for p in prompts if p.startswith(wakes.WORKER_REPORT_PREFIX)]
+    assert len(reports) == 1 and "second finding" in reports[0]
+    assert len([p for p in prompts if p.startswith(envelope)]) == 1
+    assert len(prompts) == (1 if source == "worker_report" else 2)
+
+
+@pytest.mark.asyncio
+async def test_the_turn_that_ends_a_hold_delivers_at_its_end_without_a_turn_end_note(dispatched):
+    mate, worker = _crewmate(), _worker()
+    state = _State(mate, worker)
+    wakes.hold_after_stop(state, mate)
+    wakes.note_turn_end(state, worker, "finding")
+    await _settle(state)
+    assert dispatched == []
+
+    # The next turn starts (a saved prompt's depth-1 turn, whose end notes nothing).
+    turn = asyncio.get_running_loop().create_future()
+    mate.task = turn
+    wakes.release_stop_hold(state, mate.key)
+    turn.set_result(None)
+    await _settle(state)
+
+    assert [key for key, _ in dispatched] == ["member-atlas"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("app_name, held", [("", True), ("mail-bot", False)])
+async def test_only_a_persons_dashboard_stop_holds_a_bot_thread(
+    tmp_path, monkeypatch, dispatched, app_name, held
+):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard.chat_handlers import api_chat_slot_stop
+
+    state = _make_state(tmp_path)
+    members_mod.write_dm_binding("atlas", member="Atlas", slot_key="member-atlas")
+    slot = state.get_or_create_slot("member-atlas", agent="Atlas", mode=members_mod.DM_SLOT_MODE)
+    turn = asyncio.get_running_loop().create_future()
+    slot.task = turn
+    worker = state.get_or_create_slot("chat-worker-1")
+    worker._created_by = slot.key
+    worker._lineage_minted = True
+    wakes.note_turn_end(state, worker, "finding")
+    state.sessions.stop_turn = AsyncMock(return_value="soft")
+    # Past both deny checks, so only the caller's identity differs.
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.deny_app_slot_access", lambda *a: None)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", MagicMock())
+
+    @web.middleware
+    async def _caller(request, handler):
+        request["app"] = app_name
+        return await handler(request)
+
+    app = web.Application(middlewares=[_caller])
+    app["state"] = state
+    app.router.add_post("/api/chat/slots/{slot}/stop", api_chat_slot_stop)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/chat/slots/member-atlas/stop")
+        assert resp.status == 200
+    turn.set_result(None)
+    await _settle(state)
+
+    assert [key for key, _ in dispatched] == ([] if held else ["member-atlas"])
+
+
+@pytest.mark.asyncio
+async def test_the_next_turn_in_the_thread_ends_the_hold():
+    from turn_harness import Do, TurnScript, run_turn
+
+    from kiro_crew.acp.types import (
+        EVENT_COMPLETE,
+        EVENT_TEXT_CHUNK,
+        STOP_REASON_END_TURN,
+        AcpEvent,
+    )
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.dashboard.recovery_replays import ReplayFamily
+
+    held: list[bool] = []
+    # Read mid-stream, so after the turn passed the dispatch gates.
+    events = [
+        Do(lambda ctx: held.append(wakes.stop_held(ctx.state, ctx.slot.key))),
+        AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+        AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+    ]
+
+    def _stop(ctx) -> None:
+        # Held afresh before each turn. The release reads only the thread's key,
+        # so the harness's slot stands in.
+        wakes._stop_holds(ctx.state).add(ctx.slot.key)
+
+    def _stop_and_arm_replay(ctx) -> None:
+        _stop(ctx)
+        # The record the drain claims a replay from, so the consume seam lets it run.
+        ctx.slot.replays.arm(
+            ReplayFamily.SESSION_NOT_FOUND,
+            entry_id="q-replay",
+            session_key=effective_session_key(ctx.slot),
+            stop_gen=ctx.slot._stop_generation,
+            session_stop_gen=0,
+        )
+
+    await run_turn(
+        TurnScript(
+            # A recovery re-run of a turn already counted: still held.
+            message="carry on",
+            run_kwargs={"_synthetic_recovery_turn": True},
+            setup=_stop,
+            events=events,
+            then=TurnScript(
+                # A replay of a turn already counted: still held.
+                message="carry on",
+                user_row=False,
+                run_kwargs={"_replay": frozenset({ReplayFamily.SESSION_NOT_FOUND})},
+                setup=_stop_and_arm_replay,
+                events=events,
+                then=TurnScript(
+                    # A person's message and a saved prompt's turn: each ends it.
+                    message="carry on",
+                    setup=_stop,
+                    events=events,
+                    then=TurnScript(
+                        # ``/prompts get`` runs the saved prompt at depth 1.
+                        message="the saved prompt",
+                        run_kwargs={"_prompt_depth": 1},
+                        setup=_stop,
+                        events=events,
+                    ),
+                ),
+            ),
+        )
+    )
+    assert held == [True, True, False, False]
 
 
 class _Draining:
@@ -732,9 +922,9 @@ async def test_the_wake_a_worker_report_starts_carries_the_page_line(monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("how", ["closing", "removed", "replaced"])
+@pytest.mark.parametrize("how", ["closing", "removed", "replaced", "stopped"])
 async def test_a_thread_closed_during_the_page_read_gets_no_wake(dispatched, monkeypatch, how):
-    """The page read is a thread hop: a close or a new generation in it wins, reports stay."""
+    """The page read is a thread hop: a close, new generation or Stop in it wins, reports stay."""
     mate, worker = _crewmate(), _worker()
     state = _State(mate, worker)
 
@@ -743,8 +933,10 @@ async def test_a_thread_closed_during_the_page_read_gets_no_wake(dispatched, mon
             mate.is_closing = True
         elif how == "removed":
             del state._slots[mate.key]
-        else:
+        elif how == "replaced":
             state._slots[mate.key] = _crewmate()
+        else:
+            wakes.hold_after_stop(state, mate)
         return "PAGE LINE"
 
     monkeypatch.setattr(wakes, "page_line", close_during_read, raising=False)

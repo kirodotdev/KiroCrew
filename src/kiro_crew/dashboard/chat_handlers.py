@@ -271,6 +271,7 @@ from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
     api_chat_slot_project,
     api_chat_slot_reload,
     api_chat_slot_workspace,
+    probe_project_dir,
     reload_slot_session,
 )
 from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
@@ -302,6 +303,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
     _app_hides_own_mode,
     _birth_default_project,
+    _birth_project,
     _check_new_slot_assignment,
     _created_slot_row,
     _default_template_stamp,
@@ -445,6 +447,7 @@ from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _compaction_in_flight,
     _decline_compacting_interrupt,
     _dispatch_run_now_idle,
+    _end_runner_past_its_provider_turn,
     _interrupt_claimed_turn,
     _log_interrupt,
     _make_stop_resolver,
@@ -601,6 +604,7 @@ from kiro_crew.dashboard.deny_override import (  # noqa: F401
     DENY_OVERRIDE_ACTIONS,
     is_deny_override_card,
 )
+from kiro_crew.dashboard.effort_overlay_mark import set_effort_overlay_clear_mark  # noqa: F401
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _SLOT_SCOPED_TRUST_MODES,
     _owner_denial_response,

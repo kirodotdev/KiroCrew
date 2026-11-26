@@ -132,7 +132,7 @@ def kas_hook_checkout(provider: object) -> str | None:
     from kiro_crew.agent_sdk import spec_hooks
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 
-    if spec_hooks.capabilities_of(provider).backend == ACP_BACKEND_KAS:
+    if spec_hooks.capabilities_of(provider).backend == ACP_BACKEND_KAS:  # harness-ok: KAS hooks
         if spec_hooks.provider_session_key(provider).startswith(
             CRON_SESSION_KEY_PREFIX
         ) and not getattr(provider, "kas_folder_hooks_projected", False):
@@ -209,7 +209,7 @@ async def person_turn_reprojects(
     key = spec_hooks.provider_session_key(provider)
     if not (
         key.startswith(CRON_SESSION_KEY_PREFIX)
-        and spec_hooks.capabilities_of(provider).backend == ACP_BACKEND_KAS
+        and spec_hooks.capabilities_of(provider).backend == ACP_BACKEND_KAS  # harness-ok: KAS hooks
         and not getattr(provider, "kas_folder_hooks_projected", False)
     ):
         return False

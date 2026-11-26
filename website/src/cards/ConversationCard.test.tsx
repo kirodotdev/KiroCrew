@@ -1017,6 +1017,22 @@ describe('a card in the conversation', () => {
     expect(screen.getByTestId('change-card-record').getAttribute('data-card-status')).toBe('applied')
   })
 
+  it('never flashes an unfinished proposal as expired while a failed read is re-read', async () => {
+    let settle = () => {}
+    server.use(
+      http.get('/api/cards/pending', () => HttpResponse.json({ error: 'card store unavailable', code: 'x' }, { status: 500 }), { once: true }),
+      http.get('/api/cards/pending', () => new Promise<Response>(resolve => { settle = () => resolve(HttpResponse.json({ cards: [card()] })) })),
+    )
+    renderCards([row(card({ status: 'pending' }))])
+    await screen.findByTestId('change-card-read-error')
+    void qc.refetchQueries({ queryKey: cardsQueryKey(SLOT) })
+    await waitFor(() => expect(screen.queryByTestId('change-card-read-error')).toBeNull())
+    expect(screen.queryByTestId('change-card-record')).toBeNull()
+    settle()
+    expect(await screen.findByTestId('change-card')).toBeTruthy()
+    expect(screen.queryByTestId('change-card-record')).toBeNull()
+  })
+
   it('never flashes a live proposal as expired while the store is still answering', async () => {
     pending = [card()]
     renderCards()

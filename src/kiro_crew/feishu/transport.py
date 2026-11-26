@@ -20,6 +20,8 @@ only when it @-mentions this app's bot (``LarkInbound.bot_mentioned``).
 from __future__ import annotations
 
 import logging
+import mimetypes
+import os
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
@@ -29,6 +31,7 @@ from kiro_crew.feishu.renderer import FEISHU_UPLOAD_LIMITS
 from kiro_crew.messaging.attachments import channel_reads_no_attachments
 from kiro_crew.messaging.dispatch import inbound_permitted
 from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
+from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
     InboundMessage,
@@ -70,6 +73,10 @@ FEISHU_CAPABILITIES = TransportCapabilities(
     # failure raises (see ``send_message``). Same contract as WeCom's.
     returns_message_id=False,
 )
+
+#: Feishu's ceiling for an ordinary file upload (``im.v1.file.create``). An image
+#: over the image API's own 10 MB cap (``FEISHU_UPLOAD_LIMITS``) is sent as a file.
+FEISHU_FILE_MAX_BYTES = 30 * 1024 * 1024
 
 # The refused-inbound spool's route markers, naming the DM sender or group chat
 # an entry came from. The restart notice is sent to that DM or group (see
@@ -257,6 +264,74 @@ class FeishuTransport(MessagingTransport):
         if receive_id_type != "open_id" or not file.data:
             return False
         return await self._client.send_new_image(receive_id_type, receive_id, file.data)
+
+    async def send_document(
+        self,
+        conversation_id: str,
+        document: OutboundFile,
+        *,
+        caption: str = "",
+        thread_id: str | None = None,
+    ) -> str:
+        """Deliver ONE ``file_send`` file into an allow-listed DM.  Returns a non-empty id.
+
+        Resolved by ``upload_destination.resolve_channel`` and called by
+        ``api_channel_upload_file``. *document* carries the bytes the file_send
+        gates validated; its path supplies only the file name, which also decides
+        the type, and is never re-opened. A file named as an image whose bytes are
+        a PNG, JPEG, GIF, WebP or BMP within Feishu's image limit goes as an image
+        message; anything else as a file message under its admitted name
+        (``file_type`` ``pdf`` for a PDF, ``stream`` otherwise). The name counts
+        because BMP's two-byte magic also opens ordinary text, such as a CSV whose
+        header starts ``BMI``.
+
+        Re-decided against the live roster at the send, as
+        :meth:`send_outbound_image` is: anything but an allow-listed DM -- a group,
+        whose members are not all on ``allowed_open_ids``, or an id dropped from
+        the roster -- raises before anything is uploaded. It is decided again after
+        the upload, raising before the message is created, and before the caption,
+        since a live reload can revoke the DM during either await. A refusal from
+        Feishu raises too; its error names the reason (for an app without
+        ``im:resource``, that scope), which the caller hands back to the
+        ``file_send`` result.
+
+        The file message has no text field, so a non-empty *caption* follows as a
+        text message to the same DM once the file landed. It is best-effort: a
+        failed or revoked caption is logged and the file still counts as
+        delivered. Returns the created message's id, or ``"sent"`` when Feishu's
+        answer carried none, since the caller reads a falsy return as failure.
+        """
+        address = self._address(conversation_id, thread_id)
+        if address[0] != "open_id":
+            raise RuntimeError("Feishu delivers files to an allow-listed direct message only")
+        data = document.data
+        if not data:
+            raise RuntimeError("Feishu does not accept an empty file")
+        file_name = os.path.basename(document.path) or "file"
+        named_type = mimetypes.guess_type(file_name)[0] or ""
+        image_cap = FEISHU_UPLOAD_LIMITS.max_file_bytes
+        as_image = (
+            named_type.startswith("image/")
+            and sniff_raster_mime(data[:SNIFF_BYTES]) is not None
+            and (image_cap is None or len(data) <= image_cap)
+        )
+        if not as_image and len(data) > FEISHU_FILE_MAX_BYTES:
+            raise RuntimeError("the file is over Feishu's 30 MB file limit")
+        msg_type, content = await self._client.upload_new_file(
+            data,
+            as_image=as_image,
+            file_name=file_name,
+            file_type="pdf" if named_type == "application/pdf" else "stream",
+        )
+        if self._address(conversation_id, thread_id) != address:
+            raise RuntimeError("the Feishu direct message left the allow-list during the upload")
+        message_id = await self._client.send_uploaded_file(*address, msg_type, content)
+        if caption:
+            if self._address(conversation_id, thread_id) != address:
+                logger.warning("feishu send_document: DM left the allow-list before the caption")
+            elif not await self._client.send_new(*address, caption):
+                logger.warning("feishu send_document: caption was not delivered")
+        return message_id or "sent"
 
     def _address(self, conversation_id: str, thread_id: str | None) -> tuple[str, str]:
         """``(receive_id_type, receive_id)`` a proactive send goes to, or ``("", "")``.

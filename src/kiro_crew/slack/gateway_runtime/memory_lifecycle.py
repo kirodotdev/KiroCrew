@@ -351,9 +351,8 @@ async def _wait_for_memory_preparation(self: GatewayOrchestrator) -> bool:
 
 def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
     """Visit one already-open memory store using the ready shared model."""
-    from kiro_crew.boot_timing import timed_step
     from kiro_crew.context import cached_vector_store_entries
-    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, require_memory_store
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 
     if self._memory_repair_stop.is_set() or reembed_progress().is_active():
         return
@@ -364,8 +363,31 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
         # named-store cache. Prefer that active handle if a malformed cache
         # ever repeats the reserved identity; repair must never open a store.
         entries_by_name[DEFAULT_MEMORY_STORE] = global_store
+    from kiro_crew.vector_memory_runtime.embedding_repair import (
+        drop_fresh_vectors,
+        has_fresh_vectors,
+    )
+
     entries = sorted(entries_by_name.items())
     if not entries:
+        return
+    # A store holding rows just written without a vector (a V2 consolidation)
+    # gets every other visit, its own cursor rotating among such stores, so new
+    # rows wait about two visits and a busy store cannot starve the rotation.
+    fresh_cursor = getattr(self, "_memory_repair_fresh_cursor", "")
+    fresh = [entry for entry in entries if has_fresh_vectors(entry[1])]
+    if fresh and getattr(self, "_memory_repair_fresh_turn", True):
+        self._memory_repair_fresh_turn = False
+        name, store = next((entry for entry in fresh if entry[0] > fresh_cursor), fresh[0])
+        self._memory_repair_fresh_cursor = name
+        swept = False
+        try:
+            swept = self._repair_store_once(name, store, fresh=True)
+        finally:
+            if not swept:
+                # Turned away (unavailable, provider-owned, no model): its rows
+                # keep NULL for the paged sweep and stop jumping the rotation.
+                drop_fresh_vectors(store)
         return
     name, store = next(
         (entry for entry in entries if entry[0] > self._memory_repair_cursor), entries[0]
@@ -373,35 +395,74 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
     # Advance before validation/inference so a broken member cannot starve
     # healthy members. Cache access never creates or opens another store.
     self._memory_repair_cursor = name
+    self._memory_repair_fresh_turn = True
+    self._repair_store_once(name, store, fresh=False)
+
+
+def _repair_store_once(self: GatewayOrchestrator, name: str, store: Any, *, fresh: bool) -> bool:
+    """Repair one store's missing vectors. True once its bounded sweep ran."""
+    from kiro_crew.boot_timing import timed_step
+    from kiro_crew.embeddings import wait_for_cold_shared_embedder
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, require_memory_store
+    from kiro_crew.vector_memory_runtime.embedding import _COLD_LOAD_RETRY_SECS
+
     require_memory_store(name)
     from kiro_crew.memory_provider.resolver import builtin_background_allowed
 
     if not builtin_background_allowed(name):
-        return
+        return False
     if name == DEFAULT_MEMORY_STORE:
         migration = self._auto_migrate_task
         if migration is not None and not migration.done():
             # The boot migration owns Global until both its migration and
             # full repair phases finish. It runs on another executor, so a
             # standing repair here would otherwise mutate the same store.
-            return
+            return False
     if self._memory_repair_stop.is_set():
-        return
-    if peek_ready_shared_embedder() is None:
+        return False
+    # Fresh rows load an idle-unloaded model; the backlog alone does not, so a
+    # row that never embeds cannot keep ~700 MB resident past idle eviction.
+    if peek_ready_shared_embedder() is None and not (
+        fresh
+        and wait_for_cold_shared_embedder(_COLD_LOAD_RETRY_SECS, self._memory_repair_stop.is_set)
+    ):
         # No model yet: only the model-free lesson-dedup rollback can run.
         from kiro_crew.memory_lesson_dedup import rollback_if_off
 
         rollback_if_off(store)
-        return
+        return False
     with timed_step("reconcile_store_repair"):
         reconcile_store_embedding_space(store)
     if not store.has_pending_embeddings() and not store_embedding_space_is_stale(store):
-        return
+        return False
     if store.embed_fn is None:
         store.embed_fn = make_sync_embed_fn()
-    store.backfill_missing_embeddings(
-        max_rows_per_kind=16, should_stop=self._memory_repair_stop.is_set
-    )
+    import contextlib
+    import os
+
+    from kiro_crew.embeddings import bulk_backlog_boost
+    from kiro_crew.memory_dream import person_turn_running
+    from kiro_crew.resource_status import _read_load_per_cpu
+    from kiro_crew.vector_memory_runtime.embedding_repair import pending_rows_at_least
+
+    # A store with 500+ rows waiting drains at the backlog duty while the host
+    # is idle: no chat turn and under half a runnable task per core, asked again
+    # before every paced row (no load average, as on Windows, reads as busy).
+    def host_idle() -> bool:
+        load = _read_load_per_cpu(os.cpu_count() or 1)
+        return load is not None and load < 0.5 and not person_turn_running(self)
+
+    try:
+        backlog = pending_rows_at_least(store, 500)
+    except Exception:  # noqa: BLE001 - the boost is optional; the sweep still runs
+        logger.debug("Backlog count failed; sweeping at the default duty", exc_info=True)
+        backlog = False
+    boost = bulk_backlog_boost(host_idle) if backlog else contextlib.nullcontext()
+    with boost:
+        store.backfill_missing_embeddings(
+            max_rows_per_kind=16, should_stop=self._memory_repair_stop.is_set
+        )
+    return True
 
 
 async def _repair_member_memory(self: GatewayOrchestrator) -> None:

@@ -783,6 +783,45 @@ class TestAppPromptPathIsContained:
         assert "prompt" not in merged
 
 
+class TestBootReconcileRefreshesTheToolExclusion:
+    """``managedToolPolicy.exclude`` is computed at materialization, so a managed
+    tool a later upgrade adds is covered only once materialization runs again.
+    Gateway boot is the path that guarantees it: pin that the boot reconcile
+    re-derives the exclusion."""
+
+    def test_a_tool_added_to_a_managed_server_is_excluded_after_boot(
+        self, tmp_path, app_env, monkeypatch
+    ) -> None:
+        import kiro_crew.mcp_discovery_managed as managed
+        from kiro_crew.apps import bridges as bridges_mod
+        from kiro_crew.apps.manager import enable_app
+
+        src = _make_app_source(
+            tmp_path, name="scoped-app", permissions={"cron": True, "mcpTools": ["cron_add"]}
+        )
+        install_app(src)
+        enable_app("scoped-app")
+        register_app("scoped-app")
+        agent_file = app_env["kiro_agents"] / "scoped-app--my-agent.json"
+        before = json.loads(agent_file.read_text())["managedToolPolicy"]["exclude"]
+        assert "brand_new_tool" not in before
+
+        real = managed.managed_tool_names_for_policy
+
+        def upgraded(name):
+            tools = real(name)
+            if name == "kirocrew-core" and tools is not None:
+                return [*tools, "brand_new_tool"]
+            return tools
+
+        monkeypatch.setattr(managed, "managed_tool_names_for_policy", upgraded)
+        bridges_mod.reconcile_enabled_app_resources("scoped-app")
+
+        after = json.loads(agent_file.read_text())["managedToolPolicy"]["exclude"]
+        assert "brand_new_tool" in after, "boot must re-derive the exclusion"
+        assert "cron_add" not in after
+
+
 class TestRegisterPrunesUpgradedAwayResources:
     """A manifest UPGRADE that drops an agent or MCP server must un-register it.
     Pruning lives in the off-loop boot reconcile (reconcile_enabled_app_resources),

@@ -19,8 +19,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from skill_script_helpers import skill_text
+from windows_sim import read_sharing_violation, read_text_sharing_violation
 
-from kiro_crew import crew_mode, crew_pause, platform_compat
+from kiro_crew import atomic_write, crew_mode, crew_pause, platform_compat
 from kiro_crew.dashboard.handlers.office_slides import _KeyedLocks
 from kiro_crew.dashboard.turn_dispatch import mark_turn_unstarted
 from kiro_crew.testing.wait import until_parked
@@ -165,6 +166,31 @@ def test_a_damaged_file_pauses_nothing(_pause_store, body):
     rec = crew_pause.record("root")
     assert rec is None or rec["held"] == rec["tree"] == rec["stopped"] == []
     assert not crew_pause.holds_turn("w1")
+
+
+def test_a_pause_file_that_cannot_be_read_is_read_again_and_never_written_over(
+    _pause_store, monkeypatch
+):
+    crew_pause.pause("rootA", ["w1"], ["w1"])
+    before = _pause_store.read_bytes()
+    _forget_memory()
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+    # Held open by another program for longer than the read retry waits.
+    name = _pause_store.name
+    with (
+        read_sharing_violation(match=name, times=10_000),
+        read_text_sharing_violation(match=name, times=10_000),
+    ):
+        crew_pause.load()  # the startup preload: logged, never raised
+        with pytest.raises(OSError):
+            crew_pause.pause("rootB", ["w2"], ["w2"])
+    assert _pause_store.read_bytes() == before
+    # Once the hold ends, the next read finds rootA paused without a restart.
+    crew_pause.load()
+    assert crew_pause.root_paused("rootA") and crew_pause.holds_turn("w1")
+    crew_pause.pause("rootB", ["w2"], ["w2"])
+    _restart()
+    assert crew_pause.root_paused("rootA") and crew_pause.root_paused("rootB")
 
 
 # ── the routes ─────────────────────────────────────────────────────────────────
@@ -791,6 +817,45 @@ async def test_a_turn_started_during_the_pause_write_is_stopped_too(routes, monk
     assert json.loads(resp.text)["stopped"] == ["w1", "w3", "w4"]
     assert ("w4", False) in routes.calls["stop"]
     assert crew_pause.record("root")["stopped"] == ["root", "w1", "w3", "w4"]
+
+
+@pytest.mark.parametrize("cause", ["size_cap", "replace_refused"])
+@pytest.mark.asyncio
+async def test_a_refused_second_pause_write_still_stops_what_the_first_one_holds(
+    routes, monkeypatch, _pause_store, cause
+):
+    rows = [dict(r) for r in _TREE]
+    real = crew_pause.pause
+    calls: list[list[str]] = []
+
+    def _refused(*_a: Any, **_k: Any) -> None:
+        raise PermissionError("[WinError 5] Access is denied")
+
+    def _pause_while_w4_wakes(root: str, tree: list[str], stopped: list[str]) -> Any:
+        calls.append(list(stopped))
+        out = real(root, tree, stopped)
+        if len(calls) == 1:
+            rows[4]["running"] = True  # w4's patrol wake starts during the write
+            if cause == "size_cap":  # the file is at the cap, so adding w4 would pass it
+                monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", _pause_store.stat().st_size)
+            else:  # a holder without sharing makes the replace fail
+                monkeypatch.setattr(crew_pause, "atomic_write", _refused)
+        return out
+
+    monkeypatch.setattr(crew_pause, "pause", _pause_while_w4_wakes)
+    try:
+        resp = await routes.handler.api_crew_pause(_req(_state(rows)))
+    except OSError as exc:
+        pytest.fail(f"the refused second write left the route before any stop: {exc!r}")
+    assert len(calls) == 2
+    assert resp.status == 500
+    body = json.loads(resp.text)
+    assert body["code"] == "pause_file_unsaved"
+    assert body["stopped"] == ["w1", "w3"] and body["not_stopped"] == ["w4"]
+    # Every key the stored record names as stopped was stopped; w4's turn runs on.
+    assert sorted(key for key, _ in routes.calls["stop"]) == ["root", "w1", "w3"]
+    assert crew_pause.record("root")["stopped"] == ["root", "w1", "w3"]
+    assert routes.calls["notice"] == [{"kind": "crew_paused_notice", "stopped": 2}]
 
 
 @pytest.mark.asyncio

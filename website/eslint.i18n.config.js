@@ -1167,10 +1167,11 @@ export default [
               // A CALLEE exemption, not a whole-file one, for the reason the ones
               // above give -- and the name is deliberately long and specific rather
               // than a generic `warnSkip`, so a future helper elsewhere cannot
-              // inherit this by accident. TWO definitions exist today:
+              // inherit this by accident. THREE definitions exist today:
               // `src/components/commandBar/contributedCommands.ts`, which renders nothing,
-              // and `src/apps/fileMenuContributions.tsx`, the same shim for a refused
-              // `contributes.fileMenuItems` row. The second REUSES this name rather
+              // `src/apps/fileMenuContributions.tsx`, the same shim for a refused
+              // `contributes.fileMenuItems` row, and `src/apps/sessionCreateContributions.tsx`
+              // for a refused `contributes.sessionCreateItems` row. The later ones REUSE this name rather
               // than adding a second global exemption for a differently-named shim:
               // one entry covering both keeps the released surface the same size,
               // where two would widen it for no gain. Note the file-scope caveat

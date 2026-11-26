@@ -146,6 +146,12 @@ def browser_grant_row(name: str, manifest: Any) -> dict[str, Any]:
     return {"browserGrant": {"approved": approved, "staged": staged, "preview": preview_on()}}
 
 
+#: The ``preview_off`` refusal's text, also the browser-recipe route's (``browser_media``).
+PREVIEW_OFF_TEXT = (
+    "the owner has not turned on App browser access (Settings > Developer > Feature previews)"
+)
+
+
 class BrowserRefused(PermissionError):
     """``ctx.browser.page(slot)`` was refused; ``code`` says why (``not_your_slot``, ``no_state``)."""
 
@@ -161,11 +167,7 @@ def verb_refusal(app: str, verb: str) -> tuple[str, str] | None:
     :func:`app_browser_verbs`, which also holds every verb back while the app is off.
     """
     if not preview_on():
-        return (
-            "preview_off",
-            "the owner has not turned on App browser access (Settings > Developer > "
-            "Feature previews)",
-        )
+        return ("preview_off", PREVIEW_OFF_TEXT)
     if verb not in app_browser_verbs(app):
         return (
             "permission_denied",

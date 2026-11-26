@@ -146,6 +146,7 @@ def _install_dashboard_middlewares(
     dashboard_url: str,
     tailnet_direct: DirectGate | GateRef | None = None,
     ssm_gate: SsmGateRef | None = None,
+    tailnet_https_port: int = 443,
 ) -> None:
     """Install the dashboard's middleware chain on *app*, outermost first.
 
@@ -363,7 +364,12 @@ def _install_dashboard_middlewares(
             # auto the seeded set also names the served port, and this rebuild
             # names only the requested one, so replacing it would drop those.
             app["allowed_origins"] = app.get("allowed_origins", set()) | build_allowed_origins(
-                port, local_only, configured_host, dashboard_url, tailnet_host=tailnet_host
+                port,
+                local_only,
+                configured_host,
+                dashboard_url,
+                tailnet_host=tailnet_host,
+                tailnet_https_port=tailnet_https_port,
             )
             logger.info(
                 "dashboard_url=%s: added to CSRF allowed origins (token auth verified)",

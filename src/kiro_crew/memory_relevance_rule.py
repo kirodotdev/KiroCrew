@@ -100,9 +100,16 @@ def fact_text(label: str, value_json: str) -> str:
     return f"{label.replace('.', ' ').replace('_', ' ')} {memory_v2.visible_json(value_json)}"
 
 
-def fact_admitted(query_terms: Iterable[str], text: str, cosine: float | None) -> bool:
-    """Whether a task fact has the private store's relevance evidence for the request."""
-    return bool(memory_v2.relevance_evidence(query_terms, text, cosine)["admitted"])
+def fact_admitted(
+    query_terms: Iterable[str], text: str, cosine: float | None, *, instructed: bool = False
+) -> bool:
+    """Whether a task fact has the private store's relevance evidence for the request.
+
+    *instructed* says the cosine came from a query embedded with the model's
+    query instruction, which has its own floors.
+    """
+    evidence = memory_v2.relevance_evidence(query_terms, text, cosine, instructed=instructed)
+    return bool(evidence["admitted"])
 
 
 def _heading_level(line: str) -> int:

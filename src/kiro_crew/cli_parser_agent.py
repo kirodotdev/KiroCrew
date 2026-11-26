@@ -139,7 +139,11 @@ Tool permission prompt (same keys as kiro-cli chat):
     )
     headless.add_argument("--cwd", metavar="DIR", help="Project directory for the chat (absolute)")
     headless.add_argument(
-        "--timeout", type=float, default=0, metavar="SECS", help="Wall-clock cap (exit 4)"
+        "--timeout",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help="Wall-clock cap (exit 4); default 6 hours, 0 turns it off",
     )
     headless.add_argument(
         "--budget", type=float, default=0, metavar="CREDITS", help="Kiro credit cap (exit 5)"

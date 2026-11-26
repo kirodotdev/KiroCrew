@@ -730,7 +730,9 @@ for want of an OS sandbox, whatever the switch reads: no backend
 host (the probe's errno, the kernel sysctl, the OS family, the launcher's stderr,
 `kirocrew service install`, the owner's config key), so `_on_error`, the ACP error
 card and the background-start stop row type it: `meta.code` `host_sandbox_unavailable` with the
-failure time `meta.at` (and `meta.retryable` for a momentary refusal), and the
+failure time `meta.at` (and `meta.retryable` for a momentary refusal, which a
+user-namespace cap read as 0 is not: it is reported transient, yet only the owner
+can fix it), and the
 content prefix `host_sandbox_unavailable: `, which the chat SSE stream carries
 since it sends no row meta. An error row a build without that typing stored is
 read as the same row when its content holds either raiser's fixed wording, "Sandbox backend unavailable" (every `SandboxUnavailableError`) or
@@ -770,7 +772,9 @@ their principal, so every audit row and attribution names them, never the owner.
 where the difference is a fact about who is at the machine, not a right:
 `/api/auth/me`'s `owner_ok` (so the host's first-run chapters open only in the
 owner's tab) and the decide-by-id form of a tool approval, which only the owner's
-browser sends (a teammate's card always names its request). A messaging allowlist
+browser sends (a teammate's card always names its request), and the YOLO
+confirmation acknowledgement kept on the gateway (`GET`/`PUT /api/chat/yolo-ack`),
+which is the machine owner's; a teammate keeps the per-browser copy. A messaging allowlist
 link, an app token, an internal caller, a widened-bind tailnet peer (attribution
 only) and an Unknown actor are not teammates. The SSM and Tailscale paths exist only
 while the Shared Crew preview is on; a relay teammate is the team Crew's own access
@@ -796,6 +800,12 @@ once through `POST /api/shared-crew/tailscale/credential` and stored in a dedica
 a response. The status read reports `connected`, the tailnet name, the key's
 `expires` (from `GET /tailnet/-/keys/{keyId}`) and `key_expires_soon` (within 7
 days) or `key_expired`. `DELETE .../credential` removes it.
+
+**State file.** Invites, members and display records live in `invites.json` beside
+the vault. A missing file reads as empty and the first update creates it. A file
+that exists but cannot be read, decoded or parsed still reads as empty for display,
+but `update_state` raises `StateUnreadableError` and writes nothing, so the action
+fails instead of rewriting the file from an empty state.
 
 **This machine's device.** `connect` matches the local daemon's `Self.PublicKey`
 against `devices[].nodeKey`, then `Self.TailscaleIPs` against `devices[].addresses`,
@@ -943,7 +953,10 @@ step (`/api/update/approve`) stays host-local.
 store (`<data home>/.vault/shared-crew-ssm/invites.json`, owner-only, masked from every
 sandbox mode) holds only the id, alias, creation time, first-use time and the SHA-256
 of the secret; the credential is returned once, by the create route. The store is
-read once when the listener starts, so a request answers from memory. At most 64
+read once when the listener starts, so a request answers from memory. A missing file
+reads as empty; a file that exists but cannot be read or is not valid JSON logs one
+warning naming it and admits no invite, and a create reads it again rather than rewrite
+it from the failed read (503 `ssm_invites_unreadable` while it still fails). At most 64
 live invites. The first request carrying `?ssm_invite=` sets the `mc_ssm_<port>` cookie (keyed by the port the browser connects to, so two Crews never share one)
 (`HttpOnly`, `SameSite=Lax`) and redirects to the same URL without it
 (`Referrer-Policy: no-referrer`); that first use sets `joined`. Revoking removes the

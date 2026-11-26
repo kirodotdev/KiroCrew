@@ -173,7 +173,7 @@ async def _recognize_session(
     # live-slot policy check (Slack is the only channel with that concept),
     # so widening the namespace does not widen memory writes to ephemeral
     # sessions.
-    is_channel_ns = is_channel_session_key(sk) or bool(SLACK_THREAD_TS_RE.match(sk))
+    is_channel_ns = is_channel_session_key(sk) or bool(SLACK_THREAD_TS_RE.fullmatch(sk))
     # Only consult the on-disk JSONL when the cheaper in-memory checks all
     # fail. ``_probe_persisted_session()`` performs synchronous filesystem
     # I/O (path resolution plus a bounded metadata head read), so it runs

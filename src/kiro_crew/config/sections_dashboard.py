@@ -316,6 +316,31 @@ class DashboardConfig:
             "30 seconds in the MCP gateway process).",
         ),
     )
+    sessionless_internal_calls: str = field(
+        default="log",
+        metadata=_meta(
+            "Session-less internal calls",
+            "What the gateway does with an internal call that names no session and comes "
+            "from a process it cannot place outside the agent sandbox. 'log' admits it and "
+            "writes a security log row (one per caller and path every 10 minutes); "
+            "'enforce' refuses it. Stays 'log' until the log shows no Kiro Crew tool of "
+            "this shape. Takes effect on the next call; no restart.",
+            enum=["log", "enforce"],
+        ),
+    )
+    unattested_session_keys: str = field(
+        default="log",
+        metadata=_meta(
+            "Unattested session-key internal calls",
+            "What the gateway does with an internal call over loopback TCP that declares "
+            "a session key no transport can prove is the caller's own (no kernel peer "
+            "attestation and no valid session token). 'log' (today's behavior) records the "
+            "request and answers it as before; 'enforce' refuses it with 403. A blank key "
+            "and 'dashboard:ui' are exempt. Stays 'log' until the log shows which callers "
+            "would be refused. Takes effect on the next call; no restart.",
+            enum=["log", "enforce"],
+        ),
+    )
     turn_cache_estimate: bool = field(
         default=False,
         metadata=_meta(

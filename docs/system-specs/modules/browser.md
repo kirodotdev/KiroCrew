@@ -169,8 +169,20 @@ until the first stage past `installing_harness`; while it is set, a start sets t
 status to `disconnected` with "Browser Harness is being reinstalled; try again
 when it finishes" (`HARNESS_REINSTALLING_DETAIL`) and raises
 `HarnessNotInstalled`. A spawn whose venv interpreter vanished between the
-install read and the spawn (`FileNotFoundError`) answers the same. An install
-that keeps the venv, and the Chromium download, hold nothing.
+install read and the spawn (`FileNotFoundError`) answers the same. Before either
+arm that clears the venv (a rebuild, a copy from the runtime) removes the marker,
+the job waits for `HarnessSupervisor.stop_for_harness_rebuild`: it sets
+`installing_harness` and runs the ordinary stop, which ends the browser session
+(the agent's tabs, the relay, Kiro's Chromium) with the daemon and helper worker
+started from the venv's interpreter, or reclaims a daemon a previous gateway left,
+waiting up to `_STOP_GRACE_SECS` for that process (by the pid its ping reply
+carries) to exit, since it still runs its shutdown cleanup after its socket stops
+answering. Left running, they lose their packages to the clear on POSIX, and on
+Windows the clear fails part-way on the interpreter they hold. The rebuild stop
+returns only after a helper call still holding the call lock lets go of it. An
+install stopped while it waits keeps the marker. A repair (`venv --upgrade`) holds starts but stops
+nothing; an install that keeps the venv, and the Chromium download, hold and stop
+nothing.
 
 The daemon starts with a scrubbed environment built by one function and pinned
 by one test:
@@ -224,7 +236,10 @@ whole script unscrubbed.
 carries none unless its runtime bundles the harness), so each helper call runs in
 a worker the venv's interpreter executes
 (`<prefix>/bin/python -I browser_harness/helper_worker.py`, JSON lines on its
-pipes, one call at a time behind a lock, `CALL_TIMEOUT_SECS = 90`). The pipe is
+pipes, one call at a time behind a lock, `CALL_TIMEOUT_SECS = 90`). A call whose
+handle a stop or restart retired before it got that lock, or while it was starting
+a worker under it, raises `BrowserRestarted`; a worker it was starting is stopped
+first. The pipe is
 read with an 8 MiB line limit (`WORKER_LINE_LIMIT`; asyncio's 64 KiB default is
 smaller than an ordinary snapshot) and the worker refuses to write a reply over
 4 MiB (`REPLY_CAP_BYTES`, an error reply instead); a line that still overruns is
@@ -262,6 +277,11 @@ equal by a test):
 | `set_files` | `expression, files` | the worker's own `DOM.setFileInputFiles`: `expression` (the walker's `fileInput(ref, true)`) is evaluated in the walker's isolated world and must give a node, and `files` is 1 to 100 paths, the gateway's staged copies (the `upload` op). For a `webkitdirectory` node (read on the node in that world) it first sends `Page.bringToFront`, since the full Chrome build lists a staged folder into a folder field only for the active tab and Harness opens its tabs in the background, and, before the set, through `Runtime.callFunctionOn` on the node in that world, sets a flag on the node's wrapper there to false and adds a capture-phase `input` listener to the node's root (its document or shadow root, ahead of the page's own listeners on the field) that sets it true on the browser's own event whose target is the node (`isTrusted`; one the page dispatches is ignored) and then removes itself (the page cannot read or write the flag itself, and the reset keeps a flag an earlier upload left in the reused world from counting); it then reads that flag for up to 3 s, not the node's `files`, which the page's own `change` handler may already have cleared: a flag still false is `folder_field_unsupported`, nothing reported set; a flag read that fails because a new document replaced the page after the set (the top frame's `loaderId`, read just before the set, changed: the page navigated, as one that submits on its own `change` does) counts as filled |
 | `chooser_files` | `x, y, files, folder=False` | the worker's own `upload via: chooser`: `Page.setInterceptFileChooserDialog` on for this call only, a click at `x, y`, then the first `Page.fileChooserOpened` within 3 s gets `DOM.setFileInputFiles` by its `backendNodeId`; `no_chooser`, `not_multiple` (2+ paths on `selectSingle`) and `not_folder_input` (`folder` on an input without `webkitdirectory`, read by `DOM.describeNode`) set nothing (the `upload` op itself never sends a folder this way: `_fits` refuses it first); a chooser opened in a frame that is not the tab's top frame or of its origin (`Page.getFrameTree`) is `frame_refused`; interception off in `finally` |
 | `drop_files` | `x, y, files` | the worker's own `upload via: drop`: no press; `Input.dispatchDragEvent` `dragEnter`, `dragOver`, `drop` at `x, y` carrying the staged paths; the browser's own hit test (`DOM.getNodeForLocation`, through every shadow root, closed ones too, honouring `pointer-events: none` as the drop does) must find a node in the tab's top frame that is not itself a frame element (`IFRAME`, `FRAME`, `OBJECT`, `EMBED`, `PORTAL`, `FENCEDFRAME`), checked again before each of the three events (the page's own drag handlers run in between; a failed check after `dragEnter` sends `dragCancel`), else `frame_refused` |
+
+`ops._page` interprets frame refs by default. Its keyword-only `frame_refs=False`
+keeps arguments literal in the top document while retaining URL refusal and
+isolated-world dispatch. App browser recipes use that mode for every walker call
+([app-kit-platform](app-kit-platform.md), browser recipes).
 
 `run.py`, Harness's MCP server, `upload_file` and the agent-helper loader are not
 reachable through it (`fill_input` is, and only the `fill` op calls it, always on

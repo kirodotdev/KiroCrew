@@ -353,6 +353,17 @@ describe('WorkerKitPane', () => {
     const done = await screen.findByTestId('worker-kit-done')
     expect(done).toHaveTextContent('Added 2 to Pixel.')
     expect(within(done).queryByTestId('worker-kit-open-approvals')).toBeNull()
+    expect(done).not.toHaveTextContent('restart the gateway')
+  })
+
+  it('says a gateway restart is needed when the add answers that its new server waits for one', async () => {
+    mockKit.apply.mockResolvedValue({ member: 'pixel', revision: 'r2', gateway_restart_required: true })
+    renderPane()
+    await previewAdd()
+    fireEvent.click(screen.getByTestId('worker-kit-apply'))
+    expect(await screen.findByTestId('worker-kit-done')).toHaveTextContent(
+      "Added 2 to Pixel. An MCP server this add copied reaches this bot's worker through the gateway only after you restart the gateway (Settings → About → Restart gateway).",
+    )
   })
 
   it('shows an already-present item as skipped, not added', async () => {

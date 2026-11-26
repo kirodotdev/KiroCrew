@@ -9,12 +9,10 @@ contract shapes the contract reader accepts or refuses.
 from __future__ import annotations
 
 import re
-import sys
 from collections import deque
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Required, TypedDict
-from unittest import mock
 
 import pytest
 from dashboard_templates_helpers import (
@@ -28,6 +26,7 @@ from skill_script_helpers import load_skill_script
 import kiro_crew.dashboard_templates.parity as parity
 from kiro_crew.dashboard_templates import Unsaid
 from kiro_crew.dashboard_templates.parity import ExtractionRefused, contract_keys, html_fields
+from kiro_crew.testing.module_table import patched_sys_modules
 
 
 # Declared at MODULE level: ``typing.get_type_hints`` resolves against module globals,
@@ -695,7 +694,7 @@ class TestTheContractReader:
         loaded = load_skill_script(name, module)
         # Registered for the duration: resolving a string annotation looks the defining
         # module up by name, and the helper deliberately leaves it out of `sys.modules`.
-        with mock.patch.dict(sys.modules, {name: loaded}):
+        with patched_sys_modules({name: loaded}):
             with pytest.raises(ExtractionRefused, match="cannot make one optional"):
                 contract_keys(loaded.Leaky)
 

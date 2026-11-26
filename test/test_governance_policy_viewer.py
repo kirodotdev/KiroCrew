@@ -472,9 +472,10 @@ class TestScopeAttribution:
 # ──────────────────────────────────────────────────────────────────────────
 class TestEndpoint:
     async def _call(self):
-        # aiohttp request is unused by the handler (no body / match_info), so a
-        # bare sentinel suffices — the handler only offloads the snapshot build.
-        return await api_governance_policy(object())  # type: ignore[arg-type]
+        # The handler reads no body or match_info; it asks the owner gate, which a
+        # caller with no app claim (an internal caller) passes, then offloads the
+        # snapshot build. A mapping is enough for that claim lookup.
+        return await api_governance_policy({})  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
     async def test_get_returns_json_snapshot(self, profiles_dir):

@@ -10,9 +10,9 @@ plan gate for a go-ahead nobody can give. Design: rfc-builtin-eval.md §12.3.
 Boundaries:
 
 * Only the marker this module prepends counts. Every caller's text, the owner's
-  own included, has a marker-shaped opener defanged to ``[quoted: headless run``
-  (the same normalize-then-match rule ``session_messaging`` applies to a forged
-  ``[sent by session``), so typing the prefix cannot skip a gate.
+  own included, has each marker-shaped opener, anywhere in the text, defanged to
+  ``[quoted: headless run`` (the same normalize-then-match rule ``session_messaging``
+  applies to a forged ``[sent by session``), so typing the prefix cannot skip a gate.
 * Only the dashboard owner may ask for it: an app token, an internal caller, a
   member or teammate gets 403 ``unattended_not_owner``; a ``run_id`` that is not
   1-64 of ``[A-Za-z0-9_-]`` gets 400 ``invalid_run_id``.
@@ -35,7 +35,7 @@ from kiro_crew.context_assembly.markers import _apply_marker_spans, _marker_span
 #: The opener the gateway writes. Also listed in the goal-conductor skill.
 HEADLESS_MARKER = "[headless run cli:{run_id}]\n\n"
 _QUOTED = "[quoted: headless run"
-_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _PS_OPENERS = "".join(chr(cp) for cp in range(0x10000) if unicodedata.category(chr(cp)) == "Ps")
 _FORGED_RE = re.compile(rf"[{re.escape(_PS_OPENERS)}]\s*headless\s*run\b", re.IGNORECASE)
 
@@ -64,7 +64,7 @@ def apply(request: web.Request, body: dict[str, Any], message: str) -> str:
             403, "only the dashboard owner may send an unattended turn", "unattended_not_owner"
         )
     run_id = body.get("run_id")
-    if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id):
+    if not isinstance(run_id, str) or not _RUN_ID_RE.fullmatch(run_id):
         _audit(request, body, "denied", "invalid_run_id")
         raise _refuse(400, "run_id must be 1-64 of A-Z a-z 0-9 _ -", "invalid_run_id")
     if message.lstrip()[:1] in ("/", "@"):

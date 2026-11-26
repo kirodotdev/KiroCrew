@@ -55,6 +55,7 @@ _POPULATED: dict = {
     "agent": "agent-a",
     "model": "model-m",
     "reasoning_effort": "high",
+    "_effort_overlay_clear": True,
     "autocompact_pct": 44.0,
     "turn_timeout_secs": 28800,
     "_dismissed_source_links": {K1, K2},
@@ -377,6 +378,7 @@ def test_the_table_declares_every_asymmetry_the_readers_had():
     assert partial == {
         "model": ["recent", "restore"],
         "reasoning_effort": ["recent", "restore"],
+        "effort_overlay_clear": ["recent", "restore"],
         "executor": ["recent", "restore"],
         "instance_id": ["recent", "restore"],
         "remote_slot": ["recent", "restore"],

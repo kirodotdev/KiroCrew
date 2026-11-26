@@ -97,6 +97,7 @@ import { drainEmbedRecovery, stashEmbedRecovery, subscribeEmbedRecovery, type Pe
 import { retireSendTail, sendTailProof, hostProofBaseline, calmLineHolds, isOwnUserRow, rowKey, type HostSendProof, type SendTail } from './embedSendTails'
 import { embedReadPath, isEmbedCursor, mergeEmbedRead, type EmbedCursor } from './embedIncrementalRead'
 import { useSlotPush } from './slotPush'
+import { useEmbedSlotRead } from './embedSlotRead'
 import type { ChatMessage } from '../types'
 import type { ChatEmbedHideKey } from './chatEmbedHide'
 import type { MessageRenderer } from './messageRenderers'
@@ -464,6 +465,7 @@ function ChatEmbed({
   // below — a deliberate smooth scroll to each NEW MESSAGE regardless of
   // position.
   const listRef = useRef<VirtualTranscriptHandle | null>(null)
+  const transcriptScrollerRef = useRef<HTMLDivElement | null>(null)
   const [isAtBottom, setIsAtBottom] = useState(true)
   const scrollToBottom = useCallback(() => { listRef.current?.scrollToBottom() }, [])
 
@@ -643,6 +645,7 @@ function ChatEmbed({
   }, [refetch])
 
   const serverMessages = shown?.messages ?? EMPTY_MESSAGES
+  useEmbedSlotRead(slotKey, serverMessages, dataUpdatedAt, hostActive, transcriptScrollerRef)
 
   const running = !stalled && (shown?.running ?? false)
   // A stale page's half-written reply must not keep its live caret: render
@@ -1435,6 +1438,7 @@ function ChatEmbed({
           handOff={false}
           transcript={{
             sessionId: `embed:${slotKey}`,
+            scrollerRef: transcriptScrollerRef,
             announcement,
             followOutput: !!startAtBottom,
             initialPlacement: startAtBottom ? 'bottom' : 'top',

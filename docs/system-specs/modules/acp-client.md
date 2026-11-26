@@ -9,7 +9,11 @@ The package itself (`acp/__init__.py`) imports none of these modules. Each name 
 access, through a module `__getattr__`, and nothing is cached, so importing one ACP
 module loads only what that module imports. `test/test_package_import_ratchet.py` holds
 `import kiro_crew.acp` to the `kiro_crew` and `kiro_crew.acp` modules in a fresh
-interpreter, so an eager import put back fails.
+interpreter, so an eager import put back fails. It also fails when a fresh
+`import kiro_crew.dashboard.state` loads `acp/client.py` or `acp/session_handle.py`: the
+agent SDK's vocabulary modules (`agent_sdk/drivers/acp_vocab.py`, `acp_turn_vocab.py`)
+read each name they re-export from the owner module that defines it, not through those
+two.
 
 Module-level code moved out of the two transports lives in the owner modules
 below: `acp/runtime_start.py` serves the runtime alone, the six host adapters
@@ -1420,6 +1424,25 @@ to an empty string before redaction, cache lookup, or event construction. A
 shell-cache hit whose value is `False` sets `shell_classified=True` — it is a
 resolved non-shell call, not a cache miss — and a structured-params cache hit
 sets `raw_params_trusted=True`.
+
+**A reused `toolCallId` whose arguments contradict the cache is refused.** The id
+is model-authored, so a cached entry is evidence about the call that wrote it. When
+a permission request states its own arguments (`rawInput`, `input` or `params`,
+the first non-empty one) and they contradict the structured params cached for the
+same origin-scoped id (`_dispatch._args_name_another_call`: a non-dict on either
+side that is not equal, or a key both dicts carry with two different string
+values), neither side wins. `build_permission_event` builds the event from the
+request's own arguments with every cache read as a miss, so it carries no trust,
+and marks it `AcpEvent.tool_call_id_reused`. Every site that answers a permission
+request refuses that event before any other refusal, consumer, card or rule sees
+it: `AcpClient._refuse_reused_call_id` on the turn loop and on `_handle_permission`
+(whatever the session judges; SEL reason `tool_call_id_reused`, no host notice,
+like the identity-drift refusals beside it) and
+`AcpSessionHandle._refuse_reused_call_id` on the handle (SEL error
+`tool_call_id_reused`, host notice cause `reused_call_id`). Arguments that equal the
+cached ones, extend them with keys the cache lacks, or are absent keep the cached
+provenance. Not caught: arguments sharing no key with the cache, and a non-string
+value (a seeded path list); closing those needs a gateway-minted call id.
 
 Both transports use `_dispatch.select_tool_title`; the direct client imports
 it as `_select_tool_title`. A confirmed shell call prefers `rawInput.description`,
@@ -3051,8 +3074,12 @@ turn is told which servers are still starting (`[MCP SERVERS]`,
 (`mcp_server_wait`). Codex is the exception: it fixes a turn's tools when the turn
 starts, after waiting about a second for its servers, so a server still starting
 then serves no tool of that turn. Its harness therefore has codex-acp hold
-`session/new` until every server in the array is ready or failed, up to
-`CodexHarness.MCP_STARTUP_AWAIT_MS` ([providers](providers.md)).
+`session/new`, and the `session/resume` a re-opened chat is restored with, until
+every server in the array is ready or failed, up to
+`CodexHarness.MCP_STARTUP_AWAIT_MS` ([providers](providers.md)). codex-acp
+ignores that request on `session/load`, so codex restores with `session/resume`
+(`ACP_BACKENDS_RESUME_WITHOUT_LOAD`). The wait is the adapter's, so it holds every
+Codex start and re-open alike, whoever waits on it.
 
 **The first turn of a start that skipped them.** Being told is what makes not
 waiting safe, and not every turn is told. So the start records the servers it
@@ -6789,7 +6816,7 @@ until the reap has settled, so being cancelled twice cannot skip it. Pinned by t
 ### Codex under Crew's OS sandbox
 
 Crew keeps its mandatory credential mask around the adapter. The spawn environment
-sets `CODEX_ACP_EXTERNAL_SANDBOX=true`. When `session/new` (or `session/load`)
+sets `CODEX_ACP_EXTERNAL_SANDBOX=true`. When `session/new` (or the restore)
 advertises `mode=external-sandbox`, both drivers write that value
 (`ACP_BACKEND_PREFERRED_PERMISSION_CONFIG`, `permission_value_for`). An adapter that
 does not offer it gets `mode=read-only`, the required floor, as before; a session

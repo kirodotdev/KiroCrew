@@ -107,7 +107,6 @@ remove_session_if_loaded
 # llama.cpp and whisper.cpp
 has_logits
 init_batch
-kv_unified
 llama_context
 llama_kv_cache
 output_all

@@ -550,7 +550,7 @@ are allowed** so a journal stays forward-compatible.
 | `run_started` | `name`, `args`, `script_hash`, `budget_total` | first event of every run. `name` comes from `META["name"]` (empty on the author-in-run and validation-failure paths). `budget_total` may be `None` |
 | `phase_started` | `title` | from `ctx.phase()`, and from the runner's own `"Authoring"` phase; also an optional `phase_index`, the phase's 1-based ordinal in the run (counted by `EventStream`) |
 | `agent_started` | `agent_id`, `label`, `phase`, `call_index` | `agent_id` is `a<call_index>`; also an optional `phase_index`, the ordinal of the phase the call runs in (0 when the call names its own `phase=` or runs before any phase) |
-| `agent_progress` | `agent_id`, `turns`, `last_tool`, `elapsed_s` | **builder exists, nothing emits it.** The frontend reads `last_tool` from it |
+| `agent_progress` | `agent_id`, `turns`, `last_tool`, `elapsed_s` | from each live `ctx.agent()` call, on every executor path (`agent_exec.step_on_event` tells the runner's `_on_progress` each tool call the step starts, once per call id). `last_tool` is the call's display `title`, else its `tool_name`, redacted then cut to `PROGRESS_MAX_TOOL_CHARS` (80). On a harness that names a call generically first and sends its real title in a later `tool_call_update` (`refines_tool_call_titles`: claude), that refined title of the newest call replaces it, under the same bound and without counting a call; `turns` counts the tool calls started so far (every re-ask of a `schema=` step together); `elapsed_s` is seconds since the call started. Bounded per call: the first tool call is sent at once, a newer one when `PROGRESS_EVERY_SECS` (30) have passed since the last, by a timer if the step starts nothing more, and a pending send is cancelled when the call settles, so none follows its `agent_finished`. A replayed call emits none. It counts as run activity for the ceiling error's "no event for Ns". The run tree shows `last_tool` on a running row only; the task timeline and `workflow_result` leave it out |
 | `agent_finished` | `agent_id`, `result_summary`, `ok` | plus an optional `error` (bounded, redacted; empty when `ok`). `result_summary` is `str(result)[:120]`, empty when the result is `None`. `error` is deliberately **not** in `REQUIRED_DATA_KEYS` so journals from an older build still deserialize |
 | `log` | `message` | from `ctx.log()`, from authoring progress, from nudge outcomes, and from a `schema=` step's refused person-only directive (`agent a<N> "<label>": <refusal>`) |
 | `budget_update` | `spent`, `remaining` | **builder exists, nothing emits it** (see the Budget open question) |
@@ -1627,9 +1627,10 @@ never spawns `kiro-cli` in tests. Two production adapters:
   turn and no session applier reads its stream, so a `USER_ORIGIN_DIRECTIVES`
   call (`set_project`, `reset_conversation`, `chat_tag`, `chat_rename`,
   `suggest_followup`) would otherwise leave only the tool's own "requested" text
-  and no audit row. Every executor path streams with `person_only_directive_refuser`
-  (`dashboard/session_directive_apply.py`, the one the cron turn uses) as
-  `on_event`: each completed call is refused with
+  and no audit row. Every executor path streams with `agent_exec.step_on_event`
+  as `on_event`, which wraps `person_only_directive_refuser`
+  (`dashboard/session_directive_apply.py`, the one the cron turn uses) and also
+  feeds the call's `agent_progress`: each completed call is refused with
   `refuse_user_origin_directive` (its wording, and a SEL `denied` row on the
   step's own session key), and the refusals lead the step's text before
   redaction (`agent_exec.step_text`, which also drops each line that only quotes
@@ -1768,6 +1769,9 @@ caller class:
   preview included) are owner-only for every caller.
 - **Run list, detail, cancel and rerun** go through `workflow_memory.authorize_run`
   (the list keeps only the runs it admits); rerun does so after the owner check above.
+  `authorize_run` takes a dashboard session as the owner, so list, detail and cancel
+  first refuse a dashboard session that is neither the owner nor an admitted teammate
+  with 403 `owner_only`; internal callers keep their run binding.
 
 The session's canonical execution record is captured before asynchronous
 dispatch; missing or malformed member identity refuses instead of selecting Global.
@@ -1848,12 +1852,25 @@ AFTER the run body validates and BEFORE the run starts, through the one
 read-only resolver (`_resolve_chat_folder_id`) — NOTHING is created, and a
 folder that does not exist or is ambiguous rejects the run with a 400 the caller
 sees rather than being silently dropped. The fallback slot is filed under that
-id only if it still exists at delivery; a folder deleted meanwhile leaves the
-slot unfiled. The retained `title`/`folder_id` on the run handle are
+id only if it still exists at delivery; a folder deleted meanwhile is not
+used. The retained `title`/`folder_id` on the run handle are
 length-bounded on every construction path, so a direct POST cannot store an
-unbounded value. With neither argument the default title and unfiled placement
-are unchanged. A live originating session is never titled or filed by these
-arguments, and incognito/temporary runs still get no fallback slot.
+unbounded value. The fallback slot is linked to the originating session's
+transcript, so its saves write that transcript's metadata line: a chat closed
+before its run finished keeps its name and filing: with no `title`, the slot
+takes the line's stored title (restored as a reload restores it), and with no
+`folder` that still exists and accepts the run's store, the line's stored folder
+under the same two checks, both read by `inject_bound_workflow_result` before it
+creates the slot. The default title and unfiled placement apply only when the
+line has none or could not be read, and a usable argument always wins over the stored
+value. From the same read
+the slot takes the line's workspace and Crew Mode conductor; its agent namespace
+(`agent_kind`) is the one of the agent it gets from the run's record (`member`
+for a member's name, else `template`). Only the delivery that creates
+the fallback slot titles and files it: a re-fire into an existing one leaves its
+title and folder as they are. A live originating session is never titled or
+filed by these arguments, and incognito/temporary runs still get no fallback
+slot.
 
 A new fallback slot is a slot allocation, so it tests the same live-session
 ceiling as every other allocator (`live_slot_count() >= MAX_LIVE_SLOTS`, 500).

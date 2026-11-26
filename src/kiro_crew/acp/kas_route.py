@@ -172,6 +172,19 @@ class KasRoute:
 RELAY = KasRoute(bundle=False)
 
 
+def kiro_cli_api_key_set(environ: Mapping[str, str]) -> bool:
+    """Whether a ``KIRO_API_KEY`` reaches kiro-cli: inherited, or in the data home's ``.env``.
+
+    The key is a whole kiro-cli login on its own, with nothing in kiro-cli's
+    identity store. Blocking file IO; raises when the ``.env`` cannot be read.
+    """
+    from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
+
+    if (environ.get(CRED_KIRO_API_KEY) or "").strip():
+        return True
+    return bool(read_env_file_credential(CRED_KIRO_API_KEY))
+
+
 def kiro_cli_signed_out(*, environ: Mapping[str, str], home: Path) -> bool:
     """Whether kiro-cli's own sign-in is PROVEN absent on this host.
 
@@ -181,12 +194,8 @@ def kiro_cli_signed_out(*, environ: Mapping[str, str], home: Path) -> bool:
     a store that will not open, or a login this reader cannot identify, keeps
     the relay. Blocking file IO, SEL-audited by the store reader.
     """
-    from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
-
-    if (environ.get(CRED_KIRO_API_KEY) or "").strip():
-        return False
     try:
-        if read_env_file_credential(CRED_KIRO_API_KEY):
+        if kiro_cli_api_key_set(environ):
             return False
         from kiro_crew.kiro_prerequisite import (
             identity_fingerprint,

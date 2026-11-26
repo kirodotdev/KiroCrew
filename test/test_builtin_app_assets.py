@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from shipped_wheel_copies import census_drift
+
 import kiro_crew.apps.manager as mgr
 from kiro_crew.apps.discovery import discover_builtin_apps
 
@@ -93,15 +95,14 @@ def test_builtin_discovery_is_not_vacuous() -> None:
     so a discovery path that returns nothing — a moved builtins directory, a
     refactor of ``discover_builtin_apps()`` — makes the whole suite pass while
     checking zero manifests. That is the one failure mode a guard cannot report on
-    itself, so it is pinned as a count.
+    itself, so discovery is held, by name, to the wheel copies that ship
+    (``test/shipped_wheel_copies.txt``), and every one of them must carry an icon.
     """
     apps = _all_builtin_apps()
-    with_icons = [a for a in apps if isinstance(a.get("iconUrl"), str) and a["iconUrl"]]
-    assert len(apps) >= 20, f"builtin discovery returned only {len(apps)} apps"
-    assert len(with_icons) >= 20, (
-        f"only {len(with_icons)} discovered builtins carry an iconUrl; the asset "
-        f"guards below would be near-vacuous"
-    )
+    differs = census_drift(a["name"] for a in apps)
+    assert not differs, f"builtin discovery: {differs}"
+    iconless = [a["name"] for a in apps if not (isinstance(a.get("iconUrl"), str) and a["iconUrl"])]
+    assert not iconless, f"{sorted(iconless)} carry no iconUrl, so no asset guard checks it"
 
 
 def test_builtin_app_assets_are_not_empty() -> None:

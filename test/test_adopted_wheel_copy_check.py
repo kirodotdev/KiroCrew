@@ -4,7 +4,8 @@ The first property pinned is the one the gate is for: two real wheel-copy-only
 fixes to a pinned app (one on papyrus's backend, one on file-explorer's server)
 are flagged, so each must name its app-repo commit. The second is the pin
 drift guard: a PR that adds or changes a pin row fails when the app's wheel
-copy moved after the base its app-repo port names.
+copy moved after the base its app-repo port names, and holds a row whose app
+ships no wheel copy at the base tip to nothing.
 Owning spec: docs/system-specs/modules/app-kit-platform.md § Former built-in
 adoption.
 """
@@ -255,6 +256,17 @@ class TestPinDriftGuard:
         with pytest.raises(ValueError):
             mod.check_bases(["", "{not json"], "", _Compare())
 
+    def test_a_row_whose_app_ships_no_wheel_copy_needs_no_base(self) -> None:
+        """A copy deleted with its row kept: nothing is left for the pin to fall behind."""
+        compare = _Compare({(SHA, "papyrus"): ["src/kiro_crew/apps/builtins/papyrus/server.py"]})
+        texts = [_table(_row("papyrus")), _table(_row("papyrus", "b" * 40))]
+        for body in ("", f"Wheel-copy base: papyrus@{SHA}"):
+            assert mod.check_bases(texts, body, compare, lambda _name: False) == []
+        assert compare.calls == []
+        texts = ["", _table(_row("papyrus"), _row("file-explorer"))]
+        errors = mod.check_bases(texts, "", compare, lambda name: name == "file-explorer")
+        assert len(errors) == 1 and errors[0].startswith("file-explorer:"), errors
+
 
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(
@@ -336,6 +348,21 @@ class TestGitCompare:
         with pytest.raises(mod.CannotCompare):
             self._drift(_git(repo, "rev-parse", "HEAD"), "")
 
+    def test_the_probe_sees_a_deleted_wheel_copy(self, repo: Path) -> None:
+        def ships(revision: str) -> bool:
+            return mod.git_wheel_copy_ships(revision)("papyrus")
+
+        backend, frontend = mod.wheel_copy_dirs("papyrus")
+        assert ships(_git(repo, "rev-parse", "HEAD"))
+        assert ships(_commit(repo, f"{backend}server.py", None)), "the page still ships"
+        _commit(repo, f"{backend}tests/test_server.py", "t\n")
+        assert not ships(_commit(repo, f"{frontend}Page.tsx", None)), "a test file is no copy"
+        assert ships(""), "with no base tip the row is still held"
+
+    def test_an_unreadable_base_tip_fails_closed(self, repo: Path) -> None:
+        with pytest.raises(mod.CannotCompare):
+            mod.git_wheel_copy_ships("d" * 40)("papyrus")
+
 
 class TestShippedTable:
     def test_every_pinned_wheel_package_sits_where_the_check_looks(self) -> None:
@@ -350,6 +377,35 @@ class TestShippedTable:
 
 
 class TestCli:
+    @staticmethod
+    def _argv(tmp_path: Path, ns: str, pins: list[str]) -> list[str]:
+        ns_file = tmp_path / "ns.txt"
+        ns_file.write_text(ns, encoding="utf-8")
+        pin_files = []
+        for i, text in enumerate(pins):
+            path = tmp_path / f"pins{i}.json"
+            path.write_text(text, encoding="utf-8")
+            pin_files.append(str(path))
+        return [str(SCRIPT), str(ns_file), *pin_files]
+
+    @classmethod
+    def _main(
+        cls,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        pins: list[str],
+        cwd: Path,
+        base_tip: str,
+    ) -> tuple[int, str]:
+        """Run the script's ``main`` in this interpreter; env and cwd revert on teardown."""
+        argv = cls._argv(tmp_path, "", pins)
+        monkeypatch.setenv("PR_BODY", "")
+        monkeypatch.setenv("BASE_TIP", base_tip)
+        monkeypatch.chdir(cwd)
+        code = mod.main(argv)
+        return code, capsys.readouterr().out
+
     def _run(
         self,
         tmp_path: Path,
@@ -359,18 +415,11 @@ class TestCli:
         cwd: Path | None = None,
         revs: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        ns_file = tmp_path / "ns.txt"
-        ns_file.write_text(ns, encoding="utf-8")
-        pin_files = []
-        for i, text in enumerate(pins):
-            path = tmp_path / f"pins{i}.json"
-            path.write_text(text, encoding="utf-8")
-            pin_files.append(str(path))
         env = {**os.environ, "PR_BODY": body}
         env.pop("BASE_TIP", None)
         env.update(revs or {})
         return subprocess.run(
-            [sys.executable, str(SCRIPT), str(ns_file), *pin_files],
+            [sys.executable, *self._argv(tmp_path, ns, pins)],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -416,6 +465,23 @@ class TestCli:
         pins = ["", "", _table(_row("papyrus"))]
         r = self._run(tmp_path, ns, pins, body, cwd=wheel_repo, revs={"BASE_TIP": base})
         assert r.returncode == 0, r.stdout
+
+    def test_a_pin_pr_for_an_app_with_no_wheel_copy_needs_no_base(
+        self,
+        tmp_path: Path,
+        wheel_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        backend, frontend = mod.wheel_copy_dirs("papyrus")
+        pins = [_table(_row("papyrus"))] * 2 + [_table(_row("papyrus", "b" * 40))]
+        tip = _git(wheel_repo, "rev-parse", "HEAD")
+        code, out = self._main(monkeypatch, capsys, tmp_path, pins, wheel_repo, tip)
+        assert code == 1 and "Wheel-copy base: papyrus@" in out, out
+        _commit(wheel_repo, f"{backend}server.py", None)
+        tip = _commit(wheel_repo, f"{frontend}Page.tsx", None)
+        code, out = self._main(monkeypatch, capsys, tmp_path, pins, wheel_repo, tip)
+        assert code == 0, out
 
     def test_a_pin_pr_without_a_base_tip_fails(self, tmp_path: Path) -> None:
         r = self._run(

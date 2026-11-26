@@ -21,6 +21,7 @@ from typing import Any
 from kiro_crew.apps.app_hosts import HOST_RE as _HOST_RE
 from kiro_crew.apps.app_hosts import host_list_errors, normalize_host
 from kiro_crew.apps.manifest_memory_providers import MemoryProvidersConfig
+from kiro_crew.apps.manifest_session_create import SessionCreateItemsConfig
 
 #: Hard cap on session controls per app. A control here renders inside the
 #: composer, on the path of every turn — an app must not be able to crowd the
@@ -1575,6 +1576,11 @@ class Contributes:
     memoryProviders: MemoryProvidersConfig = field(  # noqa: N815
         default_factory=MemoryProvidersConfig
     )
+    #: Rows in the Sessions New menu (``manifest_session_create``); the endpoint's
+    #: namespace is checked in ``AppManifest.validate``, which knows the app's name.
+    sessionCreateItems: SessionCreateItemsConfig = field(  # noqa: N815
+        default_factory=SessionCreateItemsConfig
+    )
     #: MCP servers this app offers to a Bot's own chat (``kiro_crew.bot_chat_app_tools``):
     #: each ``{"agent", "server"}`` names a server one of the app's own agents declares.
     #: Nothing mounts from this alone: the owner approves the ``tools`` Bot scope and
@@ -1622,6 +1628,8 @@ class Contributes:
             d["linkOpen"] = kept_opens
         if self.memoryProviders.providers:
             d["memoryProviders"] = self.memoryProviders.to_list()
+        if self.sessionCreateItems.items:
+            d["sessionCreateItems"] = self.sessionCreateItems.to_list()
         if self.botChatServers:
             d["botChatServers"] = [dict(s) for s in self.botChatServers]
         return d
@@ -1717,6 +1725,7 @@ class Contributes:
             bad_file_menu_items="fileMenuItems" in data and not isinstance(items_raw, list),
             dropped_file_menu_items=sum(1 for i in item_entries if not isinstance(i, dict)),
             memoryProviders=MemoryProvidersConfig.from_value(data.get("memoryProviders")),
+            sessionCreateItems=SessionCreateItemsConfig.from_value(data.get("sessionCreateItems")),
         )
 
     def validate(self) -> list[str]:
@@ -1916,6 +1925,7 @@ class Contributes:
                 "contributes.botChatServers must be an array of {agent, server} "
                 "objects with non-empty string values"
             )
+        errors.extend(self.sessionCreateItems.errors)
         return errors
 
     def _validate_selection_actions(self) -> list[str]:

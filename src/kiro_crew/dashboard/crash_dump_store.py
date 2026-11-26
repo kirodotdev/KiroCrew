@@ -49,7 +49,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from kiro_crew import platform_compat
+from kiro_crew import install_liveness, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.owner_only_files import mkdirs_owner_only
@@ -682,8 +682,12 @@ def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
     # plain PID liveness).
     start_id = _pid_start_id(os.getpid())
     start_tok = f" start={start_id}" if start_id is not None else ""
+    # The build on the FIRST line, never a line of its own: _is_header_only
+    # counts header lines, so a fifth would read as a dump with stacks.
+    version, install = install_liveness.BUILD_IDENTITY
     head = (
-        f"# KiroCrew loop-stall crash dump — opened {ts} {_CLEAN_EXIT_AWARE_TOKEN}\n"  # brand-ok
+        f"# KiroCrew loop-stall crash dump — opened {ts} {_CLEAN_EXIT_AWARE_TOKEN}"  # brand-ok
+        f" version={version} install={install}\n"
         f"# PID: {os.getpid()} @ {_pid_domain()}{start_tok}\n"
         "# If thread stacks appear below, the event loop wedged and faulthandler fired. "
         f"{_ALARM_DUE_TOKEN}"

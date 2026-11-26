@@ -22,7 +22,7 @@ from enum import Enum
 from typing import Any
 
 from kiro_crew import name_grant, permission_floor
-from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls
+from kiro_crew.agent_sdk.drivers.acp_vocab import RefusalHopText, continue_timed_out_calls
 from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.channel_account_check import session_after_account_check
@@ -1421,7 +1421,7 @@ async def _stream_task(
     from kiro_crew.security import redact_and_truncate
     from kiro_crew.sel import sel
 
-    chunks: list[str] = []
+    text, refusal = "", RefusalHopText()
     # Set once a tool call or a permission request arrived: a session lost after
     # that point is not replayed, because the tool may already have run.
     tool_seen = False
@@ -1435,8 +1435,9 @@ async def _stream_task(
         async for event in continue_timed_out_calls(
             lambda prompt: drop_echo(client.stream(prompt)), message
         ):
+            text = refusal.fold(event, text)
             if event.kind == EVENT_TEXT_CHUNK:
-                chunks.append(event.text)
+                text += event.text
 
             elif event.kind == EVENT_TOOL_CALL:
                 tool_seen = True
@@ -1921,7 +1922,7 @@ async def _stream_task(
             elif event.kind == EVENT_COMPLETE:
                 # A turn the backend never finished is not the agent's reply:
                 # the error branch below posts its notice instead of this text.
-                unfinished = unfinished_turn_error(event, "".join(chunks))
+                unfinished = unfinished_turn_error(event, text)
                 if unfinished is not None:
                     raise unfinished
                 break
@@ -1955,7 +1956,7 @@ async def _stream_task(
     from kiro_crew.messaging.driver import strip_steering_markers
     from kiro_crew.session_directive import strip_quoted_markers
 
-    full_text = strip_quoted_markers(strip_steering_markers("".join(chunks))).strip()
+    full_text = strip_quoted_markers(strip_steering_markers(text)).strip()
     if not full_text:
         return _STREAM_OK
     # Sanitize LLM output before posting

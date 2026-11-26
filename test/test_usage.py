@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_model,
     read_turn_model,
 )
+from kiro_crew.testing.module_table import patched_sys_modules
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 # ── _parse_sessions ─────────────────────────────────────────────────────
@@ -491,20 +492,19 @@ class TestParseSessions:
 class TestGetUsageCache:
     def test_returns_cache(self):
         mock_cache = {"credits_used": 42}
-        with patch.dict(
-            "sys.modules",
-            {"kiro_crew.dashboard.handlers.sessions": MagicMock(_usage_cache=mock_cache)},
+        with patched_sys_modules(
+            {"kiro_crew.dashboard.handlers.sessions": MagicMock(_usage_cache=mock_cache)}
         ):
             assert get_usage_cache() == {"credits_used": 42}
 
     def test_empty_cache(self):
-        with patch.dict(
-            "sys.modules", {"kiro_crew.dashboard.handlers.sessions": MagicMock(_usage_cache={})}
+        with patched_sys_modules(
+            {"kiro_crew.dashboard.handlers.sessions": MagicMock(_usage_cache={})}
         ):
             assert get_usage_cache() == {}
 
     def test_import_error(self):
-        with patch.dict("sys.modules", {"kiro_crew.dashboard.handlers.sessions": None}):
+        with patched_sys_modules({"kiro_crew.dashboard.handlers.sessions": None}):
             assert get_usage_cache() == {}
 
 

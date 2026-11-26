@@ -545,6 +545,8 @@ async def probe_server(
     proc = None
     sandbox_cleanup: str | None = None
     probe_tmp: "Path | None" = None
+    # The child-facing half of ``probe_tmp``; the finally block reads its length.
+    probe_scratch: "Path | None" = None
     # The non-JSON stdout lines both handshake reads skip, for a failed probe's error.
     stdout_skipped: list[str] = []
     # A tools/list failure returns from inside the try; its cache write waits for the
@@ -713,7 +715,6 @@ async def probe_server(
                         )
                     ),
                 )
-        probe_scratch: "Path | None" = None
         if not _declared_temp_upper:
             try:
                 from kiro_crew.mcp_gateway.backend_tmp import (
@@ -1321,6 +1322,11 @@ async def probe_server(
                     await asyncio.to_thread(sweep_all_backend_tmp)
                 except Exception:
                     logger.debug("probe-side backend-tmp sweep failed", exc_info=True)
+        if server.status == "error" and probe_scratch is not None:
+            from kiro_crew.mcp_gateway.backend_tmp import socket_room_hint
+
+            if room_hint := socket_room_hint(probe_scratch):
+                server.error = f"{server.error}\nhint: {room_hint}"
         if redacted_stderr and (hint := await npm_sign_in_hint(redacted_stderr, env, _spawn_args)):
             server.error = f"{hint}\n{server.error}"
         if cache_on_exit:

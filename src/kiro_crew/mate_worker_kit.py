@@ -523,6 +523,7 @@ def _plan(member: str, body: Any) -> tuple[Path, dict[str, Any], dict[str, Any],
         added_server_names.add(name)
     if merged_servers:
         new_spec["mcpServers"] = merged_servers
+    tkit["added_servers"] = sorted(added_server_names)
 
     # resources / skills / allowedTools: union, skipping what is already present.
     for key in ("resources", "skills"):
@@ -910,9 +911,11 @@ def apply(member: str, body: Any) -> dict[str, Any]:
     return apply_reporting(member, body)[0]
 
 
-def apply_reporting(member: str, body: Any) -> tuple[dict[str, Any], bool]:
+def apply_reporting(member: str, body: Any) -> tuple[dict[str, Any], bool, dict[str, Any]]:
     """:func:`apply`, plus whether the file's hooks, permissions or tool settings
-    changed, so the caller reloads the crewmate's live workers onto them."""
+    changed, so the caller reloads the crewmate's live workers onto them, and
+    the ``mcpServers`` entries the add wrote, by name, so it can route them
+    through the MCP gateway."""
     from kiro_crew import mate_approval_revocations as revocations
     from kiro_crew.agent import agents_spec_lock
     from kiro_crew.atomic_write import atomic_write
@@ -922,12 +925,14 @@ def apply_reporting(member: str, body: Any) -> tuple[dict[str, Any], bool]:
     if not isinstance(body, dict) or not body.get("revision"):
         raise WorkerKitError("revision_required", 400)
     policy_changed = False
+    added_servers: dict[str, Any] = {}
     with agents_spec_lock(paths_mod.mate_agents_dir()):
-        path, spec, new_spec, _template, _tkit = _plan(member, body)
+        path, spec, new_spec, _template, tkit = _plan(member, body)
         if body["revision"] != _plan_revision(spec, new_spec):
             raise WorkerKitError("stale_revision")
         if _digest(new_spec) != _digest(spec):
             atomic_write(path, json.dumps(new_spec, indent=2) + "\n", restrict_to_owner=True)
+            added_servers = {n: new_spec["mcpServers"][n] for n in tkit["added_servers"]}
             base = _worker_base_or_none()
             if base is None:
                 # The preview leaves out a ``permissions`` allow the base already
@@ -950,4 +955,4 @@ def apply_reporting(member: str, body: Any) -> tuple[dict[str, Any], bool]:
         )
     except Exception:  # noqa: BLE001 - the audit must not undo a landed write
         logger.debug("SEL audit unavailable for the worker kit add", exc_info=True)
-    return view(member), policy_changed
+    return view(member), policy_changed, added_servers

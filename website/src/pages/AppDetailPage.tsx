@@ -69,8 +69,9 @@ import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetai
 import { actionGrant } from '../composerActions/composerActionRegistry'
 import { memoryAccessLabel, memoryRequested } from '../components/appstore/memoryAccessLabel'
 import { managerLabel, originLabel } from './appDetailPageLabels'
-import { BrowserVerbsBox, BrowserVerbsStaged, KiroOperationsBox, StagedCodeList, ChatLaunchBox, ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, HiddenSessionsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, browserVerbLine, knownBrowserVerbs, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
+import { BrowserRecipesBox, StagedBrowserRecipes, BrowserVerbsBox, BrowserVerbsStaged, KiroOperationsBox, StagedCodeList, ChatLaunchBox, ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, HiddenSessionsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, browserVerbLine, knownBrowserVerbs, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
 import { trustGrants } from '../components/appstore/trustGrants'
+import { recipeLine } from '../components/appstore/browserRecipes'
 import { stagedGrantsOf } from './appDetailPageStagedGrants'
 // The page's parts live in sibling owners that never import this module:
 // `AppDetailPageArt.tsx` (the hero banner and the screenshot gallery, each with
@@ -109,7 +110,7 @@ export default function AppDetailPage() {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
     stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
-    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedKiroOperations, stagedBrowser, hasStagedGrants: hasOtherStagedGrants, firstKiroApproval: firstKiroOnly,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedKiroOperations, stagedBrowserRecipes, stagedBrowser, hasStagedGrants: hasOtherStagedGrants, firstKiroApproval: firstKiroOnly,
   } = stagedGrantsOf(app)
   // Bot scopes the owner has not approved wait the same way (`AppDetailBotGrants.tsx`).
   const stagedBots = stagedBotScopes(app)
@@ -118,9 +119,6 @@ export default function AppDetailPage() {
   const reconsentInGrantsBox = !!reconsentMsg && !!app?.installed && !app.enabled && hasStagedGrants
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
-  const enableLabel = app?.sessionApprovalConsentPending
-    ? i18nT('pages.appDetailPage.enable_and_allow_chat_control')
-    : i18nT('pages.appDetailPage.enable')
   const clearError = useCallback(() => {
     setError('')
   }, [])
@@ -349,6 +347,7 @@ export default function AppDetailPage() {
             frameSourcesGrant: installed.frameSourcesGrant,
             browserSitesGrant: installed.browserSitesGrant,
             kiroOperationsGrant: installed.kiroOperationsGrant,
+            browserRecipesGrant: installed.browserRecipesGrant,
             browserGrant: installed.browserGrant,
             managed: installed.managed,
             source: installed.source,
@@ -479,6 +478,7 @@ export default function AppDetailPage() {
             frameSourcesGrant: installed.frameSourcesGrant,
             browserSitesGrant: installed.browserSitesGrant,
             kiroOperationsGrant: installed.kiroOperationsGrant,
+            browserRecipesGrant: installed.browserRecipesGrant,
             browserGrant: installed.browserGrant,
             managed: installed.managed,
             source: installed.source,
@@ -1209,18 +1209,10 @@ export default function AppDetailPage() {
                   </div>
                 </div>
               )}
-              {stagedFrameSources.length > 0 && (
-                <div>
-                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_frame_sources')}</div>
-                  <div className="flex flex-wrap gap-1 mt-1" data-testid="staged-frame-sources">
-                    {stagedFrameSources.map(o => (
-                      <code key={o} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{o}</code>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <StagedCodeList label={i18nT('pages.appDetailPage.grants_reconsent_frame_sources')} entries={stagedFrameSources} testId="staged-frame-sources" />
               <StagedCodeList label={i18nT('pages.appDetailPage.grants_reconsent_browser_sites')} entries={stagedBrowserSites} testId="staged-browser-sites" />
               <StagedCodeList label={i18nT('pages.appDetailPage.grants_reconsent_kiro_operations')} entries={stagedKiroOperations} testId="staged-kiro-operations" />
+              <StagedBrowserRecipes label={i18nT('pages.appDetailPage.grants_reconsent_browser_recipes')} entries={stagedBrowserRecipes} />
               {stagedComposerActions.length > 0 && (
                 <div>
                   <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_composer_actions')}</div>
@@ -1258,7 +1250,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources, ...stagedBrowserSites, ...stagedKiroOperations, ...stagedBrowser.map(v => browserVerbLine(v).replace(/\.$/, ''))], { style: 'narrow' })
+                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources, ...stagedBrowserSites, ...stagedKiroOperations, ...stagedBrowserRecipes.map(e => recipeLine(e)?.name || e), ...stagedBrowser.map(v => browserVerbLine(v).replace(/\.$/, ''))], { style: 'narrow' })
                 try {
                   const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1278,6 +1270,7 @@ export default function AppDetailPage() {
                     frameSources: stagedFrameSources,
                     browserSites: stagedBrowserSites,
                     kiroOperations: stagedKiroOperations,
+                    browserRecipes: stagedBrowserRecipes,
                     browser: stagedBrowser,
                   })
                   setBackendRefusedMsg(appActionNotice(appDisplayName(app), result, 'enable'))
@@ -1478,7 +1471,7 @@ export default function AppDetailPage() {
                        store row / feature card keep the badge alone (the decision
                        does not happen there). */
                     <>
-                    <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
+                    <Btn {...uiLocation('apps.detail.enable-builtin')} onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {app.sessionApprovalConsentPending ? i18nT('pages.appDetailPage.enable_and_allow_chat_control') : i18nT('pages.appDetailPage.enable')}</Btn>
                     {desktopOnly && (
                     <span className="text-[13px] text-muted flex items-center gap-1.5">
                       <Monitor size={14} /> {i18nT('pages.appDetailPage.desktop_app_hint')}
@@ -1505,7 +1498,7 @@ export default function AppDetailPage() {
                        branches. Update and Uninstall move into one overflow
                        menu so the row stays at two controls. */
                     <>
-                      <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
+                      <Btn {...uiLocation('apps.detail.enable-self-managed')} onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {app.sessionApprovalConsentPending ? i18nT('pages.appDetailPage.enable_and_allow_chat_control') : i18nT('pages.appDetailPage.enable')}</Btn>
                       {((app.updateAvailable && !updateHidden) || canUninstall) && (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -1545,7 +1538,7 @@ export default function AppDetailPage() {
                        where store rows land, so it was the common path. Same
                        pattern as AppListRow / FeaturedSpotlight rows. */
                     <>
-                    <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
+                    <Btn {...uiLocation('apps.detail.enable')} onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {app.sessionApprovalConsentPending ? i18nT('pages.appDetailPage.enable_and_allow_chat_control') : i18nT('pages.appDetailPage.enable')}</Btn>
                     {desktopOnly && (
                     /* The consequence is VISIBLE here, not only in `title`. A
                        hover tooltip does not exist on touch and is not reachable
@@ -1833,6 +1826,7 @@ export default function AppDetailPage() {
                 <DesktopCapabilitiesBox declared={knownDesktopCapabilities(app.manifest.permissions.desktopCapabilities)} staged={stagedDesktopCapabilities} />
                 <BrowserVerbsBox declared={knownBrowserVerbs(app.manifest.permissions.browser)} staged={stagedBrowser} preview={app.browserGrant?.preview} />
                 <KiroOperationsBox grant={app.kiroOperationsGrant} />
+                <BrowserRecipesBox grant={app.browserRecipesGrant} appName={app.name} enabled={app.enabled} onChanged={() => void load({ keepView: true })} />
                 {app.manifest.permissions.webhookSource === true && <WebhookSourceBox source={app.name} />}
                 <div className="flex flex-wrap gap-3 text-[12px] text-muted mt-1">
                   {app.manifest.permissions.storage && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.storage_yes')}</span>}

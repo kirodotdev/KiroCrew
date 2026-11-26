@@ -47,6 +47,7 @@ from .paths_resolver import (
     _resolved_forms_bounded,
     _run_resolution_bounded,
     _stall_prefix,
+    _trim_windows_name_ends,
     path_resolve_executor,
 )
 
@@ -100,6 +101,8 @@ def _candidate_forms(
     candidates.add(expanded)
     if raw != expanded:
         candidates.update((os.path.normpath(raw), raw))
+    # Win32 drops a final name's trailing dots and spaces on open, so judge each form trimmed too.
+    candidates.update([_trim_windows_name_ends(form) for form in candidates])
     return candidates
 
 

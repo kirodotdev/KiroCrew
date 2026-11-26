@@ -63,6 +63,8 @@ For DMs only, no guild permissions are required. For server threads, grant:
 - **Create Public Threads** (only if you use `allowed_channel_ids`, which answers
   in a thread opened from your message)
 
+Once the bot is connected, Settings -> Messaging Channels -> Discord shows both invite
+links (DMs only, and with thread access) with your application id filled in.
 A manual thread-capable install URL is:
 
 ```text
@@ -124,7 +126,7 @@ work at all. `soft_threshold_pct` defaults to `80` and is clamped to 1-100; `rea
 A running gateway applies Discord settings when you save them in Settings, or
 when you edit `config.json` or `.env`, with no restart:
 
-- The allow-lists, `auto_thread`, the reaction and thinking toggles, the
+- The allow-lists, `auto_thread`, the reaction, thinking and footer toggles, the
   threshold and the session folder apply to the next message.
 - A new bot token for the same bot reconnects the running bot with it. The
   token is checked with Discord first. Settings does not save one Discord
@@ -368,8 +370,9 @@ never listed, and session titles plus replayed messages are scrubbed of
 credentials, inside URLs too, before they reach Discord.
 
 Each reply ends with a small "Finished in 12s · ctx 8%" line showing how long the
-turn took and how full the context is. Set `discord.show_timing_footer` to `false`
-to hide it from the next reply on; choice buttons still post.
+turn took and how full the context is. Turn off **Reply time and context line**
+in Settings -> Messaging Channels -> Discord (or set `discord.show_timing_footer` to
+`false`) to hide it from the next reply on; choice buttons still post.
 
 While a reply is running, prefix a message with `!steer` to fold it into the
 running turn or `!queue` to answer it afterward. The reply being written carries a

@@ -1033,6 +1033,15 @@ FIELDS: tuple[Field, ...] = (
         merge=_or_cleared(lambda s: s.reasoning_effort, ""),
         why="restored with the model",
     ),
+    # The merge cannot delete a key, so it writes the cleared False.
+    Field(
+        "effort_overlay_clear",
+        _STARTUP,
+        attr="_effort_overlay_clear",
+        line=_flag(lambda s: s._effort_overlay_clear),
+        merge=lambda s, f: bool(s._effort_overlay_clear),
+        why="restored with the model, beside the Default it belongs to",
+    ),
     Field(
         "autocompact_pct",
         _ALL,
@@ -1595,6 +1604,7 @@ LINE_ORDER: tuple[str, ...] = (
     "agent",
     "model",
     "reasoning_effort",
+    "effort_overlay_clear",
     "autocompact_pct",
     "turn_timeout_secs",
     "dismissed_source_links",
@@ -1656,6 +1666,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "mode",
     "artifact",
     "reasoning_effort",
+    "effort_overlay_clear",
     "color_index",
     "color_hex",
     "color_theme",

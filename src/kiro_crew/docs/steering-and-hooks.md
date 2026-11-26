@@ -206,10 +206,10 @@ audits calls sees a call that asks for approval twice there: once at the notice
 and once at its approval request.
 
 On every other event a non-zero exit is warn-only: the run is recorded against
-the hook with its error, and the turn continues. The gateway log also gets one
-WARNING, `Hook <name> (<event>) failed: <detail>`, where the detail is the
-hook's error, its stderr tail, or `exited with code N`, so a hook that fails
-without printing anything still shows up there.
+the hook with its error, and the turn continues. Any exit other than 0 or 2, on
+any event, also leaves one WARNING in the gateway log,
+`Hook <name> (<event>) failed: <detail>`, whose detail is the error, else the
+end of the hook's stderr, else `exited with code N`.
 
 **Exit 0 discards both streams except where the table says otherwise.** On
 `PostToolUse` and `Stop` a successful run surfaces nothing — stderr included — and
@@ -354,6 +354,19 @@ them with a default: `session_key` is the firing session's own key (a dashboard
 chat, a channel thread); `subagent_id` and `parent_session_key` appear only on
 an event a spawned subagent fired. To tell a person's turn from a subagent's,
 check for `subagent_id`, not `parent_session_key`.
+
+In a dashboard chat, Kiro Crew can send a prompt again, unchanged, when an
+attempt the prompt hooks already ran for did not finish the turn: it failed, was
+refused, or stopped early. The hooks fire again for the re-send, and that
+`UserPromptSubmit` carries `"replay": true`, so a hook can tell it from a new
+message and choose to skip it or still process the text. A continuation Kiro
+Crew writes to resume a turn is never marked, even when re-sent, and a queued
+re-send you edit is a new prompt and is not marked. The re-sent prompt is an earlier one from
+this chat that got no reply, not always the one just before it: a message sent
+while it waited can run first. The key is absent on every other prompt. Channel
+turns fire `UserPromptSubmit` once per message and never carry it. On kiro-cli's
+older v2 engine kiro-cli runs the agent's own hooks itself, and they do not get
+it.
 
 An agent spec's own `hooks` that Kiro Crew runs itself (for a chat session, a
 subagent or the task runner) also get the session's ACP id, as
@@ -531,6 +544,21 @@ spec's hooks changes which one a name means. A `PreCompact` or `PostCompact`
 hook, which Kiro Crew does not fire, takes no number. The list applies where Kiro Crew
 fires the hooks (Kiro Agent, goose, opencode, Strands); on the kiro-cli
 backend kiro-cli runs them itself.
+
+A hook document with a `name` of its own also answers to
+`<agent>/<Event>/<name>`, such as `my-agent/PreToolUse/read-guard`, which
+reordering does not change, and the refusal prints it beside the number. It
+names the hook, not its command: an update that keeps the name and changes the
+command is still admitted. A deny of either name refuses the hook. Each name
+is judged by the policy and the profile together, so when both carry a `hooks`
+list, name the hook the same way in both. These keep only the number: a
+document with no `name`, whose `<Trigger>-<n>` name is positional too, a name
+that is all digits or holds `/`, `\`, `*`, `?` or `[`, a name two of the
+agent's hook documents share, and every hook in the object form, which has no
+name. The list takes `fnmatch` globs: `my-agent/PreToolUse/*` lets
+every `preToolUse` hook of that agent run, including one a later update adds,
+and a glob meets these names too, so `*-guard` admits a document named
+`read-guard`.
 
 **On kiro-cli's v2 engine a `userPromptSubmit` hook reads the whole prompt.** A
 session runs on that older engine when a Kiro CLI choice meets a kiro-cli without

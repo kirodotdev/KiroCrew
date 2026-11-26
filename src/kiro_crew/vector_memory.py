@@ -1224,13 +1224,15 @@ class VectorMemoryStore:
     # ── Episodic CRUD ──
 
     @timed("vector", "search")
-    def _episodic_relevance_threshold(self, text: str) -> float:
+    def _episodic_relevance_threshold(self, text: str, *, instructed: bool = False) -> float:
         """Minimum RAW cosine for a memory to be admitted as relevant context."""
-        return _episodic_search.episodic_relevance_threshold(self, text)
+        return _episodic_search.episodic_relevance_threshold(self, text, instructed=instructed)
 
-    def _filter_by_relevance(self, candidates: list[dict]) -> list[dict]:
+    def _filter_by_relevance(
+        self, candidates: list[dict], *, instructed: bool = False
+    ) -> list[dict]:
         """Drop candidates below the length-aware raw-cosine relevance gate."""
-        return _episodic_search.filter_by_relevance(self, candidates)
+        return _episodic_search.filter_by_relevance(self, candidates, instructed=instructed)
 
     def search_episodic(
         self,
@@ -1322,10 +1324,12 @@ class VectorMemoryStore:
         tag_filter: list[str] | None,
         relevance_filter: bool,
         now: datetime,
+        *,
+        instructed: bool = False,
     ) -> list[dict]:
         """Score, filter and rank from the resident set; resolve winner bodies."""
         return _episodic_search.rank_from_scoring_set(
-            self, scoring, q, limit, mmr, tag_filter, relevance_filter, now
+            self, scoring, q, limit, mmr, tag_filter, relevance_filter, now, instructed=instructed
         )
 
     def _episodic_candidate(self, r: sqlite3.Row, cosine_sim: float, now: datetime) -> dict:
@@ -1350,6 +1354,8 @@ class VectorMemoryStore:
             "episodic",
             {
                 "query_embedding": None if query_embedding is None else list(query_embedding),
+                # The flag ``query_is_instructed`` reads; the list below drops it.
+                "query_instructed": getattr(query_embedding, "instructed", False) is True,
                 "query_text": query_text,
                 "cap": cap,
             },
@@ -1390,6 +1396,9 @@ class VectorMemoryStore:
     #: Per-kind paging cursors of the bounded repair sweep, created on first use by
     #: ``vector_memory_runtime.embedding_repair.backfill_rows``.
     _backfill_cursors: dict[str, str]
+    #: Rows written without a vector that the bounded sweep serves first, per kind,
+    #: created on first use by ``embedding_repair.queue_fresh_vectors``.
+    _fresh_vectors: dict[str, dict[str, None]]
     #: The memory algorithm the open file runs (1 for V1, 2 for a member database), set
     #: by ``_init_database`` in ``vector_memory_lifecycle`` once the file is admitted.
     _memory_version: int
@@ -1572,9 +1581,11 @@ class VectorMemoryStore:
         """Extract key-value from preference text with better heuristics."""
         return _migration.parse_preference(text)
 
-    def _embed_bulk_row(self, text: str, *, pace: bool) -> "list[float] | None":
+    def _embed_bulk_row(
+        self, text: str, *, pace: bool, should_stop: "Callable[[], bool] | None" = None
+    ) -> "list[float] | None":
         """Embed one row of a corpus sweep, then optionally pace the loop."""
-        return _embedding.embed_bulk_row(self, text, pace=pace)
+        return _embedding.embed_bulk_row(self, text, pace=pace, should_stop=should_stop)
 
     @contextmanager
     def _vector_commit(self, vector: list[float] | None, *, best_effort: bool = False):
@@ -1625,9 +1636,11 @@ class VectorMemoryStore:
                 rollback_owned()
                 raise
 
-    def _try_embed(self, text: str, priority: int = PRIORITY_NORMAL) -> list[float] | None:
-        """Embed text using embed_fn if available."""
-        return _embedding.try_embed(self, text, priority)
+    def _try_embed(
+        self, text: str, priority: int = PRIORITY_NORMAL, *, query: bool = False
+    ) -> list[float] | None:
+        """Embed text using embed_fn if available; *query* marks a recall query."""
+        return _embedding.try_embed(self, text, priority, query=query)
 
     def recorded_rebuild_generation(self) -> str:
         """Explicit rebuild request whose old vectors were durably invalidated."""

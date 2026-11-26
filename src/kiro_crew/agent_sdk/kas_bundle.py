@@ -356,6 +356,38 @@ def relay_runs_on_kiro_cli_sign_in() -> bool:
     return runs(environ=os.environ, home=Path.home())
 
 
+def kiro_cli_api_key_set() -> bool:
+    """``acp.kas_route.kiro_cli_api_key_set`` on this process's environment, for the
+    dashboard. Blocking file IO; raises when the data home's ``.env`` cannot be read.
+    """
+    from kiro_crew.acp import kas_route
+
+    return kas_route.kiro_cli_api_key_set(os.environ)
+
+
+def kiro_cli_identity_store_is_relocated() -> bool:
+    """Whether kiro-cli's live store is outside the fixed home anchor.
+
+    Uses the launch check at call time without reading any redirected store.
+    """
+    from pathlib import Path
+
+    from kiro_crew.kiro_prerequisite import identity_store_is_relocated
+
+    return identity_store_is_relocated(sys.platform, Path.home(), dict(os.environ))
+
+
+def kiro_cli_signed_out() -> bool:
+    """``acp.kas_route.kiro_cli_signed_out`` on this process's environment, for the
+    dashboard: True only when kiro-cli's own sign-in is proven absent. Blocking file IO.
+    """
+    from pathlib import Path
+
+    from kiro_crew.acp import kas_route
+
+    return kas_route.kiro_cli_signed_out(environ=os.environ, home=Path.home())
+
+
 def last_relay_takes_crew_sign_in() -> bool | None:
     """Whether Crew's own sign-in can start the relay the last KAS spawn took.
 

@@ -48,11 +48,11 @@ from kiro_crew.dashboard.state import (
     SlotOrigin,
     _safe_folder_tree,
     append_and_surface,
+    bot_member,
     count_restored_workers,
     creator_slot_cap_refusal,
     load_window_off_loop,
     note_new_worker,
-    own_worker_member,
     read_worker_execution,
 )
 from kiro_crew.mate_worker_conducts import (
@@ -311,10 +311,10 @@ async def fork_session(
     # see the child born with the grant they just withdrew. The values are
     # recorded for the audit line after the stamp has taken them.
     posture: dict[str, bool] = {}
-    # The child runs under the source's record, so a fork of a Bot's own worker is
-    # one more of its workers and takes a seat under its `max_workers`.
+    # The child runs under the source's record, so a fork of a session that runs as
+    # a Bot takes a seat under its `max_workers`.
     source_execution = await asyncio.to_thread(read_worker_execution, slot_history_key(source_slot))
-    if own_worker_member(source_execution):
+    if bot_member(source_execution):
         await count_restored_workers(state)
 
     def _folder_exists_now() -> bool:
@@ -324,7 +324,7 @@ async def fork_session(
         # its reader; the lock there exists for readers that hop off the loop.
         return any(str(f.get("id") or "") == folder_id for f in _safe_folder_tree(state._folders))
 
-    def _recheck() -> None:
+    def _recheck(child: Any = None) -> None:
         # Every containment answer above was read before `fork_slot` suspended
         # (transcript read, memory bind). Re-asserted synchronously at the two
         # points that matter -- the mint and the copy -- so a caller that lost
@@ -375,9 +375,13 @@ async def fork_session(
             )
         if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
             raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
-        # A conducting worker that forks keeps the bound its own start gave it.
+        # A conducting worker that forks keeps the bound its own start gave it. The
+        # check after the bind leaves out the child itself, which a parallel restore
+        # pass may have counted meanwhile.
         caller_conducts = holds_conducting_kit(state, caller_slot)
-        worker_reason = effective_worker_cap_refusal(state, source_execution, caller_conducts)
+        worker_reason = effective_worker_cap_refusal(
+            state, source_execution, caller_conducts, exclude=getattr(child, "key", "")
+        )
         if worker_reason is not None:
             raise SessionControlError(worker_reason, code="bot_worker_cap_reached", status=409)
 

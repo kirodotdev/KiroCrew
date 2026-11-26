@@ -67,6 +67,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
 const mocks = vi.hoisted(() => ({
   createChatSlot: vi.fn(), listInstances: vi.fn(), chatFolders: vi.fn(),
   instancesCapabilities: vi.fn(), crewPeerPost: vi.fn(), dashboardConfig: vi.fn(),
+  listApps: vi.fn(), prepareAppSession: vi.fn(), chatSlotProject: vi.fn(),
 }))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
@@ -99,7 +100,7 @@ import { PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
 import enManual from '../i18n/locales/en.manual.json'
 import { openCrewWindow, closeCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
 
-function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string; onOpenPeerSession?: (id: string, key: string) => void; connected?: boolean; folders?: ChatFolder[] } = {}) {
+function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string; onOpenPeerSession?: (id: string, key: string) => void; connected?: boolean; folders?: ChatFolder[]; apps?: unknown[] } = {}) {
   const store = createTestStore({
     dashboard: {
       // The creators are gateway-gated, so a case asserting a create reaches the
@@ -120,6 +121,8 @@ function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: st
   // alone is replaced by the Proxy's default [] mid-test.
   mocks.chatFolders.mockResolvedValue(opts.folders ?? [])
   qc.setQueryData(['chat-folders'], opts.folders ?? [])
+  mocks.listApps.mockResolvedValue(opts.apps ?? [])
+  qc.setQueryData(['apps'], opts.apps ?? [])
   const view = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -184,6 +187,33 @@ afterEach(() => {
 })
 
 describe('create-button caret menu', () => {
+  const workspaceApp = (enabled: boolean, name = 'ws') => ({
+    name, enabled,
+    manifest: { contributes: { sessionCreateItems: [{ id: 'new-workspace', label: `New ${name} session`, endpoint: `/api/apps/${name}/create` }] } },
+  })
+
+  it('lists an enabled app\'s session row with its app named, and creates on its project', async () => {
+    mocks.prepareAppSession.mockResolvedValue({ project_dir: '/mnt/ws' })
+    renderSidebar({ apps: [workspaceApp(true), workspaceApp(false, 'off')] })
+    openCreateMenu()
+    const row = await findCreateMenuItem(/New ws session/)
+    expect(row.textContent).toContain('ws')
+    expect(screen.queryByRole('menuitem', { name: /New off session/ })).toBeNull()
+    fireEvent.click(row)
+    await waitFor(() => expect(mocks.createChatSlot.mock.calls.at(-1)?.[14]).toBe('/mnt/ws'))
+    expect(mocks.chatSlotProject).not.toHaveBeenCalled()
+    expect(mocks.prepareAppSession).toHaveBeenCalledWith(expect.objectContaining({ app: 'ws', endpoint: '/api/apps/ws/create' }))
+  })
+
+  it('creates no session when the app answers without a project', async () => {
+    mocks.prepareAppSession.mockResolvedValue({})
+    renderSidebar({ apps: [workspaceApp(true)] })
+    openCreateMenu()
+    fireEvent.click(await findCreateMenuItem(/New ws session/))
+    expect(await screen.findByTestId('new-chat-error')).toBeTruthy()
+    expect(mocks.createChatSlot).not.toHaveBeenCalled()
+  })
+
   it('lists "New chat" in the caret menu', async () => {
     renderSidebar()
     openCreateMenu()

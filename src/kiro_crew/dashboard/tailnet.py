@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from kiro_crew import edition, github_runner
 from kiro_crew.dashboard.tailnet_proxy_proof import loopback_client_is_daemon
-from kiro_crew.dashboard.urls import is_loopback
+from kiro_crew.dashboard.urls import is_loopback, tailnet_https_origin
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform.governance_profiles import (
@@ -405,14 +405,13 @@ def dns_name_from_status(status: object) -> str | None:
     return name
 
 
-def tailnet_origin() -> str | None:
-    """The HTTPS origin to trust for this machine's tailnet name, or ``None``.
+def tailnet_origin(https_port: int = 443) -> str | None:
+    """The HTTPS origin for this machine's tailnet name served on *https_port*, or ``None``.
 
-    No port: ``tailscale serve`` fronts the dashboard on 443, so the browser's
-    ``Origin`` carries no port component.
+    Carries the port only when it is not 443 (:func:`urls.tailnet_https_origin`).
     """
     name = self_dns_name()
-    return f"https://{name}" if name else None
+    return tailnet_https_origin(name, https_port) if name else None
 
 
 #: ``BackendState`` values that mean the daemon is running but this machine is
@@ -824,6 +823,8 @@ class TailnetOriginState:
 
     host: str = ""
     resolved_at: int = 0
+    #: The ``dashboard.tailscale.https_port`` read at startup, which the origin carries.
+    https_port: int = 443
     load_enabled: Callable[[], bool] | None = field(
         default=None,
         repr=False,
@@ -852,6 +853,14 @@ def running_tailnet_origin(
     except (TypeError, ValueError):
         resolved_at = 0
     return host, resolved_at
+
+
+def running_tailnet_https_port(app: web.Application | Mapping[str, object]) -> int:
+    """The HTTPS port the running gateway's tailnet origin was built from."""
+    state = app.get(_ORIGIN_RUNTIME_STATE_KEY)
+    if isinstance(state, TailnetOriginState):
+        return state.https_port
+    return 443
 
 
 async def _origin_configured_enabled(load_enabled: Callable[[], bool]) -> bool | None:
@@ -926,13 +935,13 @@ async def _recover_tailnet_origin(app: web.Application, state: TailnetOriginStat
             )
             return
 
-        allowed_origins.add(f"https://{host}")
+        origin = tailnet_https_origin(host, state.https_port)
+        allowed_origins.add(origin)
         state.host = host
         state.resolved_at = _origin_resolved_now()
         logger.info(
-            "tailnet origin recovered in background: trusting https://%s "
-            "(bind and auth unchanged)",
-            host,
+            "tailnet origin recovered in background: trusting %s (bind and auth unchanged)",
+            origin,
         )
         return
 
@@ -988,6 +997,7 @@ def install_tailnet_origin_recovery(
     enabled: bool,
     initial_host: str,
     load_enabled: Callable[[], bool],
+    https_port: int = 443,
 ) -> None:
     """Seed runtime state and register recovery for an unresolved opt-in."""
 
@@ -1000,6 +1010,7 @@ def install_tailnet_origin_recovery(
     state = TailnetOriginState(
         host=initial_host,
         resolved_at=resolved_at,
+        https_port=https_port,
         load_enabled=load_enabled,
     )
     app[_ORIGIN_RUNTIME_STATE_KEY] = state

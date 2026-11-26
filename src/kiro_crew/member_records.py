@@ -47,8 +47,9 @@ MEMBER_RECORDS_LEAF = "member-records"
 #: ``protected_app_state.APP_DISABLED_KIND``, ``protected_app_state.APP_SECRETS_KIND``,
 #: ``protected_app_state.APP_CRONS_DELETED_KIND``, ``protected_app_state.APP_STARTUP_KIND``,
 #: ``bot_grant_store.APP_BOT_GRANTS_KIND``, ``local_authorization.LOCAL_GRANTS_KIND``,
-#: ``protected_app_ui.APP_UI_KIND``, ``crew_api_approval_records.APPROVALS_KIND`` and
-#: ``crew_api_response_records.RESPONSES_KIND``;
+#: ``protected_app_ui.APP_UI_KIND``, ``crew_api_approval_records.APPROVALS_KIND``,
+#: ``crew_api_response_records.RESPONSES_KIND`` and
+#: ``crew_api_conversations.CONVERSATIONS_KIND``;
 #: a test pins them. Only
 #: :data:`MIGRATED_KINDS` had an old layout under ``trust/``.
 RECORD_KINDS: tuple[str, ...] = (
@@ -66,6 +67,7 @@ RECORD_KINDS: tuple[str, ...] = (
     "app-startup",
     "crew-api-approvals",
     "crew-api-responses",
+    "crew-api-conversations",
 )
 
 #: The kinds the one-time move carries from ``trust/``: the ones an older build kept

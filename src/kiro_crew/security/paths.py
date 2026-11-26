@@ -540,6 +540,10 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
             matched and _path_in_home_dirs(path_str, _MCP_REGISTRY_ROWS, base_dir, strict=True)
         )
         matched = matched or project_mcp
+        if not matched:  # call-time import: kept off the MCP listing path's budget
+            from kiro_crew.sandbox_git_control import git_control_write
+
+            matched = git_control_write(path_str, base_dir)
     except PathResolutionStalled as exc:
         return _stall_refusal(exc, path_str)
     if not matched:
@@ -997,6 +1001,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _run_resolution_bounded,
         _running_event_loop,
         _stall_prefix,
+        _trim_windows_name_ends,
         bounded_judgment,
     )
     from kiro_crew.security.paths_targets import (  # noqa: F401

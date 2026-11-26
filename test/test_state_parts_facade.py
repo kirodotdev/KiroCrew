@@ -286,7 +286,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, content: 'str', kind: 'str' = '', meta: 'dict | None' = None, *, "
         "directive_user_origin: 'bool' = False, directive_channel_origin: 'bool' = "
-        "False, directive_owner_origin: 'bool' = False) -> 'str'",
+        "False, directive_owner_origin: 'bool' = False, source_channels: "
+        "'tuple[str, ...]' = ()) -> 'str'",
     ),
     "queue_depth": ("property", False, False, "(self) -> 'int'"),
     "queue_edit_by_id": (
@@ -306,7 +307,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "None, on_irreversibly_consumed: 'Callable[[], Awaitable[None] | None] | "
         "None' = None, directive_user_origin: 'bool' = False, "
         "directive_channel_origin: 'bool' = False, directive_owner_origin: 'bool' = "
-        "False) -> 'str'",
+        "False, source_channels: 'tuple[str, ...]' = ()) -> 'str'",
     ),
     "queue_persist_pending": ("property", False, False, "(self) -> 'bool'"),
     "queue_pop": ("function", False, False, "(self, index: 'int' = 0) -> 'dict[str, Any]'"),
@@ -491,6 +492,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_eager_spawn_reported_resume": ("value", "False"),
     "_eager_spawn_retry_at": ("value", "0.0"),
     "_eager_spawn_task": ("value", "None"),
+    "_effort_overlay_clear": ("value", "False"),
     "_effort_pick_gen": ("value", "0"),
     "_engine_promoted_model": ("value", "''"),
     "_embed_question_polled_at": ("value", "None"),

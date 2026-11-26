@@ -40,8 +40,10 @@ vi.mock('../components/ArtifactPanel', () => ({ default: () => null }))
 vi.mock('../pages/chat/FolderPanel', () => ({ default: () => null }))
 vi.mock('../components/WebPreviewPanel', () => ({ default: () => null }))
 vi.mock('../components/McpAppFrame', () => ({ default: () => null }))
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: () => <div data-testid="terminal-body" />,
+}))
+vi.mock('../components/terminalSessions', () => ({
   disposeTerminalSession: (id: string) => { killed.disposes.push(id) },
   useDeleteTerminalSession: () => ({ mutate: (id: string) => { killed.deletes.push(id) } }),
 }))

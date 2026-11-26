@@ -288,6 +288,7 @@ async def start_api_server(
         local_only,
         configured_host,
         tailnet_host=_tailnet_host,
+        tailnet_https_port=_ts_cfg.https_port,
     )
     # Stashed for the same reason as in start_dashboard, and set here too even
     # though /api/tailnet/status is registered on the dashboard app: leaving one of
@@ -308,6 +309,7 @@ async def start_api_server(
         enabled=_ts_cfg.enabled,
         initial_host=_tailnet_host,
         load_enabled=_tailnet_origin_enabled,
+        https_port=_ts_cfg.https_port,
     )
 
     # Per-session internal secret for machine-to-machine (mcp-core, cron) auth.
@@ -422,7 +424,7 @@ async def start_api_server(
     # container override honored inside bind_address_for). Without this the
     # documented `gateway --slack-only` container path would silently bind
     # loopback and be unreachable through a published Docker port.
-    bind_addr = bind_address_for(local_only)
+    bind_addr = state._bind_asked = bind_address_for(local_only)
     site = web.TCPSite(runner, bind_addr, port)
     await _start_site(site, port)
     # After the bind, never on the boot path (no-new-work-on-gateway-boot-path):

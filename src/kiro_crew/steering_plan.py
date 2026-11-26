@@ -167,7 +167,7 @@ def tree_verdict(
         return REACHES_BRIEFING, REASON_MEMBER_BRIEFING
     if native_steering:
         return REACHES_HARNESS, REASON_HARNESS_NATIVE
-    if provider_type == ctx.PROVIDER_ACP:
+    if ctx.label_inherits_kiro_defaults(provider_type):
         if ctx._project_steering_delivered(provider_type, False, project):
             return REACHES_HARNESS, REASON_HARNESS_NATIVE
         if declared is None:
@@ -336,7 +336,7 @@ def chat_steering_plan(
 
     declared = (
         declared_steering_targets(agent, project)
-        if provider_type == ctx.PROVIDER_ACP and not native_steering and not is_member
+        if ctx.label_inherits_kiro_defaults(provider_type) and not native_steering and not is_member
         else None
     )
 

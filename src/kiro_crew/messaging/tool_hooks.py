@@ -299,4 +299,4 @@ class ChannelTurnHooks:
                 **spec_hook_kwargs(self.observed, self._acp_session_id()),
             )
         except Exception:
-            logger.debug("PostToolUse hook error on a channel turn", exc_info=True)
+            logger.warning("PostToolUse hook error on a channel turn", exc_info=True)

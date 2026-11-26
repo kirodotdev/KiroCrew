@@ -17,7 +17,7 @@ from acp_runtime_helpers import _make_runtime
 from kiro_crew.acp.harness import claude as claude_harness
 from kiro_crew.acp.runtime import AcpSessionHandle
 from kiro_crew.acp.runtime_session_setup import _MirroredSessionMcp
-from kiro_crew.acp.types import METHOD_SESSION_LOAD, METHOD_SESSION_NEW
+from kiro_crew.acp.types import METHOD_SESSION_LOAD, METHOD_SESSION_NEW, METHOD_SESSION_RESUME
 from kiro_crew.agent_ipc_wire import GATEWAY_PID_ENV, PICKUP_ENV
 from kiro_crew.dashboard import agent_ipc
 
@@ -64,7 +64,7 @@ async def test_each_sent_crew_server_gets_one_pickup(monkeypatch, tmp_path, path
         sent.append((method, params))
         if method == METHOD_SESSION_NEW:
             return {"sessionId": "member-new", "modes": {"currentModeId": "kirocrew"}}
-        if method == METHOD_SESSION_LOAD:
+        if method in (METHOD_SESSION_LOAD, METHOD_SESSION_RESUME):
             return {"modes": {"currentModeId": "kirocrew"}, "models": []}
         return {}
 
@@ -79,7 +79,9 @@ async def test_each_sent_crew_server_gets_one_pickup(monkeypatch, tmp_path, path
         await rt.load_session(
             str(tmp_path / "session.json"), "member-old", cwd=str(tmp_path), agent="kirocrew", **key
         )
-        method = METHOD_SESSION_LOAD
+        # codex restores with session/resume, the restore its adapter holds for MCP
+        # startup; the other hosts here restore with session/load.
+        method = METHOD_SESSION_RESUME if backend == "codex" else METHOD_SESSION_LOAD
     params = next(params for name, params in sent if name == method)
     sent_servers = {e["name"]: e for e in params["mcpServers"]}
     if backend != "codex":

@@ -129,6 +129,7 @@ def test_receipt_stage_reads_the_stage_log_and_sampled_lines(home: Path, capsys)
     assert (card["days"], card["sessions"], card["base"], card["changed"]) == (2, 2, 2, 1)
     assert card["rate"] == 0.5
     assert card["detail"] == {"lines": 4, "would_add": 2, "would_drop": 1}
+    assert card["quotes"] is None
     assert card["status"] == msr.STATUS_WAITING
 
 
@@ -183,6 +184,8 @@ def test_each_meta_family_is_parsed(home, capsys, stage, counts, base, changed) 
     card = _card(_run(capsys, json=True), stage)
     assert (card["base"], card["changed"], card["days"], card["sessions"]) == (base, changed, 1, 3)
     assert card["policy"] == (None if stage == "dream" else 2)
+    if stage != "lesson_tier_policy":
+        assert card["quotes"] is None
     assert card["status"] == msr.STATUS_WAITING
     if stage == "dream":
         assert card["rate"] is None
@@ -294,6 +297,105 @@ def test_window_uses_full_utc_days(home: Path, capsys, stage, started, first_day
             "would_add": len(included) * 2,
             "would_drop": 0,
         }
+
+
+@pytest.mark.parametrize("policy", [2, 3])
+def test_a_lesson_stage_reports_its_quotes_from_the_new_rules_only(
+    home: Path, capsys, policy
+) -> None:
+    stage = "lesson_tier_policy"
+    _config(home, **{stage: "shadow"})
+    prefix = next(s.source for s in msr.STAGES if s.name == stage)
+    new = {
+        "lessons": 6,
+        "always": 4,
+        "quote_present": 3,
+        "quote_pass": 2,
+        "quote_fail": 1,
+        "backed": 1,
+        "unmeasured": 0,
+        "demoted": 4,
+        "support_0.8": 1,
+        "support_<0.4": 1,
+        "quote_calls": 2,
+        "quote_call_failed": 0,
+        "quote_cut": 1,
+    }
+    _write_meta(
+        {
+            prefix + "rules_version": str(policy),
+            prefix + "rules_changed_at": "2026-11-01T09:00:00+00:00",
+            # The day the rules changed mixes both rule sets: left out.
+            prefix + f"counts:{DAY}": {"shadow": {"consolidation": {"lessons": 9, "demoted": 9}}},
+            prefix + "counts:2026-11-02": {"shadow": {"consolidation": new}},
+        }
+    )
+    card = _card(_run(capsys, json=True), stage)
+    assert (card["policy"], card["base"], card["changed"]) == (policy, 6, 4)
+    assert card["bias"] == ""
+    assert card["quotes"] == {
+        "absent": 1,
+        "fail": 1,
+        "pass": 2,
+        "backed": 1,
+        "unmeasured": 0,
+        "support": {"0.8": 1, "<0.4": 1},
+        "calls": 2,
+        "call_failed": 0,
+        "cut": 1,
+    }
+    text = _run(capsys)
+    assert "upper bound" not in text
+    assert (
+        f"quotes {stage}: absent=1 fail=1 pass=2 (backed=1) unmeasured=0  "
+        "support 0.8=1 <0.4=1  quote calls=2 failed=0 cut=1"
+    ) in text
+
+
+@pytest.mark.parametrize("policy", [None, "1"])
+def test_legacy_tier_counters_keep_the_upper_bound_note(home: Path, capsys, policy) -> None:
+    _config(home, lesson_tier_policy="shadow")
+    rows: dict[str, object] = {
+        "memory_tier_log:counts:"
+        + DAY: {"shadow": {"consolidation": {"lessons": 2, "always": 2, "demoted": 2}}},
+    }
+    if policy is not None:
+        rows["memory_tier_log:rules_version"] = policy
+    _write_meta(rows)
+    card = _card(_run(capsys, json=True), "lesson_tier_policy")
+    assert card["policy"] == (None if policy is None else 1)
+    assert (card["base"], card["changed"], card["rate"]) == (2, 2, 1.0)
+    assert card["quotes"] is None
+    assert "upper bound" in card["bias"]
+    text = _run(capsys)
+    assert "note lesson_tier_policy: upper bound" in text
+    assert "quotes lesson_tier_policy" not in text
+
+
+def test_origin_gate_never_reports_quotes_even_under_version_two(home: Path, capsys) -> None:
+    _config(home, lesson_origin_gate="shadow")
+    _write_meta(
+        {
+            "memory_origin_log:rules_version": "2",
+            "memory_origin_log:counts:"
+            + DAY: {
+                "shadow": {
+                    "consolidation": {
+                        "passes": 1,
+                        "no_human": 1,
+                        "lessons": 2,
+                        "standing": 2,
+                        "demoted": 2,
+                    }
+                }
+            },
+        }
+    )
+    card = _card(_run(capsys, json=True), "lesson_origin_gate")
+    assert card["policy"] == 2
+    assert card["quotes"] is None
+    assert card["bias"] == ""
+    assert "quotes lesson_origin_gate" not in _run(capsys)
 
 
 _DAYS = (DAY, "2026-11-02", "2026-11-03")
@@ -444,6 +546,7 @@ def test_json_shape(home: Path, capsys) -> None:
         "by_day",
         "data",
         "bias",
+        "quotes",
         "status",
         "miss",
         "control",

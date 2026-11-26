@@ -1,13 +1,13 @@
 /**
  * Screenshots for the apps-3 batch of the error-state sweep
  * (capture/error-notice-apps-3.html): ops-mission-control / papyrus /
- * personal-shopper / pptx-maker / workflows failure surfaces before
- * (hand-written) and after (shared ErrorNotice), side by side.
+ * pptx-maker / workflows failure surfaces before (hand-written) and after
+ * (shared ErrorNotice), side by side.
  *
- * Self-checking: the AFTER column must render exactly six `role="alert"`
- * notices, expose the agent hand-off on the four surfaces that hold no draft
- * (ops dispatch, signals claim, sites save, workflow run tree) and none on the
- * two beside a draft (papyrus editor buffer, preferences input); the BEFORE
+ * Self-checking: the AFTER column must render exactly four `role="alert"`
+ * notices, expose the agent hand-off on the three surfaces that hold no draft
+ * (ops dispatch, signals claim, workflow run tree) and none on the one beside
+ * a draft (papyrus editor buffer); the BEFORE
  * column must expose no hand-off at all — a screenshot of the wrong state is
  * worse evidence than none.
  *
@@ -33,9 +33,9 @@ for (const theme of ['dark', 'light']) {
 
   const after = page.locator('text=After (this branch)').locator('..')
   const alerts = await after.getByRole('alert').count()
-  if (alerts !== 6) throw new Error(`expected 6 role=alert notices in the AFTER column, got ${alerts}`)
+  if (alerts !== 4) throw new Error(`expected 4 role=alert notices in the AFTER column, got ${alerts}`)
   const handoffs = await after.getByRole('button', { name: /Ask the agent/ }).count()
-  if (handoffs !== 4) throw new Error(`expected 4 agent hand-offs (dispatch, claim, sites, run tree), got ${handoffs}`)
+  if (handoffs !== 3) throw new Error(`expected 3 agent hand-offs (dispatch, claim, run tree), got ${handoffs}`)
   const before = page.locator('text=Before (origin/main)').locator('..')
   const beforeHandoffs = await before.getByRole('button', { name: /Ask the agent/ }).count()
   if (beforeHandoffs !== 0) throw new Error(`BEFORE column leaked ${beforeHandoffs} hand-off button(s)`)

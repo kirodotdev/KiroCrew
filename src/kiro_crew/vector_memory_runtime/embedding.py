@@ -26,15 +26,38 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.vector_memory")
 
 
+#: Longest a sweep row waits for an unloaded shared model to load, the same bound
+#: the boot re-embed sweep gives ``wait_ready``.
+_COLD_LOAD_RETRY_SECS = 120.0
+
+
 class _EmbeddingVector(list[float]):
     """An inference result bound to the database space observed before inference."""
 
     def __init__(
-        self, values: list[float], token: tuple[str | None, str], *, managed: bool = False
+        self,
+        values: list[float],
+        token: tuple[str | None, str],
+        *,
+        managed: bool = False,
+        instructed: bool = False,
     ):
         super().__init__(values)
         self.space_token = token
         self.managed = managed
+        #: Embedded with the model's query instruction, so the gates read the
+        #: instructed cosine floors (see :func:`query_is_instructed`).
+        self.instructed = instructed
+
+
+def query_is_instructed(vector: object) -> bool:
+    """Whether a query vector was embedded with the model's query instruction.
+
+    The flag rides on the vector, so a gate picks the floors measured for the
+    way that query was embedded. A plain list (a test's own vector, a caller's
+    embed function) reads as plain.
+    """
+    return bool(getattr(vector, "instructed", False))
 
 
 @dataclass(frozen=True)
@@ -53,9 +76,14 @@ class _RecallSpaceChanged(Exception):
 
 
 def try_embed(
-    store: VectorMemoryStore, text: str, priority: int = PRIORITY_NORMAL
+    store: VectorMemoryStore, text: str, priority: int = PRIORITY_NORMAL, *, query: bool = False
 ) -> list[float] | None:
     """Embed text using embed_fn if available.
+
+    *query* marks a recall query, compared against stored memories. On the
+    shared embedder, a model that wants a query-side instruction
+    (``embeddings.query_instruction_applies``) embeds the query with it, and the
+    result is flagged ``instructed``. Stored text never takes it.
 
     If embed_fn is None but embed_fn_factory is set, attempt to lazily
     rebind embed_fn (rate-limited via cooldown). This recovers from the
@@ -138,10 +166,19 @@ def try_embed(
                 )
             ):
                 return None
+            instructed = (
+                query
+                and producer is not None
+                and embeddings.query_instruction_applies(producer.model_id)
+            )
             # A managed call pins its producer through cache/coalescing too;
             # a later singleton replacement cannot relabel its result.
             if producer is not None:
-                result = embeddings._shared_sync_embed(text, priority=priority, backend=producer)
+                result = embeddings._shared_sync_embed(
+                    embeddings.query_instruction_text(text) if instructed else text,
+                    priority=priority,
+                    backend=producer,
+                )
             elif getattr(store.embed_fn, "accepts_priority", False):
                 result = store.embed_fn(text, priority=priority)  # type: ignore[call-arg]
             else:
@@ -161,7 +198,7 @@ def try_embed(
             else:
                 logger.debug("Embed returned None for text_len=%d", len(text))
             return (
-                _EmbeddingVector(result, persistent_token, managed=managed)
+                _EmbeddingVector(result, persistent_token, managed=managed, instructed=instructed)
                 if result is not None
                 else None
             )
@@ -171,7 +208,13 @@ def try_embed(
     return None
 
 
-def embed_bulk_row(store: VectorMemoryStore, text: str, *, pace: bool) -> "list[float] | None":
+def embed_bulk_row(
+    store: VectorMemoryStore,
+    text: str,
+    *,
+    pace: bool,
+    should_stop: "Callable[[], bool] | None" = None,
+) -> "list[float] | None":
     """Embed one row of a corpus sweep, then optionally pace the loop.
 
     The backfill sweeps (``embedding_repair``) are the longest-running CPU work the gateway does
@@ -206,12 +249,22 @@ def embed_bulk_row(store: VectorMemoryStore, text: str, *, pace: bool) -> "list[
     than before pacing existed.
     """
     from kiro_crew import vector_memory  # circular import: read the pacing seams at call time
+    from kiro_crew import embeddings
 
     priority = PRIORITY_BULK if pace else PRIORITY_NORMAL
-    if not pace:
-        return store._try_embed(text, priority)
     started = vector_memory.time.monotonic()
     vec = store._try_embed(text, priority)
+    # An embed that met an unloaded shared model only started its load: wait for
+    # it and try once more, rather than count the row failed and page past it.
+    if (
+        vec is None
+        and store.embed_fn is embeddings.make_sync_embed_fn()
+        and embeddings.wait_for_cold_shared_embedder(_COLD_LOAD_RETRY_SECS, should_stop)
+    ):
+        started = vector_memory.time.monotonic()  # pace on the inference, not the load
+        vec = store._try_embed(text, priority)
+    if not pace:
+        return vec
     delay = vector_memory.bulk_pace_delay(vector_memory.time.monotonic() - started)
     if delay > 0:
         vector_memory.time.sleep(delay)

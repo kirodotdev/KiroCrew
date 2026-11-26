@@ -83,6 +83,8 @@ from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sel import sel
 from kiro_crew.validation import (
+    CHANNEL_ID_RE,
+    CHANNEL_MAX_LEN,
     MCP_CRON_SCHEMAS,
     ValidationError,
     infer_use_case,
@@ -167,7 +169,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
         if name == "cron_add" and not args.get("channel"):
             # Preserve the direct runtime's delivery default as an ordinary,
             # server-validated argument; it confers no ownership authority.
-            channel = _caller_channel_id() or os.environ.get("KIROCREW_CHANNEL_ID")
+            channel = _default_cron_channel()
             if channel:
                 args["channel"] = channel
         # Default the reply thread on the runtime side, ONLY when ``thread_ts``
@@ -277,6 +279,18 @@ def _caller_channel_id() -> str:
     """
     ctx = current_caller()
     return ctx.channel_id if ctx is not None else ""
+
+
+def _default_cron_channel() -> str | None:
+    """The caller's channel as ``cron_add``'s default, only when it is a Slack channel id.
+
+    ``channel`` holds a Slack channel id, and another transport's id (``wecom:<userid>``)
+    can never pass that field's check. A job without a channel is routed by its origin.
+    """
+    channel = _caller_channel_id() or os.environ.get("KIROCREW_CHANNEL_ID") or ""
+    if len(channel) <= CHANNEL_MAX_LEN and CHANNEL_ID_RE.fullmatch(channel):
+        return channel
+    return None
 
 
 def _caller_thread_id() -> str:
@@ -908,7 +922,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         channel = (args.get("channel") or "").strip() or None
         caller_channel = _caller_channel_id() or None
         if channel is None:
-            channel = caller_channel or os.environ.get("KIROCREW_CHANNEL_ID") or None
+            channel = _default_cron_channel()
         if not every and not cron_expr and not at_ts:
             return "Error: provide every, cron_expr, at, delay, or at_time"
         # Validate model BEFORE add_job so an invalid value never leaves an

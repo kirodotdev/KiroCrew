@@ -204,7 +204,7 @@ export type {
 export type { MemoryCarveQuery, MemoryCarveResult, RecurringFailure } from './client/memory'
 export { SEARCH_MIN_CHARS } from './client/sessions'
 export type { ArchiveEntry, MessageSearchHit, MessageSearchParams, MessageSearchResponse, MessageSearchResult } from './client/sessions'
-export type { ChatHistoryAroundResponse, ChatHistoryHit, ChatHistoryKind, ChatHistorySearchParams, ChatHistorySearchResponse } from './client/chat'
+export type { ChatHistoryAroundResponse, ChatHistoryCountsResponse, ChatHistoryHit, ChatHistoryKind, ChatHistorySearchParams, ChatHistorySearchResponse } from './client/chat'
 export type {
   McpShareReason,
   McpShareRecommendation,
@@ -1949,6 +1949,7 @@ export const api = {
   ...apps.sessionStatus,
   ...autoResearch.campaigns,
   ...apps.fileMenu,
+  ...apps.sessionCreate,
   ...artifacts.publishing,
   ...featureDiscovery.tips,
   ...browserLive.browserLive,

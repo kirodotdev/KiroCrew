@@ -42,6 +42,8 @@ export default function TextToolbar({ shapes, onInk, onInkHex, onSize, onBold, o
   const bold = shapes.every(s => s.bold)
   const strike = shapes.every(s => s.strike)
   const inkHex = same(s => s.inkHex)
+  // As in ShapeToolbar: a shared palette colour needs every shape free of a custom one.
+  const anyInkHex = shapes.some(s => s.inkHex)
   const aligns: { align: TextAlign; label: string; icon: ReactNode }[] = [
     { align: 'left', label: t('components.canvas.align_left'), icon: <AlignLeft size={16} /> },
     { align: 'center', label: t('components.canvas.align_center'), icon: <AlignCenter size={16} /> },
@@ -49,7 +51,7 @@ export default function TextToolbar({ shapes, onInk, onInkHex, onSize, onBold, o
   ]
   return (
     <div className="flex flex-wrap items-center justify-center gap-0.5 rounded-2xl bg-bg-elevated px-1.5 py-1 text-text md:flex-nowrap md:justify-start" data-testid="canvas-text-toolbar" style={{ boxShadow: FLOAT_SHADOW }}>
-      <SwatchPicker label={t('components.canvas.text_colour')} show="paper" value={inkHex ? undefined : same(s => s.ink)} fallback="var(--text)"
+      <SwatchPicker label={t('components.canvas.text_colour')} show="paper" value={anyInkHex ? undefined : same(s => s.ink)} fallback="var(--text)"
         custom={{ hex: inkHex, start: '#1E1E1E', onHex: onInkHex }}
         onPick={onInk} onReset={() => onInk(undefined)} />
       {rule}

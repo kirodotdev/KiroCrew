@@ -413,8 +413,8 @@ def ensure(
             if os.path.lexists(dest):
                 raise WorktreeRefused(f"{dest} exists and is not a worktree of {repo}")
             if registered is not None:
-                # Its folder was deleted by hand: drop the stale registration.
-                wt._run_git(["worktree", "prune"], repo)
+                # Its folder was deleted by hand: drop this one stale registration.
+                wt._deregister_missing(repo, dest)
             registered = branch_for(slug, repo, prefix)
             _create(wt, repo, dest, registered, workspace_dir, slug)
     return CrewmateWorktree(
@@ -534,7 +534,7 @@ def _unwind_add(
     The folder goes by descriptor, and only when it is still the one made (its
     ``(dev, ino)``), so a parent swapped for a link in between leads to nothing
     being removed; never by a by-name ``rmtree``. Then ``_cleanup_partial`` with
-    ``created=False`` prunes the registration and drops the branch this lookup cut.
+    ``created=False`` deregisters that one path and drops the branch this lookup cut.
 
     A platform that cannot pin a tree (``supports_pinned_tree_walk`` is false, so
     Windows) makes ``remove_tree_pinned`` refuse before touching anything. Left
@@ -666,8 +666,8 @@ def make_run_worktree(cwd: str, run_id: str, allowed_roots: list[str]) -> RunWor
         if os.path.lexists(dest):
             raise WorktreeRefused(f"isolate: {dest} already exists and is not this run's worktree")
         if registered:
-            # Its folder was deleted by hand: drop the stale registration.
-            wt._run_git(["worktree", "prune"], repo)
+            # Its folder was deleted by hand: drop this one stale registration.
+            wt._deregister_missing(repo, dest)
         checkout = _nearest_dir(os.path.realpath(os.path.expanduser(cwd)))
         base = wt._resolve_commit(checkout, "HEAD")
         if not base:

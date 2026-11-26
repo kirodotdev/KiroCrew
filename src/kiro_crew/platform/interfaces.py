@@ -664,8 +664,9 @@ class McpToolingProvider(Protocol):
         server that :meth:`extra_mcp_servers` supplies on this host to the spec a
         session runs on a custom agent (a user-level spec Crew did not write), under
         the same opt-outs as Crew's own servers. It is added at spawn, never written
-        into the user's file, never auto-approved, and not added while a wildcard in
-        the agent's own ``allowedTools`` would approve it unasked. Which spawns add
+        into the user's file, and never auto-approved: where a wildcard in the
+        agent's own ``allowedTools`` would approve it unasked, KAS gets it with an
+        ``ask`` rule over its tools and kiro-cli does not get it. Which spawns add
         it, and so the spec an edition check that reports where it is mounted
         judges, is ``acp.default_crew_servers.session_spec_on(backend, agent, spec)``.
         The public Default returns ``()``.

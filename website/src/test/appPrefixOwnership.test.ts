@@ -19,6 +19,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { wheelCopyDrift } from './shippedWheelCopies'
 
 const SRC = resolve(__dirname, '..')
 
@@ -143,8 +144,9 @@ describe('app key-prefix ownership', () => {
   it('derives an owner for every registered app', () => {
     // If the registry's shape changes and this parse silently yields nothing, the
     // scan below would pass by having no appIds to check — the classic vacuous
-    // ratchet. Pinning the count and one known-awkward case closes that.
-    expect(owners.size).toBeGreaterThan(15)
+    // ratchet. Holding the parse to every shipped wheel copy by name, and pinning one
+    // known-awkward case, closes that.
+    expect(wheelCopyDrift(owners.keys())).toEqual({ added: [], dropped: [] })
     // The route and the app name differ here, which is why ownership is read from
     // the registry rather than from the URL.
     expect(owners.get('agent-worlds')).toBe('pages')

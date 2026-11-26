@@ -7,7 +7,7 @@ import { canRecordGlobalHotkey, useGlobalHotkey, useGlobalHotkeyRecorder } from 
 import { chordReachable, formatChordKeys, type QuickSearchMode } from '../../lib/quickSearchShortcut'
 import { formatAcceleratorKeys, type GlobalHotkeyInfo } from '../../lib/globalHotkey'
 import { useKeyboardLayout } from '../../hooks/useNavShortcutHint'
-import { PANEL_TOGGLE_IDS, PANEL_TOGGLES_SKIPPING_SHELL, TERMINAL_PANEL_TOGGLE_IDS } from '../../lib/panelToggleShortcuts'
+import { PANEL_TOGGLE_IDS, PANEL_TOGGLES_SKIPPING_SHELL, TERMINAL_FOCUS_PANEL_TOGGLE_IDS, TERMINAL_PANEL_TOGGLE_IDS } from '../../lib/panelToggleShortcuts'
 import { useTerminalEnabled } from '../../utils/terminalRegistry'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -116,6 +116,10 @@ function PanelToggleConfig() {
                 made, rather than left to be discovered by a broken Ctrl+C. */}
             {PANEL_TOGGLES_SKIPPING_SHELL.has(id) && (
               <div className="text-[12px] text-muted pt-1">{i18nT(IS_MAC ? 'pages.settings.shortcutsPanel.skips_shell_hint_mac' : 'pages.settings.shortcutsPanel.skips_shell_hint')}</div>
+            )}
+            {/* A terminal-focus command also takes its chord from the shell. */}
+            {TERMINAL_FOCUS_PANEL_TOGGLE_IDS.has(id) && (
+              <div className="text-[12px] text-muted pt-1">{i18nT('pages.settings.shortcutsPanel.terminal_focus_hint')}</div>
             )}
           </div>
         )

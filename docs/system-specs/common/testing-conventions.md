@@ -163,6 +163,10 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   left changed, and names the test), and a new process-global ships its floor entry
   (`test/test_process_cache_floor_ratchet.py` fails a new module-level cache in
   `src/kiro_crew` that no floor resets).
+  Never fake a spawn or kill by patching an attribute of a module other code shares
+  (a module's `subprocess` alias's `Popen` is `subprocess.Popen` for the whole worker, the
+  subprocess pool's helper child included): rebind the name in the module under test
+  alone, as `test_acp_deepseek_backend.py`'s `_module_with` does for `subprocess_mod`.
   [Class 4](#4-order-dependence-and-shared-state).
 - **D12. Prove it.** Each new or changed test passes 20 times at `-n0`, 10 times at
   `-n 4` beside its neighbours, and in a shuffled order. A FIX to a flaky test also
@@ -997,7 +1001,7 @@ def test_a_deep_nest_is_refused_without_an_exception():
 
 def test_the_ssh_floor_refuses_at_its_reading_bound():
     depth = ssh._MAX_SSH_READING_DEPTH
-    assert depth <= deny_gate._MAX_SUBSTITUTION_DEPTH, "the gate cap would answer first"
+    assert depth <= deny_gate_nesting._MAX_SUBSTITUTION_DEPTH, "the gate cap would answer first"
     assert _denied_by(_nested_double_quoted(depth, "true; echo ssh")) == "sandbox-escape-ssh-self"
     assert _denied_by(_nested_double_quoted(depth - 1, "true; echo ssh")) is None
 ```
@@ -4248,8 +4252,8 @@ monkeypatch.setattr(os, "scandir", counting)
 
 **A reload or a `sys.modules` eviction leaves the parent package pointing somewhere
 else.** A string target (`monkeypatch.setattr("kiro_crew.agent_state.config_dir", ...)`)
-is resolved through the PARENT PACKAGE's attribute, not through `sys.modules`. Two shapes
-break it, both reproduced:
+is resolved through the PARENT PACKAGE's attribute, not through `sys.modules`. Three shapes
+break it, all reproduced:
 
 - If the attribute is gone while `sys.modules` still holds the module, every later string
   patch on it raises `AttributeError` at setup. One Windows xdist worker reported 2,167
@@ -4259,6 +4263,20 @@ break it, both reproduced:
   leaving the block drops the `sys.modules` entry but keeps the parent attribute. The next
   string patch then lands on that stale object while the next real import builds a fresh
   one, so the patch silently misses.
+
+- Leaving `mock.patch.dict(sys.modules, ...)` empties the table before it refills it
+  (`clear()`, then `update(original)`). A thread that runs `import kiro_crew.mod` in that
+  instant finds no `kiro_crew` entry and starts loading the package again; when it
+  registers the new package after the refill, `sys.modules["kiro_crew"]` is an object with
+  none of the submodule attributes, while `sys.modules["kiro_crew.mod"]` is still the old
+  module. Every later string patch on that worker then raises `AttributeError` at setup,
+  which is the first shape above. Reproduced in a loop on Linux (a thread importing while
+  the main thread enters and leaves the block). So never use `patch.dict` on
+  `sys.modules`: fake entries with `patched_sys_modules({...})` from
+  `kiro_crew.testing.module_table`, which restores key by key, or with
+  `monkeypatch.setitem(sys.modules, name, mod)`. The semgrep rule
+  `kirocrew.test-sys-modules-patch-dict` refuses the `patch.dict` spelling and
+  `sys.modules.clear()` on a new line.
 
 `importlib.reload` is the same trap one step over. It rebinds the module's globals to new
 objects, but every `from kiro_crew.learn import Lesson` taken earlier keeps the old class,

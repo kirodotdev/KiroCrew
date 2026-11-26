@@ -102,3 +102,20 @@ def _fresh_kas_env_left_out_marks():
     marks = getattr(launch, "_LEFT_OUT_LOGGED", None)
     if marks is not None:
         marks.clear()
+
+
+@per_test_guard
+def _fresh_backend_tmp_socket_room_warnings(_floor_monkeypatch):
+    """Start each test with no low socket room warning given, and room to spare.
+
+    ``mcp_gateway.backend_tmp._warned_roots`` holds the managed roots whose low
+    socket room warning this process logged, so a root an earlier test on the same
+    worker warned about would silence this test's warning. And whether a path is
+    too long depends on how long this runner's temp folder is, so every failed
+    probe's error would gain a hint on one runner and not on another. The budget is
+    pinned out of reach here; the socket room tests put the real one back.
+    """
+    from kiro_crew.mcp_gateway import backend_tmp
+
+    _floor_monkeypatch.setattr(backend_tmp, "_warned_roots", set(), raising=False)
+    _floor_monkeypatch.setattr(backend_tmp, "_SUN_PATH_BYTES", sys.maxsize, raising=False)

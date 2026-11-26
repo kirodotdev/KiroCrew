@@ -2,8 +2,11 @@ import { useEffect, useRef } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 import { setSettingsDeepLinkTarget } from '../components/settings'
+import { settingsRoute } from '../components/commandPalette/settingsRoute'
+import { parsePathSegments } from '../components/subNavParams'
 import { i18nT } from '../i18n/t'
 import { inUntrustedContent } from '../guide/guideMarkers'
+import { useRenderedLocationIsCurrent } from './useRenderedLocationIsCurrent'
 import type { SettingEntry } from '../components/commandPalette/settingsTypes'
 
 /**
@@ -184,16 +187,17 @@ const LATE_MOUNT_ANCHORS: ReadonlySet<string> = new Set([
  *
  * Reads `?highlight=<id>` from the URL, resolves the id to the label rendered
  * in the active locale via SETTINGS_REGISTRY, finds the element by
- * `data-setting-label`, scrolls it into view, applies a temporary 2s ring
- * flash, then strips the param.
+ * `data-setting-label` (waiting for it while its panel has not mounted yet),
+ * scrolls it into view, applies a temporary 2s ring flash, then strips the param.
  * Entries with an explicit settingId instead wait for that data-setting-id
- * row, so a cold panel cannot highlight a different same-label control.
+ * row, so a cold panel cannot highlight a different same-label control, and
+ * an entry with a configKey takes its own `data-setting-key` row first.
  *
  * Also accepts `?highlight=key:<configKey>` — first tries direct DOM lookup
  * via `data-setting-key` attribute (zero round-trip), waiting for the element
- * when it is the late-mounting sign-in anchor; falls back to resolving
- * the dotted config key to the registry entry's id via the configKey field,
- * then proceeds with the standard label-based DOM highlight.
+ * when it is a late-mounting anchor (LATE_MOUNT_ANCHORS); falls back to
+ * resolving the dotted config key to the registry entry's id via the
+ * configKey field, then proceeds with the same label lookup.
  */
 /**
  * Build a `[data-setting-*="…"]` attribute selector from a settings DOM anchor
@@ -208,6 +212,30 @@ export function settingAnchorSelector(
   value: string,
 ): string {
   return `[${attr}="${CSS.escape(value)}"]`
+}
+
+const routeSegments = (entry: SettingEntry): string[] => parsePathSegments('/settings', settingsRoute(entry).split('?')[0])
+const renderedLabel = (entry: SettingEntry): string => entry.labelKey ? i18nT(entry.labelKey) : entry.label
+
+/**
+ * Whether the page shows a different Settings pane from the one a link to *id*
+ * opens, for an entry with no settingId. A pane or tab click keeps `highlight`,
+ * and one label repeats on sibling panes (every channel's "Folder name"). A
+ * location naming no pane shows its tab's list, or its first pane in the wide
+ * layout, so it is another pane only for a label that repeats; a legacy `?tab=`
+ * URL names its tab in the query. A mismatch only holds the link back; the
+ * param stays for the pane it names.
+ */
+function showsOtherPane(id: string, pathname: string, legacyTab: string | null): boolean {
+  const entry = SETTINGS_REGISTRY.find(e => e.id === id)
+  if (!entry || entry.settingId) return false
+  const [tab = legacyTab, sub] = parsePathSegments('/settings', pathname)
+  const [entryTab, entrySub] = routeSegments(entry)
+  if (tab !== entryTab) return true
+  if (!entrySub) return false
+  if (sub) return sub !== entrySub
+  const label = renderedLabel(entry)
+  return SETTINGS_REGISTRY.some(o => o.tab === entry.tab && renderedLabel(o) === label && routeSegments(o)[1] !== entrySub)
 }
 
 /** How long the outline shows before it fades, and how long the fade takes. */
@@ -264,6 +292,11 @@ export function useSettingHighlight(owns: boolean = true): void {
    * cleanup would cancel every fade the moment the outline appeared. */
   const fades = useRef(new Map<HTMLElement, ReturnType<typeof setTimeout>>())
 
+  /* A probe must not resolve while history is on another entry than the one it
+   * was armed for (a pane click that committed first, or a navigation still
+   * pending): its strip is a replace built from the armed location. */
+  const renderedLocationIsCurrent = useRenderedLocationIsCurrent()
+
   // On unmount, cancel every pending fade and take the outline down now.
   useEffect(() => {
     const pending = fades.current
@@ -291,6 +324,7 @@ export function useSettingHighlight(owns: boolean = true): void {
       highlightId = resolveLegacyHighlightId(rawHighlightId)
     }
   }
+  const onOtherPane = !!highlightId && !directConfigKey && showsOtherPane(highlightId, location.pathname, params.get('tab'))
 
   useEffect(() => {
     /* Announce the pending link BEFORE the probe, and withdraw it as soon as
@@ -301,6 +335,8 @@ export function useSettingHighlight(owns: boolean = true): void {
      * already causes: resolved, unknown and not-ours all arrive here as "no
      * highlight", which is the one condition that means nothing is pending. */
     if (!owns || !highlightId) { setSettingsDeepLinkTarget(null); return }
+    // Another pane's same-label row is not this link's; it waits for its own.
+    if (onOtherPane) { setSettingsDeepLinkTarget(null); return }
 
     const entry = SETTINGS_REGISTRY.find(e => e.id === highlightId)
     const settingId = entry?.settingId
@@ -318,11 +354,12 @@ export function useSettingHighlight(owns: boolean = true): void {
           ? settingAnchorSelector('data-setting-label', entry.labelKey ? i18nT(entry.labelKey) : entry.label)
           : null
     setSettingsDeepLinkTarget(containmentSelector)
-    // Explicit UI identities and schema keys both survive an async panel load.
-    if (settingId || directConfigKey) {
+    // Registry entries and known schema keys survive an async panel load.
+    if (entry || directConfigKey) {
       const findDirectTarget = (): HTMLElement | null => {
         if (settingId) return document.querySelector<HTMLElement>(`[data-setting-id="${CSS.escape(settingId)}"]`)
-        if (directConfigKey) return document.querySelector<HTMLElement>(`[data-setting-key="${CSS.escape(directConfigKey)}"]`)
+        const key = directConfigKey ?? entry?.configKey
+        if (key) return document.querySelector<HTMLElement>(`[data-setting-key="${CSS.escape(key)}"]`)
         return null
       }
       const findTarget = (): HTMLElement | null => {
@@ -330,12 +367,16 @@ export function useSettingHighlight(owns: boolean = true): void {
         // A declared UI identity is authoritative even before it mounts.
         if (direct || settingId) return direct
         if (!entry) return null
-        // Keep legacy unidentified controls reachable, but another setting's
-        // schema key or UI identity must never satisfy a same-label request.
         const label = entry.labelKey ? i18nT(entry.labelKey) : entry.label
         const matches = document.querySelectorAll<HTMLElement>(`[data-setting-label="${CSS.escape(label)}"]`)
         const candidate = matches[entry.occurrence - 1] ?? matches[0]
-        return candidate && !candidate.hasAttribute('data-setting-key') && !candidate.hasAttribute('data-setting-id') ? candidate : null
+        // Keep legacy unidentified controls reachable, but another setting's UI
+        // identity never satisfies a same-label request. An entry with its own
+        // key was matched by it above, so only an unkeyed row stands in for it;
+        // one that records none may take a keyed row, since the registry misses
+        // keys a panel computes.
+        const key = candidate?.getAttribute('data-setting-key')
+        return candidate && !candidate.hasAttribute('data-setting-id') && (key == null || !entry.configKey) ? candidate : null
       }
       // A declared identity -- a registry entry, or a late-mounting anchor
       // (LATE_MOUNT_ANCHORS) -- is authoritative even before it mounts, so the probe waits
@@ -344,6 +385,7 @@ export function useSettingHighlight(owns: boolean = true): void {
       if (entry || (directConfigKey && LATE_MOUNT_ANCHORS.has(directConfigKey)) || findDirectTarget()) {
         let observer: MutationObserver | null = null
         const highlightTarget = (): boolean => {
+          if (!renderedLocationIsCurrent()) return false
           const el = findTarget()
           if (!el) return false
           observer?.disconnect()
@@ -372,48 +414,20 @@ export function useSettingHighlight(owns: boolean = true): void {
           setSettingsDeepLinkTarget(null)
         }
       }
-      // Unknown keys retain the legacy parameter-cleanup behavior below.
     }
 
-    // Resolve id → label (legacy path)
-    if (!entry) {
-      // Unknown id, strip param
-      setParams(prev => {
-        const next = new URLSearchParams(prev)
-        next.delete('highlight')
-        return next
-      }, { replace: true })
-      return
-    }
-
-    // Wait a tick for the panel to render
-    const timer = setTimeout(() => {
-      // Use querySelectorAll to handle duplicate labels within a tab.
-      // entry.occurrence (1-based) identifies which DOM match to highlight.
-      const renderedLabel = entry.labelKey ? i18nT(entry.labelKey) : entry.label
-      const matches = document.querySelectorAll(`[data-setting-label="${CSS.escape(renderedLabel)}"]`)
-      const el = matches[entry.occurrence - 1] ?? matches[0]
-      if (el) {
-        el.scrollIntoView({ block: 'center', behavior: 'smooth' })
-        // Apply a temporary ring highlight using existing Tailwind tokens
-        flashSetting(fades.current, el as HTMLElement)
-      }
-
-      // Strip the highlight param
-      setParams(prev => {
-        const next = new URLSearchParams(prev)
-        next.delete('highlight')
-        return next
-      }, { replace: true })
-    }, 100)
-
-    return () => { clearTimeout(timer); setSettingsDeepLinkTarget(null) }
-    // location.key: every navigation re-arms the probe. Without it, the
+    // An unknown id or key: strip the param.
+    setParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete('highlight')
+      return next
+    }, { replace: true })
+    // location.key: every navigation re-arms the probe, which must happen
+    // because a probe armed for an earlier location matches nothing. So the
     // legacy-URL translation (SettingsPage replace-navigates ?tab=X onto the
-    // path form, mounting the target panel one commit LATER) would race this
-    // effect's 100ms timer, which strips the param even when no element was
-    // found — the re-run today only happens because react-router's
-    // setParams identity churns with the search string, an implementation
+    // path form, mounting the target panel one commit LATER) starts a fresh
+    // probe on the tree it lands on, rather than relying on react-router's
+    // setParams identity churning with the search string, an implementation
     // detail nothing pins.
-  }, [owns, highlightId, directConfigKey, setParams, location.key])
+  }, [owns, highlightId, directConfigKey, onOtherPane, setParams, location.key, renderedLocationIsCurrent])
 }

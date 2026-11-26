@@ -385,7 +385,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             _cron_add_fail("--at is outside the supported timestamp range")
 
     # ── Fields validated up front so an invalid value never strands a job ──
-    if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel)):
+    if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(channel)):
         _cron_add_fail(f"invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})")
     try:
         model = _cron_model(model)
@@ -865,7 +865,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                         kwargs[field] = ""
                         kwargs["thread_ts"] = ""
                         continue
-                    if len(val) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(val):
+                    if len(val) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.fullmatch(val):
                         print(
                             f"Error: invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})",
                             file=sys.stderr,

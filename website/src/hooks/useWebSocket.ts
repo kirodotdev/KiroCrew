@@ -8,7 +8,7 @@ import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, trigge
 import { addNotification, ackNotificationByTs, unackNotificationByTs, applyNotificationDismiss, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
-  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, resolveElicitationRow, sseSubagentPending, setSubagentApprovalTarget, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
+  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, resolveElicitationRow, sseSubagentPending, setSubagentApprovalTarget, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, subagentReplayTruncated, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
   forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, readSideSteerSubmittedText,
   takeSideQueueEditForClose, abortActiveOlderFetch,
 } from '../store/chatSlice'
@@ -752,6 +752,12 @@ export function useWebSocket() {
             if (chunkSlot && chunkId && chunkText) buffers.bufferSubagentChunk(chunkSlot, chunkId, chunkText)
             break
           }
+          case 'subagent_thinking': {
+            // An agent's reasoning: buffered beside its card's text, kept apart.
+            const { slot: thinkSlot, id: thinkId, text: thinkText } = data as { slot: string; id: string; text: string }
+            if (thinkSlot && thinkId && typeof thinkText === 'string' && thinkText) buffers.bufferSubagentThinking(thinkSlot, thinkId, thinkText)
+            break
+          }
           case 'subagent_tool':
             dispatch(sseSubagentTool(data as { slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string; is_update?: boolean }))
             break
@@ -807,7 +813,7 @@ export function useWebSocket() {
           case 'subagent_batch_chunks':
             // chunks must dispatch before newer server-batched chunks arrive.
             buffers.flushSubagentChunks()
-            dispatch(sseSubagentBatchChunks(data as { chunks: { id: string; slot: string; text: string }[] }))
+            dispatch(sseSubagentBatchChunks(data as { chunks: { id: string; slot: string; text: string; thinking?: string }[] }))
             break
           case 'subagent_snapshot_batch': {
             // Reconnect replay collapsed into one frame at scale — fan the
@@ -835,6 +841,11 @@ export function useWebSocket() {
           case 'subagent_replay_done':
             // The replay above is complete: drop the cards it did not name.
             dispatch(subagentReplayDone())
+            break
+          case 'subagent_replay_truncated':
+            // Per slot, how many finished runs the durable replay left out; the
+            // reducer validates each entry.
+            dispatch(subagentReplayTruncated(data as { slots?: unknown }))
             break
           case 'spawn_batch_started':
           case 'batch_finished':

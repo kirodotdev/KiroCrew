@@ -99,6 +99,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _validate_builtin_app,
         _wheel_copy_released,
         backfill_default_on_builtins,
+        builtin_approved_grants,
         builtin_owns_installed,
         cleanup_migrated_builtin,
         detect_orphaned_builtins,

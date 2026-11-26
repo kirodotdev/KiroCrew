@@ -33,6 +33,7 @@ from kiro_crew.dashboard.handlers.office_slides import (
     api_file_office_slides,
 )
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
+from kiro_crew.testing.module_table import patched_sys_modules
 from kiro_crew.testing.wait import await_until
 
 _MOD = "kiro_crew.dashboard.handlers.office_slides"
@@ -1062,7 +1063,7 @@ def test_soffice_discovery_needs_no_app(monkeypatch):
         "kiro_crew.apps.builtins.pptx_maker.backend": None,
     }
     with (
-        patch.dict("sys.modules", blocked),
+        patched_sys_modules(blocked),
         patch.object(mod.soffice_discovery.shutil, "which", return_value="/usr/bin/soffice"),
         patch(f"{_MOD}.validate_provider_executable", side_effect=lambda p: p),
         patch.object(

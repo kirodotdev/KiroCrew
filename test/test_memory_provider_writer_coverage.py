@@ -39,7 +39,7 @@ WRITERS = [
     ("heartbeat.py", None, "builtin_background_allowed"),
     (
         "slack/gateway_runtime/memory_lifecycle.py",
-        "_repair_member_memory_once",
+        "_repair_store_once",
         "builtin_background_allowed",
     ),
     ("memory_dream.py", "gateway_visit", "builtin_background_allowed"),

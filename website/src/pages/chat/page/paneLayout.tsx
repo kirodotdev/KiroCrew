@@ -3,7 +3,7 @@ import type { HoverIntent } from '../../../hooks/useHoverIntent'
 import type { AppDispatch } from '../../../store'
 import type { ChatSlot, ChatFolder } from '../../../types'
 import { openActivityPanel, createSlot, deleteSlot, requestSlotFolderOpen, setSidePanelAlwaysOpen } from '../../../store/chatSlice'
-import { safeSetItem } from '../../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../../utils/safeStorage'
 import { notePanelShown } from '../../../hooks/usePanelTabs'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import type { useComposerChips } from './composerChips'
@@ -109,7 +109,7 @@ export function usePaneLayoutState({
     // `autoOpenGitPanelKnown`.
     if (!autoOpenGitPanelKnown) return
     const key = `mc-git-panel-opened:${activeSlot}:${_slotProject}`
-    if (localStorage.getItem(key)) return
+    if (safeGetItem(key)) return
     // If the marker cannot be persisted, skip the auto-open entirely: opening
     // changes tabsCtl, which re-runs this effect, and an absent marker would
     // make it open again forever. safeSetItem reports whether the write landed
@@ -124,7 +124,7 @@ export function usePaneLayoutState({
     if (autoOpenGitPanel) dispatch(openActivityPanel())
   }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch, autoOpenGitPanel, autoOpenGitPanelKnown])
 
-  const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
+  const [sidebarPinned, setSidebarPinned] = useState(() => safeGetItem('mc-sidebar-pinned') !== 'false')
   const sidebarPinnedRef = useRef(sidebarPinned)
   sidebarPinnedRef.current = sidebarPinned
   // Pre-focus session-list state while the Web Preview expand mode auto-hides
@@ -140,7 +140,7 @@ export function usePaneLayoutState({
   // Until it reports, read the stored width as the list views cap it: the
   // sidebar's first layout effect corrects it before the frame paints.
   const [sidebarWidth, setSidebarWidth] = useState(() =>
-    Math.min(parseStoredSidebarWidth(localStorage.getItem('mc-sidebar-width')) ?? 260, SIDEBAR_MAX))
+    Math.min(parseStoredSidebarWidth(safeGetItem('mc-sidebar-width')) ?? 260, SIDEBAR_MAX))
   const [sidebarDragging, setSidebarDragging] = useState(false)
   // Pinned to the slot the rename opened on: activeSlot moves the instant the user
   // switches sessions, and a live-resolved commit would rename the wrong session.

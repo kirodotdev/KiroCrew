@@ -27,6 +27,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { i18nT } from '../i18n/t'
+import { fmtDate } from '../i18n/format'
 import { confirmAction } from './confirmAction'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
@@ -1524,6 +1525,143 @@ describe('ArtifactDetailPage — upstream sync banner', () => {
     expect(screen.getByText(/Published to Companion Cloud/)).toBeInTheDocument()
   })
 
+  // A dated publication: the gateway's `expired` decides "Expired"; the warning in the
+  // last 7 days reads the browser clock, frozen here so the window is exact.
+  describe('a dated publication', () => {
+    const NOW = '2026-11-25T12:00:00Z'
+    const banner = () => screen.getByTestId('publication-banner')
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date(NOW))
+      vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({})
+    })
+    afterEach(() => { vi.useRealTimers() })
+
+    it('shows the date it expires on beside the live link', async () => {
+      const expiresAt = '2026-12-25T12:00:00+00:00'
+      await mount(mkArtifact({ publication: { ...publication, expires_at: expiresAt, expired: false } }))
+      await screen.findByRole('link', { name: /Open published page/i }, PUBLISHED_LINE_WAIT)
+      expect(banner().textContent).toContain(`Expires on ${fmtDate(expiresAt)}`)
+      expect(banner().className).toContain('bg-info-subtle')
+      expect(within(banner()).queryByRole('button')).toBeNull()
+    })
+
+    it('says it expires soon, in words and the warning style, within its last 7 days', async () => {
+      const expiresAt = '2026-12-01T12:00:00+00:00'
+      await mount(mkArtifact({ publication: { ...publication, expires_at: expiresAt, expired: false } }))
+      await screen.findByRole('link', { name: /Open published page/i }, PUBLISHED_LINE_WAIT)
+      expect(banner().textContent).toContain(`Expires soon, on ${fmtDate(expiresAt)}`)
+      expect(banner().className).toContain('bg-warn-subtle')
+      expect(within(banner()).queryByRole('button')).toBeNull()
+    })
+
+    it('says it expired and offers no live link once the gateway says so', async () => {
+      const expiresAt = '2026-11-20T12:00:00+00:00'
+      await mount(mkArtifact({ publication: { ...publication, expires_at: expiresAt, expired: true } }))
+      expect(await screen.findByText(
+        `Publication on Companion Cloud expired on ${fmtDate(expiresAt)}`, {}, PUBLISHED_LINE_WAIT,
+      )).toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: /Open published page/i })).toBeNull()
+      expect(banner().textContent).not.toMatch(/Expires on/)
+      expect(banner().className).toContain('bg-warn-subtle')
+    })
+
+    it('offers Publish on the expired line, opening the Publish panel, only where the page has one', async () => {
+      const expiresAt = '2026-11-20T12:00:00+00:00'
+      const expired = { ...publication, expires_at: expiresAt, expired: true }
+      const expiredLine = `Publication on Companion Cloud expired on ${fmtDate(expiresAt)}`
+      // An image page renders no Publish panel, so it passes no callback.
+      const imagePage = await mount(mkArtifact({
+        kind: 'image', content: undefined, publication: expired,
+        image: { mime: 'image/png', ext: 'png', original_filename: 'chart.png' },
+      }))
+      await screen.findByText(expiredLine, {}, PUBLISHED_LINE_WAIT)
+      expect(within(banner()).queryByRole('button')).toBeNull()
+      imagePage.unmount()
+
+      await mount(mkArtifact({ publication: expired }))
+      await screen.findByText(expiredLine, {}, PUBLISHED_LINE_WAIT)
+      expect(screen.queryByText('publish hub stub')).toBeNull()
+      const publish = within(banner()).getByRole('button', { name: 'Publish' })
+      fireEvent.click(publish)
+      expect(await screen.findByText('publish hub stub')).toBeInTheDocument()
+      // A second press keeps it open: the button opens the panel, never toggles it.
+      fireEvent.click(publish)
+      expect(screen.getByText('publish hub stub')).toBeInTheDocument()
+    })
+
+    it.each([
+      ['outside', '2026-12-25T12:00:00+00:00', 'Expires on'],
+      ['within', '2026-12-01T12:00:00+00:00', 'Expires soon, on'],
+    ])('shows the date it expires on beside the unpublished-edits prompt, %s its last 7 days', async (_label, expiresAt, words) => {
+      vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({ local_ahead: true })
+      await mount(mkArtifact({ publication: { ...publication, expires_at: expiresAt, expired: false }, live_dirty: true }))
+      const prompt = await screen.findByText(/Local changes not yet published to/, {}, PUBLISHED_LINE_WAIT)
+      expect(prompt.textContent).toContain(`${words} ${fmtDate(expiresAt)}`)
+    })
+
+    it('says it expired, not that local edits await publishing, after an edit', async () => {
+      vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({ local_ahead: true })
+      const expiresAt = '2026-11-20T12:00:00+00:00'
+      await mount(mkArtifact({ publication: { ...publication, expires_at: expiresAt, expired: true }, live_dirty: true }))
+      expect(await screen.findByText(
+        `Publication on Companion Cloud expired on ${fmtDate(expiresAt)}`, {}, PUBLISHED_LINE_WAIT,
+      )).toBeInTheDocument()
+      expect(screen.queryByText(/Local changes not yet published to/)).toBeNull()
+      expect(screen.queryByTitle(/Snapshot the current content as a new version/i)).toBeNull()
+    })
+
+    it.each([
+      ['a sync error', { last_error: 'sync failed: 404 Not Found' }, /Publication sync issue/],
+      ['a notice', { notice: 'rolling out', notice_code: 'rolling_out' }, /Still rolling out/],
+    ])('shows no stored %s once it expired', async (_label, stored, text) => {
+      const expiresAt = '2026-11-20T12:00:00+00:00'
+      await mount(mkArtifact({ publication: { ...publication, ...stored, expires_at: expiresAt, expired: true } }))
+      await screen.findByText(`Publication on Companion Cloud expired on ${fmtDate(expiresAt)}`, {}, PUBLISHED_LINE_WAIT)
+      expect(screen.queryByText(text)).toBeNull()
+      expect(screen.queryByRole('button', { name: /Re-check this publication's status/i })).toBeNull()
+    })
+
+    it.each([
+      ['a published fork', { fork_metadata: forkMetadata }, {}],
+      ['a publication the remote copy is ahead of', {}, { upstream_ahead: true }],
+    ])('says %s expired and offers Publish, not Pull or Overwrite', async (_label, provenance, upstream) => {
+      vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue(upstream)
+      const expiresAt = '2026-11-20T12:00:00+00:00'
+      const { queryClient } = await mount(mkArtifact({
+        ...provenance, publication: { ...publication, expires_at: expiresAt, expired: true },
+      }))
+      // The remote-ahead branch reads the upstream status, which lands after the line first renders.
+      await waitFor(() => expect(queryClient.getQueryState(['upstream-status', SLUG])?.status).toBe('success'), PUBLISHED_LINE_WAIT)
+      expect(within(banner()).getByText(`Publication on Companion Cloud expired on ${fmtDate(expiresAt)}`)).toBeInTheDocument()
+      expect(within(banner()).getByRole('button', { name: 'Publish' })).toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: /Open published page/i })).toBeNull()
+      expect(screen.queryByTitle(/Pull the latest remote content/i)).toBeNull()
+      expect(screen.queryByTitle(/Push your local version up/i)).toBeNull()
+    })
+
+    it('names the destination and the date a live published fork expires on, in its last 7 days', async () => {
+      const expiresAt = '2026-12-01T12:00:00+00:00'
+      await mount(mkArtifact({
+        fork_metadata: forkMetadata, publication: { ...publication, expires_at: expiresAt, expired: false },
+      }))
+      const pull = await screen.findByTitle(/Pull the latest remote content/i, {}, PUBLISHED_LINE_WAIT)
+      const text = screen.getByText(/Forked from/).closest('span') as HTMLElement
+      expect(text.textContent).toContain(`Published to Companion Cloud · Expires soon, on ${fmtDate(expiresAt)}`)
+      expect(text.parentElement?.className).toContain('bg-warn-subtle')
+      expect(pull).toBeInTheDocument()
+    })
+  })
+
+  it('renders a publication with no expiry fields exactly as before', async () => {
+    vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({})
+    await mount(mkArtifact({ publication }))
+    await screen.findByRole('link', { name: /Open published page/i }, PUBLISHED_LINE_WAIT)
+    const banner = screen.getByTestId('publication-banner')
+    expect(banner.textContent).toBe('Published to Companion Cloud · Open published page')
+    expect(banner.className).toContain('bg-info-subtle')
+  })
+
   it('links the published copy beside the unpublished-edits prompt', async () => {
     vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({ live_dirty: true })
     await mount(mkArtifact({ publication, live_dirty: true }))
@@ -1551,6 +1689,15 @@ describe('ArtifactDetailPage — upstream sync banner', () => {
     await mount(mkArtifact({ publication }))
     expect(await screen.findByText('The remote copy is in the trash.', {}, PUBLISHED_LINE_WAIT)).toBeInTheDocument()
     expect(screen.getByText('CR Queue')).toBeInTheDocument()
+  })
+
+  it('gives the publication notice\'s re-check a resting fill and a strong edge on its tint', async () => {
+    vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({})
+    await mount(mkArtifact({ publication: { ...publication, notice: 'still rolling out', notice_code: 'rolling_out' } }))
+    const recheck = await screen.findByRole('button', { name: "Re-check this publication's status" }, PUBLISHED_LINE_WAIT)
+    expect(recheck).toHaveClass('bg-bg-elevated', 'border-border-strong')
+    expect(recheck).not.toHaveClass('bg-transparent')
+    expect(recheck).not.toHaveClass('border-border')
   })
 
   it('shows no published link when the publication carries no URL', async () => {

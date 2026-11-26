@@ -32,6 +32,7 @@ from kiro_crew.config.loader import (
     read_env_text,
 )
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.origin import is_direct_local_request
 from kiro_crew.dashboard.source_providers.gerrit import (
@@ -412,8 +413,10 @@ async def _owner_only(request: web.Request, operation: str) -> web.Response | No
     same predicate the sibling secret-adjacent handlers use
     (`agents.py`, `aws_consent.py`, `messaging.py`), and — matching those
     handlers — write a SEL audit record on the denial so a non-owner attempt on
-    the vault is not silent. Returns the 403 to send, or ``None`` when the
-    caller is the owner.
+    the vault is not silent. Returns the refusal to send, or ``None`` when the
+    caller is the owner. The refusal is the 403 ``owner_only``, except for a
+    session signed in before an owner was configured, which gets the 401
+    ``stale_session_reauth`` every other owner gate gives it.
     """
     if is_owner_dashboard_request(request):
         return None
@@ -431,10 +434,9 @@ async def _owner_only(request: web.Request, operation: str) -> web.Response | No
         )
     except Exception:  # pragma: no cover — audit must never change the outcome
         logger.debug("SEL audit for non-owner %s failed", operation, exc_info=True)
-    return web.json_response(
-        {"error": "owner authorization required", "code": "owner_only"},
-        status=403,
-    )
+    # Deny decision made above; only the response label changes for a signed
+    # pre-owner bootstrap subject (see stale_owner_session_response).
+    return _owner_denial_response(request)
 
 
 def _sanitize_for_log(value: str) -> str:

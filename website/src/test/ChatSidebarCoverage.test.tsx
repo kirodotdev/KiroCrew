@@ -103,7 +103,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
-import { requestSlotReveal } from '../store/chatSlice'
+import { requestFolderReveal, requestSlotReveal } from '../store/chatSlice'
 import { sseSlots, updateSlot } from '../store/dashboardSlice'
 import { stubAppConfirm } from './appConfirmStub'
 
@@ -149,6 +149,9 @@ function renderSidebar(opts: {
    *  RESULT of a folder write rather than just the call that made it — see the
    *  note at the stub below. */
   persistFolderWrites?: boolean
+  /** Leave the columns query to its own fetch, so it is pending or failed as
+   *  `mocks.tagColumns` answers, instead of priming it with an empty board. */
+  columnsUnloaded?: boolean
 } = {}) {
   const slots = opts.slots ?? []
   const folders = opts.folders ?? []
@@ -203,7 +206,7 @@ function renderSidebar(opts: {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   sidebarClient = qc
   qc.setQueryData(['chat-folders'], folders)
-  qc.setQueryData(['tag-columns'], [])
+  if (!opts.columnsUnloaded) qc.setQueryData(['tag-columns'], [])
   const view = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -831,6 +834,224 @@ describe('ChatSidebar — header menu view + tag entries', () => {
     // Re-render with the column cache primed via a fresh mount.
     const second = renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
     await waitFor(() => expect(second.container).toBeTruthy())
+  })
+
+  describe('before the columns have loaded (#42763)', () => {
+    const STATE_LANES = ['needs_approval', 'waiting', 'working', 'idle'].map((k, i) => (
+      { id: `l-${i}`, name: '', tag_ids: [], mode: 'any', order: i, source: 'state', state_key: k }
+    ))
+    let resolveColumns: (cols: unknown[]) => void = () => {}
+    beforeEach(() => {
+      mocks.tagColumns.mockImplementation(() => new Promise(resolve => { resolveColumns = resolve }))
+    })
+
+    it('shows a board user a loading state instead of the list', async () => {
+      cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
+      renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }], columnsUnloaded: true })
+      expect(await screen.findByTestId('board-columns-loading')).toBeInTheDocument()
+      expect(screen.queryByTestId('tree-view-lane')).toBeNull()
+      await act(async () => { resolveColumns(STATE_LANES) })
+      await waitFor(() => expect(screen.getByTestId('column-l-0')).toBeInTheDocument())
+      expect(screen.queryByTestId('board-columns-loading')).toBeNull()
+    })
+
+    it('keeps a reveal pending until loaded board rows mount', async () => {
+      cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
+      const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
+      try {
+        const { store } = renderSidebar({
+          slots: [{ key: 'k-a', title: 'A', running: false }],
+          columnsUnloaded: true,
+        })
+        await screen.findByTestId('board-columns-loading')
+
+        vi.useFakeTimers()
+        act(() => { store.dispatch(requestSlotReveal('k-a')) })
+        expect(store.getState().chat.revealRequest).not.toBeNull()
+        await act(async () => { await vi.advanceTimersByTimeAsync(2_100) })
+        expect(store.getState().chat.revealRequest).not.toBeNull()
+        expect(scrollIntoView).not.toHaveBeenCalled()
+
+        vi.useRealTimers()
+        await act(async () => { resolveColumns(STATE_LANES) })
+        await waitFor(() => expect(screen.getByTestId('column-l-0')).toBeInTheDocument())
+        await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+        expect(document.querySelector('[data-session-row="k-a"]')?.classList.contains('session-reveal-flash')).toBe(true)
+        expect(store.getState().chat.revealRequest).toBeNull()
+      } finally {
+        scrollIntoView.mockRestore()
+      }
+    })
+
+    it('keeps a folder reveal pending until loaded board rows mount', async () => {
+      cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
+      const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
+      try {
+        const { store } = renderSidebar({
+          slots: [{ key: 'k-a', title: 'A', running: false, folder_id: 'fA' }],
+          folders: [{ id: 'fA', name: 'Alpha folder', order: 0 }],
+          columnsUnloaded: true,
+        })
+        await screen.findByTestId('board-columns-loading')
+
+        vi.useFakeTimers()
+        act(() => { store.dispatch(requestFolderReveal('fA')) })
+        await act(async () => { await vi.advanceTimersByTimeAsync(2_100) })
+        expect(store.getState().chat.revealRequest).not.toBeNull()
+        expect(scrollIntoView).not.toHaveBeenCalled()
+
+        vi.useRealTimers()
+        await act(async () => { resolveColumns(STATE_LANES) })
+        await waitFor(() => expect(screen.getByTestId('column-l-0')).toBeInTheDocument())
+        await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+        expect(document.querySelector('[data-folder-drop="fA"]')?.classList.contains('session-reveal-flash')).toBe(true)
+        expect(store.getState().chat.revealRequest).toBeNull()
+      } finally {
+        vi.useRealTimers()
+        scrollIntoView.mockRestore()
+      }
+    })
+
+    it('keeps a reveal pending while search is active and board columns load', async () => {
+      cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
+      const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
+      try {
+        const { store } = renderSidebar({
+          slots: [
+            { key: 'k-a', title: 'First session', running: false },
+            { key: 'k-b', title: 'Second session', running: false },
+          ],
+          columnsUnloaded: true,
+        })
+        await screen.findByTestId('board-columns-loading')
+        fireEvent.change(screen.getByPlaceholderText('Search sessions…'), { target: { value: 'Second' } })
+        await screen.findByTestId('flat-view-lane')
+
+        vi.useFakeTimers()
+        act(() => { store.dispatch(requestSlotReveal('k-a')) })
+        expect(store.getState().chat.revealRequest).not.toBeNull()
+        await act(async () => { await vi.advanceTimersByTimeAsync(2_100) })
+        expect(store.getState().chat.revealRequest).not.toBeNull()
+        expect(scrollIntoView).not.toHaveBeenCalled()
+
+        vi.useRealTimers()
+        await act(async () => { resolveColumns(STATE_LANES) })
+        await waitFor(() => expect(screen.getByTestId('column-l-0')).toBeInTheDocument())
+        await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+        expect(document.querySelector('[data-session-row="k-a"]')?.classList.contains('session-reveal-flash')).toBe(true)
+        expect(store.getState().chat.revealRequest).toBeNull()
+      } finally {
+        vi.useRealTimers()
+        scrollIntoView.mockRestore()
+      }
+    })
+
+    it('offers a board user list view, and leaving board view seeds nothing', async () => {
+      cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
+      renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }], columnsUnloaded: true })
+      openHeaderMenu()
+      fireEvent.click(await screen.findByText('Switch to list view'))
+      expect(screen.queryByText('Switch to board view')).toBeNull()
+      expect(cfg.saveChatConfig).toHaveBeenCalledWith(expect.objectContaining({ tagColumnsEnabled: false }))
+      await act(async () => { resolveColumns([]) })
+      expect(mocks.createTagColumn).not.toHaveBeenCalled()
+    })
+
+    it('does not turn the board on, or seed lanes, until the columns load', async () => {
+      cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
+      renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }], columnsUnloaded: true })
+      openHeaderMenu()
+      fireEvent.click(await screen.findByText('Switch to board view'))
+      await act(async () => { resolveColumns([]) })
+      expect(cfg.saveChatConfig).not.toHaveBeenCalled()
+      expect(mocks.createTagColumn).not.toHaveBeenCalled()
+    })
+
+    it('keeps seeding blocked while a failed columns read retries without data', async () => {
+      cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
+      let resolveRetry: (cols: unknown[]) => void = () => {}
+      mocks.tagColumns.mockReset()
+      mocks.tagColumns
+        .mockRejectedValueOnce(new Error('gateway busy'))
+        .mockImplementationOnce(() => new Promise(resolve => { resolveRetry = resolve }))
+      renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }], columnsUnloaded: true })
+
+      const notice = await screen.findByTestId('tag-columns-error')
+      fireEvent.click(within(notice.parentElement as HTMLElement).getByRole('button', { name: 'Retry' }))
+      await waitFor(() => expect(mocks.tagColumns).toHaveBeenCalledTimes(2))
+      openHeaderMenu()
+      fireEvent.click(await screen.findByText('Switch to board view'))
+      await act(async () => {})
+
+      expect(mocks.createTagColumn).not.toHaveBeenCalled()
+      expect(cfg.saveChatConfig).not.toHaveBeenCalled()
+      await act(async () => { resolveRetry([]) })
+    })
+
+    it('shows a search while a board user\'s columns load', async () => {
+      cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
+      renderSidebar({ slots: [{ key: 'k-a', title: 'Refactor loader', running: false }], columnsUnloaded: true })
+      await screen.findByTestId('board-columns-loading')
+      fireEvent.change(screen.getByPlaceholderText('Search sessions…'), { target: { value: 'Refactor' } })
+      expect(await screen.findByTestId('flat-view-lane')).toBeInTheDocument()
+      expect(screen.queryByTestId('board-columns-loading')).toBeNull()
+    })
+
+    it('hides the seed retry while the columns read has failed', async () => {
+      cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
+      mocks.tagColumns.mockReset()
+      mocks.tagColumns.mockResolvedValueOnce([]).mockRejectedValue(new Error('gateway busy'))
+      mocks.createTagColumn.mockRejectedValue(new Error('persist failed'))
+      renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
+      await settleSidebarReads()
+      openHeaderMenu()
+      fireEvent.click(await screen.findByText('Switch to board view'))
+      const notice = await screen.findByTestId('tag-columns-error')
+      await screen.findByTestId('lane-seed-error')
+      expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+      const retry = within(notice.parentElement as HTMLElement).getByRole('button', { name: 'Retry' })
+
+      mocks.tagColumns.mockResolvedValue([])
+      fireEvent.click(retry)
+      expect(await screen.findByRole('button', { name: 'Try again' })).toBeInTheDocument()
+    })
+
+    const REFUSED = Object.assign(new Error('owner only'), { status: 403, body: JSON.stringify({ code: 'owner_only' }) })
+
+    it('hides the board toggle from a reader refused the columns', async () => {
+      cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
+      mocks.tagColumns.mockReset()
+      mocks.tagColumns.mockRejectedValue(REFUSED)
+      renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }], columnsUnloaded: true })
+      await waitFor(() => expect(sidebarClient?.getQueryState(['tag-columns'])?.status).toBe('error'))
+      openHeaderMenu()
+      await screen.findByText('Clean up sessions')
+      expect(screen.queryByText('Switch to board view')).toBeNull()
+      expect(screen.queryByText('Switch to list view')).toBeNull()
+    })
+
+    it('keeps the way back to list view when a refetch of a loaded board is refused', async () => {
+      cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
+      mocks.tagColumns.mockReset()
+      mocks.tagColumns.mockResolvedValueOnce(STATE_LANES).mockRejectedValue(REFUSED)
+      renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }], columnsUnloaded: true })
+      await screen.findByTestId('column-l-0')
+      await act(async () => { await sidebarClient?.refetchQueries({ queryKey: ['tag-columns'] }) })
+      expect(sidebarClient?.getQueryState(['tag-columns'])?.status).toBe('error')
+      openHeaderMenu()
+      expect(await screen.findByText('Switch to list view')).toBeInTheDocument()
+    })
+
+    it('never seeds lanes from a columns read that failed', async () => {
+      cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
+      mocks.tagColumns.mockRejectedValue(new Error('gateway busy'))
+      renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }], columnsUnloaded: true })
+      await screen.findByTestId('tag-columns-error')
+      openHeaderMenu()
+      fireEvent.click(await screen.findByText('Switch to board view'))
+      await settleSidebarReads()
+      expect(mocks.createTagColumn).not.toHaveBeenCalled()
+    })
   })
 
   it('toggles the Manage Tags panel open and closed', async () => {

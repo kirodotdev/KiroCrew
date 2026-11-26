@@ -88,6 +88,20 @@ one more line right after `[Monitor wake]`: `Also waiting on pull request
 without merging`, `it could not be read and is no longer checked`). Every other
 line still describes the watched pull request.
 
+With `monitoring.budget_notice_pct` set (1 to 99; 0, the default, is off), a wake
+sent once the watch has used that share or more of its agent turns, tokens or
+runtime has one more line above `Next action`:
+
+```
+Budget: 8 of 10 agent turns used, 212000 of 250000 tokens used, 2400s of 14400s runtime left; 80% or more used.
+```
+
+The turns part appears only when the watch bounds its turns; the tokens and the
+runtime parts always do, and the tokens read `at least` when a turn's usage went
+unreported, because the stop rule compares that same count. The line states facts
+and asks for nothing. It passes through the same redaction and 4,096-character cap
+as the rest of the envelope. With the setting at 0 the envelope is unchanged.
+
 `MONITOR_WAKE_PREFIX = '[Monitor wake]'` is defined in `dashboard/state_parts/injected_turns.py`.
 The complete envelope is redacted before its 4,096-character cap and contains
 only canonical provider facts, never raw responses, logs, comments, diffs,
@@ -300,6 +314,19 @@ boundary:
 | `workflow` | The gateway's follow-up prompt after a workflow result lands | Collapsed one-line note |
 | `heartbeat` | A heartbeat task's prompt delivered with `deliver:prompt:dashboard:<slot>` | Collapsed one-line note |
 | `resource` | An MCP resource-subscription wake (the `[Webhook wake]` turn above) | Collapsed one-line note (also carries `resourceServer`) |
+
+A recovery turn that sends an earlier prompt again, unchanged (a `user_replay`
+row, for a person's message), after the prompt hooks already ran for an attempt
+of it that did not finish the turn (it failed, was refused, or stopped early)
+fires `UserPromptSubmit` again, and that fire's hook stdin carries
+`"replay": true`. `turn_dispatch_gates` sets it for a synthetic recovery turn
+whose payload is not a runner continuation and whose row carries the
+`promptHooksRan` stamp, which `_queue_recovery` writes when the attempt it
+requeues, or one before it, ran the fire. A re-send whose earlier attempts all
+died before the fire (a cold start or a session claim that failed) is the
+prompt's first fire and is not marked. A continuation Kiro Crew writes to resume
+a turn is never marked, even when re-sent, and an edit that changes a queued re-send's words
+drops the stamp: it is a new prompt. No other prompt carries the key.
 
 `resolveInjectCard` in `website/src/pages/chat/RecoveryCard.tsx` is the single
 decision point. The app-sdk default registry (`website/src/app-sdk/messageRenderers.tsx`)
@@ -649,7 +676,9 @@ and tells the model the identity is the backend's, so the identical call would b
 refused again and it should use another tool. Two more handle refusals steer the
 same way, through `_reject_with_host_notice`: a request whose provenance the
 per-turn caches dropped (`_refuse_unretained_provenance`, cause
-`provenance_unretained`: reissue the call alone or in smaller parts) and a
+`provenance_unretained`: reissue the call alone or in smaller parts), a request
+whose arguments contradict the ones cached for its reused `toolCallId`
+(`_refuse_reused_call_id`, cause `reused_call_id`: reissue it as a new call) and a
 low-fidelity sub-agent request on a consumer that never opted into child
 fidelity (`child_low_fidelity_unaware_consumer`, cause `surface_policy`).
 `AcpClient`'s own auto-approve path (`_handle_permission`) steers the `policy`

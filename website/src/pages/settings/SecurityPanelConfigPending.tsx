@@ -342,9 +342,12 @@ function ConfigPendingCard({ item }: { item: ConfigPendingLeaf }) {
       ) : run.isError && (
         <ErrorNotice askAgent message={errorText} report={report} />
       )}
+      {/* A neutral button here is filled, with the strong edge: the plain edge
+          vanishes on the tint. */}
       <div className="flex flex-wrap gap-2">
         <Btn
           primary={!asksFirst}
+          className={asksFirst ? 'border-border-strong bg-bg-elevated' : undefined}
           disabled={applyBlockedBy !== undefined || refusedHere || run.isPending}
           aria-describedby={applyBlockedBy}
           aria-label={i18nT('pages.settings.securityPanel.configPending.apply_file', { file })}
@@ -354,6 +357,7 @@ function ConfigPendingCard({ item }: { item: ConfigPendingLeaf }) {
         </Btn>
         {/* Neutral, not danger: putting back the saved version is the safe choice. */}
         <Btn
+          className="border-border-strong bg-bg-elevated"
           disabled={run.isPending}
           aria-label={i18nT('pages.settings.securityPanel.configPending.discard_file', { file })}
           onClick={() => void discard()}

@@ -432,6 +432,11 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # Without this entry the Linux mount seal skips the absent leaf, the default
     # before any switch-off, leaving it creatable from inside.
     "chat_steering_off.json",
+    # The owner's YOLO confirmation acknowledgement: ``yolo_ack.read_acknowledged``
+    # reads an absent record, ``{}`` and an unreadable one alike as not acknowledged
+    # (criterion 1); the writer rewrites it in place, so the read-only mount stays on
+    # the same inode, and no in-sandbox code reads it (criterion 2).
+    "yolo_ack.json",
     # The Shared Crew preview switch: ``preview.read_stored`` reads an absent,
     # empty and unreadable store alike as OFF, so a pre-created ``{}`` means
     # exactly what an absent file means (criterion 1); the writer rewrites an

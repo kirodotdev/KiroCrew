@@ -35,7 +35,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `/agent <name>` | Same as `!ta <name>` (type a space first if Slack offers it as a slash command) |
 | `!channel` | Show current channel activation mode |
 | `!channel always/mention/observe/review/off` | Set channel activation mode |
-| `!channel agent <name/off>` | Set per-channel agent override; a Crew Bot's name runs the whole channel as that Bot |
+| `!channel agent <name/off>` | Set per-channel agent override; a Crew Bot's name runs the whole channel as that Bot. A shared user may use it with a Crew Bot's name or `off` (see "Sharing Slack access") |
 | `!project <path>` / `!project off` | Set or clear the project whose `.kiro` agents `!ta` can find in this thread (does not change the working directory); bare `!project` shows it |
 | `!voice on/off` | Speak this thread's answers as well as typing them |
 | `!voice global on/off` | On: voice replies in every thread. Off: only in threads that ran `!voice on` (or set a voice, engine, speed or pitch), plus replies to voice memos if you set `voice_reply.auto_reply_to_voice` to `true`. Saved, so a restart keeps it; bare `!voice global` toggles it |
@@ -59,6 +59,8 @@ on/off` works when the `/kirocrew` command is turned off.
 | `!dashboard 2h` | Dashboard link with custom duration (max 20h) |
 | `!title <text>` | Set this thread's title (up to 80 characters) |
 | `!stop` | Force-halt the current agent turn in this thread. Bypasses the per-session semaphore and cancels the active task. See "Emergency Stop" below |
+| `!steer <msg>` | While a reply is running, fold `<msg>` into it now. See "Messages sent while a reply runs" below |
+| `!queue <msg>` | While a reply is running, answer `<msg>` after it finishes |
 
 ## Keyword Commands
 
@@ -161,10 +163,49 @@ escalated to a hard stop, and "Nothing running." when no turn was active.
 Authorization: owner and allowed users. Unauthorized callers get
 "⛔ Not authorized." and an audit log entry under `slack.stop_command`.
 
+## Messages sent while a reply runs
+
+A message you send while the agent is still replying is folded into that reply
+(a steer) by default, and gets a ↪ (`:arrow_right_hook:`) reaction. This holds
+in thread replies, DMs and threads linked to a dashboard chat. Put `!queue` in
+front of the message to have it answered after the reply finishes instead; it
+gets an ⏳ reaction. `!steer <msg>` forces a steer. Set `messaging.queue_mode`
+to `queue` to make queueing the default, as on Discord and Telegram. When the
+session is idle, both prefixes are dropped and the message just starts a turn.
+A steered message is saved in the conversation's history, after the message the
+reply answers and before the reply.
+
+A message that cannot be steered is queued: it carries files
+or a voice memo, it comes from a shared user or a trusted bot, the running reply
+answers a shared user's message (they approve its tool prompts, so it takes
+nobody else's words), the reply runs on the native handler
+(`messaging.use_transport: false`), the backend has no
+steer, a `!stop` is still settling, the channel is in `review` mode, an earlier
+message is already queued, or the reply ended just as the message arrived. In a
+single-session DM, a message in another thread, or at the root while a thread's
+reply runs, is queued so it is answered where you sent it. A
+`!` command, a message with `!temporary` or `!incognito`, a keyword
+command (`status`, `sessions`, `spawn`, `cron`) and a message a hook answers are
+queued too, so they run as commands after the reply instead of reaching the
+agent as text. If a failed steer into the thread's own session may already have
+reached the backend, it is not sent again, and no ↪ reaction claims confirmed
+delivery. A lone `!queue` or `!steer` with no message is answered with a hint and
+runs nothing. In a linked dashboard thread, the hand-off queues a steer that
+does not land, and a message sent while a shared user's reply runs there is
+queued. If the chat's reply ended during the hand-off, the message starts its
+own turn. If the slot can no longer take it during the hand-off or its
+queue is full, a refusal is posted in the thread and the message is not queued.
+
 ## Streaming
 
 Responses stream in real-time via progressive Slack message edits. A cursor
 (▍) shows during streaming. Tool calls appear inline by name.
+
+When you send a message the bot picks up in the thread while a turn is still
+running its steps, the next step continues in a new message below yours, so the
+latest thing in the thread is what the agent is doing now. A step that was
+running is closed above with "continues below". Once the reply itself is being
+written it stays in one message, above yours.
 
 With `slack.reactions_enabled` on, where Slack shows the bot's native thread status
 ("is working on your request") your message gets no reaction; elsewhere it gets 👀
@@ -339,12 +380,20 @@ confirmed by Slack: remove them, or fix what their row says, first.
   prompts their own turns post (Approve, Reject, and **Trust session** where
   the card offers it, which turns on the same per-session Trust the owner's
   click does; the audit log names who clicked), and send or edit the review-mode draft of their own
-  turn. On an agent other than Kiro CLI, KAS or Claude Code, and for a
+  turn. They can also put a channel on a Crew Bot with `!channel agent <Bot>` and take
+  it off with `!channel agent off`, when the channel has no agent or a shared user set
+  the one it has. After that, every new thread in that channel runs as that Bot for
+  everyone, you included: its template, workspace and memory, and the tools that
+  template runs without a prompt. Approvals do not change. They cannot change an
+  agent you set, pick a kiro agent that is not a Bot, or do this in a DM with the
+  bot or in a code channel. They cannot set a Bot while a dashboard chat is
+  linked to a thread in the channel, its tab open or closed; `off` still works there. On an agent other than Kiro CLI, KAS or Claude Code, and for a
   call a background sub-agent makes, the approval prompt goes to the owner.
 - **What stays the owner's.** The access list and the switch; YOLO and
   approval-mode changes; answering (Trust included) a prompt someone else's turn
   posted, or one that is no longer waiting; `!dashboard` and other dashboard links; every
-  other `!` command, including `!channel` and agent overrides, and the
+  other `!` command, including the rest of `!channel` (activation, and any agent
+  you set for a channel) and the other agent overrides, and the
   `!temporary` / `!incognito` modifiers; a message that starts with `/` (the
   agent's own commands such as `/agent`, `/model` or `/tools`); the other `/kirocrew`
   slash commands; the Home tab and the `sessions` list; the `spawn`, `status`, cron and `run`

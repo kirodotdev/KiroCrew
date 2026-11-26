@@ -28,8 +28,10 @@ import { useLocalCrewHidden } from '../components/overlayRoot'
 
 export type EscapeVerdict = 'take' | 'pass' | 'yield'
 
-/** Layer priorities; higher answers first. */
-export const ESCAPE_PRIORITY = { composer: 0, flyout: 10 } as const
+/** Layer priorities; higher answers first. A list menu (useListKeyboardNav)
+ *  sits above the flyout: it is the surface the user opened last, often from
+ *  inside the flyout, so one Escape closes the menu and leaves the flyout. */
+export const ESCAPE_PRIORITY = { composer: 0, flyout: 10, menu: 20 } as const
 
 interface Layer { seq: number; priority: number; handle: (e: KeyboardEvent) => EscapeVerdict }
 

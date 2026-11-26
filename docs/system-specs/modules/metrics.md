@@ -596,9 +596,9 @@ receive only part of it -- a product destination reporting how Kiro Crew is used
 whose exported set is a reviewed list rather than everything the process happens
 to record.
 
-So `OtlpDestination` carries three optional NARROWING fields. Each can only
+So `OtlpDestination` carries four optional NARROWING fields. Each can only
 reduce or label what THAT destination receives; none of them can widen anything,
-reach the local sink, or touch another destination. All three default to no
+reach the local sink, or touch another destination. All four default to no
 narrowing, so a destination that sets none of them gets the full payload.
 
 | Field | Default | What it does |
@@ -606,8 +606,9 @@ narrowing, so a destination that sets none of them gets the full payload.
 | `allow: frozenset[str] \| None` | `None` | A metric whose name is not in the set is dropped before encoding. `None` sends every metric collected. Full instrument names, `kirocrew.` prefix included. |
 | `point_attributes: Mapping[str, str]` | empty | Fixed pairs added to every exported data point of this destination. |
 | `resource_allow: frozenset[str] \| None` | `None` | This destination's batches carry a `Resource` reduced to these keys. A key the shared resource does not set is simply absent. |
+| `named_entity_namespaces: frozenset[str]` | empty | The namespaces whose `<namespace>.<app>` `Entity` values (apps from a registry the edition named) this destination may see. Any other namespaced `Entity` is sent as `private`, with that point's `entity_version`; empty names nothing. The local sink and `telemetry.otlp_endpoint*` entries keep names. Counter points left with the same attributes are summed into one, so the destination sees one `private` series. |
 
-`metrics/destination_filter.py` enforces all three as an exporter WRAPPER that
+`metrics/destination_filter.py` enforces all four as an exporter WRAPPER that
 `_build_otlp_reader` puts around that destination's own exporter. The descriptor
 declares the narrowing; the core performs it. Four properties follow from where
 the wrapper sits:
@@ -1610,7 +1611,7 @@ all through `usage_spend._finite_number`.
 **Subagent turns are excluded from both readers.** `usage.is_session_slot(slot)`
 drops any row whose `telemetry_channel_of` is `subagent`, at the point the row is
 READ rather than where it is grouped — so the window totals, the prior-period
-deltas, `by_model`, `by_channel`, `by_category`, the context bands, the priciest
+deltas, `by_model`, `by_channel`, `by_category`, `by_purpose`, the context bands, the priciest
 turn and the occupancy percentiles are all computed over one population and cannot
 contradict each other. A subagent is a fragment of another session's turn rather
 than a session with its own lifecycle, and its usage row carries no field pointing
@@ -1939,6 +1940,7 @@ from fields the row store already carries — no new instrumentation:
 | `context_bands` | mean credits per turn bucketed by absolute `context_used`, which is what makes the cost/context relationship legible (a turn at 900k costs ~4.7x one at 100k) |
 | `conversations` | EVERY session in the window (not a top-N), each with its `category`, the unollapsed `channel` beneath it, peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction. Named `conversations` for payload compatibility; the entity is a session |
 | `by_category` | same shape as `by_model`, keyed by `usage.session_category(slot)` — the taxonomy the panel groups by: `bg` for an unattended session (cron, heartbeat, task runner), otherwise the transport (`dashboard`, `telegram`, `slack`, …) |
+| `by_purpose` | same shape as `by_model`, keyed by what the turn was for, a closed set read at view time with no change to any written row: `helper` when the row's `surface` starts with `bg:` (titles, tags, consolidation), else `automation` when `usage.session_category(slot)` is `bg`, else `turn` for any other non-empty slot, else `unknown` for an empty slot. Only the `bg:` prefix is read from `surface`, because a historical row's surface can be wrong but non-empty. Subagent rows are excluded as for every other split, so the entries sum to `credits` |
 | `advice` | measured recommendations from `telemetry_spend_advice.spend_advice`, largest share first, `[]` when none applies. Each is `{id, share_pct, ...}` with ids and numbers only; the dashboard words it. `high_context`: the share of the window's credits on turns whose `context_used` is at least 600k. `costly_model`: the share on the model with the highest credits per turn, listed only when a second model has 5 or more turns and costs at most half as much per turn. A share under 10% is left out, and a sub-agent row reaches none of it, as with every figure in this block |
 
 **Channel comes from the slot key, not from `surface`.** Writes derive
@@ -3245,7 +3247,7 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.lesson.injected` | counter | `hit` | each admitted turn composed with a lesson tier |
 | `kirocrew.skill.lazy_load.count` | counter | adds `skill`: a shipped skill id (nested ones by their path), `custom` or `other` | each on-demand skill body load; the duration histogram keeps `hit` alone |
 | `kirocrew.app.task.completed` | counter, **deprecated** | `app`, `outcome` (kept in the manifest only) | nowhere: retired, no longer recorded. It counted Papyrus compiles; its manifest row stays `deprecated` so the name is never reused |
-| `kirocrew.app.installed` | counter | `app`: `app_public_id`, a shipped built-in's `app.json` name, the name of an app whose install record says it came from the public store (`apps/store_origin.py`, read at install, so a later delist keeps it), else `private`; `entity_version`: `app_public_version`, the app's version when it is `N.N.N` (at most four digits each), `other` for any other version, `private` when `app` is; `via`: `store` / `default` / `other` | the first successful `install_from_registry` of an app, after its provenance is written; `via=default` from the default-apps pass. An update is not counted |
+| `kirocrew.app.installed` | counter | `app`: `app_public_id`, a shipped built-in's `app.json` name, the name of an app whose install record says it came from the public store (`apps/store_origin.py`, read at install, so a later delist keeps it), `<namespace>.<name>` for an app from a registry whose edition row sets `appNamespace`, else `private`; `entity_version`: `app_public_version`, the app's version when it is `N.N.N` (at most four digits each), `other` for any other version, `private` when `app` is; `via`: `store` / `default` / `other` | the first successful `install_from_registry` of an app, after its provenance is written; `via=default` from the default-apps pass. An update is not counted |
 | `kirocrew.app.updated` | counter | `app`, `entity_version` (the new version) and `via`, as on `kirocrew.app.installed` | a successful `install_from_registry` over an installed app, after its provenance is written (`store_origin.count_install`) |
 | `kirocrew.app.uninstalled` | counter | `app` and `entity_version` (the removed version), read before the install record is removed; `keep_data`: `true` / `false` | `uninstall_app` once it commits; a `retired_builtin` cleanup is Crew's own removal and is not counted |
 | `kirocrew.app.session_started` | counter | `app` and `entity_version` of the provider's `owning_app`, as on `kirocrew.app.installed`; `kind`: the session's `session_kind` (9 values) | `record_session_started`, right after it counts `kirocrew.session.started`, when the provider's trusted `owning_app` (the caller's slot app) is set; a failure here leaves `session.started` counted |
