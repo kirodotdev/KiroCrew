@@ -59,6 +59,7 @@ class WorkflowRunPublisher(Protocol):
         derived_from_workflow_id: str = "",
         derived_from_revision: int = 0,
         execution_context: ExecutionContext | None = None,
+        nesting_reservation: str = "",
     ) -> str: ...
 
     async def phase(self, run_id: str, title: str) -> None: ...
@@ -127,8 +128,18 @@ def attach_workflow_service(self: TaskRunner, service: WorkflowRunPublisher | No
 
 
 async def _workflow_begin(
-    self: TaskRunner, run: Project, *, source: str = "", persist_link: bool = False
+    self: TaskRunner,
+    run: Project,
+    *,
+    source: str = "",
+    persist_link: bool = False,
+    nesting_reservation: str = "",
 ) -> None:
+    """Publish *run* as a shared workflow run.
+
+    *nesting_reservation* is the placeholder a nesting check holds for this
+    start (``WorkflowService.reserve_nested_start``); the shared run takes it over.
+    """
     service = self._workflow_service
     if service is None or run.workflow_run_id:
         return
@@ -147,6 +158,7 @@ async def _workflow_begin(
             derived_from_workflow_id=run.derived_from_workflow_id,
             derived_from_revision=run.derived_from_revision,
             execution_context=run.execution_context,
+            **({"nesting_reservation": nesting_reservation} if nesting_reservation else {}),
         )
         if persist_link:
             persist_task = asyncio.create_task(self._apersist_runs())

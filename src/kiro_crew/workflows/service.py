@@ -19,7 +19,6 @@ the produced script passes ``validate``.
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import functools
 import hashlib
@@ -51,7 +50,7 @@ from kiro_crew.workflow_memory import (
     inherited_step_agent,
 )
 
-from . import update_from_run
+from . import service_nesting, update_from_run
 from .agent_exec import build_agent_fn
 from .agent_pool import admitted_agent_fn, build_pooled_agent_fn
 from .events import EventStream
@@ -64,6 +63,7 @@ from .library import (
     WorkflowSlugTakenError,
     declared_lineage,
 )
+from .nesting import NestingLedger
 from .registry import (
     STATUS_CANCELLED,
     STATUS_FAILED,
@@ -75,7 +75,7 @@ from .registry import (
 )
 from .runner import WorkflowRunner, clamp_run_timeout
 from .store import WorkflowRunStore
-from .validate import validate
+from .validate import ends_mid_construct, validate
 
 #: Decimal width of the largest run number the allocator issues.
 _RUN_ID_DIGITS = len(str(_RUN_ID_MAX))
@@ -93,18 +93,6 @@ _AUTHOR_ERRORS_PER_ATTEMPT = 5
 _AUTHOR_ERROR_CHARS = 300
 # ACP ``StopReason`` for a turn that ended on the model's output-token limit.
 _STOP_REASON_MAX_TOKENS = "max_tokens"
-# Best-effort substrings of the SyntaxError messages CPython raises when the
-# source ENDS inside an unfinished construct: an open bracket, an open
-# triple-quoted string, or bare end of input. The list is not exhaustive and
-# the wording is CPython's, so ``_ends_mid_construct`` also treats any syntax
-# error reported on the source's last line as cut off; that fallback covers
-# shapes with other messages, such as an unterminated one-line string or a
-# statement left unfinished at end of input.
-_CUT_OFF_SYNTAX_MARKERS = (
-    "was never closed",
-    "unterminated triple-quoted string",
-    "unexpected EOF",
-)
 _AUTHOR_REFERENCE_LIMIT = 3
 #: A dashboard request named the workflow by a ref that now reaches another one.
 _REF_MOVED_ERROR = "that name now reaches a different saved workflow; reload the library"
@@ -227,6 +215,10 @@ class WorkflowService:
         nudge_authorizer: Optional[Callable[..., Any]] = None,
         session_port: Any = None,
         timeout_secs: Optional[int] = None,
+        max_nesting_depth: Optional[int] = None,
+        max_nested_runs: Optional[int] = None,
+        parent_session_of: Optional[Callable[[str], Optional[str]]] = None,
+        run_of_session: Optional[Callable[[str], Optional[str]]] = None,
         definition_library: Any = None,
         task_runner: Any = None,
         task_admission: Any = None,
@@ -278,6 +270,18 @@ class WorkflowService:
         # The ceiling follows config live; runs already in flight keep the ceiling
         # they started with. The binder holds this service weakly.
         self._config_sub = live.bind("agent.workflow_run_timeout_secs", self.set_timeout_secs)
+        # Caps on runs started from inside runs. They follow config live; a
+        # start is checked against the caps in force when it is admitted.
+        self._nesting = NestingLedger(
+            max_depth=max_nesting_depth,
+            max_nested_runs=max_nested_runs,
+            parent_session_of=parent_session_of,
+            run_of_session=run_of_session,
+        )
+        self._nesting_subs = (
+            live.bind("agent.workflow_max_depth", self._nesting.set_max_depth),
+            live.bind("agent.workflow_max_nested_runs", self._nesting.set_max_nested_runs),
+        )
         # When True, each run's ``ctx.agent()`` calls reuse a small per-run WARM
         # session pool (workflows/agent_pool.py), since per-call cold starts
         # dominate workflow wall-clock. Off => a cold session per call
@@ -330,6 +334,19 @@ class WorkflowService:
     def timeout_secs(self) -> int:
         """Effective (clamped) default wall-clock ceiling for runs of this service."""
         return self._timeout_secs
+
+    @property
+    def nesting(self) -> NestingLedger:
+        """The depth and fan-out caps on runs started from inside runs."""
+        return self._nesting
+
+    def reserve_nested_start(self, session_key: str) -> tuple[str, Optional[dict]]:
+        """See :func:`service_nesting.reserve_nested_start`."""
+        return service_nesting.reserve_nested_start(self, session_key)
+
+    def settle_nested_start(self, reserved: str, run_id: str) -> None:
+        """See :func:`service_nesting.settle_nested_start`."""
+        service_nesting.settle_nested_start(self, reserved, run_id)
 
     def _admission_closed(self) -> bool:
         """Read SessionManager's shared gate without yielding."""
@@ -388,6 +405,7 @@ class WorkflowService:
         workflow_revision: int = 0,
         derived_from_workflow_id: str = "",
         derived_from_revision: int = 0,
+        nesting_reservation: str = "",
     ) -> str:
         """Register work executed by a trusted host on the shared run substrate.
 
@@ -429,6 +447,7 @@ class WorkflowService:
             derived_from_revision=derived_from_revision,
         )
         await self.registry.register_async(handle, persist=False)
+        self._nesting.record(session_key, run_id, reserved_id=nesting_reservation)
         stream = EventStream(run_id)
         self._host_streams[run_id] = stream
         script_hash = hashlib.sha256(source.encode("utf-8")).hexdigest() if source else ""
@@ -1084,7 +1103,7 @@ class WorkflowService:
                 errors = vr.errors
                 if cut_off:
                     errors = ["script was cut off at the output length limit", *errors]
-                cut_off = cut_off or _ends_mid_construct(source, errors)
+                cut_off = cut_off or ends_mid_construct(source, errors)
                 label = f"attempt {i + 1}/{attempts}: "
                 all_errors.extend(
                     label + error[:_AUTHOR_ERROR_CHARS]
@@ -1166,32 +1185,35 @@ class WorkflowService:
                 _memory_scope=memory_scope,
             )
 
-        started = await self._runner(
-            run_id,
-            timeout_secs=timeout_secs,
-            memory_scope=memory_scope,
-            session_key=session_key,
-            default_agent=default_agent,
-        ).run_background(
-            "",  # no source — author inside the run
-            registry=self.registry,
-            admission_closed=self._admission_closed,
-            execution_binding_version=1,
-            execution_context=memory_scope.execution_context,
-            memory_mode=memory_scope.memory_mode,
-            run_id=run_id,
-            now=self._now_fn(),
-            name=name or run_id,
-            args=args or {},
-            author=author,
-            session_key=session_key,
-            budget_total=budget_total,
-            intent=intent,
-            author_fn=_author_fn,
-            fallback_title=fallback_title,
-            fallback_folder_id=fallback_folder_id,
-        )
-        if not started:
+        with service_nesting.admitted_slot(self, session_key, run_id) as slot:
+            if slot.refusal is not None:
+                return slot.refusal
+            slot.started = await self._runner(
+                run_id,
+                timeout_secs=timeout_secs,
+                memory_scope=memory_scope,
+                session_key=session_key,
+                default_agent=default_agent,
+            ).run_background(
+                "",  # no source — author inside the run
+                registry=self.registry,
+                admission_closed=self._admission_closed,
+                execution_binding_version=1,
+                execution_context=memory_scope.execution_context,
+                memory_mode=memory_scope.memory_mode,
+                run_id=run_id,
+                now=self._now_fn(),
+                name=name or run_id,
+                args=args or {},
+                author=author,
+                session_key=session_key,
+                budget_total=budget_total,
+                intent=intent,
+                author_fn=_author_fn,
+                fallback_title=fallback_title,
+                fallback_folder_id=fallback_folder_id,
+            )
+        if not slot.started:
             return {"error": "gateway admission is closed"}
         return {"run_id": run_id, "name": name or ""}
 
@@ -1241,33 +1263,36 @@ class WorkflowService:
         default_agent = await self._inherited_agent(memory_scope)
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
-        started = await self._runner(
-            run_id,
-            timeout_secs=timeout_secs,
-            memory_scope=memory_scope,
-            session_key=session_key,
-            default_agent=default_agent,
-        ).run_background(
-            source,
-            registry=self.registry,
-            admission_closed=self._admission_closed,
-            execution_binding_version=1,
-            execution_context=memory_scope.execution_context,
-            memory_mode=memory_scope.memory_mode,
-            run_id=run_id,
-            now=self._now_fn(),
-            name=name or (vr.meta or {}).get("name", "") or run_id,
-            args=args or {},
-            author=author,
-            session_key=session_key,
-            budget_total=budget_total,
-            workflow_id=workflow_id,
-            workflow_slug=workflow_slug,
-            workflow_revision=workflow_revision,
-            fallback_title=fallback_title,
-            fallback_folder_id=fallback_folder_id,
-        )
-        if not started:
+        with service_nesting.admitted_slot(self, session_key, run_id) as slot:
+            if slot.refusal is not None:
+                return slot.refusal
+            slot.started = await self._runner(
+                run_id,
+                timeout_secs=timeout_secs,
+                memory_scope=memory_scope,
+                session_key=session_key,
+                default_agent=default_agent,
+            ).run_background(
+                source,
+                registry=self.registry,
+                admission_closed=self._admission_closed,
+                execution_binding_version=1,
+                execution_context=memory_scope.execution_context,
+                memory_mode=memory_scope.memory_mode,
+                run_id=run_id,
+                now=self._now_fn(),
+                name=name or (vr.meta or {}).get("name", "") or run_id,
+                args=args or {},
+                author=author,
+                session_key=session_key,
+                budget_total=budget_total,
+                workflow_id=workflow_id,
+                workflow_slug=workflow_slug,
+                workflow_revision=workflow_revision,
+                fallback_title=fallback_title,
+                fallback_folder_id=fallback_folder_id,
+            )
+        if not slot.started:
             return {"error": "gateway admission is closed"}
         return {"run_id": run_id, "name": name or (vr.meta or {}).get("name", "")}
 
@@ -1597,13 +1622,20 @@ class WorkflowService:
             # Task Runner plans and runs it, so it obeys Task Runner's switch.
             if (refusal := await asyncio.to_thread(task_runner_off)) is not None:
                 return {"error": refusal, "app_disabled": True}
-            started = await self._task_runner.start_workflow_definition(
-                definition,
-                input_text=effective_input,
-                author=author,
-                session_key=session_key or author,
-                execution_context=captured_execution,
-            )
+            # The task runner allocates the run id, so the reservation is
+            # made under a placeholder and moved onto the id it returns.
+            with service_nesting.reserved_slot(self, session_key or author) as slot:
+                if slot.refusal is not None:
+                    return slot.refusal
+                started = await self._task_runner.start_workflow_definition(
+                    definition,
+                    input_text=effective_input,
+                    author=author,
+                    session_key=session_key or author,
+                    execution_context=captured_execution,
+                    **({"nesting_reservation": slot.reserved} if slot.reserved else {}),
+                )
+                slot.run_id = str(started.get("run_id") or "")
             if "run_id" in started:
                 started.update(_run_provenance(definition))
             return started
@@ -1775,39 +1807,42 @@ class WorkflowService:
             derived_id = prior.derived_from_workflow_id
             derived_revision = prior.derived_from_revision
         # A rerun keeps the limits its run was launched with unless the caller names one.
-        started = await self._runner(
-            new_id,
-            timeout_secs=timeout_secs if timeout_secs is not None else prior.timeout_secs,
-            memory_scope=memory_scope,
-            session_key=origin,
-            default_agent=default_agent,
-        ).run_background(
-            run_source,
-            registry=self.registry,
-            admission_closed=self._admission_closed,
-            execution_binding_version=1,
-            execution_context=memory_scope.execution_context,
-            memory_mode=memory_scope.memory_mode,
-            run_id=new_id,
-            now=self._now_fn(),
-            name=f"{prior.name} ({label})",
-            args=prior.args,
-            budget_total=prior.budget_total,
-            fallback_title=prior.fallback_title,
-            fallback_folder_id=prior.fallback_folder_id,
-            author=origin,
-            session_key=origin,
-            replay_results=replay_results,
-            replay_before=replay_before,
-            replay_fingerprints=replay_fingerprints,
-            source_is_original=edited or prior.source_is_original,
-            workflow_id="" if edited else prior.workflow_id,
-            workflow_slug="" if edited else prior.workflow_slug,
-            workflow_revision=0 if edited else prior.workflow_revision,
-            derived_from_workflow_id=derived_id,
-            derived_from_revision=derived_revision,
-        )
-        if not started:
+        with service_nesting.admitted_slot(self, caller_session, new_id) as slot:
+            if slot.refusal is not None:
+                return slot.refusal
+            slot.started = await self._runner(
+                new_id,
+                timeout_secs=timeout_secs if timeout_secs is not None else prior.timeout_secs,
+                memory_scope=memory_scope,
+                session_key=origin,
+                default_agent=default_agent,
+            ).run_background(
+                run_source,
+                registry=self.registry,
+                admission_closed=self._admission_closed,
+                execution_binding_version=1,
+                execution_context=memory_scope.execution_context,
+                memory_mode=memory_scope.memory_mode,
+                run_id=new_id,
+                now=self._now_fn(),
+                name=f"{prior.name} ({label})",
+                args=prior.args,
+                budget_total=prior.budget_total,
+                fallback_title=prior.fallback_title,
+                fallback_folder_id=prior.fallback_folder_id,
+                author=origin,
+                session_key=origin,
+                replay_results=replay_results,
+                replay_before=replay_before,
+                replay_fingerprints=replay_fingerprints,
+                source_is_original=edited or prior.source_is_original,
+                workflow_id="" if edited else prior.workflow_id,
+                workflow_slug="" if edited else prior.workflow_slug,
+                workflow_revision=0 if edited else prior.workflow_revision,
+                derived_from_workflow_id=derived_id,
+                derived_from_revision=derived_revision,
+            )
+        if not slot.started:
             return {"error": "gateway admission is closed"}
         return {
             "run_id": new_id,
@@ -1836,28 +1871,6 @@ def _strip_fence(text: str) -> str:
             elif t.startswith("py"):
                 t = t[len("py") :]
     return t.strip() + "\n"
-
-
-def _ends_mid_construct(source: str, errors: list[str]) -> bool:
-    """True when ``source`` failed to parse because it stops mid-construct.
-
-    That is what a reply cut off at the output limit looks like: an open
-    bracket or string at end of input, or a syntax error on the last line.
-    Only consulted after ``validate`` reported a syntax error, so the re-parse
-    runs on the failure path and never on a size-rejected script.
-    """
-    if not any(error.startswith("syntax error:") for error in errors):
-        return False
-    try:
-        ast.parse(source)
-    except SyntaxError as exc:
-        if any(marker in (exc.msg or "") for marker in _CUT_OFF_SYNTAX_MARKERS):
-            return True
-        last_line = len(source.rstrip().splitlines())
-        return exc.lineno is not None and exc.lineno >= last_line
-    except (RecursionError, MemoryError, ValueError):
-        return False
-    return False
 
 
 def _authoring_references(matches: list[dict[str, Any]]) -> str:
