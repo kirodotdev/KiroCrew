@@ -1340,7 +1340,10 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   - `argv_floor_hosts.py` — which names and addresses are this host: the loopback
     names, this machine's own names and interface addresses, the hosts-file aliases
     and the DNS verdict cache behind `_host_is_self`, backed by `hosts_file.py` and
-    `host_addresses.py`.
+    `host_addresses.py`. It also holds `_glob_matches`, which every glob match in the
+    ssh floor goes through (against an ssh-family name or a self name): when a `[` in
+    the pattern never closes and the name holds none, it answers without `fnmatch`, so
+    a long run of `[` costs linear time, not quadratic.
   - `argv_floor_ssh_gate.py` — the cheap gate in front of the ssh floor: it cuts a
     line into words (also at the sentinels that stand for a quoted separator) and
     decides whether a glob word can expand to an ssh-family program. It holds the
