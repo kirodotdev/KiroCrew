@@ -726,6 +726,39 @@ async def test_a_call_refused_for_a_tab_move_takes_its_own_note(route):
     assert bht.take_host_approval("chat-1", "click", {"ref": "e1"}) is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cover", ["trust", "yolo", ""])
+async def test_a_call_session_trust_covers_runs_on_a_tab_that_left_the_site(tmp_path, route, cover):
+    # The site grant approves the click before the trust rung is reached. Session
+    # trust or a live YOLO runs it on any host, so it leaves no note to refuse it.
+    from kiro_crew.browser_harness.live_hub import get_live_hub
+
+    h, run_chat = _turn_harness()
+    state, client = h._make_state(tmp_path, context_builder=_context_builder(h))
+    client.capabilities = capabilities_for(ACP_BACKEND_KAS)
+    state.is_yolo_active = lambda: cover == "yolo"
+    state.yolo_reaches = lambda _slot, **_kw: True
+    slot = h._make_slot("chat-1", trust=cover == "trust")
+    slot._trusted_patterns.add(bht.grant_pattern(bht.trust_key("a.example", "act")))
+    get_live_hub()._session("chat-1").url = "https://a.example/start"
+    h._set_stream(client, [_browser(h, "req-1", _call("click", x=10, y=20)), h._complete_event()])
+    with h._patch_stats():
+        await finished(run_chat(state, slot, "hello"), "the chat turn completing")
+    client.approve_tool.assert_any_call("req-1")
+    # The tab then left the site the grant names.
+    sup = _Supervisor("https://b.example/")
+    route.install(sup)
+    answer, _status = await route.mod.run_browser_op(
+        "dashboard:chat-1", "click", {"x": 10, "y": 20}
+    )
+    if cover:
+        assert answer.get("code") != bht.SCOPE_CHANGED_CODE and "click" in sup.calls
+    else:
+        # A call only the site grant covers is still held to that site.
+        assert answer["ok"] is False and answer["code"] == bht.SCOPE_CHANGED_CODE
+        assert "click" not in sup.calls
+
+
 @pytest.mark.parametrize(
     ("op", "args"),
     [
