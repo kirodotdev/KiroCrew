@@ -51,7 +51,8 @@ bodies included, to the wake judge, so `wake_when` may name prose. No
 judge lane: only an unchanged subject is free.
 
 An installation setting can make `monitor_watch` the default for a supported
-pull request; see [references/arming-preference.md](references/arming-preference.md).
+pull request; evidence the typed provider cannot see stays on `monitor_start`.
+See [references/arming-preference.md](references/arming-preference.md).
 
 ### In-turn wait and poll
 
@@ -263,7 +264,8 @@ closed until you have confirmed the mapping on the actual host.
 
 A conflict, `BEHIND` or `green_age.py` exit 30 needs an authorized sync, not
 another unchanged poll; a draft or `CHANGES_REQUESTED` hold also survives waiting.
-How to act on each: [references/sync-and-holds.md](references/sync-and-holds.md).
+A product hold needs a human decision: report it once and stop with the blocking
+review quoted. How to act on each: [references/sync-and-holds.md](references/sync-and-holds.md).
 
 ### Optional GitHub helper
 
