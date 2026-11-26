@@ -447,6 +447,7 @@ def list_apps() -> list[dict[str, Any]]:
     from kiro_crew.apps.browser_sites import browser_sites_grant_row  # noqa: PLC0415
     from kiro_crew.apps.frame_sources import frame_sources_grant_row  # noqa: PLC0415
     from kiro_crew.apps.kiro_operations import kiro_operations_grant_row  # noqa: PLC0415
+    from kiro_crew.apps.widget_grants import widget_grant_row  # noqa: PLC0415
 
     root = apps_dir()
     names = _recorded_app_names(root)
@@ -507,6 +508,7 @@ def list_apps() -> list[dict[str, Any]]:
             **link_open_grant_row(entry.name, manifest_data),
             **composer_action_grant_row(entry.name, manifest_data),
             **selection_action_grant_row(entry.name, manifest_data),
+            **widget_grant_row(entry.name, manifest_data),
             **worker_auto_approve_grant_row(entry.name, manifest_data),
             **user_session_reach_grant_row(entry.name, manifest_data),
             **desktop_capabilities_grant_row(entry.name, manifest_data),
@@ -538,6 +540,7 @@ def get_app(name: str) -> dict[str, Any] | None:
     from kiro_crew.apps.browser_sites import browser_sites_grant_row  # noqa: PLC0415
     from kiro_crew.apps.frame_sources import frame_sources_grant_row  # noqa: PLC0415
     from kiro_crew.apps.kiro_operations import kiro_operations_grant_row  # noqa: PLC0415
+    from kiro_crew.apps.widget_grants import widget_grant_row  # noqa: PLC0415
 
     meta = _read_installed(name)
     if not meta:
@@ -565,6 +568,7 @@ def get_app(name: str) -> dict[str, Any] | None:
         **link_open_grant_row(name, manifest_data),
         **composer_action_grant_row(name, manifest_data),
         **selection_action_grant_row(name, manifest_data),
+        **widget_grant_row(name, manifest_data),
         **worker_auto_approve_grant_row(name, manifest_data),
         **user_session_reach_grant_row(name, manifest_data),
         **desktop_capabilities_grant_row(name, manifest_data),

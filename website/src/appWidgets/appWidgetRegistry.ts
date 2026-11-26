@@ -4,7 +4,8 @@
  *
  * The gateway validates the manifest; this module re-checks only the shape it acts
  * on, because the app list may be stale. A widget resolves only for an enabled app
- * that declares it.
+ * that declares it and whose owner approved it (`widgetGrant`). The gateway mints
+ * no frame for any other widget, so this check only picks the fallback's words.
  *
  * @module appWidgets/appWidgetRegistry
  */
@@ -34,6 +35,13 @@ interface AppLike {
   displayName?: string
   enabled?: boolean
   manifest?: { displayName?: string; contributes?: { widgets?: unknown } }
+  /** `apps/widget_grants.py`: the ids the owner approved. */
+  widgetGrant?: { approved?: unknown }
+}
+
+/** The grant entry of one widget. Mirrors `widget_grant` in `apps/widget_grants.py`. */
+export function widgetGrant(widgetId: string): string {
+  return `${widgetId}:render`
 }
 
 /** The app and widget a `use` attribute names, or null when it is not `<app>:<id>`. */
@@ -43,7 +51,7 @@ export function parseWidgetUse(use: string): AppWidgetRef | null {
 }
 
 /** Why a `use` tag names no drawable widget, when the app list says so. */
-export type UnresolvedReason = 'not-installed' | 'app-off' | 'no-widget'
+export type UnresolvedReason = 'not-installed' | 'app-off' | 'no-widget' | 'not-approved'
 
 function findApp(apps: readonly AppLike[], appName: string): AppLike | undefined {
   return apps.find((a) => a && a.name === appName)
@@ -60,7 +68,8 @@ export function appLabelFor(apps: readonly AppLike[], appName: string): string {
 
 /** The declared widget `ref` names, from an enabled app in `apps`; else why not:
  *  `not-installed` when no app has that name, `app-off` when the app is turned off,
- *  `no-widget` when it declares no such widget. */
+ *  `no-widget` when it declares no such widget, `not-approved` when the owner has not
+ *  approved it. A row without `widgetGrant` approves nothing. */
 export function resolveAppWidget(apps: readonly AppLike[], ref: AppWidgetRef): ResolvedAppWidget | UnresolvedReason {
   const app = findApp(apps, ref.appName)
   if (!app) return 'not-installed'
@@ -71,6 +80,8 @@ export function resolveAppWidget(apps: readonly AppLike[], ref: AppWidgetRef): R
     if (!raw || typeof raw !== 'object') continue
     const w = raw as Record<string, unknown>
     if (w.id !== ref.widgetId) continue
+    const approved = app.widgetGrant?.approved
+    if (!Array.isArray(approved) || !approved.includes(ref.widgetId)) return 'not-approved'
     const title = typeof w.title === 'string' && w.title.length <= MAX_WIDGET_TITLE ? w.title : ''
     return { ...ref, appLabel: appLabelFor(apps, ref.appName), title }
   }

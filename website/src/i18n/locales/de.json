@@ -11611,9 +11611,10 @@
     "appWidget": {
       "frame_label": "{{title}}, von {{app}}",
       "from_app": "Von {{app}}",
-      "reason_bad_use": "Dieses Widget nennt „{{use}}“, das ist kein App-Widget-Name.",
+      "reason_bad_use": "Der Agent hat dieses Widget falsch benannt, daher kann es nicht angezeigt werden.",
       "reason_not_installed": "Dieses Widget braucht die App {{app}}, die nicht installiert ist.",
       "reason_app_off": "Dieses Widget braucht die App {{app}}, die ausgeschaltet ist.",
+      "reason_not_approved": "Du hast dieses Widget der App {{app}} noch nicht genehmigt.",
       "reason_no_widget": "Die App {{app}} hat kein Widget namens „{{widget}}“.",
       "reason_too_large": "Die Daten dieses Widgets sind zu groß zum Anzeigen.",
       "reason_not_object": "Die Daten dieses Widgets sind ungültig, daher kann es nicht angezeigt werden.",
@@ -11621,7 +11622,9 @@
       "reason_failed": "Die App {{app}} konnte dieses Widget nicht anzeigen.",
       "open_to_install": "Zur Seite von {{app}}, um sie zu installieren",
       "open_to_turn_on": "Zur Seite von {{app}}, um sie einzuschalten",
-      "show_data": "Rohdaten anzeigen"
+      "open_to_approve": "Zur Seite von {{app}}, um es zu genehmigen",
+      "show_data": "Rohdaten anzeigen",
+      "retry": "Erneut versuchen"
     },
     "messageActions": {
       "popover_label": "{{app}}: {{title}}",
@@ -12559,6 +12562,7 @@
         "installed_needs_newer_host": "Die installierte Version von {{name}} braucht ein neueres {{productName}}. Aktualisiere {{productName}}; deine Daten bleiben unverändert."
       },
       "grants_reconsent_composer_actions": "Eingabefeld-Schaltflächen: Die App darf diese Schaltflächen zum +-Menü des Eingabefelds hinzufügen. Ein Klick fügt den Text der App in deinen Entwurf ein; die App kann den Entwurf weder sehen noch senden.",
+      "grants_reconsent_widgets": "Chat-Widgets: Die App darf diese Widgets in Chat-Antworten anzeigen. Jedes erhält die Daten, die der Agent dafür schreibt und die Text aus deiner Unterhaltung enthalten können, und die App kann diese Daten an andere Websites senden.",
       "grants_reconsent_selection_actions": "Aktionen für ausgewählten Text: Die Einträge der App erhalten Text, den du in Chat-Antworten auswählst, und können ein Ergebnis zum Kopieren oder Öffnen anbieten.",
       "browser_sites_list_title": "Besuchte Websites",
       "browser_sites_list_hint": "Die Seiten, die der eigene Agent dieser App besuchen darf. Eine entfernte Website endet beim nächsten Schritt des Agents.",

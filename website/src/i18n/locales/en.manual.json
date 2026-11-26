@@ -5790,6 +5790,7 @@
         "installed_needs_newer_host": "The installed version of {{name}} needs a newer {{productName}}. Update {{productName}}; your data is unchanged."
       },
       "grants_reconsent_composer_actions": "Composer buttons: lets the app add these buttons to the composer's + menu. A click inserts the app's text into your draft; the app can't see the draft or send it.",
+      "grants_reconsent_widgets": "Chat widgets: lets the app draw these widgets in chat answers. Each one gets the data the agent writes for it, which can include text from your conversation, and the app can send that data to other sites.",
       "grants_reconsent_selection_actions": "Selected-text actions: lets the app's items be handed text you select in chat replies, and offer it back for Copy or Open.",
       "bots_scope_tools": "Lets a bot you tick for this app use its tools in its own chat. Other bots don't change.",
       "bots_scope_tools_preview_off": "Off until you turn on <preview>App tools in bot chats</preview>."

@@ -1854,6 +1854,16 @@ At most **16** widgets per app. A field with the wrong JSON type, or an unknown
 field, is refused, never coerced. The block is signed. A widget starts no process,
 so it keeps a browser-only app eligible for a startup module.
 
+**The owner approves each widget.** A widget is handed what an agent wrote, so
+each one is a grant, `<id>:render`, in the `widgets` family of the app's approved
+permissions. Installing the app approves the widgets it declares. An app that a
+host from before widgets installed has none approved, because its owner never saw
+them in a prompt, so each one waits on the app's page. An update that
+adds a widget id holds that widget back until the owner approves it under
+**Approve new permissions** on the app's page. Until then the chat shows a card
+that links there. Changing a widget's title, description or entry keeps its
+approval.
+
 **The tag.** `use` is `<app name>:<widget id>`. The body is one JSON object of at
 most 16,384 bytes. The payload lives in the body because a tag attribute cannot
 hold a `"`. While the answer streams, the widget shows the usual placeholder. A
@@ -1867,7 +1877,9 @@ capability, so `ctx` has no `fetch` and the module reaches no backend, and the
 frame's policy is `img-src 'self' data: blob:`, so it loads no image from the
 network. The payload is agent output, so an image URL built from it could
 otherwise carry conversation text to another host. Bundle the images the view
-needs, or use `data:` URLs. The frame mounts when the widget comes near the
+needs, or use `data:` URLs. Offline does not stop a module from navigating its own
+frame, which is why each widget needs the owner's approval. A frame that navigates
+away is closed and draws the fallback card. The frame mounts when the widget comes near the
 viewport. `ctx` is `{ appName, point: 'widgets', theme() }`. The module exports
 `activate(ctx)` and returns a handler:
 
@@ -1891,11 +1903,15 @@ globalThis.kirocrew?.register(activate)  // for the inline path behind a proxy
 The host sends `render` once, after the module is ready. Treat `props` as
 untrusted: an agent wrote it, and it can hold text from a tool result. The
 height is clamped to 40-800 pixels. A link the user clicks in the frame opens
-through the host's link bridge, as for every app frame.
+through the host's link bridge, as for every app frame, but only when it goes to
+a page of this dashboard. A link to another host opens nothing, so show such an
+address as text. The server judges a reply's blocked links in its text, and the
+browser can read an address in a JSON payload differently from that text.
 
 **When it cannot be drawn.** The host draws a card that names the reason and
 keeps the payload readable under **Show the raw data** when: no enabled app
-has that name, the app declares no such widget, `use` is not `<app>:<id>`, the
+has that name, the owner has not approved the widget, the app declares no such
+widget, `use` is not `<app>:<id>`, the
 body is not one JSON object within the cap, the mint is refused, or the module
 does not say it is ready within 10 seconds, reports a failure or navigates the
 frame away.

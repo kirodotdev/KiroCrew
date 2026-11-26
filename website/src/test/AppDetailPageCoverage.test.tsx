@@ -887,7 +887,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, {
       api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], linkOpenHosts: [], linkOpenFullUrl: [],
-      api: ['/api/memory'], events: ['log'], bots: [], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [], reachableByUserSessions: [], desktopCapabilities: [], frameSources: [], browserSites: [], kiroOperations: [], browserRecipes: [], browser: [],
+      api: ['/api/memory'], events: ['log'], bots: [], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], widgets: [], workerAutoApprove: [], reachableByUserSessions: [], desktopCapabilities: [], frameSources: [], browserSites: [], kiroOperations: [], browserRecipes: [], browser: [],
     }))
     expect(await screen.findByText('Approved: /api/memory, log. The app can use them now.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
@@ -905,6 +905,21 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(screen.getByText('summarize')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ composerActions: ['summarize:insert'] })))
+  })
+
+  it('lists a held-back app widget and approves its grant entry', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [] } },
+      approvedGrants: { api: [], events: [] },
+      widgetGrant: { approved: ['ledger-card'], staged: ['ledger-chart'] },
+    }))
+    renderDetail()
+    await loaded()
+    expect(screen.getByText(/Chat widgets: lets the app draw these widgets in chat answers/)).toBeInTheDocument()
+    expect(screen.getByTestId('staged-widgets')).toHaveTextContent('ledger-chart')
+    expect(screen.getByTestId('staged-widgets')).not.toHaveTextContent('ledger-card')
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ widgets: ['ledger-chart:render'] })))
   })
 
   it('lists a held-back worker auto-approve grant and approves its one entry', async () => {

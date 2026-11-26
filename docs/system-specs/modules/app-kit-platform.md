@@ -5712,8 +5712,9 @@ owner each:
   text the host shows from a frame. The link-preview point keeps its own
   show/card messages (§18a) and does not use the contract.
 - **Grant families from one registry** (`apps/point_grants.py`).
-  `register_point_grants(families, entries)` adds a point's families and the
-  function that derives them from a manifest's `contributes`; `grant_source` is the
+  `register_point_grants(families, entries, *, explicit_only=False)` adds a point's
+  families and the function that derives them from a manifest's `contributes`, and
+  `explicit_only` is as for a permission family; `grant_source` is the
   one reader every install, update and approval path uses, and
   `STAGED_GRANT_FAMILIES` and the enable route's consent read
   `point_grant_families()`. A family name already taken, or `api` / `events`, is
@@ -6695,10 +6696,23 @@ serialized, so it is covered by the signing payload, and `widgets` is in
   payload. `register_widgets` skips a `use` widget: its body is data, not a page.
 - **Point.** `widgets`, registered at the bottom of `apps/app_frame.py` with
   `widget_frame.resolve_widget` and `WIDGET_SCRIPT`, and `offline=True`. The
-  resolver answers only for an enabled app's declared widget. An offline point's
-  mint returns `capability: null`, and its frame policy, served and srcdoc, is
-  `img-src 'self' data: blob:`: the payload is agent output, and a network image
-  URL built from it would carry it off the host.
+  resolver answers only for an enabled app's declared widget whose grant the owner
+  approved. An offline point's mint returns `capability: null`, and its frame
+  policy, served and srcdoc, is `img-src 'self' data: blob:`: the payload is agent
+  output, and a network image URL built from it would carry it off the host.
+- **Grant.** Offline does not stop the module from navigating its own frame to
+  another host with the payload in the address. No frame policy a browser enforces
+  refuses that, and `onNavigatedAway` closes the frame only after the new document
+  loads. So a widget is gated by the owner, as every point handed
+  conversation-derived text is. One staged family, `widgets`, entry `<id>:render`
+  (`apps/widget_grants.py`), registered explicit-only in `apps/point_grants.py`
+  without importing the module. An install approves the declared widgets. A set
+  stored before this host read `contributes.widgets` approves none, because no owner
+  saw them in a prompt, so each one waits as a held-back id does. A new id on update is held
+  back until the owner approves it on the App Detail page, which lists it under
+  "Chat widgets" and sends `widgets: ['<id>:render']`. A title, description or
+  entry change keeps the approval. The app row carries
+  `widgetGrant { approved, staged }`.
 - **What the frame gets.** `init` with no capability, then one
   `widget.render { props, theme, widgetId }`. The script hands the module
   `render(props, view)` once, with a frozen `view` (`widgetId`, `theme`,
@@ -6715,20 +6729,34 @@ serialized, so it is covered by the signing payload, and `widgets` is in
 - **Links.** The frame opens a link only through `useFrameLinkBridge`, with the
   refusal `WidgetFrame` uses: the renderer passes the reply's blocked-link records
   and pending flag, so a link the reply draws as a Blocked link chip opens nothing,
-  and no web link opens while the records are pending.
+  and no web link opens while the records are pending. A link to another host
+  opens nothing (`leavesDashboard`). The server finds blocked links in the text
+  as written, and the browser can read an address in the payload differently
+  (an escape such as `https:\/\/`, a full-width host it folds to ASCII, userinfo
+  before the host), so no such address was reliably judged. Only a page of this
+  dashboard opens from an app widget.
+- **Loading.** While the app list loads, the block shows its heading and a
+  placeholder 120 pixels high, with `aria-busy`, so it reads as loading and not as
+  an empty card.
 - **Fallback.** A bad `use`, an app that is not installed, an app that is turned
-  off, no such widget, a body that is not one JSON object within the cap, an app
-  list that does not load, a refused mint, a frame that fails, navigates away or is
-  not ready in time: each draws `AppWidgetFallback`, which names the reason and
-  keeps the payload in a closed `<details>` block. The not-installed and turned-off
+  off, a widget the owner has not approved, no such widget, a body that is not one
+  JSON object within the cap, an app list that does not load, a refused mint, a
+  frame that fails, navigates away or is not ready in time: each draws
+  `AppWidgetFallback`, which names the reason and keeps the payload in a closed
+  `<details>` block. `resolveAppWidget` reads `widgetGrant.approved`, and a row
+  without it approves nothing. The not-installed, turned-off and not-approved
   cards link to `/apps/detail/<app>`, through the page-leave check. The link label
   names the app's page ("Go to the {{app}} page to install it"), because nothing
-  is installed or turned on from the card. Every other card renders its reason
-  through `ErrorNotice` with the agent hand-off, so each card offers a next step.
-  The no-widget card names the widget by its id, the part of `use` after the colon.
+  is installed, turned on or approved from the card. Every other card renders its
+  reason through `ErrorNotice` with the agent hand-off, so each card offers a next
+  step. The app-list card also offers "Try again", which refetches the `['apps']`
+  query. The no-widget card names the widget by its id, the part of `use` after the
+  colon. The bad-use card says the agent named the widget wrongly and does not
+  quote `use`, because the reader cannot fix the tag and the agent hand-off can.
 
-Writers: `apps/manifest_widgets.py`, `apps/widget_frame.py`, `apps/app_frame.py`,
-`widget_parse.py`, `widget_artifacts.py`, `website/src/appWidgets/*`,
+Writers: `apps/manifest_widgets.py`, `apps/widget_frame.py`, `apps/widget_grants.py`,
+`apps/point_grants.py`, `apps/app_frame.py`, `widget_parse.py`, `widget_artifacts.py`,
+`website/src/appWidgets/*`, `website/src/pages/AppDetailPage.tsx`,
 `website/src/hooks/useBlockAssembler.ts`, `website/src/components/MarkdownRenderer.tsx`.
 
 ## 19. Spec Builder's backend is composed by lifecycle owner

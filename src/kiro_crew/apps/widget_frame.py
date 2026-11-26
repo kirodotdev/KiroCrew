@@ -11,21 +11,28 @@ capability, so its module has no ``ctx.fetch`` and reaches no backend, and its
 policy loads no network image. The payload is agent output, so an image URL the
 module built from it would otherwise carry conversation text to any host.
 
-This module says which entry a frame loads (a declared widget of an enabled app) and
-what the frame script hands the app's module. It is registered at the bottom of
-``app_frame.py``.
+Offline does not stop the module from navigating its own frame to another host
+with the payload in the address. No frame policy a browser enforces refuses that,
+and ``onNavigatedAway`` closes the frame only after the new document loads. So a
+widget loads only with the owner's grant (``widget_grants``), as the other points
+handed conversation-derived text do.
+
+This module says which entry a frame loads (an enabled app's declared widget whose
+grant the owner approved) and what the frame script hands the app's module. It is
+registered at the bottom of ``app_frame.py``.
 """
 
 from __future__ import annotations
 
 from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
+from kiro_crew.apps.widget_grants import approved_widget_ids
 
 #: The manifest key, which is the point's name in the frame routes.
 WIDGETS_POINT = "widgets"
 
 
 def resolve_widget(name: str, widget_id: str) -> tuple[str, bool, str] | None:
-    """``(entry, process_backed, app)`` of an enabled app's declared widget, else None."""
+    """``(entry, process_backed, app)`` of an enabled app's approved widget, else None."""
     # Imported here: app_frame imports this module at its bottom to register it.
     from kiro_crew.apps.app_frame import clean_entry, process_backed
 
@@ -36,6 +43,8 @@ def resolve_widget(name: str, widget_id: str) -> tuple[str, bool, str] | None:
         return None
     widget = manifest.contributes.widgets.by_id(widget_id)
     if widget is None:
+        return None
+    if widget_id not in approved_widget_ids(name, manifest):
         return None
     entry = clean_entry(widget.entry)
     if entry is None or "\\" in entry:

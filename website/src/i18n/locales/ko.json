@@ -11351,9 +11351,10 @@
     "appWidget": {
       "frame_label": "{{title}}, {{app}} 제공",
       "from_app": "{{app}} 제공",
-      "reason_bad_use": "이 위젯은 ‘{{use}}’를 지정하지만 이는 앱 위젯 이름이 아닙니다.",
+      "reason_bad_use": "에이전트가 이 위젯의 이름을 잘못 지정해 표시할 수 없습니다.",
       "reason_not_installed": "이 위젯에는 {{app}} 앱이 필요하지만 설치되어 있지 않습니다.",
       "reason_app_off": "이 위젯에는 {{app}} 앱이 필요하지만 꺼져 있습니다.",
+      "reason_not_approved": "{{app}} 앱의 이 위젯은 아직 승인되지 않았습니다.",
       "reason_no_widget": "{{app}} 앱에 ‘{{widget}}’ 위젯이 없습니다.",
       "reason_too_large": "이 위젯의 데이터가 너무 커서 표시할 수 없습니다.",
       "reason_not_object": "이 위젯의 데이터가 올바르지 않아 표시할 수 없습니다.",
@@ -11361,7 +11362,9 @@
       "reason_failed": "{{app}} 앱이 이 위젯을 표시하지 못했습니다.",
       "open_to_install": "설치하려면 {{app}} 페이지로 이동",
       "open_to_turn_on": "켜려면 {{app}} 페이지로 이동",
-      "show_data": "원시 데이터 보기"
+      "open_to_approve": "승인하려면 {{app}} 페이지로 이동",
+      "show_data": "원시 데이터 보기",
+      "retry": "다시 시도"
     },
     "messageActions": {
       "popover_label": "{{app}}: {{title}}",
@@ -12281,6 +12284,7 @@
         "installed_needs_newer_host": "설치된 {{name}}에는 더 새로운 {{productName}}이(가) 필요합니다. {{productName}}을(를) 업데이트하세요. 데이터는 변경되지 않았습니다."
       },
       "grants_reconsent_composer_actions": "입력창 버튼: 앱이 입력창의 + 메뉴에 이 버튼들을 추가할 수 있습니다. 클릭하면 앱의 텍스트가 초안에 들어갑니다. 앱은 초안을 보거나 보낼 수 없습니다.",
+      "grants_reconsent_widgets": "채팅 위젯: 앱이 채팅 답변에 이 위젯들을 표시할 수 있습니다. 각 위젯은 에이전트가 작성한 데이터를 받으며, 이 데이터에는 대화의 텍스트가 포함될 수 있습니다. 앱은 이 데이터를 다른 사이트로 보낼 수 있습니다.",
       "grants_reconsent_selection_actions": "선택한 텍스트 작업: 채팅 답변에서 선택한 텍스트가 앱 항목에 전달되며, 복사하거나 열 결과를 제공할 수 있습니다.",
       "browser_sites_list_title": "탐색 사이트",
       "browser_sites_list_hint": "이 앱 자체 에이전트가 탐색할 수 있는 페이지입니다. 삭제한 사이트는 에이전트의 다음 단계부터 적용되지 않습니다.",

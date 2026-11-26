@@ -29,10 +29,8 @@ export function activate(ctx) {
       text('span', state, { color: c[state], fontWeight: '600', marginRight: '8px' }),
       text('span', `#${Number(props.number) || '?'}`, { color: c.muted, marginRight: '6px' }),
     )
-    // A link opens through the host's link bridge when the user clicks it.
-    const title = text('a', props.title || 'Untitled issue', { color: c.fg, fontWeight: '600', textDecoration: 'none' })
-    if (typeof props.url === 'string' && props.url.startsWith('https://')) title.href = props.url
-    head.append(title)
+    // Plain text: a link to another host opens nothing from an app widget.
+    head.append(text('span', props.title || 'Untitled issue', { color: c.fg, fontWeight: '600' }))
     root.append(head)
     const labels = Array.isArray(props.labels) ? props.labels.slice(0, 8) : []
     if (labels.length) {

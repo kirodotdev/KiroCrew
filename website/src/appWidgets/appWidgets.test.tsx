@@ -2,8 +2,8 @@
  * App widgets: the `use` tag reaches `AppWidget`, a resolvable widget mounts the
  * shared sandbox with no capability and gets only its payload, its frame opens no
  * link the reply blocks, and every other case draws the fallback card with its
- * reason, a way to the app's page when the app is missing or off, and an error
- * notice when something failed to load.
+ * reason, a way to the app's page when the app is missing, off or not approved, and
+ * an error notice when something failed to load.
  */
 import type React from 'react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -17,7 +17,7 @@ import { OPEN_MESSAGE_TYPE } from '../hooks/useFrameOpenLink'
 import type { BlockedLink } from '../components/blockedLinkRecords'
 import { parseBlocks } from '../hooks/useBlockAssembler'
 import AppWidget, { MAX_HEIGHT, READY_TIMEOUT_MS, setAppWidgetMintForTest } from './AppWidget'
-import { appLabelFor, MAX_WIDGET_PROPS_BYTES, parseWidgetProps, parseWidgetUse, resolveAppWidget } from './appWidgetRegistry'
+import { appLabelFor, MAX_WIDGET_PROPS_BYTES, parseWidgetProps, parseWidgetUse, resolveAppWidget, widgetGrant } from './appWidgetRegistry'
 
 const listApps = vi.fn()
 vi.mock('../api/client', () => ({ api: { listApps: () => listApps() } }))
@@ -27,6 +27,7 @@ const app = (over: Record<string, unknown> = {}) => ({
   displayName: 'Issue Radar',
   enabled: true,
   manifest: { contributes: { widgets: [{ id: 'issue-card', title: 'Issue card', entry: 'widgets/card.mjs' }] } },
+  widgetGrant: { approved: ['issue-card'], staged: [] },
   ...over,
 })
 
@@ -51,6 +52,15 @@ describe('appWidgetRegistry', () => {
     expect(resolveAppWidget([app({ enabled: false })], ref)).toBe('app-off')
     expect(resolveAppWidget([app({ manifest: { contributes: {} } })], ref)).toBe('no-widget')
     expect(resolveAppWidget([app()], { ...ref, widgetId: 'other' })).toBe('no-widget')
+  })
+
+  it('resolves only a widget the owner approved, and a row without the grant approves none', () => {
+    const ref = { appName: 'issue-radar', widgetId: 'issue-card' }
+    expect(resolveAppWidget([app({ widgetGrant: { approved: [], staged: ['issue-card'] } })], ref)).toBe('not-approved')
+    expect(resolveAppWidget([app({ widgetGrant: undefined })], ref)).toBe('not-approved')
+    expect(resolveAppWidget([app({ widgetGrant: { approved: 'issue-card' } })], ref)).toBe('not-approved')
+    // The entry the approval sends mirrors `widget_grant` in `apps/widget_grants.py`.
+    expect(widgetGrant('issue-card')).toBe('issue-card:render')
   })
 
   it('names an app by its display name when the list has it, else by its name', () => {
@@ -152,10 +162,11 @@ describe('AppWidget', () => {
     const activation = () => Object.defineProperty(navigator, 'userActivation', { value: { isActive: true }, configurable: true })
     afterEach(() => { Reflect.deleteProperty(navigator, 'userActivation'); vi.restoreAllMocks() })
 
-    async function asked(url: string, props: { blockedLinks?: readonly BlockedLink[]; linksPending?: boolean }) {
+    async function asked(url: string, props: { blockedLinks?: readonly BlockedLink[]; linksPending?: boolean; body?: string }) {
       activation()
       const open = vi.spyOn(window, 'open').mockReturnValue(null)
-      render(withQuery(<AppWidget use="issue-radar:issue-card" body='{"n": 1}' title="Issue 7" {...props} />))
+      const { body = JSON.stringify({ n: 1, url }), ...rest } = props
+      render(withQuery(<AppWidget use="issue-radar:issue-card" body={body} title="Issue 7" {...rest} />))
       const el = await waitFor(() => {
         const f = document.querySelector<HTMLIFrameElement>('iframe[data-app-widget-frame]')
         if (!f) throw new Error('no frame yet')
@@ -178,8 +189,25 @@ describe('AppWidget', () => {
       expect(screen.queryByRole('button')).toBeNull()
     })
 
-    it('offers any other web link the usual way', async () => {
-      const open = await asked('https://example.com/issue/7', { blockedLinks: [record] })
+    it('opens nothing for an address the payload escapes, which the scan never read', async () => {
+      const escaped = '{"url": "https:\\/\\/attacker.example\\/?d=c2VjcmV0"}'
+      const open = await asked(BLOCKED, { blockedLinks: [], body: escaped })
+      expect(open).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button')).toBeNull()
+    })
+
+    it.each([
+      ['in plain ASCII', 'https://example.com/issue/7'],
+      ['with a full-width host the browser folds to ASCII', 'https://\uff45\uff56\uff49\uff4c.example/?d=c2VjcmV0'],
+      ['with userinfo before the host', 'https://user@evil.example/?d=c2VjcmV0'],
+    ])('opens nothing for a link to another host written %s', async (_case, url) => {
+      const open = await asked(url, { blockedLinks: [] })
+      expect(open).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button')).toBeNull()
+    })
+
+    it('offers a page of this dashboard the usual way', async () => {
+      const open = await asked(new URL('/apps/detail/issue-radar', window.location.origin).href, { blockedLinks: [record] })
       expect(open.mock.calls.length + screen.queryAllByRole('button').length).toBeGreaterThan(0)
     })
   })
@@ -187,6 +215,7 @@ describe('AppWidget', () => {
   it.each([
     ['not-installed', [], 'Go to the issue-radar page to install it'],
     ['app-off', [app({ enabled: false })], 'Go to the Issue Radar page to turn it on'],
+    ['not-approved', [app({ widgetGrant: { approved: [], staged: ['issue-card'] } })], 'Go to the Issue Radar page to approve it'],
   ])('links to the app\'s page when the app is %s', async (reason, apps, label) => {
     listApps.mockResolvedValue(apps)
     render(withQuery(
@@ -234,11 +263,39 @@ describe('AppWidget', () => {
     const card = await screen.findByTestId('app-widget-fallback')
     expect(card.dataset.reason).toBe('apps-unavailable')
     expect(card.querySelector('[data-testid="app-widget-error"]')?.textContent).toContain("Couldn't load your apps")
+    // Try again loads the list again, and a list that loads draws the widget.
+    listApps.mockResolvedValue([app()])
+    fireEvent.click(screen.getByTestId('app-widget-retry'))
+    await waitFor(() => expect(document.querySelector('iframe[data-app-widget-frame]')).not.toBeNull())
+    expect(listApps).toHaveBeenCalledTimes(2)
+  })
+
+  it('offers Try again only when the app list failed to load', async () => {
+    listApps.mockResolvedValue([app({ manifest: { contributes: { widgets: [] } } })])
+    render(withQuery(<AppWidget use="issue-radar:issue-card" body='{"n": 1}' title="Issue 7" />))
+    await screen.findByTestId('app-widget-fallback')
+    expect(screen.queryByTestId('app-widget-retry')).toBeNull()
+  })
+
+  it('draws a placeholder the height of the card while the app list loads', () => {
+    listApps.mockReturnValue(new Promise(() => {}))
+    render(withQuery(<AppWidget use="issue-radar:issue-card" body='{"n": 1}' title="Issue 7" />))
+    const box = screen.getByTestId('app-widget-loading')
+    expect(box.getAttribute('aria-busy')).toBe('true')
+    expect(box.textContent).toBe('Issue 7')
+    expect(screen.getByTestId('app-widget-skeleton').style.height).toBe('120px')
+  })
+
+  it('says the agent named the widget wrongly without quoting the name back', async () => {
+    render(withQuery(<AppWidget use="issue radar" body='{"n": 1}' title="Widget" />))
+    const card = await screen.findByTestId('app-widget-fallback')
+    expect(card.querySelector('[data-testid="app-widget-error"]')?.textContent).toContain("The agent named this widget wrongly, so it can't be shown.")
   })
 
   it.each([
     ['not-installed', [], '{"n": 1}', 'issue-radar:issue-card', 'link'],
     ['app-off', [app({ enabled: false })], '{"n": 1}', 'issue-radar:issue-card', 'link'],
+    ['not-approved', [app({ widgetGrant: { approved: [], staged: ['issue-card'] } })], '{"n": 1}', 'issue-radar:issue-card', 'link'],
     ['no-widget', [app({ manifest: { contributes: { widgets: [] } } })], '{"n": 1}', 'issue-radar:issue-card', 'notice'],
     ['not-object', [app()], 'not json', 'issue-radar:issue-card', 'notice'],
     ['too-large', [app()], JSON.stringify({ s: 'x'.repeat(17_000) }), 'issue-radar:issue-card', 'notice'],
@@ -248,7 +305,7 @@ describe('AppWidget', () => {
     render(withQuery(<AppWidget use={use} body={body} title="Issue 7" />))
     const card = await screen.findByTestId('app-widget-fallback')
     expect(card.dataset.reason).toBe(reason)
-    // A missing or turned-off app links to its page. Every other card offers the agent hand-off.
+    // A missing, turned-off or unapproved app links to its page. Every other card offers the agent hand-off.
     expect(card.querySelector('[data-testid="app-widget-app-link"]') !== null).toBe(next === 'link')
     expect(card.querySelector('[data-testid="app-widget-error"]') !== null).toBe(next === 'notice')
     // The payload stays readable.

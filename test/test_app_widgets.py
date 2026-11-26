@@ -2,7 +2,8 @@
 
 The point runs on the shared app frame (``apps/app_frame.py``), whose per-entry
 token binding is pinned by ``test_app_frame_points.py``. These pin what a widget may
-declare, that its resolver answers only for an enabled app's declared widget, that
+declare, that its grant is the widget (``<id>:render``), that its resolver answers
+only for an enabled app's declared widget whose grant the owner approved, that
 its frame is offline (no capability on the mint, no network image in either
 policy), that its script hands the app's module the payload and nothing else, and
 that a ``use`` widget is parsed but never stored as an artifact.
@@ -26,6 +27,12 @@ from kiro_crew.apps import app_frame as af
 from kiro_crew.apps import widget_frame as wf
 from kiro_crew.apps.manifest_contributes import Contributes
 from kiro_crew.apps.manifest_widgets import MAX_WIDGETS_PER_APP
+from kiro_crew.apps.point_grants import grant_source, point_grant_families
+from kiro_crew.apps.widget_grants import (
+    WIDGET_GRANT_FAMILY,
+    widget_grant,
+    widget_grant_entries,
+)
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 from kiro_crew.widget_parse import parse_widgets
 
@@ -135,17 +142,23 @@ def _manifest(widgets: list[dict[str, Any]], name: str = APP) -> SimpleNamespace
 
 @pytest.fixture
 def installed(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """An installed app whose enabled flag and manifest a test sets."""
+    """An installed app whose enabled flag, manifest and approved ids a test sets."""
     state: dict[str, Any] = {
         "enabled": True,
         "manifest": _manifest([_widget(), _widget(id="other", entry="widgets/b.mjs")]),
+        "approved": {"issue-card", "other"},
     }
     monkeypatch.setattr(wf, "is_app_enabled", lambda name: name == APP and state["enabled"])
     monkeypatch.setattr(wf, "get_app_manifest", lambda name: state["manifest"])
+    monkeypatch.setattr(
+        wf,
+        "approved_widget_ids",
+        lambda name, m: [w.id for w in m.contributes.widgets.widgets if w.id in state["approved"]],
+    )
     return state
 
 
-def test_the_resolver_serves_an_enabled_apps_declared_widget(installed) -> None:
+def test_the_resolver_serves_an_enabled_apps_approved_widget(installed) -> None:
     assert wf.resolve_widget(APP, "issue-card") == ("widgets/card.mjs", False, APP)
     assert wf.resolve_widget(APP, "other") == ("widgets/b.mjs", False, APP)
 
@@ -154,6 +167,7 @@ def test_the_resolver_serves_an_enabled_apps_declared_widget(installed) -> None:
     "change",
     [
         {"enabled": False},
+        {"approved": {"other"}},
         {"manifest": None},
         {"manifest": _manifest([_widget()], name="someone-else")},
         {"manifest": _manifest([_widget(entry="../x.mjs")])},
@@ -164,6 +178,127 @@ def test_the_resolver_refuses_anything_else(installed, change: dict[str, Any]) -
     installed.update(change)
     assert wf.resolve_widget(APP, "issue-card") is None
     assert wf.resolve_widget(APP, "missing") is None
+
+
+# ── grant ──
+
+
+def test_the_grant_is_the_widget_not_its_label() -> None:
+    a = widget_grant_entries({"widgets": [_widget()]})
+    b = widget_grant_entries({"widgets": [_widget(title="Renamed", entry="widgets/new.mjs")]})
+    c = widget_grant_entries({"widgets": [_widget(id="other")]})
+    assert a == b == {WIDGET_GRANT_FAMILY: ["issue-card:render"]}
+    assert c[WIDGET_GRANT_FAMILY] != a[WIDGET_GRANT_FAMILY]
+    assert widget_grant("issue-card") == "issue-card:render"
+
+
+def test_the_family_is_staged_like_every_point() -> None:
+    from kiro_crew.apps.manager_records import STAGED_GRANT_FAMILIES
+
+    assert WIDGET_GRANT_FAMILY in point_grant_families()
+    assert WIDGET_GRANT_FAMILY in STAGED_GRANT_FAMILIES
+    src = grant_source({"contributes": {"widgets": [_widget()]}})
+    assert src is not None and src[WIDGET_GRANT_FAMILY] == ["issue-card:render"]
+    # A parsed manifest declares the same entries as its raw form.
+    parsed = SimpleNamespace(contributes=Contributes.from_dict({"widgets": [_widget()]}))
+    assert grant_source(parsed)[WIDGET_GRANT_FAMILY] == ["issue-card:render"]
+
+
+def test_a_new_widget_on_update_is_held_back() -> None:
+    from kiro_crew.apps.manager_records import (
+        _approved_grants_after_manifest_change,
+        _held_back_entries,
+    )
+
+    old = grant_source({"contributes": {"widgets": [_widget()]}})
+    new = grant_source({"contributes": {"widgets": [_widget(), _widget(id="two")]}})
+    approved = _approved_grants_after_manifest_change(
+        existing_approved=None, old_permissions=old, new_permissions=new
+    )
+    assert approved[WIDGET_GRANT_FAMILY] == ["issue-card:render"]
+    assert _held_back_entries(approved, new)[WIDGET_GRANT_FAMILY] == ["two:render"]
+
+
+def test_the_grant_row_lists_approved_widgets_and_holds_new_ones_back(monkeypatch) -> None:
+    from kiro_crew.apps import widget_grants as wg
+
+    granted = {"one:render"}
+    seen: list[str] = []
+
+    def staged(name: str, family: str, declared: Any) -> list[str]:
+        seen.append(family)
+        return [e for e in declared() if e in granted]
+
+    monkeypatch.setattr("kiro_crew.apps.manager.staged_app_grants", staged)
+    raw = {
+        "contributes": {
+            "widgets": [
+                {"id": "one", "title": "One", "entry": "a.mjs"},
+                {"id": "two", "title": "Two", "entry": "b.mjs"},
+                {"id": "one", "title": "Duplicate", "entry": "c.mjs"},
+                "not an entry",
+                {"title": "no id"},
+            ]
+        }
+    }
+    assert wg.widget_grant_row("snip", raw) == {
+        "widgetGrant": {"approved": ["one"], "staged": ["two"]}
+    }
+    assert wg.approved_widget_ids("snip", raw) == ["one"]
+    assert set(seen) == {WIDGET_GRANT_FAMILY}
+    parsed = SimpleNamespace(
+        contributes=Contributes.from_dict({"widgets": [_widget(id="one"), _widget(id="two")]})
+    )
+    assert wg.widget_grant_row("snip", parsed)["widgetGrant"]["approved"] == ["one"]
+
+
+def test_an_app_without_widgets_has_no_grant_row() -> None:
+    from kiro_crew.apps import widget_grants as wg
+
+    assert wg.widget_grant_row("snip", {"contributes": {}}) == {}
+    assert wg.widget_grant_row("snip", SimpleNamespace(contributes=None)) == {}
+    assert wg.approved_widget_ids("snip", {"contributes": None}) == []
+    assert wg.widget_grant_entries(None) == {WIDGET_GRANT_FAMILY: []}
+    assert wg.widget_grant_entries({"widgets": "nope"}) == {WIDGET_GRANT_FAMILY: []}
+
+
+def test_a_set_stored_before_the_key_existed_approves_no_widget(tmp_path, monkeypatch) -> None:
+    """An older host installed the app without reading ``contributes.widgets``.
+
+    No owner saw the widgets in a prompt, so the first read after the upgrade must
+    not freeze them as approved. They wait on the app page.
+    """
+    from pathlib import Path
+
+    from kiro_crew.apps import protected_app_state
+    from kiro_crew.apps.manager import enable_app, get_app, install_app
+    from kiro_crew.apps.point_grants import explicit_only_grant_families
+
+    assert WIDGET_GRANT_FAMILY in explicit_only_grant_families()
+    home = tmp_path / "kirocrew-home"
+    home.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    (home / "config.json").write_text(
+        json.dumps({"agent": {"apps_allow_third_party": True}}), encoding="utf-8"
+    )
+    example = Path(__file__).resolve().parents[1] / "docs/app-kit/examples/widget-app"
+    source = tmp_path / "source" / "issue-cards"
+    shutil.copytree(example, source)
+    assert install_app(source).ok
+    name = "issue-cards"
+    assert get_app(name)["widgetGrant"] == {"approved": ["issue-card"], "staged": []}
+
+    stored = json.loads(protected_app_state.read_grants_text(name) or "{}")
+    stored.pop(WIDGET_GRANT_FAMILY)
+    protected_app_state.write_grants_text(name, json.dumps(stored))
+
+    assert get_app(name)["widgetGrant"] == {"approved": [], "staged": ["issue-card"]}
+    after = json.loads(protected_app_state.read_grants_text(name) or "{}")
+    assert after.get(WIDGET_GRANT_FAMILY, []) == [], "no read stored an approval"
+
+    approved = enable_app(name, grants_consent={WIDGET_GRANT_FAMILY: ["issue-card:render"]})
+    assert approved.ok, approved.error
+    assert get_app(name)["widgetGrant"] == {"approved": ["issue-card"], "staged": []}
 
 
 def test_the_point_is_registered_offline_on_the_shared_frame() -> None:
@@ -242,6 +377,10 @@ async def test_an_unknown_widget_or_a_disabled_app_gets_no_frame(
     async with _client(monkeypatch) as (client, _):
         minted = await (await client.post(f"/api/apps/{APP}/frames/{POINT}/issue-card")).json()
         assert (await client.post(f"/api/apps/{APP}/frames/{POINT}/missing")).status == 404
+        # A widget the owner has not approved gets no frame, so its module never runs.
+        installed["approved"] = {"other"}
+        assert (await client.post(f"/api/apps/{APP}/frames/{POINT}/issue-card")).status == 404
+        installed["approved"] = {"issue-card", "other"}
         installed["enabled"] = False
         assert (await client.post(f"/api/apps/{APP}/frames/{POINT}/issue-card")).status == 404
         assert (await client.get(minted["frame"])).status == 404

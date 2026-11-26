@@ -5,15 +5,18 @@
  * (`appFrame/sandboxFrame.ts`, point `widgets`). The frame is handed the parsed
  * payload of this one tag and the theme, nothing else. The point is offline
  * (`apps/widget_frame.py`): the mint gives no capability, so the module reaches no
- * backend, and none is ever renewed.
+ * backend, and none is ever renewed. The module can still navigate its own frame
+ * away with the payload, so the gateway mints a frame only for a widget the owner
+ * approved (`apps/widget_grants.py`).
  *
  * Every way the widget cannot be drawn ends in the same fallback card, which says
  * why and keeps the payload readable: the app is not installed, it is turned off,
- * it declares no such widget, the payload is not one JSON object within the cap,
- * the app list does not load, the mint is refused, or the frame does not say
- * `ready` in time. The first two link to the app's page, where the user can
- * install it or turn it on. The last three are load failures, so they render
- * through `ErrorNotice`.
+ * the owner has not approved the widget, it declares no such widget, the payload is
+ * not one JSON object within the cap, the app list does not load, the mint is
+ * refused, or the frame does not say `ready` in time. The first three link to the
+ * app's page, where the user can install it, turn it on or approve the widget. The
+ * last three are load failures, so they render through `ErrorNotice`, and a failed
+ * app list also offers to load it again.
  *
  * The frame opens a link only through the host, and refuses one the reply's own
  * text draws as a Blocked link chip, or any link while those records are pending,
@@ -62,8 +65,8 @@ export const MAX_HEIGHT = 800
 const MAX_FRAME_MESSAGE_BYTES = 4096
 
 export type FallbackReason =
-  | 'bad-use' | 'not-installed' | 'app-off' | 'no-widget' | 'too-large' | 'not-object'
-  | 'apps-unavailable' | 'failed'
+  | 'bad-use' | 'not-installed' | 'app-off' | 'not-approved' | 'no-widget' | 'too-large'
+  | 'not-object' | 'apps-unavailable' | 'failed'
 
 const NO_BLOCKED: readonly BlockedLink[] = []
 
@@ -94,7 +97,7 @@ export default function AppWidget({ use, body, title, blockedLinks = NO_BLOCKED,
 }) {
   const ref = useMemo(() => parseWidgetUse(use), [use])
   const parsed = useMemo(() => parseWidgetProps(body), [body])
-  const { data: apps, isPending } = useQuery({
+  const { data: apps, isPending, refetch } = useQuery({
     queryKey: ['apps'],
     queryFn: () => (typeof api?.listApps === 'function' ? api.listApps() : []),
     select: selectApps,
@@ -117,11 +120,17 @@ export default function AppWidget({ use, body, title, blockedLinks = NO_BLOCKED,
   const heading = title && title !== 'Widget' ? title : (widget?.title || use)
   if (reason) {
     const appLabel = widget?.appLabel ?? (ref && apps ? appLabelFor(apps as never[], ref.appName) : undefined)
-    return <AppWidgetFallback title={heading} use={use} reason={reason} body={body} appLabel={appLabel} />
+    const onRetry = reason === 'apps-unavailable' ? () => { void refetch() } : undefined
+    return <AppWidgetFallback title={heading} use={use} reason={reason} body={body} appLabel={appLabel} onRetry={onRetry} />
   }
   if (!widget || !parsed.ok) {
-    // The app list is still loading.
-    return <section className="my-2 rounded-lg border border-border bg-bg-elevated/40 px-3 py-2 text-[12px] text-muted" aria-busy="true" data-testid="app-widget-loading">{heading}</section>
+    // The app list is still loading. A placeholder the card's height reads as loading, not as an empty card.
+    return (
+      <section className="my-2 rounded-lg border border-border bg-bg-elevated/40 px-3 py-2 text-[12px] text-muted" aria-busy="true" data-testid="app-widget-loading">
+        <div className="truncate font-semibold">{heading}</div>
+        <div className="mt-2 animate-pulse rounded bg-bg motion-reduce:animate-none" style={{ height: DEFAULT_HEIGHT }} aria-hidden="true" data-testid="app-widget-skeleton" />
+      </section>
+    )
   }
   // Keyed by the tag: a frame renders its payload once, so a changed body is a new frame.
   return (
@@ -135,6 +144,15 @@ export default function AppWidget({ use, body, title, blockedLinks = NO_BLOCKED,
       onFailed={() => setFailed(true)}
     />
   )
+}
+
+/** Whether `url` goes to a host other than this dashboard's. */
+function leavesDashboard(url: string): boolean {
+  try {
+    return new URL(url).origin !== window.location.origin
+  } catch {
+    return true
+  }
 }
 
 function AppWidgetFrame({ widget, props, heading, blockedLinks, linksPending, onFailed }: {
@@ -152,10 +170,14 @@ function AppWidgetFrame({ widget, props, heading, blockedLinks, linksPending, on
   const [height, setHeight] = useState(DEFAULT_HEIGHT)
   const onFailedRef = useRef(onFailed)
   onFailedRef.current = onFailed
-  // A link the reply's own text draws as a Blocked link chip opens nothing, and
-  // no web link opens while the reply's records are pending.
+  // Only a page of this dashboard opens. The blocked-link records come from the
+  // reply's text, and the browser can read an address in a JSON payload
+  // differently from that text (an escape, a full-width host, userinfo), so a
+  // link to another host was never reliably judged and opens nothing. A link the
+  // reply draws as a Blocked link chip, or any link while the records are
+  // pending, opens nothing either.
   const refuseLink = useCallback(
-    (url: string) => linksPending || blockedLinkFor(url, blockedLinks) !== null,
+    (url: string) => linksPending || blockedLinkFor(url, blockedLinks) !== null || leavesDashboard(url),
     [linksPending, blockedLinks],
   )
   const chip = useFrameLinkBridge([frameRef], undefined, undefined, undefined, refuseLink)
@@ -259,10 +281,12 @@ function AppWidgetFrame({ widget, props, heading, blockedLinks, linksPending, on
 
 /** The fallback card's one-line reason. Static keys, so the catalog check sees each one. */
 function fallbackText(reason: FallbackReason, app: string, use: string): string {
+  // `bad-use` quotes nothing: the reader cannot fix the tag, and the agent hand-off can.
   switch (reason) {
-    case 'bad-use': return i18nT('components.appWidget.reason_bad_use', { use })
+    case 'bad-use': return i18nT('components.appWidget.reason_bad_use')
     case 'not-installed': return i18nT('components.appWidget.reason_not_installed', { app })
     case 'app-off': return i18nT('components.appWidget.reason_app_off', { app })
+    case 'not-approved': return i18nT('components.appWidget.reason_not_approved', { app })
     // `use` parsed as `<app>:<id>`, so the widget's own id follows the one colon.
     case 'no-widget': return i18nT('components.appWidget.reason_no_widget', { app, widget: use.slice(use.indexOf(':') + 1) })
     case 'too-large': return i18nT('components.appWidget.reason_too_large')
@@ -310,29 +334,35 @@ function GuardedAppPageLink({ to, label }: { to: string; label: string }) {
   )
 }
 
-export function AppWidgetFallback({ title, use, reason, body, appLabel }: {
+export function AppWidgetFallback({ title, use, reason, body, appLabel, onRetry }: {
   title: string
   use: string
   reason: FallbackReason
   body: string
   appLabel?: string
+  /** Loads the app list again. Offered only when it failed to load. */
+  onRetry?: () => void
 }) {
   const appName = use.split(':', 1)[0] || use
   const app = appLabel || appName
   const why = fallbackText(reason, app, use)
-  // The user fixes a missing or turned-off app on its page. Every other reason is
-  // a bad draw or a failed load, which the agent can redraw or explain.
-  const appMissing = reason === 'not-installed' || reason === 'app-off'
+  // The user fixes a missing, turned-off or unapproved app on its page. Every other
+  // reason is a bad draw or a failed load, which the agent can redraw or explain.
+  const appMissing = reason === 'not-installed' || reason === 'app-off' || reason === 'not-approved'
+  const retry = onRetry
+    ? <button type="button" onClick={onRetry} data-testid="app-widget-retry">{i18nT('components.appWidget.retry')}</button>
+    : undefined
   return (
     <section className="my-2 rounded-lg border border-border bg-bg-elevated/40 px-3 py-2" role="note" data-testid="app-widget-fallback" data-reason={reason}>
       <div className="text-[12px] font-semibold text-muted truncate">{title}</div>
       {appMissing
         ? <p className="mt-1 text-[12px] text-text-strong">{why}</p>
         // The rest of the chat works and the payload stays below, so the loss is partial.
-        : <ErrorNotice impact="partial" className="mt-1" message={why} askAgent testId="app-widget-error" />}
+        : <ErrorNotice impact="partial" className="mt-1" message={why} actions={retry} askAgent testId="app-widget-error" />}
       {/* The labels say the link opens the app's page; nothing is installed or turned on from here. */}
       {reason === 'not-installed' && <AppPageLink appName={appName} label={i18nT('components.appWidget.open_to_install', { app })} />}
       {reason === 'app-off' && <AppPageLink appName={appName} label={i18nT('components.appWidget.open_to_turn_on', { app })} />}
+      {reason === 'not-approved' && <AppPageLink appName={appName} label={i18nT('components.appWidget.open_to_approve', { app })} />}
       <details className="mt-1 text-[12px]">
         <summary className="cursor-pointer text-muted">{i18nT('components.appWidget.show_data')}</summary>
         <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded bg-bg px-2 py-1 font-mono text-[11px] text-text-strong">{body.trim()}</pre>

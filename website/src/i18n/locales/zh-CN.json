@@ -11351,9 +11351,10 @@
     "appWidget": {
       "frame_label": "{{title}}，来自 {{app}}",
       "from_app": "来自 {{app}}",
-      "reason_bad_use": "此小组件指定了“{{use}}”，但这不是应用小组件名称。",
+      "reason_bad_use": "智能体写错了此小组件的名称，因此无法显示。",
       "reason_not_installed": "此小组件需要 {{app}} 应用，但该应用未安装。",
       "reason_app_off": "此小组件需要 {{app}} 应用，但该应用已关闭。",
+      "reason_not_approved": "你尚未批准 {{app}} 应用的此小组件。",
       "reason_no_widget": "{{app}} 应用没有名为“{{widget}}”的小组件。",
       "reason_too_large": "此小组件的数据太大，无法显示。",
       "reason_not_object": "此小组件的数据无效，因此无法显示。",
@@ -11361,7 +11362,9 @@
       "reason_failed": "{{app}} 应用无法显示此小组件。",
       "open_to_install": "前往 {{app}} 页面进行安装",
       "open_to_turn_on": "前往 {{app}} 页面以开启",
-      "show_data": "显示原始数据"
+      "open_to_approve": "前往 {{app}} 页面以批准",
+      "show_data": "显示原始数据",
+      "retry": "重试"
     },
     "messageActions": {
       "popover_label": "{{app}}：{{title}}",
@@ -12281,6 +12284,7 @@
         "installed_needs_newer_host": "已安装的 {{name}} 需要更新的 {{productName}}。请更新 {{productName}}；你的数据不受影响。"
       },
       "grants_reconsent_composer_actions": "输入框按钮：允许应用在输入框的 + 菜单中添加这些按钮。点击后会把应用的文字插入你的草稿；应用看不到草稿，也不能发送。",
+      "grants_reconsent_widgets": "聊天小组件：允许应用在聊天回答中显示这些小组件。每个小组件会收到智能体为它写的数据，其中可能包含对话中的文字，应用可以把这些数据发送到其他网站。",
       "grants_reconsent_selection_actions": "选中文字操作：允许应用的条目拿到你在聊天回复中选中的文字，并提供结果供复制或打开。",
       "browser_sites_list_title": "浏览网站",
       "browser_sites_list_hint": "这个应用自带的智能体可以浏览的页面。移除的网站在智能体下一步时失效。",

@@ -11,7 +11,7 @@
       {
         "id": "issue-card",
         "title": "Issue card",
-        "description": "One GitHub issue: number, title, state, labels and url.",
+        "description": "One GitHub issue: number, title, state and labels.",
         "entry": "widgets/issue-card.mjs"
       }
     ]

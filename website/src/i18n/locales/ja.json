@@ -11351,9 +11351,10 @@
     "appWidget": {
       "frame_label": "{{title}}（{{app}} より）",
       "from_app": "{{app}} から",
-      "reason_bad_use": "このウィジェットは「{{use}}」を指定していますが、これはアプリのウィジェット名ではありません。",
+      "reason_bad_use": "エージェントがこのウィジェットの名前を誤って指定したため、表示できません。",
       "reason_not_installed": "このウィジェットには {{app}} アプリが必要ですが、インストールされていません。",
       "reason_app_off": "このウィジェットには {{app}} アプリが必要ですが、オフになっています。",
+      "reason_not_approved": "{{app}} アプリのこのウィジェットはまだ承認されていません。",
       "reason_no_widget": "{{app}} アプリには「{{widget}}」という名前のウィジェットがありません。",
       "reason_too_large": "このウィジェットのデータは大きすぎて表示できません。",
       "reason_not_object": "このウィジェットのデータが無効なため、表示できません。",
@@ -11361,7 +11362,9 @@
       "reason_failed": "{{app}} アプリはこのウィジェットを表示できませんでした。",
       "open_to_install": "{{app}} のページに移動してインストール",
       "open_to_turn_on": "{{app}} のページに移動してオンにする",
-      "show_data": "生データを表示"
+      "open_to_approve": "{{app}} のページに移動して承認する",
+      "show_data": "生データを表示",
+      "retry": "再試行"
     },
     "messageActions": {
       "popover_label": "{{app}}：{{title}}",
@@ -12281,6 +12284,7 @@
         "installed_needs_newer_host": "インストール済みの {{name}} には新しい {{productName}} が必要です。{{productName}} を更新してください。データは変更されていません。"
       },
       "grants_reconsent_composer_actions": "入力欄ボタン：入力欄の + メニューにこれらのボタンを追加できます。クリックするとアプリのテキストが下書きに挿入されます。アプリは下書きを見ることも送信することもできません。",
+      "grants_reconsent_widgets": "チャットウィジェット：チャットの回答にこれらのウィジェットを表示できます。各ウィジェットはエージェントが書いたデータを受け取ります。このデータには会話のテキストが含まれることがあり、アプリはそのデータを他のサイトに送信できます。",
       "grants_reconsent_selection_actions": "選択テキストの操作: チャットの返信で選択したテキストがアプリの項目に渡され、コピーまたは開くための結果を返せます。",
       "browser_sites_list_title": "閲覧サイト",
       "browser_sites_list_hint": "このアプリ自身のエージェントが閲覧できるページです。削除したサイトはエージェントの次の操作から無効になります。",
