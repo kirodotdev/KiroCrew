@@ -561,6 +561,12 @@ def setup_weixin_routes(app: web.Application) -> None:
 
 async def weixin_config_get(request: web.Request) -> web.Response:
     """GET /api/weixin/config — status + policy. Never returns the credential."""
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "weixin.config.read")
+    if owner_denied is not None:
+        return owner_denied
 
     def _load() -> tuple[Any, bool]:
         cfg = KiroCrewConfig.load()

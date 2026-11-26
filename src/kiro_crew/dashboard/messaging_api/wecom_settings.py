@@ -54,6 +54,12 @@ def _is_valid_wecom_userid(v: str) -> bool:
 
 async def api_wecom_config_get(request: web.Request) -> web.Response:
     """GET /api/wecom/config — read WeCom config + masked credential status."""
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "wecom.config.read")
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_WECOM_BOT_ID,
         CRED_WECOM_SECRET,
