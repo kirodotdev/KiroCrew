@@ -52,7 +52,9 @@ export const SWITCH_INLINE_MIN = 512
 const clampRail = (width: number) => Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(width)))
 const SELECT_ALL_LIMIT = 10000
 
-export default function MemoryList({ jump, store, botName, privateMemory, focusKey, focusLessons = false, selecting, onSelectingChange, onDirtyChange, onRecovery, emptyActions, storeName }: {
+export default function MemoryList({ jump, store, botName, privateMemory, focusKey, focusLessons = false, selecting, onSelectingChange, onDirtyChange, onRecovery, onSaveAsLesson, emptyActions, storeName }: {
+  /** Copy an experience into a new lesson, which never fades: the global page only. */
+  onSaveAsLesson?: (rule: string) => void
   store: string; privateMemory: boolean
   /** The bot this store belongs to, named in the (?) tips; none on the global page. */
   botName?: string
@@ -155,6 +157,8 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
   // A write between two page reads can shift a row onto the next page too; it is shown once.
   const rows = useMemo(() => searching || records.error ? [] : firstOfEach((pages || []).flatMap(page => page.entries), recordIdentity), [searching, records.error, pages])
   const facets = counts.data?.facets
+  // Only a store whose recall fades experiences sends this.
+  const storeDecay = counts.data?.decay
   const total = pages?.[0]?.total || 0
   const weaker = meaning && !weak ? pages?.[pages.length - 1]?.hidden || 0 : 0
   // A new search or list shows only the strong matches again.
@@ -227,11 +231,13 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
   const meaningUnavailable = (records.error as { status?: number } | null)?.status === 409
   const narrowed = !!view.q || view.kind !== 'all' || activeFilterCount(view.filters) > 0 || !!view.range
   const filterCount = activeFilterCount(filtersForKind(view.filters, view.kind))
-  const filterPanel = <FilterPanel bot={botName} view={view} facets={facets} onToggle={onToggleFilter} onRange={onRange} />
+  const filterPanel = <FilterPanel bot={botName} view={view} facets={facets} decay={storeDecay} onToggle={onToggleFilter} onRange={onRange} />
 
   // Under a score sort, rows with no score come last, newest first; a divider marks where.
-  const scoreSort = sort === 'confidence' || sort === 'importance'
-  const firstUnscored = scoreSort ? rows.findIndex(row => typeof row.importance !== 'number' || (sort === 'confidence') === (row.kind === 'episode')) : -1
+  const scoreSort = sort === 'confidence' || sort === 'importance' || sort === 'strength'
+  const firstUnscored = !scoreSort ? -1 : sort === 'strength' ? rows.findIndex(row => !row.decay)
+    : rows.findIndex(row => typeof row.importance !== 'number' || (sort === 'confidence') === (row.kind === 'episode'))
+  const DIVIDER_KEYS = { confidence: 'memoryPage.divider_no_confidence', importance: 'memoryPage.divider_no_importance', strength: 'memoryPage.divider_no_strength' } as const
   const toolbar = <div className="space-y-3">
     {selecting ? <div className="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-3 py-2" role="toolbar" aria-label={t('memoryPage.selection_toolbar')}>
       {rows.length > 0 && <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[13px]"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_page')} checked={rows.every(isSelected)} disabled={!!all && all.exclude.size >= MANUAL_LIMIT && rows.every(isSelected)} onChange={() => picked.choosePage(rows)} />{t('memoryEditing.select_page')}</label>}
@@ -275,7 +281,7 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
       {(sheet || !railOpen) && <Btn aria-label={t('memoryPage.filters')} aria-expanded={sheet ? undefined : false} className="relative min-h-11 min-w-11 shrink-0 justify-center sm:min-h-10 sm:min-w-10" onClick={() => sheet ? setFiltersOpen(true) : setRailOpen(true)}><SlidersHorizontal className="lucide-inline" aria-hidden="true" />{filterCount > 0 && <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 text-[11px] text-accent-fg">{fmtNumber(filterCount)}</span>}</Btn>}
       {/* Picking another order leaves the search by meaning, which only ranks by match. */}
       <DateRangeButton range={view.range} onChange={setRange} />
-      <SortControl view={view} onChange={(next: MemoryRecordSort, order) => change({ sort: next, order, ...(meaning && next !== 'match' ? { mode: 'words' as const } : {}) })} />
+      <SortControl view={view} decays={!!storeDecay} onChange={(next: MemoryRecordSort, order) => change({ sort: next, order, ...(meaning && next !== 'match' ? { mode: 'words' as const } : {}) })} />
       {!phone && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={() => onSelectingChange(true)}><ListChecks className="lucide-inline" />{t('memoryPage.select')}</Btn>}
     </div></div>}
     {!selecting && <SavedTopics topics={topics.topics} query={view.q} canSave={meaning} onRun={runTopic} onRemove={topics.remove} onSave={() => topics.save(view.q)} />}
@@ -299,7 +305,7 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
     </Card>}
     {(rows.length > 0 || weaker > 0) && <ul className="m-0 list-none overflow-hidden rounded-2xl border border-border bg-card p-0" aria-live="polite" aria-label={t('memoryV2.tab_memories')}>
       {rows.map((row, index) => [
-        index === firstUnscored && index > 0 && view.kind === 'all' ? <li key="divider" className="flex h-9 items-center border-b border-border bg-bg-hover px-4 text-[12px] text-muted">{t(sort === 'confidence' ? 'memoryPage.divider_no_confidence' : 'memoryPage.divider_no_importance')}</li> : null,
+        index === firstUnscored && index > 0 && view.kind === 'all' ? <li key="divider" className="flex h-9 items-center border-b border-border bg-bg-hover px-4 text-[12px] text-muted">{t(DIVIDER_KEYS[sort as keyof typeof DIVIDER_KEYS])}</li> : null,
         <RecordRow key={recordIdentity(row)} row={row} sort={sort} meaning={meaning} selecting={selecting} selected={isSelected(row)} chip={locked || selecting ? undefined : { filters: view.filters, onToggle: onToggleFilter }}
           selectDisabled={picked.lockedRow(row)}
           open={detailKey === recordIdentity(row)} focus={row === focused} saved={row === focused && !jumpFocus} focusRef={row === focused ? focusRow : undefined}
@@ -318,7 +324,8 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
     {!searching && !records.error && total > PAGE_SIZE && <p className="text-[12px] tabular-nums text-muted">{t('memoryEditing.page_range', { from: fmtNumber(1), to: fmtNumber(rows.length), total: fmtNumber(total) })}</p>}
   </div>
 
-  const detailPanel = detail && <MemoryRecordDetail store={store} row={detail} phone={phone} chip={locked || selecting ? undefined : { filters: view.filters, onToggle: onToggleFilter }} onClose={() => setDetailKey(null)}
+  const detailPanel = detail && <MemoryRecordDetail store={store} row={detail} phone={phone} fadeLine={storeDecay?.fade_line}
+    onSaveAsLesson={onSaveAsLesson ? () => { setDetailKey(null); onSaveAsLesson(detail.text) } : undefined} chip={locked || selecting ? undefined : { filters: view.filters, onToggle: onToggleFilter }} onClose={() => setDetailKey(null)}
     onEdit={() => { setDetailKey(null); edit.begin({ type: 'set', row: detail }) }} onForget={() => { setDetailKey(null); edit.begin({ type: 'forget', row: detail }) }}
     onRestore={revisionId => { setDetailKey(null); edit.restore(detail, revisionId) }} onKeepCurrent={() => { setDetailKey(null); edit.keepCurrent(detail) }}
     onProposal={(proposal, operation) => { setDetailKey(null); edit.takeProposal(detail, proposal, operation) }} />
@@ -327,7 +334,7 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
     {stacked ? <div className="space-y-4">{toolbar}{list}{detailPanel}</div> : <div className="flex gap-6">
       {/* The rail stays in view while the list scrolls, as tall as the window, and scrolls on its own. */}
       {!compact && <FilterRail open={railOpen} width={railWidth} onResize={resizeRail}>
-        <FilterPanel bot={botName} capped view={view} facets={facets} onToggle={onToggleFilter} onRange={onRange}
+        <FilterPanel bot={botName} capped view={view} facets={facets} decay={storeDecay} onToggle={onToggleFilter} onRange={onRange}
           trailing={<IconButton aria-label={t('memoryPage.hide_filters')} title={t('memoryPage.hide_filters')} aria-expanded className="pi-morph -mr-2.5 flex h-9 w-9 shrink-0 items-center justify-center text-muted" onClick={() => setRailOpen(false)}><PanelLeftLight size={16} aria-hidden="true" /></IconButton>} />
       </FilterRail>}
       <div className="min-w-0 flex-1 space-y-4">{toolbar}{list}</div>
