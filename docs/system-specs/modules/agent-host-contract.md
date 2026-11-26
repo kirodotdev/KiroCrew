@@ -940,7 +940,14 @@ edit.
   names, when `extra_mcp_servers()` supplies it, on kiro-cli and KAS (the mirrors in
   `ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY` get none, as they get no app server),
   without its `autoApprove`, loader or not,
-  under the same wildcard and conductor rules. It is not counted in
+  under the same wildcard and conductor rules, except on KAS: there a wildcard
+  does not keep it out. With a non-empty `allowedTools` list it mounts with an
+  `ask` rule for `<server>/*` appended to the spec's `permissions`, unless the
+  list names the server and no wildcard reaches it after trimming entries.
+  KAS picks the most restrictive rule, so a wildcard's `allow` cannot beat the
+  `ask`. A tool-less agent gets it alone, and a
+  `permissions` block that would not carry the rule keeps it out
+  (`with_default_crew_servers(edition_ask_rules=True)`). It is not counted in
   `crew_added_servers`, so on KAS its tools follow the author's own servers' rule.
   A read-only check that judges a spec as its session runs it judges
   `default_crew_servers.session_spec_on(backend, agent, spec)`, as the doctor's

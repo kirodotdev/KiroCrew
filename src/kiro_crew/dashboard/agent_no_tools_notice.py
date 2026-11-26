@@ -69,12 +69,9 @@ def session_spec_lists_tools(agent: str, spec: dict[str, Any]) -> bool:
     Shared by the chat notice and the editor's detail read. Blocking file I/O;
     the projection never writes the added servers or grants into the agent file.
     """
-    from kiro_crew.agent_sdk import spec_with_default_crew_servers
-    from kiro_crew.template_mcp_additions import merge_at_spawn
+    from kiro_crew.agent_sdk import kas_session_spec
 
-    # The tools projection order used by acp.harness.kas.resolve_projected_spec.
-    projected = spec_with_default_crew_servers(agent, merge_at_spawn(agent, spec))
-    return spec_lists_tools(projected)
+    return spec_lists_tools(kas_session_spec(agent, spec))
 
 
 def editable_agent_without_tools(agent: str) -> bool:
