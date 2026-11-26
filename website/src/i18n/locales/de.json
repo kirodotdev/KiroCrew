@@ -8323,6 +8323,7 @@
     "markdownPanel": {
       "open_in_remote_editor": "In {{editor}} öffnen",
       "partial_copy_cannot_save": "Nur ein Teil dieser Datei wurde geladen ({{reason}}), daher kann sie nicht über die Datei auf dem Datenträger gespeichert werden.",
+      "partial_copy_preview": "Nur ein Teil dieser Datei wurde geladen ({{reason}}), daher zeigt die Vorschau nur diesen Teil. Lade die Datei über das ⋯-Menü herunter, um sie vollständig zu erhalten.",
       "add_to_artifact_library": "Zur Artefaktbibliothek hinzufügen",
       "add_to_artifacts": "Zu Artefakten hinzufügen",
       "add_to_knowledge": "Zum Wissen hinzufügen",

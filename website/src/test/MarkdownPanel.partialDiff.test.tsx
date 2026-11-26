@@ -156,6 +156,27 @@ describe('MarkdownPanel diff of a partial (capped) read', () => {
     expect(removedCount()).toBe('-1')
   })
 
+  it('shows no partial-preview notice while the patch view replaces the preview', async () => {
+    render(<Panel />)
+    await screen.findByTestId('pierre-patch')
+    await waitFor(() => expect(removedCount()).toBe('-1'))
+    expect(screen.queryByTestId('markdown-panel-partial-notice')).toBeNull()
+  })
+
+  it('shows no partial-preview notice while the zero-diff notice replaces the preview', async () => {
+    vi.mocked(api.fileDiff).mockResolvedValue(clean)
+    render(<Panel />)
+    await screen.findByText('No changes in this file')
+    expect(screen.queryByTestId('markdown-panel-partial-notice')).toBeNull()
+  })
+
+  it('shows no partial-preview notice while the diff error replaces the preview', async () => {
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: '', original: '', status: 'error' as const })
+    render(<Panel />)
+    await screen.findByTestId('markdown-panel-diff-compute-error')
+    expect(screen.queryByTestId('markdown-panel-partial-notice')).toBeNull()
+  })
+
   it("leaves the editor's patch view through the diff toggle, back to the editor", async () => {
     render(<Panel readOnly={false} />)
     await screen.findByTestId('pierre-patch')

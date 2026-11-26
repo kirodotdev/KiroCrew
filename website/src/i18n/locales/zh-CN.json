@@ -8112,6 +8112,7 @@
     "markdownPanel": {
       "open_in_remote_editor": "在 {{editor}} 中打开",
       "partial_copy_cannot_save": "此文件只加载了一部分（{{reason}}），因此无法保存覆盖磁盘上的文件。",
+      "partial_copy_preview": "此文件只加载了一部分（{{reason}}），因此预览只显示这一部分。要获取完整文件，请从 ⋯ 菜单下载。",
       "add_to_artifact_library": "添加到产物库",
       "add_to_artifacts": "添加到产物",
       "add_to_knowledge": "添加到知识库",

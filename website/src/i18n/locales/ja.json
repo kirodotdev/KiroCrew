@@ -8112,6 +8112,7 @@
     "markdownPanel": {
       "open_in_remote_editor": "{{editor}} で開く",
       "partial_copy_cannot_save": "このファイルは一部しか読み込まれていません（{{reason}}）。そのため、ディスク上のファイルに上書き保存できません。",
+      "partial_copy_preview": "このファイルは一部しか読み込まれていません（{{reason}}）。そのため、プレビューにはその部分だけが表示されます。ファイル全体は ⋯ メニューからダウンロードしてください。",
       "add_to_artifact_library": "アーティファクトライブラリに追加",
       "add_to_artifacts": "アーティファクトに追加",
       "add_to_knowledge": "ナレッジに追加",
