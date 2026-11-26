@@ -176,6 +176,19 @@ describe('SchedulePage batch actions', () => {
     expect(api.runCron).toHaveBeenCalledWith('a')
   })
 
+  it('returns focus to Actions after the delete confirm when a click alone opened the menu', async () => {
+    await renderChecked(['Alpha job'])
+    const trigger = screen.getByLabelText('Actions for the checked jobs')
+    // No pointer or key event: `detail: 0` is the click a screen reader sends.
+    fireEvent.click(trigger, { detail: 0 })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^Delete 1 selected$/ }))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+  })
+
   it('lists at most five skipped jobs in the Run now confirm, then the rest as a count', async () => {
     const { api } = await import('../api/client')
     const paused = Array.from({ length: 7 }, (_, i) => mkJob({ id: `p${i}`, name: `Paused ${i}`, enabled: false }))
