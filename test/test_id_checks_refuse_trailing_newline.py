@@ -16,7 +16,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew import history_threads
+from kiro_crew import history_threads, mcp_cron
 from kiro_crew.acp import kas_subagent_targets
 from kiro_crew.cli_setup import _verify_slack_owner_id
 from kiro_crew.dashboard import chat_tags_store, chat_threads
@@ -60,6 +60,14 @@ def test_channel_id(mcp_core):
     mcp_core._post.assert_not_called()
     mcp_messaging.delete_message("delete_message", {**args, "channel": "C0123ABCD"})
     mcp_core._post.assert_called_once()
+
+
+def test_channel_id_as_the_default_cron_channel(monkeypatch):
+    monkeypatch.setattr(mcp_cron, "_caller_channel_id", lambda: "")
+    monkeypatch.setenv("KIROCREW_CHANNEL_ID", "C0123ABCD")
+    assert mcp_cron._default_cron_channel() == "C0123ABCD"
+    monkeypatch.setenv("KIROCREW_CHANNEL_ID", "C0123ABCD\n")
+    assert mcp_cron._default_cron_channel() is None
 
 
 def test_message_timestamp(mcp_core):
