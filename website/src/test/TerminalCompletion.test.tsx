@@ -49,6 +49,12 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
   const textarea = document.createElement('textarea')
   element.appendChild(textarea)
   let opened = opts.openTerminal !== false
+  const dataCbs: ((data: string) => void)[] = []
+  /** What was typed into xterm through `term.input`. */
+  const inputs: string[] = []
+  /** Keydowns dispatched on the textarea; xterm hands each one to the key handler. */
+  const textareaKeys: [string, number][] = []
+  textarea.addEventListener('keydown', (e) => { textareaKeys.push([e.key, e.keyCode]); keyHandler(e) })
 
   const term = {
     cols: 100,
@@ -69,6 +75,11 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
       return { dispose: () => { renderCbs.splice(renderCbs.indexOf(cb), 1) } }
     },
     attachCustomKeyEventHandler: (h: (e: KeyboardEvent) => boolean) => { keyHandler = h },
+    onData: (cb: (data: string) => void) => {
+      dataCbs.push(cb)
+      return { dispose: () => { dataCbs.splice(dataCbs.indexOf(cb), 1) } }
+    },
+    input: (data: string) => { inputs.push(data); dataCbs.forEach(cb => cb(data)) },
     hasSelection: () => hasSel,
     clearSelection: () => { hasSel = false },
   }
@@ -94,13 +105,22 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
     lineFeed: () => feedCbs.forEach(cb => cb()),
     /** Finish an IME composition on the terminal's textarea. */
     compositionEnd: () => textarea.dispatchEvent(new CompositionEvent('compositionend')),
+    /** Text the browser inserts into the textarea outside a composition. */
+    insertText: (data: string) =>
+      textarea.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data })),
+    /** xterm sending data to the shell. */
+    emit: (data: string) => dataCbs.forEach(cb => cb(data)),
+    inputs,
+    textareaKeys,
     /** Deliver a keydown the way xterm does. Events MUST be cancelable: the
      *  component reserves a key by cancelling the DOM event (returning false
      *  alone does not stop the browser default), so a non-cancelable event
      *  would make `defaultPrevented` silently untestable. */
-    key: (init: KeyboardEventInit) => {
+    key: (init: KeyboardEventInit, xtermCancels = false) => {
       const e = new KeyboardEvent('keydown', { cancelable: true, ...init })
       const handled = keyHandler(e)
+      // xterm cancels Enter, Tab and Escape (and a scroll key) after the handler, sent or not.
+      if (handled && xtermCancels) e.preventDefault()
       return { passedThrough: handled, prevented: e.defaultPrevented }
     },
     osc,
@@ -1001,6 +1021,51 @@ describe('TerminalCompletion', () => {
       h.key({ key: 'n', keyCode: 78 })
       h.key({ key: 'i', keyCode: 73, isComposing: true })
       expect(dropped).toEqual(['s1'])
+    })
+
+    // When Space ends the composition, xterm 5.5 keeps its dead-key state and sends nothing for
+    // the next Enter, Backspace or arrow; given the same key again, it sends it.
+    it('hands xterm the key again when nothing reached it after a dead-key composition', () => {
+      const h = makeTerm(PROMPT, PROMPT.length)
+      renderCompletion(h.term)
+      h.key({ key: 'Dead', code: 'KeyN' })
+      h.key({ key: ' ', code: 'Space', keyCode: 32, isComposing: true })
+      h.key({ key: 'b', code: 'KeyB', keyCode: 66 })
+      h.key({ key: 'PageUp', code: 'PageUp', keyCode: 33, shiftKey: true }, true)
+      // A key followed by another before its check runs is not sent after that one.
+      h.key({ key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 })
+      h.key({ key: 'Enter', code: 'Enter', keyCode: 13 }, true)
+      vi.advanceTimersByTime(1)
+      // Only the Enter, once: a printable key reaches xterm by its keypress, Shift+PageUp scrolls.
+      expect(h.textareaKeys).toEqual([['Enter', 13]])
+      // A key xterm sent something for ends it.
+      h.key({ key: 'Backspace', code: 'Backspace', keyCode: 8 })
+      h.emit('\x7f')
+      vi.advanceTimersByTime(1)
+      h.key({ key: 'Enter', code: 'Enter', keyCode: 13 }, true)
+      vi.advanceTimersByTime(1)
+      expect(h.textareaKeys).toEqual([['Enter', 13]])
+    })
+
+    // Without an input method, Firefox commits the character as an `insertText` after
+    // `compositionend`, and xterm's own read on `compositionend` can find nothing yet.
+    it('forwards a dead key\'s character that lands after the composition ends', () => {
+      const h = makeTerm(PROMPT, PROMPT.length)
+      renderCompletion(h.term)
+      h.key({ key: 'Dead', code: 'KeyN' })
+      h.key({ key: 'a', code: 'KeyA', keyCode: 65, isComposing: true })
+      h.compositionEnd()
+      h.insertText('\u00e3')
+      vi.advanceTimersByTime(1)
+      expect(h.inputs).toEqual(['\u00e3'])
+      // When xterm's read found it, it is not sent again.
+      h.key({ key: 'Dead', code: 'KeyN' })
+      h.key({ key: ' ', code: 'Space', keyCode: 32, isComposing: true })
+      h.compositionEnd()
+      h.emit('~')
+      h.insertText('~')
+      vi.advanceTimersByTime(1)
+      expect(h.inputs).toEqual(['\u00e3'])
     })
 
     it('passes through the Enter that ends composition', async () => {
