@@ -179,7 +179,7 @@ def socket_room_hint(path: Path) -> str:
     (that needs the sandbox decision in the module docstring), so this only
     names the cause and the documented workaround.
     """
-    length = len(str(path).encode("utf-8"))
+    length = len(os.fsencode(path))
     if length + _SOCKET_SUFFIX_BYTES <= _SUN_PATH_BYTES:
         return ""
     return (

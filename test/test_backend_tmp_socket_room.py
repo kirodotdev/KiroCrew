@@ -25,11 +25,6 @@ _LONG_HOME = "/" + "h" * 70
 _SHORT_HOME = "/" + "h" * 26
 
 
-@pytest.fixture(autouse=True)
-def _fresh_warned(monkeypatch):
-    monkeypatch.setattr(bt, "_warned_roots", set(), raising=False)
-
-
 @pytest.mark.parametrize(
     ("home", "suffix", "warns"),
     [
@@ -49,6 +44,14 @@ def test_hint_appears_only_past_the_socket_budget(home: str, suffix: str, warns:
     if warns:
         assert f"{len(str(path))} bytes" in hint
         assert "TEMP, TMP and TMPDIR" in hint
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX filesystem bytes")
+def test_a_non_utf8_data_home_is_measured_not_raised() -> None:
+    # A POSIX name byte that is not UTF-8 decodes to a surrogate escape.
+    path = Path(os.fsdecode(b"/" + b"\xff" * 70 + b"/run/t/0123abcd"))
+
+    assert "86 bytes" in bt.socket_room_hint(path)
 
 
 def test_a_long_data_home_warns_once_with_the_length(caplog) -> None:

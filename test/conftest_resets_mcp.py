@@ -102,3 +102,22 @@ def _fresh_kas_env_left_out_marks():
     marks = getattr(launch, "_LEFT_OUT_LOGGED", None)
     if marks is not None:
         marks.clear()
+
+
+@per_test_guard
+def _fresh_backend_tmp_socket_room_warnings():
+    """Start and end each test with no managed temp root already warned about.
+
+    ``mcp_gateway.backend_tmp._warned_roots`` holds the roots whose low socket room
+    warning this process logged, so a root an earlier test on the same worker warned
+    about would silence this test's warning. Only when already imported.
+    """
+    module = sys.modules.get("kiro_crew.mcp_gateway.backend_tmp")
+    warned = getattr(module, "_warned_roots", None)
+    if warned is not None:
+        warned.clear()
+    yield
+    module = sys.modules.get("kiro_crew.mcp_gateway.backend_tmp")
+    warned = getattr(module, "_warned_roots", None)
+    if warned is not None:
+        warned.clear()
