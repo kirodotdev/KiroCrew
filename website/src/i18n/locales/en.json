@@ -6754,6 +6754,8 @@
       "menu_send_backward": "Send backward",
       "menu_send_to_back": "Send to back",
       "menu_unlock_all": "Unlock all objects",
+      "set_default_style": "Set as default style",
+      "reset_default_style": "Reset default style",
       "past_version": "Past version: read only",
       "linked_file": "Linked file: read only",
       "load_failed": "The canvas couldn't load",

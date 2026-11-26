@@ -12172,6 +12172,8 @@
       "menu_send_backward": "Reculer",
       "menu_send_to_back": "Mettre à l’arrière-plan",
       "menu_unlock_all": "Déverrouiller tous les objets",
+      "set_default_style": "Définir comme style par défaut",
+      "reset_default_style": "Réinitialiser le style par défaut",
       "past_version": "Version antérieure : lecture seule",
       "linked_file": "Fichier lié : lecture seule",
       "load_failed": "Impossible de charger le canevas",

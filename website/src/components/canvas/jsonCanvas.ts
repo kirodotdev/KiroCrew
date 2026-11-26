@@ -21,6 +21,7 @@
  * Array order is stacking order, back to front, as the spec says.
  */
 
+import { readDefaults } from './canvasDefaults'
 import { toHex } from './colorMath'
 import {
   CANVAS_KIND, CANVAS_SCHEMA, DEFAULT_SIZE, SWATCH_STYLE, SWATCHES, alignOf, fontSizeOf, lookOf, newId, textStyleOf, toSwatch,
@@ -30,6 +31,8 @@ import {
 /** The top-level field that marks a document as one Kiro wrote, and its version. */
 export const FORMAT_MARK = 'kirocanvas'
 export const FORMAT_VERSION = 1
+/** The top-level field holding the canvas's default styles (`canvasDefaults.ts`). */
+export const DEFAULTS_FIELD = 'defaultStyles'
 
 const KINDS = new Set<ShapeKind>(['sticky', 'rect', 'ellipse', 'diamond', 'text', 'section'])
 const SIDES = new Set<ConnectorSide>(['top', 'right', 'bottom', 'left'])
@@ -177,8 +180,10 @@ export function fromJsonCanvas(data: unknown): Canvas | null {
   }
   const { nodes: _nodes, edges: _edges, ...top } = data
   void _nodes; void _edges
+  const defaults = readDefaults(data[DEFAULTS_FIELD])
   return {
     kind: CANVAS_KIND, schema: CANVAS_SCHEMA, shapes, connectors,
+    ...(defaults ? { defaults } : {}),
     source: freeze({ nodes, edges, nodeOrder, edgeOrder, top }),
   }
 }
@@ -287,7 +292,12 @@ function ordered<T extends { id: string }>(
 /** Untouched values come from the file; only model changes replace or remove keys. */
 export function toJsonCanvas(c: Canvas): Obj {
   const source = c.source
-  if (!source) return { [FORMAT_MARK]: FORMAT_VERSION, nodes: c.shapes.map(writeShape), edges: c.connectors.map(writeConnector) }
+  if (!source) {
+    return {
+      [FORMAT_MARK]: FORMAT_VERSION, ...(c.defaults ? { [DEFAULTS_FIELD]: c.defaults } : {}),
+      nodes: c.shapes.map(writeShape), edges: c.connectors.map(writeConnector),
+    }
+  }
   const nodes = ordered(source.nodes, source.nodeOrder, c.shapes, drawable,
     (s, raw) => preserve(raw, writeShape(s), o => writeShape(readShape(o, s.id))))
   const nodeIds = new Set(nodes.map(n => n.id))
@@ -297,5 +307,13 @@ export function toJsonCanvas(c: Canvas): Obj {
   const edges = ordered(source.edges, source.edgeOrder,
     c.connectors.filter(e => nodeIds.has(e.from) && nodeIds.has(e.to)), wasDrawable,
     (e, raw) => preserve(raw, writeConnector(e), o => writeConnector(readConnector(o, e.id)), !!raw && arrowsOf(raw.fromEnd, raw.toEnd).swap), survives)
-  return { ...source.top, nodes, edges }
+  return { ...withDefaults(source.top, c.defaults), nodes, edges }
+}
+
+/** The file's top-level fields, with its defaults replaced only when they changed. */
+function withDefaults(top: Obj, defaults: Canvas['defaults']): Obj {
+  if (JSON.stringify(readDefaults(top[DEFAULTS_FIELD])) === JSON.stringify(defaults)) return top
+  const { [DEFAULTS_FIELD]: _old, ...rest } = top
+  void _old
+  return defaults ? { ...rest, [DEFAULTS_FIELD]: defaults } : rest
 }

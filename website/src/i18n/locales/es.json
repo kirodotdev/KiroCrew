@@ -12172,6 +12172,8 @@
       "menu_send_backward": "Enviar atrás",
       "menu_send_to_back": "Enviar al fondo",
       "menu_unlock_all": "Desbloquear todos los objetos",
+      "set_default_style": "Establecer como estilo predeterminado",
+      "reset_default_style": "Restablecer el estilo predeterminado",
       "past_version": "Versión anterior: solo lectura",
       "linked_file": "Archivo vinculado: solo lectura",
       "load_failed": "No se pudo cargar el lienzo",

@@ -23,10 +23,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { InstantTip, useInstantTip } from '../InstantTip'
 import {
-  CONN_INK, DEFAULT_SIZE, alignOf, defaultAlign, defaultFontSize, fontSizeOf, DEFAULT_TEXT_SIZE, MAX_TEXT_SIZE, MIN_TEXT_SIZE, SECTION_TITLE_H, SWATCH_STYLE, boundsOf, labelScale, newId, pointBounds, sectionMembers, shapeAt, wheelPanStep, wheelZoomFactor, zOrdered,
+  CONN_INK, DEFAULT_SIZE, alignOf, defaultAlign, defaultFontSize, fontSizeOf, DEFAULT_TEXT_SIZE, MAX_TEXT_SIZE, MIN_TEXT_SIZE, SECTION_TITLE_H, SWATCH_STYLE, boundsOf, textBoxFit, labelScale, newId, pointBounds, sectionMembers, shapeAt, wheelPanStep, wheelZoomFactor, zOrdered,
   type Canvas, type Connector, type Pt, type Shape, type ShapeKind, type Swatch, type TextAlign,
 } from './canvasModel'
 import CanvasContextMenu, { type MenuAction } from './CanvasContextMenu'
+import { newShapeStyle, sharedGroup, sharedStyle, withDefault, type StyleGroup } from './canvasDefaults'
 import {
   ACTIVE_STICKER, FLOAT_SHADOW, NOTE_DROP, TAPE, TAPE_SHADOW, noteClip, noteFold, LABEL_ORIGIN, SECTION_RIM, STICKER_DROP, STICKER_EDGE, TAG_SHADOW, solidBorder, stickerShadow,
 } from './canvasPaint'
@@ -42,6 +43,22 @@ import {
 } from './connectorGeometry'
 
 type Tool = 'select' | 'hand' | 'connector' | ShapeKind
+
+type Box = { x: number; y: number; w: number; h: number }
+
+/** *box* grown, where needed, so a text box shows one line of its text size unclipped. */
+function fitBox(kind: ShapeKind, fontSize: number | undefined, box: Box): Box {
+  if (kind !== 'text' || fontSize === undefined) return box
+  const fit = textBoxFit(fontSize)
+  return { ...box, w: Math.max(box.w, fit.w), h: Math.max(box.h, fit.h) }
+}
+
+/** A new shape in *box*, styled by *canvas*'s default for its group. */
+function newShape(canvas: Canvas, kind: ShapeKind, box: Box): Omit<Shape, 'id'> {
+  const style = newShapeStyle(canvas.defaults, kind)
+  return { kind, ...fitBox(kind, style.fontSize, box), text: '', ...style }
+}
+
 interface View { x: number; y: number; zoom: number }
 /** A resize handle: a corner moves two sides, an edge one. */
 type Corner = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 'e' | 's' | 'w'
@@ -334,8 +351,6 @@ export default function CanvasEditor({ canvas: stored, onChange: save, readOnly 
 
   // ---- creating and editing ------------------------------------------------------
 
-  const defaultColor = (kind: ShapeKind): Swatch => (kind === 'sticky' ? 'yellow' : kind === 'text' || kind === 'section' ? 'smoke' : 'sky')
-
   // A new shape is selected and ready to type into, as in FigJam.
   const finishCreate = (id: string) => {
     setSelected(new Set([id]))
@@ -346,10 +361,7 @@ export default function CanvasEditor({ canvas: stored, onChange: save, readOnly 
 
   const create = (kind: ShapeKind, at: Pt) => {
     const size = DEFAULT_SIZE[kind]
-    const shape: Shape = {
-      id: newId(), kind, x: snap(at.x - size.w / 2, true), y: snap(at.y - size.h / 2, true), w: size.w, h: size.h,
-      text: '', color: defaultColor(kind),
-    }
+    const shape: Shape = { id: newId(), ...newShape(canvasRef.current, kind, { x: snap(at.x - size.w / 2, true), y: snap(at.y - size.h / 2, true), ...size }) }
     commit({ ...canvasRef.current, shapes: [...canvasRef.current.shapes, shape] })
     finishCreate(shape.id)
   }
@@ -443,6 +455,32 @@ export default function CanvasEditor({ canvas: stored, onChange: save, readOnly 
     if (!copies.length) return
     commit({ ...b, shapes: [...b.shapes, ...copies] })
     setSelected(new Set(copies.map(c => c.id)))
+  }
+
+  // ---- default styles ---------------------------------------------------------------
+
+  /** *b* with *group*'s default set to *shapes*' shared look, or reset when *shapes* is null. */
+  const withGroupDefault = (b: Canvas, group: StyleGroup, shapes: Shape[] | null): Canvas => {
+    const style = shapes ? sharedStyle(shapes)?.style ?? null : null
+    const { defaults: _old, ...rest } = b
+    void _old
+    const defaults = withDefault(b.defaults, group, style)
+    return defaults ? { ...rest, defaults } : rest
+  }
+
+  /** What *shapes* can do with their group's default; null when they share no group. */
+  const defaultActions = (shapes: Shape[]): { canSet: boolean; canReset: boolean; onSet: () => void; onReset: () => void } | null => {
+    const group = sharedGroup(shapes)
+    if (!group) return null
+    const b = canvasRef.current
+    const shared = sharedStyle(shapes)
+    const current = JSON.stringify(b.defaults?.[group] ?? {})
+    return {
+      canSet: !!shared && JSON.stringify(shared.style) !== current,
+      canReset: !!b.defaults?.[group],
+      onSet: () => { if (sharedStyle(shapes)) commit(withGroupDefault(canvasRef.current, group, shapes)) },
+      onReset: () => { if (canvasRef.current.defaults?.[group]) commit(withGroupDefault(canvasRef.current, group, null)) },
+    }
   }
 
   // Picking a swatch swaps a custom colour out.
@@ -690,11 +728,11 @@ export default function CanvasEditor({ canvas: stored, onChange: save, readOnly 
         const box = dragBox(drag.shape, drag.start, world, e.ctrlKey)
         if (!drag.id) {
           drag.id = newId()
-          const shape: Shape = { id: drag.id, kind: drag.shape, ...box, text: '', color: defaultColor(drag.shape) }
+          const shape: Shape = { id: drag.id, ...newShape(b, drag.shape, box) }
           onChange({ ...b, shapes: [...b.shapes, shape] })
           setSelected(new Set([drag.id]))
         } else {
-          onChange({ ...b, shapes: b.shapes.map(s => (s.id === drag.id ? { ...s, ...box } : s)) })
+          onChange({ ...b, shapes: b.shapes.map(s => (s.id === drag.id ? { ...s, ...fitBox(s.kind, s.fontSize, box) } : s)) })
         }
       }
     }
@@ -810,6 +848,12 @@ export default function CanvasEditor({ canvas: stored, onChange: save, readOnly 
       commit(pasted.canvas)
       setSelectedConn(null)
       setSelected(new Set(pasted.ids))
+      return
+    }
+    if (a === 'setDefault' || a === 'resetDefault') {
+      const acts = defaultActions(b.shapes.filter(s => set.has(s.id)))
+      if (a === 'setDefault' && acts?.canSet) acts.onSet()
+      if (a === 'resetDefault' && acts?.canReset) acts.onReset()
       return
     }
     if (a === 'unlockAll') { if (b.shapes.some(s => s.locked)) commit(unlockAll(b)); return }
@@ -1048,11 +1092,15 @@ export default function CanvasEditor({ canvas: stored, onChange: save, readOnly 
         </div>
       )}
 
-      {menu && (
+      {menu && (() => {
+        const menuDefaults = defaultActions(canvas.shapes.filter(s => menu.ids.includes(s.id) && !s.locked))
+        return (
         <CanvasContextMenu x={menu.x} y={menu.y} bounds={{ w: root.current?.clientWidth ?? 9999, h: root.current?.clientHeight ?? 9999 }}
           hasSelection={menu.ids.length > 0} canEdit={menu.ids.some(id => !canvas.shapes.find(s => s.id === id)?.locked)} canPaste={!!canvasClipboard} anyLocked={canvas.shapes.some(s => s.locked)}
+          canSetDefault={!!menuDefaults?.canSet} canResetDefault={!!menuDefaults?.canReset}
           onAction={a => runAction(a, menu.ids, menu.at)} onClose={() => { closeMenu(); root.current?.focus({ preventScroll: true }) }} />
-      )}
+        )
+      })()}
 
       {/* The dock scrolls within the canvas, including a narrow desktop split pane. */}
       {!readOnly && (

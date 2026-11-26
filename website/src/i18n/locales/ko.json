@@ -11626,6 +11626,8 @@
       "menu_send_backward": "뒤로 보내기",
       "menu_send_to_back": "맨 뒤로 보내기",
       "menu_unlock_all": "모든 개체 잠금 해제",
+      "set_default_style": "기본 스타일로 설정",
+      "reset_default_style": "기본 스타일 재설정",
       "past_version": "이전 버전: 읽기 전용",
       "linked_file": "연결된 파일: 읽기 전용",
       "load_failed": "캔버스를 불러오지 못했습니다",

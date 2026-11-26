@@ -11899,6 +11899,8 @@
       "menu_send_backward": "पीछे भेजो",
       "menu_send_to_back": "सबसे पीछे भेजो",
       "menu_unlock_all": "सभी ऑब्जेक्ट अनलॉक करो",
+      "set_default_style": "डिफ़ॉल्ट शैली के रूप में सेट करो",
+      "reset_default_style": "डिफ़ॉल्ट शैली रीसेट करो",
       "past_version": "पिछला संस्करण: केवल पढ़ने के लिए",
       "linked_file": "लिंक की गई फ़ाइल: केवल पढ़ने के लिए",
       "load_failed": "कैनवस लोड नहीं हो सका",

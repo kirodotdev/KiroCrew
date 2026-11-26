@@ -9,6 +9,7 @@
  * replace it with an empty canvas.
  */
 
+import type { CanvasDefaults } from './canvasDefaults'
 import { toHex } from './colorMath'
 import { fromJsonCanvas, toJsonCanvas } from './jsonCanvas'
 
@@ -41,6 +42,8 @@ export function fontSizeOf(kind: ShapeKind, v: unknown): { fontSize?: number } {
   const px = Math.round(Math.min(MAX_TEXT_SIZE, Math.max(MIN_TEXT_SIZE, v)))
   return px === defaultFontSize(kind) ? {} : { fontSize: px }
 }
+/** The smallest text box that shows *lines* lines of *px* text without clipping them. */
+export const textBoxFit = (px: number, lines = 1) => ({ w: Math.ceil(px * 4), h: Math.ceil(lines * px * 1.3 + 8) })
 export const MIN_TEXT_SIZE = 8
 export const MAX_TEXT_SIZE = 400
 
@@ -129,6 +132,8 @@ export interface Canvas {
   schema: typeof CANVAS_SCHEMA
   shapes: Shape[]
   connectors: Connector[]
+  /** The look new objects start with, per group of kinds; unset, the built-in look. */
+  defaults?: CanvasDefaults
   /** Frozen file values and stacking order, shared by every edit and undo snapshot. */
   source?: Readonly<{
     nodes: Readonly<Record<string, Obj>>
