@@ -72,7 +72,11 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
     attachCustomKeyEventHandler: (h: (e: KeyboardEvent) => boolean) => { keyHandler = h },
     hasSelection: () => hasSel,
     clearSelection: () => { hasSel = false },
-    clear: () => { clears += 1 },
+    clear: () => {
+      clears += 1
+      buf.baseY = 0
+      buf.cursorY = 0
+    },
   }
   return {
     term: term as unknown as Terminal,
@@ -84,6 +88,11 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
     setLine: (next: string) => { row = next },
     /** Move the fake cursor (the shell's own echo does this for real). */
     setCursor: (x: number) => { buf.cursorX = x },
+    /** Place the cursor on an absolute scrollback row. */
+    setBufferPosition: (baseY: number, cursorY: number) => {
+      buf.baseY = baseY
+      buf.cursorY = cursorY
+    },
     /** Switch screens the way vim/less/htop do on start-up. */
     setBufferType: (t: 'normal' | 'alternate') => { buf.type = t },
     /** Mark the cursor row as the continuation of a longer logical line. */
@@ -1472,6 +1481,30 @@ describe('TerminalCompletion — Clear terminal chord', () => {
     expect(r.prevented).toBe(true)
     expect(h.keyStopped({ key: 'k', code: 'KeyK', metaKey: true })).toBe(true)
     expect(h.clears()).toBe(2)
+  })
+
+  it('keeps the OSC prompt boundary after clearing a high scrollback row', async () => {
+    bindClear({ key: 'k', mod: true })
+    const exotic = 'diwm@host ~/work ⟩⟩ '
+    const h = makeTerm(exotic, exotic.length)
+    h.setBufferPosition(70, 3)
+    const fetchMock = mockComplete([{ name: 'docs', dir: true }], 'doc')
+    vi.stubGlobal('fetch', fetchMock)
+    renderCompletion(h.term)
+    expect(h.osc[133]('B')).toBe(true)
+
+    h.key({ key: 'k', code: 'KeyK', metaKey: true })
+    expect(h.term.buffer.active.baseY).toBe(0)
+    expect(h.term.buffer.active.cursorY).toBe(0)
+    const line = `${exotic}cd doc`
+    h.setLine(line)
+    h.setCursor(line.length)
+    await trigger(h)
+
+    expect(screen.getByTestId('terminal-completion')).toHaveAttribute('data-mode', 'path')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      session_id: 's1', token: 'doc', folders_only: true,
+    })
   })
 
   it('does not clear on the opposite primary modifier (Ctrl+K on a Mac is the shell\'s kill-line)', () => {
