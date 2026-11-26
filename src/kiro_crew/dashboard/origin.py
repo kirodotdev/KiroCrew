@@ -587,6 +587,19 @@ def check_origin(
     return False
 
 
+def check_ws_origin(request: web.Request) -> None:
+    """Reject cross-origin WebSocket upgrades.
+
+    Browsers always send an Origin header on WebSocket handshakes.
+    We allow only the dashboard's own origins and reject everything else,
+    including missing Origin (non-browser clients are not expected).
+    """
+    from aiohttp import web
+
+    if not check_origin(request, require=True):
+        raise web.HTTPForbidden(text="WebSocket origin not allowed")
+
+
 def check_host(request: web.Request) -> bool:
     """Validate the request ``Host`` header against the dashboard's host allowlist.
 

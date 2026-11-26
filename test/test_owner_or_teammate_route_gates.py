@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -711,3 +711,155 @@ async def test_the_load_reading_answers_a_session_that_is_neither_owner_nor_team
     handler = NAMED_TABLE[("GET", "/api/spawn/adaptive")]
     request = _request(_app(), "other", "GET", "/api/spawn/adaptive")
     assert (await _answer(handler, request)).status == 200
+
+
+# ── The remaining reads: live streams, run snapshots, speech status, milestones ──
+#
+# Rows from the real route table, judged like the families above. The two
+# WebSocket routes are stopped where they would open the socket: reaching that
+# point means the caller got past the gate. The workflow rows run against a stub
+# service whose run scope admits everyone, so only the owner gate can refuse.
+
+
+class _Reached(Exception):
+    """Raised where a handler would start its real work: the caller is past the gate."""
+
+
+def _reached(*_args, **_kwargs):
+    raise _Reached
+
+
+#: Refused to a session that is neither the owner nor a teammate.
+REMAINING_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        # live streams
+        ("GET", "/api/ws"),
+        ("GET", "/api/ws/stt"),
+        # speech status reads
+        ("GET", "/api/stt/status"),
+        ("GET", "/api/stt/vocabularies"),
+        # workflow runs: the list, the snapshot and the cancel share the run scope
+        ("GET", "/api/workflows/runs"),
+        ("GET", "/api/workflows/runs/{run_id}"),
+        ("POST", "/api/workflows/runs/{run_id}/cancel"),
+        # the milestones table
+        ("GET", "/api/milestones"),
+        ("POST", "/api/milestones/event"),
+        ("POST", "/api/milestones/mark-done"),
+        ("POST", "/api/milestones/mark-all-done"),
+        ("POST", "/api/milestones/skip-all"),
+    }
+)
+
+
+def _remaining_table() -> dict[tuple[str, str], Any]:
+    from kiro_crew.dashboard import routes as routes_pkg
+
+    table = dict(_route_table())
+    for name in ("realtime", "memory"):
+        app = web.Application()
+        getattr(routes_pkg, name).register(app)
+        for route in app.router.routes():
+            canonical = route.resource.canonical if route.resource else ""
+            table.setdefault((route.method, canonical), route.handler)
+    return table
+
+
+def _remaining_rows() -> list[tuple[str, str, Any, dict]]:
+    table = _remaining_table()
+    rows = []
+    for method, canonical in sorted(REMAINING_ROUTES):
+        match_info = {"run_id": "run1"} if "{run_id}" in canonical else {}
+        path = canonical.replace("{run_id}", "run1")
+        rows.append((method, path, table.get((method, canonical)), match_info))
+    return rows
+
+
+REMAINING_ROWS = _remaining_rows()
+
+
+class _Runs:
+    """A workflow service holding one run that the run scope never refuses."""
+
+    registry = None
+
+    def list_runs(self) -> list[dict]:
+        return [{"run_id": "run1"}]
+
+    def result(self, run_id: str) -> dict:
+        return {"run_id": run_id, "source": "def workflow(ctx): ..."}
+
+    async def cancel(self, _run_id: str) -> bool:
+        return True
+
+
+def _remaining_app() -> web.Application:
+    app = _app()
+    app["state"].workflow_service = _Runs()
+    return app
+
+
+@pytest.fixture
+def _streams_stopped(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew.dashboard import stt_stream
+    from kiro_crew.dashboard import ws as dashboard_ws
+
+    _floor_monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda _request: None)
+    _floor_monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", _reached)
+    _floor_monkeypatch.setattr(stt_stream, "check_origin", lambda *_a, **_k: True)
+    _floor_monkeypatch.setattr(stt_stream.KiroCrewConfig, "load", _reached)
+    _floor_monkeypatch.setattr("kiro_crew.workflow_memory.authorize_run", AsyncMock())
+
+
+def test_every_remaining_route_is_registered() -> None:
+    missing = [f"{m} {p}" for m, p, handler, _ in REMAINING_ROWS if handler is None]
+    assert missing == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_streams_stopped")
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), REMAINING_ROWS)
+async def test_remaining_route_refuses_a_session_that_is_neither_owner_nor_teammate(
+    method: str, path: str, handler, match_info: dict
+) -> None:
+    request = _request(_remaining_app(), "other", method, path, match_info)
+    assert await _refused(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_streams_stopped")
+@pytest.mark.parametrize("who", ("owner", *TEAMMATES))
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), REMAINING_ROWS)
+async def test_remaining_route_admits_the_owner_and_each_teammate(
+    who: str, method: str, path: str, handler, match_info: dict
+) -> None:
+    request = _request(_remaining_app(), who, method, path, match_info)
+    assert await _past_gate(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_streams_stopped")
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), REMAINING_ROWS)
+async def test_remaining_route_leaves_app_tokens_and_internal_callers_to_their_own_controls(
+    method: str, path: str, handler, match_info: dict
+) -> None:
+    app_request = _request(_remaining_app(), "owner", method, path, match_info)
+    app_request["app"] = "notes"
+    app_request["is_dashboard_user"] = False
+    internal = make_mocked_request(method, path, app=_remaining_app(), match_info=match_info)
+    internal["internal_auth"] = True
+    for request in (app_request, internal):
+        assert await _past_gate(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_streams_stopped")
+async def test_an_admitted_session_still_reads_the_run_snapshot() -> None:
+    """The gate sits in front of the run scope; it does not replace it."""
+    handler = _remaining_table()[("GET", "/api/workflows/runs/{run_id}")]
+    request = _request(
+        _remaining_app(), "relay", "GET", "/api/workflows/runs/run1", {"run_id": "run1"}
+    )
+    resp = await _answer(handler, request)
+    assert resp.status == 200
+    assert json.loads(resp.body)["run_id"] == "run1"

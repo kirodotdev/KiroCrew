@@ -271,7 +271,7 @@ async def test_ws_connect_snapshot_failure_is_logged_with_the_offender(
 
     class Request(dict):
         def __init__(self) -> None:
-            super().__init__({"user": "local-app", "app": ""})
+            super().__init__({"user": "U_OWNER", "app": ""})
             self.setdefault("is_dashboard_user", True)
             self.app = {"state": state}
 

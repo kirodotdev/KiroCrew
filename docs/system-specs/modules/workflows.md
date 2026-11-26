@@ -1769,6 +1769,9 @@ caller class:
   preview included) are owner-only for every caller.
 - **Run list, detail, cancel and rerun** go through `workflow_memory.authorize_run`
   (the list keeps only the runs it admits); rerun does so after the owner check above.
+  `authorize_run` takes a dashboard session as the owner, so list, detail and cancel
+  first refuse a dashboard session that is neither the owner nor an admitted teammate
+  with 403 `owner_only`; internal callers keep their run binding.
 
 The session's canonical execution record is captured before asynchronous
 dispatch; missing or malformed member identity refuses instead of selecting Global.

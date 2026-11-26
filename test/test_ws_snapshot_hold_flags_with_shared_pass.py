@@ -49,6 +49,8 @@ async def test_a_rebuild_finished_after_the_pass_took_its_rows_keeps_the_snapsho
     async def _as_the_dashboard_user(request, handler):
         request["app"] = ""
         request["is_dashboard_user"] = True
+        # The owner's own session: /api/ws refuses any other dashboard session.
+        request["user"] = state.owner_id or "local-app"
         return await handler(request)
 
     app = web.Application(middlewares=[_as_the_dashboard_user])

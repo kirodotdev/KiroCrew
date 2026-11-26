@@ -22,7 +22,7 @@ from kiro_crew.dashboard import websocket_hub as _ws_hub
 from kiro_crew.dashboard import ws_chunk_scope as _ws_chunk_scope
 from kiro_crew.dashboard import ws_slot_diff as _ws_slot_diff
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
-from kiro_crew.dashboard.origin import check_origin
+from kiro_crew.dashboard.origin import check_ws_origin as _check_ws_origin
 from kiro_crew.dashboard.skill_read_ahead import read_ahead as read_skills_ahead
 from kiro_crew.dashboard.slot_list_pass import shared_slot_pass
 from kiro_crew.dashboard.slot_read_state import read_state_of, valid_read_ts
@@ -577,22 +577,20 @@ def _handle_slot_focused(
     return schedule_eager_spawn(state, slot, allow_resume=True, focus_resume=True)
 
 
-def _check_ws_origin(request: web.Request) -> None:
-    """Reject cross-origin WebSocket upgrades.
-
-    Browsers always send an Origin header on WebSocket handshakes.
-    We allow only the dashboard's own origins and reject everything else,
-    including missing Origin (non-browser clients are not expected).
-    """
-    if not check_origin(request, require=True):
-        raise web.HTTPForbidden(text="WebSocket origin not allowed")
-
-
 async def _serve_ws(
     request: web.Request, registered: list[web.WebSocketResponse]
-) -> web.WebSocketResponse:
+) -> web.StreamResponse:
     """GET /api/ws — single multiplexed WebSocket for all real-time events."""
     _check_ws_origin(request)
+
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    # The stream carries every chat's live events and the connect snapshot, which
+    # go out by direct send as well as through the hub, so a dashboard session
+    # that is neither the owner nor a teammate is refused before the upgrade.
+    owner_denied = await require_owner_for_dashboard_caller(request, "ws.connect")
+    if owner_denied is not None:
+        return owner_denied
 
     from kiro_crew.dashboard.handlers import _log_ring
 
@@ -1788,7 +1786,7 @@ async def _serve_ws(
     return ws
 
 
-async def api_ws(request: web.Request) -> web.WebSocketResponse:
+async def api_ws(request: web.Request) -> web.StreamResponse:
     """GET /api/ws: serve the socket, and unregister it on every exit.
 
     ``_serve_ws`` registers the socket before it sends the connect-time frames and
