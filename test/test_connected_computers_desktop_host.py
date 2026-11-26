@@ -434,7 +434,7 @@ async def test_a_store_read_that_meets_a_denied_open_fails_on_the_loop_and_not_o
     monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0.0)
     monkeypatch.setattr(Path, "read_bytes", read_bytes)
 
-    # On the loop the read is not retried: one denied open is the failure in #42807.
+    # On the loop the read is not retried: one denied open fails it.
     denied.update(left=1, reads=0)
     with pytest.raises(VaultDocError):
         store.get(grant.grant_id)
