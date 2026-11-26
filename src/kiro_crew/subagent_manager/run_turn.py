@@ -1563,7 +1563,7 @@ async def _run_inner_impl(
                     _named = _pending_tool_ids.pop(event.tool_call_id, None)
                     # The child's own ACP session id, for its spec hooks only.
                     _sid = getattr(client, "session_id", "") if _spec.hooks else ""
-                    results = await self._manager.hook_store.fire(
+                    await self._manager.hook_store.fire(
                         HOOK_EVENT_POST_TOOL_USE,
                         tool_name=_tool_name,
                         tool_response=bounded_hook_output(_redact(event.tool_output or "")),
@@ -1589,11 +1589,6 @@ async def _run_inner_impl(
                         ),
                         acp_session_id=_sid if isinstance(_sid, str) and _sid else None,
                     )
-                    for r in results or ():
-                        if r.exit_code not in (0, 2):
-                            logger.warning(
-                                "Hook %s (%s) failed: %s", r.hook_name, r.event, r.failure_detail
-                            )
                 except Exception:
                     logger.warning("PostToolUse hook error in subagent", exc_info=True)
         elif event.kind == EVENT_COMPLETE:

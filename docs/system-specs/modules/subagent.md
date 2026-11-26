@@ -4479,10 +4479,10 @@ backend (`agent_sdk/spec_hooks.py:turn_spec_hooks`):
 
 The tool name is cached on `EVENT_TOOL_CALL` by `tool_call_id` and looked up
 when the result arrives. The `Running: ` prefix is stripped so both hooks
-receive identical tool_name strings. A raise from either fire is caught so a
-misbehaving hook cannot break the subagent loop: the informational `PreToolUse`
-fire logs it at debug level, the `PostToolUse` fire at WARNING. A `PostToolUse`
-hook that exits other than 0 or 2 logs one WARNING with its `failure_detail`.
+receive identical tool_name strings. A raise from either fire is caught and
+logged at WARNING, so a misbehaving hook cannot break the subagent loop. A hook
+that exits other than 0 or 2 is logged once, as a WARNING with its
+`failure_detail`, by `ScriptHookStore.fire()` itself.
 
 ### Hook Payload Metadata
 
