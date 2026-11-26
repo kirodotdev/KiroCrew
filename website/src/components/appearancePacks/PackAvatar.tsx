@@ -61,7 +61,8 @@ function LottieLoadFailed({ onError }: ComponentProps<typeof LottiePlayer>) {
   return null
 }
 
-// Loaded on demand, off the first load: lottie-web is ~330 KB, and only a pack
+// Loaded on demand, off the first load: the player's chunk is ~170 KB
+// minified, and only a pack
 // whose art is a Lottie clip draws with it.
 // shortcut: lazy() caches a failed load, so every Lottie avatar shows its
 // fallback until the page reloads; use lazyRetry-style re-loading if that bites.
@@ -226,8 +227,13 @@ export default function PackAvatar({ id, state, size, className = '', onError, f
       data-pack-playing={playing ? 'true' : 'false'}
     >
       {art.format === 'lottie' ? (
-        // The box above holds the avatar's size while the player loads.
-        <Suspense fallback={null}>
+        // While the player's chunk loads, the box keeps the pending shimmer, so
+        // the first Lottie avatar does not flash an empty circle.
+        <Suspense
+          fallback={
+            <span className="skeleton block" style={{ width: size, height: size }} data-testid="pack-avatar-player-loading" />
+          }
+        >
           <LottieRenderer
             animationData={art.content}
             width={size}

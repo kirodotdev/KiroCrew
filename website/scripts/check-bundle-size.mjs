@@ -46,9 +46,9 @@ export const DEFAULT_BUDGET_BYTES = 500 * KB
  * 9,886,330 B, 1,414 B under the 9656 KB ceiling, its headroom spent by
  * first-load growth across many features since c275f70106.
  *
- * Lowered on main @ ab7eb2eeac plus the change that loads the Lottie player
- * (lottie-web) on demand from PackAvatar: 11 chunks, 9,829,506 B. Ceiling =
- * 9,829,506 B * 1.05, rounded up to whole KB.
+ * Lowered on main @ 55e47ba417 plus the change that loads the Lottie player
+ * (lottie-web) on demand from PackAvatar: 11 chunks, 9,829,769 B. Ceiling =
+ * 9,829,769 B * 1.05, rounded up to whole KB.
  */
 export const FIRST_LOAD_BUDGET_BYTES = 10080 * KB
 
@@ -158,10 +158,10 @@ export const CHUNK_BUDGETS = {
   // over the 3216 KB ceiling, its headroom spent by English strings added across
   // many features since c275f70106.
   //
-  // Lowered on main @ ab7eb2eeac, same 5% rule: PackAvatar now loads the Lottie
-  // player (lottie-web, ~170 KB) on demand, taking the chunk from 3,302,052 B
-  // to 3,130,334 B.
-  'first-load-shared': 3210 * KB, // measured 3,130,334 B
+  // Lowered on main @ 55e47ba417, same 5% rule: PackAvatar now loads the Lottie
+  // player (lottie-web, ~170 KB) on demand, taking the chunk from 3,301,397 B
+  // to 3,129,668 B (bundle-report.json sizes, which this gate checks).
+  'first-load-shared': 3210 * KB, // measured 3,129,668 B
   // The dashboard's own first-load code, cut by import depth into four parts of
   // near-equal size; `main` is the top part, holding the entry. Because the cut
   // is by size, growth anywhere in it raises all four by about a quarter each.
