@@ -19,7 +19,6 @@ in ``argv_floor_self`` and the host verdicts in ``argv_floor_hosts``, both below
 from __future__ import annotations
 
 import contextvars
-import fnmatch
 import functools
 import re
 import shlex
@@ -37,7 +36,7 @@ from ..trust_patterns import ENV_ASSIGNMENT_RE
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import argv_rules as _argv_rules
 from . import shell_normalizer as _shell_normalizer
-from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
+from .argv_floor_hosts import _GLOB_CHARS, _glob_matches, _host_is_self
 from .argv_floor_self import (
     _SELF_FLOOR_QUOTE_JUNK_RE,
     _heredoc_data_view,
@@ -553,7 +552,7 @@ def _ssh_family_verbs(token: str) -> "tuple[str, ...]":
     return tuple(
         verb
         for verb in sorted(_SSH_FAMILY_VERBS)
-        if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base)
+        if _glob_matches(verb, base) or _glob_matches(verb + ".exe", base)
     )
 
 
