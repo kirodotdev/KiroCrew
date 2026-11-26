@@ -175,14 +175,20 @@ def fold_texts(texts: Sequence[str]) -> str:
     and both producers still fold identically.
     """
     folded = FOLD_SEPARATOR.join(t.replace("\x00", FOLD_SEPARATOR) for t in texts).casefold()
-    if folded.isascii():
-        return folded
+    return storable_text(folded)
+
+
+def storable_text(text: str) -> str:
+    """*text* with each lone UTF-16 surrogate replaced by U+FFFD, one character
+    for one, so SQLite can bind it (it refuses a string UTF-8 cannot encode)."""
+    if text.isascii():
+        return text
     try:
         # Cheaper than a regex scan on the common path; only a failure pays for one.
-        folded.encode("utf-8")
+        text.encode("utf-8")
     except UnicodeEncodeError:
-        return _LONE_SURROGATE.sub("\ufffd", folded)
-    return folded
+        return _LONE_SURROGATE.sub("\ufffd", text)
+    return text
 
 
 def content_digest(texts: Sequence[str]) -> bytes:
