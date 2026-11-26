@@ -7270,7 +7270,8 @@
       "use_starting_directory": "Utiliser le répertoire de démarrage du terminal",
       "use_starting_directory_hint": "Ouvre un nouveau shell dans le répertoire de terminal configuré sur le serveur (dashboard.terminal.cwd, sinon le répertoire personnel du serveur). La commande échouée n’est pas renvoyée.",
       "loading": "Démarrage du terminal…",
-      "load_failed": "Le terminal n’a pas pu se charger. Vérifie la connexion à la passerelle, puis réessaie."
+      "load_failed": "Le terminal n’a pas pu se charger. Vérifie la connexion à la passerelle, puis réessaie.",
+      "early_input_capped": "La saisie faite pendant le démarrage du terminal a dépassé {{size}} Ko. Le reste n’a pas été envoyé."
     },
     "codeBlock": {
       "add_comment": "Ajouter un commentaire",

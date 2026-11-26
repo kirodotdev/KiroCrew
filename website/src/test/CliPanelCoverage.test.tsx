@@ -164,10 +164,14 @@ const registry = vi.hoisted(() => ({
   useTerminalWrongMachine: vi.fn<() => boolean>(),
   useTerminalAtLimit: vi.fn<() => boolean>(),
   retryTerminalConnection: vi.fn<(id: string, manual?: boolean, cwd?: string) => void>(),
-  // The socket is open at once unless a test holds it; held pastes wait here.
-  socketOpen: { value: true },
-  heldPastes: [] as string[],
-  pasteWhenOpen: vi.fn<(id: string, text: string) => void>(),
+  // What the stand-ins typed into the shell, in order (the real buffer is
+  // terminalKeysDuringLoad.test.tsx's subject).
+  typeIntoTerminal: vi.fn<(id: string, data: string) => void>(),
+  pasteIntoTerminal: vi.fn<(id: string, text: string) => void>(),
+  takesEarlyInput: vi.fn(() => false),
+  useTerminalInputCapped: vi.fn(() => false),
+  dismissTerminalInputCapped: vi.fn(),
+  EARLY_INPUT_CAP: 64 * 1024,
 }))
 registry.useTerminalConnStatus.mockImplementation(() => registry.connStatus.value)
 registry.useTerminalManualRetry.mockImplementation(() => registry.manualRetry.value)
@@ -175,10 +179,6 @@ registry.useTerminalDisplaced.mockImplementation(() => registry.displaced.value)
 registry.useTerminalInvalidCwd.mockImplementation(() => registry.invalidCwd.value)
 registry.useTerminalWrongMachine.mockImplementation(() => registry.wrongMachine.value)
 registry.useTerminalAtLimit.mockImplementation(() => registry.atLimit.value)
-registry.pasteWhenOpen.mockImplementation((_id, text) => {
-  if (!registry.socketOpen.value) { registry.heldPastes.push(text); return }
-  xt.FakeTerminal.instances[xt.FakeTerminal.instances.length - 1].paste(text)
-})
 vi.mock('../utils/terminalRegistry', () => registry)
 
 // Both children own their own xterm hooks and are covered by their own suites;
@@ -469,7 +469,7 @@ describe('CliPanel mount', () => {
     expect(second.term.focusedAt.at(-1)).toEqual({ left: '18px', top: '36px' })
   })
 
-  it('holds a first-open terminal behind a focused stand-in, then opens xterm and hands focus and typed text over', () => {
+  it('holds a first-open terminal behind a focused stand-in that types each key into the shell, then opens xterm and hands focus over', () => {
     const sessionId = nextId()
     const view = mount({ sessionId, deferOpen: true })
     const { term } = view
@@ -478,14 +478,23 @@ describe('CliPanel mount', () => {
     expect(document.activeElement).toBe(proxy)
     expect(term.openCalls).toBe(0)
     expect(term.focusCalls).toBe(0)
-    // A paste with a newline must not run a command: it is handed over as a paste.
-    fireEvent.change(proxy, { target: { value: 'ls\nrm' } })
+    registry.typeIntoTerminal.mockClear()
+    registry.pasteIntoTerminal.mockClear()
+    fireEvent.input(proxy, { target: { value: 'ls' } })
+    fireEvent.keyDown(proxy, { key: 'Enter' })
+    fireEvent.keyDown(proxy, { key: 'ArrowLeft' })
+    // A paste with a newline must not run a command: it goes as a paste, which
+    // the shell's bracketed paste guards (terminalKeysDuringLoad.test.tsx).
+    fireEvent.input(proxy, { target: { value: 'ls\nrm' }, inputType: 'insertFromPaste' })
+    expect(registry.typeIntoTerminal.mock.calls).toEqual([[sessionId, 'ls'], [sessionId, '\r'], [sessionId, '\x1b[D']])
+    expect(registry.pasteIntoTerminal.mock.calls).toEqual([[sessionId, 'ls\nrm']])
+    expect(proxy.value).toBe(' ') // only the sentinel a soft keyboard's Backspace deletes
 
     view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} />)
     expect(term.openCalls).toBe(1)
     expect(term.focusCalls).toBe(1)
     expect(document.activeElement).toBe(term.textarea)
-    expect(term.pastes).toEqual(['ls\nrm'])
+    expect(term.pastes).toEqual([])
     expect(screen.queryByTestId('terminal-focus-proxy')).toBeNull()
   })
 
@@ -541,29 +550,15 @@ describe('CliPanel mount', () => {
       renderWithProviders(<LazyCliPanel sessionId={sessionId} visible />)
       const standIn = screen.getByTestId('terminal-loading-focus-proxy')
       expect(document.activeElement).toBe(standIn)
-      fireEvent.change(standIn, { target: { value: 'echo hi' } })
-      // The socket dialled with the pane is not open yet: keys sent now would be dropped.
-      registry.socketOpen.value = false
+      registry.typeIntoTerminal.mockClear()
+      fireEvent.input(standIn, { target: { value: 'echo hi' } })
+      expect(registry.typeIntoTerminal.mock.calls).toEqual([[sessionId, 'echo hi']])
       // Waits on LazyCliPanel's `import('./CliPanel')`; 1000 ms races a loaded shard.
       await waitFor(() => expect(screen.queryByTestId('terminal-loading-focus-proxy')).toBeNull(), { timeout: 5000 })
       const term = xt.FakeTerminal.instances[xt.FakeTerminal.instances.length - 1]
-      await waitFor(() => expect(registry.heldPastes).toEqual(['echo hi']), { timeout: 5000 })
+      await waitFor(() => expect(document.activeElement).toBe(term.textarea), { timeout: 5000 })
       expect(term.pastes).toEqual([])
-      expect(document.activeElement).toBe(term.textarea)
-    } finally { opener.remove(); registry.socketOpen.value = true; registry.heldPastes.length = 0 }
-  })
-
-  it('keeps what the loading stand-in caught when typing goes on in the hold stand-in', () => {
-    const sessionId = nextId()
-    live.add(sessionId)
-    const typed = { current: 'echo ' }
-    const view = renderWithProviders(<CliPanel sessionId={sessionId} visible deferOpen typedBeforeLoad={typed} />)
-    const term = xt.FakeTerminal.instances[xt.FakeTerminal.instances.length - 1]
-    const proxy = screen.getByTestId('terminal-focus-proxy') as HTMLTextAreaElement
-    expect(proxy.value).toBe('echo ')
-    fireEvent.change(proxy, { target: { value: 'echo hi' } })
-    view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} typedBeforeLoad={typed} />)
-    expect(term.pastes).toEqual(['echo hi'])
+    } finally { opener.remove() }
   })
 
   // LazyCliPanel passes `focusBeforeLoad` when the pane waited for this chunk.

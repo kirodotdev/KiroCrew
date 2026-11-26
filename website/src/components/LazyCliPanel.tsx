@@ -6,20 +6,20 @@
  * around it.
  *
  * While the chunk loads, a focus stand-in takes the focus as the pane shows
- * (as `CliPanel`'s own does while xterm is held), so keys typed meanwhile are
- * kept, not sent to the control that opened the pane, and `CliPanel` hands
- * them to the shell once it opens.
+ * (as `CliPanel`'s own does while xterm is held), so keys typed meanwhile go
+ * to the shell, in order and as typed, not to the control that opened the pane.
  *
  * Once the chunk has loaded, a pane that mounts renders `CliPanel` directly, in
  * the same commit as the tap that opened it. That matters on a phone: the focus
  * stand-in that raises the keyboard must take focus inside the opening tap, so
  * the dock preloads the chunk while the phone is idle.
  */
-import { useLayoutEffect, useRef, useState, type ComponentProps, type MutableRefObject } from 'react'
+import { useLayoutEffect, useRef, useState, type ComponentProps } from 'react'
 import { Loader2 } from 'lucide-react'
 import type CliPanel from './CliPanel'
 import { lazyRetry } from './lazyRetry'
 import { loadTerminalModule, loadedTerminalModule } from './terminalSessions'
+import { useStandInKeys } from '../utils/terminalStandInKeys'
 import { willSkipFocusOnShow } from '../utils/terminalQuietShow'
 import { i18nT } from '../i18n/t'
 
@@ -35,9 +35,10 @@ const LoadedCliPanel = lazyRetry<CliPanelProps>(loadTerminalModule, {
 
 /** Stands in while the chunk loads: the pane's own frame and colour, so the
  *  terminal does not flash a blank box, hidden like a hidden pane, and a
- *  focus stand-in that keeps what is typed in `typed`. */
-function TerminalLoading({ sessionId, visible, typed }: { sessionId: string; visible: boolean; typed: MutableRefObject<string> }) {
+ *  focus stand-in that sends each key to the shell's early-input buffer. */
+function TerminalLoading({ sessionId, visible }: { sessionId: string; visible: boolean }) {
   const proxyRef = useRef<HTMLTextAreaElement>(null)
+  const standIn = useStandInKeys(sessionId)
   // A show a Run-in-terminal action asked to be quiet leaves the focus alone;
   // the mark stays for the terminal itself to read.
   useLayoutEffect(() => {
@@ -62,7 +63,7 @@ function TerminalLoading({ sessionId, visible, typed }: { sessionId: string; vis
         autoCapitalize="off"
         autoCorrect="off"
         spellCheck={false}
-        onChange={e => { typed.current = e.currentTarget.value }}
+        {...standIn}
       />
     </div>
   )
@@ -76,14 +77,12 @@ export default function LazyCliPanel(props: CliPanelProps) {
   // arrives later leaves alone a field the user has moved to meanwhile.
   // A hidden pane takes the focus later, when it is switched to, as any tab does.
   const [focusBeforeLoad] = useState(() => (Loaded || props.visible === false ? undefined : document.activeElement))
-  const typed = useRef('')
   if (Loaded) return <Loaded {...props} />
   return (
     <LoadedCliPanel
       {...props}
       focusBeforeLoad={focusBeforeLoad}
-      typedBeforeLoad={typed}
-      loading={<TerminalLoading sessionId={props.sessionId} visible={props.visible ?? true} typed={typed} />}
+      loading={<TerminalLoading sessionId={props.sessionId} visible={props.visible ?? true} />}
     />
   )
 }

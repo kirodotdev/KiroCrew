@@ -7270,7 +7270,8 @@
       "use_starting_directory": "Usar el directorio inicial del terminal",
       "use_starting_directory_hint": "Abre un shell nuevo en el directorio de terminal configurado en el servidor (dashboard.terminal.cwd o, si no existe, el directorio personal del servidor). El comando fallido no se vuelve a enviar.",
       "loading": "Iniciando terminal…",
-      "load_failed": "No se pudo cargar el terminal. Comprueba la conexión con el gateway y vuelve a intentarlo."
+      "load_failed": "No se pudo cargar el terminal. Comprueba la conexión con el gateway y vuelve a intentarlo.",
+      "early_input_capped": "La entrada escrita mientras el terminal se iniciaba superó {{size}} KB; el resto no se envió."
     },
     "codeBlock": {
       "add_comment": "Añadir comentario",

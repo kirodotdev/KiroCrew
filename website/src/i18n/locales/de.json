@@ -7083,7 +7083,8 @@
       "use_starting_directory": "Startverzeichnis des Terminals verwenden",
       "use_starting_directory_hint": "Öffnet eine neue Shell im konfigurierten Terminalverzeichnis des Servers (dashboard.terminal.cwd, sonst das Home-Verzeichnis des Servers). Der fehlgeschlagene Befehl wird nicht erneut gesendet.",
       "loading": "Terminal wird gestartet…",
-      "load_failed": "Das Terminal konnte nicht geladen werden. Prüfe die Verbindung zum Gateway und versuch es dann noch einmal."
+      "load_failed": "Das Terminal konnte nicht geladen werden. Prüfe die Verbindung zum Gateway und versuch es dann noch einmal.",
+      "early_input_capped": "Die Eingabe beim Start des Terminals war länger als {{size}} KB; der Rest wurde nicht gesendet."
     },
     "codeBlock": {
       "add_comment": "Kommentar hinzufügen",
