@@ -48,7 +48,7 @@ from kiro_crew.apps.manager_records import (
 from kiro_crew.apps.manager_tree import _check_path_safety, gateway_data_dir_obstruction
 from kiro_crew.apps.manifest import app_name_error
 from kiro_crew.apps.point_grants import grant_source
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.pinned_fs import supports_pinned_walk
 from kiro_crew.platform import current_context, safe_context_call
@@ -1109,7 +1109,7 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
     try:
         for path in (manifest_path, installed_path):
             if path.is_file():
-                os.replace(path, path.with_name(path.name + RETIRED_RECORD_SUFFIX))
+                replace_with_retry(path, path.with_name(path.name + RETIRED_RECORD_SUFFIX))
     except OSError as exc:
         logger.error("cleanup_migrated_builtin: failed to clean up %s: %s", name, exc)
         return AppResult(
