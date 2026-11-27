@@ -8,7 +8,8 @@ With it off, none of this applies and the gateway refuses `crew=`
 With it on, you can put a leaf item's worker on a connected crew (another
 machine). The session lives there, shows in that crew's sidebar group, and runs
 under that crew's own approvals and credentials. The crew must have the switch
-on too and run the same major.minor version; `agent.session_control` must be on
+on too; a different version only warns, and a call that crew does not know
+fails `crew_peer_incompatible` naming both versions. `agent.session_control` must be on
 here, as for every session tool.
 
 **Remote workers are visible sessions.** Dispatch a worker on another machine as

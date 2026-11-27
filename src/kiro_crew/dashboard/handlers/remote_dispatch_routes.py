@@ -50,7 +50,7 @@ from aiohttp import web
 
 import kiro_crew
 from kiro_crew import session_ledger
-from kiro_crew.apps.version import known_version, versions_compatible
+from kiro_crew.apps.version import known_version, parse_version, versions_compatible
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.handlers_instances_gate import _registry
 from kiro_crew.dashboard.handlers_instances_peer import (
@@ -401,8 +401,23 @@ def _manager(state: "DashboardState") -> Any:
     return mgr
 
 
-async def check_version(mgr: Any, instance_id: str) -> None:
-    """Refuse a crew whose ``major.minor`` differs from this hub's (RFC §5)."""
+#: A peer reply that says the crew does not know the call: a crew on another
+#: release than this hub's, so the refusal names both versions (RFC §5).
+CREW_PEER_INCOMPATIBLE = "crew_peer_incompatible"
+#: The last version each crew reported, for :func:`incompatible_error`.
+_PEER_VERSIONS: dict[str, str] = {}
+#: ``(crew, version)`` pairs already warned about: one log line per pair, not per call.
+_SKEW_WARNED: set[tuple[str, str]] = set()
+
+
+async def check_version(mgr: Any, instance_id: str) -> str:
+    """Read the crew's version: it is ``""`` when unknown. A skew never refuses (RFC §5).
+
+    A ``major.minor`` that differs from this hub's logs one warning per crew and
+    version, and the call goes ahead: whether a route works is decided by calling
+    it, and a reply that shows the crew lacks it is :func:`incompatible_error`.
+    A crew that is down, or whose version cannot be read, is still refused.
+    """
     try:
         ok, payload = await mgr.peer_capability(instance_id, "/api/version")
     except Exception as exc:
@@ -416,13 +431,65 @@ async def check_version(mgr: Any, instance_id: str) -> None:
         raise CrewCallError(502, "crew_version_unknown", "could not read that crew's version")
     peer = payload.get("version") if isinstance(payload, dict) else ""
     peer = known_version(redact_peer_text(peer)[:64]) if isinstance(peer, str) else ""
-    if not versions_compatible(kiro_crew.__version__, peer):
-        raise CrewCallError(
-            409,
-            "crew_version_mismatch",
-            f"that crew runs {peer or 'an unknown version'}; this hub runs "
-            f"{kiro_crew.__version__} (major.minor must match)",
+    _PEER_VERSIONS[instance_id] = peer
+    if not versions_compatible(kiro_crew.__version__, peer) and (
+        (instance_id, peer) not in _SKEW_WARNED
+    ):
+        _SKEW_WARNED.add((instance_id, peer))
+        logger.warning(
+            "crew %s runs %s; this hub runs %s; calls go ahead, and a call that crew "
+            "does not know is refused as %s",
+            instance_id,
+            peer or "an unknown version",
+            kiro_crew.__version__,
+            CREW_PEER_INCOMPATIBLE,
         )
+    return peer
+
+
+def skewed_reply(status: int, payload: Any) -> bool:
+    """Whether a peer reply says the crew does not know the call.
+
+    Only a plain (non-JSON) ``404``: a route the crew does not serve (:func:`peer_call`
+    returns it with no body). A JSON ``404`` is the crew's own answer (no such
+    session), and a ``5xx`` is a fault, not a skew. No peer route the hub calls
+    refuses an unknown body field with a code of its own (slot create ignores one;
+    the ``work-item`` PATCH answers ``invalid_value`` naming the field), so a 400 is
+    left as the crew's refusal.
+    """
+    return status == 404 and payload is None
+
+
+#: The first release whose ``POST api/chat`` honours ``turn_origin: agent``.
+TURN_ORIGIN_SINCE = (0, 12, 0)
+
+
+def _ignores_turn_origin(peer: str) -> bool:
+    """Whether a crew at *peer* is KNOWN to drop the agent-origin mark on a send.
+
+    The one parameter an older crew silently ignores that crosses a safety line:
+    an agent turn read as person-sent gets the person's approval rights. This is
+    not a version gate: an unknown or unparseable version is not refused (it
+    only warns, in :func:`check_version`).
+    """
+    if not peer:
+        return False
+    try:
+        return parse_version(peer) < TURN_ORIGIN_SINCE
+    except ValueError:
+        return False
+
+
+def incompatible_error(instance_id: str, what: str) -> CrewCallError:
+    """The refusal for a call the crew does not know, naming both versions."""
+    peer = _PEER_VERSIONS.get(instance_id, "") or "an unknown version"
+    return CrewCallError(
+        502,
+        CREW_PEER_INCOMPATIBLE,
+        f"{what}: that crew runs {peer}, this hub runs {kiro_crew.__version__}, "
+        "and the crew does not know this call; check that crew's version and "
+        "upgrade the older side",
+    )
 
 
 async def peer_call(
@@ -492,8 +559,10 @@ async def peer_call(
         raise CrewCallError(502, "crew_reply_malformed", "that crew's reply is not JSON") from None
 
 
-def _peer_error(status: int, payload: Any, what: str) -> CrewCallError:
-    """A peer refusal as a hub refusal. The peer's text is already redacted."""
+def _peer_error(status: int, payload: Any, what: str, *, crew: str) -> CrewCallError:
+    """A peer refusal on *crew* as a hub refusal. The peer's text is already redacted."""
+    if skewed_reply(status, payload):
+        return incompatible_error(crew, what)
     msg = payload.get("error") if isinstance(payload, dict) else ""
     code = payload.get("code") if isinstance(payload, dict) else ""
     detail = f": {str(msg)[:300]}" if isinstance(msg, str) and msg else ""
@@ -701,7 +770,9 @@ async def _create(
     else:
         status, payload = await peer_call(mgr, instance_id, "POST", "api/chat/slots", body=create)
         if not 200 <= status < 300:
-            raise _peer_error(status, payload, "could not create the crew session")
+            raise _peer_error(
+                status, payload, "could not create the crew session", crew=instance_id
+            )
         key = payload.get("key") if isinstance(payload, dict) else None
         if not _slot_ok(key):
             raise CrewCallError(
@@ -746,7 +817,9 @@ async def _create(
         except CrewCallError as exc:
             t_status, t_payload = 0, {"error": exc.message, "code": exc.code}
         if not 200 <= t_status < 300:
-            result["title_error"] = _peer_error(t_status, t_payload, "rename failed").message
+            result["title_error"] = _peer_error(
+                t_status, t_payload, "rename failed", crew=instance_id
+            ).message
             result["title"] = ""
     return result
 
@@ -769,11 +842,15 @@ async def _send(mgr: Any, instance_id: str, slot: str, body: dict[str, Any]) -> 
     }
     if steer:
         peer_body["steer"] = True
+    if _ignores_turn_origin(_PEER_VERSIONS.get(instance_id, "")):
+        # The one deliberate version floor: a crew that silently drops the
+        # agent-origin mark would run this turn with a person's rights.
+        raise incompatible_error(instance_id, "could not send to the crew session")
     status, payload = await peer_call(
         mgr, instance_id, "POST", "api/chat", params={"ws": "1"}, body=peer_body
     )
     if not 200 <= status < 300:
-        raise _peer_error(status, payload, "could not send to the crew session")
+        raise _peer_error(status, payload, "could not send to the crew session", crew=instance_id)
     # What the crew did, not what was asked: a steer it could not land is queued.
     steered = isinstance(payload, dict) and payload.get("steered") is True
     return {"target": slot, "crew": instance_id, "delivered": True, "steered": steered}
@@ -809,7 +886,7 @@ async def _read(
         mgr, instance_id, "GET", f"api/chat/slots/{quote(slot, safe='')}", params=params
     )
     if not 200 <= status < 300:
-        raise _peer_error(status, payload, "could not read the crew session")
+        raise _peer_error(status, payload, "could not read the crew session", crew=instance_id)
     if not isinstance(payload, dict):
         raise CrewCallError(502, "crew_reply_malformed", "the crew's read reply is not an object")
     rows = payload.get("messages")
@@ -903,7 +980,7 @@ async def _stop(mgr: Any, instance_id: str, slot: str) -> dict[str, Any]:
         mgr, instance_id, "POST", f"api/chat/slots/{quote(slot, safe='')}/stop", body={}
     )
     if not 200 <= status < 300:
-        raise _peer_error(status, payload, "could not stop the crew session")
+        raise _peer_error(status, payload, "could not stop the crew session", crew=instance_id)
     # The crew can decline: a slot that is compacting answers 200 with
     # ``compacting`` and keeps running, so the receipt says what happened.
     compacting = isinstance(payload, dict) and payload.get("compacting") is True
@@ -941,9 +1018,9 @@ async def _close(
     if status == 404:
         # Already gone on the crew: nothing left to drive, so the record goes too.
         await _forget_locked(state, caller, instance_id, slot)
-        raise _peer_error(status, payload, "could not close the crew session")
+        raise _peer_error(status, payload, "could not close the crew session", crew=instance_id)
     if not 200 <= status < 300:
-        raise _peer_error(status, payload, "could not close the crew session")
+        raise _peer_error(status, payload, "could not close the crew session", crew=instance_id)
     await _forget_locked(state, caller, instance_id, slot)
     return {"target": slot, "crew": instance_id, "closed": True}
 
