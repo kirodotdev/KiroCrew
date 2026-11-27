@@ -9,6 +9,8 @@ read and it is how the probe resolves the binary it reports on.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,7 +25,10 @@ from kiro_crew.kiro_prerequisite import KiroPrerequisiteService, ProcessResult
 
 
 def _service(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    before_reply: Callable[[list[str]], Awaitable[None]] | None = None,
 ) -> tuple[KiroPrerequisiteService, list[list[str]]]:
     monkeypatch.setattr(
         "kiro_crew.config.KiroCrewConfig.load",
@@ -34,6 +39,8 @@ def _service(
 
     async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
         calls.append(args)
+        if before_reply is not None:
+            await before_reply(args)
         return ProcessResult(ok=True, output="ok")
 
     service = KiroPrerequisiteService(
@@ -135,3 +142,36 @@ async def test_a_failed_turn_sign_in_check_does_not_make_a_skipped_probe_reusabl
     assert await service.verified_ready(max_age_secs=3600.0) is True
 
     assert calls.count(["whoami"]) == whoami_runs + 1
+
+
+@pytest.mark.asyncio
+async def test_a_status_probe_in_flight_does_not_make_a_skipped_latch_reusable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The skip flag describes the latch it was written with. A second status probe
+    # that is still running has not replaced that latch, so a Kiro-routed check
+    # made meanwhile must still re-probe, not trust the skipped ready=False.
+    blocking = False
+    in_version = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold_version(args: list[str]) -> None:
+        if blocking and args == ["--version"]:
+            in_version.set()
+            await release.wait()
+
+    service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE, hold_version)
+    await service.snapshot(force=True)
+    assert ["whoami"] not in calls
+
+    blocking = True
+    status_refresh = asyncio.create_task(service.snapshot(force=True))
+    await in_version.wait()
+    check = asyncio.create_task(service.verified_ready(max_age_secs=3600.0))
+    await asyncio.sleep(0)
+    blocking = False
+    release.set()
+    await status_refresh
+
+    assert await check is True
+    assert ["whoami"] in calls

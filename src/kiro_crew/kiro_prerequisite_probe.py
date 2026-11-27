@@ -430,7 +430,11 @@ async def _probe(
         if self._has_probed and not force and now - self._last_probe_at < _PROBE_CACHE_SECS:
             return self._status
         self._viable_binary = ""
-        self._whoami_skipped = False
+        # Whether THIS probe skipped whoami. Kept local until the latch is written:
+        # ``self._whoami_skipped`` describes the latch ``verified_ready`` reads
+        # without the probe lock, so it is published with that latch, with no
+        # await in between, never reset while this probe is still running.
+        whoami_skipped = False
         (
             self._probe_environment,
             candidates,
@@ -516,9 +520,10 @@ async def _probe(
                             first_party_fixed_argv=True,
                             skip_on_claude_backend=skip_whoami_on_claude,
                         )
-                        self._whoami_skipped = carve_out_whoami.error == _WHOAMI_SKIPPED_ERROR
+                        whoami_skipped = carve_out_whoami.error == _WHOAMI_SKIPPED_ERROR
                         if login_only:
                             self._viable_binary = first_candidate
+                            self._whoami_skipped = whoami_skipped
                             return _latch_login_only(self, carve_out_whoami, probe_identity)
                     elif login_only and carve_out_version.timed_out:
                         # The boot check names the probe's own timeout. Any
@@ -565,6 +570,7 @@ async def _probe(
                     sandbox_detail=detail,
                     sandbox_remedy=remedy,
                 )
+                self._whoami_skipped = whoami_skipped
                 self._stamp_probe(probe_identity)
                 return self._status
             if version_probe is not None and version_probe.timed_out and candidate_runnable:
@@ -626,6 +632,7 @@ async def _probe(
                     bundled_cli=bundled,
                     probe_timed_out=True,
                 )
+                self._whoami_skipped = whoami_skipped
                 self._stamp_probe(probe_identity)
                 return self._status
             # Neither typed condition explains the failure, so carry the
@@ -641,6 +648,7 @@ async def _probe(
                     _installer_lacks_unzip, self._platform, self._environ
                 ),
             )
+            self._whoami_skipped = whoami_skipped
             self._stamp_probe(probe_identity)
             return self._status
 
@@ -661,10 +669,11 @@ async def _probe(
             isolate_home=False,
             skip_on_claude_backend=skip_whoami_on_claude,
         )
-        self._whoami_skipped = whoami.error == _WHOAMI_SKIPPED_ERROR
+        whoami_skipped = whoami.error == _WHOAMI_SKIPPED_ERROR
         if whoami.ok:
             await asyncio.to_thread(self._mark_setup_complete)
         if login_only:
+            self._whoami_skipped = whoami_skipped
             return _latch_login_only(self, whoami, probe_identity)
         # Kiro CLI acceptance is checked here, on the probe path, because it
         # costs a spawn per spec — the every-read overlay stays stat-only. It
@@ -715,6 +724,7 @@ async def _probe(
             agent_spec_rejection_detail=rejection_detail,
             acp_supported=acp_supported,
         )
+        self._whoami_skipped = whoami_skipped
         self._stamp_probe(probe_identity)
         return self._status
 
