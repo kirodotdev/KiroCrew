@@ -13036,7 +13036,14 @@
         "artifact_save_failed": "アーティファクトを保存できませんでした",
         "workflow_runs_load_failed": "ワークフロー実行を読み込めませんでした",
         "engine_usage_not_reported": "チャット内で動くサブエージェントのクレジット使用量とモデルは報告されません。クレジットは応答の合計に含まれます。",
-        "engine_no_output": "(出力なし)"
+        "engine_no_output": "(出力なし)",
+        "live_activity": "ライブアクティビティ",
+        "full_result": "結果（全文）",
+        "tool_call_failed": "ツール呼び出しが失敗しました",
+        "tool_call_failed_no_output": "出力は返されませんでした。",
+        "ask_agent_about_failed_call": "この失敗した呼び出しについてエージェントに質問",
+        "untitled_call": "名前のないツール呼び出し",
+        "transcript_steps_not_listed_other": "以前の {{count}} 件のステップは表示されていません"
       },
       "engineSubagentRecord": {
         "end_completed": "完了",

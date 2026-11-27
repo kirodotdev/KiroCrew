@@ -232,7 +232,9 @@ def test_a_refused_dispatch_is_one_card_ended_with_the_engines_reason() -> None:
     assert done["result"] == ""
     # The turn's end closes nothing more: the pending row never became a card.
     state.broadcast_ws.reset_mock()
-    cr._native_subagent_close_all(state, slot, slot._native_subagent_tracker, {})
+    cr._native_subagent_close_all(
+        state, slot, slot._native_subagent_tracker, {}, card_output_len={}, streams={}
+    )
     assert _frames(state) == []
 
 
@@ -379,6 +381,10 @@ def _turn(state: Any, slot: Any) -> Any:
         _native_child_tc=set(),
         _native_card_output=slot._native_subagent_output,
         _native_card_output_len={},
+        # The kiro-cli child arm's stores (``_native_subagent_activity``), which a
+        # non-engine card's frames reach.
+        _native_result_digests={},
+        _native_streams_red={},
     )
 
 
@@ -432,15 +438,35 @@ async def test_a_tool_title_holding_a_credential_is_redacted_before_the_cut() ->
 
 
 @pytest.mark.asyncio
-async def test_a_native_card_outside_an_engine_turn_gets_no_tool_frame() -> None:
+async def test_a_native_card_outside_an_engine_turn_takes_the_kiro_cli_childs_arm() -> None:
+    """A card that is not an engine's is a kiro-cli child's: its call is admitted
+    and listed by ``_native_subagent_activity`` (the live-card frame, with the
+    count), not by the engine arm, and the call's repeat frame lists it once."""
     state, slot = _state(), _slot()
     _sync(state, slot, _roster(_dispatch("in_progress")), engine=False)
     state.broadcast_ws.reset_mock()
     turn = _turn(state, slot)
 
     await cr._on_subagent_activity(turn, _tool_event("c1", "Wait 20 seconds then print one"))
-    assert _frames(state) == []
+    await cr._on_subagent_activity(turn, _tool_event("c1", "Wait 20 seconds then print one"))
+    assert (
+        _frames(state)
+        == [
+            (
+                "subagent_tool",
+                {
+                    "id": f"native:{SUBTASK}",
+                    "slot": "slot-1",
+                    "tool": "Wait 20 seconds then print one",
+                    "tool_call_id": "c1",
+                    "tool_count": 1,
+                },
+            )
+        ]
+        * 2
+    )
     assert turn._native_tc_card == {"c1": f"native:{SUBTASK}"}
+    assert "tool_calls" not in slot._native_subagent_tracker[SUBTASK]
 
 
 def _output_turn(state: Any, slot: Any, backend: str = ACP_BACKEND_KAS) -> Any:

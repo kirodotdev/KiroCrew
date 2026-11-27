@@ -114,6 +114,8 @@ def test_a_child_the_turn_closed_before_the_engine_said_how_it_ended_is_not_repo
         slot._native_subagent_tracker,
         {},
         error="interrupted (parent turn ended)",
+        card_output_len={},
+        streams={},
     )
     [entry] = record.engine_record(slot._native_subagent_tracker)["children"]
     # Kiro Crew's own words for the close are not the engine's, so no reason is kept.

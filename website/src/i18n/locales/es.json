@@ -13636,7 +13636,16 @@
         "artifact_save_failed": "No se pudo guardar el artefacto",
         "workflow_runs_load_failed": "No se pudieron cargar las ejecuciones de flujos de trabajo",
         "engine_usage_not_reported": "No se informan los créditos ni el modelo de un subagente que se ejecuta dentro del chat. Sus créditos forman parte del total de la respuesta.",
-        "engine_no_output": "(sin salida)"
+        "engine_no_output": "(sin salida)",
+        "live_activity": "Actividad en vivo",
+        "full_result": "Resultado completo",
+        "tool_call_failed": "La llamada a la herramienta falló",
+        "tool_call_failed_no_output": "No se devolvió ninguna salida.",
+        "ask_agent_about_failed_call": "Preguntar al agente sobre esta llamada fallida",
+        "untitled_call": "Llamada a herramienta sin nombre",
+        "transcript_steps_not_listed_one": "{{count}} paso anterior no mostrado",
+        "transcript_steps_not_listed_many": "{{count}} pasos anteriores no mostrados",
+        "transcript_steps_not_listed_other": "{{count}} pasos anteriores no mostrados"
       },
       "engineSubagentRecord": {
         "end_completed": "Completado",

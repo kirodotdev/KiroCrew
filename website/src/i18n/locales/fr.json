@@ -13636,7 +13636,16 @@
         "artifact_save_failed": "Impossible d’enregistrer l’artefact",
         "workflow_runs_load_failed": "Impossible de charger les exécutions de workflow",
         "engine_usage_not_reported": "Les crédits et le modèle ne sont pas signalés pour un sous-agent qui tourne dans le chat. Ses crédits font partie du total de la réponse.",
-        "engine_no_output": "(aucune sortie)"
+        "engine_no_output": "(aucune sortie)",
+        "live_activity": "Activité en direct",
+        "full_result": "Résultat complet",
+        "tool_call_failed": "L’appel de l’outil a échoué",
+        "tool_call_failed_no_output": "Aucune sortie n’a été renvoyée.",
+        "ask_agent_about_failed_call": "Demander à l'agent à propos de cet appel échoué",
+        "untitled_call": "Appel d’outil sans nom",
+        "transcript_steps_not_listed_one": "{{count}} étape précédente non affichée",
+        "transcript_steps_not_listed_many": "{{count}} étapes précédentes non affichées",
+        "transcript_steps_not_listed_other": "{{count}} étapes précédentes non affichées"
       },
       "engineSubagentRecord": {
         "end_completed": "Terminé",

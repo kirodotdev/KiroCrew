@@ -38,8 +38,8 @@ if TYPE_CHECKING:
         _settle_failed_write,
     )
     from kiro_crew.dashboard.chat_turn.native_cards import (
-        _append_native_output,
-        _first_native_result,
+        _NATIVE_NOT_APPLIED_NOTE,
+        _native_subagent_flat_result,
     )
     from kiro_crew.dashboard.chat_turn.recovery import _notice_compaction_after_turn
     from kiro_crew.dashboard.chat_turn.tool_rows import (
@@ -70,8 +70,10 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
     _native_card_output = turn._native_card_output
     _native_card_output_len = turn._native_card_output_len
     _native_child_tc = turn._native_child_tc
-    _native_result_seen = turn._native_result_seen
+    _native_result_digests = turn._native_result_digests
+    _native_streams_red = turn._native_streams_red
     _native_tc_card = turn._native_tc_card
+    _native_tracker = turn._native_tracker
     _pending_dir_for_digest = turn._pending_dir_for_digest
     _pending_dir_tool = turn._pending_dir_tool
     _pending_input_digest = turn._pending_input_digest
@@ -426,11 +428,7 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
                 outcome="denied",
             )
             _out = _redact_tool_field(
-                session_directive.strip_marker(_out)
-                + (
-                    "\n\n[Not applied: a session-bound tool called "
-                    "from a sub-agent has no session to act on.]"
-                )
+                session_directive.strip_marker(_out) + _NATIVE_NOT_APPLIED_NOTE
             )
             _dir_consumed_out[event.tool_call_id] = _out
             # Refusing to APPLY is not enough on its own: the record
@@ -587,7 +585,7 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
             # SINGLE-CONSUME: one tool call can surface MORE THAN ONE
             # result frame (a mid-stream content frame and the final
             # status=completed rawOutput frame — the same reason the
-            # native-card path below keeps _native_result_seen).
+            # native-card path below keeps _native_result_digests).
             # Without this pop, a directive would be applied twice:
             # two armed loops, two cards, or a repeated mutation.
             _pending_dir_tool.pop(event.tool_call_id, None)
@@ -606,11 +604,7 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
             # must pass exfil-URL + credential scrubbing before it
             # reaches broadcast_ws / the persisted transcript.
             _out = _redact_tool_field(
-                session_directive.strip_marker(_out)
-                + (
-                    "\n\n[Not applied: a session-bound tool called "
-                    "from a sub-agent has no session to act on.]"
-                )
+                session_directive.strip_marker(_out) + _NATIVE_NOT_APPLIED_NOTE
             )
             _dir_consumed_out[event.tool_call_id] = _out
         else:
@@ -741,36 +735,30 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
             "final": bool(_tool_terminal),
         },
     )
-    # If this tool result belongs to a native sub-agent, stream its
-    # real output onto that sub-agent's card so the OUTPUT section
-    # shows actual results (git log, file contents, summaries) —
-    # not just tool names. Mirrors spawn_sub_agents' subagent_chunk.
-    _nat_card_r = _native_tc_card.get(event.tool_call_id) if event.tool_call_id else None
-    # Redact the FULL output once, then bound each consumer's copy
-    # (the native card's 4000 and the PostToolUse hook's 2000):
-    # bounding first can cut a credential at the boundary into
-    # fragments no redaction regex matches, and sharing the pass
-    # keeps the full-text cost single.
+    # A result whose id the activity path attributed to a native
+    # sub-agent is a parent-tagged copy of the child's (a wire that
+    # copies a child's calls onto the parent stream). It takes the
+    # child path's terminal rule and per-call rolling redactor: a
+    # fragment redacted alone and published here would send a
+    # credential split across two fragments over the wire in halves
+    # that neither redaction sees.
+    if event.tool_call_id and event.tool_call_id in _native_tc_card:
+        _native_subagent_flat_result(
+            state,
+            slot,
+            event,
+            _native_tracker,
+            _native_card_output,
+            _native_card_output_len,
+            _native_tc_card,
+            _native_result_digests,
+            _native_streams_red,
+        )
+    # Redact the FULL output once, then bound the PostToolUse
+    # hook's copy (2000): bounding first can cut a credential at
+    # the boundary into fragments no redaction regex matches.
     _redacted_out, _ = redact_exfiltration_urls(_out)
     _redacted_out, _ = redact_credentials(_redacted_out)
-    if (
-        _nat_card_r
-        and event.tool_output
-        and _first_native_result(_native_result_seen, event.tool_call_id)
-    ):
-        _native_card_output_len[_nat_card_r] = _append_native_output(
-            _native_card_output.setdefault(_nat_card_r, []),
-            f"{_redacted_out[:4000]}\n",
-            _native_card_output_len.get(_nat_card_r, 0),
-        )
-        state.broadcast_ws(
-            "subagent_chunk",
-            {
-                "id": _nat_card_r,
-                "slot": slot.key,
-                "text": f"{_redacted_out[:4000]}\n",
-            },
-        )
     # Mark the matching tool message as done so completion state
     # survives page reload (persisted in message meta, replayed via SSE).
     # Also persist the redacted output here so the inline detail panel
