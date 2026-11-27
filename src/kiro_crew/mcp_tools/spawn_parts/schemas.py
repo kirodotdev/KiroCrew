@@ -254,12 +254,13 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
 
     ``names_only`` is set by the in-process discovery read (via
     ``mcp_tools.build_tool_names``), which keeps only tool NAMES and discards
-    every description. Under it the two reads that exist solely to fill a
-    description -- the live sub-agent cap and the agents-directory roster scan --
-    are skipped, so a names-only caller never performs on-loop work for text it
-    throws away. The returned names and their order are unchanged; only the two
-    descriptions that would have carried those values are left without them.
-    This is why neither read needs a ``get_running_loop`` guard of its own.
+    every description. Under it the three reads that exist solely to fill a
+    description -- the live sub-agent cap, the agents-directory roster scan and
+    the cwd roots -- are skipped, so a names-only caller never performs on-loop
+    work for text it throws away. The returned names and their order are
+    unchanged; only the descriptions that would have carried those values are
+    left without them. This is why no read needs a ``get_running_loop`` guard of
+    its own.
     """
     # Advertise the concurrent sub-agent cap so the model fans out with
     # confidence instead of self-limiting. The cap IN FORCE is preferred:
@@ -286,13 +287,28 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
         "queues automatically; capacity is a ceiling, not a target. Keep dependent "
         "tasks for a later batch."
     )
-    # A names-only caller discards every description, so neither the live cap
-    # nor the roster scan below runs for it: the two values exist only to fill
-    # text it throws away. This is the whole reason those reads need no
-    # running-loop skip -- the names path never reaches them.
+    # A names-only caller discards every description, so none of the live cap,
+    # the cwd roots or the roster scan below runs for it: the three values exist
+    # only to fill text it throws away. This is the whole reason those reads need
+    # no running-loop skip -- the names path never reaches them.
     _cap_hint = ""
     _agent_hint = ""
+    _cwd_hint = ""
     if not names_only:
+        # Both spawn ``cwd`` descriptions end with the roots the admission gate hands
+        # ``validate_cwd``, so the model sees the rule before a refusal teaches it. An
+        # unreadable config names the setting and no roots: the gate then refuses
+        # every cwd too.
+        try:
+            _roots = list(KiroCrewConfig.load().agent.subagent_cwd_allowed_roots)
+        except Exception:
+            _cwd_hint = " Must be under an agent.subagent_cwd_allowed_roots entry."
+        else:
+            _cwd_hint = (
+                f" Must be under agent.subagent_cwd_allowed_roots: [{', '.join(_roots)}]."
+                if _roots
+                else " Disabled: agent.subagent_cwd_allowed_roots is empty."
+            )
         # A list the gateway builds for a tool server to relay reads as that server's
         # own, so it prints the ceiling sentence below, never the gateway's.
         _live_cap = 0 if built_for_a_tool_server() else host_status.adaptive_exec_cap()
@@ -476,9 +492,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "Optional absolute path to launch the subagent subprocess in, "
                             "instead of the default sandbox. Enables cwd-relative resource globs "
                             "(.kiro/steering, AGENTS.md, CLAUDE.md) to resolve against this directory. "
-                            "Must be under a configured subagent_cwd_allowed_roots entry "
-                            "(default: [~/workspace, ~/workspaces, ~/workplace, "
-                            "~/workplaces]). Applies to all tasks in a batch spawn."
+                            "Applies to all tasks in a batch spawn." + _cwd_hint
                         ),
                     },
                     "isolate": {
@@ -782,8 +796,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     "cwd": {
                         "type": "string",
                         "description": (
-                            "Optional absolute path to launch sub-agents in. "
-                            "Must be under a configured subagent_cwd_allowed_roots entry."
+                            "Optional absolute path to launch sub-agents in." + _cwd_hint
                         ),
                     },
                     "silent": {

@@ -47,6 +47,14 @@ from kiro_crew.mcp_tools.table import Tool
 
 def _session_tools() -> tuple[Tool, ...]:
     """Session control: open, fork, steer, stop and read other sessions."""
+    # The ``target`` text of the manager-reach verbs: list_sessions lists every session,
+    # so without it the documented path hands a fenced caller keys that are refused. The
+    # reach and the fenced callers are the ones session_handoff's description spells out.
+    fenced_target_desc = (
+        "Session key (list_sessions) or title. Fenced callers (see session_handoff) reach "
+        "only what they manage: created and kept, handed over, or theirs via "
+        "agent.session_manager_chain; else not_creator."
+    )
     return (
         Tool(
             name="session_create",
@@ -284,7 +292,7 @@ def _session_tools() -> tuple[Tool, ...]:
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": "Session key from list_sessions, or its exact title.",
+                        "description": fenced_target_desc,
                     },
                 },
                 "required": ["target"],
@@ -599,7 +607,7 @@ def _session_tools() -> tuple[Tool, ...]:
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": "Session key from list_sessions, or its exact title.",
+                        "description": fenced_target_desc,
                     },
                 },
                 "required": ["target"],
@@ -721,7 +729,7 @@ def _session_tools() -> tuple[Tool, ...]:
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": "Session key from list_sessions, or its exact title.",
+                        "description": fenced_target_desc,
                     },
                     "message": {
                         "type": "string",
@@ -1088,7 +1096,7 @@ def _session_tools() -> tuple[Tool, ...]:
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": "Session key from list_sessions, or its exact title.",
+                        "description": fenced_target_desc,
                     },
                     "limit": {
                         "type": "integer",
