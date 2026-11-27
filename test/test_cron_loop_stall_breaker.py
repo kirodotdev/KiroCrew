@@ -32,6 +32,9 @@ from kiro_crew.testing.wait import finished
 
 pytestmark = pytest.mark.asyncio
 
+#: A fixed one-shot time in the past, so the job is due when the service starts.
+_ONE_SHOT_SLOT = 1_700_017_200.0
+
 
 @pytest.fixture
 def dead_pids(monkeypatch: pytest.MonkeyPatch) -> set[int]:
@@ -315,6 +318,360 @@ class TestBreaker:
         finally:
             await svc.stop()
         assert notices == [(job.id, note)]
+
+    async def test_a_started_one_shot_a_hard_exit_cut_is_parked(
+        self, tmp_path: Path, dead_pids: set[int], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cut one-shot stays inspectable but cannot fire on the first timer tick."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew import sel as sel_mod
+
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(
+            name="launch-reminder", message="hi", at_ts=_ONE_SHOT_SLOT, delete_after_run=True
+        )
+        _abandoned_marker(tmp_path, job.id, job.name, 4_100_018, _ONE_SHOT_SLOT + 5, run="cutrun")
+        stub = MagicMock()
+        monkeypatch.setattr(sel_mod, "sel", lambda: stub)
+        ran: list[str] = []
+        notices: list[tuple[str, str]] = []
+
+        async def on_job(j: CronJob) -> str | None:
+            ran.append(j.id)
+            return None
+
+        async def notice(j: CronJob, detail: str) -> None:
+            notices.append((j.id, detail))
+
+        svc = await CronService.create(base_dir=tmp_path, on_job=on_job)
+        svc._dumps_dir = tmp_path / "no-dumps"
+        svc.set_interrupt_alert(notice)
+        await svc.start()
+        try:
+            # Drive the first due scan instead of sleeping toward it.
+            await svc._on_timer()
+            stored = CronService(base_dir=tmp_path).get_job(job.id)
+            assert stored is not None
+            assert stored.enabled is False and stored.auto_paused is True
+            assert stored.last_status == "error"
+            assert "paused" in (stored.last_error or "").lower()
+            assert f"kirocrew cron resume {job.id}" in (stored.last_error or "")
+            assert ran == [], "the parked one-shot fired on the first timer tick"
+            assert cron_inflight.abandoned_markers(tmp_path) == []
+            rows, total = await svc._history.get_job_history(job.id)
+            assert (total, rows[0]["run_id"], rows[0]["status"]) == (
+                1,
+                "cutrun",
+                "cancelled",
+            )
+            note = rows[0]["error"]
+            assert "paused" in note.lower()
+            assert f"kirocrew cron resume {job.id}" in note
+        finally:
+            await svc.stop()
+        assert notices == [(job.id, note)]
+        pause_outcomes = [
+            c.kwargs.get("outcome")
+            for c in stub.log_tool_invocation.call_args_list
+            if c.kwargs.get("tool_kind") == "cron_auto_pause"
+        ]
+        assert pause_outcomes == ["auto_paused_cut_run"]
+        removals = [
+            c
+            for c in stub.log_api_access.call_args_list
+            if c.kwargs.get("outcome") == "one_shot_completed"
+        ]
+        assert removals == []
+
+    async def test_a_one_shot_cut_in_its_jitter_wait_stays_due(
+        self, tmp_path: Path, dead_pids: set[int]
+    ) -> None:
+        """A run cut in its jitter wait ran nothing, so the one-shot is kept enabled
+        and due, as a graceful stop at that point keeps it (``run_never_started``)."""
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(
+            name="launch-reminder", message="hi", at_ts=_ONE_SHOT_SLOT, delete_after_run=True
+        )
+        _abandoned_marker(
+            tmp_path, job.id, job.name, 4_100_019, _ONE_SHOT_SLOT, run="waitrun", phase="jitter"
+        )
+        svc = await _started_service(tmp_path, tmp_path / "no-dumps")
+        try:
+            # Read before any await: start() arms the timer last, so it has not fired.
+            assert svc._history.has_run_sync(job.id, "waitrun"), "the cut run was not filed"
+            assert cron_inflight.abandoned_markers(tmp_path) == []
+            kept = CronService(base_dir=tmp_path).get_job(job.id)
+            assert kept is not None and kept.enabled
+            assert cron_module.is_due(kept, _ONE_SHOT_SLOT + 600)
+        finally:
+            await svc.stop()
+
+    async def test_a_parked_one_shot_retries_an_unwritable_history(
+        self, tmp_path: Path, dead_pids: set[int]
+    ) -> None:
+        """A failed row write cannot strand the pause, row, or notice."""
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(
+            name="launch-reminder", message="hi", at_ts=_ONE_SHOT_SLOT, delete_after_run=True
+        )
+        _abandoned_marker(tmp_path, job.id, job.name, 4_100_020, _ONE_SHOT_SLOT + 5, run="cutrun")
+        notices: list[tuple[str, str]] = []
+
+        async def notice(j: CronJob, detail: str) -> None:
+            notices.append((j.id, detail))
+
+        svc = await CronService.create(base_dir=tmp_path)
+        svc._dumps_dir = tmp_path / "no-dumps"
+        svc.set_interrupt_alert(notice)
+        with pytest.MonkeyPatch.context() as history_patch:
+            history_patch.setattr(CronHistoryStore, "append_sync", lambda self, record: False)
+            await svc.start()
+            try:
+                parked = CronService(base_dir=tmp_path).get_job(job.id)
+                assert parked is not None
+                assert parked.enabled is False and parked.auto_paused is True
+                assert [m.run_token for m in cron_inflight.read_markers(tmp_path)] == ["cutrun"]
+                assert (await svc._history.get_job_history(job.id))[1] == 0
+            finally:
+                await svc.stop()
+        assert notices == []
+
+        again = await CronService.create(base_dir=tmp_path)
+        again._dumps_dir = tmp_path / "no-dumps"
+        again.set_interrupt_alert(notice)
+        await again.start()
+        try:
+            rows, total = await again._history.get_job_history(job.id)
+            assert total == 1 and rows[0]["run_id"] == "cutrun"
+            note = rows[0]["error"]
+            assert "paused" in note.lower()
+            assert f"kirocrew cron resume {job.id}" in note
+            assert cron_inflight.abandoned_markers(tmp_path) == []
+            parked = CronService(base_dir=tmp_path).get_job(job.id)
+            assert parked is not None
+            assert parked.enabled is False and parked.auto_paused is True
+        finally:
+            await again.stop()
+        assert notices == [(job.id, note)]
+
+    async def test_a_one_shot_park_save_failure_holds_this_boot_and_retries(
+        self, tmp_path: Path, dead_pids: set[int]
+    ) -> None:
+        """A failed pause save keeps the in-memory job non-due until retry."""
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(
+            name="launch-reminder", message="hi", at_ts=_ONE_SHOT_SLOT, delete_after_run=True
+        )
+        _abandoned_marker(tmp_path, job.id, job.name, 4_100_021, _ONE_SHOT_SLOT + 5, run="cutrun")
+        ran: list[str] = []
+
+        async def on_job(j: CronJob) -> str | None:
+            ran.append(j.id)
+            return None
+
+        svc = await CronService.create(base_dir=tmp_path, on_job=on_job)
+        svc._dumps_dir = tmp_path / "no-dumps"
+        original_save = CronService._save
+        failed = False
+
+        def fail_once(service: CronService, jobs: list[CronJob] | None = None) -> None:
+            nonlocal failed
+            if service is svc and not failed:
+                failed = True
+                raise OSError(errno.ENOSPC, "disk full")
+            original_save(service, jobs)
+
+        with pytest.MonkeyPatch.context() as store_patch:
+            store_patch.setattr(CronService, "_save", fail_once)
+            await svc.start()
+            try:
+                held = svc.get_job(job.id)
+                assert held is not None
+                assert held.enabled is False and held.auto_paused is True
+                on_disk = CronService(base_dir=tmp_path).get_job(job.id)
+                assert on_disk is not None
+                assert on_disk.enabled is True and on_disk.auto_paused is False
+                assert [m.run_token for m in cron_inflight.read_markers(tmp_path)] == ["cutrun"]
+                # Exercise the first due scan; the in-memory pause must win.
+                await svc._on_timer()
+                assert ran == []
+                assert [m.run_token for m in cron_inflight.read_markers(tmp_path)] == ["cutrun"]
+            finally:
+                await svc.stop()
+        assert failed is True
+
+        again = await CronService.create(base_dir=tmp_path, on_job=on_job)
+        again._dumps_dir = tmp_path / "no-dumps"
+        await again.start()
+        try:
+            await again._on_timer()
+            assert ran == []
+            parked = CronService(base_dir=tmp_path).get_job(job.id)
+            assert parked is not None
+            assert parked.enabled is False and parked.auto_paused is True
+            rows, total = await again._history.get_job_history(job.id)
+            assert total == 1 and rows[0]["run_id"] == "cutrun"
+            assert cron_inflight.abandoned_markers(tmp_path) == []
+        finally:
+            await again.stop()
+
+    async def test_a_queued_one_shot_is_parked_and_the_notice_names_resume(
+        self, tmp_path: Path, dead_pids: set[int]
+    ) -> None:
+        """A running marker can still name a script queued before payload start."""
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(
+            name="queued-script",
+            message="",
+            at_ts=_ONE_SHOT_SLOT,
+            delete_after_run=True,
+            script="queued.py:run",
+        )
+        _abandoned_marker(
+            tmp_path,
+            job.id,
+            job.name,
+            4_100_022,
+            _ONE_SHOT_SLOT + 5,
+            run="queuedrun",
+            phase="running",
+        )
+        ran: list[str] = []
+        notices: list[tuple[str, str]] = []
+
+        async def on_job(j: CronJob) -> str | None:
+            ran.append(j.id)
+            return None
+
+        async def notice(j: CronJob, detail: str) -> None:
+            notices.append((j.id, detail))
+
+        svc = await CronService.create(base_dir=tmp_path, on_job=on_job)
+        svc._dumps_dir = tmp_path / "no-dumps"
+        svc.set_interrupt_alert(notice)
+        await svc.start()
+        try:
+            await svc._on_timer()
+            assert ran == []
+            parked = CronService(base_dir=tmp_path).get_job(job.id)
+            assert parked is not None
+            assert parked.enabled is False and parked.auto_paused is True
+            rows, total = await svc._history.get_job_history(job.id)
+            assert total == 1 and rows[0]["run_id"] == "queuedrun"
+            note = rows[0]["error"]
+            assert "paused" in note.lower()
+            assert f"kirocrew cron resume {job.id}" in note
+            assert cron_inflight.abandoned_markers(tmp_path) == []
+        finally:
+            await svc.stop()
+        assert notices == [(job.id, note)]
+
+    async def test_a_kept_marker_leaves_a_resume_of_its_parked_one_shot_standing(
+        self, tmp_path: Path, dead_pids: set[int], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The boot that files a parked run's kept marker does not park it again."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew import sel as sel_mod
+
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(
+            name="launch-reminder", message="hi", at_ts=_ONE_SHOT_SLOT, delete_after_run=True
+        )
+        _abandoned_marker(tmp_path, job.id, job.name, 4_100_023, _ONE_SHOT_SLOT + 5, run="cutrun")
+        stub = MagicMock()
+        monkeypatch.setattr(sel_mod, "sel", lambda: stub)
+        notices: list[tuple[str, str]] = []
+
+        async def notice(j: CronJob, detail: str) -> None:
+            notices.append((j.id, detail))
+
+        svc = await CronService.create(base_dir=tmp_path)
+        svc._dumps_dir = tmp_path / "no-dumps"
+        svc.set_interrupt_alert(notice)
+        with pytest.MonkeyPatch.context() as history_patch:
+            history_patch.setattr(CronHistoryStore, "append_sync", lambda self, record: False)
+            await svc.start()
+            await svc.stop()
+        parked = CronService(base_dir=tmp_path).get_job(job.id)
+        assert parked is not None and parked.auto_paused is True
+        assert [m.run_token for m in cron_inflight.read_markers(tmp_path)] == ["cutrun"]
+        assert CronService(base_dir=tmp_path).enable_job(job.id, True) is True
+
+        again = await CronService.create(base_dir=tmp_path)
+        again._dumps_dir = tmp_path / "no-dumps"
+        again.set_interrupt_alert(notice)
+        await again.start()
+        try:
+            # Read before any await: the resumed one-shot is due, and start() arms
+            # the timer last, so it has not fired.
+            resumed = CronService(base_dir=tmp_path).get_job(job.id)
+            assert resumed is not None
+            assert resumed.enabled is True and resumed.auto_paused is False
+            assert cron_inflight.abandoned_markers(tmp_path) == []
+        finally:
+            await again.stop()
+        rows, total = await again._history.get_job_history(job.id)
+        assert total == 1 and rows[0]["run_id"] == "cutrun"
+        assert notices == [(job.id, rows[0]["error"])]
+        pause_outcomes = [
+            c.kwargs.get("outcome")
+            for c in stub.log_tool_invocation.call_args_list
+            if c.kwargs.get("tool_kind") == "cron_auto_pause"
+        ]
+        assert pause_outcomes == ["auto_paused_cut_run", "auto_pause_cleared"]
+
+    async def test_a_later_cut_of_a_resumed_one_shot_is_parked_again(
+        self, tmp_path: Path, dead_pids: set[int], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The park is per run: a run cut after the resume is parked and audited again,
+        though the store still holds the first park's status and error."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew import sel as sel_mod
+
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(
+            name="launch-reminder", message="hi", at_ts=_ONE_SHOT_SLOT, delete_after_run=True
+        )
+        _abandoned_marker(tmp_path, job.id, job.name, 4_100_024, _ONE_SHOT_SLOT + 5, run="cutrun")
+        stub = MagicMock()
+        monkeypatch.setattr(sel_mod, "sel", lambda: stub)
+        svc = await _started_service(tmp_path, tmp_path / "no-dumps")
+        await svc.stop()
+        assert CronService(base_dir=tmp_path).enable_job(job.id, True) is True
+        resumed = CronService(base_dir=tmp_path).get_job(job.id)
+        assert resumed is not None
+        assert (resumed.enabled, resumed.last_status) == (True, "error")
+        assert f"kirocrew cron resume {job.id}" in (resumed.last_error or "")
+        # The resumed one-shot runs and a hard exit cuts it too, which leaves only
+        # that run's marker: its own token and a later start.
+        second_start = _ONE_SHOT_SLOT + 900
+        _abandoned_marker(tmp_path, job.id, job.name, 4_100_025, second_start, run="secondrun")
+
+        again = await _started_service(tmp_path, tmp_path / "no-dumps")
+        try:
+            parked = CronService(base_dir=tmp_path).get_job(job.id)
+            assert parked is not None
+            assert parked.enabled is False and parked.auto_paused is True
+            assert parked.last_run_ts == second_start
+            rows, total = await again._history.get_job_history(job.id)
+            assert total == 2
+            assert sorted(r["run_id"] for r in rows) == ["cutrun", "secondrun"]
+            assert cron_inflight.abandoned_markers(tmp_path) == []
+        finally:
+            await again.stop()
+        pause_outcomes = [
+            c.kwargs.get("outcome")
+            for c in stub.log_tool_invocation.call_args_list
+            if c.kwargs.get("tool_kind") == "cron_auto_pause"
+        ]
+        assert pause_outcomes == [
+            "auto_paused_cut_run",
+            "auto_pause_cleared",
+            "auto_paused_cut_run",
+        ]
 
     async def test_a_run_cancel_already_filed_is_not_filed_again(
         self, tmp_path: Path, dead_pids: set[int]
