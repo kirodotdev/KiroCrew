@@ -164,7 +164,7 @@ from kiro_crew.apps.registry import (
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
 from kiro_crew.apps.registry_pipeline.git_targets import _lfs_endpoint_pin_argv
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
-    _git_network_env,
+    _git_network_step_env,
     _proxy_env_has_credentials,
 )
 from kiro_crew.apps.routes_art import handle_app_art_file, handle_blob_proxy
