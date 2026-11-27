@@ -356,7 +356,9 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
   const LazyApp = useMemo(
     () => lazy(() => {
       noteAppBundleImport(app.name)
-      return importAppBundle(bundlePath).catch(err => {
+      // A startup mount never reloads the page, so a missing registry chunk must
+      // not either: it fails here instead and `onFailure` contains it.
+      return importAppBundle(bundlePath, { demanded: !suppressReload }).catch(err => {
         // eslint-disable-next-line no-console -- surface bundle load failures for debugging
         console.error(`[AppHost] Failed to load ${app.name} from ${bundlePath}:`, err)
         if (onFailure) {

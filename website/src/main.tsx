@@ -41,6 +41,7 @@ import { desktopWindowBridge, desktopWindowTarget } from './desktopWindow/deskto
 // importing it here would render English for every user whatever they picked.
 import { ensureCatalog, i18next, initI18n, isCatalogChunkError } from './i18n/lazy'
 import { isSpeculativeTerminalChunkError } from './components/terminalSessions'
+import { isSpeculativeAppRegistryChunkError } from './components/appRegistryPrefetch'
 import { DEFAULT_LANGUAGE } from './i18n/languages'
 import { LanguageProvider } from './i18n/LanguageProvider'
 import { AppMotionConfig } from './AppMotionConfig'
@@ -66,8 +67,8 @@ import './index.css'
 import './styles/cli-mode.css'
 import './styles/message-font-size.css'
 import './styles/crew-notes.css'
-// Register shared modules for federated app bundles (must be before any app loads)
-import './app-sdk/shared-modules'
+// The shared-modules registry for app bundles loads with the first app bundle
+// (components/appBundleImport.ts), not here: it holds every lucide icon.
 
 // Initialize RUM as early as possible
 initRum(__APP_VERSION__)
@@ -126,6 +127,8 @@ window.addEventListener('vite:preloadError', (event) => {
   if (isCatalogChunkError(preloadError)) return
   // A hover or idle preload of the terminal is not worth a reload over unsaved work.
   if (isSpeculativeTerminalChunkError(preloadError)) return
+  // Nor is a hover preload of the app registry (appRegistryPrefetch.ts).
+  if (isSpeculativeAppRegistryChunkError(preloadError)) return
   const AT_KEY = 'vite-preload-reloaded-at'
   const N_KEY = 'vite-preload-reload-count'
   const COOLDOWN_MS = 10_000

@@ -53,8 +53,13 @@ export const DEFAULT_BUDGET_BYTES = 500 * KB
  * Lowered on main @ c31700d145 plus the change that loads the xterm terminal
  * (CliPanel) on demand: 11 chunks, 9,478,468 B (main alone 9,830,620 B).
  * Ceiling = 9,478,468 B * 1.05, rounded up to whole KB.
+ *
+ * Lowered on main @ f9a384458e plus the change that keeps the whole lucide icon
+ * set out of the first load (host code imports each icon's own module, and the
+ * app-sdk registry loads with the first app bundle): 11 chunks, 9,011,554 B
+ * (main alone 9,514,980 B). Ceiling = 9,011,554 B * 1.05, rounded up to whole KB.
  */
-export const FIRST_LOAD_BUDGET_BYTES = 9720 * KB
+export const FIRST_LOAD_BUDGET_BYTES = 9241 * KB
 
 /**
  * Explicit ceilings for the chunks that are already known-large, keyed by
@@ -165,7 +170,11 @@ export const CHUNK_BUDGETS = {
   // Lowered on main @ 55e47ba417, same 5% rule: PackAvatar now loads the Lottie
   // player (lottie-web, ~170 KB) on demand, taking the chunk from 3,301,397 B
   // to 3,129,668 B (bundle-report.json sizes, which this gate checks).
-  'first-load-shared': 3210 * KB, // measured 3,129,668 B
+  //
+  // Lowered on main @ f9a384458e, same 5% rule: the lucide icon namespace left
+  // the first load (scripts/lib/lucideDeepImports.mjs), taking the chunk from
+  // 3,144,631 B to 2,641,273 B.
+  'first-load-shared': 2709 * KB, // measured 2,641,273 B
   // The dashboard's own first-load code, cut by import depth into four parts of
   // near-equal size; `main` is the top part, holding the entry. Because the cut
   // is by size, growth anywhere in it raises all four by about a quarter each.
