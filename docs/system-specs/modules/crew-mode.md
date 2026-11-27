@@ -5994,8 +5994,10 @@ attested execution records: the caller a conductor, the target a
 loaded that it lacks and the user has not switched off (one switched off cannot be
 added, so it is not offered; `dashboard/crewmate_dispatch_capabilities.own_worker_note`,
 `mate_capability_catalog.dispatch_summary`: steps 1 and 2 of `find_capabilities`,
-names only, cut to a plain character set and twelve per line; the registry stays
-on demand), which the MCP tool appends to its reply. A server of the worker's
+names only, cut to a plain character set, twelve on the worker's line and eight
+on the gateway's, then `+N more`; the registry stays on demand), which the MCP
+tool appends to its reply. `work_dispatch` makes both calls and appends the note
+once, the seed's (the newer), or the create's when the seed carried none. A server of the worker's
 that the target worker slot's MCP report says its session cannot use is left off
 the worker's list and named in a sentence of its own instead
 (`dispatch.worker_unusable`). Every other caller and

@@ -448,5 +448,5 @@ Reply in one or two short sentences, in the user's language: acknowledge them an
 Kiro Crew was just upgraded, and you now hand your work to a worker: a separate session that does it while this chat stays free for the user, and reports back here. Everything you could use before, your instructions, tools and skills, is now your worker's. Tell the user this in one or two short sentences of your own, in everyday words: that work you take on now goes to your worker, and that they can see what your worker can do by pressing your name at the top of this chat, then the pencil button (Edit Bot), then Abilities, where its tools, MCP servers and skills are listed and they can add more. Call no tools in this reply.
 
 === dispatch_note ===
-Your worker's MCP servers: git, issuetracker. This gateway also has, and your worker lacks: teamchat (request_capabilities raises the card that adds one).
+Worker MCP servers: git, issuetracker. Gateway has, worker lacks: teamchat (request_capabilities adds one).
 
