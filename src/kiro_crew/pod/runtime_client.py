@@ -280,7 +280,7 @@ def _mint_403_cause(exc: urllib.error.HTTPError, name: str) -> str:
             "that is a caller sharing the gateway's user and mount namespaces, so a "
             "different namespace is refused even at the same uid, and on macOS it is a "
             "caller running outside a sandbox profile. Mint from a host process that "
-            "meets this platform's condition."
+            "meets this platform's condition.\n  " + runtime.AGENT_POD_TOOLS_HINT
         )
     if code == "loopback_only":
         return (
