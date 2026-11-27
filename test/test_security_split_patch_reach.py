@@ -41,6 +41,7 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_security_split_patch_reach"
 
 PACKAGE = "kiro_crew.security"
 READER = "kiro_crew.security.shell_normalizer"
+READER_SELF = "kiro_crew.security.shell_normalizer_self"
 SECURITY_DIR = Path(security.__file__).resolve().parent
 _THIS_FILE = Path(__file__).resolve()
 #: Text every test file that binds either module must hold: a dotted spelling (an import,
@@ -74,9 +75,10 @@ _KNOWN_SEAMS: dict[str, frozenset[str]] = {
             "_next_stop_indexes",
             "_output_redirect_scan",
             "_decode_shell_quoted_literals",
+            "_is_self_module_flag",
         }
     ),
-    READER: frozenset({"_brace_pairs", "_glob_to_regex"}),
+    READER_SELF: frozenset({"_brace_pairs", "_glob_to_regex"}),
 }
 
 
@@ -184,13 +186,15 @@ def loop_patched_names(source: str | ast.Module) -> dict[str, set[str]]:
 @source_corpus.untraced()
 def _corpus_patched_names() -> dict[str, frozenset[str]]:
     """Target -> every name the test trees patch through it, scanned once per worker."""
-    found: dict[str, set[str]] = {PACKAGE: set(), READER: set()}
+    found: dict[str, set[str]] = {PACKAGE: set(), READER: set(), READER_SELF: set()}
     for path in _test_tree_files():
         text = path.read_text(encoding="utf-8", errors="replace")
         if not _BINDS_THE_PACKAGE.search(text):
             continue
         tree = ast.parse(text)
-        names = facade_mirror_scan.patched_names(tree, {PACKAGE: PACKAGE, READER: READER})
+        names = facade_mirror_scan.patched_names(
+            tree, {PACKAGE: PACKAGE, READER: READER, READER_SELF: READER_SELF}
+        )
         for target, patched in names.items():
             found[target] |= patched
         for target, patched in loop_patched_names(tree).items():
@@ -318,7 +322,7 @@ def test_the_patch_scan_finds_every_known_seam() -> None:
     """Non-vacuity: a scan that finds nothing would pass both reach rules over nothing."""
     found = _corpus_patched_names()
     missing = {target: sorted(seams - found[target]) for target, seams in _KNOWN_SEAMS.items()}
-    assert missing == {PACKAGE: [], READER: []}
+    assert missing == {PACKAGE: [], READER_SELF: []}
 
 
 def test_the_family_is_the_facade_the_reader_and_every_owner() -> None:
@@ -352,8 +356,8 @@ def test_every_reader_of_a_patched_name_reads_it_where_the_patch_writes() -> Non
 
 def test_every_late_read_of_a_patched_name_goes_to_the_module_the_patch_writes() -> None:
     """The reach for a read through a submodule alias, held across the whole package:
-    ``_shell_normalizer._program_basename`` in the argv floor and ``_shell._shell_tokens``
-    in the deny gate read the module a patch of that name writes."""
+    ``_walk._program_basename`` in the argv floor and ``_shell._shell_tokens`` in the
+    deny gate read the module a patch of that name writes."""
     homes = _patched_homes()
     assert late_read_violations(_texts(_package_modules()), homes) == []
 

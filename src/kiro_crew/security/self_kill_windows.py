@@ -35,6 +35,8 @@ from __future__ import annotations
 import re
 
 from . import shell_normalizer as _shell_normalizer
+from . import shell_normalizer_programs as _programs
+from . import shell_normalizer_self as _self_mod
 from .argv_rules import _expand_glued_boundaries, _split_commands_indexed, _win_program_index
 from .shell_normalizer import _debracket
 from .vocabulary import _SELF_NAME_RE, _WINDOWS_KILL_BY_NAME_PROGRAMS
@@ -58,7 +60,7 @@ def _is_separator(word: str) -> bool:
 def _names_product(word: str) -> bool:
     """True if *word* names the product, read the way the ``pkill`` operands are."""
     n = _shell_normalizer
-    views = (_debracket(word), n._normalize_operand(word), n._resolved_word_view(word))
+    views = (_debracket(word), _self_mod._normalize_operand(word), n._resolved_word_view(word))
     return any(_SELF_NAME_RE.search(view) for view in views)
 
 
@@ -129,7 +131,7 @@ def _pipeline_source_names_product(words: "list[str]", pipe_at: int) -> bool:
             break
     if start >= pipe_at:
         return False
-    if _shell_normalizer._program_basename(words[start]) not in _GET_PROCESS:
+    if _programs._program_basename(words[start]) not in _GET_PROCESS:
         return False
     for arg in _own_args(words, start):
         # A flag's own ``:value`` is read; a bare ``-ErrorAction`` value cannot name it.
@@ -139,7 +141,7 @@ def _pipeline_source_names_product(words: "list[str]", pipe_at: int) -> bool:
 
 
 def _program_of(word: str) -> str:
-    return _shell_normalizer._program_basename(word).removesuffix(".exe")
+    return _programs._program_basename(word).removesuffix(".exe")
 
 
 def _run_positions(words: "list[str]") -> "set[int]":

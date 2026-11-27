@@ -36,6 +36,7 @@ from ..trust_patterns import ENV_ASSIGNMENT_RE
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import argv_rules as _argv_rules
 from . import shell_normalizer as _shell_normalizer
+from . import shell_normalizer_self as _self_mod
 from .argv_floor_hosts import _GLOB_CHARS, _glob_matches, _host_is_self
 from .argv_floor_self import (
     _SELF_FLOOR_QUOTE_JUNK_RE,
@@ -75,7 +76,6 @@ from .shell_normalizer import (
     _data_consumer_exempt,
     _decode_shell_quoted_literals,
     _ends_argv,
-    _glob_could_expand_to,
     _only_single_quoted_openers,
     _program_basename,
     _resolve_param_defaults,
@@ -1413,27 +1413,53 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
     # one spelling), that frame keeps today's lowered reading; so does every
     # line the floor reaches by recursion, which has no submitted text.
     cased_frames: "list[list[str] | None]" = [tokens if same_case else None for tokens in frames]
+    # Each entry judges one lowered frame under one cased twin; an ambiguous lowered
+    # frame (several DISTINCT cased twins) contributes one entry per twin, so the floor
+    # judges it under each and refuses if any refuses. The third field is the frame's
+    # source as written: the lowered source when the line had no upper case, else none
+    # (a line reached by recursion has no submitted text).
+    judged_pairs: "list[tuple[list[str], list[str] | None, str | None]]" = [
+        (tokens, cased, source if same_case else None)
+        for (source, tokens), cased in zip(framed, cased_frames)
+    ]
     if cased_text is not None:
         cased_text = _mask_quoted_separators(
             _ssh_floor_unmasked_text(cased_text), blank_bodies=True
         )
         cased_framed = _self_frames(cased_text, literal)
-        cased_all = [tokens for _source, tokens in cased_framed]
-        if len(cased_all) == len(frames):
-            cased_frames = [
-                cased if [t.lower() for t in cased] == tokens else None
-                for cased, tokens in zip(cased_all, frames)
+        # Pair each lowercased frame with the cased frame(s) that lowercase to it, rather
+        # than zipping on equal length. The lowercased walk gains an ALTERNATIVE frame
+        # wherever the (case-sensitive) baseline substitution reader bound a name, so the
+        # two walks can differ in length. A length-gated positional zip then dropped EVERY
+        # cased frame to None, so a case-sensitive option (`sudo -H`, no value) was read as
+        # its lowercase twin (`-h`, takes a value), the program word shifted, and an ssh
+        # self-connection was allowed (opus). When DISTINCT cased frames lowercase to one
+        # lowered frame (the lowered walk de-dups `sudo -E`/`-e`, or `sudo -h`/`-H`), the
+        # command runs BOTH, so judge the frame under each distinct twin and refuse if any
+        # refuses -- leaving it None was fail-OPEN where the lowercase option takes a value
+        # (`-h`), not fail-closed (opus). Each pair carries its twin's source as written,
+        # for the case reading below; a frame with no twin has none.
+        remaining = list(cased_framed)
+        judged_pairs = []
+        for lowered in frames:
+            idxs = [
+                i
+                for i, (_s, cased) in enumerate(remaining)
+                if [t.lower() for t in cased] == lowered
             ]
-    # Each frame's source as written, for the case reading below: the lowered
-    # source when the line had no upper case, the cased one where its frame lines
-    # up, else none (a line reached by recursion has no submitted text).
-    written_sources: "list[str | None]" = [source if same_case else None for source, _ in framed]
-    if cased_text is not None and len(cased_all) == len(frames):
-        written_sources = [
-            source if cased is not None else None
-            for (source, _), cased in zip(cased_framed, cased_frames)
-        ]
-    for tokens, cased_tokens, written_source in zip(frames, cased_frames, written_sources):
+            if not idxs:
+                judged_pairs.append((lowered, None, None))
+                continue
+            chosen = [remaining[i] for i in idxs]
+            for i in reversed(idxs):
+                remaining.pop(i)
+            distinct: "list[tuple[str, list[str]]]" = []
+            for pick in chosen:
+                if pick[1] not in [d[1] for d in distinct]:
+                    distinct.append(pick)
+            for twin_source, twin in distinct:
+                judged_pairs.append((lowered, twin, twin_source))
+    for tokens, cased_tokens, written_source in judged_pairs:
         programs = _argv_programs(tokens)
         executed = _argv_rules._executed_program_indices(tokens, cased_tokens)
         # A ``case`` arm's closing pattern word (``*)``, ``ssh|scp)``) is matched
@@ -1833,7 +1859,9 @@ def _open_frame_could_run_git_tar(source: str) -> bool:
         base = program.rsplit("/", 1)[-1].removesuffix(".exe")
         if base in ("git", "tar") or "$" in program:
             return True
-        return _glob_has_literal(base) and _glob_could_expand_to(base, ("git", "tar", "ssh"))
+        return _glob_has_literal(base) and _self_mod._glob_could_expand_to(
+            base, ("git", "tar", "ssh")
+        )
 
     def _command_position_runs_git_tar(words: "list[str]") -> bool:
         for argv in _split_commands(words):

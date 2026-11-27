@@ -5,19 +5,35 @@ A payload reaches an interpreter through a redirection, a here-string, a heredoc
 bash array, as well as through an ordinary argument. This module reads those
 carriers: the output-redirect grammar and its glue point, here-string and heredoc
 markers, a command's stdin carriers and their program text, operand spans, the
-``xargs`` here-string rebuild, and the ``-c`` carrier forms.
+``xargs`` here-string rebuild, and the ``-c`` carrier forms. It also holds the
+here-document reset reading of the self floor (the text around each body) and the
+leaf readers of what a command hands on: a brace body's alternatives, a pipe into an
+evaluator, the command ``xargs`` builds, and a substitution body's protected name.
 
 Part of :mod:`kiro_crew.security.shell_normalizer`, which re-exports every name a
-caller imports from it. It reads only :mod:`kiro_crew.security.shell_normalizer_walk`
-below it and never imports ``shell_normalizer``. New carrier shapes belong here.
+caller imports from it. It reads only the owners below the reader
+(:mod:`kiro_crew.security.shell_normalizer_walk`, the program and name vocabularies)
+and never imports ``shell_normalizer``. New carrier shapes belong here.
 """
 
 from __future__ import annotations
 
+import contextvars
 import re
 from typing import TYPE_CHECKING
 
-from .shell_normalizer_walk import _SHELL_WRAPPER_CHARS, _ends_argv
+from . import shell_normalizer_programs as _programs
+from . import shell_normalizer_walk as _walk
+from .shell_normalizer_programs import _NESTED_SHELL_PROGRAMS, _NESTED_SHELL_VERBS
+from .shell_normalizer_walk import (
+    _SHELL_WRAPPER_CHARS,
+    _ends_argv,
+    _is_shell_variable_reference,
+    _iter_shell_chars,
+    _opens_comment,
+    _shell_quote_walk,
+)
+from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_NAME_RE
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -642,3 +658,496 @@ def _operand_span_end(run: list[str], idx: int, text: str) -> int:
         if any(c in run[j] for c in closers):
             return j + 1
     return len(run)
+
+
+# Set for the self floor's EXTRA, additive here-document pass only (see
+# :func:`_shell_payload_walk_uncached`): :func:`_self_tokens` then reads the command
+# with the quote an own-line body leaves open escaped, so the text after the closing
+# line reads unquoted. Off by default, so the ordinary pass reads a body's quotes
+# exactly as origin/main does and this pass can only ADD a denial, never remove one.
+# The ssh floor drives the same reset through its OWN flag (argv_floor_ssh).
+_HEREDOC_RESET = contextvars.ContextVar("self_floor_heredoc_reset", default=False)
+
+
+def _heredoc_body_quotes_literal(command: str) -> str:
+    """The command with every here-document BODY (and its closing tag line) removed,
+    to be read from a FRESH quote state -- the way bash consumes each body as literal
+    data and reads what surrounds it with no quote open. What is kept is everything
+    AROUND the bodies: each opener line, any command written BETWEEN two closing lines,
+    and the final tail. The as-written reading (byte-identical to origin/main) still
+    judges the body text. So a command a body's quote could otherwise pair across its
+    closing line to bury -- between two bodies, or after the last one -- is read here
+    as the command bash runs.
+
+    Removing whole bodies is what closes the two-body case: a quote left open in one
+    body cannot pair with a quote in a later body, because both bodies are gone, so a
+    ``kirocrew restart`` sitting between ``cat <<A`` .. ``A`` and ``cat <<B`` .. ``B``
+    is exposed, not swallowed. A self-restart or an ssh line that sits WITHIN a body
+    (a note written with ``cat > f <<'EOF'``, a commit message fed to
+    ``git commit -F -``) is part of a removed span and stays data, never a command.
+
+    Spans come from :func:`read_commands`, which finds a body and its delimiter line
+    the way bash does. An UNCLOSED body (empty closing text) runs to end-of-text, so
+    there is nothing after it; a DEGENERATE delimiter holding a
+    quote/backslash/substitution character (``<<'a"'``, ``<<"'"``, ``<<$(x)``) needs
+    that character verbatim to match its closing line, so it is left to the as-written
+    reading. A ``<<`` the reader held inside an open ``$(( ))`` / ``(( ))`` is a left
+    SHIFT, not a here-document (``hd.arith_held``): its "body" is a fiction bash never
+    reads, so it opens no text to expose and is skipped.
+
+    Each comment of the kept text (a ``#`` at a word start outside any quote) is
+    removed too, so a quote or a self command in it reads as nothing, as in bash. *command* is the text AS WRITTEN
+    (case and continuations intact): bash matches a closing tag case-sensitively, so
+    an ``eof`` line in an ``EOF`` body is body text, not its end.
+    """
+    from .shell_commands import read_commands  # the reader imports this module
+
+    spans: "list[tuple[int, int]]" = []
+    for cmd in read_commands(command, heredocs=True):
+        for hd in cmd.heredocs:
+            if hd.arith_held:
+                continue
+            end = hd.tail if hd.tail >= 0 else hd.end
+            closing_tag = command[hd.end : end].lstrip("\t ")
+            if end <= hd.start or not closing_tag:
+                continue
+            if any(ch in closing_tag for ch in "'\"`\\$()"):
+                continue
+            spans.append((hd.start, end))
+    if not spans:
+        return command
+    # Remove every confirmed body-plus-closing-line span, keeping what sits AROUND
+    # the bodies: each opener line, any command BETWEEN two closing lines, and the
+    # final tail. bash reads all of those with no quote open, so a quote inside one
+    # body can never pair with a quote in another body or after a closing line to
+    # bury a command written between or after them (`cat <<A` .. `A` .. kirocrew
+    # restart .. `cat <<B` .. `B`). A self-restart or self-ssh written INSIDE a body
+    # is part of a removed span and stays data, as bash leaves it. Only the as-written
+    # reading judges the body text, so this reading can add a denial, never drop one.
+    spans.sort()
+    kept_parts: "list[str]" = []
+    pos = 0
+    for start, end in spans:
+        if start < pos:  # a nested/overlapping span is already inside a removed one
+            pos = max(pos, end)
+            continue
+        kept_parts.append(command[pos:start])
+        pos = end
+    kept_parts.append(command[pos:])
+    text = "".join(kept_parts)
+    # Remove each comment of the kept text, found the way bash finds one: a ``#`` at
+    # a word start outside any quote (the shared quote walk and ``_opens_comment``).
+    # A ``#`` inside quotes or mid-word is data and stays, so a quoted ``# end'``
+    # still closes its quote. A comment's quote opens nothing; it runs to its newline.
+    comment_free: "list[str]" = []
+    pos = 0
+    while True:
+        cut = next(
+            (
+                step.offset
+                for step in _iter_shell_chars(text, start=pos)
+                if step.active and step.char == "#" and _opens_comment(text, step.offset)
+            ),
+            -1,
+        )
+        if cut < 0:
+            comment_free.append(text[pos:])
+            return "".join(comment_free)
+        comment_free.append(text[pos:cut])
+        newline = text.find("\n", cut)
+        pos = len(text) if newline < 0 else newline
+
+
+# Where one gate call keeps the command as submitted, case and continuations intact,
+# for the reset reading of the walk: bash matches a closing tag case-sensitively, so
+# the bodies are found on the words as written. A tuple, since redirect views key on str.
+_SUBMITTED_KEY = ("submitted_command",)
+
+
+def _keep_submitted_command(command: str) -> None:
+    """Keep *command* as submitted for the rest of this gate call (``is_denied``)."""
+    from .shell_commands import _CALL_VIEWS  # circular import: the reader imports this module
+
+    views = _CALL_VIEWS.get()
+    if views is not None:
+        views[_SUBMITTED_KEY] = command
+
+
+def _cased_payload(cased: "str | None", source: str, payload: str) -> "str | None":
+    """*payload* in the case it was written in *cased*, when it sits there verbatim."""
+    at = source.find(payload) if cased is not None else -1
+    found = cased[at : at + len(payload)] if cased is not None and at >= 0 else None
+    return found if found is not None and found.lower() == payload else None
+
+
+def _split_brace_alternatives(body: str) -> "list[str]":
+    """Split a brace body on its TOP-LEVEL commas (``a,{b,c},d`` -> 3 parts)."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for j, ch in enumerate(body):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(body[start:j])
+            start = j + 1
+    parts.append(body[start:])
+    return parts
+
+
+def _pipes_into_evaluator(tokens: "list[str]") -> bool:
+    """True if this command pipes into a shell or evaluator.
+
+    ``echo <name> <verb> | sh`` produces the dangerous command as TEXT and then
+    hands it to something that runs it, so the "arguments are just data" reasoning
+    does not hold: the data IS the command.
+    """
+    seen_pipe = False
+    for token in tokens:
+        if "|" in token:
+            seen_pipe = True
+        if seen_pipe and (
+            _programs._program_basename(token) in _NESTED_SHELL_PROGRAMS
+            or _programs._program_basename(token) in _NESTED_SHELL_VERBS
+            or _programs._program_basename(token) == "xargs"
+            or _is_shell_variable_reference(token)
+        ):
+            return True
+    return False
+
+
+def _xargs_reconstructed_command(tokens: "list[str]") -> str:
+    """The command ``xargs`` will run, rebuilt from its argv plus the piped words.
+
+    ``xargs`` appends the words it reads on stdin to the command given as its own
+    arguments, so ``echo <verb> | xargs <name>`` executes ``<name> <verb>``.  Neither
+    side contains a space, so the whole-token payload scan cannot see it; rebuilding the
+    effective command line makes it visible to the ordinary argv checks.
+    """
+    pipe = next((i for i, tk in enumerate(tokens) if "|" in tk), -1)
+    if pipe <= 0:
+        return ""
+    xargs_at = next(
+        (
+            i
+            for i in range(pipe + 1, len(tokens))
+            if _programs._program_basename(tokens[i]) == "xargs"
+        ),
+        -1,
+    )
+    if xargs_at == -1:
+        return ""
+    # Skip xargs' own options; everything after them is the command it runs.
+    command = [tk for tk in tokens[xargs_at + 1 :] if not tk.startswith("-")]
+    # The producer's literal words (its program name is not piped through).
+    piped = [tk for tk in tokens[1:pipe] if not tk.startswith("-")]
+    if not command:
+        return ""
+    return " ".join(command + piped)
+
+
+def _protected_name_in_substitution(tokens: "list[str]", start: int) -> str:
+    """The protected program name a substitution starting at *start* could produce.
+
+    Scans forward until the substitution closes (``shlex`` splits it across tokens
+    because it splits on whitespace only) and returns the product name, or a
+    by-name kill program, if either appears inside it.  Returns "" when neither does.
+
+    The depth is read from the shared quote-aware walk, with the quote state
+    carried ACROSS tokens because ``shlex`` splits on whitespace and a quoted word
+    can span one. A private ``str.count`` walk closed the substitution at a QUOTED
+    ``)`` and stopped scanning there, so a name hidden after it was never seen --
+    an UNDER-deny for this rule, not the over-deny a previous audit of this line
+    recorded.
+    """
+    depth = 0
+    state = 0
+    ansi = False
+    for token in tokens[start:]:
+        walk = _shell_quote_walk(token, state=state, ansi=ansi)
+        depth += walk.paren_delta
+        state, ansi = walk.end_state, walk.end_ansi
+        m = _SELF_NAME_RE.search(token)
+        if m:
+            return m.group(0)
+        for verb in _KILL_BY_NAME_PROGRAMS:
+            if verb in token:
+                return verb
+        if depth <= 0 and state == 0 and token is not tokens[start]:
+            break
+    return ""
+
+
+def _output_redirect_scan(raw: str, start: int = 0) -> "tuple[str, int] | None":
+    """``(target, end)`` for the OUTPUT redirect at *start* in *raw*, or None.
+
+    ``python 2>&1 <<< '<program>'`` runs the here-string, but the detector had no branch
+    for the ``>`` family at all: it handles ``<`` and heredocs off the raw token and let
+    everything else fall through to "this is a script path". The unnumbered glued form
+    only survived by accident, because ``_normalize_operand`` reduces ``>out.txt`` to the
+    empty string and the loop skips empties -- while ``2>&1`` reduces to ``2``, a
+    perfectly good file name, so the interpreter looked like it was running a script
+    called ``2`` and the program on its stdin went unscanned.
+
+    Every spelling is a redirect and none is ever a positional: an optional leading file
+    DESCRIPTOR -- a number, ``&`` for both streams, or a ``{name}`` automatic descriptor
+    -- then ``>`` or ``>>``, then an optional ``&`` for the duplicating form or ``|`` for
+    the noclobber override.
+
+    The target STOPS at the next redirect operator, and *end* is that position, because
+    the shell starts a new redirect there: in ``python 2>/dev/null<<EOF`` the word is one
+    token, and taking all of ``/dev/null<<EOF`` as the target swallows the heredoc marker
+    and loses the program that arrives on stdin.
+
+    Only at substitution depth ZERO, though. A redirect inside ``$(...)``, ``${...}`` or
+    backticks belongs to that inner command and is not a boundary of this word:
+    ``python 2>$(echo>/dev/null;printf /dev/null) <<< '<program>'`` really is
+    ``python 2>/dev/null`` once the shell has run the substitution, and cutting the target
+    at the inner ``>`` left the tail of the substitution to be read as a script path,
+    which put the stdin program back out of view. The whole substitution is one shell
+    WORD, and :func:`_operand_span_end` is what carries it across the tokens it spans.
+
+    Depth counts every ``(`` and ``{`` INSIDE a substitution, but at depth zero only a
+    ``$``-prefixed opener starts one. A subshell nested inside a substitution
+    (``$( (true); printf /dev/null)``) closes with its own ``)`` -- counting the opener
+    but not that one would drop the depth to zero early and reopen exactly the hole
+    this closes. A BARE opener at depth zero is different: the tokenizer that feeds
+    this scan strips quotes (``_self_token_frames`` shlex-splits, and the caller also
+    edge-strips), so a quoted ``(`` -- one filename character to bash -- arrived here
+    bare, opened a span that never closed, and the target ran past the ``<<<`` that
+    should have ended it. The here-string was absorbed into the target and the program
+    arriving on stdin went unscanned: measured in bash, ``python 2>'a)(b'<<<'<program>'``
+    runs the program, and so does the unquoted-brace spelling ``python 2>a{b<<<'<program>'``
+    (a bare ``{`` is an ordinary filename character). An UNQUOTED bare ``(`` cannot
+    reach execution at all -- bash rejects ``2>a(b`` as a syntax error -- so at depth
+    zero the only executable meaning of a bare opener is a filename character, and the
+    walk now reads it as one. *raw* must reach here with its substitution delimiters
+    intact; see the caller.
+
+    Quote CHARACTERS in *raw* are data, never grammar. The tokenizer resolved quoting
+    before this scan runs, so a quote character that survives is literal text from a
+    spelling like ``2>"a'b"`` -- and reading it as grammar is the same defect in the
+    opposite direction: a single-quote state opened on that data quote consumed the
+    ``<<<`` to the end of the text and hid the operator (found in review, First
+    Principles lane). The walk therefore steps over quote characters like any other
+    filename character. Residuals, tracked rather than chased: a quoted ``'$('`` or
+    a quoted backtick in a filename de-quotes to the same characters as real grammar
+    and still holds or toggles a span -- indistinguishable without the quoting the
+    tokenizer already destroyed, and closing that class needs quote-preserving
+    tokenization at the frame level, not another rule here.
+
+    An INDEX is returned rather than the remaining text so a word holding a chain of
+    them (``>a>a>a...``) can be walked once. Re-slicing the word per operator was
+    quadratic in its length, on a floor that runs for every command -- the same defect
+    class this module pins against elsewhere, so it is not reintroduced here.
+    """
+    match = _OUTPUT_REDIRECT_RE.match(raw, start)
+    if match is None:
+        return None
+    cut = match.end()
+    depth = 0
+    in_backtick = False
+    while cut < len(raw):
+        char = raw[cut]
+        if char == "`":
+            in_backtick = not in_backtick
+        elif char in "({":
+            # At depth ZERO an opener counts only when `$` precedes it: `$(`, `${` and
+            # `$((` start substitutions, while a BARE `(` mid-word is never grammar in
+            # a command that runs -- unquoted it is a bash syntax error, so the only
+            # spelling that reaches execution is a quoted one, and the tokenizer that
+            # feeds this scan strips quotes (see above). A bare `{` is an ordinary
+            # filename character (measured: `python 2>a{b<<<'<program>'` runs the
+            # program and writes the file `a{b`). INSIDE a substitution every opener
+            # still counts, because a nested subshell closes with its own `)`.
+            if depth or (cut > match.end() and raw[cut - 1] == "$"):
+                depth += 1
+        elif char in ")}" and depth:
+            depth -= 1
+        elif char in "<>" and not depth and not in_backtick:
+            break
+        cut += 1
+    return raw[match.end() : cut], cut
+
+
+def _rejoin_split_substitutions(tokens: "list[str]") -> "list[str]":
+    """:func:`_rejoined_runs` as words: each run of tokens put back together."""
+    return [word for word, _merged in _rejoined_runs(tokens)]
+
+
+def _rejoined_runs(tokens: "list[str]") -> "list[tuple[str, bool]]":
+    """``(word, rejoined)`` for *tokens* with each word the tokenizer split INSIDE its own command substitution
+    put back together, as bash reads it: ``x=$(echo hi) kirocrew ...`` is one
+    assignment word before the program, not ``x=$(echo`` and a program ``hi)``, and
+    ``t="${u:+"'"}$(printf token)"`` stays one assignment. A token joins the next while
+    a ``$(`` in the run is still open or the run holds an odd count of backticks. Each
+    token is scanned once, so this is linear. A run that never closes is left as
+    tokenized; the runs before it stay rejoined.
+    The caller reads the result as an EXTRA frame beside the as-tokenized one, so this
+    can only add a refusal.
+    """
+    out: "list[tuple[str, bool]]" = []
+    run: "list[str]" = []
+    depth = 0
+    ticks = 0
+    for token in tokens:
+        run.append(token)
+        ticks += token.count("`")
+        i = 0
+        while i < len(token):
+            if token.startswith("$(", i):
+                depth += 1
+                i += 2
+                continue
+            if depth and token[i] == "(":
+                depth += 1
+            elif depth and token[i] == ")":
+                depth -= 1
+            i += 1
+        if not depth and not ticks % 2:
+            out.append((" ".join(run), len(run) > 1))
+            run = []
+    return out + [(token, False) for token in run]
+
+
+# The ``${...}`` prefixes before a substitution opener in an assignment value, after
+# an optional opening double quote (``T="${U:+x}$(...)"`` quotes the whole value).
+_RAW_VALUE_PREFIX_RE = re.compile(r'"?(?:\$\{[^}]*\})*')
+
+
+def _raw_word_scopes(command: str) -> "list[tuple[int, bool]]":
+    """For each shell word of *command*, ``(start offset, at top level)``.
+
+    A word starts where unquoted, unescaped whitespace ends, which is where
+    ``shlex`` starts a token, so the list pairs with ``normalize_shell_command``'s
+    tokens one for one (the caller checks the counts).  *At top level* means no
+    ``(``/``{`` grouping is open in the raw text before it: not inside a subshell, a
+    substitution body, a brace group or a function body.  Read from the raw text
+    through the shared quote walk, so a quote the source closes cannot hide a paren
+    the way a lone dequoted quote does.  If the line's grouping does not BALANCE (depth
+    left open at the end, or it goes negative at some point -- a bare ``{``/``}`` word or
+    a ``case`` pattern's ``)``), the running depth cannot place an assignment, so every
+    word is treated as top level (FAIL-CLOSED): the alternative frame is built and can
+    only ADD a refusal, never lose one (gpt/opus r29->r30).
+
+    Every unquoted ``{`` that does not open a ``${`` parameter counts as a group,
+    glued or not (``f(){ T=$(...); }``), and every unquoted ``}`` closes one, so a
+    brace expansion closed in its own word (``{a,b}``) nets to nothing.  Telling a
+    function body from brace expansion would take a parser, and an over-count only
+    leaves an assignment unpaired, which keeps the baseline's binding.
+    """
+    words: list[tuple[int, bool]] = []
+    depth = 0
+    params = 0  # open ``${`` parameter braces: their ``}`` closes no group
+    groups: "list[int]" = []  # depths of open ``{ ...; }`` groups (current shell)
+    broken = False
+    in_word = False
+    for step in _walk._iter_shell_chars(command):
+        if step.active and step.char.isspace():
+            in_word = False
+            continue
+        if not in_word:
+            in_word = True
+            words.append((step.offset, depth == 0 and not broken))
+        if step.char == "{" and command[step.offset - 1 : step.offset] == "$":
+            params += 1
+        elif step.char == "}" and params:
+            params -= 1
+        elif step.active and step.char == "{" and _opens_current_shell_group(command, step.offset):
+            groups.append(depth)  # a ``{ ...; }`` group runs in this shell: no new scope
+        elif step.active and step.char == "}" and groups and groups[-1] == depth:
+            groups.pop()
+        elif step.active and step.char in "({":
+            depth += 1
+        elif step.active and step.char in ")}":
+            depth -= 1
+        broken = broken or depth < 0
+    # Fail-closed (gpt/opus r29->r30): an unbalanced line -- depth left open at the end,
+    # or it went negative at some point (a bare ``{``/``}`` word, or a ``case`` pattern's
+    # ``)``) -- means an EARLIER fake group would wrongly mark a real top-level ``T=`` as
+    # nested and drop its alternative frame, allowing the mint this PR refuses. The
+    # running depth cannot be trusted here, so treat every word as top level; the
+    # alternative frame is then built and can only ADD a refusal. A balanced line (a real
+    # ``{ …; }`` group or an uncalled ``f(){ …; }`` body) is unchanged -- its inner
+    # assignment stays non-top-level and keeps main's binding, as before.
+    if depth != 0 or broken:
+        words = [(start, True) for start, _ in words]
+    return words
+
+
+def _spells_self_name(token: str) -> bool:
+    """True if *token*'s basename carries a letter, so a glob there (``k*``,
+    ``kirocre[w]``) spells some of the product's name.  A word of glob characters
+    alone (``*``, ``test/*``) is a filename pattern, not the program, although
+    :func:`_is_self_program` reads it as one that could expand to it."""
+    return re.search(r"[a-z]", _programs._program_basename(token), re.IGNORECASE) is not None
+
+
+def _assignment_word_starts(command: str, tokens: "list[str]") -> "list[tuple[int, bool]] | None":
+    """``(start, at top level)`` per token: each assignment token placed by its unquoted
+    ``NAME=`` at a word start of *command*, in order (``-1`` for any other token), or
+    None when one cannot be placed. *At top level* means no ``(`` or function-body ``{``
+    is open before it; a ``{ ...; }`` group runs in this shell, so it opens no scope."""
+    depth_at: "dict[int, int]" = {}  # depth at each UNQUOTED offset
+    depth = 0
+    groups: "list[int]" = []
+    for step in _walk._iter_shell_chars(command):
+        if step.active:
+            depth_at[step.offset] = depth
+        if step.active and step.char == "{" and _opens_current_shell_group(command, step.offset):
+            groups.append(depth)
+        elif step.active and step.char == "}" and groups and groups[-1] == depth:
+            groups.pop()
+        elif step.active and (
+            step.char == "(" or (step.char == "{" and command[step.offset - 1 : step.offset] != "$")
+        ):
+            depth += 1
+        elif step.active and step.char in ")}":
+            depth = max(depth - 1, 0)
+    out: "list[tuple[int, bool]]" = []
+    pos = 0
+    for token in tokens:
+        assign = _walk._LOCAL_ASSIGN_RE.match(token)
+        if not assign:
+            out.append((-1, True))
+            continue
+        name_re = re.compile(r"(?:\A|(?<=[\s;&|(]))" + re.escape(assign.group(1)) + "=")
+        found = next((m for m in name_re.finditer(command, pos) if m.start() in depth_at), None)
+        if found is None:
+            return None
+        out.append((found.start(), depth_at[found.start()] == 0))
+        pos = found.end()
+    return out
+
+
+_COMMAND_START_RE = re.compile(
+    r"(?:\A|[;&|\n({]|\)(?=\s)|(?<![\w-])(?:if|while|until|then|do|else|elif|time(?:\s+-p)?|!))\s*\Z"
+)
+
+
+def _at_command_start(command: str, at: int) -> bool:
+    """True if offset *at* is where a command starts: after a separator, a ``(`` or
+    ``{``, a case pattern's ``)``, or a reserved word a command follows (``if``,
+    ``while``, ``until``, ``then``, ``do``, ``else``, ``elif``, ``!``, ``time [-p]``).
+    The look-back is bounded, so a caller pays no rescan."""
+    return bool(_COMMAND_START_RE.search(command[max(0, at - 256) : at]))
+
+
+def _opens_current_shell_group(command: str, at: int) -> bool:
+    """True if the ``{`` at *at* opens a ``{ ...; }`` group or a function body
+    (``f() {``, ``f(){``, ``function f {``) that runs in the CURRENT shell, so an
+    assignment in it is visible after its ``}`` or after a call. A function body is
+    read as run: any later command may call it, as main's reader already assumes for a
+    body it can read (``f(){ T=$(echo token); }; kirocrew $T`` is refused there)."""
+    if command[at + 1 : at + 2] not in (" ", "\t", "\n"):
+        return False
+    before = command[max(0, at - 256) : at].rstrip()
+    if re.search(r"(?:\bfunction\s+[\w-]+(?:\s*\(\s*\))?|\(\s*\))\s*\Z", before):
+        return True
+    return _at_command_start(command, at)
+
+
+# An assignment whose value opens a substitution, as raw text.
+_SUBST_ASSIGN_RE = re.compile(r"(?<![\w$])[A-Za-z_]\w*=[\"']?(?:\$\{[^}]*\})*[\"']?(?:\$\(|`)")

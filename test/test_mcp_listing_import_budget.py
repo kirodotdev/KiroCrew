@@ -137,11 +137,16 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for each server: config validation checks the schema with the in-house
 #: ``kiro_crew.config.schema_check`` instead of importing ``jsonschema`` (66 modules,
 #: none of them ``kiro_crew``); that one file is the whole rise.
+#: Raised by 1 for all four servers by the credential-mint floor: the product CLI's
+#: self-invocation recognizer lives in its own ``kiro_crew.security.shell_normalizer_self``,
+#: below both the shell reader and ``argv_floor_self`` and importing neither, so both read
+#: one recognizer; the security package loads before the list, so it cannot move behind it,
+#: and nothing else loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 507,
-    "mcp-cron": 373,
-    "mcp-guide": 367,
-    "mcp-mate": 370,
+    "mcp-core": 508,
+    "mcp-cron": 374,
+    "mcp-guide": 368,
+    "mcp-mate": 371,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
