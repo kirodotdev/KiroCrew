@@ -37,6 +37,35 @@ fi
 
 read_base_outputs || { echo "base stack not found - run deploy.sh once first." >&2; exit 1; }
 
+# The code archive goes into the same bucket the shared distribution serves.
+# Upload only when the bucket policy denies CloudFront the _backends/ prefix
+# (base-stack.yaml DenyCloudFrontCodeArchives); a base stack created before
+# that statement existed would otherwise publish the archive. Fail closed when
+# the policy cannot be read.
+if ! aws_cli s3api get-bucket-policy --bucket "$BUCKET" --query Policy --output text 2>/dev/null \
+    | python3 -c '
+import json, sys
+bucket = sys.argv[1]
+try:
+    stmts = json.loads(sys.stdin.read()).get("Statement", [])
+except ValueError:
+    sys.exit(1)
+def as_list(v):
+    return v if isinstance(v, list) else [v]
+for st in as_list(stmts):
+    svc = (st.get("Principal") or {}).get("Service") if isinstance(st.get("Principal"), dict) else None
+    if (st.get("Effect") == "Deny" and not st.get("Condition")
+            and any(p == "cloudfront.amazonaws.com" for p in as_list(svc))
+            and {"s3:GetObject", "s3:*"} & set(as_list(st.get("Action")))
+            and any(str(r).partition(":::")[2] == bucket + "/_backends/*" for r in as_list(st.get("Resource")))):
+        sys.exit(0)
+sys.exit(1)
+' "$BUCKET"; then
+  echo "error: the base stack bucket policy does not keep _backends/ off the public distribution." >&2
+  echo "  Run deploy.sh (or deploy-app.sh) once to apply the current base template, then retry." >&2
+  exit 1
+fi
+
 # ── F2 (R29): Boundary preflight — fail early if IAM boundary policy doesn't exist ──
 ACCT_ID="$(aws_cli sts get-caller-identity --query 'Account' --output text 2>/dev/null)" || {
   echo "error: unable to determine AWS account ID (sts get-caller-identity failed)." >&2
