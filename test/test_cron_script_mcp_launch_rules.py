@@ -245,6 +245,168 @@ class TestSwitchedOffTool:
         servers.close()
 
 
+@pytest.fixture
+def denied_tools(monkeypatch):
+    """Sets the operator's ``hooks.auto_deny_tools`` the tool gate reads."""
+    from types import SimpleNamespace
+
+    from kiro_crew import permission_floor
+
+    def _set(*patterns: str) -> None:
+        config = SimpleNamespace(hooks={"auto_deny_tools": list(patterns)})
+        monkeypatch.setattr(permission_floor.KiroCrewConfig, "load", lambda: config)
+
+    return _set
+
+
+@pytest.fixture
+def governance(tmp_path, monkeypatch):
+    """Sets a governance ceiling from the policy sections it is given."""
+    import dataclasses
+
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform import context as ctx_mod
+    from kiro_crew.platform import governance_profiles as gp
+    from kiro_crew.platform.bootstrap import build_default_context
+    from kiro_crew.platform.governance import parse_policy
+
+    monkeypatch.setattr(gp, "_PROFILES_DIR", tmp_path / "profiles")
+    gp.reset_store()
+
+    def _set(**sections: Any) -> None:
+        ceiling = parse_policy({"version": 1, "boot": {"fail_closed": True}, **sections})
+        base = build_default_context(KiroCrewConfig.load())
+        ctx_mod.set_context(dataclasses.replace(base, governance=ceiling))
+
+    yield _set
+    ctx_mod.reset_context()
+    gp.reset_store()
+
+
+class TestToolGate:
+    """A script's tool call gets the deny verdicts a chat tool call gets."""
+
+    def test_an_auto_deny_tools_rule_refuses_before_a_server_starts(
+        self, home, started, denied_tools
+    ):
+        _write_servers(home["spec"], {"srv": {"command": "x"}})
+        denied_tools("@srv/delete_*")
+        servers = KeptMcpServers(session_key="cron:j1")
+
+        with pytest.raises(McpToolError, match="tool 'delete_repo' on MCP server 'srv' is refused"):
+            servers.call_tool("srv", "delete_repo", {})
+        assert started == []
+
+        assert servers.call_tool("srv", "list_repos", {}) == "ran list_repos"
+        assert started == ["srv"]
+        servers.close()
+
+    def test_a_governance_deny_refuses_the_call(self, home, started, governance):
+        _write_servers(home["spec"], {"srv": {"command": "x"}})
+        governance(mcp={"mode": "deny", "deny": ["@srv/delete_repo"]})
+        servers = KeptMcpServers(session_key="cron:j1")
+
+        with pytest.raises(McpToolError, match="refused"):
+            servers.call_tool("srv", "delete_repo", {})
+        assert started == []
+
+        assert servers.call_tool("srv", "list_repos", {}) == "ran list_repos"
+        servers.close()
+
+    def test_an_allow_mode_tools_list_admits_the_tool_it_names(self, home, started, governance):
+        """The call carries the title a chat MCP call carries, so a ``tools`` allow
+        list naming the tool admits it here as it does in a chat."""
+        _write_servers(home["spec"], {"srv": {"command": "x"}})
+        governance(tools={"mode": "allow", "allow": ["list_repos"]})
+        servers = KeptMcpServers(session_key="cron:j1")
+
+        assert servers.call_tool("srv", "list_repos", {}) == "ran list_repos"
+        servers.close()
+
+    @pytest.mark.parametrize("fault", [RuntimeError, TimeoutError], ids=["error", "timeout"])
+    def test_a_governance_fault_refuses_a_cron_run_but_not_a_preview(
+        self, home, started, monkeypatch, fault
+    ):
+        """A cron run has nobody watching, so a governance evaluation that raises or
+        times out refuses it, as on every other unattended surface; a preview in a
+        person's terminal keeps the attended answer."""
+        from kiro_crew.platform import governance_profiles
+
+        def _fault(*args, **kwargs):
+            raise fault("profile store broke")
+
+        monkeypatch.setattr(governance_profiles, "resolve_active_scope", _fault)
+        _write_servers(home["spec"], {"srv": {"command": "x"}})
+        run = KeptMcpServers(session_key="cron:j1")
+        preview = KeptMcpServers()
+
+        with pytest.raises(McpToolError, match="could not be evaluated for an unattended turn"):
+            run.call_tool("srv", "t", {})
+        assert started == []
+        assert preview.call_tool("srv", "t", {}) == "ran t"
+        run.close()
+        preview.close()
+
+    def test_a_deny_refuses_a_preview_too(self, home, started, denied_tools):
+        """A deny verdict is not an attended-only answer: the preview refuses it too."""
+        _write_servers(home["spec"], {"srv": {"command": "x"}})
+        denied_tools("@srv/delete_*")
+        preview = KeptMcpServers()
+
+        with pytest.raises(McpToolError, match="is refused"):
+            preview.call_tool("srv", "delete_repo", {})
+        assert started == []
+        preview.close()
+
+    def test_a_cron_run_with_no_policy_runs_as_before(self, home, started):
+        """No deny rule, no ceiling and no profile: nothing decides, so the call runs."""
+        _write_servers(home["spec"], {"srv": {"command": "x"}})
+        run = KeptMcpServers(session_key="cron:j1")
+
+        assert run.call_tool("srv", "list_repos", {}) == "ran list_repos"
+        run.close()
+
+    def test_the_gate_judges_the_run_s_identity_and_the_trusted_tool(
+        self, home, started, monkeypatch
+    ):
+        from kiro_crew import hooks as hooks_mod
+
+        seen: list[tuple[str, dict]] = []
+
+        def _gate(self, tool_name, **kwargs):
+            seen.append((tool_name, kwargs))
+            return hooks_mod.ToolHookResult(action=hooks_mod.TOOL_ALLOW)
+
+        monkeypatch.setattr(hooks_mod.HookManager, "on_tool_call", _gate)
+        _write_servers(home["spec"], {"srv": {"command": "x"}})
+        servers = KeptMcpServers(session_key="cron:j1")
+
+        assert servers.call_tool("srv", "t", {"q": 1}) == "ran t"
+        ((title, kwargs),) = seen
+        assert title == "mcp__srv__t"
+        assert kwargs["session_key"] == "cron:j1"
+        assert kwargs["mcp_server_name"] == "srv"
+        assert kwargs["mcp_tool_name"] == "t"
+        assert kwargs["mcp_identity_trusted"] is True
+        assert kwargs["raw_params"] == {"q": 1}
+        servers.close()
+
+    def test_a_gate_that_cannot_be_consulted_refuses(self, home, started, monkeypatch):
+        from kiro_crew import hooks as hooks_mod
+
+        def _boom(self, *args, **kwargs):
+            raise RuntimeError("gate broke")
+
+        monkeypatch.setattr(hooks_mod.HookManager, "on_tool_call", _boom)
+        _write_servers(home["spec"], {"srv": {"command": "x"}})
+        servers = KeptMcpServers(session_key="cron:j1")
+
+        with pytest.raises(McpToolError, match="refused"):
+            servers.call_tool("srv", "t", {})
+        assert started == []
+        servers.close()
+
+
 class _FakeRemote(BaseHTTPRequestHandler):
     """A streamable-HTTP MCP server with a tool ``echo``; 401 without the token.
 

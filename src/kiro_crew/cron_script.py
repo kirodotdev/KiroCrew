@@ -1248,7 +1248,9 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         _remote_headers,
         _RemoteMcpServer,
         _resolve_mcp_server,
+        _ScriptToolCall,
         _switched_off_tools,
+        _tool_gate_refusal,
         _tool_is_switched_off,
     )
     from kiro_crew.cron_script_paths import (  # noqa: F401
