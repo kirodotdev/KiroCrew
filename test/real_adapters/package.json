@@ -16,6 +16,12 @@
     "undici": "8.12.2",
     "pi-acp": {
       "zod": "4.6.7"
+    },
+    "@deepseek-ai/dsh-mcp-client": {
+      "@modelcontextprotocol/client": "2.4.0"
+    },
+    "@deepseek-ai/libreoffice-kit": {
+      "fflate": "0.8.3"
     }
   }
 }
