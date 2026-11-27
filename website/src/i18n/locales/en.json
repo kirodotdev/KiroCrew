@@ -11335,6 +11335,7 @@
         "remote_user": "Remote user",
         "retry": "Retry",
         "ssh_host_alias": "SSH host / alias",
+        "ssh_host_alias_hint": "Exactly what you would type after ssh: a host name, user@host, or a Host alias from ~/.ssh/config. Give the user the image expects here or in that alias, for example ubuntu on Ubuntu AMIs.",
         "ssh_tunnel": "SSH tunnel",
         "ssh_tunnel_not_supported_windows": "Not supported on Windows",
         "ssh_tunnel_not_supported_windows_hint": "SSH tunnels are not yet supported when {{productName}} runs on Windows: it needs the OpenSSH client on PATH and may fail to connect. Use AWS SSM Session Manager instead.",

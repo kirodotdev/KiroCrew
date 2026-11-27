@@ -20873,6 +20873,7 @@
         "remove_failed": "Entfernen von {{id}} fehlgeschlagen: {{error}}",
         "retry": "Wiederholen",
         "ssh_host_alias": "SSH-Host / Alias",
+        "ssh_host_alias_hint": "Genau das, was du nach ssh eingeben würdest: ein Hostname, user@host oder ein Host-Alias aus ~/.ssh/config. Gib den Benutzer, den das Image erwartet, hier oder in diesem Alias an, zum Beispiel ubuntu auf Ubuntu-AMIs.",
         "ssh_tunnel": "SSH-Tunnel",
         "ssh_tunnel_not_supported_windows": "Unter Windows nicht unterstützt",
         "ssh_tunnel_not_supported_windows_hint": "SSH-Tunnel werden noch nicht unterstützt, wenn {{productName}} unter Windows läuft: Dafür wird der OpenSSH-Client im PATH benötigt, und die Verbindung kann fehlschlagen. Verwende stattdessen AWS SSM Session Manager.",

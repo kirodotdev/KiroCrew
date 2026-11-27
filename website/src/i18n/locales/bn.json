@@ -20873,6 +20873,7 @@
         "remove_failed": "{{id}} সরানো যায়নি: {{error}}",
         "retry": "পুনরায় চেষ্টা করুন",
         "ssh_host_alias": "SSH হোস্ট / অ্যালিয়াস",
+        "ssh_host_alias_hint": "ssh-এর পরে তুমি ঠিক যা লিখতে: একটি হোস্ট নাম, user@host, অথবা ~/.ssh/config-এর একটি Host অ্যালিয়াস। ইমেজ যে ব্যবহারকারী আশা করে তা এখানে বা সেই অ্যালিয়াসে দাও, যেমন Ubuntu AMI-তে ubuntu।",
         "ssh_tunnel": "SSH টানেল",
         "ssh_tunnel_not_supported_windows": "Windows-এ সমর্থিত নয়",
         "ssh_tunnel_not_supported_windows_hint": "{{productName}} Windows-এ চললে SSH টানেল এখনও সমর্থিত নয়: এর জন্য PATH-এ OpenSSH ক্লায়েন্ট লাগে এবং সংযোগ ব্যর্থ হতে পারে। এর বদলে AWS SSM Session Manager ব্যবহার করো।",

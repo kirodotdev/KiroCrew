@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { InstancesPanel, humanizeSecs } from '../pages/settings/InstancesPanel'
@@ -76,6 +76,14 @@ describe('InstancesPanel', () => {
     renderWithProviders(<InstancesPanel />)
     expect(await screen.findByText(/No remote crews configured yet/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add remote crew' })).toBeInTheDocument()
+  })
+
+  it('says under the SSH host field what it takes and which user to give', async () => {
+    ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, instances: [], warm_set_cap: 5 })
+    renderWithProviders(<InstancesPanel />)
+    const input = await screen.findByPlaceholderText('host-1-alias')
+    const label = input.closest('label') as HTMLElement
+    expect(within(label).getByText(/user@host.*~\/\.ssh\/config.*ubuntu/)).toBeInTheDocument()
   })
 
   it('passes the optional remote_bin path through the Add form', async () => {

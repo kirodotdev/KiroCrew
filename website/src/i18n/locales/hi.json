@@ -20873,6 +20873,7 @@
         "remove_failed": "{{id}} को हटाना विफल: {{error}}",
         "retry": "पुनः प्रयास करें",
         "ssh_host_alias": "SSH होस्ट / उपनाम",
+        "ssh_host_alias_hint": "ठीक वही जो तुम ssh के बाद लिखते: एक होस्ट नाम, user@host, या ~/.ssh/config का कोई Host उपनाम। इमेज जिस उपयोगकर्ता की अपेक्षा करती है उसे यहाँ या उस उपनाम में दो, जैसे Ubuntu AMI पर ubuntu।",
         "ssh_tunnel": "SSH टनल",
         "ssh_tunnel_not_supported_windows": "Windows पर समर्थित नहीं",
         "ssh_tunnel_not_supported_windows_hint": "जब {{productName}} Windows पर चलता है, तब SSH टनल अभी समर्थित नहीं हैं: इसके लिए PATH में OpenSSH क्लाइंट चाहिए और कनेक्ट होना विफल हो सकता है। इसके बजाय AWS SSM Session Manager इस्तेमाल करो।",
