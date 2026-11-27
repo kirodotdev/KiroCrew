@@ -512,6 +512,57 @@ def test_an_ordinary_relative_proof_is_not_read_as_an_escape(verify_finding):
 
 
 @pytest.mark.parametrize(
+    ("platform", "body", "argument"),
+    [
+        ("win32", "python3 tests\\poc_probe.py", "tests\\poc_probe.py"),
+        ("linux", "python3 my\\ poc.py", "my poc.py"),
+        ("darwin", "python3 my\\ poc.py", "my poc.py"),
+    ],
+)
+def test_a_backslash_is_a_separator_on_windows_and_an_escape_elsewhere(
+    verify_finding, monkeypatch, platform, body, argument
+):
+    """Each host reads a backslash the way its own command line does."""
+    monkeypatch.setattr(sys, "platform", platform)
+
+    assert verify_finding.poc_argv(f"cmd::{body}") == ([sys.executable, argument], "cmd")
+
+
+@pytest.mark.parametrize("argument", ["..\\outside.py", "C:\\outside.py"])
+def test_the_escape_screen_reads_the_windows_argv_that_runs(verify_finding, monkeypatch, argument):
+    """A kept backslash is screened too: the screen and the runner share one split."""
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    assert verify_finding.refusal_reason(f"cmd::python3 {argument}") is not None
+
+
+def test_a_windows_relative_proof_that_exits_zero_is_rejected(
+    ledger, verify_finding, db, worktree, capsys, monkeypatch
+):
+    """On Windows the runner gets ``tests\\poc_probe.py`` as written; its exit 0 rejects.
+
+    A POSIX split hands it ``testspoc_probe.py``, a file the proof never named.
+    """
+    ran: list[list[str]] = []
+
+    def fake_run_poc(argv: list[str], *_: object) -> int:
+        ran.append(argv)
+        return 0
+
+    monkeypatch.setattr(verify_finding, "run_poc", fake_run_poc)
+    monkeypatch.setattr(sys, "platform", "win32")
+    finding_id = a_finding(ledger, db, poc="cmd::python3 tests\\poc_probe.py")
+
+    code = verify_finding.main(
+        ["--db", str(db), "--finding-id", str(finding_id), "--worktree", str(worktree)]
+    )
+
+    assert ran == [[sys.executable, "tests\\poc_probe.py"]]
+    assert code == 10
+    assert out_json(capsys)["verdict"] == "rejected"
+
+
+@pytest.mark.parametrize(
     "nodeid",
     [
         # A parametrised id: `token` then `[`, which IS a word boundary.

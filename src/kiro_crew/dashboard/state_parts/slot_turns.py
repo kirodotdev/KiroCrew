@@ -11,7 +11,7 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_close_recorded``,
 ``_closing``, ``_compacting``, ``_coordinator_approvals``, ``_cycle_reached_provider``,
 ``_dashboard_card_exempt``, ``_dashboard_card_identity``, ``_deferred_notes``,
-``_dropped_note_ids``, ``_embed_question_polled_at``, ``_file_changes``,
+``_dropped_note_ids``, ``_embed_question_polled_at``, ``_file_changes``, ``_full_chat_waits``,
 ``_git_repo_touch_overflow``, ``_git_repo_touch_pending``, ``_git_repo_touch_terminal``,
 ``_git_repo_walk_pending``, ``_git_repo_walk_task``, ``_git_repos``, ``_git_repos_evicted``,
 ``_git_repos_evicted_overflow``, ``_git_repos_incomplete``, ``_git_repos_seeded``,
@@ -317,6 +317,10 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # purge never runs again for that slot, so the rows it declined to drop
     # outlive every consumer and the leak survives its own fix.
     self._pending_release_deferred = False
+    # Which stream reads ``_pending`` now, and, by epoch, what each replaced
+    # stream's turn left for it (``slot_buffers.drain_stale_pending``).
+    self._stream_epoch = 0
+    self._stream_handoffs = {}
     self._queue = []  # [{"id": uuid, "content": str}, ...]
     # Signature of the durable queue value this slot's last committed save
     # wrote (see slot_queue_repository.queue_persist_signature). Drift
@@ -418,6 +422,9 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # registry, never on _approval_futures, so the projection has to ask
     # the state to learn that this slot is waiting.
     self._coordinator_approvals = None
+    # ``full_chat_waits.needs_full_chat`` bound to the state, wired like
+    # _coordinator_approvals: the cards, guides and asks it reads are not on the slot.
+    self._full_chat_waits = None
     # The linked session's turn-lease probe (``SessionManager.is_busy``), wired
     # by DashboardState like _coordinator_approvals. A channel-born slot's
     # turns usually run on the channel path, which holds that lease and never
@@ -833,6 +840,7 @@ def queue_append(
     directive_user_origin: bool = False,
     directive_channel_origin: bool = False,
     directive_owner_origin: bool = False,
+    source_channels: tuple[str, ...] = (),
 ) -> str:
     return self._queue_repository.queue_append(
         self,
@@ -842,6 +850,7 @@ def queue_append(
         directive_user_origin=directive_user_origin,
         directive_channel_origin=directive_channel_origin,
         directive_owner_origin=directive_owner_origin,
+        source_channels=source_channels,
     )
 
 
@@ -861,6 +870,7 @@ def queue_insert(
     directive_user_origin: bool = False,
     directive_channel_origin: bool = False,
     directive_owner_origin: bool = False,
+    source_channels: tuple[str, ...] = (),
 ) -> str:
     return self._queue_repository.queue_insert(
         self,
@@ -874,6 +884,7 @@ def queue_insert(
         directive_user_origin,
         directive_channel_origin,
         directive_owner_origin,
+        source_channels,
     )
 
 

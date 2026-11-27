@@ -1,4 +1,4 @@
-import { forwardRef, type ForwardedRef } from 'react'
+import { createContext, forwardRef, useContext, type ForwardedRef } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -173,6 +173,13 @@ export function NavBadge({ navId, collapsed, appBadges, runState }: { navId: str
  *  right-edge geometry in a real browser — the one check that can see the
  *  badge-over-chord overlap this row's unit tests can only pin structurally
  *  (happy-dom computes no layout). Same seam `UpdateOverlay` is exported on. */
+/** What can move the rail's rows (their order and the rail's width), as one
+ *  string. A row's layout glide measures the row only when this changes, not on
+ *  every render: the shell re-renders the rail many times while a page opens,
+ *  and each measurement forced a layout of the whole page inside that task.
+ *  Undefined outside the rail, which keeps Framer's measure-every-render. */
+export const NavRowLayoutKey = createContext<string | undefined>(undefined)
+
 export const NavItem = forwardRef(function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId, pressed, touch, replace, caption, 'data-ui-location': uiLocationId }: {
   path: string; label: string; icon: React.ReactNode; active: boolean; collapsed: boolean; badge?: React.ReactNode; onClickOverride?: () => void; onClick?: () => void; navId?: string
   /** Set on rows that TOGGLE a surface rather than navigate (e.g. the docked
@@ -205,6 +212,7 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
   // >4,000px of it). The desktop rail is framer-free motion-wise, so it keeps
   // the row-reorder glide that `layout` buys there.
   const isMobileRow = useIsMobile()
+  const layoutKey = useContext(NavRowLayoutKey)
   const iconEl = <span className={`app-icon-nav w-5 h-5 [&>*]:!w-5 [&>*]:!h-5 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
   const { tip, tipOn, rowRef, showTip, hideTip, pointerProps: tipPointerProps } = useNavTip<HTMLDivElement>(collapsed)
   // Derived from the shortcut registry by route, so a row with a bound panel
@@ -240,7 +248,7 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
     onClick?.(); (onClickOverride || (() => navigate(path, { replace, state: asked ? { leaveGranted: true } : undefined })))()
   }
   return (
-    <motion.div layout={isMobileRow ? undefined : 'position'}
+    <motion.div layout={isMobileRow ? undefined : 'position'} layoutDependency={layoutKey}
       data-onboarding-nav={navId}
       // Forwarded, not a render site of its own: the site is the spread on <NavItem>.
       {...forwardUiLocation(uiLocationId, rowRef, forwardedRef)}
@@ -331,7 +339,29 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
           // pseudolocale failure with no clue why.
           data-i18n-opaque=""
           data-testid={navId ? `nav-shortcut-${navId}` : undefined}
-          className="shrink-0 text-[11px] leading-none text-muted opacity-0 transition-opacity duration-150 group-hover/nav:opacity-100 group-focus-visible/nav:opacity-100"
+          // IN FLOW, but with no width until it can be read. `opacity-0` hides
+          // the chord without removing it from layout, so as a plain `shrink-0`
+          // sibling it reserved its full width permanently — every row WITH a
+          // shortcut handed ~25px to a hint nobody could see, and the label
+          // (`flex-1 min-w-0`) took the whole squeeze. That is why Sessions and
+          // Schedule truncated to initials at the larger content text sizes
+          // while longer chordless labels, Artifacts and Customize, read in
+          // full. `max-w-0 overflow-hidden` gives that width back; the hover and
+          // focus escapes return it only while the chord is actually visible,
+          // so the label pays for it just while the row is hovered.
+          //
+          // NOT `absolute right-2.5`. Taking it out of flow frees the same
+          // width and reintroduces a defect that was already fixed once: the
+          // `{badge}` below is the last in-flow `shrink-0` child and this row's
+          // content edge is `pr-2.5`, so a chord pinned to that edge paints on
+          // top of the unread count and neither the keystroke nor the count can
+          // be read. `src/test/App.test.tsx` pins the badge in flow and after
+          // the chord in document order, but document order survives
+          // `position: absolute`, so it passes against that bug; and the browser
+          // probe that measures the geometry, `scripts/capture-nav-badge-chord
+          // .mjs`, cannot mount at all (its capture entry omits ThemeProvider,
+          // on main too). `src/test/navRailLabelRoom.test.ts` is the fence.
+          className="shrink-0 max-w-0 overflow-hidden text-[11px] leading-none text-muted opacity-0 transition-opacity duration-150 group-hover/nav:max-w-none group-hover/nav:opacity-100 group-focus-visible/nav:max-w-none group-focus-visible/nav:opacity-100"
         >
           {shortcut.chord}
         </span>

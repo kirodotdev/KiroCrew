@@ -1,7 +1,7 @@
 ---
 name: web-browse
 description: Open a REAL external web page with the `browser` MCP tool; the user watches it live in the chat and can take over with one click. Use when the user wants to VIEW, read or verify a public URL (a local dev server = web-preview).
-triggers: open this page, show me this site, show me the page, view this url, render this page, look at this website, open in the browser, see what this page looks like, pull up this site, visit this url
+triggers: open this page, show this site, view this url, render this page, open in browser, visit this url
 ---
 
 # Web Browse: open a real page for the user to look at
@@ -27,7 +27,8 @@ field, a button's file picker with `via: chooser`, or a drop zone with
 `via: drop`) / `wait_for` /
 `wait_for_element` / `wait_for_network_idle` / `back` / `console` /
 `screenshot` / `tabs` (list, switch or close the tabs you opened) / `dialog` /
-`reflex`, and `ask` for a step only the user may do. When no op fits, `js`
+`set_appearance` (light, dark or reset) / `resize` (viewport width and
+height, or reset) / `reflex`, and `ask` for a step only the user may do. When no op fits, `js`
 runs JavaScript in your tab, `cdp` sends one DevTools Protocol command to it
 (`iframe_target` finds a cross-site frame for `js`), and `http_get` fetches a
 public URL without the browser's cookies; prefer the ops above. Call `snapshot`

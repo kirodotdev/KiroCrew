@@ -1,0 +1,9 @@
++9
+Splitting the deny gate under the 1,600-line working target: its substitution-nesting cap
+(the depth bound, the word-break set, the refusal key and note, and the one-pass scan that
+refuses a command nested past the bound) moved out of `deny_gate.py` into a new module
+`deny_gate_nesting.py`. The moved definitions are net-neutral (they left one module and
+entered another unchanged), so this delta is the overhead the split adds to the package:
+the new module's docstring and `__future__` import, and the line `deny_gate.py` imports the
+three names it reads through, less the two blank lines the cut left. Deny behaviour is
+unchanged: this is a pure move, it adds and removes no rule.

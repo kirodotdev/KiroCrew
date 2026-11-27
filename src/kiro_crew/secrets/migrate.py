@@ -68,6 +68,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.hidden_leaf_staging import publish_env
 from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.secrets import SecretVault
 from kiro_crew.secrets.vault import entry_revision
 
@@ -92,8 +93,9 @@ def _env_lock_path(ep: Path) -> Path:
     delete or replace the held lock inode to defeat serialisation — a lock
     outside ``.vault`` is in the config dir, which the agent can write freely.
 
-    The parent ``.vault`` directory is created on demand (mode 0o700) so the
-    lock is valid even before the vault is first used.
+    The parent ``.vault`` directory is created on demand so the lock is valid
+    even before the vault is first used. Every folder this call has to create,
+    missing parents of the config folder included, is made ``0700``.
 
     Used by:
       * :func:`migrate_env_secrets` — the CLI importer
@@ -103,7 +105,7 @@ def _env_lock_path(ep: Path) -> Path:
         — the dashboard channel-credential writer
     """
     vault_dir = ep.parent / ".vault"
-    vault_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdirs_owner_only(vault_dir)
     return vault_dir / ".env.lock"
 
 

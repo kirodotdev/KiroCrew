@@ -106,6 +106,10 @@ class _Session:
     # Set by a lifecycle holder for the whole of its turn, INCLUDING the setup before the
     # provider registers one. ``has_active_turn`` cannot see that window.
     lifecycle_turn_active: bool = False
+    # Whether the last turn released on this session was started by automation
+    # (``session_idle_clock.turn_was_automated``), so the idle sweep applies
+    # ``session.automated_idle_timeout_secs``. A person's turn clears it.
+    last_turn_automated: bool = False
     prompt_count: int = 0
     consecutive_failures: int = 0
     # Bounded rather than plain: a release() call that lands on this object

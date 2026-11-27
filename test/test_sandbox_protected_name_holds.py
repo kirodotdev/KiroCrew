@@ -55,6 +55,27 @@ def _no_host_ssh_probe(monkeypatch):
 
 TIERS = ("standard", "cc", "strict")
 
+
+@pytest.fixture(autouse=True)
+def _plain_gateway_checkout(_floor_monkeypatch):
+    """Pin the gateway checkout's git layout to one plain checkout.
+
+    The live layout follows whatever checkout runs the tests (a plain clone in CI, a
+    linked worktree on a developer host), so the population would differ by host.
+    """
+    from kiro_crew import sandbox_git_control as gc
+
+    gitdir = "/srv/checkout/.git"
+    layout = gc.GitControlLayout(
+        readonly=tuple(
+            f"{gitdir}/{leaf}"
+            for leaf in ("hooks", "info", "config", "config.worktree", "commondir")
+        ),
+        names=(gitdir, f"{gitdir}/config"),
+    )
+    _floor_monkeypatch.setattr(gc, "resolved_git_control_layout", lambda: layout)
+
+
 #: Protected names held by an ENCLOSING stand-in mask today. The scratch
 #: index stays behind the whole scratch-root mask for the namespace lifetime,
 #: including after the gateway atomically republishes the index.
@@ -316,6 +337,16 @@ class TestLeafOnlyNamesHaveNoBetterHold:
             "~/.config/gcloud",
             "~/.config/gh",
             "~/.kiro/crew-auth-staging",
+            # ``~/.kiro/settings`` holds kiro-cli's other settings, which it writes.
+            "~/.kiro/settings/mcp.json",
+            # The gateway checkout's git control files, as ``_plain_gateway_checkout``
+            # pins them: they sit in the git directory beside the index, objects and
+            # refs that in-sandbox commits write, so no enclosing mask can hold them.
+            "/srv/checkout/.git/commondir",
+            "/srv/checkout/.git/config",
+            "/srv/checkout/.git/config.worktree",
+            "/srv/checkout/.git/hooks",
+            "/srv/checkout/.git/info",
         }
     )
 
@@ -450,6 +481,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
         "<crew>/workspace/md-notebook/pat": "standard",
         "<crew>/workspace/md-notebook/settings.json": "standard",
         "<crew>/workspace/md-notebook/vaults.json": "standard",
+        "<crew>/yolo_ack.json": "standard",
         "<isolated>/kiro-agents": "standard",
         "<isolated>/kiro-home/.kiro/crew/run": "standard",
         "~/.aws": "cc",
@@ -461,6 +493,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
         "~/.gnupg": "standard",
         "~/.gpg": "standard",
         "~/.kiro/crew-auth-staging": "standard",
+        "~/.kiro/settings/mcp.json": "standard",
         "~/.kube": "cc",
         "~/.midway": "cc",
         "~/.netrc": "cc",
@@ -618,7 +651,12 @@ def _leaf_only_names(paths: list[str]) -> dict[str, int]:
         )
         if key is None:
             key = isolated.sub("<isolated>/", path, count=1)
-        if key == path and (path == home or path.startswith(home + "/")):
-            key = "~" + path[len(home) :]
+        if key == path:
+            # A home directory that is itself a symlink is sealed in both spellings,
+            # and both name the same protected file.
+            for spelling in dict.fromkeys((home, os.path.realpath(home))):
+                if path == spelling or path.startswith(spelling + "/"):
+                    key = "~" + path[len(spelling) :]
+                    break
         names[key] += 1
     return dict(names)

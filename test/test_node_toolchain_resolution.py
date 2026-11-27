@@ -58,7 +58,8 @@ def isolated_home(tmp_path, monkeypatch):
     USERPROFILE (then HOMEDRIVE+HOMEPATH) and **never HOME**. Patching only HOME
     left the resolver scanning the runner's real profile — which has no version
     managers — so every layout assertion below saw an empty result on Windows CI
-    while passing on POSIX.
+    while passing on POSIX. ``ProgramFiles`` is cleared too, because a Windows
+    runner can hold a real nodejs.org install in ``C:\\Program Files\\nodejs``.
     """
     home = tmp_path / "home"
     home.mkdir()
@@ -66,6 +67,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("HOMEDRIVE", raising=False)
     monkeypatch.delenv("HOMEPATH", raising=False)
+    monkeypatch.delenv("ProgramFiles", raising=False)
     monkeypatch.delenv("KIROCREW_NODE_BIN_DIR", raising=False)
     monkeypatch.delenv("MISE_DATA_DIR", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
@@ -573,6 +575,28 @@ def test_windows_volta_dirs_are_found(windows_roots, var, parts):
     d = _fake_windows_node_bin(windows_roots[var].joinpath(*parts))
     assert str(d) in env_mod.node_bin_dirs()
     assert str(d) in env_mod.augmented_path("").split(os.pathsep)
+
+
+def test_windows_nodejs_installer_dir_is_found(windows_roots, monkeypatch):
+    """The nodejs.org installer keeps ``node.exe`` in ``%ProgramFiles%\\nodejs``.
+
+    An app backend whose gateway PATH predates the install falls back to
+    ``augmented_path("")``, so the dir must be on it, behind fnm's version so a
+    stale machine-wide Node never shadows it. With ``ProgramFiles`` unset the
+    entry is skipped, not formatted into a rootless path.
+    """
+    d = _fake_windows_node_bin(windows_roots["ProgramFiles"] / "nodejs")
+    fnm = _fake_windows_node_bin(
+        windows_roots["APPDATA"] / "fnm" / "node-versions" / "v22.1.0" / "installation"
+    )
+    assert str(d) in env_mod.node_bin_dirs()
+    entries = env_mod.augmented_path("").split(os.pathsep)
+    assert str(d) in entries
+    assert entries.index(str(fnm)) < entries.index(str(d))
+
+    monkeypatch.delenv("ProgramFiles")
+    entries = env_mod.augmented_path("").split(os.pathsep)
+    assert not any(os.path.basename(e) == "nodejs" for e in entries)
 
 
 def test_windows_roots_fall_back_to_the_profile_folder(windows_roots, nvm_home, monkeypatch):

@@ -86,7 +86,10 @@ def _read_existing_spec(path: Path) -> bytes | None:
 
 
 def _load_existing_config(
-    path: Path, *, gated_off: "frozenset[str] | None" = None
+    path: Path,
+    *,
+    gated_off: "frozenset[str] | None" = None,
+    _raw_out: "list[bytes | None] | None" = None,
 ) -> tuple[dict, bool]:
     """Load and refresh an existing kirocrew.json.
 
@@ -99,8 +102,14 @@ def _load_existing_config(
 
     *gated_off* is the caller's spec-gate snapshot, forwarded so whichever branch
     runs reads the same decision the caller's audit will report.
+
+    *_raw_out*, when given, receives the exact bytes that were parsed (``None``
+    for no file), so a caller comparing the file later compares against this
+    read and not a second one a concurrent write could land before.
     """
     raw = _read_existing_spec(path)
+    if _raw_out is not None:
+        _raw_out.append(raw)
     try:
         config = None if raw is None else loads_user_json(raw.decode("utf-8"))
     except ValueError:

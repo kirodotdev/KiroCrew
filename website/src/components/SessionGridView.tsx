@@ -20,6 +20,7 @@ import { useAppDispatch } from '../store'
 import { requestSlotFolderOpen } from '../store/chatSlice'
 import { crewModeView } from '../lib/crewMode'
 import { isSplitChord } from '../hooks/splitChord'
+import { platformShortcut } from '../utils/platform'
 type Slot = {
   key: string
   /** Set on a Crew Mode worker: the root it works for. */
@@ -292,15 +293,21 @@ function PlaceholderPane({
 }) {
   const [search, setSearch] = useState('')
   const [forkError, setForkError] = useState<ForkFailureNotice | null>(null)
+  const [createError, setCreateError] = useState('')
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
   // Same key and shape the transcript path reads, so the two share one cache entry
   const createSession = useMutation({
-    mutationFn: () => api.createChatSlot(),
+    // The person's own New session: it starts on their stored approval mode.
+    mutationFn: () => api.createChatSlot(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true),
+    onMutate: () => setCreateError(''),
     onSuccess: (r: { key?: string }) => {
       queryClient.invalidateQueries({ queryKey: ['session-grid-slots'] })
       if (r?.key) onPick(r.key)
     },
+    // A refused create (the memory store still starting, a rate limit) must say
+    // so: the spinner stopping alone reads as nothing having happened.
+    onError: (err) => setCreateError(errMessage(err) || i18nT('pages.chatPage.unknown_error')),
   })
   const forkSession = useMutation({
     mutationFn: () => api.forkChatSlot(forkSourceSlot as string),
@@ -381,7 +388,7 @@ function PlaceholderPane({
           aria-label={i18nT('components.sessionGridView.search_sessions')}
           className="flex-1 min-w-0 bg-bg-elevated border border-border rounded px-2 py-1 text-[13px] text-text placeholder:text-muted outline-hidden focus-visible:border-accent"
         />
-        <button onClick={onSplitRight} title={i18nT('components.sessionGridView.split_right_d')} aria-label={i18nT('components.sessionGridView.split_right')} className={ctrlBtn}>
+        <button onClick={onSplitRight} title={i18nT('components.sessionGridView.split_right_d', { shortcut: platformShortcut('Cmd+D') })} aria-label={i18nT('components.sessionGridView.split_right')} className={ctrlBtn}>
           <SplitGlyph />
         </button>
         <button onClick={onSplitDown} title={i18nT('components.sessionGridView.split_down')} aria-label={i18nT('components.sessionGridView.split_down')} className={ctrlBtn}>
@@ -409,6 +416,13 @@ function PlaceholderPane({
         askAgent
         className="mx-2 mt-2 mb-0"
         testId="grid-fork-error"
+      />
+      <ErrorNotice
+        message={createError || undefined}
+        onDismiss={() => setCreateError('')}
+        askAgent
+        className="mx-2 mt-2 mb-0"
+        testId="grid-create-error"
       />
 
       {/* Three creation entry points (Terminal arrives in Phase 2). */}

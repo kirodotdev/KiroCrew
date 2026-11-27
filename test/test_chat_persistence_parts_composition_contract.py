@@ -585,7 +585,9 @@ class TestPatchReach:
         monkeypatch.setattr(
             cp,
             "_save_slot_to_history",
-            lambda state, slot, force, takeover_basis=None: saved.append(slot),
+            lambda state, slot, force, takeover_basis=None, unless_unchanged=False: saved.append(
+                slot
+            ),
         )
         slot = SimpleNamespace(key="k")
         state = SimpleNamespace(

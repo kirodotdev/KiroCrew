@@ -164,7 +164,8 @@ _WHATSAPP_GROUP_COOLDOWN_DEFAULT _WHATSAPP_GROUP_MODES _WORKSPACE_DIR_NAME
 _YOLO_DURATION_DEFAULT _YOLO_DURATION_SECS _actual_type_name _adopt_in_memory
 _apply_document_migrations _apply_field_default _archive_retention_days _build_agent_config
 _build_computer_use_config _build_cron_history_config _build_dashboard_config
-_build_discord_config _build_feishu_config _build_imessage_config _build_instances_config
+_build_discord_config _build_feishu_config _build_heartbeat_config _build_imessage_config
+_build_instances_config
 _build_knowledge_config _build_mcp_config _build_mcp_gateway_config _build_memory_config
 _build_messaging_config _build_monitoring_config
 _build_publish_config _build_session_config _build_session_summary_config _build_skills_config
@@ -285,7 +286,11 @@ class TestOwnerLoggers:
 class TestMonitoringRuntimeCeiling:
     def test_field_order_default_and_bounds(self) -> None:
         fields = dataclasses.fields(sections.MonitoringConfig)
-        assert [f.name for f in fields] == ["max_runtime_secs", "prefer_structured_arming"]
+        assert [f.name for f in fields] == [
+            "max_runtime_secs",
+            "prefer_structured_arming",
+            "budget_notice_pct",
+        ]
         ceiling = fields[0]
         assert ceiling.type == "int"
         assert ceiling.default == DEFAULT_RUNTIME_CEILING_SECS == 604800
@@ -298,8 +303,16 @@ class TestMonitoringRuntimeCeiling:
 
     def test_serialized_section_keeps_its_key_order(self) -> None:
         section = loader.KiroCrewConfig().to_dict()["monitoring"]
-        assert list(section) == ["max_runtime_secs", "prefer_structured_arming"]
-        assert section == {"max_runtime_secs": 604800, "prefer_structured_arming": False}
+        assert list(section) == [
+            "max_runtime_secs",
+            "prefer_structured_arming",
+            "budget_notice_pct",
+        ]
+        assert section == {
+            "max_runtime_secs": 604800,
+            "prefer_structured_arming": False,
+            "budget_notice_pct": 0,
+        }
 
     def test_unset_value_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING):
@@ -477,9 +490,9 @@ class TestLoaderSeamsReachTheOwners:
 
     def test_moved_builders_are_the_loader_names(self) -> None:
         moved = sorted(n for n in vars(section_builders) if n.startswith("_build_"))
-        # 31: ``_build_code_channel_defaults`` (Slack Code) and ``_build_shared_access``
-        # (slack.shared_access) joined the moved builders.
-        assert len(moved) == 31
+        # 32: ``_build_code_channel_defaults`` (Slack Code), ``_build_shared_access``
+        # (slack.shared_access) and ``_build_heartbeat_config`` joined the moved builders.
+        assert len(moved) == 32
         assert [n for n in moved if getattr(loader, n) is not getattr(section_builders, n)] == []
         loader_owned = sorted(
             n

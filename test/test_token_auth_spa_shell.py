@@ -16,7 +16,10 @@ siblings are ``test_token_auth_signing_secret.py``,
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
+import re
 
 import pytest
 from aiohttp import web
@@ -78,6 +81,46 @@ async def test_signin_recovery_preserves_destination_path() -> None:
     assert "searchParams.set('token'" in body
     # The old path-discarding redirect (protocol//host?token=) is gone.
     assert "window.location.host+'?token='" not in body
+
+
+@pytest.mark.asyncio
+async def test_signin_page_policy_allows_only_its_own_script(monkeypatch) -> None:
+    # The sign-in page carries its own policy instead of the shell's, which still
+    # allows inline script: the one script it serves, by hash, and nothing else.
+    from kiro_crew.dashboard import server
+
+    parent = "http://127.0.0.1:5999"
+    monkeypatch.setattr(server, "_extra_frame_ancestors", lambda request, app=None: [parent])
+    mw = token_auth_middleware()
+    req = _make_request(path="/dashboard", method="POST", remote="10.0.0.1")  # No token
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+    body = resp.body.decode()
+    assert len(re.findall(r"<script\b", body, re.I)) == 1
+    (script,) = re.findall(r"<script\b[^>]*>(.*?)</script[^>]*>", body, re.S | re.I)
+    # Hashed as the browser sees the text: the HTML parser turns CRLF into LF and NUL
+    # into U+FFFD before a policy is checked.
+    text = script.replace("\r\n", "\n").replace("\r", "\n").replace("\0", "\ufffd")
+    digest = base64.b64encode(hashlib.sha256(text.encode()).digest()).decode()
+    policy = {
+        d.split()[0]: d.split()[1:]
+        for d in resp.headers["Content-Security-Policy"].split(";")
+        if d.strip()
+    }
+    assert policy["script-src"] == [f"'sha256-{digest}'"]
+    assert policy["default-src"] == ["'none'"]
+    # The Instances embed frames this page inside a parent on another port.
+    assert policy["frame-ancestors"] == ["'self'", parent]
+
+
+@pytest.mark.asyncio
+async def test_signin_page_has_no_inline_event_handler() -> None:
+    # A hash cannot allow an on* attribute, so the page's button must not use one.
+    mw = token_auth_middleware()
+    req = _make_request(path="/dashboard", method="POST", remote="10.0.0.1")  # No token
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+    assert not re.search(r"<[^>]*\son[a-z]+\s*=", resp.body.decode(), re.I)
 
 
 # -- Property 12b: SPA shell is public so the app can cold-start refresh --

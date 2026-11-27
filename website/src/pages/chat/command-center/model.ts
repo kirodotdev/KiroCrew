@@ -8,7 +8,7 @@ import { fmtNumber } from '../../../i18n/format'
 import { slotChannelNamespace } from '../../../utils/channelOrigin'
 import { deriveToolCallTitle, parseToolArgs } from '../../../utils/toolCallTitle'
 import { isPrivateMemoryMode } from '../../../utils/sessionRefs'
-import { crewApprovalDecidableHere, crewRootOf } from '../../../lib/crewMode'
+import { crewApprovalDecidableHere, crewRootOf, liveMateThreads, mateRootOf } from '../../../lib/crewMode'
 import { readyQueueDepth } from '../sessionLane'
 import { isUntitledSession } from '../../../utils/sessionDisplayTitle'
 
@@ -16,6 +16,7 @@ export type RunState = 'running' | 'idle' | 'done' | 'blocked' | 'waiting' | 'ne
 export const APPROVAL_MODE_KEYS: Record<ApprovalModeKey, string> = {
   normal: 'components.approvalModePicker.normal_label', trust_reads: 'components.approvalModePicker.reads_label',
   trust: 'components.approvalModePicker.trust_label', yolo: 'components.approvalModePicker.yolo_label',
+  approve_for_me: 'components.approvalModePicker.approve_for_me_label',
 }
 /** The chat header's own mode rule, so the two never disagree: a live
  * app-armed scoped grant auto-approves too, and reads as trust. */
@@ -83,6 +84,9 @@ export interface AttentionItem {
   crewCount?: number
   /** Follow-up options withheld from this card because sending them bare would run them. */
   sessionOnlyOptions?: number
+  /** On a Bot thread's own item (All Dashboards): a session of this Bot, which the
+   *  page leaves out, waits on the person and is reached from the Bot's chat. */
+  mateChat?: boolean
 }
 /** The command an approval asks about, as the transcript would title it. Empty
  * when the inventory carried no tool input to title. */
@@ -114,6 +118,9 @@ export interface CommandCenterSources {
    *  on a tool approval, counted over the FULL slot set before workers are left
    *  out (edge review R3 Z2). The conductor then reads as needing input. */
   crewWaiting?: Record<string, number>
+  /** Fleet scope: the live Bot threads with a session waiting on the person
+   *  (`mateWaitingThreads`). The Bot thread then reads as needing input. */
+  mateWaiting?: Readonly<Record<string, boolean>>
 }
 
 /** Whether a session that `key` opened is mid-turn right now: a Crew Mode
@@ -130,6 +137,20 @@ export function crewWaitingApprovals(slots: readonly ChatSlot[]): Record<string,
   for (const s of slots) {
     const root = crewRootOf(s)
     if (root && s.pending_approval) out[root] = (out[root] ?? 0) + 1
+  }
+  return out
+}
+
+/** `{bot thread: true}` for each live Bot thread with a session waiting on a tool
+ *  approval or a question. The person's lists leave that session out
+ *  (`crewModeView`), so the Bot's row carries the wait; read over the FULL slot set. */
+export function mateWaitingThreads(slots: readonly ChatSlot[]): Readonly<Record<string, boolean>> {
+  const live = liveMateThreads(slots)
+  // No prototype: a slot key such as `constructor` must not read as waiting.
+  const out: Record<string, boolean> = Object.create(null)
+  for (const s of slots) {
+    const mate = mateRootOf(s)
+    if (live.has(mate) && (s.pending_approval || s.needs_input)) out[mate] = true
   }
   return out
 }
@@ -319,11 +340,15 @@ export function buildCommandCenter(source: CommandCenterSources, now = Date.now(
     const count = crewWaiting[s.key] ?? 0
     if (count > 0) addAttention({ id: `crew-approval:${s.key}`, slot: s.key, kind: 'approval', crewCard: s.key, crewCount: count })
   }
+  const mateWaiting = source.mateWaiting || {}
+  for (const s of slots) {
+    if (mateWaiting[s.key]) addAttention({ id: `mate-waiting:${s.key}`, slot: s.key, kind: 'open_session', mateChat: true })
+  }
   // A turn can be idle while delegated work is active, or while a queued
   // message waits to run; those slot flags keep the session running.
   const nodes: RunNode[] = slots.map((s, index) => ({
     id: `session:${s.key}`, kind: 'session', ref: s.key, slot: s.key, title: s.title && !isUntitledSession(s) ? s.title : '', ordinal: index + 1,
-    state: s.needs_input || s.pending_approval || (crewWaiting[s.key] ?? 0) > 0 ? 'needs_input' : s.running || s.subagents_running || readyQueueDepth(s) > 0 ? 'running' : 'idle',
+    state: s.needs_input || s.pending_approval || (crewWaiting[s.key] ?? 0) > 0 || mateWaiting[s.key] ? 'needs_input' : s.running || s.subagents_running || readyQueueDepth(s) > 0 ? 'running' : 'idle',
     detail: s.todo?.current || undefined,
   }))
   const agentIds = new Set<string>()

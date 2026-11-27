@@ -9,7 +9,7 @@ local can, because a profile only ever narrows the policy level it sits under.
 ``BASELINE_CONTROLS`` maps a ``SCOPE_CATALOG`` scope to the raw control a policy
 document would carry for it, parsed by the same per-control parser a remote
 policy goes through. ``BASELINE_UNGATED`` lists the scopes that keep Crew's own
-default, with the reason: the two ordinals, and the open controls of D3
+default, with the reason: the three ordinals, and the open controls of D3
 (appendix "Crew default"), which the organisation's
 governance is meant to control. A remote policy that names an ungated scope still
 answers it.
@@ -108,6 +108,7 @@ BASELINE_UNGATED: Dict[str, str] = {
     "approval_mode": "ordinal; never item-queried, so Crew's own approval default applies",
     "sandbox.min_level": "ordinal; unnamed keeps Crew's sandbox default, and the organisation's "
     "crew_sandbox_min_level can only raise it (RFC D7)",
+    "command_chains": "ordinal; unnamed keeps the whole-command reading",
     "mcp": _OPEN + "MCP servers are meant to be governed by KAS and KGL",
     "unattended_web_tools": _OPEN
     + "with no `ask` rule on `web_fetch` or `web_search`, trust approves them as before",

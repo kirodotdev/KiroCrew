@@ -102,6 +102,28 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Gateway readiness uses fixed auth-status argv for a HOSTS entry, with
         # all three streams discarded. It reads no credential or guest cwd.
         "remote_session/git_gateway.py::login_status",
+        # Connected computers (local machine). asyncio.run drives the CLI's one
+        # revoke pass and the desktop host's stdio loop in-process; neither spawns.
+        "connected_computers/cli.py::_tell_remotes",
+        "connected_computers/desktop_host.py::run_desktop_host",
+        # The connector's tool servers. The argv is chosen on THIS computer: this
+        # interpreter, -I, the installed workspace_tools.py and the root the user
+        # picked in native consent, or an MCP server's command/args/env as the
+        # grant snapshotted it at consent. The remote gateway only names a kind,
+        # which selects among those entries; it supplies no path, argv, env or cwd,
+        # and agent input reaches the child only as MCP frames on its pipes. Each
+        # child already runs under confinement.wrap_off_loop (bwrap on the granted
+        # root, env built from nothing), which self_test proves holds;
+        # the gateway's own sandbox wrapper would replace that fence, not add one.
+        "connected_computers/connector.py::_spawn",
+        # That self-test's probe: this interpreter, -I -c with a fixed program; its
+        # argv tail is the JSON of witnesses this check created, cwd the granted
+        # root. stdin DEVNULL, no shell. Confined by the plan on the second run.
+        "connected_computers/confinement.py::_run_probe",
+        # OS keyring for the local grant key: secret-tool resolved from fixed system
+        # folders, with fixed verbs and a hashed account id; the key travels on
+        # stdin, never argv. No shell, no agent input.
+        "connected_computers/protected_store.py::_run",
         "acp/runtime_process_tree.py::_get_rss_mb",
         # The spawn primitive for three fixed-argv kiro-cli one-shots
         # (`chat --list-models`, `whoami`, the `/usage` scrape). Every caller has
@@ -290,6 +312,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # ``require_crew_sandbox``, so the file an agent may have planted is run
         # inside Kiro Crew's own sandbox or not at all. No process is created here.
         "kiro_cli_path_probe.py::_sandboxed_version",
+        # The sandbox's own pre-spawn gather of the gateway checkout's git control
+        # files: ``git config --file <f> --path --show-origin -z
+        # --get-regexp <fixed keys>``, one file per read. The binary is the host's git and the argv is
+        # fixed; the only paths are the checkout's own config files and the include
+        # files they name. Listing config executes nothing a config names, GIT_DIR /
+        # GIT_COMMON_DIR are pinned (no repository discovery, no ``commondir``), and
+        # system and global config are off. It runs in the gateway BEFORE the sandbox
+        # exists, to decide what to seal, so it cannot route through it.
+        "sandbox_git_control.py::_config_closure",
         # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -I -S
         # -c <leaf source>``, where the source is the text of a module-relative
         # constant script (the sensitive-path resolver's
@@ -565,13 +596,28 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Browser Harness (``browser_harness/``), the agent's one browser
         # driver. Both spawns are fixed argv the AGENT never
         # contributes to, and neither can be sandboxed without defeating it:
-        #   * ``install.py::_run`` runs ``<sys.executable> -m venv --clear <prefix>``
-        #     and ``<prefix>/bin/python -m pip install --require-hashes -r <lock>``.
+        #   * ``install.py::_run`` runs ``<sys.executable> -I -m venv --clear
+        #     <prefix>/venv`` (``--without-pip`` when the gateway's pip installs or
+        #     the runtime's harness is copied; ``--upgrade --without-pip`` instead
+        #     re-points a venv whose base Python is gone),
+        #     then ``<sys.executable> -I -m pip --python <prefix>/venv/bin/python
+        #     install --require-hashes --no-input --disable-pip-version-check -r
+        #     <lock>`` when the gateway's interpreter has pip, else
+        #     ``<prefix>/venv/bin/python -I -m pip install ...`` with the same flags,
+        #     plus ``-I -c`` module checks of either interpreter.
         #     Every token is a module constant or a path under the data home; the
         #     lock file ships in the package and pins each wheel by sha256; the only
         #     trigger is the owner pressing Install in Settings (the route refuses
-        #     internal-secret callers). The install needs the real PyPI and writes
-        #     the read-only prefix, which the sandbox exists to deny.
+        #     internal-secret callers) or the gateway's startup auto-install. When
+        #     the user set a pip index, the pip step first runs once with the index
+        #     keys the user set (of the five in ``sdk_extras._PIP_INDEX_ENV``) in its
+        #     env and ``--only-binary :all:``, then, if that attempt fails, times out
+        #     or cannot start, once more exactly as without them. The argv is not
+        #     agent-influenced; the first attempt's index is: an agent can write a pip
+        #     config file the owner's pip reads (an accepted residual in browser.md's
+        #     threat table), and the hash lock still pins every file. The install
+        #     needs a package index and writes the read-only prefix, which the
+        #     sandbox exists to deny.
         #   * ``supervisor.py::_spawn`` starts three children of the gateway: Kiro's
         #     Chromium (the downloaded binary under the sealed prefix, flags from
         #     ``_CHROMIUM_ARGS``, the profile path under the data home), the Harness
@@ -592,13 +638,19 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # (``feishu/gateway.py::_schedule_sdk_install``). Scrubbed PYTHON*/PIP_* env, with
         # only the user's own index settings (``_configured_index_env``) passed back on
         # the first attempt; a download failure there retries once against pypi.org.
-        # Not agent-influenced.
+        # The argv is not agent-influenced; the first attempt's index is: an agent can
+        # write a pip config file the owner's pip reads (an accepted residual in
+        # browser.md's threat table), and the hash lock still pins every file.
         "sdk_extras.py::_lay_down",
-        # ``sdk_extras.py::_pip_config_list`` runs ``<sys.executable> -m pip config list``
-        # (fixed argv, read-only, 15 s timeout, PYTHON* scrubbed) so the installer can
-        # find the index the user configured for pip. Same two gateway-owned callers
-        # as ``_lay_down``; only its index-url/extra-index-url/trusted-host/cert lines
-        # are used. Not agent-influenced.
+        # ``sdk_extras.py::_pip_config_list`` runs ``<interpreter> -I -m pip config list``
+        # (fixed argv, read-only, 15 s timeout, PYTHON* scrubbed) so an installer can
+        # find the index the user configured for pip. The interpreter is the one whose
+        # pip installs: the gateway's own for ``_lay_down``; for the browser harness
+        # installer (``install.py::_pip_install``) the gateway's when it has pip, else
+        # the harness venv's under the sealed prefix. Callers are gateway-owned
+        # (``_lay_down``'s two, the harness Install press and its startup auto-install);
+        # only its index-url/extra-index-url/trusted-host/cert/client-cert lines are
+        # used. The argv is not agent-influenced; the config files it reads can be.
         "sdk_extras.py::_pip_config_list",
         "browser_harness/supervisor.py::_spawn",
         # The KAS engine installer (`kirocrew kas install`, operator terminal, outside
@@ -784,10 +836,24 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "cli_server_update.py::_update",
         # `git ls-remote` for a checkout on no branch, split out of _update: the
         # same `git` the fetch runs, under the same env, after the same source-pin
-        # and exec-config checks. The argv is literals plus the three reviewed
-        # primary branch refs; stdin=DEVNULL, 60s timeout. Pinned by the
-        # `checkout_on_no_branch` tests in test_cli_server_more_coverage.py.
-        "cli_server_update.py::_detached_upstream_branch",
+        # and exec-config checks. The argv is literals plus the refs asked about:
+        # the three reviewed primary branch refs, or the release tags
+        # `release_channel.release_refs` builds for `--release`; stdin=DEVNULL,
+        # 60s timeout. Pinned by the `checkout_on_no_branch` tests in
+        # test_cli_server_more_coverage.py and test_cli_update_release_tag.py.
+        "cli_server_update.py::_remote_refs_present",
+        # The release-tag probes for `kirocrew update --release`: `git rev-parse
+        # --verify HEAD^{commit}` and `git for-each-ref --points-at=HEAD` over
+        # refs/tags. Literal argv, the update's own git env, cwd the detected
+        # checkout, stdin=DEVNULL, 10s timeout, read-only. Pinned by
+        # test_cli_update_release_tag.py.
+        "cli_server_update.py::_head_oid",
+        "cli_server_update.py::_release_tag_checkout",
+        # `git rev-parse --is-shallow-repository`, which picks `--depth 1` for the
+        # `--release` fetch only on a shallow clone. Literal argv, the update's own
+        # git env, cwd the detected checkout, stdin=DEVNULL, 10s timeout,
+        # read-only. Pinned by test_cli_update_release_tag.py.
+        "cli_server_update.py::_is_shallow_clone",
         # The changed-path listing before the reset: `git diff --name-status -z
         # --no-renames HEAD <pinned commit>`. Literal flags plus the commit pinned
         # right after the fetch, the same `git` under the same env as the fetch and
@@ -1014,11 +1080,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # it replaced the inline fetch spawns in _check_git_checkout and
         # _auto_apply_update.
         "platform/update_fetch.py::fetch_and_pin_upstream",
-        "instances/diagnostics.py::_run_ok",
-        "instances/diagnostics.py::_run_stdout",
         "instances/ssh_tunnel_manager_child.py::start",
-        "instances/token_mint.py::mint_remote_token",
-        "instances/token_mint.py::run_remote_kirocrew",
+        # The one ssh spawn behind the token mint, the remote run, the two
+        # diagnosis probes and the ssh tunnel: an argv built by token_mint's
+        # _build_ssh_argv or the tunnel's _build_argv, in a process group of its
+        # own so a ProxyCommand it leaves behind can be ended.
+        "instances/token_mint.py::spawn_one_shot_ssh",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` in the
         # desktop tunnel keeper's CLI entry point. The only child it creates is the
         # forward ``_SshTunnel.start`` spawns, listed just above.
@@ -1032,6 +1099,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Messages.app through the operator's own Full Disk Access and
         # Automation grants, which a scrubbed-env sandbox strips.
         "imessage/rpc.py::start",
+        # The managed-environment lane's ssh: `ssh -T -o ... crew-sbx-<id> sh -s`, a
+        # fixed argv whose one variable, the alias, is checked against the lane's
+        # `crew-sbx-<id>` shape first; the script travels on stdin and is rendered by
+        # the lane from its closed list (managed_env/install.py, machine.py). No agent
+        # input reaches it, and it must reach the operator's ssh config and plugin.
+        "managed_env/remote.py::_default_runner",
         "mcp_gateway/backend.py::spawn_backend",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``), used here only to drive the one-shot
@@ -1047,6 +1120,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # kills identity-confirmed backend trees through the pinned kill helpers;
         # it launches nothing an agent chose.
         "mcp_gateway/daemon_control.py::stop_daemon",
+        # NOT a subprocess spawn either: the same ``asyncio.run`` match, driving
+        # the one-shot ``_recycle_async`` coroutine for ``kirocrew mcp reload``.
+        # It sends one recycle-server frame to the already-running daemon over
+        # the same local endpoint; no child process and no argv here.
+        "mcp_gateway/daemon_control.py::recycle_server",
         "mcp_gateway/gatewayd.py::main",
         "mcp_gateway/manager.py::_spawn_once",
         "mcp_gateway/stub.py::main",
@@ -1218,9 +1296,16 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # shape as dashboard/stale_bundle_guard.py::_backend_website_tree above.
         "pod/provision.py::_resolve_oid",
         "pod/provision.py::_manifest_path",
+        # `git -C <checkout> status --porcelain --untracked-files=normal --
+        # website`: the same pinned git and hardened_git_env as the probes
+        # above, a fixed argv, read-only, bounded timeout. git status can run a
+        # repo-named `filter.<name>.clean` driver, so the caller refuses first
+        # with update_governance.repo_exec_driver_reason and treats the tree as
+        # dirty instead, as frontend.py::_write_build_source_fingerprint does.
+        # Runs only from build_dist (an explicit provision), never the Fleet poll.
+        "pod/provision.py::_website_dirty",
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",
-        "pod/runtime.py::recent_journal",
         # `kirocrew pod exec` on Windows. POSIX execs the pod's own kirocrew in
         # place; Windows has no exec, so the CLI runs the same binary as a child
         # and returns its exit code. Argv is the pod venv's entry point plus a

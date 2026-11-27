@@ -373,9 +373,8 @@ class TestRoleModels:
         """``ConfigWriteRefused`` is a ``ValueError``, but it is the operator's input
         being declined, not a server failure: it must be answered as a coded 400
         carrying the floor's one-line instruction, before the generic ``ValueError``
-        arm that reports a malformed section as a 500. The field is not editable
-        through this surface today, so the refusal is raised the way the floor
-        raises it rather than provoked through the body."""
+        arm that reports a malformed section as a 500. The refusal is raised the
+        way the floor raises it, so the test holds for any field it guards."""
         from kiro_crew.config import loader as loader_mod
         from kiro_crew.config.loader import ConfigWriteRefused
 
@@ -768,7 +767,16 @@ class TestSessionSortRoundTrip:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "key",
-        ["date-desc", "date-asc", "created-desc", "created-asc", "name-asc", "name-desc", "manual"],
+        [
+            "date-desc",
+            "date-asc",
+            "created-desc",
+            "created-asc",
+            "name-asc",
+            "name-desc",
+            "manual",
+            "active-then-date",
+        ],
     )
     async def test_every_key_round_trips_through_the_config_file(self, tmp_config, key) -> None:
         from kiro_crew.config.loader import KiroCrewConfig

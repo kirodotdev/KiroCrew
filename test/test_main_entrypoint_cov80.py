@@ -98,3 +98,33 @@ def test_executed_as_a_plain_module_does_not_start_the_cli(order: list[str]) -> 
     namespace = _exec_entrypoint("kiro_crew.__main__")
     assert order == ["utf8", "ssl"]
     assert "main" not in namespace
+
+
+@pytest.mark.parametrize(
+    "argv, gc_on_at_main",
+    [
+        pytest.param(["kiro_crew", "gateway"], False, id="gateway"),
+        pytest.param(["kiro_crew", "status"], True, id="other-command"),
+    ],
+)
+def test_gateway_reaches_the_cli_with_cyclic_gc_off(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], gc_on_at_main: bool
+) -> None:
+    """``python -m kiro_crew gateway`` imports with GC off, like the console script."""
+    import gc
+
+    seen: list[bool] = []
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr("kiro_crew.platform_compat.ensure_utf8_console", lambda: None)
+    monkeypatch.setattr("kiro_crew._ssl_compat._ensure_ssl_certs", lambda: None)
+    monkeypatch.setattr(cli_mod, "main", lambda: seen.append(gc.isenabled()))
+    was_enabled = gc.isenabled()
+    gc.enable()
+    try:
+        _exec_entrypoint("__main__")
+    finally:
+        if was_enabled:
+            gc.enable()
+        else:
+            gc.disable()
+    assert seen == [gc_on_at_main]

@@ -7,6 +7,7 @@ server is answered ``disabled`` by ``probe_server``'s consent refusal.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -26,7 +27,7 @@ def owner(monkeypatch):
     monkeypatch.setattr(shared, "require_owner_dashboard_request", AsyncMock(return_value=None))
     monkeypatch.setattr(mcp_probe, "_read_global_mcps", lambda: {})
     monkeypatch.setattr(mcp_probe, "_kirocrew_mcp_servers", lambda: {})
-    monkeypatch.setattr(mcp_probe, "_record_probe_verdicts", lambda rows: None)
+    monkeypatch.setattr(mcp_probe, "_record_probe_verdicts", lambda rows, servers: None)
 
 
 def _request(name: str) -> SimpleNamespace:
@@ -106,7 +107,9 @@ async def test_the_probed_row_is_recorded_as_a_verdict(monkeypatch, owner):
     import kiro_crew.mcp_discovery as disc
 
     recorded: list[list[dict]] = []
-    monkeypatch.setattr(mcp_probe, "_record_probe_verdicts", lambda rows: recorded.append(rows))
+    monkeypatch.setattr(
+        mcp_probe, "_record_probe_verdicts", lambda rows, servers: recorded.append(rows)
+    )
     monkeypatch.setattr(disc, "list_servers", lambda: [_server("alpha")])
 
     await mcp_probe.api_mcp_probe_one(_request("alpha"))
@@ -144,3 +147,31 @@ async def test_a_built_in_server_stays_marked_built_in_after_a_test(monkeypatch,
 
     assert core["builtin"] is True
     assert alpha["builtin"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_test_waits_while_another_name_of_its_process_is_checked(monkeypatch, owner):
+    """Two names of one command start one process, so a Test never overlaps a pass's check.
+
+    The test holds ``alpha``'s turn the way a running probe pass or pre-flight does,
+    and the Test of ``beta`` (same command and args) parks on it before it returns.
+    """
+    import kiro_crew.mcp_discovery as disc
+    from kiro_crew.testing.wait import async_wait_until, await_until
+
+    alpha, beta = _server("alpha"), _server("beta")
+    monkeypatch.setattr(disc, "list_servers", lambda: [alpha, beta])
+    key = disc._spawn_fingerprint(alpha)
+
+    async with disc.same_process_lock(alpha):
+        test = asyncio.ensure_future(mcp_probe.api_mcp_probe_one(_request("beta")))
+        # Holder plus the parked Test; a Test that skips the lock ends the wait early.
+        await async_wait_until(
+            lambda: disc._same_process_users.get(key) == 2 or test.done(),
+            describe=lambda: f"users={disc._same_process_users.get(key)}",
+        )
+        assert not test.done(), "the Test ran while another name of its process was checked"
+    resp = await await_until(test, what="the Test once the other check let go")
+
+    assert resp.status == 200
+    assert json.loads(resp.body)["name"] == "beta"

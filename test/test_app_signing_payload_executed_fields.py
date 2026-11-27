@@ -23,6 +23,7 @@ import json
 from pathlib import Path
 
 import pytest
+from shipped_wheel_copies import census_drift
 
 from kiro_crew.apps.admission import app_admission_denied, verified_signer
 from kiro_crew.apps.manifest import AppManifest
@@ -206,8 +207,9 @@ def _shipped_builtin_manifests() -> list[Path]:
 
 
 def test_the_builtin_census_is_not_empty():
-    """Guard against a vacuous green in the per-builtin test below."""
-    assert len(_shipped_builtin_manifests()) >= 20
+    """Guard against a vacuous green in the per-builtin test below: it reads every copy that ships."""
+    differs = census_drift(p.parent.name.replace("_", "-") for p in _shipped_builtin_manifests())
+    assert not differs, differs
 
 
 @pytest.mark.parametrize("manifest_path", _shipped_builtin_manifests(), ids=lambda p: p.parent.name)

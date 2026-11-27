@@ -18,6 +18,7 @@
     "skill_search": "Search skills",
     "skill_discover": "Discover skills",
     "skill_fetch": "Fetch skill",
+    "app_store_search": "Search App Store",
     "kiro_cli_logs": "Read kiro-cli logs",
     "task_run": "Start task",
     "wait": "Wait",

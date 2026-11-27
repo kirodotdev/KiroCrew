@@ -26,7 +26,7 @@ preconditions:
   members: [nova-sky]
   start_url: /chat
 steps:
-  - You are on the chat page. Look at the top bar. In its centre is a wide button that reads "Run a command" (or "⌘K — Search for anything…" if the plain search palette owns the slot -- either is fine). Click it once.
+  - You are on the chat page. Look at the top bar. In its centre is a wide button that reads "Run a command" (or "Ctrl+K — Search for anything…", ⌘K on a Mac, if the plain search palette owns the slot -- either is fine). Click it once.
   - A search box opens in the middle of the screen; its placeholder reads "Type a command…" (or "Search…" for the plain palette).
   - Type exactly "Zoom" and wait a moment for the result list to filter.
   - A result named "Zoom Level" appears under a "Settings" heading, with the subtitle "Display". If it is not the highlighted row, press the Down arrow until it is. Then press Enter.

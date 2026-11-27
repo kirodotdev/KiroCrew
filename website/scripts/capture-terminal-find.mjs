@@ -11,25 +11,26 @@
  * state. This runner is Linux, so it exercises the Linux/Windows bindings:
  * bare Ctrl+F in the focused terminal is asserted to reach the shell as ^F
  * (0x06 on the PTY socket) with no find bar; the overflow menu is asserted to
- * show Find with its Ctrl+Shift+F keycap and Fullscreen with none; the find
- * bar opens on Ctrl+Shift+F (macOS: Cmd+F), the query is typed into the bar,
- * Enter / Shift+Enter step the matches, and fullscreen is the overflow menu's
- * item (macOS also has Cmd+Shift+F). Each frame asserts the DOM state first —
- * the menu keycaps, the "n of m" counter text, the "No results" marker, the
- * fullscreen panel's `absolute inset-0` class and `<main>`'s `isolate` — so a
- * screenshot that passes is a picture of the state it names.
+ * show Find with its Ctrl+Shift+F keycap and Hide, with no Fullscreen row; the
+ * header's Fullscreen toggle is asserted to carry no chord in its tooltip; the
+ * find bar opens on Ctrl+Shift+F (macOS: Cmd+F), the query is typed into the
+ * bar, Enter / Shift+Enter step the matches, and fullscreen is the header
+ * toggle (macOS also has Cmd+Shift+F). Each frame asserts the DOM state first
+ * (the menu rows and keycap, the "n of m" counter text, the "No results" marker,
+ * the fullscreen panel's `absolute inset-0` class and `<main>`'s `isolate`), so
+ * a screenshot that passes is a picture of the state it names.
  *
  * Captured, each in dark and light (theme via localStorage `mc-theme`):
- *   00-menu-<theme>.png            overflow menu: Find (Ctrl+Shift+F), Fullscreen (no chord)
+ *   00-menu-<theme>.png            overflow menu: Find (Ctrl+Shift+F) and Hide, no Fullscreen
  *   01-find-match-<theme>.png      find bar open, "1 of 3", current match highlighted
  *   02-find-step-<theme>.png       after Enter: counter moved to "2 of 3"
  *                                  (Shift+Enter is asserted to step back)
  *   03-find-no-match-<theme>.png   a query with no hit: "No results"
- *   04-fullscreen-<theme>.png      menu Fullscreen: the dock fills the content area,
- *                                  with a visible Exit fullscreen button in Hide's slot
- *   05-fullscreen-menu-<theme>.png the overflow menu while fullscreen: "Exit fullscreen", and Hide
- *   06-exit-fullscreen-<theme>.png after the header button: back in the dock
- *   07-fullscreen-toggle-dark.webm recording: menu Fullscreen, then the header exit
+ *   04-fullscreen-<theme>.png      header Fullscreen: the dock fills the content area,
+ *                                  and the same toggle reads Exit fullscreen
+ *   05-fullscreen-menu-<theme>.png the overflow menu while fullscreen: Hide, no Fullscreen row
+ *   06-exit-fullscreen-<theme>.png after the toggle again: back in the dock
+ *   07-fullscreen-toggle-dark.webm recording: the header toggle in and out of fullscreen
  *
  * Usage: node scripts/capture-terminal-find.mjs [outDir]
  *   (default outDir: website/temp-screenshots/terminal-find, gitignored)
@@ -162,15 +163,20 @@ async function captureTheme(browser, base, theme) {
   if (!gotCtrlF) throw new Error('bare Ctrl+F did not reach the shell as ^F: ' + JSON.stringify(ptyInput))
   if (await bar.isVisible()) throw new Error('bare Ctrl+F opened the find bar; it must stay with the shell')
 
-  // ---- Overflow menu: Find carries its Ctrl+Shift+F keycap, Fullscreen none. ----
+  // ---- Overflow menu: Find carries its Ctrl+Shift+F keycap, Hide is a row,
+  //      and Fullscreen is not (it is the header toggle). ----
+  const toggle = page.getByTestId('terminal-fullscreen-toggle')
+  if ((await toggle.getAttribute('title')) !== 'Fullscreen') {
+    throw new Error('header Fullscreen tooltip names a chord; Linux/Windows have no fullscreen chord')
+  }
   await page.getByRole('button', { name: 'More actions' }).click()
   const menu = page.getByRole('menu')
   await menu.waitFor({ state: 'visible', timeout: 5000 })
   const findCap = (await menu.getByTestId('terminal-find-shortcut').textContent()) ?? ''
   if (findCap !== 'Ctrl+Shift+F') throw new Error(`menu Find keycap read ${JSON.stringify(findCap)}`)
-  await menu.getByTestId('terminal-menu-fullscreen').waitFor({ state: 'visible', timeout: 5000 })
-  if (await menu.getByTestId('terminal-fullscreen-shortcut').count()) {
-    throw new Error('menu Fullscreen shows a keycap; Linux/Windows have no fullscreen chord')
+  await menu.getByTestId('terminal-menu-hide').waitFor({ state: 'visible', timeout: 5000 })
+  if (await menu.getByRole('menuitem', { name: /fullscreen/i }).count()) {
+    throw new Error('menu still lists Fullscreen; it belongs to the header toggle')
   }
   await page.waitForTimeout(250) // menu enter animation
   {
@@ -223,14 +229,12 @@ async function captureTheme(browser, base, theme) {
   await expectCount(page, /^No results$/, 'no-match')
   await shotPanel(page, panel, `03-find-no-match-${theme}`)
 
-  // ---- Fullscreen: close find (Escape returns focus to the shell), then pick
-  //      the overflow menu's Fullscreen item (Linux/Windows have no chord), so
-  //      the frame shows a plain maximized shell. ----
+  // ---- Fullscreen: close find (Escape returns focus to the shell), then click
+  //      the header toggle (Linux/Windows have no chord), so the frame shows a
+  //      plain maximized shell. ----
   await input.press('Escape')
   await bar.waitFor({ state: 'detached', timeout: 5000 })
-  await page.getByRole('button', { name: 'More actions' }).click()
-  await page.getByTestId('terminal-menu-fullscreen').click()
-  await page.getByRole('menu').waitFor({ state: 'detached', timeout: 5000 })
+  await toggle.click()
   await page.waitForFunction(() => {
     const p = document.querySelector('[data-testid="bottom-terminal-panel"]')
     const main = document.getElementById('main-content')
@@ -246,7 +250,7 @@ async function captureTheme(browser, base, theme) {
     }
   })
   if (!/\babsolute\b/.test(state.panelClass) || !/\binset-0\b/.test(state.panelClass) || !state.mainIsolate || state.stored !== '1') {
-    throw new Error('menu Fullscreen did not maximize the dock: ' + JSON.stringify(state))
+    throw new Error('header Fullscreen did not maximize the dock: ' + JSON.stringify(state))
   }
   await page.waitForTimeout(400) // refit after the size change
   const pbox = await panel.boundingBox()
@@ -254,35 +258,32 @@ async function captureTheme(browser, base, theme) {
     throw new Error('fullscreen panel does not fill the content area: ' + JSON.stringify(pbox))
   }
   // The whole window, so the frame shows the panel covering the content area
-  // under the top bar and beside the nav rail, with the visible Exit
-  // fullscreen button in its header.
-  const exitBtn = page.getByTestId('terminal-exit-fullscreen')
-  await exitBtn.waitFor({ state: 'visible', timeout: 5000 })
-  if ((await exitBtn.getAttribute('aria-label')) !== 'Exit fullscreen') {
-    throw new Error('fullscreen header exit button is not labelled "Exit fullscreen"')
+  // under the top bar and beside the nav rail, with the toggle in its header.
+  if ((await toggle.getAttribute('aria-label')) !== 'Exit fullscreen') {
+    throw new Error('fullscreen header toggle is not labelled "Exit fullscreen"')
   }
-  // Exit fullscreen takes the Hide slot, so the header keeps two buttons.
+  // The header keeps two buttons: More actions and the toggle.
   if (await page.getByRole('button', { name: 'Hide terminal panel' }).count()) {
-    throw new Error('fullscreen header still shows Hide beside Exit fullscreen')
+    throw new Error('fullscreen header shows Hide beside the toggle')
   }
   await page.screenshot({ path: `${OUT}/04-fullscreen-${theme}.png` })
 
-  // ---- The overflow menu while fullscreen: its item now reads "Exit
-  //      fullscreen". ----
+  // ---- The overflow menu while fullscreen: Hide is there, Fullscreen is not. ----
   await page.getByRole('button', { name: 'More actions' }).click()
   const fsMenu = page.getByRole('menu')
   await fsMenu.waitFor({ state: 'visible', timeout: 5000 })
-  const fsItem = (await fsMenu.getByTestId('terminal-menu-fullscreen').textContent()) ?? ''
-  if (!fsItem.includes('Exit fullscreen')) throw new Error(`fullscreen menu item read ${JSON.stringify(fsItem)}`)
   await fsMenu.getByTestId('terminal-menu-hide').waitFor({ state: 'visible', timeout: 5000 })
+  if (await fsMenu.getByRole('menuitem', { name: /fullscreen/i }).count()) {
+    throw new Error('fullscreen menu still lists a Fullscreen row')
+  }
   await page.mouse.move(640, 500) // no hover tooltip in the frame
   await page.waitForTimeout(250) // menu enter animation
   await page.screenshot({ path: `${OUT}/05-fullscreen-menu-${theme}.png` })
   await page.keyboard.press('Escape')
   await fsMenu.waitFor({ state: 'detached', timeout: 5000 })
 
-  // ---- The header button returns the panel to the dock at its dragged size. ----
-  await exitBtn.click()
+  // ---- The toggle returns the panel to the dock at its dragged size. ----
+  await toggle.click()
   await expectDocked(page)
   // Park the pointer off the header so no hover tooltip lands in the frame.
   await page.mouse.move(640, 300)
@@ -292,7 +293,7 @@ async function captureTheme(browser, base, theme) {
 }
 
 /** The panel is docked again: not absolutely positioned, flag cleared,
- *  `<main>` no longer isolated, and the exit button gone. */
+ *  `<main>` no longer isolated, and the toggle back to "Fullscreen". */
 async function expectDocked(page) {
   await page.waitForFunction(() => {
     const p = document.querySelector('[data-testid="bottom-terminal-panel"]')
@@ -302,30 +303,33 @@ async function expectDocked(page) {
     panelClass: document.querySelector('[data-testid="bottom-terminal-panel"]')?.className ?? '',
     mainIsolate: !!document.getElementById('main-content')?.classList.contains('isolate'),
     stored: sessionStorage.getItem('mc-bottom-terminal-fullscreen'),
-    exitButton: !!document.querySelector('[data-testid="terminal-exit-fullscreen"]'),
+    toggleLabel: document.querySelector('[data-testid="terminal-fullscreen-toggle"]')?.getAttribute('aria-label') ?? null,
   }))
-  if (/\babsolute\b/.test(docked.panelClass) || docked.mainIsolate || docked.stored || docked.exitButton) {
+  if (/\babsolute\b/.test(docked.panelClass) || docked.mainIsolate || docked.stored || docked.toggleLabel !== 'Fullscreen') {
     throw new Error('Exit fullscreen did not return the panel to the dock: ' + JSON.stringify(docked))
   }
 }
 
-/** A recording of the dock going fullscreen from the menu and back through the
- *  header's Exit fullscreen button (dark theme). */
+/** A recording of the dock going fullscreen from the header toggle and back
+ *  (dark theme). */
 async function recordToggle(browser, base) {
   const dir = `${OUT}/video-tmp`
   const { context, page } = await openPage(browser, base, 'dark', {
     recordVideo: { dir, size: VIEWPORT }, deviceScaleFactor: 1,
   })
   await page.waitForTimeout(800)
-  await page.getByRole('button', { name: 'More actions' }).click()
+  const toggle = page.getByTestId('terminal-fullscreen-toggle')
+  await toggle.hover()
   await page.waitForTimeout(600)
-  await page.getByTestId('terminal-menu-fullscreen').click()
-  const exitBtn = page.getByTestId('terminal-exit-fullscreen')
-  await exitBtn.waitFor({ state: 'visible', timeout: 5000 })
+  await toggle.click()
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="terminal-fullscreen-toggle"]')?.getAttribute('aria-label') === 'Exit fullscreen',
+    null, { timeout: 5000 },
+  )
   await page.waitForTimeout(1200)
-  await exitBtn.hover()
+  await toggle.hover()
   await page.waitForTimeout(800)
-  await exitBtn.click()
+  await toggle.click()
   await expectDocked(page)
   await page.waitForTimeout(1200)
   const video = page.video()

@@ -675,10 +675,10 @@ every path derived from it, so splitting the assignment across lines does not he
 
 ## Why the driver is `monitor_start` and not a cron
 
-A turn is capped at 2 hours and a CI round here costs 20–40 minutes, so an in-turn
-poll loop reliably hits the cap around iteration 3–4 — losing the loop, though not
-the work. `monitor_start` gives each round a fresh turn and survives a tab close or
-gateway restart.
+A turn is capped at 4 hours by default (`agent.chat_turn_timeout_secs`) and a CI
+round here costs 20–40 minutes, so an in-turn poll loop hits the cap after 6–12
+rounds — losing the loop, though not the work. `monitor_start` gives each round a
+fresh turn and survives a tab close or gateway restart.
 
 Cron and heartbeat cannot drive the fix loop, and both report success while doing
 nothing. A cron has no owning slot, so its tool calls hit a deny-by-default approval

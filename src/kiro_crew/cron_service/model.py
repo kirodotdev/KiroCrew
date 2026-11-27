@@ -168,6 +168,10 @@ class CronJob:
     last_run_ts: float | None = None
     last_status: str | None = None  # "ok" | "error"
     last_error: str | None = None
+    # Which model failure ``last_error`` is, read from the error's own transport
+    # tags, never from its text: "throttle", "capacity" (the model was unavailable
+    # on the backend), or "" for any other failure and for a run that succeeded.
+    last_error_kind: str = ""
     created_ts: float = 0.0
     delete_after_run: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run was
@@ -199,8 +203,9 @@ class CronJob:
     refusal_cannot_clear: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run did
     # nothing a person would look for in the run history (a gateway job's quiet
-    # tick, which woke no one), so the run writes no history row. Reset at the
-    # start of every run.
+    # tick, which woke no one, or a wait for the host sign-in that its notice
+    # already reports), so the run writes no history row. Reset at the start of
+    # every run.
     quiet_run: bool = False
     # Runtime-only (never serialized): set by the gateway when THIS run was a
     # script's Skip(), so its history row is marked idle and the Logs tab can
@@ -299,6 +304,11 @@ class CronJob:
     silent: bool = False  # suppress auto-delivery; agent sends via send_message
     session_key: str = ""  # session that created this job (for scoped removal)
     person_owner_key: str = ""  # session_key MCP cron_add saw as a live person's tab
+    # The Bot that made this job through ``cron_add`` and the Profile approval mode
+    # it held then (``cron_service.owner_grant``). Read at each fire together with
+    # the Bot's live Profile, so the job never runs above either. "" = no grant.
+    owner_member_id: str = ""
+    owner_approval_mode: str = ""
     last_posted_hash: str = ""  # hash of last result posted to Slack (dedup)
     consecutive_dupes: int = 0  # count of suppressed duplicate results
     last_posted_at: float = 0.0  # epoch when last Slack post was delivered (dedup reminder)
@@ -326,6 +336,9 @@ class CronJob:
     # one run alone. The store refuses it with ``persistent_session=True``, whose
     # one tab already holds every run. ``hide_in_chat`` still wins.
     new_chat_per_run: bool = False
+    # True → a reminder: each run delivers ``message`` to the user as written and
+    # starts no agent turn, so no tool runs (``cron_reminder``).
+    notify_only: bool = False
     # ``fresh`` → the first run after the person closed the job's tab reopens it
     # empty: the rows stay in ``cron:<id>`` below the tab's display floor
     # (``cron_inject.start_fresh_cron_tab``). ``resume`` shows them again.

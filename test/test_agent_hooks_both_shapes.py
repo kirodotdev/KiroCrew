@@ -151,6 +151,10 @@ class TestArrayFormRoundTrip:
             "fileDeleted",
             "Manual",
             "userTriggered",
+            "PreCompact",
+            "preCompact",
+            "PostCompact",
+            "postCompact",
         ],
     )
     def test_triggers_kiro_cli_cannot_name_are_dropped_on_emission_only(
@@ -208,7 +212,8 @@ class TestTheTriggerVocabularyMatchesKiroAgent:
     Transcribed from `packages/kiro-agent/src/hooks/trigger-names.ts` at blob
     `2d4a3127e32e5e81e68d5c2ea406a6a5728f6d78`. The table there is
     case-sensitive; Crew lowercases the key, so it accepts every spelling
-    kiro-agent does plus casings of them.
+    kiro-agent does plus casings of them. The four compaction rows are read from
+    the same table in the pinned engine's (0.66.117) published bundle.
     """
 
     ALIAS_TABLE = {
@@ -239,6 +244,10 @@ class TestTheTriggerVocabularyMatchesKiroAgent:
         "stop": "Stop",
         "userPromptSubmit": "UserPromptSubmit",
         "AfterFileEdit": "PostFileSave",
+        "PreCompact": "PreCompact",
+        "PostCompact": "PostCompact",
+        "preCompact": "PreCompact",
+        "postCompact": "PostCompact",
     }
 
     def test_every_spelling_normalizes_to_its_canonical_trigger(self) -> None:
@@ -254,7 +263,7 @@ class TestTheTriggerVocabularyMatchesKiroAgent:
             )
             assert doc["trigger"] == canonical, spelling
 
-    def test_the_twelve_canonical_triggers_are_all_reachable(self) -> None:
+    def test_the_fourteen_canonical_triggers_are_all_reachable(self) -> None:
         assert set(self.ALIAS_TABLE.values()) == {
             "SessionStart",
             "SessionEnd",
@@ -268,9 +277,11 @@ class TestTheTriggerVocabularyMatchesKiroAgent:
             "PostFileSave",
             "PostFileDelete",
             "Manual",
+            "PreCompact",
+            "PostCompact",
         }
 
-    def test_five_of_the_twelve_reach_kiro_cli(self) -> None:
+    def test_five_of_the_fourteen_reach_kiro_cli(self) -> None:
         emitted = {}
         for canonical in set(self.ALIAS_TABLE.values()):
             document = {

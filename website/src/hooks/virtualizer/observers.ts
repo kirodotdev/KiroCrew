@@ -247,11 +247,11 @@ export function useResizeObserver(ctx: {
   compensation: Pick<ShiftCompensation, 'compensateAboveFold'>
   sync: Pick<GeometrySync, 'deferForRailSettle' | 'scheduleResizeSync' | 'cancelRailSettle'>
   pinning: Pick<Pinning, 'followResizeBatch'>
-  reading: Pick<ReadingPositionEntry, 'replaceCollapsedEntry'>
+  reading: Pick<ReadingPositionEntry, 'replaceCollapsedEntry' | 'noteCollapsedBox'>
   ops: Pick<WindowOperations, 'recomputeWindow'>
 }): void {
   const { scrollerRef, scrollerEl, elIndexRef, trailingRef, resizeObserverRef } = ctx
-  const { replaceCollapsedEntry } = ctx.reading
+  const { replaceCollapsedEntry, noteCollapsedBox } = ctx.reading
   const { measureResizeEntries, shiftRowTops } = ctx.measurement
   const { compensateAboveFold } = ctx.compensation
   const { deferForRailSettle, scheduleResizeSync, cancelRailSettle } = ctx.sync
@@ -274,8 +274,10 @@ export function useResizeObserver(ctx: {
       if (!el) return
       // The box got a height after being laid out at zero (a Remote Crew pane
       // shown after warming display:none): an entry placed against the
-      // collapsed box is re-run now (see replaceCollapsedEntry).
+      // collapsed box is re-run now (see replaceCollapsedEntry). A box that
+      // collapses under the reader records their row first (noteCollapsedBox).
       const regrown = boxCollapsed && !scrollerCollapsed(el)
+      if (!boxCollapsed && scrollerCollapsed(el)) noteCollapsedBox()
       boxCollapsed = scrollerCollapsed(el)
       if (regrown) replaceCollapsedEntry()
 
@@ -337,7 +339,7 @@ export function useResizeObserver(ctx: {
     }
   }, [
     scrollerRef, measureResizeEntries, shiftRowTops, compensateAboveFold, deferForRailSettle, followResizeBatch,
-    scheduleResizeSync, cancelRailSettle, recomputeWindow, elIndexRef, trailingRef, resizeObserverRef, replaceCollapsedEntry,
+    scheduleResizeSync, cancelRailSettle, recomputeWindow, elIndexRef, trailingRef, resizeObserverRef, replaceCollapsedEntry, noteCollapsedBox,
   ])
 
   // Late-mounting scroller: the RO effect above observes `scrollerRef.current`

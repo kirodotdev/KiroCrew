@@ -127,12 +127,8 @@ export interface ChatInputProps {
    *  message fired now would leave without the file, which would then land in
    *  the emptied composer as a stray attachment. */
   holdSend?: boolean
-  /** Abort the upload in flight; turns the upload spinner into a cancel control */
-  onCancelUpload?: () => void
-  /** How many uploads `onCancelUpload` aborts. Above one, the cancel control's
-   *  label names the count, since pressing it stops every one of them. */
-  uploadCount?: number
-  /** The slot those uploads run in; their progress shows beside the cancel control. */
+  /** The slot this composer's uploads run in: each one in flight shows as a
+   *  chip above the composer with its own status and cancel. */
   uploadSlot?: string | null
   /** Pending file paths (images + non-images) for preview strip */
   pendingFiles?: string[]
@@ -365,6 +361,9 @@ export interface ChatInputProps {
   approvalMode?: string
   /** The approval-mode picker drives another machine's session (crew window). */
   approvalModeRemote?: ApprovalModeRemote
+  /** The KAS session's approve-for-me read-back; `undefined` while it offers none,
+   *  which keeps the choice out of the approval-mode picker. */
+  approveForMe?: boolean
   /** Drawn directly right of the approval-mode picker (the mid-chat conductor mode chip). */
   afterApprovalMode?: React.ReactNode
   reasoningEffort?: string

@@ -11,8 +11,9 @@ Seven operations: ``ListSandboxes``, ``GetSandbox``, ``CreateSandbox``,
   shape of ``apps/kiro_calls.SignedCall``: the bearer, the sign-in id the guard's
   backoff is keyed on, and the sign-in's profile ARN. No bearer means no request. The bearer is in no log line, no
   error and no ``repr``.
-* Every id-taking call needs an id this Crew created (:class:`.guard.SandboxGuard`);
-  Delete goes by that id only, never by ``displayName``.
+* Every id-taking call needs an id this Crew created, or one the person added while the
+  service listed it for the same sign-in (:class:`.guard.SandboxGuard`); Delete goes by a
+  created id only, never by ``displayName``.
 * ``CreateSandbox`` is never retried. A lost reply is recorded with the guard before
   its error is raised, and new creates pause.
 * One call at a time, :data:`CALL_TIMEOUT_S` each, at most :data:`MAX_REPLY_BYTES` read.
@@ -52,6 +53,8 @@ _MESSAGE_MAX = 200
 _QUIET_STATUSES = (401, 403)
 #: A CreateSandbox failure with no status that may still have made an environment.
 LOST_REPLY_KINDS = ("unreachable", "bad_reply")
+#: Listed states an add refuses: the environment is gone or on its way out.
+NOT_ADOPTABLE = ("DELETED", "DELETING", "FAILED")
 #: The shape of a Smithy error type name.
 _KIND_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.]{0,63}")
 
@@ -128,8 +131,17 @@ class SandboxClient:
 
     # -- the one wire call ---------------------------------------------------------
 
-    def call(self, op: str, body: dict, *, ignore_backoff: bool = False) -> dict:
-        """POST one operation and decode its reply, or raise SandboxError / GuardRefused."""
+    def call(
+        self, op: str, body: dict, *, ignore_backoff: bool = False, known: Optional[str] = None
+    ) -> dict:
+        """POST one operation and decode its reply, or raise SandboxError / GuardRefused.
+        ``known``: the id the call acts on, checked against the sign-in it is sent with."""
+        return self._call(op, body, ignore_backoff=ignore_backoff, known=known)[0]
+
+    def _call(
+        self, op: str, body: dict, *, ignore_backoff: bool = False, known: Optional[str] = None
+    ) -> tuple[dict, str]:
+        """:meth:`call`, plus the sign-in id the call was sent with."""
         with self._lock:
             try:
                 endpoint = self._settings().service_endpoint()
@@ -141,13 +153,17 @@ class SandboxClient:
                 cred = Credential("")
             if not isinstance(cred.bearer, str) or not cred.bearer:
                 raise SandboxError(op, "no_token", message="Sign in to Kiro first.")
+            if known is not None:
+                # The same credential read as the send: an id added under another sign-in
+                # never goes out with this one's bearer.
+                self._guard.require_known(known, cred.sign_in)
             if not ignore_backoff:
                 self._guard.check_backoff(cred.sign_in)
             status, reply, kind = self._post(op, body, endpoint, cred)
             self._guard.note_reply(op, status, kind, cred.sign_in)
             if status != 200:
                 raise self._error(op, status, kind, reply, cred.bearer)
-            return reply
+            return reply, cred.sign_in
 
     def _post(self, op: str, body: dict, endpoint: str, cred: Credential) -> tuple[int, dict, str]:
         headers = {
@@ -216,17 +232,24 @@ class SandboxClient:
 
     def list_sandboxes(self) -> list[dict]:
         """Every environment of the signed-in user, from every client; others are left alone."""
+        return self.list_for_sign_in()[0]
+
+    def list_for_sign_in(self) -> tuple[list[dict], str]:
+        """The List and the one sign-in id every page was read with, or ``""`` when the
+        sign-in changed between pages."""
         body: dict = {"maxResults": LIST_PAGE_SIZE}
         entries: list[dict] = []
+        seen: set[str] = set()
         for _ in range(LIST_MAX_PAGES):
-            out = self.call("ListSandboxes", body)
+            out, sign_in = self._call("ListSandboxes", body)
+            seen.add(sign_in)
             page = out.get("sandboxes") or []
             if not isinstance(page, list):
                 raise SandboxError("ListSandboxes", "bad_reply", message="sandboxes is not a list")
             entries += [p for p in page if isinstance(p, dict)]
             token = out.get("nextToken")
             if not token:  # an empty page that still carries a token keeps paging
-                return entries
+                return entries, seen.pop() if len(seen) == 1 else ""
             body = {"maxResults": LIST_PAGE_SIZE, "nextToken": token}
         raise SandboxError("ListSandboxes", "bad_reply", message="too many pages")
 
@@ -256,17 +279,65 @@ class SandboxClient:
         self._guard.end_create()
         return _summary("CreateSandbox", out)
 
+    def adopt_sandbox(self, exec_environment_id: str) -> dict:
+        """Add an environment another client made, once one List read now shows that exact
+        id for this sign-in and not on its way out. A display name is never matched."""
+        entries, sign_in = self.list_for_sign_in()
+        entry = next((e for e in entries if e.get("execEnvironmentId") == exec_environment_id), {})
+        if not sign_in or not entry or str(entry.get("status")) in NOT_ADOPTABLE:
+            raise GuardRefused(
+                "not_listed", "Your sign-in does not list that environment as one Crew can add."
+            )
+        self._guard.record_adopted({exec_environment_id}, sign_in)
+        return entry
+
+    def rebind_listed(self, entries: list[dict], sign_in: str) -> set[str]:
+        """The added ids usable under *sign_in*, after binding to it each added id this
+        List (read under it) shows and not on its way out: the add's own check."""
+        if not sign_in:
+            return set()
+        added = self._guard.all_adopted_ids()
+        self._guard.record_adopted(
+            {
+                e["execEnvironmentId"]
+                for e in entries
+                if e.get("execEnvironmentId") in added and str(e.get("status")) not in NOT_ADOPTABLE
+            },
+            sign_in,
+        )
+        return self._guard.adopted_ids(sign_in)
+
+    def _call_known(self, op: str, body: dict, exec_environment_id: str) -> dict:
+        """:meth:`call` on an own or added id. An id added under an earlier sign-in id (a
+        new sign-in, or a refresh that rotated the token) gets the add's own check once
+        more: one live List under the current sign-in, which rebinds it when it shows the
+        id. Otherwise the call is refused and the record kept."""
+        try:
+            return self.call(op, body, known=exec_environment_id)
+        except GuardRefused as e:
+            if e.reason != "not_own_id" or not self._guard.is_adopted(exec_environment_id):
+                raise
+        try:
+            self.adopt_sandbox(exec_environment_id)
+        except GuardRefused as e:
+            if e.reason != "not_listed":
+                raise
+            raise GuardRefused(
+                "not_own_id", "Your sign-in does not list that environment. Add it again."
+            ) from None
+        return self.call(op, body, known=exec_environment_id)
+
     def get_sandbox(self, exec_environment_id: str) -> dict:
-        self._guard.require_own(exec_environment_id)
-        return _summary("GetSandbox", self.call("GetSandbox", _id(exec_environment_id)))
+        out = self._call_known("GetSandbox", _id(exec_environment_id), exec_environment_id)
+        return _summary("GetSandbox", out)
 
     def stop_sandbox(self, exec_environment_id: str) -> dict:
-        self._guard.require_own(exec_environment_id)
-        return _summary("StopSandbox", self.call("StopSandbox", _id(exec_environment_id)))
+        out = self._call_known("StopSandbox", _id(exec_environment_id), exec_environment_id)
+        return _summary("StopSandbox", out)
 
     def resume_sandbox(self, exec_environment_id: str) -> dict:
-        self._guard.require_own(exec_environment_id)
-        return _summary("ResumeSandbox", self.call("ResumeSandbox", _id(exec_environment_id)))
+        out = self._call_known("ResumeSandbox", _id(exec_environment_id), exec_environment_id)
+        return _summary("ResumeSandbox", out)
 
     def delete_sandbox(self, exec_environment_id: str, *, cleanup: bool = False) -> dict:
         """By ledger id only. A 404 means already gone. ``cleanup`` (a failed launch's own
@@ -287,9 +358,8 @@ class SandboxClient:
 
     def start_ssh_session(self, exec_environment_id: str) -> SshSession:
         """A new session on every call; never resumes a stopped environment."""
-        self._guard.require_own(exec_environment_id)
         body = {"identifier": {"executionEnvironmentId": exec_environment_id}}
-        out = self.call("StartSshSession", body)
+        out = self._call_known("StartSshSession", body, exec_environment_id)
         values = [out.get(k) for k in ("ssmSessionId", "streamUrl", "tokenValue")]
         if not all(isinstance(v, str) and v for v in values):
             raise SandboxError("StartSshSession", "bad_reply", message="the session is incomplete")

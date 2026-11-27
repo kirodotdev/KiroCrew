@@ -442,6 +442,7 @@ def missing_agent_reason(agent: str, *, member: str = "") -> str:
 def list_apps() -> list[dict[str, Any]]:
     """Return metadata for all installed apps."""
     # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.browser_recipes import browser_recipes_grant_row  # noqa: PLC0415
     from kiro_crew.apps.browser_sdk import browser_grant_row  # noqa: PLC0415
     from kiro_crew.apps.browser_sites import browser_sites_grant_row  # noqa: PLC0415
     from kiro_crew.apps.frame_sources import frame_sources_grant_row  # noqa: PLC0415
@@ -513,6 +514,7 @@ def list_apps() -> list[dict[str, Any]]:
             **browser_sites_grant_row(entry.name, manifest_data),
             **kiro_operations_grant_row(entry.name, manifest_data),
             **browser_grant_row(entry.name, manifest_data),
+            **browser_recipes_grant_row(entry.name, manifest_data),
             "manifest": manifest_data,
         }
         # Include migratedTo if non-empty
@@ -523,6 +525,7 @@ def list_apps() -> list[dict[str, Any]]:
             app_info["orphaned"] = True
         if adoption_markers is not None:
             _add_adoption_row(app_info, entry.name, meta, manifest_data, adoption_markers)
+        _add_shadowed_builtin_row(app_info, entry.name, meta)
         result.append(app_info)
     return result
 
@@ -530,6 +533,7 @@ def list_apps() -> list[dict[str, Any]]:
 def get_app(name: str) -> dict[str, Any] | None:
     """Return full metadata for a single installed app, or None."""
     # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.browser_recipes import browser_recipes_grant_row  # noqa: PLC0415
     from kiro_crew.apps.browser_sdk import browser_grant_row  # noqa: PLC0415
     from kiro_crew.apps.browser_sites import browser_sites_grant_row  # noqa: PLC0415
     from kiro_crew.apps.frame_sources import frame_sources_grant_row  # noqa: PLC0415
@@ -568,12 +572,23 @@ def get_app(name: str) -> dict[str, Any] | None:
         **browser_sites_grant_row(name, manifest_data),
         **kiro_operations_grant_row(name, manifest_data),
         **browser_grant_row(name, manifest_data),
+        **browser_recipes_grant_row(name, manifest_data),
         "manifest": manifest_data,
     }
     adoption_markers = _adoption_rows_context()
     if adoption_markers is not None:
         _add_adoption_row(row, name, meta, manifest_data, adoption_markers)
+    _add_shadowed_builtin_row(row, name, meta)
     return row
+
+
+def _add_shadowed_builtin_row(app_info: dict[str, Any], name: str, meta: InstalledApp) -> None:
+    """Set ``app_info["shadowedBuiltin"]`` when a still-running built-in shares the name."""
+    from kiro_crew.apps.builtin_shadow import shadowed_builtin_notice
+
+    notice = shadowed_builtin_notice(name, meta)
+    if notice:
+        app_info["shadowedBuiltin"] = notice
 
 
 def _adoption_rows_context() -> dict[str, Any] | None:

@@ -66,6 +66,7 @@ from kiro_crew.mcp_gateway.resource_subscriptions import (
     ResourceEvent,
     ResourceSubscriptionService,
 )
+from kiro_crew.testing.module_table import patched_sys_modules
 from kiro_crew.testing.synthetic_credentials import synth
 from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
@@ -718,7 +719,7 @@ def test_the_idle_sweep_never_imports_the_switched_off_feature(state: Any) -> No
     """Owner requirement 3: with nothing having imported the service, the sweep reads nothing."""
     module = "kiro_crew.mcp_gateway.resource_subscriptions"
     state.get_or_create_slot(SLOT)
-    with patch.dict(sys.modules):
+    with patched_sys_modules():
         sys.modules.pop(module, None)
         with patch.object(slot_retention, "slot_last_activity", lambda _slot: 1.0):
             stale, _ = slot_retention.select_idle_slot_keys(state, looped=set(), cutoff=100.0)

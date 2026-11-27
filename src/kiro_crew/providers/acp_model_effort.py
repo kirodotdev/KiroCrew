@@ -847,6 +847,30 @@ async def clear_effort(self: AcpProvider, *, every_model: bool = False) -> bool 
     return False
 
 
+async def forget_effort(self: AcpProvider) -> bool:
+    """Drop every level this session stored, and its model's overlay entry, with no live push.
+
+    For a Default the dashboard records while a turn streams: :meth:`clear_effort`
+    would send its RPC under the prompt read loop, so this does only the part a
+    respawn reads. The running process keeps its level until it respawns; that
+    respawn, and a reset successor started from the shared file, then run the
+    default instead of the level the slot's earlier pick left there.
+
+    Returns False when the workspace overlay was busy: nothing changed, file or map.
+    """
+    model = self._effort_model
+    if (
+        self._client.backend in ACP_BACKENDS_EFFORT_OVERLAY
+        and model not in ("", DEFAULT_MODEL)
+        and not await asyncio.to_thread(_clear_cli_overlay_effort, self._client._work_dir, model)
+    ):
+        logger.warning("ACP effort NOT forgotten (model=%s): the workspace overlay was busy", model)
+        return False
+    self._effort_per_model.clear()
+    self._unbound_effort = ""
+    return True
+
+
 async def _clear_effort_live(
     provider: AcpProvider, model: str, cleared: str | None, *, every_model: bool
 ) -> bool:

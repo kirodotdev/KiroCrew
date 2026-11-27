@@ -86,10 +86,11 @@ describe('warn text on warn tints in light palettes (#19920, #20071)', () => {
     const w = lightShare('warn')
     const { tints, sites } = pairedTints('warn')
     // The premise: the pairings exist (the issue listed 64 lines) and the
-    // strongest tint the token is tuned for is still among them, so a new
-    // `bg-warn/40 text-warn-text` is measured here rather than assumed.
+    // common tints are among them, so a new `bg-warn/40 text-warn-text` is
+    // measured here rather than assumed. /30 has no text-warn-text pairing in
+    // the source, so it is not part of the premise.
     expect(sites.length).toBeGreaterThanOrEqual(50)
-    expect([...tints.keys()].sort()).toEqual(expect.arrayContaining(['subtle', '/10', '/15', '/30']))
+    expect([...tints.keys()].sort()).toEqual(expect.arrayContaining(['subtle', '/10', '/15']))
     const failures: string[] = []
     for (const t of LIGHT_THEMES) {
       const warn = tokenRgb(t, '--warn')

@@ -100,7 +100,12 @@ from kiro_crew.portability_archive import (
     logger,
     manifest_is_memory_only,
 )
-from kiro_crew.portability_export import unbundled_apps
+from kiro_crew.portability_export import (
+    MAX_RECORDED_APPS,
+    apps_not_set_up,
+    recorded_apps,
+    unbundled_apps,
+)
 from kiro_crew.portability_templates import (
     AGENT_TEMPLATE_SECRET_PLACEHOLDER,
     AGENT_TEMPLATES_DIR,
@@ -201,7 +206,9 @@ def _move_home_paths(snap: Path, summary: dict) -> frozenset[str]:
     file names of the staged transcripts whose folder could not be moved: such a chat
     opens in the default workspace, and `_merge_sessions` counts the ones it installs.
     """
-    old_home, new_home = archive_home(snap), this_home()
+    # This home first: when it is unknown (Windows) no path the archive names is looked at.
+    new_home = this_home()
+    old_home = archive_home(snap) if new_home is not None else None
     if old_home is None or new_home is None:
         return frozenset()
     rewrite = rewrite_staged_paths(snap, old_home, new_home)
@@ -884,15 +891,15 @@ def apply_import_zip(
             if size_problem is not None:
                 raise ValueError(size_problem)
             session_mtimes = _read_session_mtimes(zf)
+            top_manifest: object = None
             if not memory_only:
                 # The same one manifest the validator read decides the scope; a file
                 # elsewhere that happens to be named MANIFEST.json is content. With no
                 # manifest at all nothing declares memory only (the validator is what
                 # requires one); two at the top are still refused.
                 top = _top_manifest(infos, required=False)
-                memory_only = top is not None and manifest_is_memory_only(
-                    _read_member_json(zf, top)
-                )
+                top_manifest = None if top is None else _read_member_json(zf, top)
+                memory_only = top is not None and manifest_is_memory_only(top_manifest)
             if memory_only and mode != "merge":
                 raise ValueError("A memory-only import is merge only")
             for info in infos:
@@ -990,7 +997,7 @@ def apply_import_zip(
             snap, mc, None, mode, allow_unpinned=not staging_pinned
         )
         if held_config:
-            summary["held_agent_config"] = [f"workspace/{name}" for name in held_config]
+            summary["held_agent_config"] = held_config
 
         if mode == "replace":
             # Strip sensitive files and skills/auto/ from snapshot before replace
@@ -1204,6 +1211,16 @@ def apply_import_zip(
         summary["missing_agent_templates"] = missing
     if more:
         summary["missing_agent_templates_more"] = more
+    # No archive carries an app: name the ones the other machine had that this one
+    # has not set up. A memory-only import names none.
+    apps, apps_more, apps_unlisted = apps_not_set_up(None if memory_only else top_manifest)
+    if apps:
+        summary["missing_apps"] = apps
+    if apps_more:
+        summary["missing_apps_more"] = apps_more
+    if apps_unlisted:
+        # Past the archive's list, so nothing here checked them: counted, never named.
+        summary["missing_apps_unlisted"] = apps_unlisted
     return summary
 
 
@@ -1279,13 +1296,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _keep_for_export,
         _keep_store_for_export,
         _manifest_entry_size,
-        _named_in_export,
+        _named_apps,
         _open_contained_file,
         _open_verified,
         _plan_sessions,
         _session_candidates,
         _session_manifest_base,
         _SessionOrder,
+        _set_up_here,
         _sqlite_logical_size,
         _wal_checkpoint,
         _walk_contained,

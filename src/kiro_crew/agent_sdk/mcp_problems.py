@@ -183,26 +183,70 @@ def _reports_left_out(provider: Any) -> int:
     return left_out if isinstance(left_out, int) and left_out > 0 else 0
 
 
-async def wait_for_declared_mcp(provider: Any, timeout: float) -> None:
+def given_up_servers(provider: Any) -> tuple[str, ...]:
+    """The servers *provider*'s session has given up on, or ``()``.
+
+    ``SessionMcpReport.given_up``: failed, or still starting
+    :data:`MCP_SERVER_WAIT_SECS` after the session began, the point past which
+    a server is hung. Silent for no provider, one that keeps no report, and a
+    report that cannot be read.
+    """
+    if provider is None:
+        return ()
+    try:
+        report = provider.mcp_session_report()
+        names = report.given_up(MCP_SERVER_WAIT_SECS) if report is not None else ()
+    except Exception:
+        logger.debug("MCP session report unreadable", exc_info=True)
+        return ()
+    if not isinstance(names, (tuple, list)):
+        return ()
+    return tuple(name for name in names if isinstance(name, str) and name)
+
+
+async def wait_for_declared_mcp(provider: Any, timeout: float, *, seen_by: Any = None) -> None:
     """Hold an unattended run's first prompt until the spec's servers report.
 
     Best-effort and bounded by *timeout*: a provider without the capability, or
     one whose wait fails, lets the run go ahead, and :func:`declared_mcp_missing`
     then says what it lacks.
+
+    *seen_by* is another live session on the same host that already started
+    these servers (a sub-agent's parent). A server it has given up on
+    (:func:`given_up_servers`) is not waited for: the wait could only run to its
+    bound for it. Every other server is waited for as before, so one that comes
+    up within the bound is still in the first turn.
+
+    shortcut: matched by server name, not by config. A run whose spec gives a
+    name the other session also uses a different command is not held for it;
+    compare config digests if that is ever seen.
     """
     if provider is None or timeout <= 0:
         return
+    skip = given_up_servers(seen_by)
     try:
-        missing = await provider.wait_for_declared_mcp(timeout)
+        if skip:
+            missing = await provider.wait_for_declared_mcp(timeout, skip)
+        else:
+            missing = await provider.wait_for_declared_mcp(timeout)
     except Exception:
         logger.debug("declared MCP wait failed", exc_info=True)
         return
-    if missing:
+    if not missing:
+        return
+    unwaited = [str(name) for name in missing if name in skip]
+    waited_for = [str(name) for name in missing if name not in skip]
+    if unwaited:
+        logger.warning(
+            "Unattended run not waiting for MCP server(s) a live session on this host gave up on: %s",
+            ", ".join(unwaited),
+        )
+    if waited_for:
         # The run prompts anyway; this line is when and how long it waited.
         logger.warning(
             "Unattended run prompting after a %gs wait without declared MCP server(s): %s",
             timeout,
-            ", ".join(str(name) for name in missing),
+            ", ".join(waited_for),
         )
 
 

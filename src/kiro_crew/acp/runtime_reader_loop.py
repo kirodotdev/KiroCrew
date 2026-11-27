@@ -12,9 +12,9 @@ Instance fields written: ``_answer_tasks``, ``_last_activity``, ``_load_replay_f
 ``_unrouted_child_frames``.
 
 Instance fields read: ``_acp_backend``, ``_announced_children``, ``_announced_overflow``,
-``_fold_mcp_frame``, ``_kas_host_auth``, ``_launch_cwd_roots``,
+``_agent_capabilities``, ``_fold_mcp_frame``, ``_follow_shared_model_picker``, ``_kas_host_auth``, ``_launch_cwd_roots``,
 ``_map_launch_cwd_paths``, ``_max_answer_tasks``,
-``_mcp_secret_server``, ``_native_skill_projection``, ``_process``,
+``_mcp_secret_server``, ``_native_skill_projection``, ``_process``, ``_repeated_payloads``,
 ``_session_harness_states``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
 ``_turn_active_sessions``, ``mcp_connect_progress``, ``recording_allowed``.
@@ -28,7 +28,9 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_agent_config_error, kas_secret_storage
+from kiro_crew.acp import kas_agent_config_error
+from kiro_crew.acp import kas_mcp_lazy_sign_in as _lazy_sign_in
+from kiro_crew.acp import kas_secret_storage, kas_shared_model_picker
 from kiro_crew.acp._frame_record import record_frame
 from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.harness import NotificationAliases
@@ -680,6 +682,15 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 self._answer_tasks.add(_secret_task)
                 _secret_task.add_done_callback(self._answer_tasks.discard)
                 continue
+            # The end of a mid-session sign-in. It names no session, so it goes
+            # only to the one that was shown the link, never to every session.
+            if (
+                msg.id is None
+                and msg.method == _lazy_sign_in.METHOD_KAS_MCP_OAUTH_COMPLETED
+                and self._harness.opens_external_urls
+            ):
+                await _lazy_sign_in.settle_mid_session_sign_in(self, msg.params)
+                continue
             # Any other request that arrives without a sessionId is
             # unroutable and is answered -32601 by
             # _answer_ownerless_request below, rather than being left to
@@ -706,6 +717,25 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 # log's cap is counted as a drop.
                 if not kas_agent_config_error.report(msg.params):
                     self._note_dropped_frame(session_id or _DROP_NO_SESSION, msg.method)
+                continue
+            if msg.id is None and msg.method == kas_shared_model_picker.STATE_NOTIFICATION:
+                # The engine pushed a configuration view. A connection view from an
+                # engine that serves the shared picker carries the account's hidden
+                # models, which may have changed on another client; it is recorded
+                # for the chat picker as a task, since the vault read must not hold
+                # this loop, under the same cap as the other answer tasks. A session
+                # view, a view without the row, or an engine that does not serve the
+                # picker is dropped here, counted.
+                if (
+                    not kas_shared_model_picker.serves_shared_picker(self._agent_capabilities)
+                    or kas_shared_model_picker.hidden_models_from_state(msg.params) is None
+                    or len(self._answer_tasks) >= self._max_answer_tasks
+                ):
+                    self._note_dropped_frame(_DROP_NO_SESSION, msg.method)
+                    continue
+                _picker_task = asyncio.ensure_future(self._follow_shared_model_picker(msg.params))
+                self._answer_tasks.add(_picker_task)
+                _picker_task.add_done_callback(self._answer_tasks.discard)
                 continue
             if not session_id and _subagent_list_update and msg.method == _subagent_list_update:
                 # Snapshot backend-internal subagent session ids before the
@@ -751,6 +781,9 @@ async def _reader_loop(self: AcpRuntime) -> None:
                     if msg.is_method(METHOD_AGENT_SWITCHED):
                         self._note_switched_model(session_id, msg.params)
                     self._session_activity_at[session_id] = time.monotonic()
+                    # An idle session holds every frame until its next turn:
+                    # its catalogs share one copy with the frames before it.
+                    self._repeated_payloads.share(msg)
                     await queue.put(msg)
                 elif (
                     _announced_owner is not None
@@ -954,6 +987,28 @@ async def _reader_loop(self: AcpRuntime) -> None:
         # exit is the last chance to state what they were holding.
         self._flush_dropped_frames()
         self._flush_roster_overflow()
+
+
+async def _follow_shared_model_picker(self: AcpRuntime, params: object) -> None:
+    """Record the account's hidden models a pushed connection view states.
+
+    A push of another view, or one stating no row, records nothing. The vault
+    identity is read off the loop; it is the account the engine signed the read
+    under, since the engine takes its credential from the vault per call.
+    """
+    hidden = kas_shared_model_picker.hidden_models_from_state(params)
+    if hidden is None:
+        return
+    from kiro_crew.agent_sdk import kas_model_catalog
+
+    logger.debug("KAS shared model picker: a pushed view states %d hidden model(s)", len(hidden))
+    # Stamped before the vault read yields, so two views whose reads finish out of
+    # order still land in the order the engine sent them.
+    seq = kas_model_catalog.next_hidden_models_seq()
+    identity = await asyncio.to_thread(
+        kas_model_catalog.vault_identity, getattr(self._harness, "spawn_machine_auth", None)
+    )
+    kas_model_catalog.record_hidden_models(hidden, identity=identity, seq=seq)
 
 
 def _notification_aliases(self: AcpRuntime) -> NotificationAliases:

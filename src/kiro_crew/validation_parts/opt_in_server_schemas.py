@@ -793,4 +793,23 @@ MCP_MATE_SCHEMAS: dict[str, ToolSchema] = {
         tool_name="save_notes",
         fields=[FieldSpec("text", str, required=True, max_len=_goals.NOTES_MAX_CHARS)],
     ),
+    "memory_list": ToolSchema(
+        tool_name="memory_list",
+        fields=[
+            FieldSpec(
+                "kind", str, required=True, max_len=8, allowed=frozenset({"fact", "episode"})
+            ),
+            FieldSpec("query", str, max_len=200),
+            FieldSpec("sort", str, max_len=16),
+            FieldSpec("offset", int),
+            FieldSpec("limit", int),
+        ],
+    ),
+    "propose_memory_changes": ToolSchema(
+        tool_name="propose_memory_changes",
+        fields=[
+            FieldSpec("changes", list, required=True),
+            FieldSpec("reason", str, max_len=500),
+        ],
+    ),
 }

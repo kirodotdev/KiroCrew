@@ -22,7 +22,7 @@ import { act, render, screen, fireEvent, waitFor, cleanup, within } from '@testi
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
-import { setUpdateProgress, sseStatus } from '../store/dashboardSlice'
+import { setUpdateProgress, sseConnected, sseDisconnected, sseStatus } from '../store/dashboardSlice'
 import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
 
@@ -565,8 +565,9 @@ describe('AboutPanel gateway restart', () => {
 
   it('treats the connection drop after a restart as success, not failure', async () => {
     // os.execv replaces the process image, so the POST's connection is reset by
-    // the very thing it asked for. Reporting that as an error would tell the
-    // user the restart failed at the exact moment it worked.
+    // the very thing it asked for, and the socket drops with it (the store
+    // starts disconnected). Reporting that as an error would tell the user the
+    // restart failed at the exact moment it worked.
     vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
       const url = String(input)
       if (init?.method === 'POST' && url.includes('/api/restart')) throw new TypeError('Failed to fetch')
@@ -627,5 +628,39 @@ describe('AboutPanel gateway restart', () => {
     expect(await screen.findByTestId('manual-update-restart-error')).toHaveTextContent('Sessions did not drain in time.')
     expect(screen.getByTestId('gateway-restart').getAttribute('disabled')).toBeNull()
     act(() => { store.dispatch(setUpdateProgress(null)) })
+  })
+
+  it('a restart request lost while the socket is still connected shows the failure and frees the button', async () => {
+    // The gateway answers a restart before it restarts, so a failed request
+    // with this tab still connected means no restart is coming.
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST' && url.includes('/api/restart')) throw new TypeError('Failed to fetch')
+      return {
+        ok: true, status: 200,
+        json: async () => ({}),
+        text: async () => '{}',
+        headers: new Headers({ 'content-type': 'application/json' }),
+      }
+    }))
+    seedStatus({
+      update_available: true,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
+      update_command: 'curl -fsSL https://example.test/cli.sh | sh',
+      update_channel: 'stable',
+    })
+    store.dispatch(sseConnected())
+    try {
+      mountWeb()
+
+      await screen.findByTestId('manual-update-command')
+      fireEvent.click(screen.getByTestId('gateway-restart'))
+      fireEvent.click(screen.getByTestId('gateway-restart'))
+      expect(await screen.findByTestId('manual-update-restart-error')).toHaveTextContent('Restart failed')
+      await waitFor(() => expect(screen.getByTestId('gateway-restart').getAttribute('disabled')).toBeNull())
+    } finally {
+      store.dispatch(sseDisconnected(null))
+    }
   })
 })

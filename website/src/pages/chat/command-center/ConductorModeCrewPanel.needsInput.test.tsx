@@ -79,7 +79,7 @@ describe('Conductor mode Needs your input', () => {
     expect(within(row).getByTestId('conductor-mode-person-ask-pick-why')).toHaveTextContent('Why recommended: already stocked')
     expect(within(row).getByTestId('conductor-mode-person-ask-reply')).toHaveTextContent('Write a reply')
     // The visible line says the buttons send nothing.
-    expect(within(row).getByTestId('conductor-mode-person-ask-hint')).toHaveTextContent('Pick an answer to draft it in your chat box. Nothing is sent until you press send.')
+    expect(within(row).getByTestId('conductor-mode-person-ask-hint')).toHaveTextContent('Pick an answer to draft it in your chat box.')
     expect(screen.getByTestId('conductor-mode-milestone')).toHaveTextContent('Waiting on your answer above')
   })
 

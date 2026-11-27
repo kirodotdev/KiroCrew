@@ -44,9 +44,11 @@ reaches this module (:mod:`kiro_crew._facade_mirror`).  It reads a command line 
 the ssh floor's own front end -- its source pre-walk (``_ssh_floor_source_text``), its
 nested-payload frames and its environment tracker (``_FrameEnvironment``) -- and uses
 the ssh floor's operand resolver, the host verdicts in ``argv_floor_hosts``, the tar
-grammar in ``argv_floor_tar``, and the shell reader.  A new shell normalization goes in
-the ssh floor, which both floors read; a new tar option or bundle rule goes in
-``argv_floor_tar``; a new git/tar transport spelling goes here.
+grammar in ``argv_floor_tar``, the git grammar in ``argv_floor_git_grammar``, and the
+shell reader.  A new shell normalization goes in the ssh floor, which both floors read;
+a new tar option or bundle rule goes in ``argv_floor_tar``; a new git verb, global
+option, config-entry source, URL scheme or remote shape goes in
+``argv_floor_git_grammar``; a new carrier of a command git or tar runs goes here.
 """
 
 from __future__ import annotations
@@ -57,14 +59,38 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from . import shell_normalizer as _shell_normalizer
+from .argv_floor_git_grammar import (
+    _GIT_NON_LOCAL_COMMANDS,
+    _GIT_SSH_SCHEME_ALIASES,
+    _config_entries,
+    _config_parameter_entries,
+    _git_alias_bodies,
+    _git_ext_command,
+    _git_may_dial,
+    _git_remote_candidates,
+    _git_remote_targets_self,
+    _git_transport_modes,
+    _git_verb_at,
+    _is_transport_url_key,
+)
+from .argv_floor_git_tar_parallel import (  # noqa: F401
+    _GIT_TAR_WORD_CAP,
+    _PARALLEL_REPLACE_LONG,
+    _PARALLEL_REPLACE_UNSAFE,
+    _PLACEHOLDER_RE,
+    _SEPARATORS,
+    _git_lead_without_paths,
+    _parallel_replacements,
+    _parallel_runs,
+    _rewrites_any,
+    _unmasked,
+)
 from .argv_floor_self import _SELF_FLOOR_MACHINERY_RE, _SELF_FLOOR_QUOTE_JUNK_RE
 from .argv_floor_ssh import (
     _FUNCTION_BIND_CAP,
     _LITERAL_HOSTS,
     _bind_positional_parameters,
     _command_value_names_self_endpoint,
-    _decode_scp_host,
-    _decode_url_authority,
     _dequoted,
     _env_assignment,
     _executed_value_forms,
@@ -76,7 +102,6 @@ from .argv_floor_ssh import (
     _mask_quoted_separators,
     _mask_sq_apostrophes,
     _open_frame_could_run_git_tar,
-    _operand_targets_self,
     _ssh_floor_source_text,
     _ssh_floor_unmasked_text,
     _unmask_separators,
@@ -86,7 +111,6 @@ from .argv_floor_tar import (
     _RAW_COMMAND,
     _READ_MEMO,
     _TAR_READ_VALUE_OPTS,
-    _glob_host_is_self,
     _tar_archive_targets_self,
     _tar_bundle_archive_slot,
     _tar_operation_readings,
@@ -100,7 +124,6 @@ from .shell_normalizer import (
     _push_option_matches,
     _shell_join_continuations,
     _shell_payload_walk,
-    _strip_redirect,
 )
 
 if TYPE_CHECKING:
@@ -130,121 +153,10 @@ if TYPE_CHECKING:
 # ``VAR=x`` and wrappers (``sudo -u root``, ``timeout 5``) by ``argv_rules``'s reader.
 
 
-# Subcommands (git 2.50 ``git help -a`` and ``git --exec-path``) that never open
-# a network transport themselves.  Every other verb -- a transport verb, an
-# unknown one, an alias from a config file, ``request-pull``, ``maintenance`` --
-# has its operands, config and transport environment read (fail closed).  ``archive``,
-# ``submodule`` and ``remote`` need a second-level classification below.
-# shortcut: a partial clone can lazily fetch a missing object under a local verb;
-# such a verb is still not read here.
-_GIT_LOCAL_ONLY_VERBS: frozenset[str] = frozenset(
-    {
-        *("add", "am", "annotate", "apply", "bisect", "blame", "branch", "bugreport"),
-        *("cat-file", "check-attr", "check-ignore", "check-mailmap", "check-ref-format"),
-        *("checkout", "checkout-index", "cherry", "cherry-pick", "clean", "column"),
-        *("commit", "commit-graph", "commit-tree", "config", "count-objects", "describe"),
-        *("diagnose", "diff", "diff-files", "diff-index", "diff-pairs", "diff-tree"),
-        *("fast-export", "fast-import", "fmt-merge-msg", "for-each-ref", "format-patch"),
-        *("fsck", "fsck-objects", "gc", "get-tar-commit-id", "grep", "hash-object", "help"),
-        *("index-pack", "init", "init-db", "interpret-trailers", "log", "ls-files"),
-        *("ls-tree", "mailinfo", "mailsplit", "merge", "merge-base", "merge-file"),
-        *("merge-index", "merge-one-file", "merge-tree", "mktag", "mktree"),
-        *("multi-pack-index", "mv", "name-rev", "notes", "pack-objects", "pack-redundant"),
-        *("pack-refs", "patch-id", "prune", "prune-packed", "range-diff", "read-tree"),
-        *("rebase", "reflog", "refs", "repack", "replace", "replay", "rerere", "reset"),
-        *("restore", "rev-list", "rev-parse", "revert", "rm", "shortlog", "show"),
-        *("show-branch", "show-index", "show-ref", "stage", "stash", "status"),
-        *("stripspace", "switch", "symbolic-ref", "tag", "unpack-file", "unpack-objects"),
-        *("update-index", "update-ref", "update-server-info", "var", "verify-commit"),
-        *("verify-pack", "verify-tag", "version", "whatchanged", "worktree", "write-tree"),
-    }
-)
-# The other commands git ships (and ``lfs``), which can open a transport.  git
-# ignores an alias that would hide one of them, so its own argv is read even
-# when the invocation defines that alias; an unknown verb with an
-# invocation-local alias is read both as the alias it becomes and as typed.
-# shortcut: a third-party ``git-<verb>`` on PATH also hides an alias of its
-# name; add one here when it opens a transport.
-_GIT_NON_LOCAL_COMMANDS: frozenset[str] = frozenset(
-    {
-        *("archive", "backfill", "bundle", "checkout--worker", "citool", "clone"),
-        *("contacts", "credential", "credential-cache", "credential-cache--daemon"),
-        *("credential-netrc", "credential-store", "cvsexportcommit", "cvsimport"),
-        *("cvsserver", "daemon", "difftool", "difftool--helper", "fetch", "fetch-pack"),
-        *("filter-branch", "for-each-repo", "fsmonitor--daemon", "gitk", "gitweb", "gui"),
-        *("hook", "http-backend", "http-fetch", "http-push", "imap-send", "instaweb"),
-        *("lfs", "ls-remote", "maintenance", "merge-octopus", "merge-ours"),
-        *("merge-recursive", "merge-resolve", "merge-subtree", "mergetool"),
-        *("mergetool--lib", "p4", "pull", "push", "quiltimport", "receive-pack", "remote"),
-        *("remote-ext", "remote-fd", "remote-ftp", "remote-ftps", "remote-http"),
-        *("remote-https", "request-pull", "scalar", "send-email", "send-pack"),
-        *("sh-i18n", "sh-i18n--envsubst", "sh-setup", "shell", "sparse-checkout"),
-        *("submodule", "submodule--helper", "svn", "upload-archive", "upload-pack"),
-        *("web--browse",),
-    }
-)
-# Facade manifest names: transport discovery does not read either set to
-# choose which tokens are visible.
-_GIT_REMOTE_FIRST_OPERAND_VERBS: frozenset[str] = frozenset(
-    {"fetch", "pull", "ls-remote", "push", "bundle", "send-pack", "fetch-pack"}
-)
-_GIT_REMOTE_ANY_OPERAND_VERBS: frozenset[str] = frozenset({"clone", "submodule", "remote"})
-
-
-# ``git remote`` subcommands that query a remote now, rather than only editing
-# the local remote configuration.
-_GIT_REMOTE_CONNECTING_SUBCOMMANDS: frozenset[str] = frozenset({"show", "prune", "update"})
-
-
 # The config key (lower-cased) that hands git an arbitrary ssh-replacement
 # command, and the environment variables that choose a transport command.
 _GIT_SSHCOMMAND_CONFIG_PREFIX = "core.sshcommand="
 _GIT_SSH_ENV_NAMES: frozenset[str] = frozenset({"git_proxy_command", "git_ssh", "git_ssh_command"})
-
-
-# git schemes that are NOT an ssh-or-exec escape: the connection is a plain
-# socket to a server, not a login shell on this host.
-_GIT_NON_ESCAPE_SCHEMES: tuple[str, ...] = (
-    "http://",
-    "https://",
-    "git://",
-    "ftp://",
-    "ftps://",
-    "file://",
-)
-
-
-# git ssh-transport scheme aliases normalized to ``ssh://`` so the ssh floor's
-# operand resolver reads their authority (it models ``ssh://`` but not these).
-_GIT_SSH_SCHEME_ALIASES: tuple[str, ...] = ("git+ssh://", "ssh+git://")
-_SEPARATORS = frozenset({":::", "::::", ":::+", "::::+"})  # GNU ``parallel`` input separators
-# A replacement string ``parallel`` puts each input in place of: ``{}``, ``{.}``, ``{1/}``...
-_PLACEHOLDER_RE = re.compile(r"\{\d*(?:\.|/|//|/\.|#|%)?\}")
-# GNU ``parallel`` options that name a custom replacement string (the default each
-# replaces is in the comment): ``-I`` / ``--replace`` / ``-i`` for ``{}``, and
-# ``--extensionreplace`` for ``{.}`` and so on.  Value by ``=`` or the next word.
-_PARALLEL_REPLACE_LONG = frozenset(
-    {
-        "--replace",  # {}
-        "--extensionreplace",  # {.}
-        "--er",
-        "--basenamereplace",  # {/}
-        "--bnr",
-        "--dirnamereplace",  # {//}
-        "--dnr",
-        "--basenameextensionreplace",  # {/.}
-        "--bner",
-        "--seqreplace",  # {#}
-        "--slotreplace",  # {%}
-    }
-)
-# A custom replacement string with one of these is not read literally (fail closed).
-_PARALLEL_REPLACE_UNSAFE = "$`*?["
-
-
-def _unmasked(token: str) -> str:
-    """*token* with the floor's quoted-separator sentinels restored, de-quoted."""
-    return _dequoted(_unmask_separators(token).strip())
 
 
 def _frame_commands(source: str) -> "tuple[list[str], bool]":
@@ -299,66 +211,16 @@ def _shell_read_views(source: str) -> "list[str] | None":
     ]
 
 
-def _git_remote_targets_self(operand: str) -> bool:
-    """True if a git remote *operand* dials THIS host over an ssh transport.
-
-    Only a transport-shaped operand can dial: a URL (``scheme://``) or a
-    scp-like ``host:path`` (a colon before the first slash, non-empty host).
-    http(s)/git/ftp/file URLs are not an ssh-or-exec escape and return False;
-    the ``git+ssh``/``ssh+git`` aliases are normalized to ``ssh://`` so the ssh
-    floor's resolver reads their authority.  A BARE word -- a branch name, a
-    number, ``origin``, a local path, even ``localhost`` -- is a local path to
-    git, never ssh, so it returns False without any host or DNS lookup.  The
-    host is read LITERALLY: ``dns=False`` (literal self addresses only; see the
-    module docstring), so ``git@github.com:x`` is never pending-refused.  A glob
-    host counts only as bash expands it (``_glob_host_is_self``): unquoted
-    ``local*:x`` can name this host; ``'local*:x'``, ``*:*``, ``github*:x`` cannot.
-    """
-    t = operand.strip().strip("\"'")
-    if not t:
-        return False
-    low = t.lower()
-    if "://" in t:
-        for scheme in _GIT_NON_ESCAPE_SCHEMES:
-            if low.startswith(scheme):
-                return False
-        for alias in _GIT_SSH_SCHEME_ALIASES:
-            if low.startswith(alias):
-                t = "ssh://" + t[len(alias) :]
-                break
-        t = _decode_url_authority(t)
-        return _operand_targets_self(t, host_position=True, dns=False, match_globs=False)
-    head = t.split("/", 1)[0]
-    if ":" not in head or not head.split(":", 1)[0]:
-        return False  # a bare word or local path: git never dials it
-    if _glob_host_is_self(t, head.split(":", 1)[0].rsplit("@", 1)[-1]):
-        return True
-    t = _decode_scp_host(t)
-    if t.startswith("["):
-        close = t.find("]")
-        if close > 0 and t[close + 1 :].startswith(":"):
-            host = t[1:close]
-            if "@" in host:
-                host = host.rsplit("@", 1)[1]
-            before_port, sep, _port = host.rpartition(":")
-            if sep and before_port and ":" not in before_port:
-                host = before_port
-            if _operand_targets_self(host, host_position=True, dns=False, match_globs=False):
-                return True
-    return _operand_targets_self(t, host_position=True, dns=False, match_globs=False)
-
-
 # A value word longer than this is not split into every glued-option suffix:
 # the literal reader answers "may be self" and the ssh floor's own reading of
 # the value decides.  No real ssh option bundle comes near it.
 _VALUE_WORD_SUFFIX_CAP = 256
 
-# The most words the floor reads from one command value or one git argv.  A
-# command past it is refused unread, the way ``MAX_SCANNABLE_COMMAND_CHARS``
-# refuses an oversized one: the gate runs on the event loop, and a 20 KiB
-# command can still hold about 10,000 one-letter words.  No real git or tar
-# argv, ssh command or ``ext::`` payload comes near it.
-_GIT_TAR_WORD_CAP = 4096
+# Typed replay shares a work budget across all frames, spellings and environments.
+# Ordinary git/tar lines have few case variants; 262,144 units leave room for them
+# while refusing combinatorial batches. Units count source characters and command
+# words multiplied by environment names and values, before copying or replaying.
+_GIT_TAR_REPLAY_WORK_CAP = 262_144
 
 # The most characters of carried commands one read reads, summed over every
 # command value it reads literally (``_value_names_literal_self``) and every
@@ -451,6 +313,13 @@ def _value_word_names_literal_self(word: str) -> bool:
 _REENTRY_CHAIN: "ContextVar[tuple[int, frozenset[str], frozenset[str]]]" = ContextVar(
     "git_tar_floor_reentry_chain", default=(0, frozenset(), frozenset())
 )
+
+#: Whether THIS read splits a command operator glued into a word (``glue_split``).
+#: ``_is_git_tar_to_self`` runs the floor twice over one command: once with this
+#: False -- main's exact command boundaries, so no denial main reaches can be lost
+#: -- and once True, which can only ADD refusals.  A read nested in either (a
+#: carried command, a double-quoted substitution body) inherits the pass's value.
+_GLUE_SPLIT: "ContextVar[bool]" = ContextVar("git_tar_floor_glue_split", default=False)
 
 
 def _reenter_floors(command: str, *, alias: "str | None" = None, literal: bool = False) -> bool:
@@ -565,121 +434,6 @@ def _value_runs_git_or_tar(value: str) -> bool:
     return False
 
 
-def _git_ext_command(operand: str, following: "list[str]") -> "str | None":
-    """The command an ``ext::<command>`` remote *operand* runs, else None.
-
-    An unquoted ``ext::ssh localhost id`` reaches git as several operands, so
-    the *following* operands are appended -- reading more words only widens
-    what ``_command_value_dials_self`` sees; ``_git_tokens_target_self`` passes
-    them only up to the next ``ext::`` payload.  Git separates arguments on
-    unescaped spaces; ``% `` embeds a space in one argument and ``%%`` embeds a
-    percent sign.
-    """
-    t = operand.strip().strip("\"'")
-    if not t.lower().startswith("ext::"):
-        return None
-    encoded = " ".join([t[len("ext::") :], *following])
-    arguments = [""]
-    index = 0
-    while index < len(encoded):
-        if encoded.startswith("% ", index):
-            arguments[-1] += " "
-            index += 2
-        elif encoded.startswith("%%", index):
-            arguments[-1] += "%"
-            index += 2
-        elif encoded[index] == " ":
-            arguments.append("")
-            index += 1
-        else:
-            arguments[-1] += encoded[index]
-            index += 1
-    return " ".join(arguments)
-
-
-def _git_remote_candidates(token: str) -> "tuple[str, ...]":
-    """Transport operands or executable overrides carried by one post-verb *token*.
-
-    The whole token covers ordinary operands and detached option values: every
-    post-verb token is a candidate, so ``--opt value`` has its value read
-    whatever the option.  The attached ``--opt=value`` therefore has its value
-    read for every long option too (``--repo=``, ``--remote=``,
-    ``--upload-pack=``), and fetch's glued short ``-u<program>``.  Config
-    options are also classified separately with their key intact.
-    """
-    t = token.strip().strip("\"'")
-    candidates = [t]
-    if t.startswith("--"):
-        _, sep, attached = t.partition("=")
-        if sep:
-            candidates.append(attached)
-    if t.startswith("-u") and len(t) > 2:
-        short_tail = t[2:]
-        candidates.append(short_tail[1:] if short_tail.startswith("=") else short_tail)
-    return tuple(candidate for candidate in candidates if candidate)
-
-
-def _git_nested_subcommand(tokens: "list[str]") -> "str | None":
-    """First non-option word below ``git remote`` or ``git submodule``."""
-    options_ended = False
-    for tok in tokens:
-        if _ends_argv(tok) and tok in (";", "&", "|", "\n", "&&", "||"):
-            break
-        if not options_ended and tok == "--":
-            options_ended = True
-            continue
-        if options_ended or not tok.startswith("-"):
-            return tok.lower()
-    return None
-
-
-def _git_options_before_terminator(tokens: "list[str]") -> "tuple[str, ...]":
-    """Option tokens before this git subcommand's genuine ``--`` terminator."""
-    options: "list[str]" = []
-    for tok in tokens:
-        if _ends_argv(tok) and tok in (";", "&", "|", "\n", "&&", "||"):
-            break
-        if tok == "--":
-            break
-        if tok.startswith("-"):
-            options.append(tok)
-    return tuple(options)
-
-
-def _git_transport_modes(verb: str, tokens: "list[str]") -> "tuple[bool, bool]":
-    """Return ``(opens_transport, inspect_remote_tokens)`` for this git verb.
-
-    A verb not known to be local-only is read in full, so a missing verb fails
-    closed rather than open.
-    """
-    if verb in _GIT_LOCAL_ONLY_VERBS:
-        return False, False
-    options = _git_options_before_terminator(tokens)
-    if verb == "archive":
-        opens = any(tok == "--remote" or tok.startswith("--remote=") for tok in options)
-        return opens, opens
-    if verb == "submodule":
-        opens = _git_nested_subcommand(tokens) in ("add", "update")
-        return opens, opens
-    if verb != "remote":
-        return True, True
-
-    subcommand = _git_nested_subcommand(tokens)
-    if subcommand == "add":
-        opens = any(tok in ("-f", "--fetch") for tok in options)
-        return opens, True  # records a URL even without ``--fetch``
-    if subcommand == "set-url":
-        records = "--delete" not in options
-        return False, records
-    if subcommand in _GIT_REMOTE_CONNECTING_SUBCOMMANDS:
-        opens = subcommand != "show" or not any(tok in ("-n", "--no-query") for tok in options)
-        return opens, opens
-    if subcommand == "set-head":
-        opens = any(tok in ("-a", "--auto") for tok in options)
-        return opens, opens
-    return False, False
-
-
 def _git_tokens_target_self(tokens: "list[str]") -> bool:
     """True if any post-verb transport operand or executable targets self.
 
@@ -723,58 +477,6 @@ def _observe_words(frame_env: "_FrameEnvironment", words: "list[str]", prog: boo
     """Feed each of *words* (de-quoted) to *frame_env*; the first is the program if *prog*."""
     for index, word in enumerate(words):
         frame_env.observe(word, word, prog and not index)
-
-
-def _git_verb_at(tokens: "list[str]") -> "tuple[int, str, list[tuple[str, str]]]":
-    """``(index, verb word, global config overrides)`` of git's subcommand in *tokens*."""
-    i = 0
-    n = len(tokens)
-    global_overrides: "list[tuple[str, str]]" = []
-    # Locate the subcommand first.  Global ssh-command overrides are collected
-    # here but checked only after the subcommand is known to open a transport.
-    # A redirection is not a word of git's argv (bash removes it before exec),
-    # so it is stepped over the way the ssh floor steps over it: a bare or
-    # fd-prefixed operator (``2>/dev/null``, ``>&2``, ``<file``, ``&>x``) is
-    # skipped, and a detached operator (``>`` ``file``, ``2>`` ``file``) also
-    # skips its target.  ``clone>/dev/null`` keeps its word part as the verb.
-    redirect_target_pending = False
-    verb_word = ""
-    while i < n:
-        tok = tokens[i]
-        if redirect_target_pending:
-            redirect_target_pending = False
-            i += 1
-            continue
-        if ">" in tok or "<" in tok:
-            remainder = _strip_redirect(tok)
-            if not remainder or remainder.isdigit() or remainder == "&":
-                redirect_target_pending = tok.endswith((">", "<"))
-                i += 1
-                continue
-            if not remainder.startswith("-"):
-                verb_word = remainder
-                break
-        if not tok.startswith("-"):
-            verb_word = tok
-            break
-        config_override = _git_config_override(tokens, i)
-        if config_override is not None:
-            option, config, consumed = config_override
-            global_overrides.append((option, config))
-            i += consumed
-            continue
-        if tok in (
-            "-C",
-            "--git-dir",
-            "--work-tree",
-            "--namespace",
-            "--super-prefix",
-            "--attr-source",
-        ):
-            i += 2  # option + its value
-            continue
-        i += 1
-    return i, verb_word, global_overrides
 
 
 def _git_command_targets_self(tokens: "list[str]", env: "dict[str, list[str]]") -> bool:
@@ -964,34 +666,6 @@ def _git_rewritten_remotes_dial_self(
     return any(dials(url, (rules,)) for url in remote_urls for rules in (push_set, fetch_set))
 
 
-def _config_entries(
-    option: str,
-    config: str,
-    env: "dict[str, list[str]]",
-    cache: "dict[tuple[object, ...], Any] | None" = None,
-) -> "tuple[str, list[str], str | None] | None":
-    """``(key, values, name)`` of the entry one invocation-local config *option* supplies.
-
-    None when *config* has no ``=``.  For ``--config-env`` the value names a
-    variable in the command environment (*name*), and every value kept under it
-    is a value of the entry; *cache* keeps the de-quoted values per name, so a
-    name many options point at is read once.  A ``-c`` / ``--config`` entry has
-    its one value and no name.
-    """
-    key, sep, value = _unmasked(config).partition("=")
-    if not sep:
-        return None
-    if option != "--config-env":
-        return key, [value], None
-    name = value.lower()
-    values = cache.get(("values", name)) if cache is not None else None
-    if values is None:
-        values = [_unmasked(carried) for carried in env.get(name) or [""]]
-        if cache is not None:
-            cache[("values", name)] = values
-    return key, values, name
-
-
 def _sshcommand_config_dials_self(
     config: str,
     env: "dict[str, list[str]]",
@@ -1059,23 +733,6 @@ def _url_rewrite_base_dials_self(base: str) -> bool:
     return ext_command is not None and _command_value_dials_self(ext_command)
 
 
-def _config_parameter_entries(parameters: str) -> "list[str]":
-    """The ``<key>=<value>`` entries of one ``GIT_CONFIG_PARAMETERS`` value, parsed once per read."""
-    memo = _READ_MEMO.get()
-    key = ("parameters", parameters)
-    if memo is not None and key in memo:
-        kept: "list[str]" = memo[key]
-        return kept
-    try:
-        entries = shlex.split(_unmask_separators(parameters), comments=False, posix=True)
-    except ValueError:
-        # shortcut: malformed sq-quoting falls back to whitespace before the classifier.
-        entries = _unmask_separators(parameters).split()
-    if memo is not None:
-        memo[key] = entries
-    return entries
-
-
 def _config_parameters_dial_self(parameters: str, skip_alias: bool = False) -> bool:
     """True if a ``GIT_CONFIG_PARAMETERS`` value carries a config entry that dials this host.
 
@@ -1097,67 +754,6 @@ def _config_parameters_dial_self(parameters: str, skip_alias: bool = False) -> b
     if memo is not None:
         memo[key] = False
     return False
-
-
-def _git_alias_bodies(
-    verb: str,
-    global_overrides: "list[tuple[str, str]]",
-    local_overrides: "list[tuple[str, str]]",
-    numbered_overrides: "list[tuple[str, str]]",
-    parameters: "list[str]",
-    env: "dict[str, list[str]]",
-    cache: "dict[tuple[object, ...], Any] | None" = None,
-) -> "list[str]":
-    """The definitions git can run for alias *verb*, each once, in reading order.
-
-    git reads the numbered environment config, then ``GIT_CONFIG_PARAMETERS``:
-    the inherited value followed by this invocation's own ``-c`` /
-    ``--config-env`` options (*global_overrides*) in order, and the LAST
-    ``alias.<verb>`` it reads wins.  So the last of those options that defines
-    the alias decides (with every value kept under a ``--config-env`` name);
-    without one, the last definition in each kept ``GIT_CONFIG_PARAMETERS``
-    value and every numbered one (the floor reads every numbered key, so which
-    is last is not known) are kept.  The last definition after the verb
-    (*local_overrides*), which git does not read as config, is kept too, as the
-    floor always has.  Each source is read once: no definition rescans the rest.
-    """
-    alias_key = "alias." + verb
-
-    def last_definition(overrides: "list[tuple[str, str]]") -> "list[str]":
-        found: "tuple[str, str] | None" = None
-        for option, config in overrides:
-            key, sep, _ = _unmasked(config).partition("=")
-            if sep and key.lower() == alias_key:
-                found = (option, config)
-        if found is None:
-            return []
-        entry = _config_entries(found[0], found[1], env, cache)
-        return list(entry[1]) if entry is not None else []
-
-    memo = _READ_MEMO.get()
-    bodies = last_definition(global_overrides)
-    if not bodies:
-        for value in parameters:
-            # The alias map of a value is built once per read: name -> last entry.
-            aliases: "dict[str, str] | None" = (
-                memo.get(("parameters-aliases", value)) if memo is not None else None
-            )
-            if aliases is None:
-                aliases = {}
-                for parameter in _config_parameter_entries(value):
-                    key, sep, _ = _unmasked(parameter).partition("=")
-                    if sep and key.lower().startswith("alias."):
-                        aliases[key.lower()] = parameter
-                if memo is not None:
-                    memo[("parameters-aliases", value)] = aliases
-            if alias_key in aliases:
-                bodies.extend(last_definition([("-c", aliases[alias_key])]))
-        for option, config in numbered_overrides:
-            entry = _config_entries(option, config, env, cache)
-            if entry is not None and entry[0].lower() == alias_key:
-                bodies.extend(entry[1])
-    bodies.extend(last_definition(local_overrides))
-    return list(dict.fromkeys(bodies))
 
 
 def _git_alias_dials_self(
@@ -1260,24 +856,6 @@ def _git_alias_dials_self(
         if _reenter_floors(rebuilt, alias=verb):
             return True
     return False
-
-
-def _is_transport_url_key(low_key: str) -> bool:
-    """True if a lower-cased git config *low_key* carries a transport URL value.
-
-    The keys whose VALUE is a remote git can dial: ``remote.<name>.url``,
-    ``remote.<name>.pushurl`` and the ``url.<base>.insteadOf`` /
-    ``url.<base>.pushInsteadOf`` rewrites (checked for their value here; the
-    rewrite's base is checked by the key-suffix branch in
-    ``_sshcommand_config_dials_self``), and ``submodule.<name>.url`` (``submodule update``).
-    """
-    if low_key.startswith("remote.") and (low_key.endswith(".url") or low_key.endswith(".pushurl")):
-        return True
-    if low_key.startswith("submodule.") and low_key.endswith(".url"):
-        return True
-    return low_key.startswith("url.") and (
-        low_key.endswith(".insteadof") or low_key.endswith(".pushinsteadof")
-    )
 
 
 def _tar_command_targets_self(tokens: "list[str]", env: "dict[str, list[str]]") -> bool:
@@ -1464,16 +1042,52 @@ def _is_git_tar_to_self(text_lower: str, *, raw_text: "str | None" = None) -> bo
     a floor refuses it or cannot read it.  The outermost read opens the memo every
     read nested in it shares (``_READ_MEMO``) and keeps *raw_text*, the command as
     submitted (*text_lower* when not given), for them all (``_RAW_COMMAND``).
+
+    The outermost read runs the as-written command under both command-boundary
+    splits -- the exact boundaries (``_GLUE_SPLIT`` False), so no refusal reachable
+    without the glued-operator splitter is lost, and the glued-split boundaries
+    (``_GLUE_SPLIT`` True), which only ADD boundaries -- each pass with its own memo
+    and its own environment tracking, and refuses if any pass refuses. When a ``<<``
+    is present it then runs one more reading with every here-document body and its
+    closing line removed (``_heredoc_body_quotes_literal``, found on the words as
+    written when *raw_text* is that command), again under both splits, so a quote
+    inside a body cannot pair across its closing line with the text after it. Every
+    reading only ADDS refusals: a newly over-refused shape is the worst case, never
+    a newly allowed one.
     """
     if _READ_MEMO.get() is not None:
         return _git_tar_read(text_lower)
-    memo = _READ_MEMO.set({})
     raw = _RAW_COMMAND.set(text_lower if raw_text is None else raw_text)
     try:
-        return _git_tar_read(text_lower, typed=True)
+        for glue in (False, True):
+            memo = _READ_MEMO.set({})
+            split = _GLUE_SPLIT.set(glue)
+            try:
+                if _git_tar_read(text_lower, typed=True):
+                    return True
+            finally:
+                _GLUE_SPLIT.reset(split)
+                _READ_MEMO.reset(memo)
+        if "<<" not in text_lower:
+            return False
+        cased = raw_text if raw_text is not None and raw_text.lower() == text_lower else None
+        reset_raw = _shell_normalizer._heredoc_body_quotes_literal(cased or text_lower)
+        reset = reset_raw.lower()
+        if reset == text_lower:
+            return False
+        _RAW_COMMAND.set(reset_raw)
+        for glue in (False, True):
+            memo = _READ_MEMO.set({})
+            split = _GLUE_SPLIT.set(glue)
+            try:
+                if _git_tar_read(reset, typed=True):
+                    return True
+            finally:
+                _GLUE_SPLIT.reset(split)
+                _READ_MEMO.reset(memo)
+        return False
     finally:
         _RAW_COMMAND.reset(raw)
-        _READ_MEMO.reset(memo)
 
 
 def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
@@ -1510,7 +1124,10 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
     # bound, as on main.  A literal self dial in a body is read like a plain command.
 
     def _payload_key(source: str) -> "tuple[tuple[str, ...], ...]":
-        return tuple(tuple(command) for command in _split_commands(_frame_commands(source)[0]))
+        return tuple(
+            tuple(command)
+            for command in _split_commands(_frame_commands(source)[0], glue_split=_GLUE_SPLIT.get())
+        )
 
     def _carries_self_dial_signal(expansions: bool = True) -> bool:
         """True if the whole input carries something that could dial THIS host.
@@ -1575,7 +1192,7 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
         unclosed: "list[str]" = []
         for view in (*redirect_free_sources, source):
             tokens, left_open = _frame_commands(view)
-            commands.extend(_split_commands(tokens))
+            commands.extend(_split_commands(tokens, glue_split=_GLUE_SPLIT.get()))
             if not left_open:
                 continue
             # The frame ended inside a quote, so every separator after that
@@ -1586,7 +1203,9 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
                 unclosed.append(view)
                 continue
             for shell_view in shell_views:
-                commands.extend(_split_commands(_frame_commands(shell_view)[0]))
+                commands.extend(
+                    _split_commands(_frame_commands(shell_view)[0], glue_split=_GLUE_SPLIT.get())
+                )
         return commands, unclosed
 
     def _words(raw_command: "list[str]") -> "list[str]":
@@ -1600,6 +1219,9 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
     # retain every launch environment without letting a later command rewrite
     # an earlier launch.
     inherited_by_payload: "dict[tuple[tuple[str, ...], ...], list[dict[str, list[str]]]]" = {}
+    inherited_signatures: dict[
+        tuple[tuple[str, ...], ...], set[tuple[tuple[str, tuple[str, ...]], ...]]
+    ] = {}
     try:
         payload_frames = _shell_payload_walk(text_lower)
     except Exception:
@@ -1609,14 +1231,30 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
     # the ssh floor reads them: the typed line goes through the same walk, and a
     # frame or command that does not line up word for word with the lowered one
     # keeps the lowered reading, as does every read reached by recursion.
-    cased_frames: "list[str]" = []
+    cased_walk: "list[tuple[str, list[str]]]" = []
     if typed and raw is not None and raw == raw.lower():
-        cased_frames = [s for s, _ in payload_frames]
+        cased_walk = payload_frames
     elif typed and raw is not None:
         try:
-            cased_frames = [s for s, _ in _shell_payload_walk(_ssh_floor_source_text(raw))]
+            cased_walk = _shell_payload_walk(_ssh_floor_source_text(raw))
         except Exception:
             pass  # the lowered reading only
+    cased_frames = [s for s, _ in cased_walk]
+    # Fail closed when the two readings disagree. The floor reads the line in the
+    # case it was written and lowered and pairs the two passes frame for frame to
+    # read each option word in its written case (``sudo -H`` takes no value,
+    # ``sudo -h`` does). A quote mask or a here-document tag that closes a body in
+    # one pass but not the other can give the two passes a different number of
+    # frames; the floor then cannot line the passes up, and reading an
+    # option lowered would drop its written case. Rather than read on with the
+    # written-case words dropped, such a line is refused when the input carries a
+    # self-dial signal and a frame with no partner could run git or tar (the top
+    # frame, or one ``_frame_cannot_run_git_tar`` keeps), as the capped read is.
+    # Otherwise each frame with no partner keeps the lowered reading.
+    # The walk reads a payload once, so payloads that differ only in case
+    # (``bash -c 'x -H' && bash -c 'x -h'``) are one lowered frame but two written
+    # ones. Then each lowered frame is read once per written spelling whose source
+    # and words lower to the frame's own.
     signals: "list[bool]" = []
 
     def _signal() -> bool:
@@ -1625,7 +1263,42 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
             signals.append(_carries_self_dial_signal())
         return signals[0]
 
-    for frame_index, (source, _tokens) in enumerate(payload_frames):
+    reads: "list[tuple[int, str, str | None]]" = [
+        (i, s, cased_frames[i] if len(cased_frames) == len(payload_frames) else None)
+        for i, (s, _) in enumerate(payload_frames)
+    ]
+    replay_left: int | None = None
+    if typed and raw is not None and raw != raw.lower() and len(cased_frames) != len(reads):
+        replay_left = _GIT_TAR_REPLAY_WORK_CAP
+        # The top frame pairs by index when its words agree once lowered: its
+        # source text can differ only through the pre-walk's lowercase-only
+        # rewrites (``VERSION=1; echo $VERSION`` keeps ``$VERSION`` written but
+        # reads ``1`` lowered), which the walk's words already resolve.
+        top_paired = bool(cased_walk) and tuple(w.lower() for w in cased_walk[0][1]) == tuple(
+            payload_frames[0][1]
+        )
+        spellings: "dict[tuple[str, tuple[str, ...]], list[str | None]]" = {}
+        for spelling, words in cased_walk[1:]:
+            lowered = (spelling.lower(), tuple(w.lower() for w in words))
+            if spelling not in spellings.setdefault(lowered, []):
+                spellings[lowered].append(spelling)
+        frame_keys = [(s, tuple(t)) for s, t in payload_frames]
+        lowered_keys = set(frame_keys[1:])
+        unpaired = [] if top_paired else [(0, frame_keys[0][0])]
+        unpaired += [(i, k[0]) for i, k in enumerate(frame_keys) if i and k not in spellings]
+        unpaired += [(1, k[0]) for k in spellings if k not in lowered_keys]
+        if any(not i or not _frame_cannot_run_git_tar(s) for i, s in unpaired) and _signal():
+            return True
+        spellings[frame_keys[0]] = [cased_walk[0][0] if top_paired else None]
+        if sum(len(spellings.get(k, [None])) for k in frame_keys) > replay_left:
+            return True
+        reads = [(i, k[0], c) for i, k in enumerate(frame_keys) for c in spellings.get(k, [None])]
+
+    for frame_index, source, cased_source in reads:
+        if replay_left is not None:
+            replay_left -= 1 + len(source) + len(cased_source or "")
+            if replay_left < 0:
+                return True
         if frame_index and _frame_cannot_run_git_tar(source):
             continue  # a payload frame with no git/tar word dials nothing
         # The walk also returns the rest of the line after each escaped backtick
@@ -1637,8 +1310,9 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
             before = text_lower[: len(text_lower) - len(source)]
             if _ESCAPED_TICK_END_RE.search(before) and not _signal():
                 continue
+        # Snapshot the unique launch environments so later propagation cannot change this read.
         inherited_envs = (
-            [{}] if frame_index == 0 else inherited_by_payload.get(_payload_key(source), [{}])
+            [{}] if frame_index == 0 else list(inherited_by_payload.get(_payload_key(source), [{}]))
         )
         frame_env = _FrameEnvironment(_env_assignment, _is_env_name)
         raw_commands, unclosed = _view_commands(source)
@@ -1655,8 +1329,7 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
         ):
             return True
         cased_commands: "list[list[str]]" = []
-        if len(cased_frames) == len(payload_frames):
-            cased_source = cased_frames[frame_index]
+        if cased_source is not None:
             cased_commands = (
                 raw_commands if cased_source == source else _view_commands(cased_source)[0]
             )
@@ -1692,6 +1365,15 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
             # which case the shell honors is not known (``_FrameEnvironment``).
             envs: "list[dict[str, list[str]]]" = []
             for inherited in inherited_envs:
+                if replay_left is not None:
+                    for layer in (inherited, frame_env.exported, frame_env.pending):
+                        replay_left -= len(command) * (1 + len(layer))
+                        if replay_left < 0:
+                            return True
+                        for values in layer.values():
+                            replay_left -= len(command) * len(values)
+                            if replay_left < 0:
+                                return True
                 env = {name: list(values) for name, values in inherited.items()}
                 for layer in (frame_env.exported, frame_env.pending):
                     for name, values in layer.items():
@@ -1704,7 +1386,15 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
             for payload in nested_payloads:
                 key = _payload_key(payload)
                 if key:
-                    inherited_by_payload.setdefault(key, []).extend(envs)
+                    retained = inherited_by_payload.setdefault(key, [])
+                    seen = inherited_signatures.setdefault(key, set())
+                    for env in envs:
+                        signature = tuple(
+                            (name, tuple(values)) for name, values in sorted(env.items())
+                        )
+                        if signature not in seen:
+                            seen.add(signature)
+                            retained.append(env)
             _observe_words(frame_env, command[len(prefix) :], prog=True)
             # ``script -c`` runs its value with this command's environment, so the
             # value is read led by it, as a re-entered command is.  An unknown launcher
@@ -1793,96 +1483,6 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
     return False
 
 
-def _parallel_replacements(opts: "list[str]", argv: "list[str]") -> "tuple[list[str], bool, bool]":
-    """The custom replacement strings ``parallel``'s options in *opts* set (the words
-    between ``parallel`` and the launched verb), whether any option is unsafe, and
-    whether *argv* holds a perl/plus string (``{=``, ``{+``, ``{..}``).  Unsafe is a
-    missing, empty, or ``$``/backtick/glob value (not a literal word), or ``--rpl`` /
-    ``--plus`` (and the ``--rp`` / ``--plu`` abbreviations parallel accepts), whose
-    tags can be any word.  The option name is read case-insensitively (the floor
-    lowers its input); ``--replace``/``-i`` with no value keep ``{}``."""
-    extras: "list[str]" = []
-    unsafe = any(o.lower().split("=", 1)[0] in ("--rp", "--rpl", "--plu", "--plus") for o in opts)
-    braces = any(s in _unmasked(w) for w in argv for s in ("{=", "{+", "{..}", "{...}"))
-    i = 0
-    while i < len(opts):
-        tok = opts[i]
-        low = tok.lower()
-        value: "str | None" = None
-        optional = low in ("--replace", "-i")  # these keep ``{}`` with no value
-        if low in _PARALLEL_REPLACE_LONG or low == "-i":
-            if i + 1 < len(opts):
-                value = opts[i + 1]
-                i += 1
-            elif not optional:
-                unsafe = True
-        elif low.startswith("--") and low.split("=", 1)[0] in _PARALLEL_REPLACE_LONG:
-            value = tok.split("=", 1)[1]
-        elif low.startswith("-i"):  # glued ``-I@@`` / ``-iXX``
-            value = tok[2:]
-        else:
-            i += 1
-            continue
-        if value is not None:
-            v = _unmasked(value)
-            if not v or any(c in v for c in _PARALLEL_REPLACE_UNSAFE):
-                unsafe = True
-            else:
-                extras.append(v)
-        i += 1
-    return extras, unsafe, braces
-
-
-def _git_lead_without_paths(words: "list[str]", cased: "list[str] | None") -> "list[str]":
-    """*words* (``git`` up to its verb) without the value of ``-C``, ``--git-dir`` or
-    ``--work-tree``: ``parallel`` shell-quotes each input, so a replacement string
-    there names a directory, never a verb or config.  ``-C`` is told from ``-c`` by
-    its typed case (*cased*, aligned with *words*); without it, ``-c`` keeps its
-    value (fail closed)."""
-    kept: "list[str]" = []
-    i = 0
-    while i < len(words):
-        typed = cased[i] if cased and i < len(cased) else words[i]
-        if typed.startswith(("--git-dir=", "--work-tree=")):
-            kept.append(typed.split("=", 1)[0])
-        else:
-            kept.append(words[i])
-        i += 2 if typed in ("-C", "--git-dir", "--work-tree") and i + 2 < len(words) else 1
-    return kept
-
-
-def _rewrites_any(words: "list[str]", extras: "list[str]") -> bool:
-    """Whether a replacement string (``{}``... or one of *extras*) is in *words*."""
-    reps = [e.lower() for e in extras]
-    texts = [_unmasked(w).lower() for w in words]
-    return any(_PLACEHOLDER_RE.search(t) or any(e in t for e in reps) for t in texts)
-
-
-def _parallel_runs(
-    words: "list[str]", extras: "list[str] | None" = None
-) -> "list[list[str]] | None":
-    """The argv ``parallel`` runs for each input after the first separator in *words*,
-    each replacement string (``{}`` and the *extras* from ``-I``/``--replace``...) put
-    in by that input.  Case is folded so a direct caller's mixed case reads like the
-    floor's lowered input.  None (refuse unread) past ``_GIT_TAR_WORD_CAP`` words."""
-    reps = [e.lower() for e in (extras or [])]
-    words = [w.lower() for w in words]
-    cut = next((i for i, w in enumerate(words) if w in _SEPARATORS), len(words))
-    head, inputs = words[:cut], dict.fromkeys(w for w in words[cut:] if w not in _SEPARATORS)
-    if not any(_PLACEHOLDER_RE.search(w) or any(e in w for e in reps) for w in head):
-        return []
-    if len(head) * len(inputs) > _GIT_TAR_WORD_CAP:
-        return None
-
-    def _sub(word: str, arg: str) -> str:
-        word = _PLACEHOLDER_RE.sub(lambda _: arg, word)
-        for extra in reps:
-            word = word.replace(extra, arg)
-        return word
-
-    return [[_sub(w, arg) for w in head] for arg in inputs]
-
-
 #: Text that ends in an escaped backtick: an odd run of backslashes, then ```.
 _ESCAPED_TICK_END_RE = re.compile(r"(?<!\\)(?:\\\\)*\\`\Z")
 #: A backslash escape; an escaped backtick (``\```) is text, not a substitution.
@@ -1922,13 +1522,6 @@ def _is_parallel(word: str) -> bool:
     """Whether program *word* runs GNU ``parallel`` (a glob is read as every name it CAN be)."""
     verb = _unmasked(_shell_normalizer._program_basename(word))
     return verb == "parallel" or _glob_could_expand_to(verb, ("parallel",))
-
-
-def _git_may_dial(args: "list[str]") -> bool:
-    """Whether git with *args* can open a transport or record a remote URL
-    (``_git_transport_modes``); a verb that is itself a placeholder is not local."""
-    i, verb_word, _ = _git_verb_at(args)
-    return i < len(args) and any(_git_transport_modes(_unmasked(verb_word).lower(), args[i + 1 :]))
 
 
 def _script_commands(args: "list[str]") -> "list[str]":

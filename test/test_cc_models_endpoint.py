@@ -306,6 +306,17 @@ class TestCcModelsMerge:
         # configured-default sentinel, not a model the backend serves.
         assert names[0] == "auto"
 
+    def test_an_advertised_model_no_source_knows_claims_no_window(self, monkeypatch):
+        """The dashboard learns a row's window as the model's real one, so an id no
+        source knows carries none instead of the 1M budget reference."""
+        prov = _FakeProvider([{"modelId": "claude-zeta-9", "name": "Zeta 9", "description": ""}])
+        known = {"auto": 200_000}
+        monkeypatch.setattr(model_registry, "model_window", lambda mid, **_: known.get(mid))
+        out = _cc_models(_request_with_providers({"s": prov}))
+        row = next(m for m in out if m["model_name"] == "claude-zeta-9")
+        assert "context_window" not in row
+        assert out[0]["model_name"] == "auto" and out[0]["context_window"] == 200_000
+
     def test_configured_default_is_not_resurrected_when_unentitled(self):
         """A stale config pick must not outlive the entitlement.
 

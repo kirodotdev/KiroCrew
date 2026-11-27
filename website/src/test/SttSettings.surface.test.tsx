@@ -107,10 +107,10 @@ function mountPanel(over: Record<string, unknown> = {}) {
 async function mountPanelAt(entry: string, over: Record<string, unknown> = {}) {
   // Seed BOTH reads and freeze them, so the panel commits its rows on the first
   // render rather than one round-trip later. That is not a convenience: the probe
-  // strips its own parameter 100 ms after it mounts, so a panel that arrives after
-  // that window makes every assertion here a statement about load latency instead
-  // of about ownership. Seeding pins the ordering the defect lives in -- the group
-  // opens, its children mount, and the signal is still up when they do.
+  // strips its own parameter once it finds the row, so a panel that arrives a
+  // round-trip later makes every assertion here a statement about load latency
+  // instead of about ownership. Seeding pins the ordering the defect lives in -- the
+  // group opens, its children mount, and the signal is still up when they do.
   const view = mountPanel(over)
   view.unmount()
   const qc = new QueryClient({
@@ -215,7 +215,7 @@ describe('SettingsSection disclosure', () => {
     )
     await waitFor(() => expect(screen.getByText('Streaming')).toBeTruthy())
 
-    // Past the probe's 100 ms tick: wait for it to withdraw the signal. The first tree stays MOUNTED on purpose, so its
+    // Once the probe has rung the row, wait for it to withdraw the signal. The first tree stays MOUNTED on purpose, so its
     // unmount cleanup cannot be what clears the signal: only the withdrawal can.
     await waitFor(() => expect(screen.getByTestId('pending-link')).toBeEmptyDOMElement())
     render(<SettingsSection title="Later" collapsible><p>later</p></SettingsSection>)
@@ -357,9 +357,8 @@ describe('SettingsSection disclosure', () => {
     ['a registry id', '/settings/voice?highlight=voice.streaming'],
     ['a config key', '/settings/voice?highlight=key:stt.streaming'],
   ])('withdraws when the page is torn down mid-probe (%s)', async (_name, entry) => {
-    // Leaving Settings before the probe finishes is the ordinary way out of it, and
-    // the two url forms take DIFFERENT branches -- a config key waits on a mutation
-    // observer, a registry id on a timer -- so each one has its own teardown.
+    // Leaving Settings before the probe finishes is the ordinary way out of it,
+    // whichever url form named the row.
     const view = render(
       <MemoryRouter initialEntries={[entry]}>
         <Probe>

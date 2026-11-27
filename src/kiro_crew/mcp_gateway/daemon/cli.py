@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+from kiro_crew.crash_guard import _task_lines
 from kiro_crew.executors import configure_default_executor
 from kiro_crew.mcp_gateway import agent_socket
 from kiro_crew.mcp_gateway.admission import DEFAULT_CAPACITY, DEFAULT_CEILING, DEFAULT_FLOOR
@@ -252,7 +253,8 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         exc = context.get("exception")
         msg = context.get("message", "unhandled event loop error")
         if exc is not None:
-            logger.error("gatewayd event-loop exception: %s", msg, exc_info=exc)
+            task_suffix = "".join(f"\n{line}" for line in _task_lines(context))
+            logger.error("gatewayd event-loop exception: %s%s", msg, task_suffix, exc_info=exc)
         else:
             logger.error("gatewayd event-loop error: %s | context=%r", msg, context)
 

@@ -328,13 +328,20 @@ class _GatedRelay:
         self._relay = relay
         self._caller_key = caller_key
 
-    async def send(self, method: str, params: dict[str, Any], sid: str) -> Any:
+    async def _check(self) -> None:
         if await browse_denied_async(HOST_KEY, audit=False) or await browse_denied_async(
             self._caller_key, audit=False
         ):
             stop_running_harness()
             raise BrowsingDenied()
+
+    async def send(self, method: str, params: dict[str, Any], sid: str) -> Any:
+        await self._check()
         return await self._relay.send(method, params, sid)
+
+    async def emulate(self, target_id: str, method: str, params: dict[str, Any]) -> None:
+        await self._check()
+        await self._relay.emulate(target_id, method, params)
 
 
 def build_context(
@@ -394,6 +401,13 @@ def build_context(
     def _frames() -> Any:
         return frame_ops(hub, session_key, caller_key=caller_key)
 
+    async def _emulate(target_id: str, method: str, params: dict[str, Any]) -> None:
+        # The relay the session's bind pinned (per-chat isolation), else the live one.
+        relay = hub.bound_relay(session_key) or getattr(supervisor, "relay", None)
+        if relay is None:
+            raise HelperError("the browser is not running")
+        await _GatedRelay(relay, caller_key or session_key).emulate(target_id, method, params)
+
     return harness_ops.OpContext(
         helper=helper,
         step=_step,
@@ -403,6 +417,7 @@ def build_context(
         staging_dir=config_dir() / IPC_LEAF / "shots",
         upload_dir=config_dir() / IPC_LEAF / "uploads",
         sleep=asyncio.sleep,
+        sites=tuple(sites),
         url_allowed=(
             _site_gate(sites, own_origins)
             if sites
@@ -413,6 +428,7 @@ def build_context(
         record=_record,
         frames=_frames,
         report_changes=_report_changes(),
+        emulate=_emulate,
     )
 
 
@@ -420,7 +436,7 @@ def _op_budget(op: str, ctx: harness_ops.OpContext) -> float:
     """The route's budget for *op*: its own, the hooks', the change report's, a sign-in's."""
     own = SLOW_OP_TIMEOUT_S if op in harness_ops.SLOW_OPS else OP_TIMEOUT_S
     report = CHANGE_REPORT_S if ctx.report_changes and op in harness_ops.REPORT_OPS else 0.0
-    # A navigate may go on to finish an edition sign-in (``browser_harness.sign_in``).
+    # A navigate may go on to sign a site in (``browser_harness.sign_in_guard``).
     sign_in = SIGN_IN_WORST_S if op == "navigate" else 0.0
     return own + DECISION_HEADROOM_S + report + sign_in
 
@@ -435,15 +451,18 @@ def _report_changes() -> bool:
         return False
 
 
-def _run_limits() -> tuple[int, int]:
-    """``browser.run.max_ops`` and ``max_repeats``, read fresh for each op. Off (0) when unreadable."""
+def _run_limits() -> tuple[int, int, int]:
+    """``browser.run`` ``max_ops``, ``max_repeats`` and ``max_minutes``, read fresh for each op.
+
+    Off (0) when unreadable.
+    """
     try:
         from kiro_crew.config import KiroCrewConfig
 
         run = KiroCrewConfig.load().browser.run
-        return run.max_ops, run.max_repeats
+        return run.max_ops, run.max_repeats, run.max_minutes
     except Exception:  # noqa: BLE001 - an unreadable setting leaves every op as it was
-        return 0, 0
+        return 0, 0, 0
 
 
 def frame_ops(hub: LiveHub, key: str, *, caller_key: str | None = None) -> Any:
@@ -1203,7 +1222,7 @@ async def run_browser_op(
                     SITES_REVOKED_TEXT
                     if sites == browser_sites.NO_PAGES
                     else f"{off_site} is not one of the pages this app may browse; "
-                    "open one of its approved sites instead"
+                    f"open one of its approved sites instead: {', '.join(sites)}"
                 ),
             ),
             200,
@@ -1263,10 +1282,12 @@ async def run_browser_op(
         return _held(request, hub, key, op, interrupted=False)
     from kiro_crew.dashboard.handlers import browser_card_ask
 
-    # An upload a person's act grant on this host covers runs with no card; its host
-    # goes down to the op, which re-reads the bound tab before the files go.
-    granted_host = "" if approval else browser_card_ask.upload_grant_host(state, session_key, op)
-    ctx.upload_grant_host = granted_host
+    # An upload or js a person's act grant on this host covers runs with no card; the
+    # host goes down to the op, which re-reads the bound tab before the op runs.
+    granted_host = (
+        "" if approval else browser_card_ask.site_grant_host(state, session_key, op, args, request)
+    )
+    ctx.upload_grant_host = granted_host if op == "upload" else ""
     # The caller as the tool gate names it: an agent- or app-bound profile narrows too.
     slot = (getattr(state, "_slots", None) or {}).get(key)
     ctx.read_allowed = functools.partial(
@@ -1280,7 +1301,9 @@ async def run_browser_op(
     carded = (
         None
         if granted_host
-        else await browser_card_ask.gate(state, session_key, op, args, approval, ctx.read_allowed)
+        else await browser_card_ask.gate(
+            state, session_key, op, args, approval, ctx.read_allowed, request
+        )
     )
     if carded is None and op == "upload" and approval:
         if listed is None:
@@ -1635,19 +1658,26 @@ async def _bound_op(
             result = off_host
         else:
             # An app's op is not one of the chat's steps: ``browser.run`` counts the Bot's.
-            max_ops, max_repeats = (0, 0) if isinstance(request, GatewayCaller) else _run_limits()
+            limits = (0, 0, 0) if isinstance(request, GatewayCaller) else _run_limits()
             counted: tuple[Any, run_budget.RunCount] | None = None
-            if max_ops or max_repeats:
+            if any(limits):
                 sess = hub.get(key)
                 if sess is not None:
                     counted = (sess, dataclasses.replace(sess.run))
                     stopped = run_budget.check(
-                        sess.run, op, args, max_ops=max_ops, max_repeats=max_repeats
+                        sess.run,
+                        op,
+                        args,
+                        max_ops=limits[0],
+                        max_repeats=limits[1],
+                        max_minutes=limits[2],
                     )
                     if stopped is not None:
                         _audit(request, "denied", run_budget.CODE)
                         return stopped
-            task = asyncio.ensure_future(browser_sign_in.run_op(op, args, ctx, supervisor))
+            task = asyncio.ensure_future(
+                browser_sign_in.run_op(op, args, ctx, supervisor, caller_key)
+            )
             hub.op_started(key, task)
             try:
                 result = await asyncio.wait_for(task, timeout=budget)

@@ -32,6 +32,7 @@ from kiro_crew.eval.scenario import (
 from kiro_crew.llm_helpers import _steer_host_deny, provider_model_pin_refused
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+from kiro_crew.messaging.alternation_echo import drop_echo
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
@@ -515,15 +516,18 @@ class EvalRunner:
                 vector_store=vector_store,
             )
 
-            # Constructed on a running loop, where construction-time sync
-            # skips itself; eval runs standalone with no gateway to own the
-            # sync, so run the explicit seam in a worker thread (mirrors
-            # gateway startup). The loader targets a scenario-local skills
-            # dir: eval must never write quarantines into the user's real
-            # skills home, and a self-contained dir keeps scenarios
+            # Built in a worker thread (the constructor resolves every
+            # `skills.extra_paths` root, which blocks on a slow or network
+            # mount) and without the builtin sync: eval runs standalone with no
+            # gateway to own it, so run the explicit seam in a worker thread
+            # too (mirrors gateway startup). The loader targets a scenario-local
+            # skills dir: eval must never write quarantines into the user's
+            # real skills home, and a self-contained dir keeps scenarios
             # reproducible across machines. A failed sync must not fail the
             # scenario before it runs.
-            skills = SkillsLoader(skills_path=ws / "skills", install_builtins=False)
+            skills = await asyncio.to_thread(
+                lambda: SkillsLoader(skills_path=ws / "skills", install_builtins=False)
+            )
             try:
                 await asyncio.to_thread(skills.sync_builtins)
             except Exception:
@@ -702,7 +706,9 @@ class EvalRunner:
         chunks: list[str] = []
         calls = _TurnCalls()
 
-        async for event in provider.stream(turn_def.user):
+        # A scenario's later turns run on the same session, so a turn can open
+        # with the alternation placeholder (``drop_echo``).
+        async for event in drop_echo(provider.stream(turn_def.user)):
             if event.kind == EVENT_TEXT_CHUNK:
                 chunks.append(event.text)
             elif event.kind == EVENT_TOOL_CALL:

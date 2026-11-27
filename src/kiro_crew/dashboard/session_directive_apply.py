@@ -477,7 +477,7 @@ async def apply_session_directive_outcome(
         from kiro_crew.milestones import record as record_milestone
 
         record_milestone("pr-watch")
-    return outcome
+    return DirectiveOutcome(outcome.text, outcome.ends_turn, applied=not failed)
 
 
 _TURN_ORIGINS = {"subagent": "a sub-agent result", "cron": "a cron job", "app": "an app"}

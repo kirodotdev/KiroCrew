@@ -605,7 +605,7 @@ def reconcile(leaf: str, disk_bytes: bytes) -> bytes:
         return disk_bytes
     if adopt_known_writer(leaf) == disk_bytes:
         return disk_bytes
-    _report_once(leaf, "is not the gateway's own write")
+    _report_once(leaf, "is not the gateway's own write", held=True)
     return endorsed
 
 
@@ -745,6 +745,65 @@ def _changed_paths(before: Any, after: Any, path: list[str], out: list[str]) -> 
                 _changed_paths(old, new, path + [str(key)], out)
         return
     out.append(".".join(path))
+
+
+def touches_slack(leaf: str, rows: list[dict]) -> bool:
+    """Whether diff *rows* of a config leaf change a ``slack.*`` key."""
+    return leaf in (LEAF_CONFIG, LEAF_CONFIG_LOCAL) and any(
+        (row.get("path") or [None])[0] == "slack" for row in rows
+    )
+
+
+def _held_rows(leaf: str, disk: bytes) -> tuple[list[dict], bool] | None:
+    """``(rows, truncated)``: the redacted diff of a held *leaf* edit, as
+    :func:`pending_changes` lists it. ``None`` when either side is not a JSON object."""
+    try:
+        endorsed = endorsed_bytes(leaf)
+    except OSError:
+        return None
+    before = _parse_object(endorsed) if endorsed is not None else None
+    after = _parse_object(disk)
+    if before is None or after is None:
+        return None
+    changes = _Changes(leaf)
+    _diff_keys(before, after, [], changes)
+    rows = changes.rows()
+    return rows, changes.total > len(rows)
+
+
+#: Most characters of changed-key lines a held-edit notice lists: well under the bell's
+#: body cap (``notifications.bus``), so a large diff still rings a note.
+MAX_LISTED_CHARS = 4000
+
+
+def change_lines(rows: list[dict], truncated: bool) -> list[str]:
+    """The :func:`change_line` of each row that fits in :data:`MAX_LISTED_CHARS` in
+    all, then one line saying more changes are not shown when any was left out."""
+    lines: list[str] = []
+    used = 0
+    for row in rows:
+        line = change_line(row)
+        if used + len(line) > MAX_LISTED_CHARS:
+            # Skipped, not stopped: a short row after one long row still fits.
+            truncated = True
+            continue
+        lines.append(line)
+        used += len(line)
+    if truncated:
+        lines.append("(more changes not shown; `kirocrew config pending` lists them)")
+    return lines
+
+
+def change_line(row: dict) -> str:
+    """One changed key, JSON-quoted so a key or value the edit wrote cannot drive the terminal."""
+    line = f"{row['change']} {json.dumps('.'.join(row['path']))}"
+    if row.get("redacted"):
+        return f"{line} (value withheld)"
+    values = [json.dumps(row[side]) for side in ("before", "after") if side in row]
+    # The diff leaves out a side it cannot show; the other alone would misread the change.
+    if row["change"] == "changed" and len(values) < 2:
+        return line
+    return f"{line}: {' -> '.join(values)}" if values else line
 
 
 def _only_older_writer_keys_changed(leaf: str, disk: bytes) -> bool:
@@ -943,9 +1002,40 @@ def reconciled_bytes(
     return reconcile(leaf, content)
 
 
-def _report_once(leaf: str, what: str) -> None:
-    if leaf not in _reported:
-        _reported.add(leaf)
+def _report_once(leaf: str, what: str, *, held: bool = False) -> None:
+    """Log the substitution once per leaf. A *held* edit says a restart does not apply
+    it; one that changes ``slack.*`` also lists the changed keys, redacted as
+    ``kirocrew config pending`` prints them, since a member id listed by hand looks like
+    it needs a restart. Review and Apply stay in that command: Apply takes the whole file.
+
+    shortcut: once per leaf per process, so a second edit of the same file in one run
+    is not logged; the bell note follows each version. Key on the signature if the log
+    must follow every edit.
+    """
+    if leaf in _reported:
+        return
+    _reported.add(leaf)
+    disk = _disk_bytes(leaf) if held else None
+    diff = _held_rows(leaf, disk) if disk is not None else None
+    if diff is not None and touches_slack(leaf, diff[0]):
+        logger.warning(
+            "%s on disk %s and changes Slack settings (slack.*), so the edit is held for "
+            "review and NOT in effect; a restart does not apply it. Changed: %s. Review "
+            "it and apply or discard it with `kirocrew config pending`, or in Settings > "
+            "Security",
+            leaf,
+            what,
+            "; ".join(change_lines(*diff)),
+        )
+    elif disk is not None:
+        logger.warning(
+            "%s on disk %s, so the edit is held for review and NOT in effect; a restart "
+            "does not apply it. Review it with `kirocrew config pending`, or in "
+            "Settings > Security",
+            leaf,
+            what,
+        )
+    else:
         logger.warning(
             "%s on disk %s; using the gateway-endorsed copy until the change is applied "
             "or discarded in Settings > Security or with `kirocrew config pending`",

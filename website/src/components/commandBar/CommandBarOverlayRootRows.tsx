@@ -33,7 +33,8 @@ import {
   recencyEpoch,
   sessionStatus,
 } from '../../components/commandPalette/providers/recentsProvider'
-import { matesIcon } from './matesProvider'
+import { matesIcon, mateRoute } from './matesProvider'
+import { memberThreadTitle } from '../../lib/memberThreadTitle'
 import { i18nT } from '../../i18n/t'
 import { isUntitledSession, sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 
@@ -99,12 +100,26 @@ function crewApprovalStatus(waiting: number): ReturnType<typeof sessionStatus> {
   }
 }
 
+/** The Needs You status of a Bot thread one of whose sessions waits on a tool
+ *  approval or a question: the Answer pill and the line All Dashboards' card
+ *  shows, since the wait is answered in the Bot's chat. */
+function mateWaitingStatus(): ReturnType<typeof sessionStatus> {
+  return {
+    style: 'pill',
+    colorVar: '--info',
+    label: i18nT('components.commandPalette.providers.recentsProvider.answer'),
+    detail: i18nT('pages.membersPage.team_waiting_in_chat'),
+  }
+}
+
 export function useCommandBarOverlayRootRows({
   liveSlots,
   crewWaiting,
+  mateWaiting,
   unreadSlots,
   slotStatusDetail,
   simplifiedToolNames,
+  compactingKeys,
   dispatch,
   navigate,
   store,
@@ -124,9 +139,15 @@ export function useCommandBarOverlayRootRows({
    *  The workers are not rows here (the person's list leaves them out), so their
    *  wait is lifted on the root, with the approval pill, as the fleet page does. */
   crewWaiting?: Record<string, number>
+  /** `{bot thread: true}`: a Bot thread with a session waiting on the person
+   *  (`mateWaitingThreads`). The person's list leaves that session out while
+   *  the Bot thread is live, so the Bot's row carries the wait and opens the Bot. */
+  mateWaiting?: Readonly<Record<string, boolean>>
   unreadSlots: RootState['dashboard']['unreadSlots']
   slotStatusDetail: NonNullable<RootState['chat']['slotStatusDetail']>
   simplifiedToolNames: boolean
+  /** The keys of the slots whose run state is compacting, joined by newlines. */
+  compactingKeys: string
   dispatch: AppDispatch
   navigate: (route: string) => boolean | void
   store: AppStore
@@ -143,6 +164,7 @@ export function useCommandBarOverlayRootRows({
 }): RankedRow[] {
   const rootRows: RootRow[] = useMemo(() => {
     const rows: RootRow[] = []
+    const compacting = new Set(compactingKeys.split('\n'))
     // The sessions that owe the user something, FIRST.
     //
     // `sessionStatus` marks exactly those with `style: 'pill'` — an approval to
@@ -155,11 +177,30 @@ export function useCommandBarOverlayRootRows({
     const lifted = new Set<string>()
     for (const slot of liveSlots) {
       const waiting = crewWaiting?.[slot.key] ?? 0
-      const st = waiting > 0 && !slot.pending_approval
+      const own = waiting > 0 && !slot.pending_approval
         ? crewApprovalStatus(waiting)
-        : sessionStatus(slot, unreadSlots, slotStatusDetail[slot.key], simplifiedToolNames)
+        : sessionStatus(slot, unreadSlots, slotStatusDetail[slot.key], simplifiedToolNames, compacting.has(slot.key))
+      // A Bot thread carries its sessions' wait only when it owes nothing itself;
+      // that row opens the Bot on the Bots page, where its chat lives (not /chat).
+      const mateCarried = mateWaiting?.[slot.key] === true && own.style !== 'pill'
+      const st = mateCarried ? mateWaitingStatus() : own
       if (st.style !== 'pill' || !st.label || !st.colorVar) continue
       lifted.add(slot.key)
+      if (mateCarried) {
+        rows.push({
+          id: `attention:${slot.key}`,
+          title: memberThreadTitle(slot, []) || sessionDisplayTitle(slot),
+          keywords: [slot.key],
+          group: 'attention',
+          kind: 'invoke',
+          icon: matesIcon(),
+          status: { colorVar: st.colorVar, label: st.label, detail: st.detail, pill: true },
+          run: async () => {
+            navigate(slot.agent ? mateRoute(slot.agent) : '/members')
+          },
+        })
+        continue
+      }
       rows.push({
         id: `attention:${slot.key}`,
         title: sessionDisplayTitle(slot),
@@ -203,7 +244,7 @@ export function useCommandBarOverlayRootRows({
       .sort((a, b) => recencyEpoch(b) - recencyEpoch(a))
       .slice(0, RECENT_SESSION_ROWS)
     recentSlots.forEach(slot => {
-      const st = sessionStatus(slot, unreadSlots, slotStatusDetail[slot.key], simplifiedToolNames)
+      const st = sessionStatus(slot, unreadSlots, slotStatusDetail[slot.key], simplifiedToolNames, compacting.has(slot.key))
       rows.push({
         id: `recent:${slot.key}`,
         title: sessionDisplayTitle(slot),
@@ -402,7 +443,7 @@ export function useCommandBarOverlayRootRows({
     // the tree without remounting it, which does not recompute a memo. Omitting it
     // would freeze these rows in whichever language the surface first resolved.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apps, commandById, cycleTheme, dispatch, liveSlots, crewWaiting, navigate, resolved, settingsGovernance, simplifiedToolNames, slotStatusDetail, store, unreadSlots])
+  }, [apps, commandById, compactingKeys, cycleTheme, dispatch, liveSlots, crewWaiting, mateWaiting, navigate, resolved, settingsGovernance, simplifiedToolNames, slotStatusDetail, store, unreadSlots])
 
   // The root ranks from the LIVE query, not the debounced one. Ranking is pure and
   // local, so there is nothing to throttle, and debouncing it would let a fast Enter

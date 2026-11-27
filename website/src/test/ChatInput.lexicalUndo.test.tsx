@@ -4,6 +4,7 @@ import { $createRangeSelection, $getRoot, $getSelection, $isRangeSelection, $isT
 import { useState } from 'react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { clickOptimize } from './optimizeRow'
 
 // The Lexical composer sits behind ChatInput's React.lazy boundary
 // (components/chat-input/engine.tsx). A cold chunk import on a loaded CI
@@ -98,7 +99,7 @@ describe('ChatInput Lexical composer: undo uses the snapshot history', () => {
     renderWithProviders(<Host />)
     const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
     expect(input).toHaveAttribute('data-lexical-composer')
-    fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+    clickOptimize()
     await waitFor(() => expect(shown()).toBe(OPTIMIZED))
 
     fireEvent.keyDown(input, { key: 'z', code: 'KeyZ', ctrlKey: true })
@@ -142,7 +143,7 @@ describe('ChatInput Lexical composer: undo uses the snapshot history', () => {
     })
     observer.observe(document.body, { childList: true, characterData: true, subtree: true })
     try {
-      fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+      clickOptimize()
       await waitFor(() => expect(pressed).toBe(true))
       await waitFor(() => expect(shown()).toBe(ORIGINAL))
     } finally {

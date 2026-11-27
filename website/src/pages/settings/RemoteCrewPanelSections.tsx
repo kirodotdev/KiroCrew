@@ -7,7 +7,8 @@
  * - `AddCrewModal` asks how to add a Crew, then shows the form for that choice.
  *   It draws the forms it is handed and owns none of their state: the panel and
  *   the store keep it, so closing the modal and opening it again loses nothing.
- * - `RemoteCrewSettingsSection` groups the page-wide settings.
+ * - `RemoteCrewSettingsSection` groups the page-wide settings; the warm-set
+ *   cap and usage rows come from `RemoteCrewPanelResources.tsx`.
  */
 import type { ReactNode } from 'react'
 import { ArrowLeft, Rocket, Server } from 'lucide-react'
@@ -19,6 +20,7 @@ import DefaultDestinationCrewPicker from '../../components/DefaultDestinationCre
 import { AUTO_CONNECT_KEY } from '../../hooks/useAutoConnectInstances'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { i18nT } from '../../i18n/t'
+import { RemoteCrewUsageRow, WarmCapSetting } from './RemoteCrewPanelResources'
 
 /** A labelled region of the page: its header (label, count, any controls) over its content. */
 export function CrewSection({ label, count, trailing, children, testId }: {
@@ -110,7 +112,8 @@ export function AddCrewModal({ mode, onMode, onClose, setup, connect }: {
   )
 }
 
-/** "Auto-connect crews" and the default destination crew, the page's two settings. */
+/** The page-wide settings: auto-connect, the default destination crew, how
+ *  many Crews stay loaded, and what the loaded ones cost. */
 export function RemoteCrewSettingsSection({ instances, defaultDestination }: {
   instances: readonly InstanceView[]
   defaultDestination: string
@@ -129,6 +132,8 @@ export function RemoteCrewSettingsSection({ instances, defaultDestination }: {
           onChange={setAutoConnect}
         />
         <DefaultDestinationCrewPicker instances={instances} value={defaultDestination} />
+        <WarmCapSetting />
+        <RemoteCrewUsageRow />
       </Card>
     </CrewSection>
   )

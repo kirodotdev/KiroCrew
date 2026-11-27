@@ -37,7 +37,9 @@ someone else staged (references/rationale.md):
                                onto the branch by one compare-and-swap.
 --require-single-on-base [-- PATH...]
                                after the fetch: HEAD's only parent is
-                               origin/<base>, and check 5 holds. Then
+                               origin/<base> or an older commit of it, HEAD
+                               merges into origin/<base> without a conflict,
+                               and check 5 holds. Then
                                sweep_check.py checks the class sweep file
                                (warns first; refuses once it is switched on).
 --check-index                  report what is staged here, and why.

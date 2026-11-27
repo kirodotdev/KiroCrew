@@ -112,8 +112,13 @@ export default function ShapeToolbar({ shapes, onColor, onFill, onKind, onWeight
   const kind = same(s => s.kind)
   const canSwitch = shapes.every(s => SWITCHABLE.has(s.kind))
   const weight = same(s => s.weight ?? 'medium')
+  // A palette swatch is shared only when no shape carries a custom colour: a
+  // custom colour replaces the palette colour the shape still records, so two
+  // shapes with different custom colours share no colour at all.
   const hex = same(s => s.hex)
+  const anyHex = shapes.some(s => s.hex)
   const borderHex = same(s => s.borderHex)
+  const anyBorderHex = shapes.some(s => s.borderHex)
   const ownBorder = shapes.some(s => s.borderColor || s.borderHex)
   return (
     <div className="flex flex-wrap items-center justify-center gap-0.5 rounded-2xl bg-bg-elevated px-1.5 py-1 text-text md:flex-nowrap md:justify-start" data-testid="canvas-toolbar" style={{ boxShadow: FLOAT_SHADOW }}>
@@ -126,14 +131,14 @@ export default function ShapeToolbar({ shapes, onColor, onFill, onKind, onWeight
       )}
       {canSwitch && painted.length > 0 && rule}
       {painted.length > 0 && (
-        <SwatchPicker label={t('components.canvas.colour')} show="paper" value={hex ? undefined : same(s => s.color)} fallback="#757575"
+        <SwatchPicker label={t('components.canvas.colour')} show="paper" value={anyHex ? undefined : same(s => s.color)} fallback="#757575"
           custom={{ hex, start: '#3FAAFF', onHex }}
           modes={fillModes} modesLabel={t('components.canvas.fill')} mode={same(s => s.fill ?? 'solid')} onMode={m => onFill(m as FillMode)} ring={same(s => s.fill) === 'none'}
           onPick={onColor} />
       )}
       {painted.length > 0 && rule}
       {painted.some(s => s.kind !== 'sticky') && (
-        <SwatchPicker label={t('components.canvas.border')} show="paper" value={borderHex ? undefined : same(s => s.borderColor)} fallback="#757575"
+        <SwatchPicker label={t('components.canvas.border')} show="paper" value={anyBorderHex ? undefined : same(s => s.borderColor)} fallback="#757575"
           custom={{ hex: borderHex, start: '#0B78D6', onHex: onBorderHex }}
           icon={<LinesIcon size={18} />}
           modes={borderModes} modesLabel={t('components.canvas.border')} mode={same(s => s.border ?? 'solid')} onMode={m => onBorder(m as BorderStyle)}

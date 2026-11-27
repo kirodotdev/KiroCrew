@@ -54,7 +54,9 @@ def notes() -> list[dict[str, Any]]:
 @pytest.fixture
 def notifier(notes: list[dict[str, Any]]) -> ResourcePressureNotifier:
     bus = NotificationBus(sink=notes.append)
-    return ResourcePressureNotifier(bus)
+    # No sharing hint: these cases pin the note bodies themselves, and the hint
+    # follows the runner's config (test_resource_pressure_sharing_hint.py covers it).
+    return ResourcePressureNotifier(bus, sharing_hint_fn=lambda: None)
 
 
 class TestChannel:

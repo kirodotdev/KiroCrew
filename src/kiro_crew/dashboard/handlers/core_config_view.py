@@ -545,10 +545,14 @@ def _config_body(cfg: KiroCrewConfig, kas_in_use: bool | None = None) -> dict:
     signs in with it, not only on a KAS main harness. ``None`` leaves it out.
     """
     from kiro_crew.edition_locks import feature_previews, locked_controls
+    from kiro_crew.managed_env import settings as managed_env_settings
 
     body = _masked_config_dict(cfg)
     if kas_in_use is not None:
         body["kas_in_use"] = kas_in_use
+    # Whether Settings offers the Kiro Managed Environments preview: only the boolean,
+    # never the sign-in values it is read from.
+    body["managed_env_available"] = managed_env_settings.available(cfg)
     dashboard = body.get("dashboard")
     if isinstance(dashboard, dict) and "feature_previews" in dashboard:
         # Unchanged on oss; {} in LTS, whatever the Debug tools lock does.

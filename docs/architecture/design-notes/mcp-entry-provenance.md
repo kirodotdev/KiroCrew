@@ -189,6 +189,25 @@ an edit the ownership guard reads as the user's, and the next emit expands what
 they wrote. `env.PATH` becomes irrevocable only when the declaration lives in a
 different file from the expansion — the scope-owned case above.
 
+## App source in the rendered spec (a fourth key)
+
+The rendered spec also records which app declared an entry:
+
+    "x-kirocrew-app-source": "chorus:team/service"
+
+Its value is the `{app}:{server}` source key. The two writers of app entries, the
+spec rebuild (`merge_mcp_sources`) and the app bridge's registration, stamp it on
+every entry they mount for an app, and it rides to whatever alias the rebuild
+mounts the entry under. It is how the MCP routes read which app owns a mounted
+alias (`_app_owned_mcp_server_apps`): a user's own server never carries it, so
+two servers with the same url or program stay apart. The alias dedupe ignores it
+and keeps it on the surviving alias entry when an equivalent user declaration
+converges onto the app's; sub-agent launch comparisons ignore it
+(`mcp_cleanup.NOT_LAUNCH_KEYS`), as does the per-session identity check
+(`session_mcp._NATIVE_INERT_KEYS`); the dashboard's copy of an entry into the store
+(`_find_server_spec_anywhere`) drops it, since a store entry is not app-sourced.
+Same `x-` namespace argument as the other keys.
+
 ## What this is not
 
 - Not token custody or OAuth grant ownership — see `mcp-oauth-ownership.md`.

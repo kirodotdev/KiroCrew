@@ -150,6 +150,9 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
+            # Until this Continue is decided no other write spends the room the
+            # release frees on a memory-only owed turn: a refusal puts it back.
+            root_locks.enter_context(crew_pause.continuing(slot.key))
             released = await asyncio.to_thread(crew_pause.release, slot.key)
             queue = list(slot._queue or [])
             owed = any("stopped" in taken.get("fields", []) for taken in released.values())

@@ -59,6 +59,7 @@ import {
 import { i18nT } from '../../i18n/t'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import { useRestartRefusal } from '../../hooks/useRestartRefusal'
+import { useAppStore } from '../../store'
 import ErrorNotice from '../../components/ErrorNotice'
 import { errMessage } from '../../utils/thunkError'
 
@@ -1009,6 +1010,8 @@ export default function SttSettings({ cardIndex }: {
     onSettled: () => qc.invalidateQueries({ queryKey: ['sttStatus'] }),
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.download_failed')),
   })
+  // Read at failure time, not from this render's closure.
+  const appStore = useAppStore()
   const restartRefusal = useRestartRefusal(detail => {
     setRestarting(false)
     setErr(detail || i18nT('pages.settings.aboutPanel.restart_failed'))
@@ -1018,13 +1021,14 @@ export default function SttSettings({ cardIndex }: {
     onMutate: () => restartRefusal.begin(),
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
-      // Restarting normally resets the connection before a response arrives.
-      // Only a structured server rejection is a real failure. A declined
-      // "work is running" confirmation is a quiet cancel, not one.
+      // The gateway answers the restart before it restarts, so a request that
+      // fails while this tab's socket is still connected means no restart is
+      // coming. Only a failure after the socket dropped is the restart itself.
+      // A declined "work is running" confirmation is a quiet cancel.
       if (e instanceof WorkConfirmDeclined) return restartRefusal.end()
-      if (e instanceof ApiError) {
+      if (e instanceof ApiError || appStore.getState().dashboard.connected) {
         restartRefusal.end()
-        setErr(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
+        setErr((e instanceof ApiError && e.message) || i18nT('pages.settings.aboutPanel.restart_failed'))
       } else setRestarting(true)
     },
   })
@@ -1799,7 +1803,8 @@ export default function SttSettings({ cardIndex }: {
                     <p className="text-[12px] text-muted">
                       {i18nT('pages.settings.sttSettings.decoder_fetch_prompt')}
                     </p>
-                    <Btn onClick={() => decoderMut.mutate()} disabled={decoderMut.isPending}>
+                    {/* Filled, with the strong edge: the plain edge vanishes on the tint. */}
+                    <Btn className="border-border-strong bg-bg-elevated" onClick={() => decoderMut.mutate()} disabled={decoderMut.isPending}>
                       <Download className="lucide-inline" /> {i18nT('pages.settings.sttSettings.download_decoder')}
                     </Btn>
                   </div>
@@ -1866,7 +1871,7 @@ export default function SttSettings({ cardIndex }: {
                       variant="inline"
                       askAgent={false}
                     />
-                    <Btn onClick={askAgentToFixDecoder}>
+                    <Btn className="border-border-strong bg-bg-elevated" onClick={askAgentToFixDecoder}>
                       <Sparkles className="lucide-inline" /> {i18nT('pages.settings.sttSettings.let_the_agent_fix_it')}
                     </Btn>
                   </div>

@@ -67,9 +67,10 @@ export function normalizeModelKey(name: string): string {
  *  can run.
  *
  *  `degraded` is the authority on whether the list can be trusted, and it must
- *  come from `modelsDegraded(providerId)` — NOT from the list's shape. A cached
- *  multi-row list served while `/api/models` is failing looks perfectly healthy
- *  by length while being arbitrarily stale, so length alone would relabel a pin
+ *  come from `useModelsUnconfirmed(providerId)` (a failed or a cold answer) —
+ *  NOT from the list's shape. A cached multi-row list served while
+ *  `/api/models` is failing looks perfectly healthy by length while being
+ *  arbitrarily stale, so length alone would relabel a pin
  *  the account has (re)gained access to. When `degraded` is true the pin is
  *  returned untouched: entitlement unknown is not entitlement denied. It gates
  *  the heuristic only — a verdict does not come from that list, so a stale list
@@ -156,11 +157,12 @@ export function pinIsWithheld(pinned: string, shown: string): boolean {
 /** The marker the composer chip puts beside the model it names.
  *
  *  `default` only when that model IS the Settings default and the slot takes it
- *  from there: the session was served it, or a slot with no model of its own
- *  resolved to it through an agent that pins nothing. `auto` when the session
- *  was served a different model for a slot that picked Auto or holds a
- *  withheld pin, i.e. a model chosen for the user. No marker otherwise: a pin,
- *  an agent's own model, or a default this surface cannot see (`null`).
+ *  from there: the session was served it (not over an agent's own pin), or a
+ *  slot with no model of its own resolved to it through an agent that pins
+ *  nothing. `auto` when the session was served a different model for a slot
+ *  that picked Auto or holds a withheld pin, i.e. a model chosen for the user.
+ *  No marker otherwise: a pin, an agent's own model, or a default this surface
+ *  cannot see (`null`).
  *
  *  `shown` / `pinShown` are `displayModel` with and without `served_model`.
  */
@@ -176,7 +178,7 @@ export function modelChipMarker(
   const slotKey = normalizeModelKey(slotModel)
   const isDefault = !!settingsDefault && normalizeModelKey(settingsDefault) === key
   if (key !== normalizeModelKey(pinShown)) {
-    if (isDefault) return 'default'
+    if (isDefault && (slotKey || !agentPinned || normalizeModelKey(pinShown) === 'auto')) return 'default'
     return slotKey ? 'auto' : null
   }
   return !slotKey && !agentPinned && isDefault ? 'default' : null

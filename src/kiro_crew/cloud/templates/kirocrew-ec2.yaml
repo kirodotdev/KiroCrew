@@ -670,11 +670,11 @@ Resources:
 
           echo "--- installing kiro-cli ---"
           if [ "$(uname -m)" = aarch64 ]; then
-            KIRO_ARCH=aarch64 KIRO_SHA=937ff1ae3df373717b66cc09aec79c3b7f0b8e53968d746e3a4545722e1e4587
+            KIRO_ARCH=aarch64 KIRO_SHA=9dd4cd08b7b7232892a344eb01e111e38918509dd4d999f37c5297e4afccd352
           else
-            KIRO_ARCH=x86_64 KIRO_SHA=7c7a9f5e3284c82cc6f0fb1a301597368538adb83d916927e664c957a9f953ef
+            KIRO_ARCH=x86_64 KIRO_SHA=f75d0f8ba18834fd4badf7e9acfa4c88ec7fbccadaa0967cb4954e47b2ddf610
           fi
-          KIRO_URL="https://prod.download.cli.kiro.dev/stable/2.27.1/kirocli-$KIRO_ARCH-linux-musl.zip"
+          KIRO_URL="https://prod.download.cli.kiro.dev/stable/2.37.1/kirocli-$KIRO_ARCH-linux-musl.zip"
           sudo -u $RUN_USER bash -lc "cd \$HOME; curl --proto '=https' --tlsv1.2 -sSf '$KIRO_URL' -o kirocli.zip" \
             || fail "could not DOWNLOAD kiro-cli from $KIRO_URL (host unresolvable/unreachable here)"
           echo "$KIRO_SHA  $RUN_HOME/kirocli.zip" | sha256sum -c - || fail "kiro-cli zip checksum mismatch"

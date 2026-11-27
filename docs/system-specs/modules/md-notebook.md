@@ -29,7 +29,9 @@ and `enabled`; the rail keeps `/md-notebook` and the `NotebookPen` glyph, and th
 the state move into `data/state/` has sealed, whether or not Notes is enabled (State Layout
 below). The repository's `app.json` declares the same `permissions` and the same
 `credentialMasks` as the wheel copy, so E9 holds nothing back, and the tool gate keeps
-fencing `data/state/` after adoption because it reads the shipped wheel copy's declaration.
+fencing `data/state/` after adoption because it reads the shipped wheel copy's declaration
+(once a release deletes that copy, the one its pin row froze from it, app-kit-platform.md
+§ 33).
 A fix to the app lands in that repository first; a change to the wheel copy needs its
 `App repo:` line.
 
@@ -128,7 +130,7 @@ masks nothing in any build, so nothing waits there. While one is alive the token
 off; every later start of the backend checks again. Spawn prep runs only the first move
 (`sandbox_staging._migrate_md_notebook_legacy_state`) and, until the second seals, creates
 the empty `data/state/` before each spawn so that every sandbox of this build masks it. It
-never makes a `data/` while an install, update or keep-data uninstall holds the tree at
+never makes a `data/` while an install or keep-data uninstall holds the tree at
 `apps/.md-notebook-data-tmp/` (the restore's rename would land inside it); the generic
 materialiser makes `state/` inside the moved-aside tree then, and the move itself waits.
 Adoption waits too: APPLY swaps the record onto its repository only once the move has

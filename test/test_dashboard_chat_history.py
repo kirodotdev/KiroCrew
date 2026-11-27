@@ -482,7 +482,11 @@ class TestHistorySaveOnClose:
         assert meta.get("mode") == "design-critique"
 
     def test_close_does_not_persist_trust(self, tmp_path, monkeypatch):
-        """Trust flags are ephemeral — not written to session metadata."""
+        """Trust flags are not written to session metadata, which the agent can write.
+
+        A kept mode lives only in the signed record under the masked ``kept-grants``
+        directory (``chat_trust_restart``).
+        """
         from kiro_crew.dashboard.chat import _save_slot_to_history
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -920,6 +924,56 @@ class TestResumeExpectedIdentity:
         assert unpinned_returns == []
 
 
+class TestResumeLastMetadataRead:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("line", ["transient", "corrupt"])
+    async def test_an_unreadable_last_read_refuses_unless_the_line_is_damaged(
+        self, tmp_path, monkeypatch, line
+    ):
+        """The read after the transcript runs on the loop, where its retries cannot pause.
+
+        A transient failure there (a Windows sharing violation, modelled as every
+        attempt failing) must not read as an empty line: the tab would come back
+        without the line's fields. A damaged first line no retry will read still
+        resumes, so its next save can rewrite it.
+        """
+        from kiro_crew.history import METADATA_LINE_TRANSIENT
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:held", "user", "hello")
+        await asyncio.to_thread(log.update_metadata, "dashboard:held", {"channel_origin": True})
+        if line == "corrupt":
+            path = log._path("dashboard:held")
+            path.write_bytes(b"{damaged\n" + path.read_bytes().split(b"\n", 1)[1])
+        else:
+            real_read = log.read_messages_chained
+
+            def read_then_hold(key):
+                messages = real_read(key)
+                monkeypatch.setattr(
+                    log, "_read_metadata_state", lambda _key: ({}, METADATA_LINE_TRANSIENT)
+                )
+                return messages
+
+            monkeypatch.setattr(log, "read_messages_chained", read_then_hold)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/held/resume", json={"key": "dashboard:held"}
+            )
+            body = await response.json()
+
+        if line == "corrupt":
+            assert response.status == 200, body
+        else:
+            slot = state.get_slot("held")
+            assert slot is None, f"built from an empty line: channel_origin={slot.channel_origin}"
+            assert (response.status, body["code"]) == (409, "resume_conflict")
+            assert "held" not in state._slots_under_construction
+
+
 class TestPinnedResumeOfALiveSlotBoundToAnOlderTranscript:
     """A live slot's identity is the transcript it holds, not its construction stamp.
 
@@ -1259,6 +1313,38 @@ class TestCronTranscriptResume:
 
         assert list(state._slots) == ["cron-job1"]
         assert state.get_slot("cron-job1") is tab
+
+    @pytest.mark.asyncio
+    async def test_a_cron_transcript_no_tab_saved_reopens_on_its_own_transcript(
+        self, tmp_path, monkeypatch
+    ):
+        """A job's transcript whose line carries no link is bound by its file name.
+
+        A job tab that flushed its run's rows but never saved its own line leaves no
+        ``linked_session_key``; unbound, the reopened tab's saves are refused.
+        """
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("cron:0a1b2c3d", "user", "cron prompt")
+        log.append("cron:0a1b2c3d", "assistant", "cron result")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/cron_0a1b2c3d/resume", json={"key": "cron_0a1b2c3d"}
+            )
+            assert resp.status == 200, await resp.text()
+            assert (await resp.json())["key"] == "cron-0a1b2c3d"
+
+        slot = state.get_slot("cron-0a1b2c3d")
+        assert slot.linked_session_key == "cron:0a1b2c3d"
+        slot.append("user", "follow-up after resume")
+        slot.drain()
+        assert _save_slot_to_history(state, slot) is True, "the resumed tab's save was refused"
+        assert log.read_messages("cron:0a1b2c3d")[-1]["content"] == "follow-up after resume"
+        assert log.read_messages("dashboard:cron_0a1b2c3d") == []
 
 
 class TestTaskReviewTranscriptResume:

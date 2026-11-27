@@ -25,6 +25,7 @@ from kiro_crew.dashboard.recovery_replays import (
     cancel_notice_meta,
     replays_of,
 )
+from kiro_crew.dashboard.slack_reconnect_wait import wait_for_slack_reconnect
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT
 from kiro_crew.members import DM_SLOT_MODE
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.steer_queue import _has_user_queued_followup
     from kiro_crew.dashboard.chat_turn.turn_context import _detach_appended_context
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
+    from kiro_crew.dashboard.chat_turn.turn_ledgers import _prompt_hooks_ran
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _crew_fires_agent_spawn, _fire
 
@@ -112,8 +114,15 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     # prompt author's embedded $tokens from silently loading extra skills into
     # the context (expand-what-the-user-typed, principle of least surprise).
     # Skipped for slash commands; _prompt_depth<1 blocks the recursive _run_chat
-    # path. Token is left literal; resolved bodies are appended.
-    if "$" in message and not is_slash and not prompt_expanded and _prompt_depth < 1:
+    # path. Token is left literal; resolved bodies are appended. Skipped for a
+    # chat option tap too (`_expansions_off`): the model wrote that label.
+    if (
+        "$" in message
+        and not is_slash
+        and not prompt_expanded
+        and _prompt_depth < 1
+        and not turn._expansions_off
+    ):
         # Offloaded: expansion walks the skills tree(s) and reads skill
         # bodies, which is filesystem work that must not run on the event
         # loop — a large tree would stall the gateway heartbeat and every
@@ -333,7 +342,18 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     else:
         spawn_injected = []
 
-    injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message) if _sends_prompt else []
+    # A re-send of a prompt whose prompt hooks already ran for an earlier attempt
+    # tells them so (``"replay": true``), so one person turn is not taken for two.
+    # A runner continuation (``_synthetic_payload``) is not a re-send, and nor is
+    # a requeue whose earlier attempt died before this fire (``_prompt_hooks_ran``).
+    _replays_prompt = (
+        _synthetic_recovery_turn and not turn._synthetic_payload and _prompt_hooks_ran(turn)
+    )
+    if _sends_prompt:
+        injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message, replay=_replays_prompt)
+        turn._prompt_hooks_fired = True
+    else:
+        injected = []
     all_injected = spawn_injected + injected
     if all_injected:
         hook_ctx = "\n\n".join(all_injected)
@@ -555,6 +575,15 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # answer as much as to the echo — so it is one gate, not four. A turn the
     # agent started resolves it too: its reply is owed to the thread, and the
     # echo below skips it (``_prompt_typed_in_dashboard`` reads actor ``agent``).
+    # A Slack reconnect clears the client for its window: a linked turn waits for
+    # that attempt and mirrors through the client it publishes.
+    if (
+        not state.slack_client
+        and not _slash_withholds_mirror
+        and not slack_mirror_is_paused(state, session_key)
+        and all(state.sessions.get_slack_link(session_key))
+    ):
+        await wait_for_slack_reconnect(state)
     if (
         state.slack_client
         and not _slash_withholds_mirror
@@ -937,22 +966,27 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                 store=str(turn.memory_store or ""),
             )
         )
-    # A person's message: an admitted human turn from a dashboard or channel
-    # opener, counted once. Depth re-entries, synthetic recovery and replay turns
-    # must not count the same message again. ``_directive_user_origin`` alone is
-    # not enough: a script cron's ``ctx.send_to_session`` reaches /api/chat with it
-    # True, so the turn's structural actor must also be ``user`` (as the
-    # attended-turn checks above require).
+    # Refusal retries, synthetic recovery and replay turns re-run a turn already
+    # started.
+    _rerun = _is_refusal_retry_turn or turn._synthetic_recovery_turn or bool(turn._replay)
+    # A depth-0 turn that is not a re-run: the only kind counted below.
+    _new_turn = _prompt_depth == 0 and not _rerun
+    # A person's message: a new turn a human sent from a dashboard or channel
+    # opener. ``_directive_user_origin`` alone is not enough: a script cron's
+    # ``ctx.send_to_session`` reaches /api/chat with it True, so the turn's
+    # structural actor must also be ``user`` (as the attended-turn checks above
+    # require).
     _persons_message = (
-        _prompt_depth == 0
-        and not _is_refusal_retry_turn
-        and not turn._synthetic_recovery_turn
-        and not turn._replay
-        and turn._directive_user_origin is True
-        and turn._crew_log_actor == "user"
+        _new_turn and turn._directive_user_origin is True and turn._crew_log_actor == "user"
     )
     if not turn._agent_cancel_owed:
         # A stopped agent-started turn opens only to send its cancel: not a turn.
+        if not _rerun:
+            from kiro_crew.dashboard import mate_thread_wakes
+
+            # The thread is active again, a saved prompt's depth-1 turn included,
+            # so a Stop's hold ends: this turn's end delivers what was held.
+            mate_thread_wakes.release_stop_hold(turn.state, slot.key)
         if _persons_message:
             # A person's message starts a new run, timed from this turn's own
             # start, so work an earlier run waited on that then ended with no turn

@@ -27,6 +27,7 @@ from kiro_crew.apps.user_session_reach import declared_verbs
 if TYPE_CHECKING:
     from kiro_crew.apps.chat_launch import ChatLaunch
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -377,12 +378,17 @@ class UIConfig:
     # supplies markup or styles. Empty means undeclared, which the dashboard
     # renders as "page", the skeleton every app had before the field existed.
     loading_layout: str = ""
+    loading_logo: str = ""  # ``loading.logo``: an image path in ``ui/`` drawn above the label
     # Exact ``https://host`` origins the app's pages may frame, from
     # ``"frameSources"``. The gateway adds them to the dashboard ``frame-src`` while
     # the app is enabled and trusted (``apps/frame_sources.py``).
     frameSources: list[str] = field(default_factory=list)  # noqa: N815
     #: ``frameSources`` present but not a list of strings. Not serialized.
     bad_frame_sources: bool = False
+    # ESM module, under the same ``ui/`` base as ``entry``, whose default export the
+    # dashboard mounts on every load once the owner approves it
+    # (``apps.startup_modules``). Empty means undeclared.
+    startup: str = ""
 
     # Names `ui.loading.layout` may take. Mirrors ``APP_LOADING_LAYOUTS`` in
     # ``website/src/components/AppLoadingFallback.tsx``.
@@ -410,10 +416,14 @@ class UIConfig:
         d: dict[str, Any] = {}
         if self.entry:
             d["entry"] = self.entry
-        if self.loading_layout:
+        declared = {"layout": self.loading_layout, "logo": self.loading_logo}
+        if loading := {k: v for k, v in declared.items() if v}:
             # Emitted only when declared, so a manifest without it keeps producing
             # the identical dict (and the identical signed payload).
-            d["loading"] = {"layout": self.loading_layout}
+            d["loading"] = loading
+        if self.startup:
+            # Only when declared, for the same signed-payload reason as `loading`.
+            d["startup"] = self.startup
         if self.pages:
             d["pages"] = [p.to_dict() for p in self.pages]
         if self.overlays:
@@ -454,8 +464,11 @@ class UIConfig:
             overlays=overlays,
             sidebar=sidebar,
             loading_layout=cls._parse_loading_layout(data.get("loading")),
+            loading_logo=cls._parse_loading_logo(data.get("loading")),
             frameSources=list(raw_frames) if frames_ok else [],
             bad_frame_sources=not frames_ok,
+            # A non-string (a hand-edited `null` or number) reads as undeclared.
+            startup=data["startup"] if isinstance(data.get("startup"), str) else "",
         )
 
     @classmethod
@@ -476,6 +489,14 @@ class UIConfig:
         if type(layout) is str and layout in cls.LOADING_LAYOUTS:
             return layout
         return ""
+
+    @staticmethod
+    def _parse_loading_logo(raw: Any) -> str:
+        """The declared logo, or ``""`` for a path ``handle_app_ui_file`` answers 400 for."""
+        logo = raw.get("logo") if isinstance(raw, dict) else None
+        if type(logo) is not str or logo.startswith("/") or ".." in logo:
+            return ""
+        return "" if "\\" in logo or ":" in logo else logo
 
 
 @dataclass
@@ -604,7 +625,9 @@ def _granted_list(value: Any) -> list[str]:
 
 
 #: The entries ``permissions.bots`` may hold; ``apps.bot_grants`` grants only these.
-BOT_SCOPE_NAMES = ("read", "wake")
+#: ``"tools"`` is read only behind the ``bot_chat_app_tools`` preview
+#: (``kiro_crew.bot_chat_app_tools``).
+BOT_SCOPE_NAMES = ("read", "wake", "tools")
 
 
 def _bot_scopes(value: Any) -> list[str]:
@@ -710,6 +733,13 @@ class Permissions:
     kiroOperations: list[str] = field(default_factory=list)  # noqa: N815
     #: ``kiroOperations`` present but not a list of strings. Not serialized.
     bad_kiro_operations: bool = False
+    #: Fixed click steps on CSS selectors the gateway runs on the app's own agent's
+    #: browser tab, kept raw (``apps/browser_recipes.py`` parses them). Never approved
+    #: by an install: the owner approves them on the app's page. Validated by
+    #: ``AppManifest.validate``.
+    browserRecipes: list[Any] = field(default_factory=list)  # noqa: N815
+    #: ``browserRecipes`` present but not a list. Not serialized.
+    bad_browser_recipes: bool = False
     #: The verbs (``"view"``, ``"read"``, ``"act"``) the app may use on the browser
     #: tabs of its own slots through ``ctx.browser`` (``apps/browser_sdk.py``). Empty =
     #: none, which is the default. Never approved by an install: the owner approves
@@ -722,7 +752,9 @@ class Permissions:
     webhookSource: bool = False  # noqa: N815
     #: Bot scopes (``apps.bot_grants``): ``"read"`` lists the Bots the owner ticked
     #: for this app with their status and goals, ``"wake"`` sends one of them the
-    #: gateway's fixed wake line. Any other entry is dropped. A staged grant family,
+    #: gateway's fixed wake line, ``"tools"`` mounts the MCP servers the app offers in
+    #: ``contributes.botChatServers`` on that Bot's own chat (``bot_chat_app_tools``).
+    #: Any other entry is dropped. A staged grant family,
     #: so an update that adds a scope waits for the owner.
     bots: list[str] = field(default_factory=list)
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
@@ -774,6 +806,8 @@ class Permissions:
             d["browserSites"] = list(self.browserSites)
         if self.kiroOperations:
             d["kiroOperations"] = list(self.kiroOperations)
+        if self.browserRecipes:
+            d["browserRecipes"] = list(self.browserRecipes)
         if self.browser:
             d["browser"] = list(self.browser)
         if self.webhookSource:
@@ -785,8 +819,10 @@ class Permissions:
         return d
 
     def list_errors(self) -> list[str]:
-        """Validation errors of the list-valued grants ``browserSites`` and ``kiroOperations``."""
-        # Deferred: both validators stay off an MCP server's pre-list import budget.
+        """Validation errors of the list-valued grants ``browserSites``, ``kiroOperations``
+        and ``browserRecipes``."""
+        # Deferred: the validators stay off an MCP server's pre-list import budget.
+        from kiro_crew.apps.browser_recipes import recipe_errors  # noqa: PLC0415
         from kiro_crew.apps.browser_sites import browser_site_errors  # noqa: PLC0415
         from kiro_crew.apps.kiro_operations import kiro_operation_errors  # noqa: PLC0415
 
@@ -801,6 +837,11 @@ class Permissions:
                 [bad.format("kiroOperations")]
                 if self.bad_kiro_operations
                 else kiro_operation_errors(self.kiroOperations)
+            ),
+            *(
+                ["permissions.browserRecipes must be an array of recipes"]
+                if self.bad_browser_recipes
+                else recipe_errors(self.browserRecipes)
             ),
         ]
 
@@ -829,6 +870,8 @@ class Permissions:
         sites_ok = isinstance(raw_sites, list) and all(isinstance(e, str) for e in raw_sites)
         raw_ops = data.get("kiroOperations", [])
         ops_ok = isinstance(raw_ops, list) and all(isinstance(e, str) for e in raw_ops)
+        raw_recipes = data.get("browserRecipes", [])
+        recipes_ok = isinstance(raw_recipes, list)
         return cls(
             api=_granted_list(data.get("api")),
             events=_granted_list(data.get("events")),
@@ -853,6 +896,8 @@ class Permissions:
             bad_browser_sites=not sites_ok,
             kiroOperations=list(raw_ops) if ops_ok else [],  # noqa: N815
             bad_kiro_operations=not ops_ok,
+            browserRecipes=list(raw_recipes) if recipes_ok else [],  # noqa: N815
+            bad_browser_recipes=not recipes_ok,
             browser=browser_verbs(data.get("browser")),
             webhookSource=data.get("webhookSource") is True,  # noqa: N815
             bots=_bot_scopes(data.get("bots")),
@@ -887,57 +932,6 @@ def lifecycle_timeout_error(field_name: str, value: Any) -> str:
             f"(1-{LIFECYCLE_SCRIPT_TIMEOUT_MAX}), got {value!r}"
         )
     return ""
-
-
-def clamp_lifecycle_timeout(value: Any) -> tuple[int, str]:
-    """The seconds a lifecycle script gets for a manifest ``value``, and why it moved.
-
-    The reason is ``""`` when ``value`` is used as written (``60``, ``"60"``,
-    ``60.0``). Otherwise the seconds are clamped and the reason says how:
-
-    - ``int()`` refuses it (see :func:`lifecycle_timeout_error`): the default.
-    - a bool: the default, since ``int(True)`` is a 1-second timeout nobody meant.
-    - below 1 after ``int()``: the default, since a zero or negative timeout ends the
-      script before it starts.
-    - above ``LIFECYCLE_SCRIPT_TIMEOUT_MAX``: the cap.
-    - a fractional float: truncated, as ``int()`` always did, then the rules above.
-    """
-    if lifecycle_timeout_error("", value):
-        return LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT, "not a number"
-    if isinstance(value, bool):
-        return LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT, "a bool is not a duration"
-    seconds = int(value)
-    fraction = isinstance(value, float) and value != seconds
-    if seconds < 1:
-        return LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT, "below 1 second"
-    if seconds > LIFECYCLE_SCRIPT_TIMEOUT_MAX:
-        return LIFECYCLE_SCRIPT_TIMEOUT_MAX, f"above the {LIFECYCLE_SCRIPT_TIMEOUT_MAX}s cap"
-    return seconds, ("fraction dropped" if fraction else "")
-
-
-def lifecycle_timeout_seconds(value: Any, *, app_name: str = "", field_name: str = "") -> int:
-    """:func:`clamp_lifecycle_timeout` where a script is about to run, logging a clamp.
-
-    This is the only place the bound is applied. ``SetupConfig`` keeps the value as
-    ``int()`` read it, because ``setup`` is part of ``AppManifest.signing_payload``:
-    clamping it there would change the signed bytes of a manifest published with,
-    say, ``600``, and its signature would stop verifying. The enable route and the
-    disable teardown call this once per script run, so the warning is not repeated
-    by listings. ``None`` (the key is absent) is the default with no warning.
-    """
-    if value is None:
-        return LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT
-    seconds, reason = clamp_lifecycle_timeout(value)
-    if reason:
-        logger.warning(
-            "app %r setup.%s=%r: %s, running the script with a %ss timeout",
-            app_name,
-            field_name,
-            value,
-            reason,
-            seconds,
-        )
-    return seconds
 
 
 @dataclass

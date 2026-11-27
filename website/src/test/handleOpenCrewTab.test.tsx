@@ -13,10 +13,10 @@ import type { ResizeInfo } from '../utils/resizeImage'
 // alike. It reuses the shared `openCrewSession` reveal — switch to the card's
 // slot so the opened panel is THAT chat's (split view never moves activeSlot
 // with pane focus), select Workers, open the dock, keepPanel=true because the
-// button is a deliberate "open" — and adds the one thing openCrewSession does
-// not: closing the find pane (which keeps the dock unmounted while open). These
-// mock openCrewSession + the search controller and assert handleOpenCrewTab
-// drives exactly that single path.
+// button is a deliberate "open". An open history search keeps its Search tab
+// behind the revealed one, so the reveal never closes it. These mock
+// openCrewSession + the search controller and assert handleOpenCrewTab drives
+// exactly that single path.
 
 const closeSearch = vi.hoisted(() => vi.fn())
 const openCrewSession = vi.hoisted(() => vi.fn())
@@ -63,7 +63,7 @@ vi.mock('../utils/composerSendHolds', () => ({
   registerComposerUpload: vi.fn(),
   releaseComposerSend: vi.fn(),
   unregisterComposerUpload: vi.fn(),
-  useComposerUploadCount: () => 0,
+  useComposerUploads: () => [],
 }))
 // The single shared reveal `handleOpenCrewTab` reuses — mock it so the test
 // asserts delegation rather than re-spelling switchSlot+openPanelView+open.
@@ -123,7 +123,7 @@ function useController(activeSlot: string | null) {
 describe('handleOpenCrewTab (Crew Mode dispatch-notice reveal)', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('reveals via the shared openCrewSession (keepPanel) and closes Find', () => {
+  it('reveals via the shared openCrewSession (keepPanel) and leaves the search open', () => {
     const { result } = renderHook(() => useController('conductor-1'), { wrapper })
     result.current.handleOpenCrewTab('conductor-1')
 
@@ -131,9 +131,8 @@ describe('handleOpenCrewTab (Crew Mode dispatch-notice reveal)', () => {
     // with keepPanel=true because the button is a deliberate open.
     expect(openCrewSession).toHaveBeenCalledTimes(1)
     expect(openCrewSession).toHaveBeenCalledWith(dispatch, 'conductor-1', true)
-    // And the one thing openCrewSession does not do: close Find, else the dock
-    // stays unmounted (shouldMountSidePanel) while search is open.
-    expect(closeSearch).toHaveBeenCalledTimes(1)
+    // The Search tab stays behind the Crew tab until the person closes it.
+    expect(closeSearch).not.toHaveBeenCalled()
   })
 
   it('in a split pane (card slot ≠ activeSlot) reveals the CARD slot, not the active one', () => {
@@ -143,7 +142,7 @@ describe('handleOpenCrewTab (Crew Mode dispatch-notice reveal)', () => {
     // openCrewSession switches to the card's slot first, so the panel it opens
     // belongs to the card's chat, not the active pane's.
     expect(openCrewSession).toHaveBeenCalledWith(dispatch, 'conductor-1', true)
-    expect(closeSearch).toHaveBeenCalledTimes(1)
+    expect(closeSearch).not.toHaveBeenCalled()
   })
 })
 
@@ -166,7 +165,7 @@ describe('handleFolderOpen (split-pane slot override)', () => {
     expect(switchCall).not.toBe(-1)
     // Held first, then switched (the order `openCrewSession` uses).
     expect(openFolder.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(dispatch).mock.invocationCallOrder[switchCall])
-    expect(closeSearch).toHaveBeenCalledTimes(1)
+    expect(closeSearch).not.toHaveBeenCalled()
   })
 
   it('a file opened from a split pane switches the panel to that pane\'s chat and opens held', () => {

@@ -1,0 +1,2 @@
++8
+The ssh-to-self walk checks an option value that holds a quoted > or < (a -o proxycommand value, for one) before it reads that word as a redirect: one call of the existing value check and its comment.

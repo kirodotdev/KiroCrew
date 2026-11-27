@@ -43,11 +43,13 @@ export interface TailnetStatusData {
  *
  * - `policy_off` — an LTS build whose policy does not turn tailnet on. Dead end.
  * - `pinned` — an administrator's policy forbids tailnet access. Dead end.
- * - `untrusted_cli` / `install` / `start_daemon` / `sign_in` / `enable_magicdns`
- *   — the ways there is no usable tailnet name, kept apart because each is a
- *   different errand for the operator. `untrusted_cli` means Tailscale IS
- *   installed, at a path the gateway refuses to run (user-writable), so the
- *   remedy is `dashboard.url` rather than a download.
+ * - `untrusted_cli` / `install` / `start_daemon` / `sign_in` / `approve_device` /
+ *   `enable_magicdns` — the ways there is no usable tailnet name, kept apart
+ *   because each is a different errand for the operator. `untrusted_cli` means
+ *   Tailscale IS installed, at a path the gateway refuses to run
+ *   (user-writable), so the remedy is `dashboard.url` rather than a download.
+ *   `approve_device` is signed in but waiting for an admin to approve this
+ *   device, which another sign-in cannot do.
  * - `enable_https` — the tailnet has not granted certificate provisioning for
  *   that name; this requires one-time tailnet administrator consent.
  * - `trust_off` — a name exists but the gateway will not accept it as an origin
@@ -66,6 +68,7 @@ export type TailnetMobileStep =
   | 'install'
   | 'start_daemon'
   | 'sign_in'
+  | 'approve_device'
   | 'enable_magicdns'
   | 'enable_https'
   | 'trust_off'
@@ -121,6 +124,15 @@ export interface MobileConnectMethodsData {
 export interface TailnetMobileConfigure {
   /** Trust/origin settings are snapshotted by middleware at gateway boot. */
   restart_required: boolean
+}
+
+/** One `config.local.json` key a `409 config_overlay_conflict` setup answer
+ *  names: the value that file holds and the `config.json` value that applies
+ *  once it is removed. */
+export interface TailnetMobileOverride {
+  field: string
+  local: unknown
+  applies: unknown
 }
 
 /** A minted mobile-access QR. Carries a LIVE session token in both fields, so
@@ -192,6 +204,12 @@ export function createRemoteAccessEndpoints({ get, post, put, j }: ClientTranspo
     tailnetMobile: () => get('/api/tailnet/mobile').then(j) as Promise<TailnetMobileData>,
     tailnetMobileConfigure: () =>
       post('/api/tailnet/mobile/configure', {}).then(j) as Promise<TailnetMobileConfigure>,
+    // Removes only the listed keys from config.local.json; the card calls it
+    // after the owner confirms the overrides a setup conflict listed.
+    tailnetMobileClearOverrides: (fields: string[]) =>
+      post('/api/tailnet/mobile/clear-overrides', { fields }).then(j) as Promise<{
+        removed: string[]
+      }>,
     tailnetMobilePublish: () =>
       post('/api/tailnet/mobile/publish', {}).then(j) as Promise<TailnetMobileMutation>,
     tailnetMobileUnpublish: () =>

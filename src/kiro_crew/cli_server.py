@@ -192,6 +192,8 @@ def _status(args: argparse.Namespace) -> None:
     print(f"  Sessions:    {data.get('sessions', 0)}")
     if data.get("session_map_writes_refused"):
         print(f"  Session map: {data.get('session_map_remedy', '')}")
+    if data.get("entry_port_closed"):
+        print("  Entry port:  closed; restart the gateway to open it again")
     print(f"  Messages:    {data.get('messages', 0)}")
     print(f"  Tool calls:  {data.get('tool_calls', 0)}")
     print(f"  Subagents:   {data.get('subagents', 0)}")
@@ -322,6 +324,7 @@ def _should_reconcile_launchd_launcher() -> bool:
 async def _gateway(
     *,
     no_dashboard: bool = False,
+    headless: bool = False,
     no_crons: bool = False,
     no_tunnel: bool = False,
     no_open: bool = False,
@@ -405,6 +408,7 @@ async def _gateway(
     await run_gateway(
         cfg,
         no_dashboard=no_dashboard,
+        headless=headless,
         no_crons=no_crons,
         no_tunnel=no_tunnel,
         no_open=no_open,
@@ -483,11 +487,13 @@ async def _run_task(args: argparse.Namespace) -> None:
     conv_log = ConversationLog()
     conv_log.init()
     lessons = LessonStore()
-    # Constructed on a running loop, so construction-time sync skips itself;
-    # standalone `kirocrew run` has no gateway to own the sync, so run the
-    # explicit seam in a worker thread (mirrors gateway startup). A failed
-    # sync must not gate the task: continue with the skills already on disk.
-    skills = SkillsLoader(install_builtins=False)
+    # Built in a worker thread (the constructor resolves every
+    # `skills.extra_paths` root, which blocks on a slow or network mount) and
+    # without the builtin sync: standalone `kirocrew run` has no gateway to own
+    # it, so run the explicit seam in a worker thread too (mirrors gateway
+    # startup). A failed sync must not gate the task: continue with the skills
+    # already on disk.
+    skills = await asyncio.to_thread(lambda: SkillsLoader(install_builtins=False))
     try:
         await asyncio.to_thread(skills.sync_builtins)
     except Exception:
@@ -555,6 +561,7 @@ async def _run_task(args: argparse.Namespace) -> None:
     task_name = getattr(args, "name", "")
     # Local: this module's top-level imports are a frozen facade inventory.
     from kiro_crew.hooks import FileTooLargeError
+    from kiro_crew.taskrunner_parts.run_reporting import live_error
 
     try:
         try:
@@ -571,7 +578,7 @@ async def _run_task(args: argparse.Namespace) -> None:
         if result.status == "completed":
             print(f"\n✅ Task completed — {label} ({len(result.tasks)} steps)")
         elif result.status == "failed":
-            print(f"\n❌ Task failed ({label}): {result.error}", file=sys.stderr)
+            print(f"\n❌ Task failed ({label}): {live_error(result)}", file=sys.stderr)
             sys.exit(1)
         elif result.status == "cancelled":
             print("\n⚠️  Task cancelled")
@@ -589,13 +596,15 @@ def _service_cmd(args: argparse.Namespace) -> int:
     """
     action = getattr(args, "service_action", None)
     if action == "install":
-        rc = service_controller.install_service()
+        # True / False for --headless / --no-headless, None for neither (keep).
+        headless = getattr(args, "headless", None)
+        rc = service_controller.install_service(headless=headless)
         sel().log_api_access(
             caller="cli",
             operation="service_install",
             outcome="allowed" if rc == 0 else "error",
             source="cli",
-            resources=f"rc={rc}",
+            resources=f"rc={rc} headless={'keep' if headless is None else int(headless)}",
         )
         return rc
     if action == "uninstall":
@@ -902,6 +911,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _update_approve,
     )
     from kiro_crew.cli_server_restart import (  # noqa: F401
+        _POLL_EXITED,
+        _POLL_EXPIRED,
+        _POLL_SERVED,
         _READY_DIED,
         _READY_OK,
         _READY_TIMEOUT,
@@ -924,8 +936,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _gateway_log_mark,
         _GatewayLogMark,
         _incumbent_from_lock_holder,
+        _now,
         _own_console_script,
+        _parent_pid,
+        _poll_until_serving,
+        _PollResult,
         _print_applying_update,
+        _print_resume_hint,
         _print_running_cron_runs,
         _print_still_starting,
         _print_token_url,
@@ -969,7 +986,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DETACHED_BRANCH_ORDER,
         _detached_upstream_branch,
         _gateway_holds_update_lock,
+        _head_oid,
+        _is_release_tag,
+        _is_shallow_clone,
         _refresh_agent_config,
+        _release_tag_checkout,
+        _release_update_tag,
+        _remote_refs_present,
         _report_already_latest,
         _revalidate_gateway_update_check,
         _snapshot_memory_or_exit,

@@ -579,7 +579,13 @@ The `tailscale serve` path and mobile setup check a login against a derived set
 
 Before the dashboard binds, the gateway publishes an owner-only placeholder
 (`access_set.install_placeholder`, no I/O); `tailnet_direct_listener.start` reads
-the set after the bind. At the first gateway start with a readable tailnet section,
+the set after the bind. All three start paths install the set this way. The
+ordinary dashboard does it through `prepare_at_start` and `start_after_bind`. A
+`gateway --headless` start calls `prepare_tailnet_path` before the bind, which
+records the tailnet path with `loopback_only` true because that bind is always
+loopback, and `finish_access_set` after it, and starts no direct tailnet listener.
+The reduced `--slack-only` server calls `prepare_access_set` and
+`finish_access_set`. At the first gateway start with a readable tailnet section,
 `access_set.install` copies `allowed_logins` (logins and `tag:` entries) into the set
 as its seed and marks it seeded. After that the seed only shrinks: at each start an
 entry no longer in `allowed_logins` leaves the seed, and an entry added later admits
@@ -659,6 +665,10 @@ agent's question cards included. `GET /api/terminal/sessions` answers a teammate
 route refuses them with `owner_only`. A test fails when a Terminal route is
 registered outside those prefixes.
 
+`/api/managed-environments/*` is owner-only for teammates through
+`teammate_access.is_owner_only_for_teammates`; `/api/cloud/*` refuses a teammate on a
+`kiro_managed_env` job.
+
 Three things stay the machine owner's (`is_owner_only_for_teammates`). The
 Terminal's own surface; it is a UI boundary, not a sandbox, since YOLO, cron scripts
 and app installs, all open to a teammate, reach the host too. Every route the relay
@@ -669,8 +679,9 @@ app's own credential mints and the relay viewer; shutdown; and a path not in
 canonical form. Each is a credential that would outlive the teammate's access, or the
 gateway process, so one table holds a teammate on any path to the boundary the relay
 holds every remote caller to. Plus a channel connection's writes
-(`CHANNEL_CONNECTION_WRITES`: a channel's `/config`, creating, changing or removing a
-connection, linking WhatsApp or Weixin), which hold the channel's token, and a cron
+(`CHANNEL_CONNECTION_WRITES`: a channel's `/config`, which creates, changes or removes
+the connection, and linking WhatsApp or Weixin), which hold the channel's token; the
+multi-agent channels under `/api/channels` hold none and stay open to a teammate; and a cron
 job's secret grants (`CRON_SECRET_GRANTS`), which hand a vault value to a job; reading
 a channel and sending through it stay open. And managing who may reach the
 Crew: `routes_invites._owner_refusal` admits only the local operator or this
@@ -684,8 +695,10 @@ refuses the owner too on a relayed request, 403 `relay_remote_control_refused`, 
 the same reason); and `PATCH
 /api/config/kirocrew` refuses a teammate 403 `owner_only` on an admission key
 (`is_admission_config_key`: the `dashboard.shared_crew`, `dashboard.tailscale`,
-`instances` and `tunnel` subtrees, and any key segment starting `allow` or equal to
-`dm_policy`, so a new allow-list is covered by its name). Reading the Remote Control
+`instances` and `tunnel` subtrees, the `dashboard.entry_port` listener key, and any
+key segment starting `allow` or equal to `dm_policy`, so a new allow-list is covered
+by its name; `dashboard.entry_port` has no rule on that route, so the route refuses
+the owner too, 400 `field not editable`). Reading the Remote Control
 state stays open. The teammate's screens follow the same line: an owner-only control
 is hidden or replaced by an "Only the Crew's owner can …" notice
 (`useViewerIsNotOwner`), never offered and then refused: Secrets, Remote Control's
@@ -693,6 +706,9 @@ Turn off, remote crew management, Channels' connection forms and `/terminal` sho
 the notice; Connect your phone is not offered; Voice drops the host install command;
 Privacy says the data stays on the Crew's computer; People reads "Shared with your
 team" and names an owner known only by machine name "Crew owner".
+
+The managed-environment lane never removes Remote Crew rows; a gone environment's row
+is removed with Remove.
 
 A teammate is not the owner for redaction. The owner's credential-redaction OFF
 covers only what the owner alone sees
@@ -714,7 +730,9 @@ for want of an OS sandbox, whatever the switch reads: no backend
 host (the probe's errno, the kernel sysctl, the OS family, the launcher's stderr,
 `kirocrew service install`, the owner's config key), so `_on_error`, the ACP error
 card and the background-start stop row type it: `meta.code` `host_sandbox_unavailable` with the
-failure time `meta.at` (and `meta.retryable` for a momentary refusal), and the
+failure time `meta.at` (and `meta.retryable` for a momentary refusal, which a
+user-namespace cap read as 0 is not: it is reported transient, yet only the owner
+can fix it), and the
 content prefix `host_sandbox_unavailable: `, which the chat SSE stream carries
 since it sends no row meta. An error row a build without that typing stored is
 read as the same row when its content holds either raiser's fixed wording, "Sandbox backend unavailable" (every `SandboxUnavailableError`) or
@@ -743,6 +761,10 @@ skip the row for every reader: neither string carries a row type to redact by.
 The machine owner is never a teammate, whichever path they came in on: the owner on
 a tailnet path carries a `tailscale_*` actor too, and keeps the Terminal.
 
+A task run's planning sandbox refusal is stored nowhere. `POST /api/taskrunner/plan`
+shows its text to the machine owner alone (`host_sandbox_refusal.plan_error_text`) and
+gives anyone else the ordinary plan error.
+
 A teammate keeps their own identity: `request["user"]` stays their subject
 (`ssm:<invite>`, `relay:<id>`, `tailnet:uid:<id>`) and the published actor stays
 their principal, so every audit row and attribution names them, never the owner.
@@ -750,7 +772,9 @@ their principal, so every audit row and attribution names them, never the owner.
 where the difference is a fact about who is at the machine, not a right:
 `/api/auth/me`'s `owner_ok` (so the host's first-run chapters open only in the
 owner's tab) and the decide-by-id form of a tool approval, which only the owner's
-browser sends (a teammate's card always names its request). A messaging allowlist
+browser sends (a teammate's card always names its request), and the YOLO
+confirmation acknowledgement kept on the gateway (`GET`/`PUT /api/chat/yolo-ack`),
+which is the machine owner's; a teammate keeps the per-browser copy. A messaging allowlist
 link, an app token, an internal caller, a widened-bind tailnet peer (attribution
 only) and an Unknown actor are not teammates. The SSM and Tailscale paths exist only
 while the Shared Crew preview is on; a relay teammate is the team Crew's own access
@@ -776,6 +800,12 @@ once through `POST /api/shared-crew/tailscale/credential` and stored in a dedica
 a response. The status read reports `connected`, the tailnet name, the key's
 `expires` (from `GET /tailnet/-/keys/{keyId}`) and `key_expires_soon` (within 7
 days) or `key_expired`. `DELETE .../credential` removes it.
+
+**State file.** Invites, members and display records live in `invites.json` beside
+the vault. A missing file reads as empty and the first update creates it. A file
+that exists but cannot be read, decoded or parsed still reads as empty for display,
+but `update_state` raises `StateUnreadableError` and writes nothing, so the action
+fails instead of rewriting the file from an empty state.
 
 **This machine's device.** `connect` matches the local daemon's `Self.PublicKey`
 against `devices[].nodeKey`, then `Self.TailscaleIPs` against `devices[].addresses`,
@@ -923,7 +953,10 @@ step (`/api/update/approve`) stays host-local.
 store (`<data home>/.vault/shared-crew-ssm/invites.json`, owner-only, masked from every
 sandbox mode) holds only the id, alias, creation time, first-use time and the SHA-256
 of the secret; the credential is returned once, by the create route. The store is
-read once when the listener starts, so a request answers from memory. At most 64
+read once when the listener starts, so a request answers from memory. A missing file
+reads as empty; a file that exists but cannot be read or is not valid JSON logs one
+warning naming it and admits no invite, and a create reads it again rather than rewrite
+it from the failed read (503 `ssm_invites_unreadable` while it still fails). At most 64
 live invites. The first request carrying `?ssm_invite=` sets the `mc_ssm_<port>` cookie (keyed by the port the browser connects to, so two Crews never share one)
 (`HttpOnly`, `SameSite=Lax`) and redirects to the same URL without it
 (`Referrer-Policy: no-referrer`); that first use sets `joined`. Revoking removes the
@@ -1420,12 +1453,18 @@ Terminal rows are purged after `IDEMPOTENCY_TTL_SECONDS`.
 `Admission.run` waits for a slot, then revalidates right before starting: queue
 expiry, `policy_version` (a change to `admission_enabled`, `hard_limits` or
 `containment_enabled` since acceptance is `policy_changed`), the hard-limit probe,
-and the entry point's own check (a chat slot must still be live). `running` is
+and the entry point's own check (a chat slot must still be live, and no Stop was
+recorded on its session since the wait began: `admitted_chat_turn`'s `stop_count`,
+not read for an agent-started turn; either ends the turn `cancelled_by_user` with no
+capacity note). `running` is
 written before the work launches, so `admitted` proves it never started, unless it
 names a run id: a child's, or one an operation's probe can find. A queued
 chat turn holds the slot reservation; while it waits a later send on that slot
 cannot steer into it (`admission_entry.admission_pending`) and queues instead, so a
-queued prompt is never delivered as a steer.
+queued prompt is never delivered as a steer. A dashboard Stop or Interrupt pressed
+while a send waits there, before its runner starts, cancels the work
+(`admission_entry.cancel_waiting_send`), and the turn ends unstarted through its own
+hand-off.
 
 Disabling admission affects new submissions immediately. Maintenance keeps running
 until accepted live work settles: queued work (including parked messages) ends
@@ -1730,7 +1769,11 @@ Rules:
    connection principal the socket handler stamps, never a value from a frame. A
    person's tabs fold into one holder (`typing_lease.same_person`: the same
    principal id, or the local operator's machine-local subjects from
-   `crew_mode.operator_ids`), so their other tabs stay unlocked.
+   `crew_mode.operator_ids`), so their other tabs stay unlocked. The lease and
+   the send race read the gateway's owner id at each comparison, not when they
+   are built: a messaging reconnect sets it from the saved `KIROCREW_OWNER_ID`
+   while the gateway runs, and a tab signed in after that still folds with the
+   operator's earlier tabs.
 2. The first collaborator whose tab sends an accepted `typing` report with a
    non-empty draft acquires a free lease. Each later accepted `typing` report from
    the holder renews it. A typing report never takes a held lease away. Unknown and
@@ -1794,7 +1837,9 @@ spacing while keystrokes continue, so a trailing report lands after the last one
 an edit that leaves the draft empty, and a send, report `draft: 'empty'` at once.
 `useComposerTypingLock` reads the lease and the viewer; when someone else holds
 it, ChatInput's `typingLock` turns the box read-only (not disabled: the draft
-stays as it was, and so does focus), replaces the button row with
+stays as it was, and so does focus), gives its text column the look of a
+disabled input (hover fill, editor at 40%,
+not-allowed cursor; the draft can still be selected and copied), replaces the button row with
 `TypingLockBanner` ("<name> is typing…", the only place typing is named; the
 box's placeholder stays empty; a line beside Take over says Take over types in their place and their draft stays with them), and keeps only Stop and Steer for a running turn.
 When the lease ends the box unlocks in place. A send refused `composer_locked` restores the draft and records the refusal

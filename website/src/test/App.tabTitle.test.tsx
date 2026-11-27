@@ -25,6 +25,12 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { BrandingProvider } from '../hooks/useBranding'
 import type { ChatSlot } from '../types'
 
+// Counts shell renders: `useAppShell` runs once per render of the whole shell.
+const shellRenders = vi.hoisted(() => ({ count: 0 }))
+vi.mock('../shell/appShell', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../shell/appShell')>()
+  return { ...actual, useAppShell: () => { shellRenders.count++; return actual.useAppShell() } }
+})
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => <div data-testid="schedule-page">SchedulePage</div> }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {}, subscribeSubagents: () => {}, forceReconnect: () => {} }) }))
@@ -98,6 +104,37 @@ describe('main window tab title', () => {
       store.dispatch(setActiveSlot('s1'))
     })
     await waitFor(() => expect(document.title).toBe('Fix the login page — Chat — Kiro Crew'))
+  })
+
+  it('retitles the tab on a session switch without rendering the whole shell again', async () => {
+    const store = renderAt('/chat')
+    act(() => {
+      store.dispatch(addSlotOptimistic(slot('s1', 'Fix the login page')))
+      store.dispatch(addSlotOptimistic(slot('s2', 'Other work')))
+      store.dispatch(setActiveSlot('s1'))
+    })
+    await waitFor(() => expect(document.title).toBe('Fix the login page — Chat — Kiro Crew'))
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    const before = shellRenders.count
+    act(() => { store.dispatch(setActiveSlot('s2')) })
+    await waitFor(() => expect(document.title).toBe('Other work — Chat — Kiro Crew'))
+    expect(shellRenders.count).toBe(before)
+  })
+
+  it('switches to a session in another project without rendering the whole shell again', async () => {
+    const store = renderAt('/chat')
+    const inProject = (key: string, title: string, project: string) => ({ key, title, agent: 'kirocrew', project }) as unknown as ChatSlot
+    act(() => {
+      store.dispatch(addSlotOptimistic(inProject('p1', 'Fix the login page', '/work/a')))
+      store.dispatch(addSlotOptimistic(inProject('p2', 'Other work', '/work/b')))
+      store.dispatch(setActiveSlot('p1'))
+    })
+    await waitFor(() => expect(document.title).toBe('Fix the login page — Chat — Kiro Crew'))
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    const before = shellRenders.count
+    act(() => { store.dispatch(setActiveSlot('p2')) })
+    await waitFor(() => expect(document.title).toBe('Other work — Chat — Kiro Crew'))
+    expect(shellRenders.count).toBe(before)
   })
 
   it('names Chat alone when no session is selected', async () => {

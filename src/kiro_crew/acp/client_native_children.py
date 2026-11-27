@@ -353,7 +353,8 @@ def _untracked_child_call(child_key: str, update: dict[str, Any]) -> list[AcpEve
     the parent's own, and its directive would act on the parent's chat. The event
     carries no title and nothing is stored, so the bounds still hold. *child_key* is
     the child's sessionId, or the Agent call it serves when the frame names the
-    parent's session.
+    parent's session. The same call may be marked again on each later frame; every
+    consumer of the event is idempotent, so a repeat costs nothing.
     """
     tool_call_id = str(update.get("toolCallId") or "")
     if not child_key or not tool_call_id:
@@ -361,6 +362,21 @@ def _untracked_child_call(child_key: str, update: dict[str, Any]) -> list[AcpEve
     return [
         AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id=child_key, tool_call_id=tool_call_id)
     ]
+
+
+def _late_child_mark(child_key: str, update: dict[str, Any]) -> list[AcpEvent]:
+    """Mark a child's call first named a child's on a ``tool_call_update``.
+
+    claude-agent-acp emits a call eagerly, naming no parent, when Claude Code asks
+    permission for it before the Agent call that spawned its subagent has streamed.
+    The streamed ``tool_use`` then names the parent on a ``tool_call_update``, or the
+    adapter routes that update to the child's own session. The call is the child's
+    from then on, so it is marked there, ahead of the frame's own events: a result on
+    the same frame must find the mark, or the call's session directive would act on
+    the parent's chat. Every such update is marked, so a call already marked is
+    marked again, which is harmless (:func:`_untracked_child_call`).
+    """
+    return _untracked_child_call(child_key, update)
 
 
 def _native_child_events(self: AcpClient, msg: JsonRpcMessage) -> tuple[list[AcpEvent], bool]:
@@ -390,17 +406,20 @@ def _native_child_events(self: AcpClient, msg: JsonRpcMessage) -> tuple[list[Acp
         # declaration: the provenance caches its permission requests are judged by
         # fill from them. A tool call is still marked as a child's, and so is one on
         # the parent's session stamped with an Agent call this session has no link
-        # for. Its text and side frames are dropped, never the parent's.
+        # for, on each frame that says so (``_late_child_mark``). Its text and side
+        # frames are dropped, never the parent's.
         foreign = (
             isinstance(session_id, str)
             and bool(session_id)
             and bool(self._session_id)
             and session_id != self._session_id
         )
-        if kind == UPDATE_TOOL_CALL:
-            child_key = session_id if foreign else _parent_tool_use(update)
-            return _untracked_child_call(str(child_key), update), False
-        return [], foreign and kind != UPDATE_TOOL_CALL_UPDATE
+        if kind in (UPDATE_TOOL_CALL, UPDATE_TOOL_CALL_UPDATE):
+            child_key = str((session_id if foreign else _parent_tool_use(update)) or "")
+            if kind == UPDATE_TOOL_CALL:
+                return _untracked_child_call(child_key, update), False
+            return _late_child_mark(child_key, update), False
+        return [], foreign
     events: list[AcpEvent] = []
     if child_sid not in self._native_child_turn and child_sid in self._native_child_rows:
         # A background child started in an earlier turn: list it again here.
@@ -422,7 +441,7 @@ def _native_child_events(self: AcpClient, msg: JsonRpcMessage) -> tuple[list[Acp
             )
         return events, False
     if kind == UPDATE_TOOL_CALL_UPDATE:
-        return events, False
+        return events + _late_child_mark(child_sid, update), False
     text = _child_text(self.backend, kind, update)
     if text:
         self._prompt_or_tool_seen = True

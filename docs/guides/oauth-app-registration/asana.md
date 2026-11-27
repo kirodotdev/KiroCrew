@@ -9,7 +9,7 @@ Kiro Crew connects to the Asana V2 MCP server at `https://mcp.asana.com/v2/mcp`.
 - An Asana account that is a member of the workspace or organization the agents should work in. The developer console is available to any Asana user; no paid developer program is needed.
 - Know whether your Asana domain is on the Enterprise+ or Legacy Enterprise tier with app management turned on. Asana's MCP page says the MCP client app "must not be blocked in your workspace via Asana app management. If it is, you will be prompted to send a request for your admin to unblock the app for your domain when trying to authorize." If that is your situation, find out who your super admin is before you start.
 - A running Kiro Crew gateway with the dashboard open.
-- Note the exact redirect URI you will register: `http://127.0.0.1:48102/callback`. It is plain HTTP on the loopback interface. Kiro Crew's callback listener runs inside kiro-cli on the loopback interface over plain HTTP only; an https loopback is not possible.
+- Note the exact redirect URI you will register: `http://127.0.0.1:48102/callback`. It is plain HTTP on the loopback interface. The callback listener (kiro-cli's own, or the gateway's when the **MCP sign-in by Kiro Crew** feature preview runs the sign-in) binds `127.0.0.1` on that port over plain HTTP only; an https loopback is not possible.
 - Tokens from an MCP app work only against the MCP server: "Tokens issued for MCP apps only work with the MCP server ... If you need to make standard Asana API requests, create a separate API app." Do not reuse an existing Asana API app for this.
 
 ## 1. Create the app

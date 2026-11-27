@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * check-phantom-classes.mjs — gate color utilities whose token does not exist.
  *
@@ -86,11 +85,14 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { join, relative } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { compile } from '@tailwindcss/node'
 
-const WEBSITE = join(fileURLToPath(new URL('.', import.meta.url)), '..')
+// Not `new URL('.', import.meta.url)`: under vitest's DOM environment `URL` is the
+// DOM's, which `fileURLToPath` refuses, and src/test/adoptedAppClassSafelist.test.ts
+// imports this module for `emittedClasses`.
+const WEBSITE = join(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO_ROOT = join(WEBSITE, '..')
 const SCAN_ROOT = 'website/src'
 const MARKER = 'phantom-class-ok'

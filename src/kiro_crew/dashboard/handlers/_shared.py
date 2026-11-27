@@ -270,10 +270,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.state import VALID_MEMORY_MODES  # noqa: F401
     from kiro_crew.dashboard.state import DashboardState  # noqa: F401
     from kiro_crew.dashboard.state import _normalize_slot_key  # noqa: F401
+    from kiro_crew.dashboard.token_auth import ANCESTORS_CLAIM  # noqa: F401
     from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS  # noqa: F401
     from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY  # noqa: F401
     from kiro_crew.dashboard.token_auth import _b64url_decode  # noqa: F401
     from kiro_crew.dashboard.token_auth import required_peer_key_unverified  # noqa: F401
+    from kiro_crew.dashboard.token_auth import token_lineage  # noqa: F401
     from kiro_crew.frontmatter import SKILL_LOADER  # noqa: F401
     from kiro_crew.frontmatter import parse_frontmatter  # noqa: F401
     from kiro_crew.history import TRANSCRIPT_HEADER_MAX_BYTES  # noqa: F401

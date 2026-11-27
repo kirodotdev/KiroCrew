@@ -32,6 +32,10 @@ import ChatInput from '../../../components/ChatInput'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../../../chat-core/composer/Composer'
 import { busySteerFlag } from '../../../components/chat-input/busySend'
 import ChatMessageList from '../../../app-sdk/ChatMessageList'
+import StatusNotice from '../../../components/StatusNotice'
+import { useQuoteJump } from '../useQuoteJump'
+import { findTranscriptRow } from '../usePinnedPrompt'
+import type { DisplayItem } from '../types'
 import ChatFooter from '../ChatFooter'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from '../../../components/QueueStack'
 import { hydrateQueuedBubbles, normalizeQueueEntries } from '../../../store/chatSlice'
@@ -46,6 +50,7 @@ import { coverSiblings } from '../../../utils/coverSiblings'
 import { createCrewWindowRenderers, crewWindowSlot } from './crewWindowRenderers'
 import { authRequiredIsNewest } from '../transcriptRenderers'
 import { useChatSetting } from '../../../hooks/useChatSetting'
+import JumpRevealContext from '../../../hooks/JumpRevealContext'
 import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowModelPicker'
 import { useCrewWindowAgentMode, type PeerAgentModeFields } from './crewWindowAgentMode'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
@@ -53,11 +58,15 @@ import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { isRetractedSteerRow } from '../../../utils/invisibleText'
 import { isHiddenReplyAt } from '../../../app-sdk/turnPolicyBlock'
 import { isSystemNoticeRow } from '../CompactionCard'
+import { injectOpensTurn } from '../RecoveryCard'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
 import { clearDictated, isDictated, markDictated, noteComposerEdit, takeDictated, wantsDictationNote, withDictationNote } from '../../../chat-core/composer/dictationProvenance'
+import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement, type AnnouncementTail } from '../../../hooks/useTranscriptAnnouncement'
+import { useUserRowSpeaker } from '../shared-crew/MessageByline'
+import { TranscriptLiveRegion } from '../TranscriptLiveRegion'
 
-interface PeerApproval { origin?: string; request_id?: string; request_mid?: string }
+interface PeerApproval { origin?: string; request_id?: string; request_mid?: string; request_instance?: string; tool?: string; tool_purpose?: string }
 interface PeerSlot extends PeerModelFields, PeerAgentModeFields {
   key?: string; title?: string; running?: boolean; interrupted?: boolean; agent?: string; pending_approval_info?: PeerApproval | null
   // The peer's own turn state, drawn by the composer as it draws a local one.
@@ -73,6 +82,9 @@ const CAPS_RETRY_MS = 5000
 /** How far above the bottom a reader can be and still count as at the bottom. */
 const FOLLOW_BOTTOM_SLACK_PX = 48
 const NO_MESSAGES: ChatMessage[] = []
+/** The tail a loaded empty transcript gives the announcement hook, so an
+ *  approval that lands with a session's first row is still spoken. */
+const LOADED_EMPTY_TAIL: AnnouncementTail = { ts: 'crew-window:loaded-empty' }
 const NO_INSTANCES: never[] = []
 
 /** The proxy's codes for a request that never reached the crew's chat:
@@ -228,6 +240,15 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   const scrollerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const { dockH, dockGutter, dockRef } = useComposerDockMetrics(scrollerRef)
+  // The strip the dock covers: the scroller's bottom padding and scroll
+  // padding, so a `scrollIntoView` centres a row in what stays visible.
+  const dockInset = dockH + DOCK_CLEARANCE_PX
+  // A sent quote card lands its row in this window's own transcript. The list
+  // is not virtualized: reporting its display items turns on the
+  // `data-display-index` rows the landing finds, never a copy forged in
+  // message content (findTranscriptRow).
+  const displayItemsRef = useRef<readonly DisplayItem[]>([])
+  const onDisplayItems = useCallback((items: DisplayItem[]) => { displayItemsRef.current = items }, [])
   const settle = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: slotKeyQ })
     void queryClient.invalidateQueries({ queryKey: detailKeyQ })
@@ -292,6 +313,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     else setDraft('')
     setRewindTs(null)
     action.mutate({ ...req, message, rewindTs, typed, quote, bare, dictated })
+    speakSent(message)
   }
   // Dictation runs on THIS machine (mic + STT); only the text goes to the
   // peer, through the same send as a typed message. An auto-submit (endpoint
@@ -333,6 +355,46 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     const mid = typeof m.meta?.mid === 'string' ? m.meta.mid : ''
     return { ...m, meta: { ...m.meta, approval_id: JSON.stringify([aid, mid]) } }
   }), [detailQ.data?.messages])
+  // Text for the window's one live region, the same decision the local chat
+  // makes: a reply is spoken once when it settles, an approval once when it
+  // is raised, and the user's own message when it is sent. The turn state is
+  // the detail's own, read with these rows: the slot frame that ends a turn
+  // lands before the re-read that carries its reply, and the previous row
+  // would be spoken as the reply in between.
+  const tail = messages[messages.length - 1]
+  // A coordinator approval (a sub-agent's) writes no transcript row, so it
+  // joins the rows' approvals from the slot record, keyed on that record
+  // because its id can recur. The transcript is loaded once the rows and that
+  // record have both answered, so what the window opens on, an approval
+  // already pending included, is recorded without speaking.
+  const transcriptLoaded = !slotQ.isPending && detailQ.data !== undefined
+  const coordinatorId = approval?.origin === 'coordinator' && approval.request_id ? `coordinator:${approval.request_id}:${approval.request_instance ?? ''}` : ''
+  const coordinatorLabel = approval?.tool_purpose || approval?.tool || ''
+  const windowApprovals = useMemo(() => {
+    const rows = pendingApprovalsOf(messages)
+    return coordinatorId ? [...rows, { id: coordinatorId, label: coordinatorLabel }] : rows
+  }, [messages, coordinatorId, coordinatorLabel])
+  const tailUserSpeaker = useUserRowSpeaker(tail?.meta ?? undefined, undefined, tail?.content)
+  const { announcement, announceSent } = useTranscriptAnnouncement(
+    transcriptLoaded ? (announcementTail(messages) ?? LOADED_EMPTY_TAIL) : undefined, tail?.role === 'streaming' || (detailQ.data?.running ?? running), undefined, draftVoiceKey, windowApprovals, messages.length, tailUserSpeaker, transcriptLoaded,
+  )
+  // Before both first reads answer the hook holds no rows, so a send then
+  // would take the reply on screen for a new one: it is spoken once they have.
+  const readsOut = slotQ.isPending || detailQ.isPending
+  const readsOutRef = useRef(readsOut)
+  readsOutRef.current = readsOut
+  const heldSentRef = useRef<string | null>(null)
+  const speakSent = useCallback((message: string) => {
+    if (readsOutRef.current) heldSentRef.current = message
+    else announceSent(message)
+  }, [announceSent])
+  useEffect(() => {
+    const held = heldSentRef.current
+    if (readsOut || held === null) return
+    heldSentRef.current = null
+    announceSent(held)
+  }, [readsOut, announceSent])
+  useEffect(() => () => { heldSentRef.current = null }, [draftVoiceKey])
   // A sign-in error keeps Resume; the composer's hint names the sign-in first.
   // Memoised: the window re-renders per keystroke.
   const resumeAfterSignIn = useMemo(() => authRequiredIsNewest(messages), [messages])
@@ -367,6 +429,24 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     ro.observe(content)
     return () => ro.disconnect()
   }, [])
+  // A jump that lands above the bottom stops following; one that ends there
+  // keeps it. No `claimScroll`: a turn's own row scroll supersedes this one.
+  const quoteJump = useQuoteJump({
+    messages,
+    getDisplayItems: () => displayItemsRef.current,
+    land: (index) => {
+      const sc = scrollerRef.current
+      const row = sc ? findTranscriptRow(sc, index) : null
+      if (!sc || !row) return
+      const rowRect = row.getBoundingClientRect()
+      // Centred above the dock, where the scroll padding makes the scroll land.
+      const centred = sc.scrollTop + rowRect.top - sc.getBoundingClientRect().top - (sc.clientHeight - dockInset - rowRect.height) / 2
+      const bottom = sc.scrollHeight - sc.clientHeight
+      if (bottom - Math.min(Math.max(centred, 0), bottom) > FOLLOW_BOTTOM_SLACK_PX) followBottom.current = false
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    },
+    scrollerEl: () => scrollerRef.current,
+  })
   const approve = useCallback((approvalId: string, decision: string) => {
     let row: unknown
     try { row = JSON.parse(approvalId) } catch { row = null }
@@ -378,11 +458,12 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
       action: decision, request_id: id, request_mid: mid, origin: 'native',
     }).finally(settle)
   }, [nativeApproval, instanceId, slotPath, settle, name])
-  // The newest turn row the transcript draws as a bubble: a system notice
-  // (compaction, reload) and a say-nothing reply (`isHiddenReplyAt`) are not one.
+  // The newest turn row: an opener the regenerate scan stops at (a user row, a
+  // turn-opening inject) or a reply drawn as a bubble, which a system notice and
+  // a say-nothing reply (`isHiddenReplyAt`) are not. A press re-runs that turn.
   const lastTurnIdx = messages.findLastIndex((m, i) =>
     !isRetractedSteerRow(m) && (
-      m.role === 'user' ||
+      m.role === 'user' || injectOpensTurn(m) ||
       (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenReplyAt(m, messages, i))
     ),
   )
@@ -443,11 +524,12 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
       setRewindTs(null)
       setRewindText('')
       mutate({ path: slotPath + '/rewind', body: { ts, content: message }, message, rewindTs: ts })
+      speakSent(message)
       return true
     },
     regenerateRow,
     onRegenerate: () => mutate({ path: slotPath + '/regenerate' }),
-  }), [instanceId, key, name, running, actionPending, connected, slotPath, mutate, regenerateRow, recoverIntoDraft])
+  }), [instanceId, key, name, running, actionPending, connected, slotPath, mutate, regenerateRow, recoverIntoDraft, speakSent])
   const picker = useCrewWindowModelPicker({
     instanceId, slotKey: crewWindowSlot(instanceId, key), slotPath, slot: slotQ.data, caps: capsQ.data, enabled: versionOk, onWritten: settle,
   })
@@ -508,7 +590,11 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         </div>
       )}
       <div className="relative flex-1 min-h-0">
-      <div ref={scrollerRef} onScroll={noteScroll} className="absolute inset-0 overflow-y-auto pt-3" aria-live="polite" style={{ paddingBottom: dockH + DOCK_CLEARANCE_PX }}>
+      {/* The transcript's only live region, outside the scroller: a live
+          scroller re-reads a reply on every flush that re-renders it, and the
+          offscreen speaker headings with it. */}
+      <TranscriptLiveRegion announcement={announcement} />
+      <div ref={scrollerRef} onScroll={noteScroll} className="absolute inset-0 overflow-y-auto pt-3" style={{ paddingBottom: dockInset, scrollPaddingBottom: dockInset }}>
       <div ref={contentRef} className="flex flex-col gap-1">
         <div className="px-4 flex flex-col gap-3">
           {/* No hand-off: the composer below may hold an unsent draft. */}
@@ -527,7 +613,9 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         {/* Every code fence here is the peer's: copy only, never Edit or Run
             in THIS machine's terminal. */}
         <ReadOnlyCodeCtx.Provider value={true}>
-          <ChatMessageList messages={messages} running={displayRunning} renderers={renderers} onApprove={approve} onQuoteMessage={messageQuote.quoteMessage} collapseAllSteps={collapseAllSteps} />
+        <JumpRevealContext.Provider value={quoteJump.reveal}>
+          <ChatMessageList messages={messages} running={displayRunning} renderers={renderers} onApprove={approve} onQuoteMessage={messageQuote.quoteMessage} collapseAllSteps={collapseAllSteps} onJumpToQuote={quoteJump.onJumpToQuote} onDisplayItems={onDisplayItems} />
+        </JumpRevealContext.Provider>
         </ReadOnlyCodeCtx.Provider>
         {/* The footer reads the peer's turn phase from `state` and its stop
             from `stopState`, the same two fields the local chat passes. */}
@@ -599,6 +687,12 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
               onDismiss={picker.clearError}
               footer={<Btn onClick={() => selectInstance(instanceId)}>{i18nT('pages.chat.crewWindow.open_crew_dashboard', { name })}</Btn>}
             />
+          )}
+          {/* Opaque under the warn tint: the column floats over the transcript. */}
+          {quoteJump.notice && (
+            <div className="rounded-lg bg-bg-elevated">
+              <StatusNotice testId="crew-window-quote-unavailable" message={quoteJump.notice} onDismiss={quoteJump.dismissNotice} />
+            </div>
           )}
           {/* No hand-off: same draft. The peer refused an agent or approval-mode change. */}
           {!!agentMode.error && <ErrorNotice title={i18nT('pages.chat.crewWindow.action_failed', { name })} message={agentMode.error} onDismiss={agentMode.clearError} />}

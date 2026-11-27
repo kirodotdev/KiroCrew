@@ -25,7 +25,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import batch_guard
+from kiro_crew.acp import batch_guard, kas_approve_for_me
 from kiro_crew.acp._dispatch import (
     MAX_ACTIVE_TOOL_CALLS,
     liveness_key,
@@ -36,6 +36,7 @@ from kiro_crew.acp._dispatch import (
     scoped_tool_cache_key,
 )
 from kiro_crew.acp.codex_subagent_wire import SUBAGENT_LIFECYCLE_UPDATES
+from kiro_crew.acp.kas_child_finished import mark_child_call_finished
 from kiro_crew.acp.liveness import (
     INTERACTIVE_NONE,
     ToolCallState,
@@ -46,6 +47,7 @@ from kiro_crew.acp.liveness import (
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
+    ACP_BACKENDS_APPROVE_FOR_ME,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     EVENT_STRUCTURED_STATUS,
@@ -265,6 +267,12 @@ def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[Ac
     update = params.get("update") or {}
     if not isinstance(update, dict):
         return []
+    if self._runtime.acp_backend in ACP_BACKENDS_APPROVE_FOR_ME and update.get("sessionUpdate") in (
+        "tool_call",
+        "tool_call_update",
+    ):
+        # A call KAS approved on its own reached no Crew gate: record it.
+        kas_approve_for_me.audit_classifier_approved(self, update)
 
     # A frame the runtime routed here for a backend-internal subagent
     # carries the CHILD's sessionId. Its tool_call/refinement updates are
@@ -326,7 +334,8 @@ def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[Ac
         # result never reaches the main route's release. Nothing below
         # reads the settled row: the events out are coarse activity.
         self._release_settled_tool_call(update, frame_sid)
-        out: list[AcpEvent] = []
+        # A claude child's call that first reaches its own session as an update.
+        out: list[AcpEvent] = self._child_session_call_marks(update, frame_sid)
         for ev in child_events:
             if ev.kind == EVENT_TOOL_CALL and ev.tool_call_id:
                 # A child's tool call is this session's side effect for
@@ -427,9 +436,9 @@ def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[Ac
     # lifecycle frames — intercept PARENT frames and route to the native
     # sub-agent WS path (EVENT_SUBAGENT_LIST) instead of rendering them as
     # ordinary tool calls. CHILD nested tool frames (agentSubtaskId present,
-    # but not a parent) emit an activity prefix AND fall through to the
-    # shared parser (caches populate + tool events render).
-    # Positive KAS gate (H5).
+    # but not a parent) run the shared parser for its caches and return only
+    # the activity event; a finished call's outcome rides on that event
+    # (``kas_child_finished``). Positive KAS gate (H5).
     if self._runtime.acp_backend == ACP_BACKEND_KAS:
         if session_update in ("tool_call", "tool_call_update"):
             kas_sub_events = self._handle_kas_subagent(update)
@@ -450,7 +459,7 @@ def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[Ac
                 # return ONLY the activity. Surfacing the tool events would
                 # render the child tool as a top-level tool; the sub-agent
                 # card is fed by the roster + activity, not the raw frame.
-                parse_session_update(
+                _child_parsed = parse_session_update(
                     update,
                     tool_input_cache=self._tool_call_inputs,
                     tool_input_redacted_cache=self._tool_call_input_redacted,
@@ -467,6 +476,8 @@ def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[Ac
                     harness_backend=getattr(self._runtime, "acp_backend", "") or "",
                 )
                 self._note_child_calls(update, "kas-child")
+                # Read before the release below drops the call's caches.
+                mark_child_call_finished(self, _child_prefix[0], _child_parsed)
                 self._release_settled_tool_call(update, self._session_id)
                 return _child_prefix
         if session_update == "agent_message_chunk":

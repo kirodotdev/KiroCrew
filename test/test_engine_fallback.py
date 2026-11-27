@@ -1069,8 +1069,9 @@ def test_dashboard_promotion_leaves_an_unpinned_slot_unpinned(pick: str) -> None
     for notice in normalize_kas({"from": A, "to": B, "trigger": "refusal", "scope": "session"}):
         dash.record_engine_fallback(state, slot, client, walk, notice)
     assert slot.model == pick
-    # The chip still names the served model.
+    # The chip still names the served model, as the engine's promotion.
     slot.record_served_model.assert_called_once_with(B)
+    assert slot._engine_promoted_model == B
 
 
 # Crew's own fallback serves the session: P is the user's pin, F Crew's candidate,

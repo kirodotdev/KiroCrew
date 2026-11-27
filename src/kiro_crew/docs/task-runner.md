@@ -26,9 +26,8 @@ It is on unless you turn it off with the **Show Task Runner** switch in
 Everywhere, and the gateway refuses new starts from the page, the agent tool,
 the chat keyword and a saved plan workflow; `kirocrew run` on the host does not
 read the switch. Work already under way carries
-on, and the page still opens from a link or **Alt+P** / **Option+P**. It used to
-be an app you switched on and off in Library; if you had switched it off there, it
-stays off after the update.
+on, and the page still opens from a link or **Alt+P** / **Option+P**. If you
+switched Task Runner off as a Library app in an earlier version, it stays off.
 
 ### Via Slack
 

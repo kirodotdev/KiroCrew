@@ -7,6 +7,7 @@ import { uniqueRowKeys } from '../../chat-core/transcript/rowKeys'
 import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { isJumpTarget, useJumpReveal } from '../../hooks/JumpRevealContext'
+import { MESSAGE_BODY_ATTR } from '../../messageActions/messageText'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
 import { ExpandStepsContext } from '../../hooks/useToolCallsStartExpanded'
@@ -27,6 +28,7 @@ import { i18nT } from '../../i18n/t'
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './BrowserLiveCard'
 import { useDismissedSpecHooksNotice } from './SpecHooksNotice'
 import { isToolCallRow } from '../../lib/toolRowContract'
+import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 
 /**
  * Where a turn's live-browser card goes. The card belongs to the turn's FIRST
@@ -87,8 +89,13 @@ const isMcpAppItem = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
 // ever hid. Density relief is per-card (ToolCallLine's fold chip) plus the
 // size caps in presentToolDiff, so an edit-heavy turn is N foldable cards,
 // not an immovable wall (see rfc-tool-derived-diff-cards.md).
+// The exception is a row the gateway stamped `file_change_recorded`: the
+// turn's changed-files card lists that change, so the row is a working step
+// and folds with the others (rfc-fold-recorded-edit-cards.md). A row without
+// the stamp (another harness's write shape, a refused path, an older turn)
+// keeps the rule above, since its card may be the only record of the edit.
 const isDiffCardItem = (it: TurnItem) =>
-  it.kind === 'single' && isDiffToolMessage(it.msg)
+  it.kind === 'single' && isDiffToolMessage(it.msg) && it.msg.meta?.file_change_recorded !== true
 // An answered ask_question row carries the only record of the user's answers (its chip), so like a diff card it stays out of both folds.
 const isAskAnsweredItem = (it: TurnItem) =>
   it.kind === 'single' && isAskAnsweredToolMessage(it.msg)
@@ -124,7 +131,7 @@ const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (
   it.msg.role === 'mcp_oauth' || it.msg.role === 'error' || it.msg.role === 'card' ||
   it.msg.meta?.kind === 'crew_dispatch_notice' || it.msg.meta?.kind === 'crew_paused_notice' ||
   it.msg.meta?.kind === 'agent_welcome' || it.msg.meta?.kind === 'agent_no_tools' ||
-  it.msg.meta?.kind === 'mcp_sign_in_unsupported' ||
+  it.msg.meta?.kind === 'mcp_sign_in_unsupported' || it.msg.meta?.kind === 'mcp_servers_left_out' ||
   (it.msg.role === 'inject' && it.msg.meta?.injectKind === 'mcp_app')
 )
 
@@ -302,7 +309,10 @@ function substantiveLength(text: string): number {
  * Find the index of a turn's conclusion item: the last `isConclusion` item that
  * is substantive (>= 50 chars), falling back to the last `isConclusion` item of
  * any length, else -1. System notice rows (a watchdog recycle, a compaction)
- * never qualify: they trail the answer and must not displace it. Shared by the
+ * never qualify: they trail the answer and must not displace it. Nor does any
+ * row after the turn's last stamped reply (`isTurnEnd`, the reply the runner
+ * recorded): a workflow result or another writer's row landing after it would
+ * otherwise fold the turn's final answer. Shared by the
  * auto-expand decision and the render split so the "what's the always-visible
  * conclusion vs collapsed reasoning" answer can't drift between them (a
  * mismatch wrongly expands reasoning above a visible match and pushes it down).
@@ -310,7 +320,8 @@ function substantiveLength(text: string): number {
 function findConclusionIdx(items: TurnItem[]): number {
   let conclusionIdx = -1
   let fallbackIdx = -1
-  for (let i = items.length - 1; i >= 0; i--) {
+  const lastReply = items.findLastIndex(it => it.kind === 'single' && isTurnEnd(it.msg))
+  for (let i = lastReply >= 0 ? lastReply : items.length - 1; i >= 0; i--) {
     const it = items[i]
     if (isConclusion(it) && !(it.kind === 'single' && isSystemNoticeRow(it.msg))) {
       if (fallbackIdx === -1) fallbackIdx = i
@@ -347,14 +358,15 @@ const collapseAllFoldRange = (items: TurnItem[]): { end: number; wholeTurn: bool
     : { end: conclusionIdx, wholeTurn: false }
 }
 
+/** The agent's own text (a system notice is the gateway's, not the agent's). */
+const isAgentTextRow = (it: TurnItem): boolean =>
+  it.kind === 'single' && (it.msg.role === 'assistant' || it.msg.role === 'streaming') && !isSystemNoticeRow(it.msg)
+
 /** A row the agent produced while working: a tool call, a reasoning burst, or
- *  its own text (a system notice is the gateway's, not the agent's). */
+ *  its own text. */
 const isWorkingStepRow = (it: TurnItem): boolean => {
   if (it.kind !== 'single') return it.kind === 'group'
-  const { role } = it.msg
-  if (role === 'tool') return true
-  if (role === 'assistant' || role === 'streaming') return !isSystemNoticeRow(it.msg)
-  return isReasoningBurst(it)
+  return it.msg.role === 'tool' || isAgentTextRow(it) || isReasoningBurst(it)
 }
 
 /**
@@ -673,9 +685,11 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   useEffect(() => {
     if (!jumpInTurn || !revealTs) return
     const t = setTimeout(() => {
-      // The transcript's own row, not the measuring farm's off-screen copy.
-      const rows = document.querySelectorAll<HTMLElement>('[data-jump-target]')
-      const row = Array.from(rows).find(el => el.dataset.jumpTarget === revealTs && !el.closest('[data-farm-index]'))
+      // The transcript's own row: not the measuring farm's copy, nor one authored in a message.
+      // Searched in this pane's own transcript: split panes can show the same
+      // transcript, so the same timestamp can mark a row in another pane.
+      const rows = (scrollerEl() ?? document).querySelectorAll<HTMLElement>('[data-jump-target]')
+      const row = Array.from(rows).find(el => el.dataset.jumpTarget === revealTs && !el.closest('[data-farm-index]') && !el.closest(`[${MESSAGE_BODY_ATTR}]`))
       if (!row) return
       // The jump's settle poll centres the whole turn each frame; end it first.
       claimScroll()
@@ -689,6 +703,9 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
 
   const candidateSet = useMemo(() => new Set(candidates), [candidates])
   const count = fold.rows.size
+  // The collapse-all pill names the folded replies that hold text; an interim
+  // fan-out fold does not, as the synthesis below restates its replies.
+  const messages = mode === 'collapseAll' ? Array.from(fold.rows, i => items[i]).filter(it => it.kind === 'single' && isAgentTextRow(it) && !isHiddenInvisibleAssistantRow(it.msg, { fileChips: false, steerChip: false })).length : 0
   // "Earlier" only holds while nothing the fold skipped sits above the toggle.
   // A live row older than the folded ones keeps its place there, so the
   // running label falls back to the neutral tool-call count.
@@ -697,7 +714,10 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     ? (open ? i18nT('pages.chat.turnBlock.hide_earlier_steps') : i18nT('pages.chat.turnBlock.earlier_step', { count }))
     : mode === 'default' || !turn.complete
       ? (open ? i18nT('pages.chat.turnBlock.hide_tool_calls') : i18nT('pages.chat.collapsibleToolGroup.tool_call', { count }))
-      : (open ? i18nT('pages.chat.thinkingBlock.hide_reasoning') : i18nT('pages.chat.turnBlock.worked_through_step', { count }))
+      : open ? i18nT('pages.chat.thinkingBlock.hide_reasoning')
+        : messages > 0
+          ? i18nT('pages.chat.turnBlock.worked_through_step_with_messages', { count, messages: i18nT('pages.chat.turnBlock.folded_message', { count: messages }) })
+          : i18nT('pages.chat.turnBlock.worked_through_step', { count })
 
   // ONE render for every mode and both phases. Each row is a plain keyed
   // <div> in one flat list, so a fold, an unfold, the completion flip, a

@@ -9,7 +9,7 @@ import { readIndexCss } from './indexCssSource'
 import InstanceTabBar from '../components/InstanceTabBar'
 import EmbeddedHostBridge, { parseHostModel } from '../components/EmbeddedHostBridge'
 import type { HostModel } from '../store/instancesSlice'
-import { isDesktopAppPane, noteHostOrigin } from '../lib/hostRelay'
+import { getCrewPopoutHub, isDesktopAppPane, noteHostOrigin } from '../lib/hostRelay'
 
 // Embedded panes never hit the instances API; mock it to a no-op so the import
 // is inert and any accidental call is observable.
@@ -613,14 +613,18 @@ describe('EmbeddedHostBridge (option B relay)', () => {
 
     sendModel({})
     expect(clipboardRelayAvailable()).toBe(false)
+    expect(getCrewPopoutHub()).toBeNull()
     sendModel({ clipboardRelay: 1 })
     expect(clipboardRelayAvailable()).toBe(true)
+    sendModel({ crewPopout: 1 })
+    expect(getCrewPopoutHub()).toBe('http://localhost:8080')
     // A model from a non-loopback origin never becomes a relay target.
     sendModel({ clipboardRelay: 1 }, 'https://example.com')
     expect(clipboardRelayAvailable()).toBe(false)
-    sendModel({ clipboardRelay: 1 })
+    sendModel({ clipboardRelay: 1, crewPopout: 1 })
     view.unmount()
     expect(clipboardRelayAvailable()).toBe(false)
+    expect(getCrewPopoutHub()).toBeNull()
   })
 
   it('keeps the pane\'s own focus mode when an older host sends a model without the field', async () => {

@@ -19,6 +19,7 @@ import re
 import tempfile
 from typing import TYPE_CHECKING
 
+from kiro_crew.messaging.attachments import unlink_temp
 from kiro_crew.sel import sel
 from kiro_crew.slack.files import (
     VOICE_MEMO_DURATION_UNVERIFIED,
@@ -188,8 +189,5 @@ async def _transcribe_files(
             )
         finally:
             if dest:
-                try:
-                    os.unlink(dest)
-                except OSError:
-                    pass
+                unlink_temp(dest)
     return results

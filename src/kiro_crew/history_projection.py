@@ -230,6 +230,17 @@ class SessionMetadataProjection:
                         key,
                     )
                     return False
+                # The chat's history search cache keeps its redacted message
+                # text, so it goes before the transcript too.
+                from kiro_crew import chat_search_cache
+
+                if existed and not chat_search_cache.drop(self._log._dir, identities):
+                    _HISTORY_LOGGER.warning(
+                        "delete_session: could not remove the chat's search cache, "
+                        "not deleting key=%s",
+                        key,
+                    )
+                    return False
                 # The chunk store holds data derived from this text under the
                 # same contract: drop() succeeds when no store file exists and
                 # fails when one exists and cannot be opened or erased.

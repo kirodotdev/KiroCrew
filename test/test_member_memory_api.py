@@ -834,6 +834,51 @@ async def test_caller_cannot_choose_another_members_recall(env, query, owner, in
     assert response.status == 403
 
 
+def _seed_bot_and_global_facts(env) -> None:
+    env.tiers[""].set_semantic("project.database", "PostgreSQL GLOBALFACT", 1.0, "user_explicit")
+    env.tiers["member-bob"].set_semantic(
+        "project.database", "PostgreSQL BOBFACT", 1.0, "user_explicit"
+    )
+
+
+@pytest.mark.asyncio
+async def test_owner_recall_from_a_bot_thread_searches_the_bots_store(env):
+    """A session control in a Bot thread recalls with the owner's cookie.
+
+    It sends the thread's own ``X-Session-Key`` and no ``store``, so the store comes
+    from the binding that session recorded when the Bot's thread was created, not
+    from the owner's identity: a voice call to the Bot answers from the Bot's memory.
+    """
+    _seed_bot_and_global_facts(env)
+    env.state._slots["bob-thread"] = SimpleNamespace(
+        key="bob-thread", is_restricted=False, blocks_reads=False
+    )
+    await env.bind_session_async("dashboard:bob-thread", "member-bob")
+    response = await memory_member.api_memory_recall(
+        request(env, query={"q": "PostgreSQL database"}, owner=True, session="dashboard:bob-thread")
+    )
+    assert response.status == 200, response.text
+    result = json.loads(response.text)
+    assert result["store"] == "member-bob"
+    assert "BOBFACT" in response.text
+    assert "GLOBALFACT" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_owner_recall_from_a_main_agent_session_stays_global(env):
+    """The control's other side: a session with no recorded Bot binding reads Global."""
+    _seed_bot_and_global_facts(env)
+    env.state._slots["main"] = SimpleNamespace(key="main", is_restricted=False, blocks_reads=False)
+    response = await memory_member.api_memory_recall(
+        request(env, query={"q": "PostgreSQL database"}, owner=True, session="dashboard:main")
+    )
+    assert response.status == 200, response.text
+    result = json.loads(response.text)
+    assert result["store"] == ""
+    assert "GLOBALFACT" in response.text
+    assert "BOBFACT" not in response.text
+
+
 @pytest.mark.asyncio
 async def test_owner_can_preview_a_selected_private_store(env):
     env.tiers["member-bob"].set_semantic("project.database", "PostgreSQL", 1.0, "user_explicit")

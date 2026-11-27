@@ -223,9 +223,8 @@ function persistFullscreen(fullscreen: boolean): void {
  *  build that still shared it is ignored. */
 function loadPersisted(open = loadOpen(), fullscreen = loadFullscreen()): BottomTerminalState {
   const base: BottomTerminalState = { open: false, fullscreen: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
-  if (typeof localStorage === 'undefined') return base
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = safeGetItem(STORAGE_KEY)
     if (!raw) return base
     // `splits` is read as a fallback for the pre-tab-model dev shape.
     const p = JSON.parse(raw) as (Partial<BottomTerminalState> & { splits?: TermTab[] }) | null
@@ -626,6 +625,9 @@ export function useBottomTerminalOpen(): boolean {
  *  way a `toggleBottomTerminal` is about to go — see `terminalChordFocus.ts`,
  *  which has to decide about focus BEFORE the panel unmounts. */
 export function isBottomTerminalOpen(): boolean { return state.open }
+
+/** The dock tab on screen now, or null while the panel is closed. */
+export function shownTabId(): string | null { return state.open ? state.activeId : null }
 
 /** Selector for just the `fullscreen` flag. A primitive so the Object.is check
  *  skips re-renders on unrelated state changes, same as the open selector. */

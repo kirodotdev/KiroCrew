@@ -20,7 +20,11 @@ from kiro_crew import session_directive
 from kiro_crew.agent_sdk.mcp_problems import mcp_server_state
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.body_numbers import body_int
-from kiro_crew.dashboard.handlers._shared import guard_owner_surface_routes, internal_memory_scope
+from kiro_crew.dashboard.handlers._shared import (
+    guard_owner_surface_routes,
+    internal_memory_scope,
+    require_owner_for_dashboard_caller,
+)
 from kiro_crew.dashboard.handlers.sessions_parts.app_scope import (
     _STATE_APPROVALS_NOT_APP_VISIBLE,
     _app_not_found,
@@ -53,6 +57,9 @@ async def api_approvals(request: web.Request) -> web.Response:
             request_app, "approval_list", "approvals=*", _STATE_APPROVALS_NOT_APP_VISIBLE
         )
         return web.json_response([])
+    denied = await require_owner_for_dashboard_caller(request, "approval_list")
+    if denied is not None:
+        return denied
     return web.json_response(list(state._pending_approvals.values()))
 
 
@@ -138,6 +145,12 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
     request_app = str(request.get("app") or "")
     if request_app:
         return await _resolve_app_approval(request, state, request_app, approval_id, action)
+    # Deciding runs (or refuses) an action on the owner's machine with the owner's
+    # grants, on either leg below: the owner or a teammate only. An internal caller
+    # (no app claim) keeps its owner-bound target rule.
+    denied = await require_owner_for_dashboard_caller(request, "approval_resolve")
+    if denied is not None:
+        return denied
 
     async def _response_id(request: web.Request, shared_decisions: Any) -> tuple[str, bool]:
         """The click's ``response_id`` from the decide body, and whether it is valid."""

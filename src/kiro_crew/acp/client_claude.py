@@ -71,6 +71,10 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
         self._claude_held_asks: tuple[str, ...] = ()
         # Whether those held limits cover MCP, so the session runs strictMcpConfig.
         self._claude_held_mcp = False
+        # Project-file holds are read off-loop before each session envelope.
+        self._claude_held_project_servers: tuple[str, ...] = ()
+        # Whether that file exists but cannot be read, so the session runs strictMcpConfig.
+        self._claude_project_mcp_unreadable = False
         # True once this session has CREATED <work_dir>/.claude/settings.local.json
         # itself. Only then does reset remove it, and only then does a re-seed
         # overwrite it. The writer refuses a path that already holds a file it did
@@ -85,6 +89,9 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
         # The chat notice when the exclusion runs a requested ``auto`` in
         # ``default`` (_exclude_foreign_local_settings); "" otherwise.
         self.claude_mode_pinned_notice = ""
+        # Why this session's MCP array is withheld and what the person can do,
+        # set where the seed declines (``settings_withheld_reason``); None otherwise.
+        self._claude_tools_withheld_reason: tuple[str, str] | None = None
         # The exact bytes this session last wrote to that path, held as the str
         # whose utf-8 encoding IS those bytes -- the writer emits binary so no
         # newline translation can come between the two on any platform. Creating
@@ -148,6 +155,7 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
     _foreign_settings_owner = _client_seed_ownership._foreign_settings_owner
     _foreign_settings_is_crew_seed = _client_seed_ownership._foreign_settings_is_crew_seed
     settings_withheld_cause = _client_seed_ownership.settings_withheld_cause
+    settings_withheld_reason = _client_seed_ownership.settings_withheld_reason
     _settle_claude_settings_seed_locked = _client_seed_ownership._settle_claude_settings_seed_locked
 
     @staticmethod

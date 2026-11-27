@@ -21,6 +21,13 @@ markdown specs a Bot boots from.
 The **Bots** row sits in the left rail, under Sessions, and opens
 `/members`.
 
+On the desktop app, another program can open the page with
+`kirocrew://members`, or one Bot with `kirocrew://members?member=<name>`, where
+`<name>` is the Bot's `name` as `GET /api/members` lists it, next to its
+`slot_key`, percent-encoded. That is the Bot's config key (an id such as
+`code-reviewer` for a Bot made today), not the label the page shows. The link
+opens the Bot as clicking its roster row does.
+
 ## What a Bot is made of
 
 | Part | What it does | Empty means |
@@ -42,10 +49,11 @@ choice wins: saving the Bot's model clears the model that chat picked for
 itself (with `/model`, for example), and saving its reasoning effort clears
 the chat's own effort, so the chat's next reply uses the Bot's values. This
 happens on every save from the Bot's editor, which always sends both fields,
-so renaming the Bot or saving it unchanged resets them too. A change made
-outside the dashboard, with `kirocrew agent update --model` or by editing
-`config.json`, does not reset the chat's own model or effort; save the Bot
-in its editor to bring the chat back onto it. A `/model` typed in the chat
+so renaming the Bot or saving it unchanged resets them too. A change of the
+Bot's model or effort made outside the dashboard, with
+`kirocrew agent update --model` or by editing `config.json`, resets them the
+same way once the running Kiro Crew picks up the file; a change made while Kiro
+Crew is stopped does not, so save the Bot in its editor. A `/model` typed in the chat
 after the save wins again until the next save.
 Other chats and the sessions the Bot starts keep their own picks.
 
@@ -87,16 +95,31 @@ page is their only home. The right-hand side panel is the chat page's panel with
 two standing tabs: **Dashboard** (the page the Bot publishes itself) and
 **Files** (its workspace). The Dashboard's **Download as HTML** button saves the
 page as it looks now as one file you can open anywhere, offline, or send to
-someone; it does not update after it is saved. Links on the page do not open
-from the saved file: the page runs with the same limits it has in the tab, where
-links open through the dashboard, and a saved file has no dashboard. Artifacts is
-not offered here; Terminal, Browser and
+someone; it does not update after it is saved. In the tab, a link on the page
+to a saved artifact or to a file in the Bot's workspace opens in this side
+panel, as the same link in the Bot's chat does. A link to another dashboard page
+opens in place, and any other link opens in your browser. A link to a file
+outside the workspace opens nothing and says so.
+Links on the page do not open from the saved file: the page runs with the same
+limits it has in the tab, where links open through the dashboard, and a saved
+file has no dashboard. The Artifacts list is not offered here, though an artifact
+a link opens shows as its own panel tab; Terminal, Browser and
 the other views open from the panel's **+** menu.
 
 The identity pill in the thread header opens the Bot's **Profile** card,
 with four tabs: **Profile**, **Schedules**, **Sessions** (the ones it is driving)
 and **Goals**. **Notes** — what it learned, its own standing notes — opens from
 the Profile tab as a read-only page pushed over the card.
+
+The sessions a Bot opens are listed in its **Sessions** tab and, by default,
+in your own Sessions list too. Two switches at the top of that tab decide:
+**Show {name} in my Sessions** (the Bot's `show_sessions_in_list`, on by
+default) lists that Bot's sessions, and turning it off leaves them out of your
+list. **Show all bots in my Sessions**
+(`dashboard.show_bot_sessions_in_list`, off by default, also in
+Settings > Chat > Sessions) lists every Bot's. While the global switch is on, no Bot's own
+switch applies.
+A listed session sits in its Bot's folder in your Sessions list.
 
 A few situations make Kiro Crew refuse to open a thread rather than guess:
 
@@ -105,6 +128,18 @@ A few situations make Kiro Crew refuse to open a thread rather than guess:
 | bound to a crew the registry no longer names | The Bot was renamed or deleted while its thread survived. Restore the name, or delete the thread from Older Sessions in the Sessions list. |
 | this thread's history exists but its binding is gone | The transcript is on disk with nothing claiming it. Handing it to whoever holds the name now would show one Bot another's conversation. |
 | shares its short name with … | Two Bots fold to the same short name and therefore the same thread. Renaming changes only the name a Bot shows, never its short name, so delete the Bot that shows this notice, not the one it names, and create it again under a name that folds differently. Deleting the named one leaves its thread bound to a Bot that is gone, and the other is refused instead. |
+
+A Bot whose agent file is gone shows **Agent missing** on its row, and its
+thread says it cannot reply and names the missing agent. This happens when the
+package or app that supplied the agent was uninstalled or turned off, or the
+file was deleted. Kiro Crew never deletes such a Bot for you, because it still
+holds its memory, chats and schedules. To fix it, bring the agent back: if an
+app provided it, enable that app in **Apps › Library**, or disable and re-enable
+it; otherwise reinstall what provided it, or put its file back. Or use **Delete
+bot…** on the notice, which opens the Bot's editor on its Danger zone; deleting
+removes the Bot with its picture and goal check-ins, and keeps its memory and
+past chats. The default Bot has no Delete bot button, because it cannot be
+deleted.
 
 ## Creating and editing
 
@@ -166,19 +201,19 @@ kirocrew agent create --name oncall-2 --display-name "On-call 2" --kiro-agent ki
 kirocrew agent update oncall --workspace incidents
 kirocrew agent update oncall --display-name "On-call"
 kirocrew agent update oncall --model <model-id>
-kirocrew agent update oncall --model ""
+kirocrew agent update oncall --model=
 kirocrew agent delete oncall
 ```
 
 `--model` (on `create` and `update`) sets the Bot's default model, and
-`--model ""` or `--model auto` clears it so the Bot inherits again;
+`--model=` or `--model auto` clears it so the Bot inherits again;
 `agent list` shows the pin, or `(inherit)`. The CLI refuses an id that is not
 shaped like a model id, and a registry spelling kiro-cli does not serve (it
 names the served one). It cannot check whether your account serves an id, since
 that needs a running session; the crew editor in the dashboard does check.
 
 Renaming changes only the name a Bot shows: its agent name, short name,
-chat, schedules and memory stay where they are, and `--display-name ""` goes
+chat, schedules and memory stay where they are, and `--display-name=` goes
 back to showing the agent name. A name another Bot already shows is
 refused, as is one with line breaks or hidden characters. A Bot can also
 take a new name itself: tell it in its own chat what to call it, and it renames
@@ -355,10 +390,12 @@ From a Discord DM, `!bot` connects the conversation to the bot's own thread
 instead of opening a new chat, so the bot keeps its worker there
 ([discord-integration.md](discord-integration.md)).
 
-Slack is the exception worth knowing. Its per-thread `!ta <name>` (`!ta off`
-clears it) resolves the name against the agent spec files in `~/.kiro/agents/`,
-not against your roster, so it picks a **template**. A Bot whose name has no
-spec file of its own comes back as `Unknown agent`.
+In Slack, send `!bot <name>` as a thread's first message to run that thread as
+the Bot, as a channel bound to it does (`!bot off` goes back;
+[slack-integration.md](slack-integration.md)). Slack's other per-thread command,
+`!ta <name>` (`!ta off` clears it), resolves the name against the agent spec
+files in `~/.kiro/agents/`, not against your roster, so it picks a **template**.
+A Bot whose name has no spec file of its own comes back as `Unknown agent`.
 
 ## Routing work to a Bot
 
@@ -399,7 +436,9 @@ somewhere it does not belong.
 Triggers are comma-separated phrases. A phrase scores as the fraction of its own
 words present in the task text, and a Bot scores as its best phrase, so a
 specific multi-word phrase has to match more completely than a generic one-word
-phrase to reach the same score. A phrase prefixed with `!` is a negative: if all
+phrase to reach the same score. Chinese, Japanese and Thai are written without
+spaces, so a trigger word in one of them matches anywhere inside the task text:
+`周报` matches "帮我总结一下这周的周报". A phrase prefixed with `!` is a negative: if all
 of its words appear, that Bot is excluded whatever else it scored.
 Negatives are applied after every positive, so the order you write them in
 cannot change the outcome. Anything below a 0.7 overlap is not a match at all,

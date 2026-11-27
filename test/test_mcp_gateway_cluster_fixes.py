@@ -47,7 +47,12 @@ class TestEnableRebuildsFactory:
                 result = await orch._apply_mcp_gateway_enabled(True)
 
         orch.sessions.refresh_defaults.assert_awaited_once()
-        assert result == {"enabled": True, "running": False, "ping_ok": False}
+        assert result == {
+            "enabled": True,
+            "running": False,
+            "ping_ok": False,
+            "restart_required": False,
+        }
 
     @pytest.mark.asyncio
     async def test_disable_also_calls_refresh_defaults(self) -> None:
@@ -69,7 +74,12 @@ class TestEnableRebuildsFactory:
                 result = await orch._apply_mcp_gateway_enabled(False)
 
         orch.sessions.refresh_defaults.assert_awaited_once()
-        assert result == {"enabled": False, "running": False, "ping_ok": False}
+        assert result == {
+            "enabled": False,
+            "running": False,
+            "ping_ok": False,
+            "restart_required": False,
+        }
 
     @pytest.mark.asyncio
     async def test_no_crash_when_sessions_is_none(self) -> None:
@@ -87,7 +97,12 @@ class TestEnableRebuildsFactory:
                 orch._cfg = mock_cfg.load.return_value
                 result = await orch._apply_mcp_gateway_enabled(True)
 
-        assert result == {"enabled": True, "running": False, "ping_ok": False}
+        assert result == {
+            "enabled": True,
+            "running": False,
+            "ping_ok": False,
+            "restart_required": False,
+        }
 
 
 # ── #927: injection precedence is robustly tested ───────────────────────────

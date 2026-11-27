@@ -70,6 +70,7 @@ async def _handle_dashboard(
     from kiro_crew.dashboard.token_auth import (
         MAX_SESSION_TTL_SECS,
         generate_token,
+        owner_mint_extra,
         parse_duration,
     )
     from kiro_crew.dashboard.urls import dashboard_origin, parse_dashboard_url
@@ -88,7 +89,24 @@ async def _handle_dashboard(
         MAX_SESSION_TTL_SECS,
     )
     try:
-        token = generate_token(str(user_id), ttl_seconds=ttl_secs)
+        # The owner's own link carries the owner's dashboard session, as the
+        # owner's Slack link does: the sender must be the id the owner named as
+        # theirs (``telegram.owner_user_id``, the KIROCREW_OWNER_ID of this
+        # channel), read live so a removed owner stops at once. Being the only
+        # allow-listed id is NOT that proof: an operator may allow-list one
+        # other person. The subject is the one the dashboard's owner gate admits
+        # (its owner id, else ``local-app``), so the link needs the dashboard
+        # attached. Every other link stays under the sender's own id, which the
+        # owner's chat refuses.
+        owner_id = self._live_cfg().telegram.owner_user_id
+        state = getattr(self, "dashboard_state", None)
+        if state is not None and type(owner_id) is int and owner_id > 0 and user_id == owner_id:
+            from kiro_crew.shared_crew.owner import DEFAULT_OWNER_SUBJECT
+
+            subject = str(getattr(state, "owner_id", "") or "") or DEFAULT_OWNER_SUBJECT
+            token = generate_token(subject, ttl_seconds=ttl_secs, extra=owner_mint_extra())
+        else:
+            token = generate_token(str(user_id), ttl_seconds=ttl_secs)
         origin = dashboard_origin(self.cfg.dashboard.url)
         if not origin:
             # No configured dashboard.url: fall back to the local port
@@ -444,8 +462,12 @@ async def _handle_compact(
     chat_id: int,
     *,
     session_key: str | None = None,
+    focus: str = "",
 ) -> None:
     """In-place ACP ``/compact`` on the user's session (mirrors Slack).
+
+    *focus* is the cleaned text a person typed after ``/compact``; empty (a bare
+    ``/compact``) calls ``provider.compact()`` with no argument, as before.
 
     Holds the per-session semaphore for the WHOLE compaction. Each Telegram
     update is dispatched as its own task, so a bare ``locked()`` check
@@ -500,7 +522,9 @@ async def _handle_compact(
             # nested inside another timeout, or the graceful "timed out"
             # branch is unreachable and a slow-but-healthy session gets
             # destroyed by the outer TimeoutError.
-            await asyncio.wait_for(provider.compact(), timeout=120)
+            await asyncio.wait_for(
+                provider.compact(focus) if focus else provider.compact(), timeout=120
+            )
             cr = await provider.wait_for_compaction(
                 timeout=self.sessions.compact_wait_budget_secs()
             )

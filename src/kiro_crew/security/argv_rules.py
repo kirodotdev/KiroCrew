@@ -40,7 +40,7 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
     "sudo": (
         frozenset(
             {
-                *("-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-D", "-R"),
+                *("-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-T", "-D", "-R"),
                 *("--user", "--group", "--close-from", "--host", "--prompt"),
                 *("--other-user", "--role", "--type", "--chdir", "--chroot"),
             }
@@ -50,7 +50,7 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
     "doas": (frozenset({"-u", "-C"}), 0),
     "pkexec": (frozenset({"--user"}), 0),
     "runuser": (frozenset({"-u", "-g", "-G", "--user", "--group"}), 0),
-    "env": (frozenset({"-u", "-C", "--unset", "--chdir"}), 0),
+    "env": (frozenset({"-u", "-U", "-C", "--unset", "--chdir"}), 0),
     "command": (frozenset(), 0),
     "builtin": (frozenset(), 0),
     "exec": (frozenset({"-a"}), 0),
@@ -70,7 +70,7 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
     "xargs": (
         frozenset(
             {
-                *("-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a"),
+                *("-I", "-n", "-P", "-L", "-s", "-S", "-d", "-E", "-a"),
                 *("--max-args", "--max-procs", "--max-lines", "--max-chars"),
                 *("--delimiter", "--arg-file", "--process-slot-var"),
             }
@@ -78,6 +78,10 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
         0,
     ),
     "systemd-run": (frozenset({"-p", "-u", "-E", "--unit", "--property", "--setenv"}), 0),
+    # cmd.exe's ``start`` and ``call`` run the command after them (``cmd /c`` is
+    # read by ``_win_program_index``, since its switch is not a ``-`` option).
+    "start": (frozenset(), 0),
+    "call": (frozenset(), 0),
 }
 
 #: ``find`` options whose following words, up to ``;`` or ``+``, are a command.
@@ -146,6 +150,76 @@ def _is_plain_git(word: str) -> bool:
 
 _SEPARATORS = frozenset({";", "|", "||", "&", "&&", "{", "}"})
 
+#: Command operators that, glued into one shlex word, still separate commands.
+#: Quoted operators are masked out of the word upstream (the ssh-floor source
+#: pre-walk), so a literal one here is always a real separator; a leading ``(``
+#: glued to a following word opens a subshell. ``{``/``}``, a lone ``&`` and a
+#: redirection ``&`` (``2>&1``) are deliberately NOT here: they stay in the word
+#: and are read exactly as before.
+_GLUED_BOUNDARY_OPS = frozenset({"&&", "||", ";;", ";", "|"})
+
+
+def _expand_glued_boundaries(token: str) -> "list[str]":
+    """*token* split so a command operator glued into it becomes its own piece.
+
+    The one rule: split a glued separator ONLY in a word that carries no other
+    shell metacharacter. Without this a word that carries a glued ``;`` / ``|`` /
+    ``||`` / ``&&`` or a glued ``(`` is kept whole, so the piece after the
+    operator never starts its own command. A quoted
+    operator is masked to a placeholder upstream, so a literal ``;`` / ``|`` /
+    ``||`` / ``&&`` here separates commands, and a ``(`` glued to a following word
+    opens a subshell (emitted as a boundary). A word that ALSO carries a
+    substitution (``$(`` / `` ` `` / ``${``), a ``)`` (a ``case`` pattern or a
+    subshell close), a ``#`` comment, or a ``>|`` / ``<|`` redirection is left
+    whole for the unsplit reading: an operator there is not an outer command
+    boundary, so splitting it could drop or invent a command. A bare ``(`` token,
+    ``{`` / ``}``, a lone ``&`` and a redirection ``&`` are left in place too.
+    """
+    # THE ONE RULE: split a glued separator only in a word that carries no other
+    # shell metacharacter. A substitution (``$( )``, `` ` ``, ``${ }``), a ``)``
+    # (a ``case`` pattern like ``a|b)``, or a subshell close) or a ``#`` comment
+    # means an operator in the word is NOT an outer command boundary, so splitting
+    # it could drop or invent a command; leave the whole word to the unsplit
+    # reading, which keeps it. (A ``>|`` / ``<|`` redirection ``|`` is handled
+    # below for the same reason.)
+    if any(mark in token for mark in ("$(", "${", "`", ")", "#")):
+        return [token]
+    ops = ("&&", "||", ";;", ";", "|")
+    pieces: list[str] = []
+    buf = ""
+    i, n = 0, len(token)
+    while i < n:
+        ch = token[i]
+        if (
+            ch == "("
+            and not buf
+            and (i == 0 or token[i - 1] not in "$<>")
+            and i + 1 < n
+            and token[i + 1] not in "();|&"
+        ):
+            # A subshell opened right before a word starts a fresh command, like a
+            # separator; emit one so the word after it is not read as the paren's
+            # argument. A bare ``(`` token keeps its existing reading (not split).
+            pieces.append(";")
+            i += 1
+            continue
+        hit = next((op for op in ops if token.startswith(op, i)), None)
+        if hit == "|" and i > 0 and token[i - 1] in "<>":
+            hit = None  # ``>|`` / ``<|`` is a redirection operator, not a pipe
+        if hit:
+            if buf:
+                pieces.append(buf)
+                buf = ""
+            pieces.append(hit)
+            i += len(hit)
+            continue
+        buf += ch
+        i += 1
+    if buf:
+        pieces.append(buf)
+    return pieces or [token]
+
+
 #: Reserved words after which the next word is still in command position.
 _COMPOUND_OPENERS = frozenset({"then", "do", "else", "elif", "{", "(", "!"})
 
@@ -203,7 +277,43 @@ def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
     return _shell._program_basename(tokens[i]), tokens[i + 1 :]
 
 
-def _split_commands_indexed(tokens: "list[str]") -> "list[list[tuple[int, str]]]":
+def _strip_win_program_suffix(word: str) -> str:
+    return next((word[:-4] for s in (".exe", ".cmd", ".bat") if word.endswith(s)), word)
+
+
+def _cmd_line_args(args: "list[str]") -> "list[str] | None":
+    """The words after ``/c`` or ``/k`` in a ``cmd`` argv, past other ``/x`` switches.
+
+    cmd.exe also takes the switch glued to another switch or to the line (``/s/c``,
+    ``/c"dir"``); the rest of that word is then the first word of the line.
+    """
+    for i, arg in enumerate(args):
+        if not arg.startswith("/"):
+            return None
+        low = arg.lower()
+        for switch in ("/c", "/k"):
+            at = low.find(switch)
+            if at != -1:
+                tail = arg[at + 2 :]
+                return ([tail] if tail else []) + args[i + 1 :]
+    return None
+
+
+def _win_program_index(tokens: "list[str]") -> "int | None":
+    """Index of the program word, past ``sudo``/``env``-style wrappers and ``cmd /c``."""
+    start = 0
+    while (found := _program_args(tokens[start:])) is not None:
+        program, args = found
+        rest = _cmd_line_args(args) if _strip_win_program_suffix(program) == "cmd" else None
+        if not rest:
+            return len(tokens) - len(args) - 1
+        start = len(tokens) - len(rest)
+    return None
+
+
+def _split_commands_indexed(
+    tokens: "list[str]", glue_split: bool = False
+) -> "list[list[tuple[int, str]]]":
     """*tokens* cut into one command per argv, each word kept with its index.
 
     The one place comment and separator boundaries are decided; callers that
@@ -222,34 +332,50 @@ def _split_commands_indexed(tokens: "list[str]") -> "list[list[tuple[int, str]]]
         if not token:  # an empty word (``chmod "" 777 x``) is an argument, not a separator
             current.append((i, token))
             continue
-        if token.startswith("#"):
-            in_comment = True
-        elif _shell._ends_argv(token):
-            # A separator glued to a word (``https://x;``) keeps the word.
-            word = token.rstrip(";|&")
-            if word and word not in _SEPARATORS and not word.endswith("{"):
-                current.append((i, word))
-        else:
-            current.append((i, token))
-            continue
-        if current:
-            out.append(current)
-        current = []
+        # With *glue_split*, a command operator glued into the word is split off
+        # first, so the piece after it starts its own command; each piece keeps
+        # this token's index ``i``. Only callers whose tokens had quoted operators masked upstream
+        # pass it; the default leaves a glued operator inside the word, as before,
+        # because a dequoted/unmasked token cannot tell a quoted operator from a
+        # real one.
+        for piece in _expand_glued_boundaries(token) if glue_split else [token]:
+            if piece in _GLUED_BOUNDARY_OPS:
+                if current:
+                    out.append(current)
+                current = []
+                continue
+            if piece.startswith("#"):
+                in_comment = True
+            elif _shell._ends_argv(piece):
+                # A separator glued to a word (``https://x;``) keeps the word.
+                word = piece.rstrip(";|&")
+                if word and word not in _SEPARATORS and not word.endswith("{"):
+                    current.append((i, word))
+            else:
+                current.append((i, piece))
+                continue
+            if current:
+                out.append(current)
+            current = []
     if current:
         out.append(current)
     return out
 
 
-def _split_commands(tokens: "list[str]") -> "list[list[str]]":
+def _split_commands(tokens: "list[str]", glue_split: bool = False) -> "list[list[str]]":
     """*tokens* (one frame's flat argv) cut into one argv per command.
 
     A comment runs to the next separator; a ``find -exec`` command is its own argv.
+    *glue_split* is forwarded to :func:`_split_commands_indexed`: pass it only
+    when the tokens had quoted operators masked upstream.
     """
-    out = [[word for _, word in command] for command in _split_commands_indexed(tokens)]
+    out = [[word for _, word in command] for command in _split_commands_indexed(tokens, glue_split)]
     return [*out, *(sub for argv in out for sub in _find_exec_argvs(argv))]
 
 
-def _executed_program_indices(tokens: "list[str]", cased: "list[str] | None" = None) -> "set[int]":
+def _executed_program_indices(
+    tokens: "list[str]", cased: "list[str] | None" = None, glue_split: bool = False
+) -> "set[int]":
     """Indices in *tokens* that bash runs as a program, wrappers and ``VAR=x`` stepped over.
 
     One per command and per ``case`` arm body: program position, or the program a wrapper in
@@ -258,17 +384,19 @@ def _executed_program_indices(tokens: "list[str]", cased: "list[str] | None" = N
     program position is a ``case`` arm pattern (``s*)``) or a subshell close,
     not a program.  ``find -exec`` commands are not marked (their words keep no
     index).  *cased* is *tokens* in the case they were written in, read for the
-    wrapper option words (see :func:`_program_index`).
+    wrapper option words (see :func:`_program_index`).  *glue_split* is
+    forwarded to :func:`_split_commands_indexed` and :func:`_case_arm_pattern_indices`.
     """
     executed: set[int] = set()
-    case_patterns, arm_bodies = _case_arm_pattern_indices(tokens)
-    for command in _split_commands_indexed(tokens):
+    case_patterns, arm_bodies = _case_arm_pattern_indices(tokens, glue_split)
+    lowered = [] if cased is None else [original.lower() for original in cased]
+    for command in _split_commands_indexed(tokens, glue_split):
         command = _without_redirections(command)
         words = [word for _, word in command]
         # A word cut off a glued separator (``-H;``) keeps its lowered reading.
         options = None
         if cased is not None:
-            options = [cased[j] if cased[j].lower() == word else word for j, word in command]
+            options = [cased[j] if lowered[j] == word else word for j, word in command]
         # A case arm body's first word (``x) s?h …``, or ``x) >f s?h``) starts a command too.
         bodies = [
             k
@@ -385,7 +513,9 @@ def _without_redirections(command: "list[tuple[int, str]]") -> "list[tuple[int, 
     return out
 
 
-def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]":
+def _case_arm_pattern_indices(
+    tokens: "list[str]", glue_split: bool = False
+) -> "tuple[set[int], set[int]]":
     """Indices in *tokens* that sit in a ``case`` arm's pattern list, and the
     index of each arm body's first word.
 
@@ -401,14 +531,28 @@ def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]
     ``id;;``) are read off the token. Only a ``case`` in command position opens
     one (``echo case in x`` does not): a command's first word, a word after a
     :data:`_COMPOUND_OPENERS` word in command position, or an arm body's first word.
+    With *glue_split*, each word is read as its :func:`_expand_glued_boundaries`
+    pieces, each keeping the word's index.
     """
     patterns: set[int] = set()
     bodies: set[int] = set()
     stack: list[str] = []  # per open case: "await_in", "pattern" or "body"
-    starts = {command[0][0] for command in _split_commands_indexed(tokens)}
+    commands = _split_commands_indexed(tokens, glue_split)
+    starts = {command[0][0] for command in commands}
+    # A word whose first piece an earlier command runs into: only its pieces
+    # after a glued operator start a command (``echo case;true`` opens none).
+    joined = {b for command in commands for (a, _), (b, _) in zip(command, command[1:]) if a < b}
     program_position = False
-    for i, tok in enumerate(tokens):
-        here, program_position = program_position or i in starts, False
+    # Read once per word, not once per piece the glue split cuts from it.
+    fall_through = {i for i, whole in enumerate(tokens) if ";&" in whole}
+    pieces = (
+        (i, k, piece)
+        for i, whole in enumerate(tokens)
+        for k, piece in enumerate(_expand_glued_boundaries(whole) if glue_split else [whole])
+    )
+    for i, k, tok in pieces:
+        here = program_position or i in starts and (k > 0 or i not in joined)
+        program_position = False
         if tok.rstrip(";&| ") == "esac":
             if stack:
                 stack.pop()
@@ -429,9 +573,10 @@ def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]
                     stack[-1] = "body"
                     program_position = True
                     bodies.add(i + 1)
-        elif state == "body" and (";;" in tok or ";&" in tok):
+        elif state == "body" and (";;" in tok or ";&" in tok or tok == ";" and i in fall_through):
             # ``;;``, ``;;&`` and ``;&`` (fall through) each end an arm, so the
-            # next word opens the next arm's pattern list.
+            # next word opens the next arm's pattern list. The glue split cuts
+            # ``;&`` into ``;`` and ``&``.
             stack[-1] = "pattern"
     return patterns, bodies
 

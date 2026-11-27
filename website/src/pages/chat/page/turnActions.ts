@@ -39,6 +39,7 @@ export const REFUSED_PRESS_TITLE_KEYS = {
   fork: 'pages.chatPage.could_not_fork_session',
   fresh_session: 'pages.chatPage.could_not_start_fresh_session',
   repair_images: 'pages.chatPage.could_not_repair_images',
+  edit_resend: 'pages.chatPage.could_not_edit_and_resend',
 } as const
 
 export type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS
@@ -318,6 +319,15 @@ export function useRegenerate({
     }
     return -1
   }, [messages])
+  // A press re-runs the newest turn (handleRegenerate's boundary below), so only
+  // a reply inside it carries Regenerate: when that turn's only reply is hidden, no row does.
+  const regenerateIdx = useMemo(() => {
+    for (let i = messages.length - 1; i > lastTextIdx; i--) {
+      const m = messages[i]
+      if (!isRetractedSteerRow(m) && (m.role === 'user' || injectOpensTurn(m))) return -1
+    }
+    return lastTextIdx
+  }, [messages, lastTextIdx])
   const [regenerating, setRegenerating] = useState(false)
   useEffect(() => { setRegenerating(false) }, [activeSlot])
   // Clear typing dots as soon as streaming starts
@@ -411,6 +421,6 @@ export function useRegenerate({
     })
   }, [activeSlot, regenerating, slotRunning, activeSlotRemoteBound, messagesRef, showRefusedPress])
   return {
-    lastTextIdx, regenerating, setRegenerating, handleRegenerate, replacingMids,
+    lastTextIdx, regenerateIdx, regenerating, setRegenerating, handleRegenerate, replacingMids,
   }
 }

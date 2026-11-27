@@ -465,10 +465,12 @@ class WebSocketHub:
             # boundary the ``/api/members`` reads apply. A non-owner dashboard
             # session (a Telegram, Teams or Webex allowlist link) is a dashboard
             # user too, so the owner set decides: ``register_ws`` fills it from
-            # ``is_owner_dashboard_request``.
+            # ``is_owner_dashboard_request``. The gateway log's live fan-out
+            # rechecks every send here, so ``log`` takes the same boundary as
+            # ``GET /api/logs`` and the ``subscribe_logs`` replay in ``ws.py``.
             from kiro_crew.dashboard.ws_event_scope import MEMBER_LOG_EVENTS
 
-            if msg_type in MEMBER_LOG_EVENTS and ws not in (
+            if (msg_type in MEMBER_LOG_EVENTS or msg_type == "log") and ws not in (
                 getattr(self._owner, "_owner_ws_clients", None) or set()
             ):
                 try:

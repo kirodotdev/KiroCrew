@@ -12,6 +12,9 @@
  * each with what to do next. Nothing runs without the confirming click, and
  * the gateway refuses a second job while one runs.
  *
+ * While the job waits for the crew's running work, the work that crew named is
+ * listed under the waiting line in the restart dialog's words.
+ *
  * Every instance of this control for the same crew (its Remote Crew row, the
  * post-update offer) reads the same job query, so a job started in one place
  * shows its progress in the other.
@@ -25,6 +28,7 @@ import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { INSTANCE_VERSIONS_KEY, useInstanceVersions } from '../hooks/useInstanceVersions'
 import { errMessage } from '../utils/thunkError'
+import { asWorkHolders, runningNowLine } from '../utils/workInFlight'
 import { i18nT } from '../i18n/t'
 
 /** How often a running job is re-read. An update takes a minute or more, so a
@@ -68,6 +72,16 @@ function stoppedBeforeRestart(job: RemoteUpdateJob | null): boolean {
   return (
     job?.state === 'failed'
     && (job.code === 'still_busy' || job.code === 'peer_cannot_wait' || job.code === 'idle_check_failed')
+  )
+}
+
+/** The work a waiting job's crew named, in the restart dialog's words, or "". */
+function waitingOnLine(job: RemoteUpdateJob | null): string {
+  if (job?.state !== 'running' || job.phase !== 'waiting_for_idle') return ''
+  const more = job.waiting?.holders_more
+  return runningNowLine(
+    asWorkHolders(job.waiting?.holders),
+    typeof more === 'number' && Number.isFinite(more) && more > 0 ? Math.floor(more) : 0,
   )
 }
 
@@ -167,12 +181,19 @@ export default function RemoteUpdateControl({ instanceId, name }: { instanceId: 
   ) : null
 
   if (start.isPending || job?.state === 'running') {
+    const waitingOn = waitingOnLine(job)
     return (
       <span className={ROOT} data-testid="remote-update-control">
         <Btn disabled aria-live="polite" className="max-w-full text-left">
           <RefreshCw className="lucide-inline animate-spin shrink-0" aria-hidden />{' '}
           <span className="min-w-0">{progressLabel(job, name)}</span>
         </Btn>
+        {/* Names the crew chose: rendered as text, never markup. */}
+        {waitingOn && (
+          <span data-testid="remote-update-waiting-on" className="text-[12px] text-muted max-w-[420px]">
+            {waitingOn}
+          </span>
+        )}
         {statusNotice}
       </span>
     )

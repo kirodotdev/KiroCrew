@@ -136,6 +136,13 @@ class TestTheList:
         (row,) = _body(resp)
         assert row["model_name"] == "auto"
         assert row["context_window"] > 0
+        # Unmarked: this route's cold probe sends ``models_changed`` once it records.
+        assert "cold" not in row
+
+    async def test_the_workload_route_marks_its_cold_answer(self, ready):
+        """It starts no probe either, so the page has to be told to read again."""
+        (row,) = _body(await bundle.api_models_kas_workload(_request()))
+        assert row.get("cold") is True
 
     async def test_cold_starts_the_background_probe_and_a_recording_does_not(
         self, ready, monkeypatch
@@ -326,6 +333,16 @@ class TestTheCrewSignInRelay:
         (row,) = _body(await agents.api_models(_request()))
         assert row["model_name"] == "auto"
 
+    async def test_a_cold_answer_is_marked_and_a_recorded_auto_alone_is_not(self, relay):
+        """The mark is how the dashboard tells a cold ``auto`` from a list that holds
+        only ``auto``: a cold one is not saved as its last-good list, and it reads again."""
+        (cold,) = _body(await agents.api_models(_request()))
+        assert cold.get("cold") is True
+        _record({"id": "auto"})
+        (row,) = _body(await agents.api_models(_request()))
+        assert row["model_name"] == "auto"
+        assert "cold" not in row
+
     @staticmethod
     def _timed_out() -> web.Response:
         """The gate's own answer when its kiro-cli check timed out."""
@@ -336,9 +353,9 @@ class TestTheCrewSignInRelay:
     async def test_a_timed_out_check_with_nothing_recorded_keeps_the_gates_503(
         self, relay, monkeypatch
     ):
-        """A timeout passes on a later read, so the 503 keeps the dashboard on the
-        list it holds and reading again. A cold ``auto`` here would be saved over
-        that list and end the retry."""
+        """A timeout passes on a later read: it is a failed read the page reports,
+        not a cold list, so the 503 keeps the dashboard on the list it holds and
+        reading again."""
         monkeypatch.setattr(
             agents, "reject_if_kiro_unverified", AsyncMock(return_value=self._timed_out())
         )

@@ -144,16 +144,19 @@ export type CostOutcome = {
 export type CostConvo = {
   slot: string
   /**
-   * The session taxonomy: `dashboard`, `bg`, `telegram`, `slack`, … Classified
-   * by the backend, because it is the only place that knows every session-key
-   * form. Used for the category column and for linkability — only a `dashboard`
-   * session has a route to open, while a Telegram thread is every bit a session
-   * with nowhere for a dashboard link to go. Deriving either from the key shape
-   * here would put a second, drifting copy of session-key knowledge in the
-   * frontend.
+   * The session taxonomy: `dashboard`, `bg`, `telegram`, `slack`, or
+   * `app:<name>` for a session an app owns. Classified by the backend, because
+   * it is the only place that knows every session-key form. Deriving it from the
+   * key shape here would put a second, drifting copy of session-key knowledge in
+   * the frontend.
    */
   category: string
-  /** The unollapsed channel underneath the category (`cron`, `heartbeat`, …). */
+  /**
+   * The unollapsed channel underneath the category (`cron`, `heartbeat`, …).
+   * Also what decides linkability: only a `dashboard` session has a route to
+   * open, including one an app owns, while a Telegram thread is every bit a
+   * session with nowhere for a dashboard link to go.
+   */
   channel: string
   // Present only while the conversation is still open — titles are not persisted.
   title?: string
@@ -192,6 +195,8 @@ export type Cost = {
   by_channel: CostRow[]
   /** Spend by the session taxonomy — the grouping the panel offers. */
   by_category: CostRow[]
+  /** Spend by what a turn was for; absent from an older gateway, which means no Purpose choice. */
+  by_purpose?: CostRow[]
   context_bands: CostBand[]
   /** Absent from an older gateway, which means no recommendations. */
   advice?: SpendAdvice[]

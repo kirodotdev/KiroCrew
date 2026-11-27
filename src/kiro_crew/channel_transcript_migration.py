@@ -34,11 +34,22 @@ Design:
   :func:`~kiro_crew.messaging.link.is_channel_session_key`) AND that channel
   transcript must already exist. A dashboard-born session is therefore never
   touched: its name is ``chat-<N>-<ts>``, which is not a channel key, and it has
-  no channel transcript to merge into.
+  no channel transcript to merge into. A cron chat's copy is identified by its
+  rows instead, below.
 * **The channel file's metadata line survives.** It carries the binding that
   makes the tab the conversation; letting the leftover's metadata overwrite it
   would break that. Only genuinely user-owned presentation fields are carried
   over, and only where the channel side has none (see :data:`_CARRIED_META_FIELDS`).
+
+The same merge folds in a cron chat's drifted copy. A cron chat reopened from
+History could save to the ``dashboard:cron_<id>`` fallback instead of its own
+``cron_<id>.jsonl``, writing the rows its tab had read from the cron transcript
+into ``dashboard_cron_<id>.jsonl`` followed by the turns typed after them, which
+exist only there. History then lists the conversation twice. Such a copy is
+merged only when both files allow it (:func:`_cron_copy_may_merge`) and its rows
+prove it is one (:func:`_leads_with_cron_row`), never on its name. One case the
+rows cannot tell apart: a copied row the user later rewound or edited away in the
+cron transcript comes back with the merge, beside the turn that replaced it.
 """
 
 from __future__ import annotations
@@ -48,12 +59,15 @@ import logging
 from pathlib import Path
 
 from kiro_crew.atomic_write import fsync_dir
+from kiro_crew.chat_attachments import attachments_dir
 from kiro_crew.history import (
     ConversationLog,
     HistoryLockTimeout,
     _restore_mtime,
     _safe_mtime,
+    is_incognito_transcript,
     transcript_sort_key,
+    transcript_stem,
 )
 from kiro_crew.history_projection import DISPLAY_ONLY_ROLES
 from kiro_crew.history_rewrite import rewrite_transcript
@@ -104,6 +118,12 @@ def _orphan_target_stem(stem: str) -> str:
     while stem.startswith(_DASHBOARD_STEM_PREFIX):
         stem = stem[len(_DASHBOARD_STEM_PREFIX) :]
     return stem if is_channel_session_key(stem) else ""
+
+
+def _cron_copy_target_stem(stem: str) -> str:
+    """Cron transcript stem *stem* may be a drifted copy of (``cron_<...>``), or ``""``."""
+    target = stem.removeprefix(_DASHBOARD_STEM_PREFIX)
+    return target if target != stem and target.startswith("cron_") else ""
 
 
 #: Shared with the dashboard save path, which must interleave a channel's
@@ -198,6 +218,38 @@ def _merged_metadata(channel_meta: dict, orphan_meta: dict) -> dict:
         if not meta.get(field) and orphan_meta.get(field):
             meta[field] = orphan_meta[field]
     return meta
+
+
+def _cron_copy_may_merge(
+    log: ConversationLog, cron_stem: str, cron_meta: dict, copy_stem: str, copy_meta: dict
+) -> bool:
+    """Whether the cron transcript and its possible copy allow a merge at all.
+
+    The cron transcript's line must name its own ``cron:`` key, the key a History
+    reopen binds. A run file still tagged ``cron_run="ephemeral"`` carries no link,
+    so it never qualifies; the cron prune deletes such a file with every row merged
+    into it. The copy's tab must be closed:
+    this is read under the copy's lock, and a reopen clears the marker under that
+    lock before it publishes a tab. It must not be private, since History does not
+    list a private chat and the merge would. And it must own no images or reply
+    threads, which deleting it would take with it.
+    """
+    link = str(cron_meta.get("linked_session_key") or "")
+    if not link.startswith("cron:") or transcript_stem(link) != cron_stem:
+        return False
+    if not copy_meta.get("closed") or is_incognito_transcript(copy_meta.get("memory_mode")):
+        return False
+    images = attachments_dir(log._dir, copy_stem)
+    return not images.exists() and not log.threads_sidecar_path(copy_stem).exists()
+
+
+def _leads_with_cron_row(cron: list[dict], copy: list[dict]) -> bool:
+    """Whether *copy*'s first row is one of *cron*'s own (same role, content and instant).
+
+    A drifted copy starts with the rows its tab read from the cron transcript; an
+    unrelated tab that is merely called ``cron_<x>`` never starts with one of them.
+    """
+    return bool(copy) and _identity(copy[0]) in {_identity(m) for m in cron}
 
 
 def _rendered_head(messages: list[dict], offset: int) -> dict | None:
@@ -348,7 +400,12 @@ def _write_merged(path: Path, meta: dict, messages: list[dict]) -> None:
 
 
 def _migrate_one(
-    log: ConversationLog, channel_stem: str, orphan_stem: str, *, remove: bool = True
+    log: ConversationLog,
+    channel_stem: str,
+    orphan_stem: str,
+    *,
+    remove: bool = True,
+    cron_copy: bool = False,
 ) -> bool:
     """Merge one orphan into its channel transcript. True if the orphan is gone.
 
@@ -363,6 +420,11 @@ def _migrate_one(
     may still be reading, and a later pass -- this one re-merges to a
     byte-identical transcript -- removes it. See
     :func:`migrate_channel_transcripts`.
+
+    With ``cron_copy`` the orphan is a cron chat's possible drifted copy, merged
+    only when :func:`_cron_copy_may_merge` and :func:`_leads_with_cron_row` hold on
+    what this lock reads (the rows are read only once the first has); otherwise
+    both files stay.
     """
     channel_path = log._path(channel_stem)
     orphan_path = log._path(orphan_stem)
@@ -372,11 +434,18 @@ def _migrate_one(
         if not orphan_path.exists() or not channel_path.exists():
             return not orphan_path.exists()
 
+        channel_meta = log.get_metadata(channel_stem)
+        orphan_meta = log.get_metadata(orphan_stem)
+        if cron_copy and not _cron_copy_may_merge(
+            log, channel_stem, channel_meta, orphan_stem, orphan_meta
+        ):
+            return False
         orphan_messages = list(log.read_messages(orphan_stem))
         channel_messages = list(log.read_messages(channel_stem))
-        channel_meta = log.get_metadata(channel_stem)
+        if cron_copy and not _leads_with_cron_row(channel_messages, orphan_messages):
+            return False
         merged = _merge_messages(channel_messages, orphan_messages)
-        meta = _merged_metadata(channel_meta, log.get_metadata(orphan_stem))
+        meta = _merged_metadata(channel_meta, orphan_meta)
         _invalidate_consolidation_offset(meta, channel_messages, merged)
 
         if merged != channel_messages or meta != channel_meta:
@@ -427,7 +496,9 @@ def migrate_channel_transcripts(
 
     *dashboard_slots* names the slots the session map claims as real dashboard
     sessions; any orphan whose target is in that set is left alone. Omitting it
-    disables that protection, so the gateway startup call always supplies it.
+    disables that protection, so the gateway startup call always supplies it. A
+    cron chat's drifted copy is judged by its files and rows instead
+    (:func:`_cron_copy_may_merge`, :func:`_leads_with_cron_row`).
 
     *remove* false merges every orphan but deletes none: the copies stay on
     disk, to be removed by a later pass. The gateway passes false while its
@@ -462,6 +533,9 @@ def migrate_channel_transcripts(
         if path.is_symlink():
             continue
         channel_stem = _orphan_target_stem(path.stem)
+        cron_copy = not channel_stem
+        if cron_copy:
+            channel_stem = _cron_copy_target_stem(path.stem)
         if not channel_stem:
             continue
         if not log._path(channel_stem).exists():
@@ -469,7 +543,9 @@ def migrate_channel_transcripts(
             # its messages, and inventing the channel side could resurrect a
             # conversation the user deleted. Leave it alone.
             continue
-        if channel_stem in claimed:
+        # A drifted cron copy's tab ran as ``dashboard:cron_<...>``, so the map
+        # names it like a real tab of that name; its rows tell the two apart.
+        if channel_stem in claimed and not cron_copy:
             logger.info(
                 "channel transcript migration: %s is a live dashboard session, not an "
                 "orphan of %s; leaving it alone",
@@ -478,7 +554,7 @@ def migrate_channel_transcripts(
             )
             continue
         try:
-            if _migrate_one(log, channel_stem, path.stem, remove=remove):
+            if _migrate_one(log, channel_stem, path.stem, remove=remove, cron_copy=cron_copy):
                 migrated += 1
                 logger.info(
                     "channel transcript migration: merged %s into %s",

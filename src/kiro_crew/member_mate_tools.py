@@ -83,7 +83,7 @@ def spec_has_mate_tools(spec: Any) -> bool:
     return _referenced(spec.get("tools"))
 
 
-def _read_template(name: str, workspace: str) -> dict | None:
+def _read_template(name: str, workspace: str, project_dir: str | Path | None = None) -> dict | None:
     """The spec file named *name* a session in *workspace* runs, project scope first.
 
     Only the exact ``<name>.json`` / ``<name>.md`` candidates are read, never a
@@ -98,7 +98,8 @@ def _read_template(name: str, workspace: str) -> dict | None:
 
     if not _SAFE_NAME.fullmatch(name):
         return None
-    project = default_project_dir(workspace)
+    # *project_dir*, when given, is the directory the session itself runs in.
+    project = project_dir if project_dir is not None else default_project_dir(workspace)
     roots = [project_agents_dir(project)] if project else []
     roots.append(agent_mod.kiro_agents_dir_path())
     for root in roots:
@@ -111,12 +112,15 @@ def _read_template(name: str, workspace: str) -> dict | None:
     return None
 
 
-def binding_has_mate_tools(binding: Any) -> bool:
+def binding_has_mate_tools(binding: Any, member: str = "") -> bool:
     """Whether the crewmate *binding* (a ``config.agents`` row) has the mate tools.
 
     Read from the spec its sessions run (its private copy once enrolled). A spec
     that cannot be read answers True, keeping the wording every crewmate had
-    before this check existed: the question only chooses text.
+    before this check existed: the question only chooses text. A spec without the
+    server still answers True for crewmate *member* when its chat runs on a backend
+    that mounts the server into that chat (:mod:`kiro_crew.acp.member_goal_mount`,
+    and on KAS :mod:`kiro_crew.acp.kas_member_goal_tools`).
     """
     name = getattr(binding, "kiro_agent", "")
     if not isinstance(name, str) or not name:
@@ -126,7 +130,56 @@ def binding_has_mate_tools(binding: Any) -> bool:
     except Exception:
         logger.debug("spec for %r unreadable; keeping the Bot wording", name, exc_info=True)
         return True
-    return True if spec is None else spec_has_mate_tools(spec)
+    if spec is None or spec_has_mate_tools(spec):
+        return True
+    if not chat_lacks_goal_tools(name, spec):
+        return False
+    return bool(member) and _chat_mounts_mate_tools(spec, member)
+
+
+def _chat_mounts_mate_tools(spec: dict, member: str) -> bool:
+    """Whether crewmate *member*'s chat gains the server its *spec* lacks."""
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MEMBER_PANEL
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.mate_worker import crewmate_worker_backend
+
+    entry = _server_entry(spec)
+    if isinstance(entry, dict):
+        from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+        if mcp_entry_is_muted(entry):
+            return False
+    from kiro_crew.agent_sdk import spec_withholds_server_whole
+
+    # A spec that excludes the server whole keeps it out of the chat on every
+    # backend (the mount withholds it; KAS applies the exclusion itself).
+    if spec_withholds_server_whole(spec, MATE_SERVER):
+        return False
+    try:
+        # The crewmate's chat and its worker run on the one backend it resolves to.
+        return crewmate_worker_backend(KiroCrewConfig.load(), member) in ACP_BACKENDS_MEMBER_PANEL
+    except Exception:
+        logger.debug("backend for %r unreadable; no tools assumed", member, exc_info=True)
+        return False
+
+
+def chat_lacks_goal_tools(agent: str, spec: Any) -> bool:
+    """Whether a Bot's DM chat on *agent*, whose spec is *spec*, has no ``kirocrew-mate``.
+
+    False for every agent Kiro Crew writes itself (``agent_files.OWNED_KIRO_AGENT_FILES``:
+    the default agent, the conductors and the service agents, each built with the
+    tool set it means to have), for a Bot's own file (the conductor runs that chat),
+    and for a spec that already mounts the server. A spec that could not be read
+    (``None``) lacks it. A spec that mutes it is answered by the mount's withholds.
+    """
+    from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+    from kiro_crew.mate_worker import is_mate_owned_agent
+
+    if not agent or f"{agent}.json" in OWNED_KIRO_AGENT_FILES:
+        return False
+    if is_mate_owned_agent(agent):
+        return False
+    return not (isinstance(spec, dict) and spec_has_mate_tools(spec))
 
 
 def member_has_mate_tools(member: str) -> bool:
@@ -138,7 +191,7 @@ def member_has_mate_tools(member: str) -> bool:
     except Exception:
         logger.debug("config unreadable; keeping the Bot wording", exc_info=True)
         return True
-    return True if binding is None else binding_has_mate_tools(binding)
+    return True if binding is None else binding_has_mate_tools(binding, member)
 
 
 #: The built-ins that write a file, in kiro-cli's names: governance's write class

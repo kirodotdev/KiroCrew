@@ -79,8 +79,8 @@ async def test_workflow_receipt_requires_productive_raw_success(world, mode):
     full = await scope.prompt(
         world.builder, key, "first", is_new=True, agent="kirocrew", cwd=None, provider=provider
     )
-    assert provider.essential_delivery._pending is not None
-    envelope = provider.essential_delivery._pending.envelope
+    assert "essentials" in provider.essential_delivery._pending
+    envelope = provider.essential_delivery._pending["essentials"].envelope
     provider.mode = mode
     try:
         await consume(provider, full)
@@ -172,10 +172,12 @@ async def test_owner_can_cancel_unavailable_store_without_reading_it(world, monk
         return True
 
     state = SimpleNamespace(
+        # The owner gate reads the caller's subject against this.
+        owner_id="owner",
         workflow_service=SimpleNamespace(
             registry=SimpleNamespace(get=lambda _: handle),
             cancel=cancel,
-        )
+        ),
     )
     request = make_request(
         state,

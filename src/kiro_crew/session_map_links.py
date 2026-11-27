@@ -363,6 +363,24 @@ def get_session_for_thread(self: SessionMap, thread_ts: str) -> str | None:
     return self._thread_to_session.get(thread_ts)
 
 
+@_guarded
+def slack_thread_owners(self: SessionMap, channel_id: str) -> list[str]:
+    """Return the session keys that own a Slack thread in *channel_id*.
+
+    Read off the same index as :func:`get_session_for_thread`, so a session is
+    listed while it still owns its thread, with or without a session ID and with
+    its dashboard tab open or closed. Under the map's lock, unlike that one-key
+    lookup: it reads the index and each owner's channel, and a thread handed from
+    one session to another in between must not read as owned by neither.
+    """
+    owners: list[str] = []
+    for key in list(self._thread_to_session.values()):
+        entry = self._data.get(key)
+        if entry and entry.get("slack_channel_id") == channel_id:
+            owners.append(key)
+    return owners
+
+
 # ── Channel-neutral outbound mirror binding (generalizes Slack linking) ──
 # ``set/get/clear_slack_link`` above are the Slack-specific backend of this
 # API: they own the dedicated ``slack_thread_ts`` / ``slack_channel_id``

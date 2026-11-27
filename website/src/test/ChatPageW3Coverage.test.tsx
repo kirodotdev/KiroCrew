@@ -75,6 +75,7 @@ vi.mock('../pages/chat', async () => {
 interface QueueProps {
   messages: ChatMessage[]
   onCancel: (id: string) => void
+  onCancelAll: (ids: readonly string[]) => void
   onInterrupt: (id: string) => void
   onEdit: (id: string, content: string) => void
   onReorder: (id: string, direction: 'next' | 'later') => void
@@ -148,7 +149,6 @@ vi.mock('../components/ModelDropdownList', () => ({ default: () => null }))
 vi.mock('../components/InfoTip', () => ({ default: () => null }))
 vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
 vi.mock('../components/WelcomeView', () => ({ default: () => null }))
-vi.mock('../components/SearchResultsList', () => ({ default: () => null }))
 interface SidebarProps {
   onDropSessionRef?: (ref: { key: string; title: string }) => void
 }
@@ -564,6 +564,15 @@ describe('ChatPage — queued message actions', () => {
     expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
     // Optimistically removed rather than waiting for the WS echo.
     await waitFor(() => expect(queueProps!.messages.map(m => m.meta?.queueId)).toEqual(['q2']))
+  })
+
+  it('Discard all cancels every queued card and leaves the composer as it was', async () => {
+    await renderWithQueue()
+    const before = inputProps!.value
+    act(() => { queueProps!.onCancelAll(['q1', 'q2']) })
+    await waitFor(() => expect(queueProps!.messages).toEqual([]))
+    expect(apiMocks.cancelQueuedMessage.mock.calls).toEqual([['chat-1', 'q1'], ['chat-1', 'q2']])
+    expect(inputProps!.value).toBe(before)
   })
 
   it('cancelling a queued send restores the typed text and chips losslessly from the stash', async () => {

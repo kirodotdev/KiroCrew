@@ -100,9 +100,10 @@ Six decisions:
   ([#16757](https://github.com/kirodotdev/KiroCrew/pull/16757)) and the
   per-machine sidebar ([#16756](https://github.com/kirodotdev/KiroCrew/pull/16756))
   use exactly these.
-- **Version gate.** `versions_compatible` (`src/kiro_crew/apps/version.py`)
+- **Version compare.** `versions_compatible` (`src/kiro_crew/apps/version.py`)
   matches `major.minor`. `api_instances_capabilities` reports it as
-  `version_match`.
+  `version_match`. Remote dispatch does not refuse on it (owner decision
+  2026-11-25): whether a call works is decided by calling it (§5, Version skew).
 - **Peer headroom.** `resource_status.probe()` (`src/kiro_crew/resource_status.py`)
   returns a `ResourceStatus`: cgroup-clamped `available_gb`, `cpu_count`,
   `load_per_cpu`, a `posture` and its `pressure_gb` / `critical_gb` thresholds.
@@ -324,7 +325,8 @@ peer's own check, because only the peer can measure the peer.
 `session_create(work_item=)` and on `crew=`. It filters before ranking. When
 no crew that answered meets it, and none that meets it is merely short, the
 create is refused `crew_requirements_unmet`, naming what each crew lacked
-(`tag gpu`, `login gh (expired)`); there is no fallback to a crew without it.
+(`tag gpu`, `login gh (expired)`) and each connected crew it could not check
+(`b could not be checked`); there is no fallback to a crew without it.
 A named `crew=` is checked the same way, and a crew whose headroom cannot be
 read is refused, never assumed to qualify. `requires` stays on the hub; the
 peer never sees it.
@@ -370,7 +372,7 @@ peer's current snapshot:
 | `posture` | `ResourceStatus.posture` |
 | `disk_free_gb` | free space under `scratch_root()` |
 | `open_workers` | peer slots bound to a `hub:` mailbox item and not closed |
-| `tags` | `work_ledger.remote_dispatch_tags`: the operator's own words, each 1-32 of `a-z0-9_-` with a letter, so no path, dotted host or bare account number fits |
+| `tags` | `work_ledger.remote_dispatch_tags`: the operator's own words, each 1-32 of `a-z0-9_-`, not starting with `_` or `-`, with a letter, so no path, dotted host or bare account number fits |
 | `logins` | §4: `{"gh": "valid"}` and the like, for `gh`, `glab` and `az`; `unknown` while a first check runs; a tool whose check cannot tell is absent. On `GET api/chat/headroom` only, and left out when the read carries `logins=0`, which the hub sends unless the item's `requires.logins` is set, so no create and no other placement waits on a login check |
 | `measured_at` | the peer's clock |
 
@@ -542,7 +544,9 @@ ones.
   `requires.logins`. A worker stuck
   on a login reports `blocked` with reason `needs_human`. The conductor first
   redispatches the item to another crew (§5b), and asks the person only when no
-  crew works.
+  crew works. The hub does not verify a peer's login word: a peer that reports
+  `valid` while signed out still gets the item, and its worker reports `blocked`
+  (`needs_human`), as for any login failure.
 - **Risk: login status in headroom.** The headroom reply MAY carry per-login
   status flags, one word per named tool (`valid`, `expired`), such as
   `{"gh": "valid"}`. It never carries a token, a user name, a path, or any other
@@ -577,7 +581,7 @@ ones.
 | Worker stuck on a login | `blocked`, `needs_human`. The conductor redispatches to another crew: on a turn the owner sent, `work_ledger_record action=retire reason=login_blocked`, then `session_create(work_item=)` (§5b). On a wake turn it tells the owner. |
 | Wrong crew (a tool or account the item needs is missing) | The same move, with `reason=wrong_crew`. |
 | Hub restart | Nothing in flight lives on the hub. The item, with its binding history, is on disk; the next read resumes. Snapshots are refetched from `api/chat/headroom`. |
-| Version skew | Every call with a crew checks `versions_compatible` first (`major.minor`). A create whose reply lacks `work_item_id` (a peer that ignored the field) is closed at once and refused as `crew_peer_lacks_work_items`, so a worker never runs unbound. |
+| Version skew | A `major.minor` that differs from the hub's never refuses a call (owner decision 2026-11-25): the hub reads the crew's version, logs one warning per crew and version, and calls. A call the crew does not know (a plain non-JSON 404 on the route) is refused `crew_peer_incompatible`, naming both versions. A JSON 404 (no such session), a 5xx and a network fault keep their own errors. A create whose reply lacks `work_item_id` (a peer that ignored the field) is closed at once and refused as `crew_peer_lacks_work_items`, naming both versions, so a worker never runs unbound. A parameter an old crew could silently ignore needs its own proof in the reply (the `confirm_header` pattern), not a version compare. The one exception is `turn_origin: agent` on `send`: a crew whose known version is below 0.12.0 drops it, so that send is refused `crew_peer_incompatible`; an unknown version is not refused. |
 
 ### 5b. Retire and redispatch
 

@@ -175,12 +175,22 @@ export const KIRO_USAGE_STEADY_POLL_MS = 30_000
  */
 export const KIRO_USAGE_WARMING_MAX_READS = 12
 
+/**
+ * A failed read backs off: the warming cadence doubles with each failure
+ * (`failedReads`, the errors the query has settled so far), up to the steady
+ * cadence. A boot 503 is retried in seconds; a standing one (kiro-cli missing
+ * or signed out) stops being asked every few seconds after the first few.
+ */
 export function kiroUsageRefetchInterval(
   state: KiroUsageState,
   isError: boolean,
   settledReads: number,
+  failedReads: number,
 ): number {
   if (settledReads >= KIRO_USAGE_WARMING_MAX_READS) return KIRO_USAGE_STEADY_POLL_MS
-  if (isError || state === null) return KIRO_USAGE_WARMING_POLL_MS
+  if (isError) {
+    return Math.min(KIRO_USAGE_WARMING_POLL_MS * 2 ** Math.max(failedReads - 1, 0), KIRO_USAGE_STEADY_POLL_MS)
+  }
+  if (state === null) return KIRO_USAGE_WARMING_POLL_MS
   return KIRO_USAGE_STEADY_POLL_MS
 }

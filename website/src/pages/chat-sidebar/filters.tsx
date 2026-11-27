@@ -15,6 +15,7 @@ import { decomposeRecentWindow, type RecentUnit, clampRecentAmount, customRecent
 import { normalizeRunSessionKey } from '../../components/workflows/runModel'
 import { slotActivityTs } from '../chat/sessionOrder'
 import { decideUnreadDrain } from '../unreadDrain'
+import { selectUnread, useRowStatusSelect } from './rowStatus'
 import type { ChatFolder } from '../../types'
 
 interface SessionFilterDef {
@@ -377,8 +378,7 @@ export function useSessionFilterState() {
 }
 
 /** Which local rows are running, recent or unread, the Recent window and the unread auto-drain. */
-export function useSessionStatusFilters({ unreadSlots, activeFilters, pausedFilters, enableFilter, localSlots, disableFilter }: {
-  unreadSlots: string[]
+export function useSessionStatusFilters({ activeFilters, pausedFilters, enableFilter, localSlots, disableFilter }: {
   activeFilters: Set<SessionFilterKey>
   /** The active status filters that are lifted, so they do not narrow the list. */
   pausedFilters: ReadonlySet<SessionFilterKey>
@@ -413,9 +413,10 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, pausedFilt
   const subagentStartedCounts = useAppSelector(selectSidebarStartedSubagentCounts, shallowEqual)
   // Spawn approvals (pending + approval_id) — surfaced here since background chats have no inline prompt.
   const subagentApprovalCounts = useAppSelector(selectSidebarApprovalCounts, shallowEqual)
-  // O(1) lookup set for the filter predicate (mirrors the `pinned` and
-  // `slotSearchRanks` patterns elsewhere in the sidebar).
-  const unreadSet = useMemo(() => new Set(unreadSlots), [unreadSlots])
+  // The unread keys, read from the row-status store (./rowStatus). The set keeps
+  // its identity while its members hold, so a chat switch that reads nothing
+  // does not re-render the sidebar through it.
+  const unreadSet = useRowStatusSelect(selectUnread)
   // Heartbeat that re-evaluates recency even when nothing else re-renders.
   // Sidebar interactions (new messages, status changes, opening the menu) all
   // recompute the recency lookup for free, so this only matters when the sidebar
@@ -538,7 +539,7 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, pausedFilt
   const prevOtherFiltersOn = useRef<boolean | null>(null)
   useEffect(() => {
     // Guard the ENTIRE body on slotsLoaded: without this, the unconditional
-    // `prevUnreadCount.current = unreadSlots.length` assignment below would
+    // `prevUnreadCount.current = unreadSet.size` assignment below would
     // destroy the null sentinel on the pre-load effect run, breaking the
     // case-2 "loadedEmpty" branch in `decideUnreadDrain`. The helper's own
     // !slotsLoaded check stays as defense-in-depth.
@@ -554,16 +555,16 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, pausedFilt
     if (unreadPaused) return
     const action = decideUnreadDrain({
       prev: prevUnreadCount.current,
-      current: unreadSlots.length,
+      current: unreadSet.size,
       slotsLoaded,
       showUnreadOnly: activeFiltersRef.current.has('unread'),
       otherFiltersOn,
       prevOtherFiltersOn: prevOtherFiltersOn.current,
     })
     if (action === 'disable') disableFilter('unread')
-    prevUnreadCount.current = unreadSlots.length
+    prevUnreadCount.current = unreadSet.size
     prevOtherFiltersOn.current = otherFiltersOn
-  }, [unreadSlots.length, slotsLoaded, disableFilter, unreadPaused, otherFiltersOn])
+  }, [unreadSet.size, slotsLoaded, disableFilter, unreadPaused, otherFiltersOn])
   return {
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,

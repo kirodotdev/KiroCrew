@@ -344,6 +344,7 @@ describe('direct terminal commands', () => {
     )
     const run = screen.getByRole('button', { name: 'Review terminal command' })
     const review = screen.getByRole('group', { name: 'Review and run in terminal' })
+    expect(review.className).toMatch(/\bliquid-glass\b.*\bglass-thick\b/)
     expect(within(review).getAllByRole('button')).toEqual([run])
     expect(within(review).getByRole('status')).toHaveTextContent('Terminal panel · selected project')
     expect(run).toBeEnabled()
@@ -899,6 +900,23 @@ describe('direct terminal commands', () => {
     expect(props.onSend).not.toHaveBeenCalled()
     expect(props.onSteer).not.toHaveBeenCalled()
     expect(onStop).not.toHaveBeenCalled()
+  })
+
+  it.each(['limit', 'failed'] as const)('draws the %s notice on the dock glass', failure => {
+    if (failure === 'failed') vi.useFakeTimers()
+    setup()
+    fireEvent.click(screen.getByRole('button', { name: 'Review terminal command' }))
+    confirmRun()
+    if (failure === 'limit') { terminal.atLimit = true; act(() => terminal.failure?.()); terminal.atLimit = false }
+    if (failure === 'failed') act(() => { vi.advanceTimersByTime(6000) })
+
+    // The composer dock floats over the transcript: the notice alone lets the
+    // text scrolled under it show through its words.
+    const alert = screen.getByRole('alert')
+    expect(alert.parentElement).toHaveClass('liquid-glass', 'glass-thick')
+    // The block notice is nested on a danger pane; the inline one keeps a plain pane.
+    expect(alert.parentElement?.classList.contains('glass-danger')).toBe(failure === 'limit')
+    expect(alert.className).not.toMatch(/\bbg-danger-subtle\b/)
   })
 
   it('reports a rejected workspace immediately and retries only on a new submission', () => {

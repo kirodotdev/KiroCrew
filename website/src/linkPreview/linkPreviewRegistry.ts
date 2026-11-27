@@ -14,8 +14,6 @@ import { MAX_TEXT_PATTERNS, type RawTextPattern } from './textPatterns'
 // The host rule lives in appFrame/hosts, shared by every point that names hosts.
 export { CC_SECOND_LEVELS, PUBLIC_SUFFIXES, isPublicSuffix, normalizeHost } from '../appFrame/hosts'
 
-/** Mirrors the backend caps. */
-const MAX_HOSTS = 64
 const ID_RE = /^[a-z][a-z0-9_-]{0,63}$/
 
 /** A text pattern's grant entry. Mirrors `pattern_grant` in `apps/link_preview_grants.py`. */
@@ -56,7 +54,7 @@ export interface ResolvedLinkPreview {
   /** Exact hostnames. */
   exact: ReadonlySet<string>
   /** Domain suffixes, each starting with a dot (`.example.dev`). */
-  suffixes: readonly string[]
+  suffixes: ReadonlySet<string>
   /** Route base of the app's own backend: `/api/apps/<app>` or `/apps/<app>/api`. */
   routeBase: string
   /** Plain-text patterns, shape-checked only; `textPatterns.ts` compiles and gates them. */
@@ -100,14 +98,14 @@ export function resolveLinkPreviews(apps: readonly AppLike[]): ResolvedLinkPrevi
     // Only what the owner approved: an update that added a host or a pattern
     // waits for them (`linkPreviewGrant`, from the gateway).
     const grant = app.linkPreviewGrant
-    const { exact, suffixes } = readHostClaims(p.hosts, MAX_HOSTS, grant ? grantedSet(grant.hosts) : null)
+    const { exact, suffixes } = readHostClaims(p.hosts, undefined, grant ? grantedSet(grant.hosts) : null)
     const grantedPatterns = grant ? grantedSet(grant.textPatterns) : null
     // An unnamed pattern's id is its declaration index. Fix it before the grant
     // filter drops any, so a later pattern keeps its id (and the app's off switch
     // for it) when an earlier one waits for approval.
     const textPatterns = readTextPatterns(p.textPatterns)
       .filter((tp) => !grantedPatterns || grantedPatterns.has(patternGrant(tp, 0)))
-    if (!exact.size && !suffixes.length && !textPatterns.length) continue
+    if (!exact.size && !suffixes.size && !textPatterns.length) continue
     const processBacked = Boolean(app.manifest?.backend?.entryPoint)
     out.push({
       key: `${app.name}:${id}`,

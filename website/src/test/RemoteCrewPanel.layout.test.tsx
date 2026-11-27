@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { renderWithProviders } from './helpers'
+import { createConnectedTestStore, renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 
 // Settings > Remote Crew (#38790): My Crews and Shared with me, one Add Crew
@@ -185,7 +185,7 @@ describe('Add Crew modal', () => {
 describe('Crew rows', () => {
   it('shows name, status and source collapsed, and the rest behind its chevron', async () => {
     const u = userEvent.setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     const r = await waitFor(() => row('build-farm'))
     const chevron = within(r).getByRole('button', { name: 'Show details for build-farm' })
@@ -226,7 +226,7 @@ describe('Crew rows', () => {
       ],
     } as never)
     const u = userEvent.setup()
-    const { store } = renderWithProviders(<RemoteCrewPanel />)
+    const { store } = renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     await waitFor(() => row('build-farm'))
     const header = (name: string) => row(name).firstElementChild as HTMLElement

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -296,6 +297,26 @@ class TestEvalRunner:
         assert result.passed is True
         assert result.total_assertions == 1
         assert result.passed_assertions == 1
+
+    @pytest.mark.asyncio
+    async def test_skills_loader_is_built_off_the_loop(self, monkeypatch):
+        # Its constructor resolves every skills.extra_paths root, which blocks
+        # until a slow or network mount answers.
+        from kiro_crew.eval import runner as runner_mod
+
+        built_on: list[int] = []
+
+        class _SpyLoader(runner_mod.SkillsLoader):
+            def __init__(self, *a, **kw) -> None:
+                built_on.append(threading.get_ident())
+                super().__init__(*a, **kw)
+
+        monkeypatch.setattr(runner_mod, "SkillsLoader", _SpyLoader)
+        scenario = Scenario(
+            name="off_loop", sessions=[Session(name="s1", turns=[Turn(user="hello")])]
+        )
+        await EvalRunner(provider_factory=lambda key, **kw: MockProvider()).run_scenario(scenario)
+        assert built_on and threading.get_ident() not in built_on
 
     @pytest.mark.asyncio
     async def test_run_scenario_fail(self):

@@ -23,7 +23,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 from redaction_structured_cases import github_classic
 
-from kiro_crew import history_projection, name_grant, pinned_fs, platform_compat
+from kiro_crew import history_projection, name_grant, pinned_fs, platform_compat, session_directive
 from kiro_crew.acp_backends import ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_threads, ws
@@ -1470,6 +1470,22 @@ async def test_turn_without_tools_uses_reject_all_and_the_no_tools_boundary(tmp_
     assert acquired["agent"] == "kirocrew"
     assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.REJECT_ALL
     assert THREAD_BOUNDARY_PROMPT_NO_TOOLS in streamed["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_thread_reply_drops_a_quoted_directive_marker_line(tmp_path, monkeypatch):
+    """A REJECT_ALL thread runs the slot's own spec, which can pre-grant a directive
+    tool, so the reply may quote its marker line: protocol, kept out of the reply."""
+    quoted = session_directive.encode("autonudge_stop", {"reason": "done"}, "Stop REQUESTED.")
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    slot, mid = _member_slot(state)
+    _arm_turn(state, monkeypatch, answer=f"Result:\n{quoted}\nDone.", backend="other-harness")
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    assert _finals(events)[-1]["content"] == "Result:\nStop REQUESTED.\nDone."
 
 
 @pytest.mark.asyncio

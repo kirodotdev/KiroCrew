@@ -42,6 +42,7 @@ from side_helpers import (  # noqa: F401 -- the autouse fixture registers by imp
 )
 
 from kiro_crew import context as context_module
+from kiro_crew import session_directive
 from kiro_crew.acp.client import AcpError, _raise_acp_error
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard.handlers.side import _run_side_turn
@@ -672,6 +673,39 @@ async def test_side_stream_redacts_credential_split_across_chunks(tmp_path, monk
     assert raw_cred not in stored[-1]["content"]
     assert exfil_payload not in stored[-1]["content"]
     assert "[REDACTED" in stored[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_side_reply_drops_a_quoted_directive_marker_line(tmp_path, monkeypatch):
+    """On any posture the reply loses a line that only quotes a directive marker: the
+    REJECT_ALL fallback runs the slot's own spec, where a pre-granted directive tool runs."""
+    quoted = session_directive.encode("autonudge_stop", {"reason": "done"}, "Stop REQUESTED.")
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent.agent = "kirocrew"
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user("q")
+    parent._side.last_run_id = "run-1"
+    parent._side.is_complete = False
+
+    async def _fake_get_or_create(key, **kwargs):
+        return MagicMock(), True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+
+    async def _fake_stream(provider, message, **kwargs):
+        return f"Result:\n{quoted}\nDone."
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _fake_stream)
+
+    await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
+
+    final = [d for t, d in events if t == "chat.side_result" and d.get("final")]
+    assert final and final[-1]["content"] == "Result:\nStop REQUESTED.\nDone."
+    stored = [m for m in parent._side.messages if m["role"] == "assistant"]
+    assert stored and stored[-1]["content"] == "Result:\nStop REQUESTED.\nDone."
 
 
 def _app_slot(state, *, app: str = "notes", agent: str = "notes--assistant"):

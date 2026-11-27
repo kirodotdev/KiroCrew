@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from git_maintenance_helpers import git_maintenance_off_entries
-from skill_script_helpers import load_skill_script
+from skill_script_helpers import load_skill_script, skill_text
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
 
@@ -242,7 +242,7 @@ def test_a_lower_code_wins_over_the_proof_code(tmp_path: Path) -> None:
 
 def test_the_exit_code_is_documented_where_agents_read_it() -> None:
     assert "24 Proof line" in ds.__doc__
-    skill = (PREPARE_PR / "SKILL.md").read_text(encoding="utf-8")
+    skill = skill_text((PREPARE_PR / "SKILL.md"))
     assert "23 sibling list · 24 proof line" in skill
     assert "**24**: fix or re-run `prove.py`" in skill
     assert "11 frontend tests" in skill

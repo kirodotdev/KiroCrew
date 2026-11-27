@@ -1,10 +1,12 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import type React from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, MessageSquarePlus, Plug, Rows2, Save } from 'lucide-react'
 
 import { api } from '../../api/client'
+import ErrorNotice, { ErrorNoticeMenuItem } from '../../components/ErrorNotice'
 import SessionActionsMenu from '../../components/SessionActionsMenu'
+import SearchMenuRow from '../../components/chatHistorySearch/SearchMenuRow'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,7 +27,7 @@ import McpToolsPanel from './McpToolsPanel'
 /** The session header's dropdown: reveal, rename, auto-title, mode, the MCP
  *  servers and initial-prompt submenus and the rest of SessionActionsMenu. Header chrome, so it
  *  lives beside the page, not in the message-content module. */
-export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere, onSplitDown, memoryMode, onPromote, promoting }: {
+export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere, onSplitDown, memoryMode, onPromote, promoting, onOpenSearch }: {
   activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; onAutoTitle?: () => void; mode?: string
   /** Whether the sidebar (and its folder-order banner) is on screen -- see SessionActionsMenu. */
   sidebarOnScreen?: boolean
@@ -54,6 +56,10 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   onPromote?: () => void
   /** A keep is in flight; the item is disabled so a double click makes one copy. */
   promoting?: boolean
+  /** Desktop only: opens this chat's history search. A first row here, not a
+   *  button in the title row, whose trailing group already holds its peers
+   *  (`max-two-buttons-per-row`); the row names the find shortcut. */
+  onOpenSearch?: () => void
 }) {
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
@@ -61,11 +67,26 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   // MCP server list is fetched lazily when its submenu opens (driven by the
   // Radix Sub's open state).
   const [mcpOpen, setMcpOpen] = useState(false)
-  const { data: servers = [] } = useQuery<{ name: string; enabled?: boolean }[]>({
-    queryKey: ['mcp-servers', agent],
-    queryFn: () => api.mcpActive(agent || undefined),
+  // The slot names the chat whose live session the server asks for its backend:
+  // a backend that does not read mcp.json is not listed its servers. That answer
+  // changes when the session starts, so every open asks again (`staleTime: 0`
+  // opts out of the client's `Infinity` default, as McpInfoButton does).
+  const serversQ = useQuery<{ name: string; enabled?: boolean }[]>({
+    queryKey: ['mcp-servers', agent, activeSlot],
+    queryFn: () => api.mcpActive(agent || undefined, activeSlot || undefined),
     enabled: mcpOpen,
+    staleTime: 0,
   })
+  // A failed re-ask keeps the earlier answer in the cache; that answer may be
+  // about a session that has since moved, so a failure shows no list at all.
+  const servers = serversQ.isError ? [] : serversQ.data ?? []
+  const mcpServersErrorId = useId()
+  // Closing the menu closes its MCP submenu too, so the next open of that
+  // submenu enables the server read again and asks afresh.
+  const onMenuOpenChange = (next: boolean) => {
+    setOpen(next)
+    if (!next) setMcpOpen(false)
+  }
   // Tool Search mode for this session's MCP tools (shared ['kirocrewConfig']
   // cache). When on, tool specs are deferred (search-and-call), so every server
   // shows as connected but its tools load only when used; when off, every spec
@@ -102,7 +123,7 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   )
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu open={open} onOpenChange={onMenuOpenChange}>
       <DropdownMenuTrigger asChild>
         {triggerLabel !== undefined ? (
           /* No aria-label here: the visible title IS the accessible name, and the
@@ -125,6 +146,12 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
             <DropdownMenuItem data-testid="mobile-new-session-here" disabled={newSessionHere.disabled} onSelect={newSessionHere.onSelect}>
               <MessageSquarePlus size={13} className="shrink-0 text-muted" /> {newSessionHere.label}
             </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
+        {activeSlot && onOpenSearch && (
+          <>
+            <SearchMenuRow onSelect={onOpenSearch} testId="chat-header-search" />
             <DropdownMenuSeparator />
           </>
         )}
@@ -165,9 +192,31 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
                   toolsByServer={toolsByServer}
                   loaded={loadedTools}
                   toolSearchOn={toolSearchOn}
-                  loading={servers.length === 0}
+                  loading={serversQ.isPending}
                   sessionReport={sessionReport}
                 />
+                {/* An answer with no servers says so, in McpInfoButton's words,
+                    rather than leaving the heading over nothing. */}
+                {serversQ.isSuccess && servers.length === 0 && (
+                  <div className="text-muted text-[12px] italic">{i18nT('pages.chat.mcpInfoButton.none_loaded')}</div>
+                )}
+                {/* A refused read says so, with the hand-off as its own menu row,
+                    instead of staying on "Loading". */}
+                {serversQ.isError && (
+                  <>
+                    <ErrorNotice
+                      id={mcpServersErrorId}
+                      variant="inline"
+                      className="mt-2"
+                      message={i18nT('pages.chat.mcpInfoButton.load_failed')}
+                    />
+                    <ErrorNoticeMenuItem
+                      Item={DropdownMenuItem}
+                      message={i18nT('pages.chat.mcpInfoButton.load_failed')}
+                      describedBy={mcpServersErrorId}
+                    />
+                  </>
+                )}
               </DropdownMenuSubContent>
             </DropdownMenuSub>,
             // The session's first prompt, with Copy and "New session from this

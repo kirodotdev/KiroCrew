@@ -279,6 +279,51 @@ def test_the_header_is_real_elapsed_time_and_summed_credits():
     assert live["elapsed_ms"] == 99_000
 
 
+def _billed(monkeypatch, by_slot: dict[str, list[float]]) -> list[tuple[str, float, Any]]:
+    """Stub the per-turn usage store: *by_slot*'s credits, one row each; returns the reads."""
+    from kiro_crew.dashboard.handlers import usage
+
+    reads: list[tuple[str, float, Any]] = []
+
+    def slot_turn_usage(slot: str, days: float, *, until: Any = None) -> list[dict[str, Any]]:
+        reads.append((slot, days, until))
+        return [{"credits": value} for value in by_slot.get(slot, [])]
+
+    monkeypatch.setattr(usage, "slot_turn_usage", slot_turn_usage)
+    return reads
+
+
+def test_a_turn_that_left_no_reply_still_counts_its_billed_credits(monkeypatch):
+    # The conductor's second turn ends on autonudge_stop: no reply row, no turn_stats.
+    rows = [
+        _row("user", 0, "go"),
+        _row("assistant", 10, "done", turn_stats={"elapsed_ms": 8000, "credits": 0.5}),
+        _row("user", 20, "[auto-nudge cycle 1]"),
+        _row("tool", 22, "🔧 @kirocrew-dashboard/autonudge_stop", tool_call_id="stop"),
+    ]
+    lane = {"key": "root", **_lane(rows)}
+    assert lane["credits"] == 0.5
+    reads = _billed(monkeypatch, {"root": [0.5, 0.25]})
+    now = T0 + timedelta(days=1)
+    crew_timeline.add_billed_credits([lane], now=now)
+    assert lane["credits"] == 0.75
+    # The store is read for the lane's own slot from its first loaded row on, and
+    # the window ends at the caller's clock, not a later one taken at read time.
+    assert reads == [("root", pytest.approx(1.0), now.timestamp())]
+
+
+def test_a_lane_the_store_has_nothing_for_keeps_its_recorded_credits(monkeypatch):
+    lanes = [
+        {"key": "w1", "first_ts": _at(0), "credits": 0.3},
+        {"key": "empty", "first_ts": "", "credits": 0.0},
+    ]
+    reads = _billed(monkeypatch, {})
+    crew_timeline.add_billed_credits(lanes, now=T0 + timedelta(seconds=60))
+    assert [lane["credits"] for lane in lanes] == [0.3, 0.0]
+    # A lane with no timed row has no window to read.
+    assert [slot for slot, _days, _until in reads] == ["w1"]
+
+
 def test_a_finished_timeline_with_no_timed_row_has_no_end():
     # A finished header with no recorded moment has no end; it never takes the request's clock.
     lane = _lane([{"role": "user", "content": "go"}])
@@ -453,6 +498,23 @@ async def test_the_route_draws_the_root_then_its_workers_then_closed_ones(_route
     # The closed lane runs on the default, so the served-model gap is named.
     assert "served_model_unreported" in body["gaps"]
     assert "other" not in {lane["key"] for lane in body["lanes"]}
+
+
+@pytest.mark.asyncio
+async def test_the_route_counts_billed_turns_that_left_no_reply(_route, monkeypatch):
+    rows = [_slot_row("root", agent="kirocrew-conductor")]
+    windows = {
+        "root": [
+            _row("user", 0, "go"),
+            _row("assistant", 4, "ok", turn_stats={"elapsed_ms": 4000, "credits": 0.2}),
+            _row("tool", 8, "🔧 @kirocrew-dashboard/autonudge_stop", tool_call_id="stop"),
+        ]
+    }
+    _billed(monkeypatch, {"root": [0.2, 0.1]})
+    resp = await _route.api_crew_timeline(_get(_state(rows, windows), "root"))
+    body = json.loads(resp.text)
+    assert body["lanes"][0]["credits"] == 0.3
+    assert body["credits"] == 0.3
 
 
 @pytest.mark.asyncio

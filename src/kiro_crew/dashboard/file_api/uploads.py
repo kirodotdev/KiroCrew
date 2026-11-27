@@ -47,6 +47,7 @@ if TYPE_CHECKING:
         PATH_MARKS,
         SNIFF_BYTES,
         WINDOWS_DEVICE_STEMS,
+        _is_path_too_long_error,
         _PathProbeBusy,
         _probe_busy_response,
         _run_path_probe,
@@ -298,7 +299,13 @@ async def api_upload_file(request: web.Request) -> web.Response:
     Saves files to the data home's uploads/ and returns server-side paths
     that ACP's _send_prompt() can detect for image inlining.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
 
+    # The files land in the owner's data home and the answer names host paths,
+    # so only the owner or a teammate uploads here.
+    denied = await require_owner_for_dashboard_caller(request, "upload.file")
+    if denied is not None:
+        return denied
     upload_dir = _upload_dir()
     ensure_directory(upload_dir)  # 0700 in the data home: uploads are user files
     # Read once per request, off the loop: a config load stats and may parse
@@ -341,6 +348,50 @@ async def api_upload_file(request: web.Request) -> web.Response:
 
         await asyncio.to_thread(_rm)
 
+    async def _refuse_path_too_long(
+        exc: BaseException, fname: str, dest: Path
+    ) -> web.Response | None:
+        """The coded 400 when this host refused the write for its path's LENGTH, else None.
+
+        The name cap cannot see the folder, so a host without long-path support can
+        still refuse the joined path; the prompt and skill creates read that refusal
+        the same way. On Windows ``os.open`` is the CRT ``_wopen``, which reports a
+        too-long path as a bare ``ENOENT`` with no ``winerror``; the uploads folder
+        was just made, so while it still exists a missing folder is not the cause.
+        Only that case awaits (a stat), and every refusal is of the open itself, so
+        nothing exists at *dest*: only this request's earlier files are removed.
+        """
+        if not isinstance(exc, OSError):
+            return None
+        if not _is_path_too_long_error(exc) and not (
+            platform_compat.IS_WINDOWS
+            and isinstance(exc, FileNotFoundError)
+            and getattr(exc, "winerror", None) is None
+            and await asyncio.to_thread(os.path.isdir, dest.parent)
+        ):
+            return None
+        await _cleanup()
+        # The path the filesystem refused: *dest*, or a streamed part's temp beside it.
+        length = len(os.fsdecode(exc.filename) if exc.filename else str(dest))
+        _sel().log_api_access(
+            caller=caller,
+            operation="upload.file",
+            outcome="rejected",
+            source="dashboard",
+            resources=f"file:{fname} reason:name_too_long:{length}",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    f"File name too long: storing {Path(fname).name} needs a path "
+                    f"{length} characters long, more than this computer accepts. "
+                    "Rename it to something shorter and attach it again."
+                ),
+                "code": "name_too_long",
+            },
+            status=400,
+        )
+
     try:
         while True:
             part = await reader.next()
@@ -367,8 +418,8 @@ async def api_upload_file(request: web.Request) -> web.Response:
             # Sanitize: strip path components to prevent traversal
             safe_name = _safe_upload_name(Path(fname).name)
             ext = Path(safe_name).suffix.lower()
-            # A browser sends any length; past the file-system limit the open
-            # below raises "File name too long" and the upload answers 500.
+            # A browser sends any length; past the file-system's name limit the
+            # open below would refuse it with "File name too long".
             safe_name = _fit_stored_name(safe_name, name_max)
             if ext not in allowed:
                 await _cleanup()
@@ -429,10 +480,12 @@ async def api_upload_file(request: web.Request) -> web.Response:
                         accepted_exts=accepted_exts,
                         media_name=media_name,
                     )
-                except (Exception, asyncio.CancelledError):
+                except (Exception, asyncio.CancelledError) as exc:
                     # CancelledError derives from BaseException. Name it so a
                     # disconnect or shutdown cannot leave a partial media file
                     # or an earlier sibling from this request behind.
+                    if (refused := await _refuse_path_too_long(exc, fname, dest)) is not None:
+                        return refused
                     await _cleanup(dest)
                     raise
                 if refusal is not None:
@@ -545,7 +598,9 @@ async def api_upload_file(request: web.Request) -> web.Response:
                 )
             try:
                 await asyncio.to_thread(_write_file_restricted, dest, bytes(data))
-            except Exception:
+            except Exception as exc:
+                if (refused := await _refuse_path_too_long(exc, fname, dest)) is not None:
+                    return refused
                 await _cleanup(dest)
                 raise
             # Register the stored file for cleanup BEFORE the next await: a

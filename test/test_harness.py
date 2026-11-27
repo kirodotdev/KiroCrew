@@ -1860,6 +1860,10 @@ def test_harness_environment_skips_the_model_download_by_default(tmp_path, monke
     from kiro_crew.acp.kas_engine_startup import SKIP_ENGINE_INSTALL_ENV
 
     assert env[SKIP_ENGINE_INSTALL_ENV] == "1"
+    # The checkout the gateway imports is no install root, so no update modal.
+    from kiro_crew.platform.update_capability import NO_CHECKOUT_ROOT_ENV
+
+    assert env[NO_CHECKOUT_ROOT_ENV] == "1"
     assert env["KIROCREW_HOME"] == str(tmp_path)
     assert env["KIRO_HOME"] == str(tmp_path / "kiro")
     assert env["PYTHONUNBUFFERED"] == "1"

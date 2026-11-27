@@ -61,6 +61,7 @@ const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
 const { applyAuthServerAllowlist } = require("./auth-allowlist");
 const { initGpuCrashFallback } = require("./gpu-crash-fallback");
+const { isRelaunching, watchRelaunch } = require("./relaunch-intent");
 const { cancelPendingTrayHide } = require("./hide-to-tray");
 const { exitImmersiveModes } = require("./blocking-prompt");
 const { createMetricsRecorder } = require("./perf-metrics");
@@ -313,6 +314,16 @@ function readInternalSecret(gatewayUrl) {
 }
 
 let isQuitting = false;
+// Why this quit happens, for the gateway: only a quit the user chose ends the YOLO
+// and chat trust it keeps across every other exit. An update's quit and the OS
+// ending the session are not one. On macOS and Linux powerMonitor's `shutdown` says
+// the OS is ending it (watched once the app is ready); on Windows `before-quit` is
+// not emitted for a shutdown, restart or log off at all.
+let quittingForUpdate = false;
+let osSessionEnding = false;
+// A relaunch (GPU fallback, update Restart now, the dashboard relaunch, a managed
+// apply) is a restart, not a user stop: every `app.relaunch()` is noted.
+watchRelaunch(app);
 let desktopMetricsRecorder = null;
 let windows = null;
 // The kirocrew:// deep-link handler (armed by the single-instance winner below).
@@ -425,6 +436,7 @@ const requestQuit = () => {
 onQuitForUpdate(electron.autoUpdater, () => {
   if (!isQuitting) glog("update: installer is quitting the app; window closes no longer hide to tray");
   isQuitting = true;
+  quittingForUpdate = true;
 });
 
 // Only the lock winner may arm native logging. A rejected second instance must
@@ -520,10 +532,14 @@ if (!app.requestSingleInstanceLock()) {
   // when no listener is attached.
   deepLinks = createDeepLinkHandler({ deliver: deliverDeepLink, log: glog });
   installDeepLinks({ app, handler: deepLinks, log: glog });
+  // The close notice's click waits for the same ack (close-hide-notice.js).
   installNavigateReady({
     app,
     ipcMain,
-    handler: deepLinks,
+    handler: {
+      navigateReady: () => { deepLinks.navigateReady(); windows?.closeHideNavigation.navigateReady(); },
+      navigationStarted: () => { deepLinks.navigationStarted(); windows?.closeHideNavigation.navigationStarted(); },
+    },
     isDashboardContents: (contents) => Boolean(contents) && contents === mainDashboardContents(),
   });
   // On Windows and Linux the URL that launched THIS instance is in its own
@@ -596,6 +612,9 @@ const gateway = createGatewaySupervisor({
   predictLocalPort: () => fallbackLocalPort(store, glog),
   // The respawned backend can be healthy while this app's own bundle is gone.
   onStaleBundleRespawn: () => shellBundleWatch.checkNow(),
+  // The tray's quit label depends on a gateway this app started: re-read it on
+  // every spawn, exit, stop or switch to a remote gateway.
+  onOwnedGatewayChange: () => windows?.refreshTrayMenu(),
   currentThemeSplash: () => themeSplashUrl(app.getPath("userData")),
 });
 
@@ -618,6 +637,7 @@ windows = createWindowLifecycle({
   fetchRemoteToken: (...args) => gateway.fetchRemoteToken(...args),
   isQuitting: () => isQuitting,
   requestQuit,
+  stopsGatewayOnQuit: () => gateway.stopsGatewayOnQuit(),
   connectWindow: (...args) => gateway.connect(...args),
   syncTunnel: () => gateway.syncTunnel(),
   downloadExpectations,
@@ -763,6 +783,11 @@ app.whenReady().then(async () => {
     });
   } catch (error) {
     glog("power: could not watch for resume: " + (error && error.message));
+  }
+  try {
+    electron.powerMonitor.on("shutdown", () => { osSessionEnding = true; });
+  } catch (error) {
+    glog("power: could not watch for shutdown: " + (error && error.message));
   }
 
   // A dictation left running when the person locks the screen keeps the
@@ -979,8 +1004,8 @@ app.whenReady().then(async () => {
       preloadPath: path.join(__dirname, "app-window-preload.js"),
       log: glog,
       displayMemoryPath: appWindowDisplays,
-      showDashboardSession: (slotKey) => openDashboardSession(
-        windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey, SURFACE_APP,
+      showDashboardSession: (slotKey, crewId) => openDashboardSession(
+        windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey, SURFACE_APP, crewId,
       ),
       openExternal: (url) => openExternalSafely(shell.openExternal, url, glog),
       // Which crew each app's windows show is this computer's choice, kept by the shell.
@@ -1023,7 +1048,7 @@ app.on("before-quit", () => {
   } catch {
     // Best effort during quit.
   }
-  gateway.stopOnQuit();
+  gateway.stopOnQuit({ userStop: !quittingForUpdate && !osSessionEnding && !isRelaunching() });
 });
 
 // Release only the shell summon accelerator. Mochi owns and removes its own

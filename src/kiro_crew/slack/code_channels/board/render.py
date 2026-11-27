@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from kiro_crew.platform.context import redact_via_context
@@ -143,9 +143,27 @@ def _pr_url(row: model.WorkerRow) -> str:
     return url if url.startswith("https://") and _linkable(url) else ""
 
 
-def row_text(row: model.WorkerRow, link_for: LinkFor, *, now: datetime | None = None) -> str:
-    """One worker's mrkdwn (the fallback look): title, then the same details and output."""
+def row_text(
+    row: model.WorkerRow,
+    link_for: LinkFor,
+    *,
+    now: datetime | None = None,
+    brief: bool = False,
+) -> str:
+    """One worker's mrkdwn (the fallback look): title, then the same details and output.
+
+    *brief* (a Conductor thread): ONE line, the title linking the worker's chat,
+    its state word, then its PR and CI. Nothing the worker said or did.
+    """
     when = now or datetime.now(timezone.utc)
+    if brief:
+        link = link_for(row.session_key) if row.session_key else ""
+        head = f"*{_link(link, row.title)}*"
+        parts = [
+            "".join(_mrkdwn(e) for e in _brief_details(row)),
+            "".join(_mrkdwn(e) for e in _output(row)),
+        ]
+        return (head + " · " + " · ".join(p for p in parts if p))[:2900]
     lines = [f"*{_escape(row.title)}*"]
     detail = "".join(_mrkdwn(e) for e in _details(row, when))
     if detail:
@@ -203,6 +221,7 @@ def board_blocks(
     block_seed: str = "",
     now: datetime | None = None,
     tabs: Tabs | None = None,
+    brief: bool = False,
 ) -> list[dict]:
     """The pinned board message: Slack's own ``plan`` block, or the mrkdwn rows.
 
@@ -212,6 +231,15 @@ def board_blocks(
     *tabs* deep-links the channel's own tabs: a ``Workers · Code`` line under the
     header and each task's ``PR #n`` to its pull-request tab. The mrkdwn rows
     carry no tab links (mrkdwn has no way to name a tab).
+
+    *brief* is a Conductor thread's board: the same message, one status row per
+    worker (title, state, PR and CI), with no step, summary or branch, and the
+    row's link to the worker's dashboard chat as the way to read more. It is
+    posted INTO a thread other people read, so it shows only that.
+
+    Either look lists the rows most urgent first (what needs the owner, what is
+    stuck, what runs, what waits, what is finished) and puts each row's state
+    word where it shows without opening the row (:func:`state_word`).
     """
     when = now or datetime.now(timezone.utc)
     stamp = f"Work board · updated {updated}" if updated else "Work board"
@@ -224,7 +252,7 @@ def board_blocks(
         blocks.append(_rich([{"type": "text", "text": "Tabs: "}, *links]))
     if look == "plan" and snapshot.rows:
         # The plan's own title is the summary line: it is not repeated above it.
-        blocks.append(plan_block(snapshot, link_for, now=when, tabs=tabs))
+        blocks.append(plan_block(snapshot, link_for, now=when, tabs=tabs, brief=brief))
     elif not snapshot.rows:
         blocks.append(_summary_section(snapshot))
         blocks.append(
@@ -242,12 +270,17 @@ def board_blocks(
             blocks.append(
                 {
                     "type": "section",
-                    "text": {"type": "mrkdwn", "text": row_text(row, link_for, now=when)},
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": row_text(row, link_for, now=when, brief=brief),
+                    },
                 }
             )
         if snapshot.omitted:
             folded = f"+{snapshot.omitted} more items, listed in the dashboard"
             blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": folded}]})
+    if brief and snapshot.rows:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": BRIEF_FOOTER}]})
     if block_seed:
         for index, block in enumerate(blocks):
             block["block_id"] = f"board-{block_seed}-{index}"
@@ -255,9 +288,9 @@ def board_blocks(
 
 
 MAX_TASKS = model.MAX_TASKS
-#: The words that set a waiting row apart: its plan title leads with them, and the
-#: plain rows and the threaded reply say the same.
-WAITING_LEAD = "Waiting on you"
+#: The words that set a row that needs the owner apart: its plan title leads with
+#: them, and the plain rows say the same.
+WAITING_LEAD = "Needs you"
 _TASK_STATUS = {
     # Only a worker that is running shows Slack's spinner.
     model.WORKING: "in_progress",
@@ -325,6 +358,70 @@ def _rich(elements: list[dict]) -> dict:
     return {"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": elements}]}
 
 
+#: Under a Conductor thread's board: where the details are.
+BRIEF_FOOTER = "Worker details stay in the dashboard: open a worker to read them."
+_STATE_WORDS = {
+    model.WORKING: "Working",
+    model.IDLE: "Idle",
+    model.WAITING_ON_YOU: WAITING_LEAD,
+    model.BLOCKED: "Stuck",
+    model.DONE: "Done",
+    model.LOST: "Lost",
+}
+#: What a row that needs the owner needs, in fixed words (a Conductor thread's
+#: board shows nothing the worker or the conductor wrote): by ``waiting_on``.
+_BRIEF_NEEDS = {"approval": "approve its tool call"}
+_BRIEF_NEEDS_ANSWER = "answer its question"
+
+
+def state_word(row: model.WorkerRow) -> str:
+    """A row's state in fixed words, the lead of its plan title: nothing the worker
+    said, ran or reported. An idle row whose own pull request says what it waits
+    on names it (:func:`~.model.idle_wait`): ``Idle, waiting on CI``."""
+    if row.stopped:
+        return "Stopped"
+    if row.state == model.CLOSED:
+        return (row.closed_as or "closed").capitalize()
+    word = _STATE_WORDS.get(row.state, "Working")
+    wait = model.idle_wait(row)
+    return f"{word}, waiting on {wait}" if wait else word
+
+
+def _brief_details(row: model.WorkerRow) -> list[dict]:
+    """A row's state as fixed words (a Conductor thread's plain rows): nothing the
+    worker said, ran or reported, however safe :mod:`.source` made it. A row that
+    needs the owner says what for (:func:`_brief_needs`)."""
+    element: dict = {"type": "text", "text": state_word(row)}
+    if row.state == model.WAITING_ON_YOU:
+        element["style"] = {"bold": True}
+    return [element, *({**e, "text": f": {e['text']}"} for e in _brief_needs(row))]
+
+
+def _brief_needs(row: model.WorkerRow) -> list[dict]:
+    """What a row that needs the owner needs from them, in fixed words; else nothing."""
+    if row.state != model.WAITING_ON_YOU:
+        return []
+    return [{"type": "text", "text": _BRIEF_NEEDS.get(row.waiting_on, _BRIEF_NEEDS_ANSWER)}]
+
+
+def brief_snapshot(snapshot: model.BoardSnapshot) -> model.BoardSnapshot:
+    """*snapshot* with what a worker said or ran taken off every row.
+
+    A Conductor thread's board is read by whoever reads the thread, so the
+    summary, current step, branch and approval wording never reach its renderer:
+    a renderer bug cannot publish what the row does not hold. The title, state,
+    PR and CI stay, with the keys the needs-you page and the stop overlay use.
+    """
+    return replace(
+        snapshot,
+        goal="",
+        rows=tuple(
+            replace(r, summary="", step="", branch="", approval_tool="", turn_started_at="")
+            for r in snapshot.rows
+        ),
+    )
+
+
 def _details(row: model.WorkerRow, now: datetime, elapsed: bool = True) -> list[dict]:
     """The row's status words; *elapsed* off leaves the minute counts out (a digest)."""
     if row.stopped:
@@ -345,6 +442,10 @@ def _details(row: model.WorkerRow, now: datetime, elapsed: bool = True) -> list[
                 out.append({"type": "text", "text": asked, "style": {"code": True}})
             else:
                 out.append({"type": "text", "text": row.approval_tool or "a tool"})
+        elif row.waiting_on == "ask":
+            # The conductor's question, relayed in its own reply: the worker's last
+            # report is about something else, so it is not shown as the reason.
+            out.append({"type": "text", "text": f" {_BRIEF_NEEDS_ANSWER}"})
         elif row.summary:
             out.append({"type": "text", "text": " " + row.summary})
         return out
@@ -356,7 +457,7 @@ def _details(row: model.WorkerRow, now: datetime, elapsed: bool = True) -> list[
         return out
     if row.state == model.IDLE:
         idle_for = _elapsed(row.report_stamp, now) if elapsed else ""
-        text = f"Idle · {idle_for}" if idle_for else "Idle"
+        text = f"{state_word(row)} · {idle_for}" if idle_for else state_word(row)
         note = row.step or row.summary
         return [{"type": "text", "text": f"{text} · {note}" if note else text}]
     label = model.row_label(row)
@@ -413,8 +514,16 @@ def plan_block(
     *,
     now: datetime,
     tabs: Tabs | None = None,
+    brief: bool = False,
 ) -> dict:
-    """One ``plan`` with one task per worker (Slack's own status marks, no emoji)."""
+    """One ``plan`` with one task per worker (Slack's own status marks, no emoji).
+
+    Slack shows a task's mark and title, and its details only once the task is
+    opened, so every title leads with the row's state word (:func:`state_word`).
+
+    *brief*: each task's details are what a row that needs the owner needs, in
+    fixed words, and a link to the worker's dashboard chat (see :func:`board_blocks`).
+    """
     shown = list(snapshot.plan_rows)
     more = snapshot.total - len(shown)  # settled items not kept as rows count too
     prefix = _common_prefix(shown)
@@ -425,11 +534,17 @@ def plan_block(
         else:
             status = _TASK_STATUS.get(row.state, "in_progress")
         title = (row.title[len(prefix) :] if prefix else row.title) or row.title
-        details = _details(row, now)
-        if row.state == model.WAITING_ON_YOU:
+        title = f"{state_word(row)}: {title}"
+        details = _brief_needs(row) if brief else _details(row, now)
+        if brief:
+            link = link_for(row.session_key) if row.session_key else ""
+            if _linkable(link):
+                if details:
+                    details = [*details, {"type": "text", "text": " · "}]
+                details = [*details, {"type": "link", "url": link, "text": "Open in dashboard"}]
+        elif row.state == model.WAITING_ON_YOU:
             # The title carries the words that set the row apart (it shares the
             # empty circle with idle rows), so the details don't repeat them.
-            title = f"{WAITING_LEAD}: {title}"
             if details and details[0].get("text") == f"{WAITING_LEAD}:":
                 details = details[1:]
                 if details and details[0].get("type") == "text":
@@ -442,7 +557,7 @@ def plan_block(
             "title": title,
             "status": status,
         }
-        if row.state == model.WAITING_ON_YOU:
+        if row.state == model.WAITING_ON_YOU and not brief:
             # The one row that needs the owner says where to act on it.
             link = link_for(row.session_key) if row.session_key else ""
             if _linkable(link):
@@ -490,10 +605,18 @@ def outcome_line(row: model.WorkerRow) -> str:
     return f"• {_escape(row.title)}: {outcome}"
 
 
-def needs_you_text(row: model.WorkerRow, owner_id: str, link_for: LinkFor) -> str:
-    """The threaded reply that pages the owner for a worker that waits on them."""
+def needs_you_text(
+    row: model.WorkerRow, owner_id: str, link_for: LinkFor, *, brief: bool = False
+) -> str:
+    """The threaded reply that pages the owner for a worker that waits on them.
+
+    *brief* (a Conductor thread): the worker's title and the link only, with no
+    report line and no approval wording.
+    """
     who = f"<@{owner_id}> " if owner_id and owner_id.isalnum() else ""
-    if row.waiting_on == "approval":
+    if brief:
+        text = f"{who}*{_escape(row.title)}* is waiting on you"
+    elif row.waiting_on == "approval":
         text = f"{who}*{_escape(row.title)}* has a tool approval waiting on you"
         # The tool's kind only: the call itself is shown on the board alone, never
         # in a page that notifies.
@@ -527,7 +650,7 @@ _BUTTON_TEXT = 75
 
 
 def _status_elements(row: model.WorkerRow, now: datetime, elapsed: bool = True) -> list[dict]:
-    """``Working · Running `pytest -q` · 4m`` / ``Waiting on you: approve `git push```."""
+    """``Working · Running `pytest -q` · 4m`` / ``Needs you: approve `git push```."""
     if row.stopped:
         return _details(row, now, elapsed)
     if row.state == model.WORKING:
@@ -644,7 +767,7 @@ def workers_view_blocks(
         {"type": "section", "text": {"type": "mrkdwn", "text": f"*{_escape(snapshot.aggregate)}*"}},
         {"type": "context", "elements": [{"type": "mrkdwn", "text": header}]},
     ]
-    open_rows = [r for r in snapshot.rows if not r.settled]
+    open_rows = model.by_urgency(r for r in snapshot.rows if not r.settled)
     settled = [r for r in snapshot.rows if r.settled]
     for row in open_rows[:WORKERS_TAB_ROWS]:
         lines: list[dict] = [{"type": "text", "text": row.title, "style": {"bold": True}}]

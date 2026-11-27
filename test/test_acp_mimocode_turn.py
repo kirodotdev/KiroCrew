@@ -872,22 +872,24 @@ def test_an_explicit_always_option_is_written_as_once_on_an_armed_session(
     assert _options(written) == [(0, "once")]
 
 
-def test_always_true_without_recorded_options_falls_back_to_the_canonical_once(
+def test_always_true_without_recorded_options_falls_back_to_the_offered_once(
     tmp_path, monkeypatch
 ) -> None:
-    """With no options on record, the canonical always id is still downgraded."""
+    """With no options on record, the canonical always id is still downgraded, and the
+    once goes out as the id the frame offered for it, never a literal it did not offer."""
     client, written = _asked_client(tmp_path, monkeypatch)
     client._permission_options.pop(0)
     assert _run(client.approve_tool(0, always=True)) is True
-    assert _options(written) == [(0, "allow_once")]
+    assert _options(written) == [(0, "once")]
 
 
-def test_an_unarmed_opencode_session_sends_its_always_option(tmp_path, monkeypatch) -> None:
-    """Control: the downgrade is the tripwire's alone."""
+def test_an_unarmed_opencode_session_still_sends_once(tmp_path, monkeypatch) -> None:
+    """opencode is answered once without the tripwire too: its allow-always would stop
+    it asking about the calls the spec allowlist rows judge."""
     client, written = _asked_client(tmp_path, monkeypatch, ACP_BACKEND_OPENCODE, armed=False)
     assert client._unasked_shell_tripwire is False
     assert _run(client.approve_tool(0, always=True)) is True
-    assert _options(written) == [(0, "always")]
+    assert _options(written) == [(0, "once")]
 
 
 def test_a_mimocode_session_without_the_tripwire_sends_its_always_option(

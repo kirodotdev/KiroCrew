@@ -34,6 +34,7 @@ from kiro_crew.snapshot_components import (
     _is_host_local,
     _never_ships,
     _tree_roots_replace_clears,
+    is_named_workspace_tree,
     is_product_tree_database,
 )
 
@@ -73,6 +74,7 @@ def _safe_name(value: object, default: str = "unknown", limit: int = 300) -> str
 
 def _rejection_recording_filter(
     rejected: list[str],
+    rejected_named: list[str] | None = None,
 ) -> "Callable[..., tarfile.TarInfo | None]":
     """`_data_filter`, plus a record of every entry it DROPPED for a structural reason.
 
@@ -87,16 +89,30 @@ def _rejection_recording_filter(
     a tree that replace clears: there a hostile entry is dropped and the restore succeeds
     (`test_symlink_filtered_out`). Only inside a cleared tree does a drop delete the
     operator's own tree.
+
+    A drop under a top-level ``workspace-<name>/`` goes to *rejected_named* instead: that
+    tree is replaced only when the manifest declares ``named-workspaces``, which extraction
+    cannot know yet, so the caller decides once it has read the manifest.
     """
     cleared_trees = _tree_roots_replace_clears()
+    cleared_folded = {t.casefold() for t in cleared_trees}
 
     def _f(info: tarfile.TarInfo, dest: str = "") -> tarfile.TarInfo | None:
         kept = _data_filter(info, dest)
         if kept is None and not _never_ships(info.name):
-            # Entries are `<bundle-root>/<tree>/...`; the tree is what decides.
-            parts = PurePosixPath(info.name).parts
-            if len(parts) > 1 and parts[1] in cleared_trees:
+            # Entries are `<bundle-root>/<tree>/...`; the tree is what decides. Split the
+            # way extraction will write it: Windows honours `\` as a separator too, so a
+            # `<root>/workspace\x` member lands in `workspace/` there and must count.
+            # Its names compare without case there, as the filesystem does.
+            windows = platform_compat.IS_WINDOWS
+            parts = (PureWindowsPath if windows else PurePosixPath)(info.name).parts
+            tree = parts[1] if len(parts) > 1 else ""
+            if windows:
+                tree = tree.casefold()
+            if tree and tree in (cleared_folded if windows else cleared_trees):
                 rejected.append(_safe_name(info.name))
+            elif rejected_named is not None and tree and is_named_workspace_tree(tree):
+                rejected_named.append(_safe_name(info.name))
         return kept
 
     return _f
@@ -762,7 +778,7 @@ def _staging_is_pinned(*, allow_unpinned: bool, what: str) -> bool:
 
     This is the whole "refuse rather than fall back" rule, in one place. The reason it
     is a refusal and not a warning: a by-name walk is not a slightly weaker version of
-    a pinned walk, it is the mechanism whose failure closed two pull requests. An
+    a pinned walk, because an ancestor swapped mid-walk can redirect every deeper open. An
     operator who needs a snapshot on a platform without ``dir_fd`` can still have one,
     but they say so on the command line and the archive records that they did, so the
     weaker mode is never something the tool chose on their behalf.

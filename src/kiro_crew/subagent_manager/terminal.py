@@ -461,6 +461,7 @@ class TerminalCoordinator(ManagerComponent):
             {
                 "elapsed": info.elapsed,
                 "credits": info.credits,
+                "cost_usd": info.cost_usd,
                 "error": _redact(info.error) if info.error else None,
                 "stopped": info.user_stopped,
                 "outcome": info.outcome,
@@ -1008,6 +1009,10 @@ class TerminalCoordinator(ManagerComponent):
                     # Shutdown the shared provider handle only
                     try:
                         if info._shared_provider:
+                            try:
+                                info._shared_provider.set_keep_transcript(True)
+                            except Exception:
+                                logger.debug("set_keep_transcript failed", exc_info=True)
                             await info._shared_provider.shutdown()
                     except Exception:
                         logger.debug(

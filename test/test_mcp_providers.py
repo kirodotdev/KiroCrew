@@ -731,6 +731,68 @@ class TestRegistryFanOut:
             ("ok", "ok"),
         ]
 
+    @pytest.mark.asyncio
+    async def test_unavailable_provider_with_a_reason_is_reported_after_the_searched_ones(self):
+        class _Unready(_StubProvider):
+            def unavailable_reason(self):
+                return "  Install the package CLI first.  "
+
+        registry = ProviderRegistry()
+        registry.register(_Unready("pkg", [_result("pkg", "p1")], available=False))
+        registry.register(_StubProvider("on", [_result("on", "y")]))
+
+        response = await registry.search_with_outcomes("query")
+
+        assert [r.id for r in response.results] == ["y"]
+        assert [(o.name, o.status, o.message) for o in response.provider_outcomes] == [
+            ("on", "ok", ""),
+            ("pkg", "unavailable", "Install the package CLI first."),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unavailable_provider_without_a_reason_gets_no_outcome(self):
+        class _RaisingReason(_StubProvider):
+            def unavailable_reason(self):
+                raise RuntimeError("no context")
+
+        registry = ProviderRegistry()
+        registry.register(_StubProvider("silent", available=False))
+        registry.register(_RaisingReason("raising", available=False))
+
+        response = await registry.search_with_outcomes("query")
+
+        assert response.results == []
+        assert response.provider_outcomes == []
+
+    @pytest.mark.asyncio
+    async def test_provider_filter_on_an_unready_provider_reports_its_reason(self):
+        class _Unready(_StubProvider):
+            def unavailable_reason(self):
+                return "Not installed."
+
+        registry = ProviderRegistry()
+        registry.register(_Unready("pkg", available=False))
+
+        response = await registry.search_with_outcomes("query", provider="pkg")
+
+        assert [(o.name, o.status, o.message) for o in response.provider_outcomes] == [
+            ("pkg", "unavailable", "Not installed.")
+        ]
+        assert (
+            await registry.search_with_outcomes("query", provider="nope")
+        ).provider_outcomes == []
+
+    @pytest.mark.asyncio
+    async def test_a_provider_that_becomes_available_is_searched_on_the_next_request(self):
+        provider = _StubProvider("late", [_result("late", "l1")], available=False)
+        registry = ProviderRegistry()
+        registry.register(provider)
+        assert (await registry.search_with_outcomes("query")).results == []
+
+        provider._available = True
+
+        assert [r.id for r in (await registry.search_with_outcomes("query")).results] == ["l1"]
+
 
 # ---------------------------------------------------------------------------
 # Capability-seam provider
@@ -792,6 +854,59 @@ class TestCapabilityProvider:
         results = await provider.search("mcp")
         # The idless and non-dict rows never surface.
         assert {r.id for r in results} == {"InternalMCP", "OtherMCP"}
+
+    def test_unavailable_reason_comes_from_the_manager_without_reprobing(self):
+        """The registry asks only after ``is_available()`` returned False, so the
+        provider reads the manager's op and never probes ``available()`` again."""
+
+        class _Reasoned(_FakeManager):
+            probes = 0
+
+            def available(self):
+                self.probes += 1
+                return super().available()
+
+            def unavailable_reason(self):
+                return "Install the package CLI."
+
+        manager = _Reasoned([], available=False)
+        provider = CapabilityProvider(lambda: manager)
+        assert provider.unavailable_reason() == "Install the package CLI."
+        assert manager.probes == 0
+
+    def test_unavailable_reason_is_empty_when_the_manager_says_nothing(self):
+        class _NotText(_FakeManager):
+            def unavailable_reason(self):
+                return 42
+
+        def boom():
+            raise RuntimeError("no context installed")
+
+        assert (
+            CapabilityProvider(lambda: _FakeManager([], available=False)).unavailable_reason() == ""
+        )
+        assert CapabilityProvider(lambda: _NotText([], available=False)).unavailable_reason() == ""
+        assert CapabilityProvider(boom).unavailable_reason() == ""
+
+    def test_the_bounded_manager_passes_the_reason_through(self):
+        from kiro_crew.platform.capability_bound import bind_capability_manager
+        from kiro_crew.platform.defaults import DefaultCapabilityManager
+
+        class _Reasoned(_FakeManager):
+            def unavailable_reason(self):
+                return "Install the package CLI."
+
+        assert bind_capability_manager(_Reasoned([], available=False)).unavailable_reason() == (
+            "Install the package CLI."
+        )
+        # The public Default has no such op: it says nothing.
+        assert bind_capability_manager(DefaultCapabilityManager()).unavailable_reason() == ""
+        assert (
+            CapabilityProvider(
+                lambda: bind_capability_manager(DefaultCapabilityManager())
+            ).unavailable_reason()
+            == ""
+        )
 
     @pytest.mark.asyncio
     async def test_unavailable_manager_raises(self):

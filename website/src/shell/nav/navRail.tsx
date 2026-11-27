@@ -9,6 +9,7 @@ import { DndContext, closestCenter, DragOverlay } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { toggleBottomTerminal } from '../../hooks/useBottomTerminal'
 import { focusPopout as focusTerminalPopout } from '../../utils/terminalPopout'
+import { preloadTerminalOnIntent } from '../../components/terminalSessions'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { isAppNavId } from '../../appNotificationBadges'
@@ -17,9 +18,9 @@ import { isChatRoute } from './routeActive'
 import { RailBrandToggle, RailCommunityLinks } from './railChrome'
 import { appPathname } from '../../lib/basePath'
 import { MOBILE_NAV_WIDTH, type AppShell } from '../appShell'
-import { NavItem, NavBadge } from './navRow'
+import { NavItem, NavBadge, NavRowLayoutKey } from './navRow'
 import { AppRowPopoutAction } from './appRowPopoutAction'
-import { DockMatesSection, useDockMates } from './matesDock'
+import { DockMatesSection, useDockMates, useDockMatesSectionOpen } from './matesDock'
 import { hiddenChromeProps } from '../focus/focusChrome'
 import { coversPaneProps } from '../../hooks/paneVisibility'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
@@ -35,18 +36,21 @@ import { AccountAvatar, ACCOUNT_AVATAR_RAIL_PX, ACCOUNT_AVATAR_TOUCH_PX } from '
 export function ShellNavRail({ shell }: { shell: AppShell }) {
   const {
     settingsDotLabel, terminalEnabled, terminalPoppedOut, bottomTerminalOpen, mobileConnectOpen,
-    setMobileConnectOpen, hasRenderableMobileConnect, activeSlotProject, navigate, branding, botName, avatar,
+    setMobileConnectOpen, hasRenderableMobileConnect, getActiveSlotProject, navigate, branding, botName, avatar,
     isMobile, focusActive, focusChromeInert, railPeek, railPeekSurface, mobileNavMounted, mobileNavOpen, mobileNavX, mobileNavPanelRef,
     mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup,
     activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
-    appsExpanded, toggleAppsExpanded, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates,
+    appsExpanded, toggleAppsExpanded, quickSearchLauncher, appBadges, discoverBadges, discoverInRail, railAppBadges, railAppRunStates,
     commandPalette, kiroUsageState, kiroSignInPrompt, openKiroSignIn,
     setReportProblemOpen, toggleNav, effectiveCollapsed, closeMobileNav, activePath, libraryNavActive,
     discoverNavActive, isChat, navRowActive,
   } = shell
   // A docked mate's row is the lit one while its chat is open; lighting the
-  // Mates page row too would mark two rows as "you are here".
+  // Mates page row too would mark two rows as "you are here". With the
+  // section put away that row is gone, so the Mates page row stands in.
   const { openIsDocked } = useDockMates()
+  const [matesSectionOpen, toggleMatesSection] = useDockMatesSectionOpen()
+  const openMateLit = openIsDocked && (effectiveCollapsed || matesSectionOpen)
   // Everything above the bottom block scrolls as ONE region: the menu row, the
   // primary destinations, the starred mates and the Apps list. Its scrollbar is
   // hidden, so the bottom edge fades while anything sits below the fold. The
@@ -71,7 +75,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
       path={n.path}
       label={surfaceLabel(n)}
       icon={n.icon}
-      active={navRowActive(n.path) && !(n.id === 'members' && openIsDocked)}
+      active={navRowActive(n.path) && !(n.id === 'members' && openMateLit)}
       collapsed={effectiveCollapsed}
       onClick={closeMobileNav}
       // The chat row, while chat is the page on screen, toggles the sessions
@@ -111,8 +115,10 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     ) : renderNavRow(n)
   )
 
+  const rowLayoutKey = `${effectiveCollapsed}|${discoverInRail}|${advertisedNavItems.map(n => n.id).join(',')}|${sortedAppGroup.map(n => n.id).join(',')}`
+
   return (
-    <>
+    <NavRowLayoutKey.Provider value={rowLayoutKey}>
       {/* Mobile backdrop — opacity is animated by animateDrawer in lockstep
           with the panel (compositor), so there is no framer fade here; it
           mounts at 0 and the slide carries it. Mounted for the whole phase so
@@ -169,7 +175,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
           {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mb-[7px]" />}
           {advertisedNavItems.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
         </div>
-        <DockMatesSection collapsed={effectiveCollapsed} isMobile={isMobile} onNavigate={closeMobileNav} onDragActiveChange={setMateDragActive} />
+        <DockMatesSection collapsed={effectiveCollapsed} isMobile={isMobile} sectionOpen={matesSectionOpen} onToggleSection={toggleMatesSection} onNavigate={closeMobileNav} onDragActiveChange={setMateDragActive} />
         <div className="shrink-0 flex flex-col gap-0.5 px-2">
           {/* Apps section: the old single "Explore" header link split into two
               nav rows — Discover (the storefront, /apps) and Library
@@ -178,7 +184,9 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
               rows as regular icon rows like their neighbors. The unread-updates
               badge rides Discover (navId "apps"), matching where update
               discovery lives. NavItem carries data-onboarding-nav={navId}, so
-              the onboarding anchor "apps" stays on the Discover row. */}
+              the onboarding anchor "apps" stays on the Discover row. With
+              "Show Discover in the sidebar" off (`discoverInRail`), the
+              Discover row is not drawn and the badge rides Library instead. */}
           {!effectiveCollapsed ? (
             <>
               <div className="nav-section flex items-center pl-3 pr-1 pt-3 pb-1">
@@ -191,16 +199,18 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                   className="text-[13px] font-medium text-muted whitespace-nowrap overflow-hidden"
                 >{i18nT('app.apps')}</span>
               </div>
-              <NavItem
-                navId="apps"
-                path="/apps"
-                label={i18nT('nav.discover')}
-                icon={<Compass size={20} />}
-                active={discoverNavActive}
-                collapsed={false}
-                onClick={closeMobileNav}
-                badge={<NavBadge navId="apps" collapsed={false} appBadges={discoverBadges} />}
-              />
+              {discoverInRail && (
+                <NavItem
+                  navId="apps"
+                  path="/apps"
+                  label={i18nT('nav.discover')}
+                  icon={<Compass size={20} />}
+                  active={discoverNavActive}
+                  collapsed={false}
+                  onClick={closeMobileNav}
+                  badge={<NavBadge navId="apps" collapsed={false} appBadges={discoverBadges} />}
+                />
+              )}
               <NavItem
                 navId="apps-library"
                 path="/apps/library"
@@ -209,6 +219,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 active={libraryNavActive}
                 collapsed={false}
                 onClick={closeMobileNav}
+                badge={discoverInRail ? undefined : <NavBadge navId="apps" collapsed={false} appBadges={discoverBadges} />}
               />
             </>
           ) : (
@@ -218,16 +229,18 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.2, ease: 'easeOut' }}
             >
-              <NavItem
-                navId="apps"
-                path="/apps"
-                label={i18nT('nav.discover')}
-                icon={<Compass size={20} />}
-                active={discoverNavActive}
-                collapsed
-                onClick={closeMobileNav}
-                badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
-              />
+              {discoverInRail && (
+                <NavItem
+                  navId="apps"
+                  path="/apps"
+                  label={i18nT('nav.discover')}
+                  icon={<Compass size={20} />}
+                  active={discoverNavActive}
+                  collapsed
+                  onClick={closeMobileNav}
+                  badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
+                />
+              )}
               <NavItem
                 navId="apps-library"
                 path="/apps/library"
@@ -236,6 +249,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 active={libraryNavActive}
                 collapsed
                 onClick={closeMobileNav}
+                badge={discoverInRail ? undefined : <NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
               />
             </motion.div>
           )}
@@ -243,7 +257,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
 
         {/* Apps list: the last part of the rail's scroll region. */}
         <div className="shrink-0 px-2">
-          <div className="grid gap-0.5">
+          <div className="grid grid-cols-[minmax(0,1fr)] gap-0.5">
             {(() => {
               const fullList = sortedAppGroup
               // Collapse a long Apps list behind a "N more" toggle (both expanded
@@ -321,7 +335,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
           const s = NAV_ITEMS.find(n => n.id === 'settings')!
           const cap = NAV_ITEMS.find(n => n.id === 'capabilities')!
           return (
-            <div className="shrink-0 grid gap-0.5 px-2 pt-1 pb-2">
+            <div className="shrink-0 grid grid-cols-[minmax(0,1fr)] gap-0.5 px-2 pt-1 pb-2">
               {terminalEnabled && (
                 <NavItem
                   path="#"
@@ -338,8 +352,8 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                   /* While popped out: focus only (a refused programmatic
                      focus is a harmless no-op). Explicit re-dock lives in the
                      TerminalDetachedBar below -- never a timing heuristic. */
-                  onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
-                  {...uiLocation('shell.terminal')}
+                  onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(getActiveSlotProject()) }}
+                  {...uiLocation('shell.terminal', preloadTerminalOnIntent)}
                 />
               )}
               {hasRenderableMobileConnect && (
@@ -479,6 +493,6 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
           </nav>
         )
       })()}
-    </>
+    </NavRowLayoutKey.Provider>
   )
 }

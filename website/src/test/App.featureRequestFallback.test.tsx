@@ -17,12 +17,13 @@
  * same real flow: `createSlot` thunk, seed, `sendTurn`, receipt.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, act } from '@testing-library/react'
+import { screen, fireEvent, act, renderHook } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'
 import { FEATURE_REQUEST_ROW_META_KEY } from '../prompts/featureRequest'
 import type { RootState } from '../store'
 import { setActiveSlot, selectPendingTurn, selectSlotStreamState, startLocalTurn } from '../store/chatSlice'
+import { useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
 import App from '../App'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -218,5 +219,21 @@ describe('Request a Feature — the non-inference exit is wired (#13342)', () =>
     expect(button).not.toHaveAttribute('title')
     // The visible label is still the action, so the accessible name is unchanged.
     expect(button).toHaveAccessibleName(i18nT('app.request_a_feature_2'))
+  })
+})
+
+describe('Request a Feature — spoken as a composer send is', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    sendChatMock.mockReset()
+    createChatSlotMock.mockReset()
+    createChatSlotMock.mockResolvedValue({ key: 'fr-slot', name: 'New chat' })
+  })
+
+  it('speaks the request in the transcript showing the new chat', async () => {
+    sendChatMock.mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({ ok: true }) })
+    const transcript = renderHook(() => useTranscriptAnnouncement(undefined, false, undefined, 'fr-slot', undefined, 0, { speaker: 'You', own: true }, true))
+    await clickRequestFeature()
+    expect(transcript.result.current.announcement).toBe(`You: ${i18nT('app.i_d_like_to_request_a_feature')}`)
   })
 })

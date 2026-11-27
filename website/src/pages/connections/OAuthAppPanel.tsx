@@ -26,9 +26,9 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
 import { fmtList } from '../../i18n/format'
 import { CONNECTION_PROVIDERS } from './registry'
-import { isGoogleSlug } from './connectionsLinks'
+import { OAUTH_CLIENTS_QUERY_KEY, isGoogleSlug } from './connectionsLinks'
 
-export const OAUTH_CLIENTS_QUERY_KEY = ['connections', 'oauth-clients'] as const
+export { OAUTH_CLIENTS_QUERY_KEY }
 
 /** Repository docs are the runbook's home; the link resolves against main. */
 const RUNBOOK_BASE = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/'
@@ -200,6 +200,10 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects, onUnr
   const storedIdRef = useRef(client.client_id ?? '')
   const secretPendingRef = useRef(false)
   secretPendingRef.current = secret.length > 0 || secretClear
+  // The save's onSuccess reads the secret field as it is when the save lands,
+  // not as it was when the request started.
+  const secretRef = useRef({ secret, secretClear })
+  secretRef.current = { secret, secretClear }
   useEffect(() => {
     const next = client.client_id ?? ''
     // Read both refs now: React may run the updater after the ref moves on.
@@ -247,11 +251,17 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects, onUnr
       }
       return result
     },
-    onSuccess: (r) => {
+    onSuccess: (r, body) => {
       setNotApplied(agentSpecNotRewritten(r))
-      setSecret('')
-      setSecretClear(false)
-      setFormKey(k => k + 1)
+      // Only the secret just sent is cleared, and only while the field still
+      // holds it: a secret typed or pasted during the save stays pending.
+      const s = secretRef.current
+      const nextSecret = body.client_secret && s.secret === body.client_secret ? '' : s.secret
+      setSecret(nextSecret)
+      if (body.client_secret_clear) setSecretClear(false)
+      // Remount the field back to its stored state only when no newer edit is
+      // pending in it; a remount would hide it.
+      if (!nextSecret && !(s.secretClear && !body.client_secret_clear)) setFormKey(k => k + 1)
       setError(null)
       setPartialFailed(null)
       setRetryShared(false)
@@ -463,6 +473,9 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects, onUnr
             isSet={client.client_secret_set}
             preview="••••••••"
             readOnly={readOnly}
+            // A secret still pending (typed during a save) stays in the editor,
+            // even once the refetch reports a stored secret.
+            editing={secret ? true : undefined}
             value={secret}
             onChange={setSecret}
             cleared={secretClear}

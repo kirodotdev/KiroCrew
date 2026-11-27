@@ -394,7 +394,8 @@ describe('FileBrowserRail New file…', () => {
     ])
     // The upload refuses an empty body, so the new file holds one empty line.
     expect(await (H.api.uploadToDirectory.mock.calls[1][1] as File).text()).toBe('\n')
-    expect(screen.queryByRole('dialog')).toBeNull()
+    // The file opens before the dialog's unmount is committed, so wait for it.
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 
   it('keeps Create on after a failure the same name may pass on a retry', async () => {

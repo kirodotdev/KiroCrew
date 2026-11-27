@@ -69,7 +69,7 @@ describe('FolderPanel', () => {
     // `ws` is described by its path through a hidden copy, so pick the shown line.
     const pathLine = screen.getAllByText('/Users/me/ws').find(el => !el.hidden)!
     for (const line of [screen.getByText('ws'), pathLine]) {
-      expect(line).not.toHaveAttribute('title')
+      expect(line).toHaveAttribute('title', '')
       expect(line).toHaveAttribute('tabindex', '0')
       fireEvent.focus(line)
       expect(screen.getByRole('tooltip')).toHaveTextContent('/Users/me/ws')

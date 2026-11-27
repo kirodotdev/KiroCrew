@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.builtin_adoption_baseline import GrantBaseline
 from kiro_crew.apps.builtin_adoption_mcp import adopted_mcp_servers_refusal
 from kiro_crew.apps.builtin_adoption_pins import AdoptionPin
 from kiro_crew.apps.builtin_adoption_state import GrantPlan
@@ -116,6 +117,7 @@ def pinned_tree_refusal(
     *,
     shipped_manifest: Any = None,
     record_version: str = "",
+    frozen_servers: Any = None,
 ) -> str | None:
     """E7, E8 and E10 against a verified copy of the pinned tree, or None.
 
@@ -123,7 +125,8 @@ def pinned_tree_refusal(
     wheel built-in's (its version must equal the pin's, which keeps a one-release
     downgrade data-safe, and its ``mcpServers`` are the ceiling of the stdio servers
     the tree may carry, :mod:`kiro_crew.apps.builtin_adoption_mcp`); *record_version*
-    the installed record's.
+    the installed record's; *frozen_servers* that ceiling once the wheel copy is gone,
+    as the pin row froze it from the deleted copy.
     """
     if manifest is None or getattr(manifest, "name", None) != pin.name:
         return "manifest_identity_mismatch"
@@ -136,7 +139,9 @@ def pinned_tree_refusal(
     raw = _raw_manifest(tree_root)
     if manifest.ui.overlays or raw.get("defaultEnabled") is True:
         return "pinned_feature_unsupported"
-    refusal = adopted_mcp_servers_refusal(manifest, tree_root, shipped_manifest)
+    refusal = adopted_mcp_servers_refusal(
+        manifest, tree_root, shipped_manifest, frozen_servers=frozen_servers
+    )
     if refusal is not None:
         return refusal
     try:
@@ -182,16 +187,19 @@ def admission_refusal(name: str, manifest: Any) -> str | None:
     )
 
 
-def permission_refusal(name: str, manifest: Any) -> str | None:
+def permission_refusal(
+    name: str, manifest: Any, baseline: GrantBaseline | None = None
+) -> str | None:
     """E9: what ``update_app`` would hold back or newly ask consent for, or None.
 
     The same computation ``update_app`` runs, against the record's live state, so
-    an adopted app keeps every grant it held and its ``enabled`` flag.
+    an adopted app keeps every grant it held and its ``enabled`` flag. *baseline*,
+    set once the wheel copy is gone (``builtin_adoption_baseline.no_copy_baseline``),
+    replaces the record's ``app.json`` copy and approved set, which nothing rewrites
+    without a copy; the record must still exist.
     """
     from kiro_crew.apps.manager import (
-        _approved_grants_after_manifest_change,
         _effective_approved_grants,
-        _held_back_entries,
         _read_installed,
         get_app_manifest,
     )
@@ -201,24 +209,35 @@ def permission_refusal(name: str, manifest: Any) -> str | None:
     existing = _read_installed(name, manifest=old_manifest)
     if existing is None:
         return "permission_widening"
-    if manifest.permissions.sessionApproval and not (
-        old_manifest and old_manifest.permissions.sessionApproval
-    ):
+    if baseline is None:
+        baseline = GrantBaseline(
+            permissions=old_manifest.permissions if old_manifest else None,
+            grants=grant_source(old_manifest),
+            approved=_effective_approved_grants(name, existing),
+        )
+    return widening_refusal(manifest, baseline)
+
+
+def widening_refusal(manifest: Any, baseline: GrantBaseline) -> str | None:
+    """E9 of *manifest* against *baseline*, or None. Reads nothing from disk."""
+    from kiro_crew.apps.manager import _approved_grants_after_manifest_change, _held_back_entries
+    from kiro_crew.apps.point_grants import grant_source
+
+    old = baseline.permissions
+    if manifest.permissions.sessionApproval and not (old and old.sessionApproval):
         return "permission_widening"
     # Declared at the trust prompt, so an adopted copy declares it only where the
     # wheel copy the owner already runs does.
-    if manifest.permissions.chatSlots and not (old_manifest and old_manifest.permissions.chatSlots):
+    if manifest.permissions.chatSlots and not (old and old.chatSlots):
         return "permission_widening"
     # The same for the chats its page may open: no prefix, folder, agent or memory
     # mode the wheel copy does not declare.
     launch = manifest.permissions.chatLaunch
-    if launch is not None and not launch.within(
-        old_manifest.permissions.chatLaunch if old_manifest else None
-    ):
+    if launch is not None and not launch.within(old.chatLaunch if old else None):
         return "permission_widening"
     approved = _approved_grants_after_manifest_change(
-        existing_approved=_effective_approved_grants(name, existing),
-        old_permissions=grant_source(old_manifest),
+        existing_approved=baseline.approved,
+        old_permissions=baseline.grants,
         new_permissions=grant_source(manifest),
     )
     if any(_held_back_entries(approved, grant_source(manifest)).values()):

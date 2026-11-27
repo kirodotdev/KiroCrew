@@ -86,6 +86,9 @@ vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../components/DetailPanel', () => ({ default: () => null }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }), emitSlotFocused: () => {}, endSplitPaneFocus: () => {} }))
+// The test DOM has no layout, so the side panel's on-screen check reads every open
+// panel as zero-size and closes it mid-test; its own spec covers it.
+vi.mock('../hooks/useSidePanelHealth', () => ({ useSidePanelHealth: vi.fn() }))
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,

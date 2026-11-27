@@ -1,18 +1,18 @@
+import { chordLetter } from '../lib/shortcutRegistry'
+
 /** Pure rules for the terminal's find and fullscreen affordances (the layout
  *  rules, the per-platform find/fullscreen chord match and the keycaps the
- *  menu shows) and the chord-letter match its key handler shares, kept out of
+ *  dock shows) and the chord-letter match its key handler shares, kept out of
  *  the components so they unit-test without rendering. */
 
-/** Whether a keydown is the lowercase Latin `letter` of a terminal chord.
- *  Matches the letter TYPED (`key`), so on a remapped Latin layout such as
- *  Dvorak, Ctrl+U on QWERTY's F position still reaches the shell as kill-line,
- *  and the key that types `f` opens find. Falls back to the physical position
- *  (`code === 'Key<LETTER>'`) only when the typed key is not a Latin letter, so
+/** Whether a keydown is the lowercase Latin `letter` of a terminal chord, by
+ *  the dashboard's one letter rule ({@link chordLetter}): the letter TYPED, so
+ *  on a remapped Latin layout such as Dvorak, Ctrl+U on QWERTY's F position
+ *  still reaches the shell as kill-line, and the key that types `f` opens find;
+ *  the physical position only when the typed key is not a Latin letter, so
  *  non-Latin layouts (and macOS Option glyphs) keep a working chord. */
 export function isChordLetter(key: string, code: string, letter: string): boolean {
-  const k = key.toLowerCase()
-  if (k.length === 1 && k >= 'a' && k <= 'z') return k === letter
-  return code === `Key${letter.toUpperCase()}`
+  return chordLetter(key, code) === letter
 }
 
 /** Whether a keydown is the F of the find/fullscreen chord. */
@@ -25,8 +25,8 @@ export function isFindChordKey(key: string, code: string): boolean {
  *  (readline forward-char, page-forward in less/man/vim):
  *  - macOS: Cmd+F finds, Cmd+Shift+F toggles fullscreen. Ctrl+F is the shell's.
  *  - Linux/Windows: Ctrl+Shift+F finds. Bare Ctrl+F is the shell's and passes
- *    through unchanged. Fullscreen has no chord there; its overflow-menu item
- *    is the way in.
+ *    through unchanged. Fullscreen has no chord there; the dock header's
+ *    Fullscreen button is the way in.
  *  Alt, and Cmd+Ctrl together, never match. */
 export type TerminalChord = 'find' | 'fullscreen' | null
 
@@ -48,10 +48,16 @@ export function findKeycap(mac: boolean): string {
   return mac ? '⌘F' : 'Ctrl+Shift+F'
 }
 
-/** The keycap the overflow menu shows next to Fullscreen, or null where the
+/** The keycap the Fullscreen button's tooltip shows, or null where the
  *  platform has no fullscreen chord (Linux/Windows). */
 export function fullscreenKeycap(mac: boolean): string | null {
   return mac ? '⇧⌘F' : null
+}
+
+/** The fullscreen chord in `aria-keyshortcuts` form, or undefined where the
+ *  platform has none. */
+export function fullscreenAriaKeyshortcuts(mac: boolean): string | undefined {
+  return mac ? ['Meta', 'Shift', 'F'].join('+') : undefined
 }
 
 /** Whether the dock terminal may go fullscreen. Fullscreen fills the dashboard

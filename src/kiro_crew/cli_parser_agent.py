@@ -139,7 +139,11 @@ Tool permission prompt (same keys as kiro-cli chat):
     )
     headless.add_argument("--cwd", metavar="DIR", help="Project directory for the chat (absolute)")
     headless.add_argument(
-        "--timeout", type=float, default=0, metavar="SECS", help="Wall-clock cap (exit 4)"
+        "--timeout",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help="Wall-clock cap (exit 4); default 6 hours, 0 turns it off",
     )
     headless.add_argument(
         "--budget", type=float, default=0, metavar="CREDITS", help="Kiro credit cap (exit 5)"
@@ -194,7 +198,7 @@ Examples:
         "--folder",
         default=None,
         help='Only list jobs in this existing Schedule-page folder, by name or id; "-" '
-        'or "" lists jobs in no folder.',
+        "or --folder= lists jobs in no folder.",
     )
     cron_add = cron_sub.add_parser(
         "add",
@@ -232,7 +236,9 @@ Examples:
         dest="at",
         help="One-shot: fire once at this time and then delete the job. A Unix timestamp, "
         "or a time string ('5pm', 'in 30 minutes', 'tomorrow 9am', '2026-10-01 09:00') "
-        "read in --timezone, or in the default timezone when --timezone is omitted.",
+        "read in --timezone, or in the default timezone when --timezone is omitted. "
+        "An ISO 8601 time with its own zone ('2026-10-01T09:00:00Z', "
+        "'2026-10-01T09:00+02:00') names an instant and ignores --timezone.",
     )
     cron_add.add_argument(
         "--timezone",
@@ -407,12 +413,12 @@ Examples:
         help=_ALERT_AFTER_HELP,
     )
     cron_update.add_argument("--cron", dest="cron_expr", help="New cron expression")
-    cron_update.add_argument("--channel", help='New channel ID ("" clears it)')
+    cron_update.add_argument("--channel", help="New channel ID (--channel= clears it)")
     cron_update.add_argument(
         "--agent",
         dest="agent",
         default=None,
-        help="New agent name (empty string resets to agent.default_agent, "
+        help="New agent name (--agent= resets to agent.default_agent, "
         "or the kirocrew agent when that is unset or not eligible)",
     )
     cron_update.add_argument(
@@ -420,7 +426,7 @@ Examples:
         dest="project_path",
         default=None,
         metavar="DIR",
-        help="New project directory for the job's agent session (empty string "
+        help="New project directory for the job's agent session (--project-path= "
         "clears it, back to the default directory)",
     )
     cron_update.add_argument(
@@ -433,21 +439,21 @@ Examples:
     cron_update.add_argument(
         "--folder",
         default=None,
-        help='Move the job to this Schedule-page folder, by name or id; "" moves it '
+        help="Move the job to this Schedule-page folder, by name or id; --folder= moves it "
         "out of its folder. A missing name is created through the running gateway.",
     )
     cron_update.add_argument(
         "--model",
         dest="model",
         default=None,
-        help='New model id for the agent wake; "" clears it, back to the default model',
+        help="New model id for the agent wake; --model= clears it, back to the default model",
     )
     cron_update.add_argument(
         "--timezone",
         dest="timezone",
         default=None,
         help="New IANA timezone the job's wall clock is read in (e.g. America/New_York, "
-        "or 'local'); \"\" resets it to the configured timezone, else 'local'",
+        "or 'local'); --timezone= resets it to the configured timezone, else 'local'",
     )
     cron_update.add_argument(
         "--persistent-session",
@@ -766,8 +772,8 @@ Examples:
             "Only remove lessons carrying this repo scope. A lesson's "
             "identity is (rule, repo_scope), so a scoped and a global lesson can "
             "share rule text; without this flag a matching substring removes both. "
-            "Omit to match every scope (the default). Pass an empty string to "
-            'target only the unscoped (global) rows: --repo-scope "".'
+            "Omit to match every scope (the default). Pass an empty value, "
+            "--repo-scope=, to target only the unscoped (global) rows."
         ),
     )
 
@@ -785,6 +791,8 @@ Examples:
   kirocrew artifact show cr-queue
   kirocrew artifact show cr-queue --version 2
   kirocrew artifact show cr-queue --meta
+  kirocrew artifact show cr-queue --docx cr-queue.docx
+  kirocrew artifact show cr-queue --xlsx cr-queue.xlsx
   kirocrew artifact update cr-queue --content-file widget.html
   kirocrew artifact versions cr-queue
   kirocrew artifact delete cr-queue
@@ -807,10 +815,27 @@ Examples:
     art_show.add_argument(
         "--version", type=positive_int, help="Specific version, 1 or more (default: current)"
     )
-    art_show.add_argument(
+    show_form = art_show.add_mutually_exclusive_group()
+    show_form.add_argument(
         "--meta",
         action="store_true",
         help="Print metadata as JSON instead of the content body",
+    )
+    show_form.add_argument(
+        "--docx",
+        metavar="FILE",
+        help=(
+            "Write a markdown or text artifact to a NEW Word file, one paragraph per source "
+            "line with only headings styled; an existing file is refused"
+        ),
+    )
+    show_form.add_argument(
+        "--xlsx",
+        metavar="FILE",
+        help=(
+            "Write the tables of a markdown or text artifact to a NEW spreadsheet file, one "
+            "sheet per table with every cell as text; an existing file is refused"
+        ),
     )
 
     art_save = art_sub.add_parser("save", help="Save a new artifact")
@@ -923,6 +948,17 @@ def register_memory_parser(sub: _Commands) -> None:
         action="store_true",
         help="Cancel a staged memory restore without changing active memory",
     )
+    mem_restore_choice.add_argument(
+        "--merge-from",
+        default=None,
+        help=(
+            "Add back only the rows a member store is missing, from a memory.db of the same "
+            "store (such as the one in a superseded-* copy); dry run unless --apply"
+        ),
+    )
+    mem_restore.add_argument(
+        "--apply", action="store_true", help="With --merge-from: write the merge"
+    )
     mem_create = mem_sub.add_parser(
         "create-store",
         help="Create a declared memory store's directory (use never creates it)",
@@ -1006,6 +1042,9 @@ def register_memory_parser(sub: _Commands) -> None:
         help="Save facts from a text or Markdown file another assistant wrote about you",
     )
     mem_import_text.add_argument("file", help="Path to a plain text or Markdown file")
+    mem_import_text.add_argument(
+        "--store", default=None, help="Store to save into (default: the default store)"
+    )
     mode = mem_import_text.add_mutually_exclusive_group()
     mode.add_argument("--yes", action="store_true", help="Save every listed fact without asking")
     mode.add_argument("--dry-run", action="store_true", help="List the facts and save nothing")
@@ -1037,7 +1076,6 @@ def register_memory_parser(sub: _Commands) -> None:
         "--stage",
         default=None,
         choices=[
-            "relevance_rule",
             "lesson_origin_gate",
             "lesson_tier_policy",
             "fact_origin_gate",
@@ -1101,7 +1139,7 @@ def register_agent_parser(sub: _Commands) -> None:
     agent_update.add_argument("--workspace", help="New workspace name")
     agent_update.add_argument(
         "--display-name",
-        help='New label the dashboard shows; "" clears it back to the agent name',
+        help="New label the dashboard shows; --display-name= clears it back to the agent name",
     )
     agent_update.add_argument(
         "--memory-store",
@@ -1110,7 +1148,7 @@ def register_agent_parser(sub: _Commands) -> None:
     agent_update.add_argument(
         "--model",
         help=(
-            "New default model for the agent's sessions; \"\" or 'auto' clears the pin "
+            "New default model for the agent's sessions; --model= or 'auto' clears the pin "
             "so it follows the template's pinned model, then agent.model"
         ),
     )
@@ -1233,6 +1271,7 @@ Examples:
   kirocrew app enable oncall-watchtower
   kirocrew app update oncall-watchtower
   kirocrew app update oncall-watchtower --source /path/to/oncall-watchtower
+  kirocrew app config oncall-watchtower set root /srv/oncall
   kirocrew app disable oncall-watchtower
   kirocrew app info oncall-watchtower
   kirocrew app uninstall oncall-watchtower
@@ -1298,6 +1337,22 @@ Examples:
             "(default: the recorded source, where it was installed or last updated from)"
         ),
     )
+    app_config = app_sub.add_parser(
+        "config",
+        help="Read or set an installed app's config (needs a running gateway; not on "
+        "native Windows)",
+        description="Print an installed app's config, or set one top-level key in it, "
+        "through the running gateway. `set` runs none of the app's own checks and works "
+        "only for an app whose config the host stores.",
+    )
+    app_config.add_argument("name", help="App name")
+    app_config_sub = app_config.add_subparsers(dest="config_action")
+    app_config_sub.add_parser("get", help="Print the app's config (the default)")
+    app_config_set = app_config_sub.add_parser("set", help="Set one top-level key")
+    app_config_set.add_argument("key", help="Top-level key, taken literally (a.b is one key)")
+    app_config_set.add_argument(
+        "value", help="Value, typed as `kirocrew config set` types it (JSON for an object)"
+    )
     app_disable = app_sub.add_parser("disable", help="Disable an installed app")
     app_disable.add_argument("name", help="App name to disable")
     app_mcp = app_sub.add_parser(
@@ -1336,6 +1391,13 @@ Examples:
             "app's install directory (e.g. a ui/ symlinked to your source tree)"
         ),
     )
+    app_startup = app_sub.add_parser(
+        "startup",
+        help="Approve an app's ui.startup module to run on every dashboard load",
+        allow_abbrev=False,
+    )
+    app_startup.add_argument("name", help="App name")
+    app_startup.add_argument("--revoke", action="store_true", help="Withdraw the approval")
     app_init = app_sub.add_parser("init", help="Scaffold a new app")
     app_init.add_argument("name", help="App name (kebab-case)")
     app_init.add_argument("--dir", default=".", help="Output directory (default: current)")

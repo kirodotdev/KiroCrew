@@ -1,0 +1,12 @@
++52
+Splitting the git/tar floor under the 1,600-line working target: the git grammar it reads
+a git argv with (the local-only and transport verb sets, where the subcommand sits behind
+git's global options, the transport operands and remote-host test, the `ext::` decoder,
+the config entries one invocation carries, the alias bodies git can run from them, and the
+transport-URL config keys) moved out of `argv_floor_git_tar.py` into a new owner module
+`argv_floor_git_grammar.py`. The moved definitions are net-neutral (they left one module
+and entered another unchanged), so this delta is the overhead the split adds to the
+package: the new module's docstring and imports, the import block `argv_floor_git_tar.py`
+reads the moved names through, and the facade registration in `argv_floor.py` (the
+`_OWNERS` entry, its owner comment and its `TYPE_CHECKING` manifest block). Deny-floor
+behaviour is unchanged: this is a pure move plus registration, it adds and removes no rule.

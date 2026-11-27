@@ -134,12 +134,23 @@ async def _run_app_build(
     app that needs no build still installs cleanly.
     """
     build_cmds: list[list[str]] = []
+    build_env = minimal_env()
 
     if await asyncio.to_thread((build_dir / "package.json").is_file):
         # Resolve to a full path, mirroring the pip branch below: on Windows npm
         # is ``npm.CMD``, which shutil.which finds but CreateProcess cannot spawn
         # by the bare name "npm".
         npm = shutil.which("npm")
+        if not npm:
+            # Off PATH, the backend's lookup finds both, and its node goes on npm's
+            # PATH. Imported here: backend imports this module. Off the loop: the
+            # nvm step can run a shell.
+            from kiro_crew.apps.backend import _find_node_binary, _find_npm_binary, _npm_child_path
+
+            npm = await asyncio.to_thread(_find_npm_binary)
+            node = await asyncio.to_thread(_find_node_binary) if npm else None
+            if node:
+                build_env["PATH"] = _npm_child_path(node, build_env.get("PATH", ""))
         if npm:
             build_cmds.append([npm, "install"])
             try:
@@ -149,7 +160,10 @@ async def _run_app_build(
             except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
         else:
-            log_lines.append("npm not found on PATH — skipping JavaScript build step")
+            log_lines.append(
+                "npm not found on PATH or in the Node.js install directories"
+                " — skipping JavaScript build step"
+            )
     elif platform_compat.is_bundled_interpreter():
         # The desktop gate decides for the bundled interpreter, ahead of the
         # `is_file` detection the pip branch below uses, because it decides on
@@ -320,7 +334,7 @@ async def _run_app_build(
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-            env=minimal_env(),
+            env=build_env,
         )
         assert proc.stdout is not None
 

@@ -40,7 +40,7 @@ over and what changes.
 | [Task Runner](task-runner.md) | Autonomous multi-step execution from spec files: hand it a task, walk away |
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns with scoping, adaptive agent execution, and exportable reports |
 | [Issue Radar Pipeline](issue-radar-pipeline.md) | Which step of automated triage every issue is sitting in, how long it has been there, and what each agent session cost |
-| [Apps](apps.md) | Twenty-one apps ship in the package: enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
+| [Apps](apps.md) | Nineteen apps ship in the package: enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
 | [Connections](connections.md) | MCP servers and OAuth'd services on one page: the curated provider catalogue, adding your own stdio or remote server, what a health badge means, and why a tool's name may differ |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
@@ -135,8 +135,11 @@ gracefully rather than failing the turn.
 - [Blocked commands and credential access](blocked-commands.md): why a command was
   refused, what the agent is told to do instead, and how to check your AWS or SSO
   credential setup
-- [Tool approvals](tool-approvals.md): auto-approve one MCP tool on KAS so it stops
-  asking, and the settings that look like they would but do not
+- [Tool approvals](tool-approvals.md): stop one MCP tool asking with Always allow,
+  and the settings that look like they would but do not
+- [Security model](security-model.md): the defense-in-depth layers, what each one
+  protects against, where they deliberately stop, and whether the defaults fit a
+  corporate host or only an isolated one
 - [Apps and the App Store](apps.md): what an app is, what ships, enabling and
   updating one, the agents and skills it brings, and why enabling one is a trust
   decision
@@ -166,6 +169,9 @@ gracefully rather than failing the turn.
 - An enabled app runs in-process with the gateway's own privileges, so enabling one
   is a trust decision. Third-party app execution is deny-by-default, and every app
   load is audited
+
+See [Security model](security-model.md) for how these layers fit together, what
+each protects against, where they stop, and which posture fits your host.
 
 ## Links
 

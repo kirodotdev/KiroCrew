@@ -717,6 +717,15 @@ async def _publish_pr_observation(
     return unchanged, {"digest": this_digest, "remarks": ids[:_JUDGE_PR_SEEN_REMARKS]}
 
 
+def _ledger_moved_since_read(probe: Any) -> bool:
+    """Whether the ledger the probe read was written since, in this process.
+
+    True when the probe cannot say: doubt keeps the watch for another tick.
+    """
+    moved = getattr(probe, "board_moved_since_read", None)
+    return True if moved is None else bool(moved())
+
+
 def _terminal_note(observation: Any, merged: bool) -> str:
     """The one-line result the owed final turn opens with, from the typed reading.
 
@@ -965,7 +974,7 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
     observation = _pr_observation_of(probe)
     # Two channels reach terminal: the gh-pr fetcher through ``probe.observation``,
     # and the kernel's own ``Outcome.TERMINAL`` verdict (a subject that cannot be
-    # named). A work ledger whose every item is closed is a wake, not a terminal.
+    # named, or a board whose every item is closed once its conductor's turn is over).
     terminal = (
         observation is not None and observation.is_terminal
     ) or verdict.outcome is irq.Outcome.TERMINAL
@@ -1032,7 +1041,10 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         )
         # A subject with no pull-request reading (a kernel TERMINAL on a target
         # that cannot be named, e.g. a work ledger with no conductor) has no result
-        # to report, so a dashboard loop on one settles now with the bell alone.
+        # to report, so a dashboard loop on one settles now with the bell alone. A
+        # finished ledger reaches here from a dashboard conductor only: a channel
+        # conductor's probe answers a closed board with a wake instead.
+        ledger_finished = bool(probes.LEDGER_FINISHED_KEYS & set(verdict.keys))
         if observation is not None or is_channel_key(loop.slot_key):
             classification = "success" if succeeded else "blocked"
             if monitor.terminal_delivered == classification:
@@ -1097,6 +1109,20 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
                     loop.id,
                 )
                 return False
+            if ledger_finished and (
+                self._worker_running(loop.slot_key) or _ledger_moved_since_read(probe)
+            ):
+                # The board or the conductor moved after the probe read the closed
+                # board: a turn may be creating and binding the next item, whose bind
+                # would see this loop still active and arm nothing. Both reads are in
+                # memory with no await before the deactivation below, so a bind cannot
+                # land in between: keep the watch, and the next tick reads it again.
+                logger.info(
+                    "AutoNudge: loop %s's ledger or conductor moved before its finished "
+                    "ledger settled -- keeping the watch",
+                    loop.id,
+                )
+                return True
             monitor.outcome = MonitorOutcome.SUCCESS if succeeded else MonitorOutcome.BLOCKED
             monitor.stopped_reason = MONITOR_TERMINAL_REASON
             monitor.stopped_at = time.time()

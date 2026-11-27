@@ -31,7 +31,8 @@ CRON = (
     "Schedule recurring or one-shot jobs (reminders, polling, digests) and manage "
     "the jobs this session owns.\n"
     '- `cron_add`: recurring or one-shot jobs ("every", "daily", "remind me", '
-    '"check regularly"). Prefer no-LLM `script` or mutually exclusive `command` for '
+    '"check regularly"). A plain "remind me to X" sets `notify_only=true`: the text '
+    "reaches the user and no agent runs. Prefer no-LLM `script` or mutually exclusive `command` for "
     "deterministic polling. Register Python as "
     "`script='~/.kiro/crew/crons/file.py:function'`; read `ctx.message`, deliver "
     "with `ctx.notify()`, raise `Skip()` to retry, `Done(msg)` to deliver/remove, "
@@ -60,8 +61,9 @@ GUIDE = (
     "- `find_ui`, `search_docs`, guides, cards: for where-is, how-to and setting "
     "questions about Kiro Crew itself (including why a tool keeps asking for "
     "approval), call these first and follow each result's `next`; answer from what "
-    "they return, never from a config key you recall. Guides and cards need a "
-    "message the user sent from the dashboard.\n"
+    "they return, never from a config key you recall or code you read. A result "
+    "with a `guide_ref` goes to `guide_start` in the same turn, before the reply. "
+    "Guides and cards need a message the user sent from the dashboard.\n"
     "- Write no text before these calls: the user reads every word, so a line such "
     'as "Let me check the layout first" is shown to them. Call the tool, then write '
     "only the answer, or offer the guide or card."

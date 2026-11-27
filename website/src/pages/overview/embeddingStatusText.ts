@@ -190,3 +190,37 @@ export function embeddingSetupStepLabel(step: string, attempt = 0): string {
     default: return i18nT('pages.overview.vectorMemoryCard.model_loading')
   }
 }
+
+// Turn a raw embedding model id (e.g. "qwen3-embedding:0.6b") into a friendly
+// display name (e.g. "Qwen3-Embedding-0.6B") for disclosure in the UI. Falls
+// back to the raw id for any shape it doesn't recognise, so a future model
+// swap still discloses *something* rather than silently blanking.
+export function formatEmbedModel(modelId?: string): string {
+  const raw = (modelId ?? '').trim()
+  if (!raw) return ''
+  const [base, tag] = raw.split(':')
+  const pretty = base.split('-').map(p => p ? p[0].toUpperCase() + p.slice(1) : p).join('-')
+  return tag ? `${pretty}-${tag.toUpperCase()}` : pretty
+}
+
+// Build the embedding-model disclosure shown under the EMBEDDINGS badge:
+// a short label (friendly model name + vector dimension) plus a fuller tooltip.
+// The model name is a technical identifier; the surrounding copy is localized.
+// Returns null when no model id is known, so the disclosure line is omitted.
+export function embedModelDisclosure(status?: { model_source?: string; model_path?: string; model_id?: string; model_dim?: number } | null): { label: string; title: string } | null {
+  // A custom model's id is either operator-chosen or derived as
+  // 'custom:<file>:<size>'; neither reads well through formatEmbedModel, so
+  // label it by filename and put the full path in the tooltip.
+  const isCustom = status?.model_source === 'custom'
+  const customFile = (status?.model_path ?? '').split(/[\\/]/).pop() ?? ''
+  const name = isCustom && customFile ? customFile : formatEmbedModel(status?.model_id)
+  if (!name) return null
+  const dim = status?.model_dim
+  const label = dim ? i18nT('pages.overview.vectorMemoryCard.embed_model_label', { model: name, dim }) : name
+  const baseTitle = dim
+    ? i18nT('pages.overview.vectorMemoryCard.embed_model_runs_locally', { model: status?.model_id, dim })
+    : String(status?.model_id ?? '')
+  // Technical identifiers only — no new localized copy needed.
+  const title = isCustom && status?.model_path ? `${baseTitle} — ${status.model_path}` : baseTitle
+  return { label, title }
+}

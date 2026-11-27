@@ -391,11 +391,23 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
 
         task.add_done_callback(forget_owner)
     session_key = info.conversation_key or f"subagent:{info.id}"
+    # Read when this run's KAS session starts: it is held to its parent agent's denies,
+    # anchored where a parent that is itself a run has its session bound.
+    # Imported here because this body runs on the facade's globals.
+    from kiro_crew.agent_sdk.kas_subagent_runs import note_parent
+    from kiro_crew.subagent_manager.turn_session import _run_on
+
+    parent_key = info.parent_session_key or ""
     # Set by the reap-echo arm below: the run ended because a reap in
     # flight tore its runtime down, and that reap publishes the terminal
     # report once its kill has decided (see the ``finally``).
     reap_owns_report = False
     try:
+        # Inside the ``try``, so a failed read ends this run as any start error does.
+        # A parent past the key's cap is not recorded; a KAS session refuses it.
+        above = _run_on(self._manager, parent_key) if parent_key.startswith("subagent:") else None
+        bound = getattr(above, "_session_cwd", "")
+        note_parent(session_key, parent_key, bound if isinstance(bound, str) else "")
         # Capture the deadline once, when execution starts. A record that
         # unexpected-cancel recovery respawns keeps its nonzero value, so a
         # config reload between the two attempts cannot move it.
@@ -689,6 +701,21 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
         # report exists, so the parent reads a bounded file. Bounded, and it
         # never raises, so it cannot keep the report below from spawning.
         await self._cap_unclaimed_result_impl(info)
+        if info.worktree is not None and not info._recovering:
+            # The completion event names an isolated run's worktree and its
+            # commits, read off the loop now. Bounded, and it never raises, so
+            # the report below is still spawned.
+            from kiro_crew.subagent_worktree import completion_note
+
+            try:
+                info.worktree_note = await asyncio.wait_for(
+                    asyncio.to_thread(completion_note, info.id, info.worktree), 30
+                )
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                logger.debug("worktree note for %s not read", info.id, exc_info=True)
+                info.worktree_note = (
+                    f"Note: Agent `{info.id}` worked in its own git worktree {info.worktree.path}."
+                )
         # Guard 3 of 3 — the terminal REPORT, owned by the finalize claim.
         # Taken (and the report task SPAWNED) before the teardown awaits
         # below, so a cancellation landing anywhere in teardown cannot

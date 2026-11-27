@@ -98,6 +98,7 @@ const WS_SLOT_SCOPED_EVENTS = new Set([
   'approval', 'approval_resolved', 'question_card', 'elicitation_resolved',
   // Subagent lifecycle
   'subagent_spawn', 'subagent_done', 'subagent_tool', 'subagent_chunk',
+  'subagent_thinking',
   'subagent_snapshot', 'subagent_status', 'subagent_queued',
   'subagent_stalled', 'subagent_retrying', 'subagent_recovering',
   'subagent_waiting', 'subagent_resumed',
@@ -114,6 +115,7 @@ const WS_SLOT_SCOPED_EVENTS = new Set([
  */
 const WS_SUBAGENT_EVENTS = new Set([
   'subagent_spawn', 'subagent_done', 'subagent_tool', 'subagent_chunk',
+  'subagent_thinking',
   'subagent_snapshot', 'subagent_status', 'subagent_queued',
   'subagent_stalled', 'subagent_retrying', 'subagent_recovering',
   'subagent_waiting', 'subagent_resumed',
@@ -667,7 +669,10 @@ export type { HostSession, HostSessionApproval, HostSessions, HostSessionDecisio
 // Play, pause, seek and volume on the tab the app's own agent browses, behind the
 // app's declared `/api/browser/media` (level 10, see ./browserMedia).
 export { useBrowserMedia, BROWSER_MEDIA_PATH } from './browserMedia'
-export type { BrowserMedia, BrowserMediaState } from './browserMedia'
+export type { BrowserMedia, BrowserMediaState, BrowserRecipeResult } from './browserMedia'
+// The app's browsing list, and the owner's dialog before a site is added (level 13).
+export { useBrowserSites } from './browserSites'
+export type { BrowserSite, BrowserSiteResult, BrowserSites } from './browserSites'
 // The live view of an app's own slot, with take over and hand back, behind the
 // `app_browser_sdk` preview (RFC app-sdk-browser, section 5).
 export { default as BrowserView } from './BrowserView'

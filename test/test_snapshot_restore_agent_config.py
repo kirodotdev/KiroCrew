@@ -41,9 +41,10 @@ FILE_NAMES = (
 DEPTHS = ("", "proj", "a/b")
 
 
-def _bundle(path: Path, files: dict[str, str]) -> Path:
+def _bundle(path: Path, files: dict[str, str], components: dict[str, str] | None = None) -> Path:
     root = "kirocrew-snapshot-20260101T000000Z"
-    manifest = {"version": 4, "purpose": "backup", "components": {"workspace": "unresolved"}}
+    declared = components or {"workspace": "unresolved"}
+    manifest = {"version": 4, "purpose": "backup", "components": declared}
     members = {"MANIFEST.json": json.dumps(manifest), **files}
     with tarfile.open(str(path), "w:gz") as tar:
         d = tarfile.TarInfo(root)
@@ -217,3 +218,90 @@ def test_replace_keeps_live_agent_config_inside_dependency_directories(
     base = home / "workspace" / skipped
     assert (base / ".claude" / "settings.local.json").read_text() == LIVE
     assert (base / "lib.py").read_text() == "archive lib"
+
+
+def _memory_bundle(path: Path, files: dict[str, str]) -> Path:
+    return _bundle(path, files, components={"memory": "unresolved"})
+
+
+#: The two ``workspace/`` subtrees the memory component restores on its own.
+MEMORY_TREES = ("memory", "knowledge")
+
+
+@pytest.mark.parametrize("mode", ["replace", "merge"])
+@pytest.mark.parametrize("tree", MEMORY_TREES)
+@pytest.mark.parametrize("with_config", [True, False], ids=["live-has-config", "live-has-none"])
+def test_memory_only_restore_holds_back_agent_config_in_its_workspace_trees(
+    tmp_path, monkeypatch, capsys, mode, tree, with_config
+):
+    """``--components memory`` installs two ``workspace/`` subtrees, so they get the hold-back."""
+    home = _live_home(tmp_path, with_config=False)
+    live_proj = home / "workspace" / tree / "proj"
+    live_proj.mkdir(parents=True)
+    (live_proj / "live.md").write_text("live note")
+    if with_config:
+        (live_proj / ".kiro" / "settings").mkdir(parents=True)
+        (live_proj / ".kiro" / "settings" / "mcp.json").write_text(LIVE)
+        (live_proj / ".mcp.json").write_text('{"mcpServers": {}}')
+    bundle = _memory_bundle(
+        tmp_path / "b.tar.gz",
+        {
+            f"workspace/{tree}/proj/.kiro/settings/mcp.json": BYPASS,
+            f"workspace/{tree}/proj/.mcp.json": BYPASS,
+            f"workspace/{tree}/proj/doc.md": "archive doc",
+        },
+    )
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    argv = [str(bundle), "--force", "--mode", mode, "--components", "memory"]
+    assert restore_main(argv + unpinnable_argv()) == 0
+    if with_config:
+        assert (live_proj / ".kiro" / "settings" / "mcp.json").read_text() == LIVE
+        assert (live_proj / ".mcp.json").read_text() == '{"mcpServers": {}}'
+    else:
+        assert not (live_proj / ".kiro").exists()
+        assert not (live_proj / ".mcp.json").exists()
+    # The rest of the subtree still restores as the mode says.
+    assert (live_proj / "doc.md").read_text() == "archive doc"
+    assert (live_proj / "live.md").exists() is (mode == "merge")
+    out = capsys.readouterr().out
+    assert f"workspace/{tree}/proj/.mcp.json" in out
+
+
+def test_memory_only_restore_leaves_workspace_outside_its_trees_alone(tmp_path, monkeypatch):
+    """Without ``workspace`` selected, the rest of the live ``workspace/`` is not touched."""
+    home = _live_home(tmp_path, with_config=True)
+    bundle = _memory_bundle(
+        tmp_path / "b.tar.gz",
+        {
+            "workspace/memory/notes.md": "archive memory",
+            "workspace/proj/.mcp.json": BYPASS,
+        },
+    )
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    argv = [str(bundle), "--force", "--mode", "replace", "--components", "memory"]
+    assert restore_main(argv + unpinnable_argv()) == 0
+    ws = home / "workspace"
+    assert (ws / "memory" / "notes.md").read_text() == "archive memory"
+    assert (ws / "proj" / ".mcp.json").read_text() == '{"mcpServers": {}}'
+    assert (ws / ".claude" / "settings.local.json").read_text() == LIVE
+    assert (ws / "old.txt").read_text() == "live only"
+
+
+@pytest.mark.parametrize("mode", ["replace", "merge"])
+def test_memory_only_restore_keeps_live_agent_config_in_a_subtree_the_archive_lacks(
+    tmp_path, monkeypatch, mode
+):
+    """Replace clears a memory subtree the archive does not carry; its live config stays."""
+    home = _live_home(tmp_path, with_config=False)
+    live_proj = home / "workspace" / "knowledge" / "proj"
+    (live_proj / ".kiro" / "settings").mkdir(parents=True)
+    (live_proj / ".kiro" / "settings" / "mcp.json").write_text(LIVE)
+    (live_proj / "doc.md").write_text("live doc")
+    bundle = _memory_bundle(tmp_path / "b.tar.gz", {"workspace/memory/notes.md": "archive"})
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    argv = [str(bundle), "--force", "--mode", mode, "--components", "memory"]
+    assert restore_main(argv + unpinnable_argv()) == 0
+    assert (live_proj / ".kiro" / "settings" / "mcp.json").read_text() == LIVE
+    # Replace still clears the rest of the subtree the archive lacks; merge keeps it.
+    assert (live_proj / "doc.md").exists() is (mode == "merge")
+    assert (home / "workspace" / "memory" / "notes.md").read_text() == "archive"

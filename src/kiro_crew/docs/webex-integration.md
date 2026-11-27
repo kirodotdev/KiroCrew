@@ -81,7 +81,7 @@ and `/sessions` there lists the space's history rather than yours.
 | Command | What it does |
 |---|---|
 | `/new` (or `/start`) | Start a fresh, restart-safe conversation; its first turn adds it to `/sessions` |
-| `/compact` | Compress the conversation context |
+| `/compact` | Compress the conversation context. Text after it (`/compact keep the API decisions`) is passed to the compaction; the KAS backend's compaction takes no instructions, so there the text is ignored |
 | `/model` | List the models this account can use, and pick one |
 | `/agent [name]` | Show the agent and the ones you can pick; `/agent <name>` switches, `/agent default` goes back |
 | `/sessions` | List this conversation's earlier sessions |
@@ -89,7 +89,7 @@ and `/sessions` there lists the space's history rather than yours.
 | `/link` | Resume mirroring dashboard replies here (on by default) |
 | `/unlink` | Stop mirroring dashboard replies here |
 | `/stop` (or `/cancel`) | Stop the current reply and clear the queue |
-| `/kirocrew dashboard [2h]` | Get a dashboard login link (**DM only**) |
+| `/kirocrew dashboard [2h]` | Get a dashboard login link (**DM only**); it reaches your chats only when your email is `webex.owner_email` |
 | `/help` | Show available commands |
 
 `/help` is generated from the same table the parser uses, so it cannot go stale.

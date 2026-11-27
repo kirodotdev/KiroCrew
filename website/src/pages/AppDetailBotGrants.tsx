@@ -8,6 +8,7 @@
  * any other caller, the app's own token included.
  */
 import { useEffect, useState } from 'react'
+import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
@@ -15,12 +16,15 @@ import type { AppBotGrants } from '../api/client/apps'
 import { membersRosterQuery } from '../api/membersQuery'
 import { Btn, Card, CardTitle, Checkbox } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
+import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { i18nT } from '../i18n/t'
 import { compareText } from '../i18n/format'
+import { PREVIEW_BOT_CHAT_APP_TOOLS } from '../utils/previewFlags'
 
 const SCOPE_TEXT: Record<string, () => string> = {
   read: () => i18nT('pages.appDetailPage.bots_scope_read'),
   wake: () => i18nT('pages.appDetailPage.bots_scope_wake'),
+  tools: () => i18nT('pages.appDetailPage.bots_scope_tools'),
 }
 
 /** The declared Bot scopes outside the approved set (`approvedGrants.bots` is omitted while empty). */
@@ -55,6 +59,7 @@ export default function AppDetailBotGrants({ appName, declared }: { appName: str
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('')
+  const botChatAppTools = usePreviewFlag(PREVIEW_BOT_CHAT_APP_TOOLS)
   useEffect(() => { setTicked(null); setSaved(false); setError('') }, [appName])
   if (scopes.length === 0) return null
 
@@ -92,6 +97,14 @@ export default function AppDetailBotGrants({ appName, declared }: { appName: str
           <li key={s}>
             {SCOPE_TEXT[s]()}
             {grants.data && !approved.includes(s) && <span className="ml-1 text-warn">· {i18nT('pages.appDetailPage.grant_not_approved')}</span>}
+            {s === 'tools' && !botChatAppTools && (
+              <div className="text-[12px] text-muted" data-testid="bots-scope-tools-preview-off">
+                <Trans
+                  i18nKey="pages.appDetailPage.bots_scope_tools_preview_off"
+                  components={{ preview: <Link to="/settings/developer/feature-previews" className="text-accent hover:underline" /> }}
+                />
+              </div>
+            )}
           </li>
         ))}
       </ul>

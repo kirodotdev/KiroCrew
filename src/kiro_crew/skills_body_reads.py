@@ -29,6 +29,7 @@ from kiro_crew.metrics.feature_usage import SKILL_LAZY_LOAD_COUNT, skill_label
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.sel import sel
 from kiro_crew.skills_discovery import _installed_package_bytes_match, _within_any
+from kiro_crew.user_json import strip_utf8_bom
 
 #: The facade's logger, so a filter or a capture on ``kiro_crew.skills`` sees these records.
 logger = logging.getLogger("kiro_crew.skills")
@@ -62,6 +63,25 @@ PINNED_SKILL_BODIES_CAP = 99_000
 # path's ``PINNED_SKILL_BODIES_CAP`` above is the same number; if this capacity
 # is ever revisited, the two move together.
 SKILL_READ_CAPACITY = 99_000
+# The same bound for a session on KAS. KAS saves any tool result of 30,000
+# characters or more to a file and shows the model only its first and last 500,
+# so a read sized to the ceiling above reaches a KAS model as a file path. Bytes
+# bound characters (a character is at least one UTF-8 byte), and 1,000 are left
+# under 30,000 for anything wrapped around the tool's own response.
+KAS_SKILL_READ_CAPACITY = 29_000
+
+
+def kas_read_capacity(key: str, capacity: int) -> int:
+    """The body bytes a KAS session's read of *key* may carry: *capacity* or less.
+
+    *capacity* stays the ceiling, so a caller that asked for a smaller page gets
+    that page. The KAS bound comes off ``KAS_SKILL_READ_CAPACITY`` less the
+    skill_search response framing, which repeats the key: measured at 637
+    characters for a 14-character key and 1,009 for a 200-character one, so
+    1,000 plus 3 per key character covers it.
+    """
+    return max(1, min(capacity, KAS_SKILL_READ_CAPACITY - 1_000 - 3 * len(key)))
+
 
 # Why an exact-key read delivered no body. Three values because the caller acts
 # differently on each: a key outside the scope is a lookup to correct, an
@@ -234,9 +254,21 @@ def _decode_skill_text(raw: bytes, *, strict: bool = True) -> str:
     (``update_auto_skill`` carries version metadata across a rewrite). Callers
     that only render text pass ``strict=False``.
     """
-    text = raw.decode("utf-8-sig") if strict else raw.decode("utf-8-sig", errors="replace")
+    return _normalize_skill_text(
+        raw.decode("utf-8") if strict else raw.decode("utf-8", errors="replace")
+    )
+
+
+def _normalize_skill_text(text: str) -> str:
+    """The SKILL.md text every reader sees: one leading BOM dropped, newlines folded.
+
+    The single definition :func:`_decode_skill_text` applies to bytes, for a
+    reader that already holds decoded text (``read_auto_skill_body`` reads
+    through ``safe_read_file``). Dropping exactly one leading U+FEFF is what the
+    ``utf-8-sig`` codec does.
+    """
     # Universal newlines, matching TEXT-mode reads: CRLF and lone CR both fold.
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+    return strip_utf8_bom(text).replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _trusted_project_key(self, project_dir: str | Path | None) -> str:

@@ -237,6 +237,9 @@ def _record(
         "availability": "not_observed",
         "match": basis,
     }
+    if loc.get("app"):
+        # A page an app adds: name the app, so the answer can say which one to turn on.
+        rec["app"] = loc["app"]
     if loc.get("tier") == _AUTO:
         # A control with this label is drawn on this page; where on it, and
         # what must be true for it to show, is not known (see find_ui's doc).

@@ -6,6 +6,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { i18nT } from '../../i18n/t'
+import { safeGetItem } from '../../utils/safeStorage'
 
 /** The completion flags and writers `useTheme` owns, read afresh every render. */
 interface FirstRunFlags {
@@ -32,7 +33,7 @@ export function useFirstRunChapters({ onboarded, importOnboarded, themeBootReady
   // never overlays the shell and intercepts every spec's interactions. If this flag is
   // renamed or the modal moves off localStorage, update auth.setup.ts to match.
   const locallyImportOnboarded =
-    !!localStorage.getItem('mc-import-onboarded') || !!localStorage.getItem('mc-onboarded')
+    !!safeGetItem('mc-import-onboarded') || !!safeGetItem('mc-onboarded')
   const [showAgentImport, setShowAgentImport] = useState(false)
   // Set by a replay of the importer alone, never by first run. First run finishes
   // the chapter by itself when nothing is found to import; a replay shows that
@@ -41,7 +42,7 @@ export function useFirstRunChapters({ onboarded, importOnboarded, themeBootReady
   // Never seeded while the host's state is unread or this tab is not yet
   // confirmed as the owner: the derive below opens it once both answer.
   const [showOnboarding, setShowOnboarding] = useState(
-    () => !hostStateUnread && locallyImportOnboarded && !localStorage.getItem('mc-onboarded'),
+    () => !hostStateUnread && locallyImportOnboarded && !safeGetItem('mc-onboarded'),
   )
   // Read by the derive effect without being one of its inputs: closing the
   // importer must not re-run the derive (its onComplete/onSkipAll already set

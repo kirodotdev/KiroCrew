@@ -4,24 +4,26 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
-import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
-import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, useTerminalAtLimit, retryTerminalConnection } from '../utils/terminalRegistry'
+import { takeSkipFocusOnShow } from '../utils/terminalQuietShow'
+import { ensureTerminalConnection, pasteIntoTerminal, takesEarlyInput, useTerminalInputCapped, dismissTerminalInputCapped, EARLY_INPUT_CAP, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, useTerminalAtLimit, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
 import { ansiPaletteFromVars, toHexColor } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
-import { useTerminalTouchSelection, type TouchSelectStatus } from '../hooks/useTerminalTouchSelection'
+import { useTerminalTouchSelection } from '../hooks/useTerminalTouchSelection'
 import TerminalCompletion from './TerminalCompletion'
 import TerminalKeyBar from './TerminalKeyBar'
+import TerminalTouchHandles from './TerminalTouchHandles'
 import TerminalFindBar from './TerminalFindBar'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
-import { setTerminalCloseFailed } from '../hooks/useBottomTerminal'
 import { useTerminalSearch } from '../hooks/useTerminalSearch'
 import { copyToClipboard } from '../utils/clipboard'
 import { attachOsc52Copy, type Osc52CopyHandle } from '../lib/terminalOsc52'
 
 import { i18nT } from '../i18n/t'
+import { searchOpeners, registerDestroyTerm } from './terminalSessions'
+import { useStandInKeys } from '../utils/terminalStandInKeys'
 import { apiTransport } from '../api/apiTransport'
 /* ── Per-session xterm instance cache ──
  * Keyed by PTY session id. Instances persist across tab switches / chat
@@ -266,59 +268,8 @@ export function prewarmTerminal(id: string, width: number, height: number): void
   fit.fit()
 }
 
-/**
- * Tear down a terminal tab's LOCAL state: close its persistent WS and dispose
- * the cached xterm instance. Killing the backend PTY is a separate server call
- * routed through useDeleteTerminalSession() (per the use-react-query guideline);
- * SidePanel.handleCloseTab fires both.
- */
-export function disposeTerminalSession(sessionId: string): void {
-  disposeTerminalConnection(sessionId)
-  destroyTerm(sessionId)
-}
-
-/** Each mounted terminal pane's "open the find bar" action, by session id. */
-const searchOpeners = new Map<string, () => void>()
-
-/** Open the scrollback find bar on a mounted terminal pane (the overflow
- *  menu's Find item). Returns false when no pane for that id is mounted. */
-export function openTerminalSearch(sessionId: string): boolean {
-  const open = searchOpeners.get(sessionId)
-  if (!open) return false
-  open()
-  return true
-}
-
-/**
- * React Query mutation that kills a terminal's backend PTY
- * (DELETE /api/terminal/sessions/:id). Best-effort — a failed delete is
- * backstopped by the server-side orphan reaper — but routing it through a
- * mutation gives it the standard write lifecycle instead of a bare fetch.
- * Local teardown stays synchronous in disposeTerminalSession().
- *
- * `keepalive` lets the request outlive the document that issued it: the
- * terminal popout returns itself to the main window the moment its last tab
- * closes, and without it that final DELETE would be aborted with the window.
- * A rejection is recorded in the shared close-failed flag (every consumer
- * reports it the same way), which the always-mounted panel root renders.
- */
-export function useDeleteTerminalSession() {
-  return useMutation({
-    mutationFn: async (sessionId: string) => {
-      const res = await apiTransport.request(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE', keepalive: true })
-      // 404 means the server has no such session any more: the PTY was already
-      // reaped (idle sweep, gateway restart, a second close racing this one).
-      // The shell is stopped, which is the outcome the user asked for, so this
-      // is success, not a failure to report.
-      if (res.status === 404) return
-      if (!res.ok) throw new Error(`Failed to delete terminal session (${res.status})`)
-    },
-    // Mutation-level (not per-`mutate`) so it still fires after the caller has
-    // unmounted — closing the LAST tab hides the strip that would otherwise
-    // render the failure.
-    onError: () => setTerminalCloseFailed(true),
-  })
-}
+registerDestroyTerm(destroyTerm)
+export { disposeTerminalSession, openTerminalSearch, useDeleteTerminalSession } from './terminalSessions'
 
 /**
  * Force xterm to re-measure the character cell, then refit. xterm measures the
@@ -370,21 +321,12 @@ function cellKey(term: Terminal): string {
 }
 
 /* ── Terminal view for one session ── */
-/** Literal-key lookup for the touch range-selection hint (#6834) — one compact
- *  string per gesture stage, serving both the visible hint chip and the sr-only
- *  live region. Literal keys (no runtime-assembled catalog keys) keep the
- *  dead-key scan meaningful, same discipline as the key bar's label lookups. */
-function touchSelectHint(status: TouchSelectStatus): string {
-  switch (status) {
-    case 'range_anchor': return i18nT('components.cliPanel.touch_select_anchor')
-    case 'range_selected': return i18nT('components.cliPanel.touch_select_done')
-    default: return ''
-  }
-}
-
-function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat, deferOpen, onToggleFullscreen }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void; deferOpen?: boolean; onToggleFullscreen?: () => void }) {
+function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat, deferOpen, onToggleFullscreen, focusBeforeLoad }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void; deferOpen?: boolean; onToggleFullscreen?: () => void; focusBeforeLoad?: Element | null }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
+  // The terminal plus its overlays: the touch listeners and the selection
+  // handles' positioning context.
+  const gridRef = useRef<HTMLDivElement>(null)
   const entryRef = useRef<{ term: Terminal; fit: FitAddon; search: SearchAddon; osc52: Osc52CopyHandle } | null>(null)
   // Floating selection toolbar: anchored to where the drag ended (wrapper-
   // relative px), carrying the captured text so the actions stay valid even
@@ -456,13 +398,10 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
     return () => { if (searchOpeners.get(sessionId) === openSearchFn) searchOpeners.delete(sessionId) }
   }, [sessionId, openSearchFn])
 
-  // Touch range-selection (#6834): long-press a line to set the first endpoint,
-  // then tap/long-press another to select the inclusive span. xterm's own
-  // drag-selection is mouse-only and never fires on touch, so on a phone this
-  // is the only way to grab an ARBITRARY range out of the middle of scrollback
-  // (the staged Select key only reaches the last line or the whole buffer).
+  // Touch scrolling with momentum, and long-press selection with drag handles.
+  // xterm's own selection is mouse-only and its touch scroll stops on lift.
   // Inert on mouse devices, where xterm's drag-selection already works.
-  const touchSelect = useTerminalTouchSelection(term, touchDevice)
+  const touchSelect = useTerminalTouchSelection(term, touchDevice, gridRef)
 
   // Re-measure + refit, gated on pane visibility (see remeasureAndFit). Stable
   // per cached term/fit, so the effects below don't re-subscribe.
@@ -482,15 +421,32 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   // takes the focus over once the host lets go. A terminal opened before is
   // cheap to re-attach and never waits.
   const holding = !!deferOpen && !term.element
-  const proxyRef = useRef<HTMLTextAreaElement>(null)
+  // A show a Run-in-terminal action asked for on a touch device leaves the
+  // focus alone, through any hold and its hand-off, until the next show.
+  const quietShow = useRef(false)
   useLayoutEffect(() => {
-    if (holding && visible) proxyRef.current?.focus({ preventScroll: true })
+    if (!visible) { quietShow.current = false; return }
+    if (takeSkipFocusOnShow(sessionId)) quietShow.current = true
+  }, [visible, sessionId])
+  // A pane that waited for this chunk (LazyCliPanel) must not take the focus
+  // from a field the user moved to while it loaded. Read on the first show only.
+  const lateFocus = useRef(focusBeforeLoad)
+  const focusMovedDuringLoad = (): boolean => {
+    const before = lateFocus.current
+    lateFocus.current = undefined
+    if (before === undefined) return false
+    const active = document.activeElement
+    return !!active && active !== document.body && active !== before && !wrapperRef.current?.contains(active)
+  }
+  const proxyRef = useRef<HTMLTextAreaElement>(null)
+  const standIn = useStandInKeys(sessionId)
+  const inputCapped = useTerminalInputCapped(sessionId)
+  useLayoutEffect(() => {
+    if (holding && visible && !quietShow.current && !focusMovedDuringLoad()) proxyRef.current?.focus({ preventScroll: true })
   }, [holding, visible])
-  // Hand-off: whatever reached the stand-in goes to the shell as a paste, so
-  // the shell's bracketed-paste guard holds and a newline in it does not run
-  // a command; the focus moves to xterm's own field (the focus effect below),
-  // field to field, so the keyboard stays up.
-  const proxyText = useRef('')
+  // Hand-off: the stand-in sends each key to the shell as typed (standInKeys),
+  // so nothing is left to hand over; the focus moves to xterm's own field (the
+  // focus effect below), field to field, so the keyboard stays up.
   const handingOff = useRef(false)
   // Only a hold the user could see hands off: a hidden held tab opens later
   // and takes focus like any tab switched to.
@@ -514,9 +470,19 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
       measuredWith.set(term, cellKey(term))
     }
     fit.fit()
-    const pending = proxyText.current
-    proxyText.current = ''
-    if (pending) term.paste(pending)
+    // A paste into xterm before its first socket settles joins the early-input
+    // queue as a paste, so it waits for bracketed paste like a stand-in's;
+    // xterm's own handler would turn it into key bytes and its newlines would run.
+    const field = term.textarea
+    const onPaste = (ev: ClipboardEvent) => {
+      if (!takesEarlyInput(sessionId)) return
+      ev.preventDefault()
+      ev.stopImmediatePropagation()
+      const text = ev.clipboardData?.getData('text/plain')
+      if (text) pasteIntoTerminal(sessionId, text)
+    }
+    field?.addEventListener('paste', onPaste, true)
+    return () => field?.removeEventListener('paste', onPaste, true)
   }, [term, fit, holding, sessionId])
 
   // Focus + refit when becoming visible. Re-measure here too so a pane that
@@ -535,14 +501,15 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
     const fromHold = handingOff.current
     handingOff.current = false
     const active = document.activeElement
-    const movedAway = fromHold && !!active && active !== document.body && !wrapperRef.current?.contains(active)
+    const movedDuringLoad = focusMovedDuringLoad()
+    const movedAway = movedDuringLoad || (fromHold && !!active && active !== document.body && !wrapperRef.current?.contains(active))
     const raf = requestAnimationFrame(doRefit)
     const input = term.textarea
     if (input && !input.style.left) {
       input.style.left = '0px'
       input.style.top = '0px'
     }
-    if (!movedAway) term.focus()
+    if (!movedAway && !quietShow.current) term.focus()
     return () => cancelAnimationFrame(raf)
   }, [visible, term, doRefit, holding])
 
@@ -726,20 +693,11 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
           and drop over the soft keys — covering Tab on exactly the devices the
           bar exists for.
 
-          The touch handlers (#6834) live on THIS div, not the outer wrapper, so
-          a touch maps to a terminal row using the terminal's own geometry. They
-          no-op on mouse devices (the hook's `enabled` gate), where xterm's own
-          drag-selection handles selection. Passive: they never preventDefault,
-          so ordinary scroll/tap still reach xterm — a long-press is recognised
-          by a still-finger timer, not by swallowing the gesture. */}
-      <div
-        className="relative w-full flex-1 min-h-0 overflow-hidden"
-        onTouchStart={touchSelect.onTouchStart}
-        onTouchMove={touchSelect.onTouchMove}
-        onTouchEnd={touchSelect.onTouchEnd}
-        onTouchCancel={touchSelect.onTouchEnd}
-      >
+          The touch hook binds its listeners on THIS div (gridRef), so the
+          selection handles share the terminal's coordinate space. */}
+      <div ref={gridRef} className="relative w-full flex-1 min-h-0 overflow-hidden">
         <div ref={containerRef} className="w-full h-full overflow-hidden" />
+        {touchDevice && <TerminalTouchHandles handles={touchSelect.handles} />}
         {osc52Result === 'failed' && (
           <ErrorNotice
             variant="inline"
@@ -748,6 +706,17 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
             className="absolute top-2 right-2 z-20 max-w-[calc(100%-1rem)] rounded-md border border-border bg-bg-elevated px-2 py-1 shadow-sm"
             message={i18nT('components.cliPanel.copy_failed')}
             onDismiss={() => setOsc52Result('idle')}
+          />
+        )}
+        {inputCapped && (
+          // No hand-off: a terminal pane sits beside the chat composer's unsent draft,
+          // and the dropped input is gone; the notice only says so.
+          <ErrorNotice
+            variant="inline"
+            testId="cli-panel-early-input-capped"
+            className="absolute top-2 left-2 z-20 max-w-[calc(100%-1rem)] rounded-md border border-border bg-bg-elevated px-2 py-1 shadow-sm"
+            message={i18nT('components.cliPanel.early_input_capped', { size: EARLY_INPUT_CAP / 1024 })}
+            onDismiss={() => dismissTerminalInputCapped(sessionId)}
           />
         )}
         {osc52Result === 'copied' && (
@@ -770,7 +739,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            onChange={e => { proxyText.current = e.currentTarget.value }}
+            {...standIn}
           />
         )}
         {/* Owns xterm's SINGLE `attachCustomKeyEventHandler` slot for this term
@@ -792,31 +761,6 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
         {/* Scrollback find bar (#10176): over the grid, top-right, only while
             open. Focus-scoped — the chord opens it only from a focused shell. */}
         <TerminalFindBar search={termSearch} bannerShowing={showBanner} onToggleFullscreen={onToggleFullscreen} />
-        {/* Touch range-selection discoverability (#6834). The gesture is
-            invisible on a canvas — nothing tells the user an endpoint is set —
-            so surface it two ways: a small transient hint chip anchored top-left
-            (visual), and an sr-only live region (screen reader), the same
-            announce-through-a-status-region pattern the key bar's Copy/Select
-            use. Only rendered on touch, and only while a gesture is mid-flight
-            or just completed. */}
-        {touchDevice && touchSelect.status && (
-          <div
-            // Sits top-left over the grid. When the disconnect banner is up it
-            // occupies the top strip (z-30) and would fully cover a top-2 chip —
-            // and copying the last output of a dead session is exactly when this
-            // gesture is used — so drop the chip below the banner then (UX
-            // review #8070).
-            className={`pointer-events-none absolute left-2 z-20 rounded-md border border-border bg-bg-elevated/95 px-2 py-0.5 text-[11px] text-text shadow-sm backdrop-blur ${showBanner ? 'top-10' : 'top-2'}`}
-            aria-hidden="true"
-          >
-            {touchSelectHint(touchSelect.status)}
-          </div>
-        )}
-        {touchDevice && (
-          <span role="status" aria-live="polite" className="sr-only">
-            {touchSelect.status ? touchSelectHint(touchSelect.status) : ''}
-          </span>
-        )}
         {showBanner && (
           <div
             className={`absolute inset-x-0 top-0 z-30 flex max-h-full gap-2 border-b border-border bg-bg-elevated/95 px-3 py-1.5 text-[12px] text-text shadow-sm backdrop-blur ${invalidCwd ? 'flex-col items-start overflow-hidden' : 'flex-wrap items-center overflow-y-auto'}`}
@@ -973,7 +917,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
  * Sessions are chat-specific by virtue of living in usePanelTabs' per-slot
  * bucket; the module-level termCache keeps them warm across tab/chat switches.
  */
-export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible = true, onSendToChat, deferOpen, onToggleFullscreen }: {
+export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible = true, onSendToChat, deferOpen, onToggleFullscreen, focusBeforeLoad }: {
   sessionId: string
   cwd?: string
   /** Open the shell in this chat's REMOTE session workspace instead of locally. */
@@ -984,10 +928,13 @@ export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible
   onSendToChat?: (text: string) => void
   /** Hold a never-opened terminal behind a focus stand-in until this turns false. */
   deferOpen?: boolean
-  /** Toggle the app-wide dock panel fullscreen (Cmd+Shift+F on macOS; the menu item elsewhere). Passed ONLY
+  /** Toggle the app-wide dock panel fullscreen (Cmd+Shift+F on macOS; the header button elsewhere). Passed ONLY
    *  by the dock's TerminalTabsView — a chat side-panel terminal leaves it
    *  undefined so its chord does not maximize the unrelated dock panel. */
   onToggleFullscreen?: () => void
+  /** Set by LazyCliPanel when this pane waited for its chunk: where the focus
+   *  was when it asked. A focus moved elsewhere meanwhile is left alone. */
+  focusBeforeLoad?: Element | null
 }) {
   useEffect(() => { ensureThemeObserver(); ensureTerminalFontSync() }, [])
   return (
@@ -998,7 +945,7 @@ export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible
       className="flex flex-col w-full h-full overflow-hidden px-3 pt-2"
       style={{ background: 'var(--term-bg, var(--bg))' }}
     >
-      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} chatSlot={chatSlot} visible={visible} onSendToChat={onSendToChat} deferOpen={deferOpen} onToggleFullscreen={onToggleFullscreen} />
+      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} chatSlot={chatSlot} visible={visible} onSendToChat={onSendToChat} deferOpen={deferOpen} onToggleFullscreen={onToggleFullscreen} focusBeforeLoad={focusBeforeLoad} />
     </div>
   )
 }

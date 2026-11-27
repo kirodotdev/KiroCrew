@@ -248,7 +248,7 @@ def test_the_fire_time_refusal_is_not_transient(tmp_path) -> None:
     with pytest.raises(RuntimeError) as exc_info:
         cron_session_cwd(job, None)
     assert exc_info.value.transient is False  # type: ignore[attr-defined]
-    assert "--project-path ''" in str(exc_info.value)
+    assert "--project-path=`" in str(exc_info.value)
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────

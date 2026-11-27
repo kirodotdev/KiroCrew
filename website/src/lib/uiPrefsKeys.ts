@@ -97,6 +97,10 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   'mc-artifacts-pinned-only',
   'mc-artifacts-session-docs-collapsed',
   'mc-artifact-folders-expanded',
+  // The memory page's filter rail, hidden on a wide screen ('1'; absent is shown)
+  // (pages/overview/memoryPage/MemoryList.tsx). Written only by its hide and show
+  // clicks, through savePrefExplicitly. It gates nothing.
+  'kirocrew:memory-filters-collapsed',
   // Misc opt-ins and acknowledgements the user should not have to repeat.
   //
   // NOT here: 'mc-yolo-ack'. Its mere PRESENCE makes ApprovalModePicker skip the
@@ -106,6 +110,7 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   // the user's next fresh origin. The rule this key is an instance of: a value
   // that GATES a safety confirmation must not be restorable from a file the agent
   // can write, however convenient re-acknowledging is.
+  // The machine owner's ack is also kept on the gateway's owner-only record (/api/chat/yolo-ack).
   'mc-agent-scene',
   'mc-kb-graph-physics',
   // Notification sound settings (enabled/volume/per-category presets, a timed mute) --
@@ -134,6 +139,10 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   // permission: it skips a reminder before a switch the person starts themselves,
   // and the switch grants the agent nothing.
   'kirocrew:conductor-mode-midchat-confirm-dismissed',
+  // The memory page's saved topics, a JSON array of search texts
+  // (pages/overview/memoryPage/memoryTopics.ts). Written only by the user's Save
+  // and remove clicks, through savePrefExplicitly. It gates nothing.
+  'kirocrew:memory-topics',
   // Settings > Shortcuts, and the push-to-talk key on Settings > Voice. Each
   // key is written only by an explicit user action, on its settings page or in
   // the shortcuts reference modal. No hook writes a default on mount. The

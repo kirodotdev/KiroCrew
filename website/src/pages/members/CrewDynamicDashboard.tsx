@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { RotateCw, SendHorizontal } from 'lucide-react'
+import { RotateCw, SendHorizontal, X } from 'lucide-react'
 import { api, type DashboardManifest } from '../../api/client'
 import { apiErrorCode, isNotFoundError } from '../../api/apiError'
 import { retryPolicy } from '../../api/queryClient'
-import { Badge, Btn } from '../../components/ui'
+import { Badge, Btn, IconButton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useTheme } from '../../hooks/useTheme'
+import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
 import { focusHostOf, useFrameLinkBridge, tiedToFrame } from '../../hooks/useFrameLinkBridge'
 import { useFrameAliveRecovery } from '../../hooks/useFrameAliveRecovery'
@@ -139,6 +140,8 @@ export function sendText(data: unknown): string | null {
  * was merely slow to parse a chart library.
  */
 const READY_TIMEOUT_MS = 6000
+/** One dismissal for every bot's tab: the notice reads the same on each. */
+const CARD_SEND_BADGE_DISMISSED_KEY = 'mc-dashboard-card-send-badge-dismissed'
 
 /**
  * How long an open Dashboard tab may go without re-reading, when no WebSocket
@@ -274,8 +277,13 @@ export function dashboardQueryKey(target: DashboardTarget): readonly string[] {
     : [SESSION_DASHBOARD_QUERY_PREFIX, target.slot]
 }
 
-export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, onActKeep, onSend, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
+export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, onActKeep, onSend, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, onOpenLink, dashboardSlug = '', relayWheel = false }: {
   target: DashboardTarget
+  /** Claim a link the page asked for, after the link bridge's frame, URL and click
+   *  checks and before its in-app and new-tab opens: answer true for a link the
+   *  host handled. The Bots page claims artifact and workspace-file links for its
+   *  side panel. Absent: nothing is claimed. */
+  onOpenLink?: (url: string) => boolean
   /** Report the frame's horizontal wheel runs to the host (see `relayWheel` in
    *  lib/widgetSrcdoc). Only a host that listens may ask: the relay cancels the
    *  browser's back swipe over the frame. The Mates side panel does. */
@@ -330,8 +338,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const onActKeepRef = useRef(onActKeep)
   onActKeepRef.current = onActKeep
   // A link the page asks for: the agent-page link bridge, from this frame only. A
-  // click it cannot tie to the frame gets the host's "Open <host>" button.
-  const linkChip = useFrameLinkBridge([frameRef])
+  // click it cannot tie to the frame gets the host's "Open <host>" button. The
+  // host's `onOpenLink` may claim an accepted link before the bridge opens it.
+  const linkChip = useFrameLinkBridge([frameRef], undefined, undefined, undefined, undefined, undefined, onOpenLink)
   const onSendRef = useRef(onSend)
   onSendRef.current = onSend
   const [sendFailed, setSendFailed] = useState(false)
@@ -1210,9 +1219,12 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // One-click send is on for this crewmate: the host offers a send only then (the
   // Members side panel passes `onSend` only when the Profile switch is on), so a card
   // button here sends at once instead of filling the chat box. Said where the person
-  // clicks, and it opens the Profile tab where the switch is.
-  const cardSendBadge = onSend && target.kind === 'member' && !preview ? (
-    <div className="shrink-0 flex justify-end px-2 pt-1">
+  // clicks, and it opens the Profile tab where the switch is. The person who turned
+  // the switch on needs telling once, not on every page of every bot, so Dismiss
+  // hides it for good on this browser; the switch itself stays on Profile.
+  const [cardSendBadgeDismissed, setCardSendBadgeDismissed] = usePersistedBool(CARD_SEND_BADGE_DISMISSED_KEY, false)
+  const cardSendBadge = onSend && target.kind === 'member' && !preview && !cardSendBadgeDismissed ? (
+    <div className="shrink-0 flex justify-end items-center gap-1 px-2 pt-1">
       {onOpenProfileTab ? (
         <Btn
           type="button"
@@ -1236,6 +1248,14 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           {i18nT('pages.membersPage.dashboard_card_send_badge')}
         </Badge>
       )}
+      <IconButton
+        onClick={() => setCardSendBadgeDismissed(true)}
+        className="p-[6px] rounded-full focus-ring"
+        aria-label={i18nT('app.dismiss')}
+        data-testid="crew-dashboard-card-send-badge-dismiss"
+      >
+        <X size={14} aria-hidden="true" />
+      </IconButton>
     </div>
   ) : null
   // The badge rows above the page, so the floating Download control sits below them.

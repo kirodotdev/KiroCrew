@@ -57,7 +57,11 @@ def test_v2_prompt_lifecycles_leave_retrieval_to_the_tool(env, monkeypatch):
     assert all(call.kwargs["query_text"] for call in rules.call_args_list)
 
 
-def test_v1_new_session_reads_activity_once_and_follow_ups_never(tmp_path):
+def test_v1_new_session_reads_activity_once_and_follow_ups_never(tmp_path, monkeypatch):
+    from kiro_crew import memory_relevance_rule
+
+    # The history sentinel shares no word with the query; this pins read counts.
+    monkeypatch.setattr(memory_relevance_rule, "configured_mode", lambda: "off")
     memory = MemoryStore(workspace=tmp_path / "workspace")
     memory.write_preferences("Use a concise reply.")
     memory.write_projects("The active project is Beacon.")

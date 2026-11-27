@@ -92,8 +92,10 @@ class TestDisplayFormRedaction:
         from kiro_crew.security import redact_credentials
 
         # The premise: the byte-level pass leaves the markup untouched, so the
-        # halves are still there for the platform to rejoin.
-        assert redact_credentials(markup)[0] == markup
+        # halves are still there for the platform to rejoin. The byte-level pass
+        # reads through an invisible character, so that row is caught there already.
+        first = redact_credentials(markup)[0]
+        assert first == markup or ("\u200b" in markup and "[REDACTED" in first)
         # The guarantee, asserted POSITIVELY. "the contiguous key is absent" is
         # true of the input too — it was never contiguous — so it holds with the
         # redactor deleted. What must be true is that the redactor FIRED and the

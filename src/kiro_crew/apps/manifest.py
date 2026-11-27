@@ -83,7 +83,6 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
     _MAX_LINK_OPEN_HOSTS,
-    _MAX_LINK_PREVIEW_HOSTS,
     _MAX_MESSAGE_ACTION_TITLE,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
@@ -200,10 +199,19 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _l10n_quoted,
     _sidebar_order,
     bot_grant_entries,
-    clamp_lifecycle_timeout,
     lifecycle_timeout_error,
-    lifecycle_timeout_seconds,
     logger,
+)
+from kiro_crew.apps.manifest_session_create import (  # noqa: F401
+    _SESSION_CREATE_KEYS,
+    MAX_SESSION_CREATE_ENDPOINT,
+    MAX_SESSION_CREATE_ID,
+    MAX_SESSION_CREATE_ITEMS_PER_APP,
+    MAX_SESSION_CREATE_LABEL,
+    SESSION_CREATE_ID_RE,
+    SessionCreateItem,
+    SessionCreateItemsConfig,
+    _session_create_len,
 )
 from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import read_bytes_with_retry
@@ -221,6 +229,7 @@ from kiro_crew.user_json import loads_user_json
 #   ``manifest_containment`` -- app-root path containment and contributed-agent containment
 #   ``manifest_sections`` -- the typed ``app.json`` blocks other than ``contributes``
 #   ``manifest_contributes`` -- the ``contributes`` block and its caps
+#   ``manifest_session_create`` -- the ``contributes.sessionCreateItems`` rows
 
 
 # Expected JSON type per CronEntry field that from_dict type-gates; turns a
@@ -289,6 +298,7 @@ CORE_APP_ROUTE_SEGMENTS = frozenset(
         "_jobs",
         "_sel",
         "bot-grants",
+        "browser-sites",
         "config",
         "dev",
         "disable",
@@ -639,6 +649,19 @@ class AppManifest:
         if refusal:
             report_path(refusal, f"ui.entry {refusal}: {self.ui.entry!r}")
 
+        if self.ui.startup:
+            refusal = path_refusal(self.ui.startup)
+            if refusal:
+                report_path(refusal, f"ui.startup {refusal}: {self.ui.startup!r}")
+            # The same rule admission applies on every read: a plain script path the
+            # browser cannot normalize out of ui/. Local import: startup_modules
+            # imports the app records module, which imports this one.
+            from kiro_crew.apps.startup_modules import entry_refusal
+
+            startup_refusal = entry_refusal(self.ui.startup)
+            if startup_refusal:
+                errors.append(f"ui.startup refused: {startup_refusal}")
+
         refusal = path_refusal(self.backend.entryPoint)
         if refusal:
             report_path(refusal, f"backend.entryPoint {refusal}: {self.backend.entryPoint!r}")
@@ -668,9 +691,15 @@ class AppManifest:
                     refusal, f"contributes.messageActions entry {refusal}: {action.entry!r}"
                 )
         for link_open in self.contributes.linkOpen:
-            refusal = path_refusal(link_open.entry)
+            refusal = path_refusal(link_open.entry) if link_open.entry else ""
             if refusal:
                 report_path(refusal, f"contributes.linkOpen entry {refusal}: {link_open.entry!r}")
+            # The link opens on the app's own page, so there must be one (AppHost
+            # mounts ``ui.entry``; without it the page is a placeholder).
+            if link_open.page_param and not (self.ui.entry and self.ui.pages):
+                errors.append(
+                    f"contributes.linkOpen[{link_open.id}]: page needs ui.entry and ui.pages"
+                )
         # A composer-action entry is imported by the same frame bootstrap.
         for composer in self.contributes.composerActions:
             refusal = path_refusal(composer.entry)
@@ -889,6 +918,15 @@ class AppManifest:
                     f"or /apps/{self.name}/api/ "
                     "(no traversal, no other app's namespace, no core route)"
                 )
+        # Same check for a Sessions New row, kept to the in-gateway namespace
+        # (`/api/apps/<app>/`), the one shape the row's contract documents.
+        for row in self.contributes.sessionCreateItems.items:
+            if not app_endpoint_allowed(self.name, row.endpoint):
+                errors.append(
+                    f"contributes.sessionCreateItems[{row.id}]: endpoint {row.endpoint!r} "
+                    f"must route under /api/apps/{self.name}/ "
+                    "(no traversal, no other app's namespace, no core route)"
+                )
 
         return errors
 
@@ -947,6 +985,8 @@ class AppManifest:
             or self.contributes.linkOpen
             or self.contributes.composerActions
             or self.contributes.selectionActions
+            # A Sessions New row's `endpoint` decides which project a new session opens on.
+            or self.contributes.sessionCreateItems.items
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
@@ -1584,13 +1624,16 @@ def requirements_verdict(app_root: Path, req_file: Path) -> tuple[tuple[Path, Pa
     return (root_resolved, target), ""
 
 
-#: Cron helpers served as attributes of this module on first access, so
+#: Helpers served as attributes of this module on first access, so
 #: ``kiro_crew.apps.manifest.<name>`` is the object its home module holds. The
-#: cron service is heavy and the stdio MCP servers read manifests at start-up.
+#: cron service is heavy and the stdio MCP servers read manifests at start-up; the
+#: lifecycle-timeout bound runs only when a script is about to run.
 _LAZY_CRON_NAMES: dict[str, str] = {
     "is_valid_skip_date": "kiro_crew.cron",
     "is_valid_timezone": "kiro_crew.cron",
     "validate_create_timeouts": "kiro_crew.cron_service.fields",
+    "clamp_lifecycle_timeout": "kiro_crew.apps.manifest_lifecycle_timeouts",
+    "lifecycle_timeout_seconds": "kiro_crew.apps.manifest_lifecycle_timeouts",
 }
 
 

@@ -27,6 +27,7 @@ import Clickable from '../Clickable'
 import AppIcon from '../AppIcon'
 import { gradientFor } from './gradient'
 import { categoryFor, categoryLabel } from './categories'
+import { editorialCopy } from './editorialCopy'
 import { useHeroArt, type InstalledArtSource } from './useHeroArt'
 import { useEditorialArt, type EditorialArtwork } from './useEditorialArt'
 import { isVerified, type RegistryApp } from './types'
@@ -279,8 +280,9 @@ export default function FeaturedSpotlight({
   // instead of a thrown one.
   if (!lead) return null
 
-  const heading = isCollection ? title : appDisplayName(lead)
-  const sub = blurb || (isCollection ? '' : appDescription(lead))
+  const copy = editorialCopy({ title, blurb })
+  const heading = isCollection ? copy.title : appDisplayName(lead)
+  const sub = copy.blurb || (isCollection ? '' : appDescription(lead))
 
   /**
    * The dissolve at the foot of the art, and how far the copy climbs into it.
@@ -419,11 +421,12 @@ export default function FeaturedSpotlight({
           ? i18nT('components.appstore.featuredSpotlight.collection')
           : i18nT('components.appstore.featuredSpotlight.featured')}
       </span>
-      {/* Both the curator's theme and an app's own name are Latin in every
-          locale: one is published English-only in the editorial document, the
-          other comes from a third-party manifest. Neither is catalog copy, so
-          neither may be translated -- and the gate needs telling, or every
-          featured card reads as a fresh render-time i18n defect. */}
+      {/* Neither the curator's theme nor an app's own name is always catalog
+          copy. The theme is published in English and translated only when the
+          dashboard knows that exact English (`editorialCopy`); the name comes
+          from a third-party manifest. Either can reach any locale verbatim, so
+          the gate needs telling, or every featured card reads as a fresh
+          render-time i18n defect. */}
       <h2 data-i18n-opaque className="text-[23px] leading-[1.2] font-bold text-text-strong tracking-tight mt-1.5">{heading}</h2>
       {sub && <p data-i18n-opaque className="text-[14px] text-muted line-clamp-2 mt-1" title={sub}>{sub}</p>}
       <div className="mt-2.5 divide-y divide-border">
@@ -492,7 +495,7 @@ export default function FeaturedSpotlight({
     return (
       <>
         <Clickable
-          aria-label={i18nT('components.appstore.featuredSpotlight.view_details_for', { name: title || '' })}
+          aria-label={i18nT('components.appstore.featuredSpotlight.view_details_for', { name: copy.title || '' })}
           aria-haspopup="dialog"
           aria-expanded={expanded}
           className={`${shell} group cursor-pointer hover:border-border-strong transition-colors focus-ring mb-0`}
@@ -540,7 +543,7 @@ export default function FeaturedSpotlight({
           </div>
         </Clickable>
         <Dialog open={expanded} onOpenChange={setExpanded}>
-          <DialogContent maxWidth={560} aria-label={title}>
+          <DialogContent maxWidth={560} aria-label={copy.title}>
             {artSrc && (
               <div className="relative aspect-[16/9] shrink-0 overflow-hidden" style={{ background: 'var(--bg-elevated)' }}>
                 {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle hook (retire unreachable art), not a user interaction; this art is decoration inside the dialog and offers nothing to activate */}

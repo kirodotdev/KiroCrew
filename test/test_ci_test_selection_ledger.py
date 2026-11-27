@@ -24,202 +24,42 @@ Pinned:
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
+from ci_test_selection_ledger_fake import (
+    FULL,
+    LATER,
+    OLD_RUN,
+    ROOT,
+    SKIP,
+    VERDICT,
+    WIN_SELECT,
+    FakeGh,
+    failed_run,
+    install,
+    job,
+    rates,
+    rows,
+    run_main,
+    summary,
+    win_job,
+    win_run,
+)
 
 from scripts import ci_test_selection_ledger as ledger
 
+# guard-tier: not a member -- it reads ci.yml and its own temp folder, never the test tree
 # The script's own binding of the shadow module: the one its calls go through.
 shadow = ledger.shadow
-
-ROOT = Path(__file__).resolve().parents[1]
-DAY = "2026-11-18T00:00:00Z"
-LATER = "2026-11-18T01:00:00Z"
-VERDICT: dict[str, Any] = {
-    "schema": 1,
-    "base": "b" * 40,
-    "head": "a" * 40,
-    "bundle_commit": None,
-    "verdict": "select",
-    "reason": None,
-    "tiers": {
-        "A": ["test/test_gate.py"],
-        "B": ["test/test_b.py"],
-        "G": ["test/test_a.py", "test/test_c.py"],
-    },
-    "would_skip": ["test/test_a.py", "test/test_c.py"],
-    "would_run_share": 0.5,
-}
-SKIP: dict[str, Any] = {
-    "kind": "skip",
-    "run": 1,
-    "attempt": 1,
-    "source": "1:pr-7",
-    "fork": False,
-    "pr": 7,
-    "head": "a" * 40,
-    "date": DAY,
-    "reason": "x",
-}
-OLD_RUN = {**{k: v for k, v in SKIP.items() if k not in ("source", "reason")}, "kind": "run"}
-FULL: dict[str, Any] = {
-    **VERDICT,
-    "verdict": "full",
-    "reason": "no bundle",
-    "tiers": {tier: [] for tier in "ABG"},
-    "would_skip": [],
-}
-
-
-def job(job_id: int, shard: int, conclusion: str = "success", full: bool = True) -> dict[str, Any]:
-    step = {
-        "name": f"{ledger.FULL_SUITE_STEP} (shard {shard}/8)",
-        "conclusion": "success" if full else "skipped",
-    }
-    return {
-        "id": job_id,
-        "name": f"Backend Tests (3.12, {shard})",
-        "conclusion": conclusion,
-        "steps": [{"name": "Select test scope", "conclusion": "success"}, step],
-    }
-
-
-class FakeGh:
-    """GitHub as the script reads it: runs, each attempt's jobs, job logs, artifacts, issues."""
-
-    def __init__(self, verdicts: Path) -> None:
-        self.verdicts = verdicts
-        self.runs: list[dict[str, Any]] = []
-        self.jobs: dict[tuple[int, int], list[dict[str, Any]]] = {}
-        self.logs: dict[int, list[str]] = {}
-        self.messages: dict[str, str] = {}
-        self.artifacts: dict[int, list[str]] = {}
-        self.issues: list[dict[str, Any]] = []
-        self.calls: list[str] = []
-        self.page_size = 100
-        self.overlap = 0
-
-    def add(
-        self,
-        run_id: int,
-        pr: int | None,
-        attempts: list[list[dict[str, Any]]],
-        verdict: dict[str, Any] | None = VERDICT,
-        date: str = DAY,
-        branch: str | None = None,
-        fork: bool = False,
-    ) -> dict[str, Any]:
-        run = {
-            "id": run_id,
-            "run_attempt": len(attempts),
-            "head_sha": "a" * 40,
-            "created_at": date,
-            "pull_requests": [{"number": pr}] if pr else [],
-            "repository": {"id": 1},
-            "head_repository": {"id": 2 if fork else 1},
-            "head_branch": branch or f"pr-{pr}",
-        }
-        self.runs.insert(0, run)
-        self.set_attempts(run_id, attempts)
-        if verdict is not None:
-            (self.verdicts / f"{run_id}.json").write_text(json.dumps(verdict), encoding="utf-8")
-        return run
-
-    def set_attempts(self, run_id: int, attempts: list[list[dict[str, Any]]]) -> None:
-        for number, jobs in enumerate(attempts, 1):
-            self.jobs[(run_id, number)] = jobs
-        for run in self.runs:
-            if run["id"] == run_id:
-                run["run_attempt"] = len(attempts)
-
-    def _page(self, url: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        found = re.search(r"[?&]page=(\d+)", url)
-        start = (int(found.group(1)) - 1) * (self.page_size - self.overlap) if found else 0
-        return items[start : start + self.page_size]
-
-    def gh_json(self, args: list[str], root: Path) -> Any:
-        url = args[1]
-        self.calls.append(url)
-        if "/workflows/ci.yml/runs?" in url:
-            event = re.search(r"[?&]event=(\w+)", url)
-            listed = [r for r in self.runs if event and r.get("event", "pull_request") == event[1]]
-            return self._page(url, listed)
-        attempt = re.search(r"/runs/(\d+)/attempts/(\d+)/jobs\?", url)
-        if attempt:
-            key = (int(attempt.group(1)), int(attempt.group(2)))
-            if key not in self.jobs:
-                raise subprocess.CalledProcessError(1, args)
-            other = [{"id": 900 + n, "name": f"Lint {n}", "conclusion": "success"} for n in (1, 2)]
-            jobs = other + self.jobs[key]
-            return {"total_count": len(jobs), "jobs": self._page(url, jobs)}
-        artifact = re.search(r"/runs/(\d+)/artifacts\?name=", url)
-        if artifact:
-            names = self.artifacts.get(int(artifact.group(1)), [])
-            return [{"name": "test-selection-verdict", "expired": False}] if names else []
-        if "/issues?" in url:
-            return self.issues
-        raise AssertionError(f"unexpected gh call: {url}")
-
-    def run(self, argv: list[str], root: Path) -> str:
-        self.calls.append(" ".join(argv[1:4]))
-        if argv[1:3] == ["run", "download"]:
-            target = Path(argv[argv.index("-D") + 1])
-            for number, text in enumerate(self.artifacts[int(argv[3])]):
-                (target / f"verdict-{number}.json").write_text(text, encoding="utf-8")
-            return ""
-        job_id = int(argv[-1].rsplit("/", 2)[1])
-        if job_id not in self.logs:
-            raise subprocess.CalledProcessError(1, argv)
-        return "".join(
-            f"2026-11-18T00:00:00.0Z FAILED {name}::test_one - "
-            f"{self.messages.get(name, 'assert 1 == 2')}\n"
-            for name in self.logs[job_id]
-        )
 
 
 @pytest.fixture
 def gh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeGh:
-    verdicts = tmp_path / "verdicts"
-    verdicts.mkdir()
-    fake = FakeGh(verdicts)
-    monkeypatch.setattr(shadow, "_gh_json", fake.gh_json)
-    monkeypatch.setattr(shadow, "_run", fake.run)
-    return fake
-
-
-def run_main(tmp_path: Path, *extra: str, offline: bool = True) -> int:
-    argv = ["--ledger", str(tmp_path / "ledger.jsonl"), "--rates-out", str(tmp_path / "rates.json")]
-    argv += ["--summary-out", str(tmp_path / "summary.md")]
-    if offline:
-        argv += ["--verdict-dir", str(tmp_path / "verdicts")]
-    return ledger.main([*argv, *extra])
-
-
-def rows(tmp_path: Path, kind: str | None = None) -> list[dict[str, Any]]:
-    path = tmp_path / "ledger.jsonl"
-    text = path.read_text(encoding="utf-8") if path.is_file() else ""
-    parsed = [json.loads(line) for line in text.splitlines()]
-    return [row for row in parsed if kind is None or row["kind"] == kind]
-
-
-def rates(tmp_path: Path) -> dict[str, Any]:
-    loaded: dict[str, Any] = json.loads((tmp_path / "rates.json").read_text(encoding="utf-8"))
-    return loaded
-
-
-def summary(tmp_path: Path) -> str:
-    return (tmp_path / "summary.md").read_text(encoding="utf-8")
-
-
-def failed_run(gh: FakeGh, run_id: int, pr: int, files: list[str], **kwargs: Any) -> None:
-    """One full-suite run whose shard 2 failed `files` and whose shard 1 passed."""
-    gh.add(run_id, pr, [[job(run_id * 10 + 1, 1), job(run_id * 10 + 2, 2, "failure")]], **kwargs)
-    gh.logs[run_id * 10 + 2] = files
+    return install(monkeypatch, tmp_path)
 
 
 # -- JOIN ---------------------------------------------------------------------
@@ -249,6 +89,44 @@ def test_a_failing_file_the_verdict_would_skip_is_a_diff_caused_miss(
     assert "Misses caused by the diff: 1." in text and "Misses not caused by it: 0." in text
     assert "| #7 | aaaaaaaaaaaa | 1 | test/test_a.py | G |" in text
     assert "| G | 4 | 1 | 0 |" in text and "Days of data: 0.0." in text
+
+
+def test_a_run_and_its_misses_carry_the_statuses_the_verdict_covered(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    covered = {"M": 2, "A": 1, "added_test": 3}
+    failed_run(gh, 1, 7, ["test/test_a.py"], verdict={**VERDICT, "covered": covered})
+    # A verdict written before the scorer had the field: it reads as none covered.
+    assert "covered" not in VERDICT
+    failed_run(gh, 2, 8, ["test/test_c.py"])
+    gh.add(3, 9, [[job(31, 1), job(32, 2)]])
+
+    assert run_main(tmp_path) == 0
+
+    by_run = {row["run"]: row["covered"] for row in rows(tmp_path, "run")}
+    assert by_run == {1: {"A": 1, "M": 2, "added_test": 3}, 2: {}, 3: {}}
+    assert all(ledger.valid_row(row) for row in rows(tmp_path))
+    text = summary(tmp_path)
+    assert "(a run counts under each it has): none 2; A: 1; M: 1; added_test: 1." in text
+    assert "| #7 | aaaaaaaaaaaa | 1 | test/test_a.py | G |  | A:1 M:2 added_test:3 |" in text
+    assert "| #8 | aaaaaaaaaaaa | 2 | test/test_c.py | G |  |  |" in text
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [[], "M", {"": 1}, {"M-1": 1}, {"M" * 21: 1}, {"M": 0}, {"M": True}, {"M": "1"}, {"M": 1.0}],
+)
+def test_a_covered_table_of_another_shape_is_no_verdict_and_no_row(bad: object) -> None:
+    assert ledger.parse_verdict(json.dumps({**VERDICT, "covered": bad})) is None
+    good = ledger.parse_verdict(json.dumps({**VERDICT, "covered": {"R": 1, "A": 3}}))
+    assert good is not None and good["covered"] == {"A": 3, "R": 1}
+    absent = ledger.parse_verdict(json.dumps(VERDICT))
+    assert absent is not None and absent["covered"] == {}
+    row = {**SKIP, "kind": "run", "verdict": "select", "tiers": {"A": 1}}
+    del row["reason"]
+    # A row an earlier pass wrote has no `covered`; it still reads.
+    assert ledger.valid_row(row) and ledger.valid_row({**row, "covered": {"D": 1}})
+    assert not ledger.valid_row({**row, "covered": bad})
 
 
 def test_a_file_failing_on_another_pr_in_the_window_is_shared_and_reported_apart(
@@ -602,13 +480,15 @@ def test_an_unreadable_run_records_nothing_and_a_later_pass_reads_it(
     gh: FakeGh, tmp_path: Path
 ) -> None:
     gh.add(1, 7, [[job(11, 1), job(12, 2, "failure")]])
+    gh.logs[12] = ["test/test_a.py"]
+    gh.unreadable.add(12)
     gh.add(2, 8, [[job(21, 1)]])
     del gh.jobs[(2, 1)]
 
     assert run_main(tmp_path) == 0
     assert rows(tmp_path) == []
 
-    gh.logs[12] = ["test/test_a.py"]
+    gh.unreadable.clear()
     gh.jobs[(2, 1)] = [job(21, 1)]
     assert run_main(tmp_path) == 0
     assert sorted(row["run"] for row in rows(tmp_path, "run")) == [1, 2]
@@ -653,7 +533,8 @@ def test_backend_jobs_reads_every_page_of_an_attempt(gh: FakeGh) -> None:
 
 def test_since_narrows_the_listing(gh: FakeGh, tmp_path: Path) -> None:
     assert run_main(tmp_path, "--since", "2026-11-18") == 0
-    assert [c for c in gh.calls if "/runs?" in c][0].endswith("&page=1&created=%3E%3D2026-11-18")
+    listing = [c for c in gh.calls if "/runs?" in c][0]
+    assert "&page=1&created=2026-11-18T00:00:00Z.." in listing and listing.endswith("Z")
     with pytest.raises(SystemExit):
         run_main(tmp_path, "--since", "2026-11-18&per_page=1")
 
@@ -882,36 +763,10 @@ def test_no_summary_cell_can_carry_markup(gh: FakeGh, tmp_path: Path) -> None:
     assert run_main(tmp_path) == 0
 
     line = next(text for text in summary(tmp_path).splitlines() if "test/test_a.py" in text)
-    assert line == "| 1:x???b??team?? y | aaaaaaaaaaaa | 1 | test/test_a.py | G |  |"
+    assert line == "| 1:x???b??team?? y | aaaaaaaaaaaa | 1 | test/test_a.py | G |  |  |"
 
 
 # -- WINDOWS ------------------------------------------------------------------
-
-WIN_SELECT = {**VERDICT, "windows": {"verdict": "select", "run": ["test/test_in.py"]}}
-
-
-def win_job(
-    job_id: int, shard: int, conclusion: str = "success", full: bool = True
-) -> dict[str, Any]:
-    return {**job(job_id, shard, conclusion, full), "name": f"Backend Tests (Windows) ({shard})"}
-
-
-def win_run(
-    gh: FakeGh,
-    run_id: int,
-    pr: int | None,
-    windows: list[str],
-    linux: tuple[str, ...] = (),
-    full: bool = True,
-    **kwargs: Any,
-) -> dict[str, Any]:
-    """A full Linux run failing `linux`, beside two Windows shards, the second failing `windows`."""
-    base = run_id * 10
-    jobs = [job(base + 1, 1, "failure" if linux else "success")]
-    red = "failure" if windows else "success"
-    jobs += [win_job(base + 2, 1, full=full), win_job(base + 3, 2, red, full=full)]
-    gh.logs.update({base + 1: list(linux), base + 3: windows})
-    return gh.add(run_id, pr, [jobs], **{"verdict": WIN_SELECT, **kwargs})
 
 
 def test_a_windows_only_failure_outside_windows_run_is_a_windows_miss_and_inside_it_is_not(
@@ -1022,20 +877,23 @@ def test_each_trial_carries_its_source_and_a_push_counts_without_a_verdict(
     for run_id, source in ((1, "sample"), (2, "label")):
         block = {"verdict": "full", "source": source}
         win_run(gh, run_id, run_id, [], verdict={**VERDICT, "windows": block})
-    for run_id, branch in ((3, "main"), (4, "release/1.2"), (5, "feature")):
-        win_run(gh, run_id, None, ["test/test_win.py"], verdict=None, branch=branch)["event"] = (
-            "push"
-        )
+    pushes = ((3, "main", "failure"), (4, "release/1.2", "failure"), (5, "main", "success"))
+    for run_id, branch, conclusion in pushes:
+        push = win_run(gh, run_id, None, ["test/test_win.py"], verdict=None, branch=branch)
+        push.update(event="push", conclusion=conclusion)
 
     assert run_main(tmp_path) == 0
 
+    # Of the pushes only the failed one on `main` is read: a push can never show a
+    # miss, and a failed one says which files failed elsewhere than on a pull request.
     trials = {r["run"]: r["trial"] for r in rows(tmp_path, "windows_run")}
-    assert trials == {1: "sample", 2: "label", 3: "push", 4: "push"}
+    assert trials == {1: "sample", 2: "label", 3: "push"}
+    assert not [call for call in gh.calls if "/runs/4/" in call or "/runs/5/" in call]
     # A push writes Windows rows only, and selects nothing it could miss.
     assert {r["run"] for r in rows(tmp_path, "run")} == {1, 2}
-    assert [r["miss"] for r in rows(tmp_path, "windows_failure")] == [False, False]
-    assert "Windows trials: 4; shadow: 0; sample: 1; label: 1; push: 2." in summary(tmp_path)
-    # None of the four ran under a `select` Windows verdict.
+    assert [r["miss"] for r in rows(tmp_path, "windows_failure")] == [False]
+    assert "Windows trials: 3; shadow: 0; sample: 1; label: 1; push: 1." in summary(tmp_path)
+    # None of the three ran under a `select` Windows verdict.
     assert "Windows trials that can show a miss (a `select` Windows verdict): 0." in summary(
         tmp_path
     )
@@ -1059,13 +917,22 @@ def test_a_miss_names_the_source_of_its_trial(gh: FakeGh, tmp_path: Path) -> Non
     assert "Windows trials that can show a miss (a `select` Windows verdict): 2." in text
 
 
-def test_a_cancelled_run_is_excluded_as_cancelled(gh: FakeGh, tmp_path: Path) -> None:
-    push = gh.add(1, None, [[]], verdict=None, branch="main")
-    push.update(event="push", conclusion="cancelled")
+@pytest.mark.parametrize("conclusion", ledger._NOT_RUN)
+def test_a_run_that_never_ran_its_jobs_is_excluded_from_the_listing_alone(
+    gh: FakeGh, tmp_path: Path, conclusion: str
+) -> None:
+    gh.add(1, 7, [[job(11, 1)]])["conclusion"] = conclusion
 
     assert run_main(tmp_path) == 0
+    first = rows(tmp_path)
 
-    assert [r["reason"] for r in rows(tmp_path, "windows_skip")] == [ledger.RUN_CANCELLED]
+    reason = ledger.RUN_CANCELLED if conclusion == "cancelled" else ledger.NEVER_RAN
+    assert [(r["kind"], r["reason"]) for r in first] == [("skip", reason)]
+    # Not one job, log, annotation or artifact of it is read, and no later pass asks again.
+    assert not [call for call in gh.calls if "/runs/1/" in call or "check-runs" in call]
+    assert run_main(tmp_path) == 0
+    assert rows(tmp_path) == first
+    assert not [call for call in gh.calls if "/runs/1/" in call or "check-runs" in call]
 
 
 def test_without_windows_no_windows_job_or_push_run_is_read(gh: FakeGh, tmp_path: Path) -> None:
@@ -1100,17 +967,17 @@ def test_a_linux_only_ledger_gains_its_windows_half_once_and_keeps_its_linux_row
     assert not [call for call in gh.calls[before:] if "/jobs" in call or "logs" in call]
 
 
-def test_an_unreadable_windows_log_keeps_the_linux_rows_and_leaves_windows_for_later(
+def test_unreadable_windows_annotations_keep_the_linux_rows_and_leave_windows_for_later(
     gh: FakeGh, tmp_path: Path
 ) -> None:
     win_run(gh, 1, 7, ["test/test_win.py"], ("test/test_a.py",))
-    windows_log = gh.logs.pop(13)
+    gh.unreadable.add(13)
 
     assert run_main(tmp_path) == 0
     linux = rows(tmp_path)
     assert [r["kind"] for r in linux] == ["run", "failure"]
 
-    gh.logs[13] = windows_log
+    gh.unreadable.clear()
     assert run_main(tmp_path) == 0
 
     assert rows(tmp_path)[: len(linux)] == linux
@@ -1134,7 +1001,7 @@ def test_a_pr_backlog_past_the_limit_still_reads_the_newer_push_runs(
     for run_id in range(1, 5):
         gh.add(run_id, run_id, [[job(run_id * 10, 1)]], date=f"2026-11-1{run_id}T00:00:00Z")
     push = win_run(gh, 9, None, [], verdict=None, branch="main", date="2026-11-13T12:00:00Z")
-    push["event"] = "push"
+    push.update(event="push", conclusion="failure")
 
     assert run_main(tmp_path, "--limit", "2") == 0
 

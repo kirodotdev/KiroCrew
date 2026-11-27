@@ -12,13 +12,14 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
 
 from conftest import requires_symlinks
-from kiro_crew import sandbox_leaves, sandbox_precreate
+from kiro_crew import sandbox_leaves, sandbox_precreate, sdk_extras
 from kiro_crew.browser_harness import HARNESS_VERSION, build_deps, chromium, install
 from kiro_crew.security import paths_lists
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
@@ -30,6 +31,13 @@ def _no_old_glibc(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """Every test here runs as on a host whose glibc the locked wheels cover, unless it says
     otherwise: without the pin an old-glibc test host would refuse every install below."""
     _floor_monkeypatch.setattr(build_deps, "refusal_for_this_host", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_pip_index_settings(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test here reads the host's own pip settings or spawns a real ``pip config list``;
+    a test that needs index settings sets them itself."""
+    _floor_monkeypatch.setattr(sdk_extras, "_configured_index_env", lambda *a, **k: {})
 
 
 #: The distributions the gateway's interpreter must carry for its own copy to be used.
@@ -298,6 +306,158 @@ def _pruned_install(prefix: Path, *, minor: int) -> Path:
     return sentinel
 
 
+def _windows_venv(prefix: Path, home: Path) -> None:
+    """A finished Windows install: a copied ``Scripts/python.exe`` and ``pyvenv.cfg`` naming ``home``."""
+    venv = install.venv_dir(prefix)
+    (venv / "Lib" / "site-packages" / "pip").mkdir(parents=True)
+    (venv / "Scripts").mkdir()
+    (venv / "Scripts" / "python.exe").write_bytes(b"launcher")
+    minor = ".".join(str(n) for n in sys.version_info[:2])
+    (venv / "pyvenv.cfg").write_text(f"home = {home}\nversion = {minor}.4\n", encoding="utf-8")
+    (prefix / install.MARKER_FILE).write_text(
+        json.dumps({"version": HARNESS_VERSION, "lock_sha256": install.lock_digest()}),
+        encoding="utf-8",
+    )
+
+
+def test_a_windows_venv_whose_base_python_was_removed_is_repaired_in_place(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The Windows launcher is a copied file, so it outlives its base Python.
+    The venv reads as not installed and is re-pointed offline, not left to fail at pip."""
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    _gateway_ships(monkeypatch, "pip")
+    prefix = tmp_path / install.PREFIX_LEAF
+    _windows_venv(prefix, tmp_path / "pruned")
+    assert install.install_state(tmp_path).installed is False
+    assert install.install_state(tmp_path).python is None
+    assert install.harness_current(tmp_path) is False
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return _ok(argv, timeout)
+
+    install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert calls[0] == [
+        sys.executable,
+        "-I",
+        "-m",
+        "venv",
+        "--upgrade",
+        "--without-pip",
+        str(install.venv_dir(prefix)),
+    ]
+    assert "pip" in calls[1] and calls[1][-1] == str(install.LOCK_FILE)
+
+
+def test_a_windows_venv_whose_base_python_exists_stays_installed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "python.exe").write_bytes(b"python")
+    _windows_venv(tmp_path / install.PREFIX_LEAF, base)
+    assert install.install_state(tmp_path).installed is True
+    assert install.harness_current(tmp_path) is True
+
+
+@requires_symlinks
+def test_a_windows_base_python_that_is_a_link_still_reads_as_present(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A Store Python's ``python.exe`` is an app execution alias, not a plain file.
+    A dangling link stands in for it: present by name, so the venv reads as installed."""
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    base = tmp_path / "store-python"
+    base.mkdir()
+    (base / "python.exe").symlink_to(tmp_path / "alias-target-not-a-file")
+    _windows_venv(tmp_path / install.PREFIX_LEAF, base)
+    assert install.install_state(tmp_path).installed is True
+
+
+def _copy_base_python(dest: Path) -> Path:
+    """A private copy of this interpreter's base install, enough for ``-m venv`` to run."""
+    src = Path(sys.base_prefix)
+    dest.mkdir()
+    for entry in src.iterdir():
+        if entry.is_file() and entry.suffix.lower() in (".exe", ".dll", ".zip", "._pth"):
+            shutil.copy2(entry, dest / entry.name)
+    shutil.copytree(src / "DLLs", dest / "DLLs")
+    skip = shutil.ignore_patterns(
+        "site-packages", "__pycache__", "test", "tests", "idlelib", "tkinter", "turtledemo"
+    )
+    shutil.copytree(src / "Lib", dest / "Lib", ignore=skip)
+    return dest / "python.exe"
+
+
+def _runs(launcher: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(launcher), "-c", "pass"],
+        capture_output=True,
+        timeout=FALLBACK_TIMEOUT_SECS,
+        **UTF8_TEXT,
+    )
+
+
+@_REAL_CHILD
+@pytest.mark.skipif(sys.platform != "win32", reason="the copied venv launcher is a Windows layout")
+def test_a_real_windows_venv_over_a_removed_base_python_is_repaired(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """On a real Windows host: a venv built on a Python that is then removed reads as not
+    installed, and the offline repair (a real ``venv --upgrade``) makes it start again.
+    Over the intact base it reads as installed and Install repairs nothing."""
+    _gateway_ships(monkeypatch, "pip")
+    base_python = _copy_base_python(tmp_path / "base-python")
+    prefix = tmp_path / install.PREFIX_LEAF
+    prefix.mkdir()
+    subprocess.run(
+        [str(base_python), "-I", "-m", "venv", "--without-pip", str(install.venv_dir(prefix))],
+        check=True,
+        capture_output=True,
+        timeout=FALLBACK_TIMEOUT_SECS,
+        **UTF8_TEXT,
+    )
+    (prefix / install.MARKER_FILE).write_text(
+        json.dumps({"version": HARNESS_VERSION, "lock_sha256": install.lock_digest()}),
+        encoding="utf-8",
+    )
+    launcher = install.venv_python(prefix)
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if argv[1:4] == ["-I", "-m", "venv"]:
+            # The production venv deadline equals the suite's pytest-timeout, so the
+            # child gets the shorter test deadline and a stall fails as a normal test.
+            return subprocess.run(
+                argv, capture_output=True, timeout=FALLBACK_TIMEOUT_SECS, **UTF8_TEXT
+            )
+        return _ok(argv, timeout)
+
+    # Intact base: installed, and Install runs no venv step.
+    assert _runs(launcher).returncode == 0
+    assert install.install_state(tmp_path).installed is True
+    install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert not [c for c in calls if c[1:4] == ["-I", "-m", "venv"]]
+
+    # Base removed: the copied launcher is still a file but cannot start.
+    shutil.rmtree(base_python.parent)
+    assert launcher.is_file()
+    dead = _runs(launcher)
+    assert dead.returncode != 0, dead.stdout + dead.stderr
+    assert install.install_state(tmp_path).installed is False
+    assert install.harness_current(tmp_path) is False
+
+    calls.clear()
+    install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert calls[0][:6] == [sys.executable, "-I", "-m", "venv", "--upgrade", "--without-pip"]
+    assert _runs(launcher).returncode == 0
+    assert install.install_state(tmp_path).installed is True
+
+
 @requires_symlinks
 @pytest.mark.parametrize("gateway_has", ["pip", "ensurepip"])
 def test_a_venv_whose_base_python_was_removed_is_repaired_in_place(
@@ -319,6 +479,12 @@ def test_a_venv_whose_base_python_was_removed_is_repaired_in_place(
         if argv[1:4] == ["-I", "-m", "venv"]:
             bindir = install.venv_python(prefix).parent
             links_at_venv.extend(p.name for p in bindir.iterdir() if p.is_symlink())
+            # ``venv --upgrade`` re-points ``pyvenv.cfg`` at this interpreter.
+            cfg = install.venv_dir(prefix) / "pyvenv.cfg"
+            minor = ".".join(str(n) for n in sys.version_info[:2])
+            cfg.write_text(
+                f"home = {Path(sys.executable).parent}\nversion = {minor}.4\n", encoding="utf-8"
+            )
         return _ok(argv, timeout)
 
     install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
@@ -393,6 +559,75 @@ def test_a_rebuild_whose_pip_fails_reads_as_not_installed(tmp_path: Path, monkey
     with pytest.raises(install.InstallError):
         install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
     assert install.install_state(tmp_path).installed is False
+
+
+@pytest.mark.parametrize(
+    ("arm", "expected"),
+    [
+        ("rebuild", [("before_clear", True), "--clear"]),
+        ("runtime_copy", [("before_clear", True), "--clear"]),
+        pytest.param("repair", ["--upgrade"], marks=requires_symlinks),
+        ("current", []),
+    ],
+)
+def test_only_an_install_that_clears_the_venv_calls_before_clear_and_first(
+    tmp_path: Path, monkeypatch, runtime_site: list[Path], arm: str, expected: list[object]
+) -> None:
+    """A daemon or worker started from the venv's interpreter must stop before the
+    clear: the hook runs while the marker is still there, before ``venv --clear``. A
+    repair keeps site-packages and a current venv is kept: neither calls it."""
+    _gateway_ships(monkeypatch, "ensurepip")
+    prefix = install.harness_prefix(tmp_path)
+    marker = prefix / install.MARKER_FILE
+    if arm == "repair":
+        _pruned_install(prefix, minor=sys.version_info[1])
+    else:
+        _current_install(prefix, venv_pip=True)
+    if arm == "rebuild":
+        marker.write_text(json.dumps({"version": "0.0.1"}), encoding="utf-8")
+    elif arm == "runtime_copy":
+        runtime_site.append(_runtime_ships(tmp_path / "runtime"))
+    events: list[object] = []
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        if argv[1:4] == ["-I", "-m", "venv"]:
+            events.append(argv[4])
+        return _ok(argv, timeout)
+
+    install.install_sync(
+        tmp_path,
+        runner=runner,
+        components=(install.COMPONENT_HARNESS,),
+        before_clear=lambda: events.append(("before_clear", marker.is_file())),
+    )
+    assert events == expected
+
+
+@pytest.mark.parametrize("arm", ["rebuild", "runtime_copy"])
+def test_a_stop_while_before_clear_runs_keeps_the_marker_and_the_venv(
+    tmp_path: Path, monkeypatch, runtime_site: list[Path], arm: str
+) -> None:
+    """The gateway can stop the install while the hook waits for the harness to stop:
+    nothing was cleared then, so the install must not read as cleared either."""
+    _gateway_ships(monkeypatch, "ensurepip")
+    prefix = install.harness_prefix(tmp_path)
+    _current_install(prefix, venv_pip=True)
+    marker = prefix / install.MARKER_FILE
+    if arm == "rebuild":
+        marker.write_text(json.dumps({"version": "0.0.1"}), encoding="utf-8")
+    else:
+        runtime_site.append(_runtime_ships(tmp_path / "runtime"))
+    calls: list[list[str]] = []
+    stop = threading.Event()
+    with pytest.raises(install.InstallError):
+        install.install_sync(
+            tmp_path,
+            runner=_recording_runner(calls),
+            components=(install.COMPONENT_HARNESS,),
+            stop=stop,
+            before_clear=stop.set,
+        )
+    assert marker.is_file() and calls == []
 
 
 def test_neither_pip_nor_ensurepip_fails_before_any_spawn(tmp_path: Path, monkeypatch) -> None:
@@ -574,9 +809,9 @@ def test_the_installers_pip_reads_no_index_from_the_owners_pip_config(
 ) -> None:
     """A real pip under the installer's own spawn never sees the owner's pip config.
 
-    An ``index-url`` there (a CodeArtifact repository whose login expired answers 401
-    for every locked wheel) would otherwise replace the index the lock was audited
-    against, and the Settings page would show pip's raw failure.
+    The installer's environment points pip's config at the null device, so pip
+    loads none of the owner's settings; a first attempt against the user's index is
+    given only the index keys themselves (``sdk_extras._PIP_INDEX_ENV``).
     """
     if not isolated_child_imports["pip"]:
         pytest.skip("this interpreter ships no pip an isolated child can run")

@@ -19,6 +19,9 @@ dashboard hides the prefix (``chatErrorRecovery.chatErrorDisplayText``).
 :func:`for_non_owner` is applied on the edges ``redaction_audience`` already owns
 for a reader who is not the machine owner: the websocket send, the chat SSE writer,
 the status stream and every HTTP response body (:func:`body_for_non_owner`).
+A task run's planning refusal is stored nowhere: the run keeps its ordinary error, and
+the one dashboard answer that shows the refusal's own text is
+``POST /api/taskrunner/plan``'s to the machine owner (:func:`plan_error_text`).
 """
 
 from __future__ import annotations
@@ -85,13 +88,19 @@ def row_meta(refusal: Any) -> dict[str, object]:
     """The typed meta for the error row of *refusal*: the code and when it happened.
 
     ``retryable`` marks a momentary refusal (``kind == "transient"``), which a
-    retry can clear, so the card keeps Resume for it.
+    retry can clear, so the card keeps Resume for it. A cap read as 0 is transient
+    (never cached) but not momentary: only the host's owner can clear it.
     """
+    from kiro_crew.sandbox import REMEDY_USERNS_CAP_ZERO
+
     meta: dict[str, object] = {
         "code": HOST_SANDBOX_UNAVAILABLE,
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    if getattr(refusal, "kind", "") == "transient":
+    if (
+        getattr(refusal, "kind", "") == "transient"
+        and getattr(refusal, "remedy", "") != REMEDY_USERNS_CAP_ZERO
+    ):
         meta["retryable"] = True
     return meta
 
@@ -185,6 +194,28 @@ def _lines_for_non_owner(body: bytes) -> bytes | None:
             lines[i] = json.dumps(shown).encode()
             changed = True
     return b"\n".join(lines) if changed else None
+
+
+def plan_error_text(request: Any, exc: BaseException) -> str:
+    """What the plan route tells *request*'s caller about the failed plan *exc*.
+
+    Its own text for everyone, except that the machine owner reads a host sandbox
+    refusal's own text (``PlanSandboxRefused.refusal``) in its place. A request the owner
+    check fails on reads as not the owner.
+    """
+    # Call-time import: the planner imports much of the gateway.
+    from kiro_crew.task_planner import PlanSandboxRefused
+
+    if isinstance(exc, PlanSandboxRefused) and _is_machine_owner(request):
+        return exc.refusal
+    return str(exc)
+
+
+def _is_machine_owner(request: Any) -> bool:
+    # Call-time import: the handlers package imports much of the gateway.
+    from kiro_crew.dashboard.handlers.source_providers import owner_view_for_request
+
+    return owner_view_for_request(request)
 
 
 def text_for_non_owner(text: str) -> str:

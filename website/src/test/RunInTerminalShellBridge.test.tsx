@@ -35,11 +35,20 @@ vi.mock('../utils/terminalRegistry', async (importOriginal) => ({
 import { RunInTerminalShellNotice, useRunInTerminalShellBridge } from '../shell/runInTerminalShellBridge'
 
 function RunInTerminalShellBridge({ cwd, hasDock = true }: { cwd: string | undefined; hasDock?: boolean }) {
-  const { error, dismiss } = useRunInTerminalShellBridge(cwd, hasDock)
+  const { error, dismiss } = useRunInTerminalShellBridge(() => cwd, hasDock)
   return <RunInTerminalShellNotice error={error} onDismiss={dismiss} />
 }
 import { useRunInTerminalBridge, useRunInTerminalRefs } from '../hooks/useRunInTerminalBridge'
-import { __resetBottomTerminal, useBottomTerminal } from '../hooks/useBottomTerminal'
+import { __resetBottomTerminal, addTab, closeBottomTerminal, useBottomTerminal } from '../hooks/useBottomTerminal'
+import { takeSkipFocusOnShow } from '../utils/terminalQuietShow'
+
+/** Make `isTouchDevice()` answer `touch` for the rest of the test. */
+function stubPointer(touch: boolean) {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: touch && (query === '(pointer: coarse)' || query === '(hover: none)'),
+    media: query, addEventListener() {}, removeEventListener() {},
+  }))
+}
 
 function client() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -74,6 +83,7 @@ describe('RunInTerminalShellBridge', () => {
     window.addEventListener('mc:run-in-terminal-result', onResult)
   })
   afterEach(() => {
+    vi.unstubAllGlobals()
     window.removeEventListener('mc:run-in-terminal-result', onResult)
     act(() => { __resetBottomTerminal() })
   })
@@ -83,6 +93,50 @@ describe('RunInTerminalShellBridge', () => {
     render(wrap(<RunInTerminalShellBridge cwd="/proj" />))
     run({ code: 'npm test', reqId: 'r1' })
     expect(dock.result.current.tabs).toEqual([expect.objectContaining({ cwd: '/proj' })])
+  })
+
+  it('opens a new terminal without focus on a touch device, so the keyboard stays down', () => {
+    stubPointer(true)
+    const dock = renderHook(() => useBottomTerminal())
+    render(wrap(<RunInTerminalShellBridge cwd="/proj" />))
+    run({ code: 'npm test', reqId: 'r1' })
+    const [tab] = dock.result.current.tabs
+    expect(takeSkipFocusOnShow(tab.id)).toBe(true)
+  })
+
+  it('opens a new terminal with its usual focus on a device with a pointer', () => {
+    stubPointer(false)
+    const dock = renderHook(() => useBottomTerminal())
+    render(wrap(<RunInTerminalShellBridge cwd="/proj" />))
+    run({ code: 'npm test', reqId: 'r1' })
+    const [tab] = dock.result.current.tabs
+    expect(takeSkipFocusOnShow(tab.id)).toBe(false)
+  })
+
+  it('reuses a hidden terminal without focus on a touch device, and leaves an already shown one alone', () => {
+    stubPointer(true)
+    qc.setQueryData(['kirocrewConfig'], { dashboard: { terminal: { reuse_current: true } } })
+    render(wrap(<RunInTerminalShellBridge cwd="/proj" />))
+    let id = ''
+    act(() => { id = addTab('/proj'); closeBottomTerminal() })
+    run({ code: 'aws s3 ls', reqId: 'r1' })
+    expect(takeSkipFocusOnShow(id)).toBe(true)
+    // Shown already: no show follows, so nothing may linger to swallow a later one.
+    run({ code: 'aws s3 ls', reqId: 'r2' })
+    expect(takeSkipFocusOnShow(id)).toBe(false)
+  })
+
+  it('opens in the project selected when the request arrives, with no re-render after the switch', () => {
+    const dock = renderHook(() => useBottomTerminal())
+    let project: string | undefined = '/first'
+    function Bridge() {
+      const { error, dismiss } = useRunInTerminalShellBridge(() => project, true)
+      return <RunInTerminalShellNotice error={error} onDismiss={dismiss} />
+    }
+    render(wrap(<Bridge />))
+    project = '/second'
+    run({ code: 'ls', reqId: 'r1' })
+    expect(dock.result.current.tabs).toEqual([expect.objectContaining({ cwd: '/second' })])
   })
 
   it('starts in the server default when no project is selected', () => {

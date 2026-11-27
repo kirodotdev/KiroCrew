@@ -48,7 +48,6 @@ vi.mock('../api/client', async (importOriginal) => {
 import { api } from '../api/client'
 import TagManagerList from '../components/TagManagerList'
 import ProjectPicker from '../components/ProjectPicker'
-import SearchBar from '../components/SearchBar'
 import { BlockEditor } from '../apps/md-notebook/BlockEditor'
 
 /** Arm the hook's post-composition latch: the WebKit commit-Enter window. */
@@ -256,48 +255,6 @@ describe('ProjectPicker path input — rule 2: gate the Enter path only', () => 
     const { input, onOpenChange } = await openBrowseWithSpy()
     fireEvent.keyDown(input, { key: 'Tab' })
     expect(onOpenChange).not.toHaveBeenCalled()
-  })
-})
-
-describe('SearchBar find input — rule 2 mixed handler: claim the Enter branch only', () => {
-  // Representative of the sweep's claim-in-mixed-handler sites: Enter steps the
-  // find while arrows/Home/End navigate, so only the Enter branch is claimed.
-  const renderBar = () => {
-    const next = vi.fn()
-    const prev = vi.fn()
-    render(
-      <SearchBar
-        term="查询" setTerm={vi.fn()} matches={[]} currentIdx={0}
-        next={next} prev={prev} close={vi.fn()}
-        caseSensitive={false} toggleCaseSensitive={vi.fn()}
-      />,
-    )
-    const input = screen.getByLabelText(/./, { selector: 'input' }) as HTMLInputElement
-    return { input, next, prev }
-  }
-
-  it('does NOT step the find on the committing Enter, and consumes it', () => {
-    const { input, next } = renderBar()
-    armLatch(input)
-    const defaultNotPrevented = fireEvent.keyDown(input, { key: 'Enter' })
-    expect(next).not.toHaveBeenCalled()
-    // claimEnter consumed the declined key (both native signals clear).
-    expect(defaultNotPrevented).toBe(false)
-  })
-
-  it('keeps arrow-key navigation working while the latch is armed', () => {
-    const { input, next } = renderBar()
-    armLatch(input)
-    fireEvent.keyDown(input, { key: 'ArrowDown' })
-    expect(next).toHaveBeenCalledTimes(1)
-  })
-
-  it('steps the find on a plain Enter (positive control)', () => {
-    const { input, next, prev } = renderBar()
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(next).toHaveBeenCalledTimes(1)
-    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
-    expect(prev).toHaveBeenCalledTimes(1)
   })
 })
 

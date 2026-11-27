@@ -16,7 +16,7 @@
 // or `scrollToDisplayIndex`, which is DOM-driven and runs for real.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, act, fireEvent, screen } from '@testing-library/react'
+import { render, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -380,11 +380,10 @@ describe('ChatPage — a page that lands while a jump settles leaves the jump on
   })
 
   const OLDER = 10
-  /** The walk's next page lands: OLDER messages from before the loaded ones,
-   *  the word in message `withMatch` of the page when one is named. */
-  const landOlderPage = (store: ReturnType<typeof createTestStore>, withMatch = -1) => {
+  /** The walk's next page lands: OLDER messages from before the loaded ones. */
+  const landOlderPage = (store: ReturnType<typeof createTestStore>) => {
     const older = Array.from({ length: OLDER }, (_, i) => ({
-      role: 'user', content: i === withMatch ? `o${i} also has the needle` : `o${i}`, cls: '', ts: `2026-06-23T19:${String(i).padStart(2, '0')}:00.000Z`,
+      role: 'user', content: `o${i}`, cls: '', ts: `2026-06-23T19:${String(i).padStart(2, '0')}:00.000Z`,
     }))
     act(() => {
       store.dispatch(loadOlderMessages.fulfilled(
@@ -403,44 +402,6 @@ describe('ChatPage — a page that lands while a jump settles leaves the jump on
     return recorded.map((r) => r.top)
   }
 
-  // The reader is on the match in L19 when a page of older history lands with
-  // another match in it (o2). The current match is the message, so L19 stays
-  // current, and rows arriving move nobody.
-  it('rows arriving: a page that brings an older match leaves the current one current and moves nobody', async () => {
-    const messages = mkMessages().map((m, i) => (i === 19 ? { ...m, content: 'L19 asks about the needle' } : m))
-    const { store } = await renderChatPage(messages)
-    act(() => { fireEvent.keyDown(document, { key: 'f', ctrlKey: true }) })
-    act(() => { fireEvent.change(screen.getByPlaceholderText('Find in chat…'), { target: { value: 'needle' } }) })
-    act(() => { vi.advanceTimersByTime(60) })
-    const current = () => [...document.querySelectorAll('[data-current="yes"]')].map((el) => el.getAttribute('data-ts'))
-    expect(current()).toEqual([ts(19)])
-    // The jump to L19 runs out its backstop before the page lands.
-    raf.flush(1)
-    act(() => { vi.advanceTimersByTime(2500) })
-    raf.flush(2)
-
-    landOlderPage(store, 2)
-    act(() => { vi.advanceTimersByTime(60) })
-    expect(scrollsDuring(() => raf.flush(3))).toEqual([])
-    expect(current()).toEqual([ts(19)])
-  })
-
-  it('a find action: the poll keeps centering the match, not the row that takes its number', async () => {
-    const messages = mkMessages().map((m, i) => (i === 3 ? { ...m, content: 'the needle' } : m))
-    const { store } = await renderChatPage(messages)
-    act(() => { fireEvent.keyDown(document, { key: 'f', ctrlKey: true }) })
-    act(() => { fireEvent.change(screen.getByPlaceholderText('Find in chat…'), { target: { value: 'needle' } }) })
-    // The search's debounce; the term is a find action, so the poll starts.
-    act(() => { vi.advanceTimersByTime(60) })
-    expect(scrollsDuring(() => raf.flush(2)).at(-1)).toBe(centered(3))
-
-    landOlderPage(store)
-    expect(document.querySelector(`[data-display-index="${3 + OLDER}"]`)).not.toBeNull()
-    const after = scrollsDuring(() => raf.flush(3))
-    expect(after.length).toBeGreaterThan(0)
-    expect(after).toEqual(after.map(() => centered(3 + OLDER)))
-  })
-
   it('a ?msg= link: the poll keeps centering the linked message after the page lands', async () => {
     const { store } = await renderChatPage(mkMessages(), ts(5))
     // The deep link scrolls 500ms after the rows load.
@@ -451,40 +412,5 @@ describe('ChatPage — a page that lands while a jump settles leaves the jump on
     const after = scrollsDuring(() => raf.flush(3))
     expect(after.length).toBeGreaterThan(0)
     expect(after).toEqual(after.map(() => centered(5 + OLDER)))
-  })
-
-  // The search counts a landed page at once, while the rows on screen still
-  // draw the list from before it: React renders the transcript's new snapshot
-  // when it has room. In that window the current match must stay on its own
-  // row, and a find action must move the reader to it.
-  it('while the landed page waits to render, the current match stays on its row and a step goes to the next one', async () => {
-    const messages = mkMessages().map((m, i) => (i === 3 || i === 13 ? { ...m, content: `the needle ${i}` } : m))
-    const { store } = await renderChatPage(messages)
-    act(() => { fireEvent.keyDown(document, { key: 'f', ctrlKey: true }) })
-    const input = screen.getByPlaceholderText('Find in chat…')
-    act(() => { fireEvent.change(input, { target: { value: 'needle' } }) })
-    act(() => { vi.advanceTimersByTime(60) })
-    const current = () => [...document.querySelectorAll('[data-current="yes"]')].map((el) => el.getAttribute('data-ts'))
-    expect(current()).toEqual([ts(3)])
-    // The jump to the first needle runs out its backstop.
-    raf.flush(1)
-    act(() => { vi.advanceTimersByTime(2500) })
-    raf.flush(2)
-
-    deferral.hold = true
-    landOlderPage(store)
-    // The rows on screen are still the loaded ones; the search has counted the
-    // page (its debounce ran) and nobody was moved.
-    expect(document.querySelector(`[data-display-index="${N}"]`)).toBeNull()
-    act(() => { vi.advanceTimersByTime(60) })
-    expect(scrollsDuring(() => raf.flush(2))).toEqual([])
-    expect(current()).toEqual([ts(3)])
-
-    // Enter: the next match is the second needle, still row 13 on screen.
-    act(() => { fireEvent.keyDown(input, { key: 'Enter' }) })
-    expect(current()).toEqual([ts(13)])
-    const steps = scrollsDuring(() => raf.flush(2))
-    expect(steps.length).toBeGreaterThan(0)
-    expect(steps).toEqual(steps.map(() => centered(13)))
   })
 })

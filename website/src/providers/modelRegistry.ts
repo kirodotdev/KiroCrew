@@ -109,6 +109,15 @@ export function canonicalKey(name: string): string | null {
   return stripped !== raw ? lookup(stripped) : null
 }
 
+/** Registry-declared effort support, or `null` when the row declares none or
+ *  the id is unregistered; mirrors `model_registry.supports_effort`. */
+export function supportsEffort(name: string): boolean | null {
+  const key = canonicalKey(name)
+  if (key === null) return null
+  const declared = REGISTRY[key].supports_effort
+  return declared === undefined ? null : Boolean(declared)
+}
+
 /** Registry-declared ISO release date (`YYYY-MM-DD`), or `null`; mirrors `model_registry.released_at`. */
 export function releasedAt(name: string): string | null {
   const key = canonicalKey(name)

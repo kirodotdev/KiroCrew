@@ -236,7 +236,7 @@ def _agent_roster_hint() -> str:
         # caller needs: naming any agent will be refused, so say so rather than
         # advertising nothing and letting it guess.
         return (
-            " This agent's toolsSettings.subagent.availableAgents allows none of the "
+            " This agent's availableAgents allows none of the "
             "installed agents, so every spawn is refused; ask the operator to widen the list."
             if restricted
             else ""
@@ -245,7 +245,7 @@ def _agent_roster_hint() -> str:
     if withheld:
         hint += f" (+{withheld} more)"
     if restricted:
-        hint += " (restricted by this agent's toolsSettings.subagent.availableAgents)"
+        hint += " (restricted by this agent's availableAgents)"
     return hint + "."
 
 
@@ -378,7 +378,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 " do not start a new spawn until all of them have been"
                 " delivered and processed."
                 " A shared-session spawn costs about 200ms and little memory; a per-spawn"
-                " model or reasoning_effort runs each subagent in its own process"
+                " model or reasoning_effort can run each subagent in its own process"
                 " (~3-5s, ~0.55 GB), so check resource_status before a wide wave."
                 " A memory-pressure refusal means take a lighter path; an unknown agent"
                 " name means pick from the returned roster. awaiting_approval means the"
@@ -481,6 +481,15 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "~/workplaces]). Applies to all tasks in a batch spawn."
                         ),
                     },
+                    "isolate": {
+                        "type": "string",
+                        "enum": ["worktree"],
+                        "description": (
+                            "Optional. 'worktree' gives each task its own git worktree of "
+                            "cwd's repository, detached at HEAD; uncommitted changes are "
+                            "not copied. Needs 'cwd'."
+                        ),
+                    },
                     "model": {
                         "type": "string",
                         "description": (
@@ -490,7 +499,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "the kiro backend list them with "
                             "`kiro-cli chat --list-models --format json`; another backend "
                             "(e.g. codex) accepts only ids from its own model list and "
-                            "refuses ids from kiro's catalog. Setting it forces the "
+                            "refuses ids from kiro's catalog. Setting it can force the "
                             "dedicated-process path (~3-5s start, ~0.55 GB per subagent)."
                         ),
                     },

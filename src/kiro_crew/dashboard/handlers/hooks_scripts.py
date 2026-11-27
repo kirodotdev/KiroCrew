@@ -102,6 +102,11 @@ def _store_unavailable_response() -> web.Response:
 @_store_failure_guard
 async def api_hooks(request: web.Request) -> web.Response:
     """GET /api/hooks — list all script hooks."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "hooks.list")
+    if denied is not None:
+        return denied
     store = _get_hook_store(request.app["state"])
     return web.json_response({"hooks": [h.to_dict() for h in store.list_all()]})
 

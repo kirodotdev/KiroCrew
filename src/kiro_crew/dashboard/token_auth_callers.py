@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import Counter
 from collections.abc import Iterable
 from functools import partial
 from typing import Any, Sequence, cast
@@ -23,6 +25,7 @@ from kiro_crew.dashboard.origin import is_proxied_request, request_is_unix_socke
 from kiro_crew.dashboard.token_auth_paths import _deny, _log_auth
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self, get_peer_pid
+from kiro_crew.member_memory_auth import session_key_is_attested
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.peer_resolve import resolve_peer_tenancy
 from kiro_crew.runtime_ownership import session_keys_bound_to_pid
@@ -1097,3 +1100,147 @@ def _internal_caller_record_missing(request: web.Request) -> bool:
         getattr(getattr(state, "crons", None), "_jobs", None),
         getattr(getattr(state, "subagents", None), "_agents", None),
     )
+
+
+#: The session-key prefixes the would-refuse line names. The key is the caller's own
+#: header, so any other prefix is logged as ``other``: the line and the count stay
+#: bounded, and nothing the caller chose is written verbatim.
+_SESSION_KEY_KINDS = frozenset(
+    {
+        "acp",
+        "app",
+        "channel",
+        "cron",
+        "dashboard",
+        "discord",
+        "meeting",
+        "member",
+        "remote",
+        "slack",
+        "subagent",
+        "taskrunner",
+        "teams",
+        "telegram",
+        "webex",
+        "workflow",
+    }
+)
+
+#: Seconds during which a repeat would-refuse line for the same (kind, caller, route)
+#: is not written again. An MCP server without a token sends one such request per
+#: tool call, so without the throttle a single session fills the rotating log.
+_WOULD_REFUSE_LOG_INTERVAL_SECS = 600.0
+
+_would_refuse_log_last: dict[tuple[str, str, str], float] = {}
+
+#: TCP internal requests whose declared session key no transport attested, per
+#: (kind, caller, route), since this process started. Every part of the key is
+#: drawn from a closed set (the kinds above, :data:`KNOWN_INTERNAL_CALLERS`, the
+#: router's own templates), so the map cannot grow with what callers send.
+_WOULD_REFUSE_COUNTS: Counter[tuple[str, str, str]] = Counter()
+
+
+def _session_key_kind(session_key: str) -> str:
+    prefix = session_key.split(":", 1)[0] if ":" in session_key else ""
+    return prefix if prefix in _SESSION_KEY_KINDS else "other"
+
+
+def _route_template(request: web.Request) -> str:
+    """The matched route's template, so no id or query string reaches the log."""
+    resource = getattr(getattr(request.match_info, "route", None), "resource", None)
+    canonical = getattr(resource, "canonical", None)
+    return canonical if isinstance(canonical, str) and canonical else "unmatched"
+
+
+def live_dashboard_mode(name: str, modes: Sequence[str], default: str = "log") -> str:
+    """``dashboard.<name>`` from the config in force now; *default* when unset or invalid.
+
+    Read through :func:`kiro_crew.config.live.current`: the watcher's snapshot once
+    primed, and before that (the boot window) a disk load, so an operator's
+    ``"enforce"`` holds from the first request. When the disk read fails too, a
+    default config stands in, so an unreadable config yields *default* -- it never
+    starts refusing and never stops the gateway.
+    """
+    try:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg: Any = live.current(KiroCrewConfig(), log_prefix="token_auth")
+    except Exception:  # noqa: BLE001 - an unreadable config keeps the default
+        cfg = None
+    value = getattr(getattr(cfg, "dashboard", None), name, default)
+    return value if value in modes else default
+
+
+def unattested_session_key_mode() -> str:
+    """``dashboard.unattested_session_keys``: ``"log"`` (default) or ``"enforce"``.
+
+    ``"log"`` is today's behaviour -- :func:`_note_unattested_tcp_session_key`
+    records the request and it is answered as before. ``"enforce"`` is the opt-in
+    that refuses it. Read from the live config on each call (the on-disk value
+    before the watcher is primed); ``"log"`` when unset or unreadable, so a broken
+    config never starts refusing.
+    """
+    return live_dashboard_mode("unattested_session_keys", ("log", "enforce"))
+
+
+async def _note_unattested_tcp_session_key(request: web.Request) -> bool:
+    """Log an internal TCP request whose declared session key is unattested; say so.
+
+    The internal secret proves a request came from this machine, not which session
+    sent it, and on TCP loopback no kernel peer check runs, so the app claim
+    :func:`_derive_internal_caller_app` publishes rests on the caller's own
+    ``X-Session-Key``. The attestation a strict check would require is
+    :func:`~kiro_crew.member_memory_auth.session_key_is_attested`. This records the
+    requests that check would refuse and returns ``True`` for them, so the caller
+    refuses when ``dashboard.unattested_session_keys`` is ``"enforce"``; the logging
+    and counting are unchanged, and in the default ``"log"`` mode the request is
+    still answered exactly as before.
+
+    ``dashboard:ui`` and a blank key are exempt: they derive no app claim. The line
+    names the key's kind, the internal caller, the route template and whether a
+    token was sent, never the key, the token, the secret or the query string. A
+    check that raises returns ``False`` -- an internal error never starts refusing.
+    """
+    try:
+        key = request.headers.get("X-Session-Key", "")
+        if not isinstance(key, str):
+            return False
+        key = key.strip()
+        if not key or key == "dashboard:ui":
+            return False
+        # With no token there is nothing to verify and the answer is "unattested", so
+        # the common tokenless case pays no thread hop and no file read. The token
+        # branch does blocking file I/O, so it runs off the event loop.
+        if request.headers.get("X-Session-Token") or request.get("peer_verified") is True:
+            if await asyncio.to_thread(session_key_is_attested, request, key):
+                return False
+        caller = (request.headers.get("X-Internal-Caller") or "").strip()
+        bucket = (
+            _session_key_kind(key),
+            caller if caller in KNOWN_INTERNAL_CALLERS else "other",
+            _route_template(request),
+        )
+        _WOULD_REFUSE_COUNTS[bucket] += 1
+        now = time.monotonic()
+        last = _would_refuse_log_last.get(bucket)
+        if last is None or now - last >= _WOULD_REFUSE_LOG_INTERVAL_SECS:
+            _would_refuse_log_last[bucket] = now
+            token = "unverified" if request.headers.get("X-Session-Token") else "absent"
+            logger.warning(
+                "would refuse: internal request over tcp declared a session key that no "
+                "transport attests (kind=%s, caller=%s, route=%s %s, session token %s); "
+                "%d such requests for this kind, caller and route since start; repeats are "
+                "suppressed for %ds.",
+                bucket[0],
+                bucket[1],
+                request.method[:16],
+                bucket[2],
+                token,
+                _WOULD_REFUSE_COUNTS[bucket],
+                int(_WOULD_REFUSE_LOG_INTERVAL_SECS),
+            )
+        return True
+    except Exception:  # noqa: BLE001 - this check must never change the answer on error
+        logger.debug("would-refuse session-key check failed", exc_info=True)
+        return False

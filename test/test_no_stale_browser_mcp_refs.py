@@ -37,6 +37,8 @@ def _agent_facing_files() -> list[Path]:
     """Every file whose text or config reaches a live agent."""
     files: list[Path] = [SRC / "config" / "prompt.md"]
     files += sorted((SRC / "builtin_skills").rglob("SKILL.md"))
+    # A skill's detail split out of its core reaches the agent the same way.
+    files += sorted((SRC / "builtin_skills").glob("**/references/*.md"))
     files += sorted((SRC / "apps" / "builtins").glob("*/skills/**/SKILL.md"))
     files += sorted((SRC / "apps" / "builtins").glob("*/agents/*.json"))
     files += sorted((ROOT / "skills").rglob("SKILL.md"))
@@ -49,10 +51,10 @@ def test_scan_covers_the_surfaces_it_claims_to() -> None:
     assert len(files) > 20, f"expected the full skill/agent corpus, got {len(files)}"
     names = {p.name for p in files}
     assert "prompt.md" in names
-    assert "advisor.json" in names, "app agent specs must be in scope"
-    # The two app skill trees the migration left behind live here.
-    assert any("personal-shopper" in str(p) for p in files)
-    assert any("feature-demo-recording" in str(p) for p in files)
+    apps = SRC / "apps" / "builtins"
+    app_files = [p.relative_to(apps).parts for p in files if apps in p.parents]
+    assert any(parts[1] == "agents" for parts in app_files), "app agent specs must be in scope"
+    assert any(parts[1] == "skills" for parts in app_files), "app skill trees must be in scope"
 
 
 def test_no_agent_facing_file_names_a_removed_browser_tool() -> None:

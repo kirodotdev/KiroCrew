@@ -20,6 +20,7 @@ import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
 import { i18nT } from '../i18n/t'
 import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 import { RadioChipGroup, radioChip } from './RadioChipGroup'
+import { builtInEngineOn } from './FirstRunSignInHold'
 /**
  * First-run onboarding flow (5 steps) — the Customize chapter plus the feature
  * tour. It is the LAST of the two first-run chapters: Import setup runs first,
@@ -874,7 +875,11 @@ export default function OnboardingFlow({
         <h3 className="text-[18px] font-semibold text-text-strong leading-tight">{i18nT(POP_TITLE_KEY[pop.navId])}</h3>
         <p className="text-[13px] text-muted mt-2.5 leading-relaxed">
           {pop.navId === 'chat' && kiroSignInNeeded
-            ? i18nT('components.onboardingFlow.pop_chat_body_sign_in_first')
+            // With the built-in engine on, the chat shows one sign-in strip above
+            // the message box; with it off, the sign-in lives in Settings.
+            ? (kasBundle.data && builtInEngineOn(kasBundle.data)
+              ? i18nT('components.onboardingFlow.pop_chat_body_almost_ready')
+              : i18nT('components.onboardingFlow.pop_chat_body_sign_in_first'))
             : i18nT(POP_BODY_KEY[pop.navId])}
         </p>
         <div className="flex items-center mt-[18px]">

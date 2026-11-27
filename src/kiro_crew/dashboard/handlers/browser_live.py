@@ -51,6 +51,7 @@ from kiro_crew.browser_harness.live_hub import (
     handback_text,
 )
 from kiro_crew.browser_harness.takeover import InputEventError
+from kiro_crew.dashboard import full_chat_waits
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
@@ -77,15 +78,20 @@ def _sel() -> Any:
     return sel()
 
 
-def _audit(request: web.Request, *, operation: str, outcome: str, error: str = "") -> None:
-    """Best-effort SEL audit; a logging failure never changes the answer."""
+def _audit(
+    request: web.Request, *, operation: str, outcome: str, error: str = "", resources: str = ""
+) -> None:
+    """Best-effort SEL audit; a logging failure never changes the answer.
+
+    *resources* defaults to the request path.
+    """
     try:
         _sel().log_api_access(
             caller=str(request.get("user") or "dashboard"),
             operation=operation,
             outcome=outcome,
             source="dashboard",
-            resources=request.path,
+            resources=resources or request.path,
             error=error,
         )
     except Exception:
@@ -401,6 +407,8 @@ def bind_live_hub(state: Any) -> LiveHub:
     publish = getattr(state, "deliver_ws_owners", None)
     send_frame = getattr(state, "deliver_ws_owners_bytes", None)
     hub.bind(publish, send_frame)
+    # A parked ask is one of the waits the slot list's ``needs_full_chat`` reports.
+    hub.watch_asks(lambda _key: full_chat_waits.push_slot_list(state))
     hub.attach_recorder(get_recorder())
     refresh_live_config(hub)
     return hub

@@ -490,7 +490,7 @@ describe('RemoteFilesPanel', () => {
 
 describe('RemoteGitPanel', () => {
   // Each hand-off stages a draft in the composer; nothing is sent by the click.
-  const DRAFT_TITLE = 'Opens the chat with this request drafted. Nothing is sent until you send it.'
+  const DRAFT_TITLE = 'Opens the chat with this request drafted.'
 
   it('parses NUL porcelain with literal filenames and rename/copy source records', () => {
     expect(parsePorcelain('## main...origin/main\0 M space name.py\0?? é.txt\0R  new\nname.py\0old.py\0 C copied.py\0source.py\0 M arrow -> name\0')).toEqual({
@@ -550,7 +550,7 @@ describe('RemoteGitPanel', () => {
     // after two chained query answers: bound that chain explicitly.
     const CHAINED_READS_MS = 5000
     const line = await screen.findByText(subject, {}, { timeout: CHAINED_READS_MS })
-    expect(line).not.toHaveAttribute('title')
+    expect(line).toHaveAttribute('title', '')
     expect(line).toHaveAttribute('tabindex', '0')
     fireEvent.focus(line)
     expect(screen.getByRole('tooltip')).toHaveTextContent(subject)

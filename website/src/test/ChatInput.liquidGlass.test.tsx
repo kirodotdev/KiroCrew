@@ -98,6 +98,8 @@ describe('composer liquid glass', () => {
     // wrapper box), carrying the radius, the caller's class and the effect
     // layers, with the children rendered directly after them.
     expect(dock.classList.contains('liquid-glass')).toBe(true)
+    // The composer keeps the default `thin` step (maintainer direction on #16299).
+    expect(dock.classList.contains('glass-thin')).toBe(true)
     expect(dock.style.isolation).toBe('isolate')
     // The tint rides the oversized frost box inside the clipping effect layer.
     const boxes = Array.from(dock.querySelectorAll<HTMLElement>(':scope > span[aria-hidden="true"] > span'))
@@ -198,10 +200,10 @@ describe('composer liquid glass', () => {
     // the Display panel shows the switch.
     expect(INDEX_HTML).toMatch(/var lg = false; try \{ lg = localStorage\.getItem\('mc-liquid-glass'\) === 'on'; \} catch \(e\) \{\}\n\s+if \(!lg\) document\.documentElement\.dataset\.reduceTransparency = 'on';/)
     expect(INDEX_HTML).not.toContain('mc-reduce-transparency')
-    // On the View card beside the interface style, not at the foot of the
+    // On the View card beside the interface style (the touch layout row may sit between), not at the foot of the
     // Theme card (stacked fields under captions, where a switch row read as a
     // different kind of control). The user-facing name is never the primitive's.
-    expect(DISPLAY_PANEL_SRC).toMatch(/onChange=\{v => setUIMode\(v as 'chat' \| 'cli'\)\} \/>\n(?:\s+\{\/\*[\s\S]*?\*\/\}\n)?(?:\s+<div>\n)?\s+<SettingsToggle\n\s+label=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels'\)/)
+    expect(DISPLAY_PANEL_SRC).toMatch(/onChange=\{v => setUIMode\(v as 'chat' \| 'cli'\)\} \/>\n(?:\s+<TouchLayoutSetting \/>\n)?(?:\s+\{\/\*[\s\S]*?\*\/\}\n)?(?:\s+<div>\n)?\s+<SettingsToggle\n\s+label=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels'\)/)
     expect(DISPLAY_PANEL_SRC).toMatch(/<SettingsToggle\n\s+label=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels'\)\}\n\s+hint=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels_desc'\)\}\n\s+checked=\{liquidGlass\}\n\s+onChange=\{setLiquidGlass\}/)
     expect(DISPLAY_PANEL_SRC).not.toMatch(/liquid_glass/)
     // The live preview follows the row: the real primitive over a skeleton transcript.

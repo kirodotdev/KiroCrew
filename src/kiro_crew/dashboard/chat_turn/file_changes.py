@@ -869,18 +869,18 @@ def _settle_failed_write(
     write, so neither "no change" nor the requested hunk can be claimed.
     Unprovable entries are returned in neither list and stay ``unverified_write``.
 
-    Reads up to ``_MAX_RECONSTRUCT_BYTES`` per path, so it runs off the loop.
-    A file that is gone, unreadable or past the bound is unprovable too.
+    Reads up to ``_MAX_RECONSTRUCT_BYTES`` per path: run it off the loop. A path empty before and
+    after (``before_missing``) is no change; one gone since, unreadable or too large is unprovable.
     """
     same: list[dict[str, Any]] = []
     changed: list[dict[str, Any]] = []
     for held in entries:
-        digest = held.get("pre_call_digest")
-        if not digest:
-            continue
-        now = _safe_read_file_text(held["path"], whole=True)
-        if now is not None:
-            (same if _disk_digest(now.content) == digest else changed).append(held)
+        if (probed := held.get("before_missing")) and not os.path.lexists(probed):
+            same.append(held)
+        elif digest := held.get("pre_call_digest"):
+            now = _safe_read_file_text(held["path"], whole=True)
+            if now is not None:
+                (same if _disk_digest(now.content) == digest else changed).append(held)
     return same, changed
 
 

@@ -225,6 +225,35 @@ class TestContinueConversation:
         assert info is not None and info.done
         assert info.error.startswith("conversation_busy")
 
+    def test_running_continuation_id_uses_owner_for_busy_check(self, continuation_runtime) -> None:
+        import kiro_crew.subagent_persistence as sp
+
+        _, manager = continuation_runtime.new_manager()
+        sp.create_agent_folder("continued1", memory_mode="persistent")
+        sp.update_state(
+            "continued1",
+            conversation_key="subagent:original1",
+            session_id="sid-shared",
+            provider="claude_code",
+        )
+        manager._agents["continued1"] = SubagentInfo(
+            id="continued1",
+            task="first follow-up",
+            conversation_key="subagent:original1",
+        )
+        with (
+            patch("kiro_crew.subagent.sel"),
+            patch.object(manager, "spawn") as spawn,
+            patch.object(manager, "_promote_conversation", return_value=object()),
+        ):
+            info = manager.continue_conversation("continued1", "second follow-up")
+        started = spawn.call_args.kwargs if spawn.called else None
+        assert info is not None and info.done and str(info.error).startswith("conversation_busy"), (
+            "a second turn was dispatched beside the running continuation: "
+            f"conversation_key={started and started.get('conversation_key')!r}"
+        )
+        spawn.assert_not_called()
+
     def test_gone_conversation_refused(self) -> None:
         sessions = _mock_sessions()
         sessions.resumable_sid = MagicMock(return_value=None)

@@ -20,12 +20,15 @@ from pathlib import Path
 from aiohttp import web
 
 from kiro_crew.dashboard import part_stream
-from kiro_crew.dashboard.handlers._shared import open_multipart, read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    open_multipart,
+    read_bounded_json,
+    require_owner_for_dashboard_caller,
+)
 from kiro_crew.dashboard.handlers.files import _ZIP_CONTAINER_EXTS, _content_matches_ext
 from kiro_crew.dashboard.handlers.knowledge_access import (
     _audited_write,
     _pipeline,
-    _require_knowledge_owner,
     _sel_log,
     _store,
 )
@@ -33,6 +36,7 @@ from kiro_crew.dashboard.handlers.knowledge_sync import (
     _add_source_unique,
     _finalize_sync_status,
     _hand_off_under_gate,
+    _remove_staged_file,
     _set_sync_status,
     _source_row,
 )
@@ -47,7 +51,7 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.knowledge")
 
 async def ingest_text(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources/{id}/ingest-text -- agent submits fetched text."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.source.ingest_text")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.source.ingest_text")
     if owner_denied is not None:
         return owner_denied
     source_id = request.match_info["id"]
@@ -153,7 +157,7 @@ async def ingest_text(request: web.Request) -> web.Response:
                 logger.exception("Agent ingest_text failed for source %s", source_id)
             return web.json_response({"error": "internal server error"}, status=500)
         finally:
-            Path(tmp.name).unlink(missing_ok=True)
+            _remove_staged_file(tmp.name)
 
 
 # ---------- Ingestion ----------
@@ -215,7 +219,7 @@ def _inspect_zip_archive(path: str) -> str | None:
 
 async def ingest_file(request: web.Request) -> web.Response:
     """POST /api/knowledge/ingest -- multipart file upload."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.ingest")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.ingest")
     if owner_denied is not None:
         return owner_denied
     pipeline = _pipeline(request)
@@ -280,7 +284,7 @@ async def ingest_file(request: web.Request) -> web.Response:
         if ext in _ZIP_CONTAINER_EXTS:
             reason = await asyncio.to_thread(_inspect_zip_archive, str(staged))
             if reason is not None:
-                staged.unlink(missing_ok=True)
+                _remove_staged_file(staged)
                 _sel_log("ingest", filename=filename, outcome="rejected", reason=reason)
                 return web.json_response(
                     {"error": f"{ext} archive rejected ({reason})"}, status=400
@@ -296,7 +300,7 @@ async def ingest_file(request: web.Request) -> web.Response:
         try:
             budget_token = await pipeline.reserve_import_budget()
         except ImportChunkBudgetError as exc:
-            staged.unlink(missing_ok=True)
+            _remove_staged_file(staged)
             _sel_log("ingest", filename=filename, outcome="deferred")
             return web.json_response(
                 {"error": str(exc), "code": "import_budget_exceeded"}, status=429
@@ -413,7 +417,7 @@ async def ingest_file(request: web.Request) -> web.Response:
                 # holding a stale prior status over a deleted upload.
                 await asyncio.to_thread(_set_sync_status, store, src_id, "error")
             finally:
-                Path(tmp_path).unlink(missing_ok=True)
+                _remove_staged_file(tmp_path)
 
         # The gate is held from the lookup, through the re-used row's 'syncing'
         # stamp, until the task holds its own gate: an itemless row in a
@@ -466,13 +470,13 @@ async def ingest_file(request: web.Request) -> web.Response:
         # window for its duration and refuse imports that should pass. Once the
         # background task exists, ingest_file's finally owns the token.
         pipeline.release_import_budget(budget_token)
-        staged.unlink(missing_ok=True)
+        _remove_staged_file(staged)
         return web.json_response({"error": "internal server error"}, status=500)
 
 
 async def get_job(request: web.Request) -> web.Response:
     """GET /api/knowledge/jobs/{id}."""
-    owner_denied = await _require_knowledge_owner(request, "knowledge.job.read")
+    owner_denied = await require_owner_for_dashboard_caller(request, "knowledge.job.read")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)

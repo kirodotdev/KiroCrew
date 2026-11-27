@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { renderWithProviders } from './helpers'
+import { createConnectedTestStore, renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 import { __resetErrorJournalForTests } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
@@ -93,7 +93,7 @@ describe('a cloud crew stopped from its menu', () => {
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [STOPPED_CREW] })
     vi.mocked(api.cloudStart).mockResolvedValue({ started: true } as never)
     const u = userEvent.setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     const row = (await screen.findByText(NAME)).closest('[data-crew-id]') as HTMLElement
     expect(within(row).getByText('Stopped')).toBeInTheDocument()
@@ -114,7 +114,7 @@ describe('a cloud crew stopped from its menu', () => {
     const running = { ...STOPPED_CREW, cloud_stopped: false, status: { instance_id: 'kc1', state: 'connected' as const } }
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [running] })
     const u = userEvent.setup()
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     const row = (await screen.findByText(NAME)).closest('[data-crew-id]') as HTMLElement
     expect(within(row).queryByText(/You stopped this crew's cloud machine/)).not.toBeInTheDocument()

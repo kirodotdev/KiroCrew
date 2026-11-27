@@ -9,6 +9,7 @@ import {
   Download,
   ExternalLink,
   Globe,
+  Hourglass,
   LockKeyhole,
   LogIn,
   Play,
@@ -23,14 +24,18 @@ import {
 import {
   api,
   type TailnetMobileData,
+  type TailnetMobileOverride,
   type TailnetMobileQr,
   type TailnetMobileStep,
 } from '../api/client'
 import { Badge, Btn, Card, CardTitle } from './ui'
 import Clickable from './Clickable'
+import ErrorNotice from './ErrorNotice'
+import { useConfirm } from './ConfirmDialog'
 import { SettingRef } from './settingRef/SettingRef'
 import { i18nT } from '../i18n/t'
 import { WorkConfirmDeclined } from '../utils/workInFlight'
+import { reportForError, type ErrorReport } from '../utils/errorReport'
 import { copyToClipboard } from '../utils/clipboard'
 import { useAppSelector } from '../store'
 
@@ -78,6 +83,7 @@ const STEP_ICON: Record<TailnetMobileStep, typeof Smartphone> = {
   install: Download,
   start_daemon: Play,
   sign_in: LogIn,
+  approve_device: Hourglass,
   enable_magicdns: Globe,
   enable_https: LockKeyhole,
   trust_off: ShieldCheck,
@@ -97,6 +103,7 @@ const STEP_TITLE_KEY: Record<TailnetMobileStep, string> = {
   install: 'components.tailnetMobile.install_title',
   start_daemon: 'components.tailnetMobile.start_daemon_title',
   sign_in: 'components.tailnetMobile.sign_in_title',
+  approve_device: 'components.tailnetMobile.approve_device_title',
   enable_magicdns: 'components.tailnetMobile.enable_magicdns_title',
   enable_https: 'components.tailnetMobile.enable_https_title',
   trust_off: 'components.tailnetMobile.trust_off_title',
@@ -113,6 +120,7 @@ const STEP_BODY_KEY: Record<TailnetMobileStep, string> = {
   install: 'components.tailnetMobile.install_body',
   start_daemon: 'components.tailnetMobile.start_daemon_body',
   sign_in: 'components.tailnetMobile.sign_in_body',
+  approve_device: 'components.tailnetMobile.approve_device_body',
   enable_magicdns: 'components.tailnetMobile.enable_magicdns_body',
   enable_https: 'components.tailnetMobile.enable_https_body',
   trust_off: 'components.tailnetMobile.trust_off_body',
@@ -159,12 +167,13 @@ const INVITE_EXPANDED_LS_KEY = 'mc-tailnet-mobile-invite-expanded'
 
 /** Steps the dashboard can finish without sending the operator elsewhere.
  *
- * Tailscale installation, daemon startup, sign-in, MagicDNS, and tailnet-wide
- * HTTPS consent remain explicit prerequisites because the gateway cannot safely
- * complete them on a user's behalf. Once those are satisfied, these three steps
- * are one operation from the operator's point of view: trust the daemon-derived
- * name, restart through the formal single-flight path, publish through Tailscale
- * Serve, and mint the QR after the replacement gateway proves readiness.
+ * Tailscale installation, daemon startup, sign-in, device approval, MagicDNS,
+ * and tailnet-wide HTTPS consent remain explicit prerequisites because the
+ * gateway cannot safely complete them on a user's behalf. Once those are
+ * satisfied, these three steps are one operation from the operator's point
+ * of view: trust the daemon-derived name, restart through the formal
+ * single-flight path, publish through Tailscale Serve, and mint the QR after
+ * the replacement gateway proves readiness.
  */
 const ONE_CLICK_SETUP_STEPS = new Set<TailnetMobileStep>([
   'trust_off',
@@ -179,25 +188,47 @@ function pause(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
-/** Preserve the backend's actionable overlay field list in the visible error.
+/** The card's visible error, the config.local.json overrides Fix this may
+ * remove, and the error's journal report for the agent hand-off (the message
+ * below is reworded, so the hand-off cannot find the report by its text). */
+interface ActionFailure {
+  message: string
+  overrides: TailnetMobileOverride[]
+  report?: ErrorReport
+}
+
+const NO_FAILURE: ActionFailure = { message: '', overrides: [] }
+
+/** Preserve the backend's actionable overlay field list in the visible error,
+ * and the overrides the card can offer to remove.
  *
  * `ApiError.body` is intentionally available for call sites that need more
  * than the generic human message. Keep this structural rather than
  * `instanceof ApiError`: component tests mock the API module, and the useful
  * contract here is simply status + raw body.
  */
-function setupErrorMessage(err: Error): string {
+function setupFailure(err: Error): ActionFailure {
+  const plain = { message: err.message, overrides: [], report: reportForError(err) }
   const apiErr = err as Error & { status?: unknown; body?: unknown }
-  if (apiErr.status !== 409 || typeof apiErr.body !== 'string') return err.message
+  if (apiErr.status !== 409 || typeof apiErr.body !== 'string') return plain
   try {
-    const payload = JSON.parse(apiErr.body) as { fields?: unknown }
-    if (!Array.isArray(payload.fields)) return err.message
+    const payload = JSON.parse(apiErr.body) as { fields?: unknown; overrides?: unknown }
+    if (!Array.isArray(payload.fields)) return plain
     const fields = payload.fields.filter(
       (field): field is string => typeof field === 'string' && field.length > 0,
     )
-    return fields.length > 0 ? `${err.message} (${fields.join(', ')})` : err.message
+    const overrides = Array.isArray(payload.overrides)
+      ? payload.overrides.filter(
+          (row): row is TailnetMobileOverride => typeof row?.field === 'string',
+        )
+      : []
+    return {
+      ...plain,
+      message: fields.length > 0 ? `${err.message} (${fields.join(', ')})` : err.message,
+      overrides,
+    }
   } catch {
-    return err.message
+    return plain
   }
 }
 
@@ -279,7 +310,10 @@ function writeInviteExpanded(expanded: boolean): void {
 export function TailnetMobileCard() {
   const qc = useQueryClient()
   const [qr, setQr] = useState<TailnetMobileQr | null>(null)
-  const [actionError, setActionError] = useState('')
+  // One state, so a later error never keeps an earlier one's Fix this.
+  const [failure, setFailure] = useState<ActionFailure>(NO_FAILURE)
+  const { confirm, confirmDialog } = useConfirm()
+  const showError = (message: string) => setFailure({ message, overrides: [] })
   const [inviteExpanded, setInviteExpanded] = useState(readInviteExpanded)
   const [setupRestarting, setSetupRestarting] = useState(false)
   // The active slot's key rides the mint so the server's restricted-session
@@ -311,11 +345,11 @@ export function TailnetMobileCard() {
   const unpublish = useMutation({
     mutationFn: () => api.tailnetMobileUnpublish(),
     onSuccess: (res) => {
-      setActionError(res.ok ? '' : res.detail)
+      showError(res.ok ? '' : res.detail)
       setQr(null)
       invalidate()
     },
-    onError: (err: Error) => setActionError(err.message),
+    onError: (err: Error) => showError(err.message),
   })
 
   /** Finish every gateway-owned step behind one click.
@@ -379,7 +413,7 @@ export function TailnetMobileCard() {
 
       return api.tailnetMobileQr(mintSessionKey)
     },
-    onMutate: () => setActionError(''),
+    onMutate: () => showError(''),
     onSuccess: (res) => {
       setQr(res)
       invalidate()
@@ -387,10 +421,49 @@ export function TailnetMobileCard() {
     onError: (err: Error) => {
       // Declining the "work is running" confirmation stops the setup quietly.
       if (err instanceof WorkConfirmDeclined) return
-      setActionError(setupErrorMessage(err))
+      setFailure(setupFailure(err))
     },
     onSettled: () => setSetupRestarting(false),
   })
+
+  // Fix this: remove only the confirmed keys, then retry setup, which is the
+  // check that they no longer override anything.
+  const clearOverrides = useMutation({
+    mutationFn: (fields: string[]) => api.tailnetMobileClearOverrides(fields),
+    onSuccess: () => setup.mutate(),
+    onError: (err: Error) => showError(err.message),
+  })
+
+  const fixOverrides = async () => {
+    const { overrides } = failure
+    const confirmed = await confirm({
+      title: i18nT('components.tailnetMobile.fix_overrides_title'),
+      body: (
+        <>
+          <ul className="m-0 pl-4">
+            {overrides.map((row) => (
+              <li key={row.field}>
+                <code className="break-all">{row.field}</code>
+                <div className="text-muted">
+                  <Trans
+                    i18nKey="components.tailnetMobile.fix_overrides_values"
+                    components={{
+                      local: <code className="break-all">{JSON.stringify(row.local)}</code>,
+                      applies: <code className="break-all">{JSON.stringify(row.applies)}</code>,
+                    }}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 mb-0">{i18nT('components.tailnetMobile.fix_overrides_body')}</p>
+        </>
+      ),
+      confirmLabel: i18nT('components.tailnetMobile.fix_overrides_confirm'),
+      danger: false,
+    })
+    if (confirmed) clearOverrides.mutate(overrides.map((row) => row.field))
+  }
 
   if (isLoading || !data) return null
 
@@ -466,7 +539,8 @@ export function TailnetMobileCard() {
   const Icon = STEP_ICON[step]
   const busy =
     unpublish.isPending ||
-    setup.isPending
+    setup.isPending ||
+    clearOverrides.isPending
 
   return (
     <Card>
@@ -677,9 +751,18 @@ export function TailnetMobileCard() {
             ) : null}
           </div>
 
-          {actionError ? (
-            <p className="mt-2 text-danger">{actionError}</p>
-          ) : null}
+          <ErrorNotice
+            className="mt-2"
+            message={failure.message}
+            report={failure.report}
+            askAgent
+            actions={failure.overrides.length > 0 ? (
+              <button type="button" disabled={busy} onClick={() => void fixOverrides()}>
+                {i18nT('components.tailnetMobile.fix_overrides')}
+              </button>
+            ) : undefined}
+          />
+          {confirmDialog}
 
           {ONE_CLICK_SETUP_STEPS.has(step) ? (
             <p className="mt-2 text-muted">
@@ -731,6 +814,18 @@ export function TailnetMobileCard() {
                   ? 'components.tailnetMobile.open_https_admin'
                   : 'components.tailnetMobile.open_dns_admin',
               )}
+            </a>
+          ) : null}
+
+          {step === 'approve_device' ? (
+            <a
+              className="mt-2 inline-flex items-center gap-1 text-accent"
+              href="https://login.tailscale.com/admin/machines"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink className="lucide-inline" />
+              {i18nT('components.tailnetMobile.open_machines_admin')}
             </a>
           ) : null}
         </div>

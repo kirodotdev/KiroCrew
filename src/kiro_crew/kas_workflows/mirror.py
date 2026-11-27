@@ -40,7 +40,7 @@ MAX_LIVE_RUNS = 500
 #: distinct node ids kept in a run's per-id maps. A known id or path is always
 #: updated; a new one past the cap is not recorded.
 MAX_PATHS_PER_RUN = 2000
-#: Project scopes whose last list membership is remembered (gap 19).
+#: Project scopes whose last list membership is remembered.
 MAX_LIST_SCOPES = 64
 #: Longest string the mirror keeps from KAS, ids, names, timestamps and reasons
 #: alike. A cut id names nothing KAS holds, so a control sent with it fails.
@@ -483,15 +483,12 @@ class RunMirror:
             name = wire.as_str(body.get("workflowName")) or workflow_id
             run = self._ensure(workflow_id, status=wire.STATUS_RUNNING, name=name, budget=budget)
         else:
-            existing = self._runs.get(workflow_id)
-            if existing is None:
-                # A notification for a run this mirror has not listed yet. Hold
-                # a placeholder so the stream is not lost; the next list or load
-                # fills in its name and creation time.
-                existing = self._ensure(
-                    workflow_id, status=wire.STATUS_RUNNING, name=workflow_id, budget=budget
-                )
-            run = existing
+            # A notification for a run this mirror has not listed yet holds a
+            # placeholder so the stream is not lost; the next list or load
+            # fills in its name and creation time.
+            run = self._ensure(
+                workflow_id, status=wire.STATUS_RUNNING, name=workflow_id, budget=budget
+            )
         if run is None:
             return None
         if run.status in wire.TERMINAL_RUN_STATUSES and self._live_full():
@@ -637,17 +634,17 @@ def _on_run_start(run: _Run, body: Mapping[str, Any], now: str) -> None:
     plan = wire.parse_plan(body.get("nodeTree"))
     if plan:
         run.plan = plan
-    if plan and restarted:
-        # A restart from scratch re-sends the tree; every node is pending again.
-        run.node_status.clear()
-        run.node_reason.clear()
-        run.node_iteration.clear()
-        run.node_loop_max.clear()
-        run.node_retry_wait.clear()
-        run.node_started.clear()
-        run.node_ended.clear()
-        run.node_watch.clear()
-        run.path_state.clear()
+        if restarted:
+            # A restart from scratch re-sends the tree; every node is pending again.
+            run.node_status.clear()
+            run.node_reason.clear()
+            run.node_iteration.clear()
+            run.node_loop_max.clear()
+            run.node_retry_wait.clear()
+            run.node_started.clear()
+            run.node_ended.clear()
+            run.node_watch.clear()
+            run.path_state.clear()
 
 
 def _on_node_start(run: _Run, body: Mapping[str, Any], now: str) -> None:
@@ -810,21 +807,19 @@ def _on_steps_queued(run: _Run, body: Mapping[str, Any], now: str) -> None:
     pending = wire.parse_plan(body.get("pendingSteps"))
     resolution = wire.as_mapping(body.get("resolution"))
     outcome = wire.as_str(resolution.get("outcome")) if resolution else None
-    if outcome in wire.PLAN_UPDATE_OUTCOMES:
-        assert resolution is not None and outcome is not None
-        reason = wire.as_str(resolution.get("reason"))
-        run.last_plan_update = (outcome, reason[:MAX_REASON_CHARS] if reason else None, now)
+    if outcome not in wire.PLAN_UPDATE_OUTCOMES:
+        run.queued_steps = pending
+        return
+    assert resolution is not None and outcome is not None
+    reason = wire.as_str(resolution.get("reason"))
+    run.last_plan_update = (outcome, reason[:MAX_REASON_CHARS] if reason else None, now)
     if outcome == wire.PLAN_UPDATE_APPLIED:
         if pending:
             # replace_remaining rewrites only the not-yet-run tail of the top level.
             started = tuple(node for node in run.plan if _subtree_started(run, node))
             run.plan = started + pending
-        run.queued_steps = ()
         run.plan_revision += 1
-    elif outcome in wire.PLAN_UPDATE_OUTCOMES:
-        run.queued_steps = ()
-    else:
-        run.queued_steps = pending
+    run.queued_steps = ()
 
 
 _HANDLERS: dict[str, Callable[[_Run, Mapping[str, Any], str], None]] = {
@@ -844,7 +839,7 @@ _HANDLERS: dict[str, Callable[[_Run, Mapping[str, Any], str], None]] = {
 
 
 def _set_parent(run: _Run, parent: str | None) -> None:
-    """Record a run's parent session; once known it is fixed (gap 29).
+    """Record a run's parent session; once known it is fixed.
 
     KAS fixes a run's parent at ``_kiro/workflow/new``. An input naming a
     DIFFERENT parent later is a corrupt or colliding event, and following it
@@ -867,7 +862,7 @@ def _stale_live(run: _Run, incoming: str | None) -> bool:
 
     Lists and inspect/load answers can be read before a run's end and applied
     after it. Only a lifecycle event (KAS's ``run_start``, sent on every
-    resume, retry and restart) may bring a finished run back (gap 2).
+    resume, retry and restart) may bring a finished run back.
     """
     return (
         run.status in wire.TERMINAL_RUN_STATUSES
@@ -977,10 +972,10 @@ def _walk_node_state(
             session_id=session_id,
             reason=wire.as_str(node.get("failureReason")),
         )
-        if loop_max and wire.NODE_PATH_SEP.join(here) in run.path_state:
-            run.path_state[wire.NODE_PATH_SEP.join(here)]["loopMax"] = str(loop_max)
         entry = run.path_state.get(wire.NODE_PATH_SEP.join(here))
         if entry is not None:
+            if loop_max:
+                entry["loopMax"] = str(loop_max)
             if started:
                 entry["startedAt"] = started
             if ended and status not in (wire.STATUS_RUNNING, wire.STATUS_PAUSED):
@@ -1359,7 +1354,7 @@ def _waiting_for(
 
 
 def _active_steps(run: _Run) -> list[dict[str, Any]]:
-    """Running step INSTANCES, by runtime path; none on a finished run (gap 23)."""
+    """Running step INSTANCES, by runtime path; none on a finished run."""
     if run.status in wire.TERMINAL_RUN_STATUSES:
         return []
     steps = {s.id: s for s in wire.iter_steps(run.plan)}

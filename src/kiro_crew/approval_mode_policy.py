@@ -36,11 +36,21 @@ logger = logging.getLogger(__name__)
 #: Approval modes a single session may hold. ``yolo`` is process-wide and has its
 #: own pushed verdict; ``normal`` is the floor and never denied.
 SESSION_TRUST_MODES = ("trust_reads", "trust")
+#: KAS approves calls on its own (``acp.kas_approve_for_me``), so Crew's own gate
+#: answers none of them. It has a verdict of its own, denied by default: only an
+#: installed ``approval_modes`` rule that lists it in its ``allow`` list permits it.
+#: Allowing ``trust`` does not, and neither does a deny-mode rule that leaves it out.
+#: It is no rung of the trust ladder :func:`clamp_session_mode` walks, and no deny
+#: hook drops it: the owner check reads this verdict before each turn and on each
+#: call KAS approves, turning the option off or cancelling the running turn.
+APPROVE_FOR_ME_MODE = "approve_for_me"
 #: Every approval-mode id Crew knows. Anything else is refused, not passed on.
 KNOWN_APPROVAL_MODES = ("normal", "trust_reads", "trust", "yolo")
 
 _denied: frozenset[str] = frozenset(SESSION_TRUST_MODES)
 _resolved = False
+#: Whether the installed rule lists ``approve_for_me``; False until resolved.
+_approve_for_me_listed = False
 #: Bumped by each ceiling invalidation. A resolve started under an older value was
 #: reading a ceiling that is being replaced, so its answer is dropped.
 _ceiling_gen = 0
@@ -112,6 +122,43 @@ def _ceiling_denied() -> frozenset[str]:
         return frozenset(SESSION_TRUST_MODES)
 
 
+def _lists_approve_for_me(control: object, depth: int = 0) -> bool:
+    """Whether an allow-mode tier of *control* names ``approve_for_me``.
+
+    A composed rule (central and local tiers ANDed) has no ``mode`` of its own, so
+    its halves are read; a nesting past a few levels counts as no listing.
+    """
+    if depth > 8:
+        return False
+    outer, inner = getattr(control, "outer", None), getattr(control, "inner", None)
+    if outer is not None and inner is not None:
+        return _lists_approve_for_me(outer, depth + 1) or _lists_approve_for_me(inner, depth + 1)
+    if getattr(control, "mode", None) != "allow":
+        return False
+    return APPROVE_FOR_ME_MODE in tuple(getattr(control, "allow", ()) or ())
+
+
+def _ceiling_lists_approve_for_me() -> bool:
+    """Whether the installed rule's ``allow`` list names ``approve_for_me``. Pure memory.
+
+    No rule, a deny-mode rule, or a rule that cannot be read: False (fail closed).
+    """
+    from kiro_crew.platform.governance_parts.evaluator import _query_level
+    from kiro_crew.safety_override_permits import _APPROVAL_MODES_SCOPE
+
+    try:
+        control = _ceiling_control()
+        if control is None or not _lists_approve_for_me(control):
+            return False
+        # The listing is the opt-in; the whole (composed) rule still decides.
+        return bool(_query_level(control, _APPROVAL_MODES_SCOPE, APPROVE_FOR_ME_MODE).permitted)
+    except Exception:
+        logger.warning(
+            "could not read the approval_modes rule; denying approve_for_me", exc_info=True
+        )
+        return False
+
+
 def _rule_may_narrow() -> bool:
     """Whether the installed ceiling has a rule that refuses ``trust`` or ``trust_reads``."""
     return bool(_ceiling_denied())
@@ -128,6 +175,7 @@ def _on_ceiling_invalidating() -> None:
     _installing = True
     _install_done.clear()
     _denied = frozenset(SESSION_TRUST_MODES)
+    _set_approve_for_me_listed(False)
     _resolved = True
 
 
@@ -158,11 +206,13 @@ def _resolve_now(*, from_install: bool = False) -> None:
         return
     gen = _ceiling_gen
     denied = _resolve()
+    listed = _ceiling_lists_approve_for_me()
     if gen != _ceiling_gen or (_installing and not from_install):
         # A ceiling install started while this resolved: its answer belongs to the
         # outgoing ceiling. Drop it; the install hook resolves the new one.
         return
     _denied, _resolved = denied, True
+    _set_approve_for_me_listed(listed)
     if from_install:
         # The verdict is final: lower the fence before the deny hooks read it.
         _installing = False
@@ -194,6 +244,12 @@ def session_mode_permitted(mode: str) -> bool:
     """True when policy lets a session hold *mode*. ``normal`` always; unknown never."""
     if mode == "normal":
         return True
+    if mode == APPROVE_FOR_ME_MODE:
+        if _installing:
+            return False
+        if not _resolved:
+            _bootstrap()
+        return _approve_for_me_listed
     if mode not in SESSION_TRUST_MODES:
         return False
     if _installing:
@@ -264,14 +320,20 @@ def stored_auto_permitted() -> bool:
 
 def disabled_session_modes() -> list[str]:
     """The session modes the policy forbids, in picker order."""
-    return [m for m in SESSION_TRUST_MODES if not session_mode_permitted(m)]
+    return [m for m in (*SESSION_TRUST_MODES, APPROVE_FOR_ME_MODE) if not session_mode_permitted(m)]
 
 
 def reset_state() -> None:
     """Forget the verdict so the next read resolves again. Tests and ``reset_context``."""
     global _denied, _resolved, _installing
     _denied, _resolved, _installing = frozenset(SESSION_TRUST_MODES), False, False
+    _set_approve_for_me_listed(False)
     _install_done.set()
+
+
+def _set_approve_for_me_listed(listed: bool) -> None:
+    global _approve_for_me_listed
+    _approve_for_me_listed = listed
 
 
 def register_hooks() -> None:

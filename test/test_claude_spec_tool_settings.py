@@ -146,6 +146,39 @@ def test_an_auto_mode_job_still_writes_inside_the_allowed_paths(tmp_path, agents
     assert _auto_refusal(_write(_client(tmp_path), tmp_path / "docs" / "a.md")) is None
 
 
+_ALIAS_SHELL = {"executeBash": {"denyByDefault": True, "allowedCommands": ["git status"]}}
+
+
+@pytest.mark.parametrize(
+    ("tools_settings", "request_for", "setting", "branch"),
+    [
+        (_ALIAS_SHELL, lambda c, root: _shell(c, "rm notes.txt"), "denyByDefault", "none of"),
+        (
+            _ALIAS_SHELL,
+            lambda c, root: _shell(c, "git status && rm notes.txt"),
+            "denyByDefault",
+            "a chain",
+        ),
+        (
+            {"fsWrite": {"fallbackAction": "deny", "allowedPaths": ["docs/**"]}},
+            lambda c, root: _write(c, root / "src" / "a.py"),
+            "fallbackAction",
+            "allowedPaths",
+        ),
+    ],
+    ids=["shell-no-match", "shell-composed", "write"],
+)
+def test_a_refusal_names_the_setting_whatever_spelling_the_spec_used(
+    tmp_path, agents_dir, tools_settings, request_for, setting, branch
+) -> None:
+    """An alias-spelled spec is refused under a name its author can find in it."""
+    _write_spec(agents_dir, tools_settings)
+    reason = _auto_refusal(request_for(_client(tmp_path), tmp_path))
+    assert reason is not None and branch in reason
+    assert setting in reason
+    assert "toolsSettings." not in reason
+
+
 def test_a_withheld_array_still_refuses(tmp_path, agents_dir) -> None:
     """A session whose settings file Crew does not govern runs without Crew's MCP
     array, but claude's own shell still runs, so the allowlist must still hold."""
@@ -286,3 +319,44 @@ def test_a_spec_that_grants_the_shell_and_denies_nothing_lifts_deny_by_default()
     command its ``deniedCommands`` do not deny, so there is no allowlist to ask for."""
     spec = {"allowedTools": ["execute_bash"], "toolsSettings": _SHELL}
     assert claude_ask_rules(spec) == []
+
+
+@pytest.mark.parametrize("stored", [None, False, True], ids=["never-set", "off", "on"])
+@pytest.mark.parametrize(
+    ("shell", "allowed_tools", "expected"),
+    [
+        # The one shape that lifts: the shell named, and no command denied.
+        ({}, ["execute_bash"], None),
+        ({}, ["@builtin"], None),
+        ({"deniedCommands": []}, ["shell"], None),
+        ({"autoAllowReadonly": True}, ["execute_bash"], None),
+        # A deny of any shape keeps the allowlist: no harness rule carries it here.
+        ({"deniedCommands": ["touch .*"]}, ["execute_bash"], ("git status",)),
+        ({"deniedCommands": ["(touch|mkdir) .*"]}, ["execute_bash"], ("git status",)),
+        ({"deniedCommands": "touch .*"}, ["execute_bash"], ("git status",)),
+        # The shell not named keeps it.
+        ({}, None, ("git status",)),
+        ({}, ["fs_read"], ("git status",)),
+        ({}, ["*"], ("git status",)),
+    ],
+)
+def test_the_shell_grant_lift_on_this_transport_reads_no_kas_preview(
+    shell: dict[str, Any],
+    allowed_tools: Any,
+    expected: Any,
+    stored: bool | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On KAS the ``kas_subagents`` preview decides whether a shell grant lifts
+    ``denyByDefault``. This transport's reader never asks: what it returns is the
+    same with the preview on, off or never set."""
+    from test_kas_deny_by_default import _set_switch
+
+    from kiro_crew.acp.spec_tools_allowlists import spec_shell_patterns
+
+    _set_switch(monkeypatch, stored)
+    spec: dict[str, Any] = {"toolsSettings": {"shell": {**_SHELL["shell"], **shell}}}
+    if allowed_tools is not None:
+        spec["allowedTools"] = allowed_tools
+    assert spec_shell_patterns(spec) == expected
+    assert claude_ask_rules(spec) == ([] if expected is None else list(CLAUDE_SHELL_ASK_RULES))

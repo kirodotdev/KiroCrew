@@ -203,6 +203,43 @@ def is_deny_override_card(messages: Any, request_id: str) -> bool:
     return False
 
 
+def slot_is_owners(slot: Any) -> bool:
+    """Whether *slot* is one a person created and drives from the dashboard.
+
+    Not app-owned or unattended, not a cron or system session, not bound to a
+    channel, cron or workflow session, not mirrored to Slack, not born in a
+    messaging channel.
+    """
+    if getattr(slot, "_app", "") or getattr(slot, "unattended", False):
+        return False
+    if getattr(slot, "_origin", "") in _NOT_A_PERSON_ORIGINS:
+        return False
+    if getattr(slot, "linked_session_key", ""):
+        return False
+    if getattr(slot, "_slack_linked", False):
+        return False
+    return not (
+        getattr(slot, "channel_origin", False) or getattr(slot, "_channel_runtime_origin", False)
+    )
+
+
+def turn_is_owners(slot: Any) -> bool:
+    """Whether *slot*'s running turn is one the owner sent, with no channel text in it.
+
+    Only a turn the OWNER sent from the dashboard (``_turn_owner_sent``, which
+    implies ``_turn_user_sent``): a turn another dashboard user sent, a cron
+    delivery, an app injection, a loop wake or a sub-agent's completion is not.
+    A messaging-channel steer admitted into the turn narrows it to channel
+    authority for the rest of the turn.
+    """
+    if getattr(slot, "_turn_owner_sent", False) is not True:
+        return False
+    return not (
+        getattr(slot, "_turn_channel_origin", False)
+        or getattr(slot, "_turn_channel_narrowed", False)
+    )
+
+
 def slot_may_override(slot: Any, event: Any) -> bool:
     """Whether *event* on *slot* is a call a person at the dashboard can override.
 
@@ -214,29 +251,7 @@ def slot_may_override(slot: Any, event: Any) -> bool:
     (not a backend subagent's) and be a shell command whose bytes the transport
     delivered unredacted.
     """
-    if getattr(slot, "_app", "") or getattr(slot, "unattended", False):
-        return False
-    if getattr(slot, "_origin", "") in _NOT_A_PERSON_ORIGINS:
-        return False
-    if getattr(slot, "linked_session_key", ""):
-        return False
-    if getattr(slot, "_slack_linked", False):
-        return False
-    # Only a turn the OWNER sent from the dashboard (``_turn_owner_sent``, which
-    # implies ``_turn_user_sent``): only the owner can grant an override, so a
-    # turn another dashboard user sent, a cron delivery, an app injection, a loop
-    # wake or a sub-agent's completion gets no card and does not reuse a session
-    # waiver.
-    if getattr(slot, "_turn_owner_sent", False) is not True:
-        return False
-    if (
-        getattr(slot, "channel_origin", False)
-        or getattr(slot, "_channel_runtime_origin", False)
-        or getattr(slot, "_turn_channel_origin", False)
-        # A messaging-channel steer admitted into this turn narrows it to
-        # channel authority for the rest of the turn.
-        or getattr(slot, "_turn_channel_narrowed", False)
-    ):
+    if not slot_is_owners(slot) or not turn_is_owners(slot):
         return False
     # Only a backend whose transport is proven to mark a sub-agent's call
     # (``deny_waiver.child_calls_marked``); on any other, codex included, a child's

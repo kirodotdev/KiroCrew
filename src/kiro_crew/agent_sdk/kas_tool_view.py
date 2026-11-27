@@ -11,6 +11,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from kiro_crew.acp.kas_policy_bundle import (  # noqa: F401 - read through here above the boundary
+    allows_beside_bundle,
+    bundle_ids,
+    is_allow_rule,
+    without_policy_bundle,
+)
+
 
 def clean_names(values: Any) -> list[str]:
     """The non-empty, stripped strings of *values*, in order, without repeats."""
@@ -103,7 +110,7 @@ def kas_tool_view(provider: object) -> dict[str, Any] | None:
 def permissions_block_readable(raw: Any) -> bool:
     """Whether KAS's projection would read the ``permissions`` block *raw* whole.
 
-    A block it refuses (a named bundle, an unknown key, a rule it cannot parse)
+    A block it refuses (an unknown key, a rule it cannot parse)
     travels as no rule at all, its denies included. Read without auditing: this
     asks, it projects nothing.
     """
@@ -177,6 +184,23 @@ def _pattern_contains(granted: str, wanted: str) -> bool:
         return True
     server, sep, tool = granted.partition("/")
     return bool(sep) and tool == "*" and wanted.startswith(server + "/")
+
+
+def write_fallback_reading(value: Any) -> str:
+    """How KAS's projection and Crew's gate read write ``fallbackAction`` *value*.
+
+    ``"deny"`` for any value ``kas_permissions._write_falls_back_to_deny`` reads as
+    deny (any case, or a value that is not a string); ``"interactive"`` for the
+    values the translation treats as the default (``None``, ``""``,
+    ``"interactive"``); otherwise *value* itself.
+    """
+    from kiro_crew.acp import kas_permissions
+
+    if kas_permissions._write_falls_back_to_deny({"fallbackAction": value}):
+        return "deny"
+    if value in (None, "", "interactive"):
+        return "interactive"
+    return str(value)
 
 
 def permission_allow_derivable(rule: dict[str, Any]) -> bool:

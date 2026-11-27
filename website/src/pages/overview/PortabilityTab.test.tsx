@@ -196,6 +196,45 @@ describe('PortabilityTab template warnings', () => {
     expect(warning.textContent).toContain('triage \u2192 local-only')
     expect(screen.getByText(/Import complete/)).toBeTruthy()
   })
+
+  it('names the apps from the other machine this one has not set up, as a warning line', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.includes('preview')
+        ? { ok: true, manifest: { version: 1, created_at: 't', hostname: 'h', user: 'u', contents: {} } }
+        : { ok: true, summary: { items: ['config (merged)'], missing_apps: ['Minimal App', 'Notes'], missing_apps_more: 2 } },
+    ), { status: 200 })))
+    render(<PortabilityTab />)
+    const input = screen.getByLabelText(/choose import file/i) as HTMLInputElement
+    fireEvent.change(input, { target: { files: [new File(['PK'], 'e.zip')] } })
+    const importButton = screen.getByRole('button', { name: /^import$/i })
+    await waitFor(() => expect((importButton as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(importButton)
+    const warning = await screen.findByTestId('portability-import-warning')
+    expect(warning.textContent).toBe(
+      "These apps from the other machine aren't set up here: Minimal App, Notes, and 2 more. Install them again or turn them on; the archive doesn't include any app data.",
+    )
+    expect(screen.getByText(/Import complete/)).toBeTruthy()
+  })
+
+  it('counts the apps past the archive list on their own line, after the missing-apps one', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.includes('preview')
+        ? { ok: true, manifest: { version: 1, created_at: 't', hostname: 'h', user: 'u', contents: {} } }
+        : { ok: true, summary: { items: ['config (merged)'], missing_apps: ['Notes'], missing_apps_unlisted: 1234 } },
+    ), { status: 200 })))
+    render(<PortabilityTab />)
+    const input = screen.getByLabelText(/choose import file/i) as HTMLInputElement
+    fireEvent.change(input, { target: { files: [new File(['PK'], 'e.zip')] } })
+    const importButton = screen.getByRole('button', { name: /^import$/i })
+    await waitFor(() => expect((importButton as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(importButton)
+    await screen.findByText(/Import complete/)
+    const lines = screen.getAllByTestId('portability-import-warning').map(w => w.textContent)
+    expect(lines).toEqual([
+      "These apps from the other machine aren't set up here: Notes. Install them again or turn them on; the archive doesn't include any app data.",
+      "Apps from the other machine that the archive doesn't list, so they weren't checked here: 1,234.",
+    ])
+  })
 })
 
 describe('PortabilityTab restoring browser settings', () => {

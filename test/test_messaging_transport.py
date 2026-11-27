@@ -24,7 +24,7 @@ from kiro_crew.messaging import (
     TransportCapabilities,
     chunk_text,
 )
-from kiro_crew.messaging.renderer import TOOL_RESULT
+from kiro_crew.messaging.renderer import TOOL_RESULT, TOOL_TITLE
 
 
 class TestTransportCapabilities:
@@ -187,6 +187,7 @@ class TestRendererDispatch:
             THINKING,
             TOOL_CALL,
             TOOL_RESULT,
+            TOOL_TITLE,
             PROMPT_CHOICE,
             COMPACTION,
             DONE,

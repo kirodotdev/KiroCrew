@@ -329,6 +329,18 @@ def scoped_blocked_links(text: str) -> list[dict]:
 #: What app egress writes in place of a link the dashboard blocks: the placeholder
 #: builds before the blocked-link chip wrote everywhere.
 SUSPICIOUS_URL_TAG = "[REDACTED: suspicious URL to {domain}]"
+#: The reason app egress writes after that tag, by the rule a record would name: fixed
+#: words, never URL text, so a reader can tell a likely secret from a shape check a
+#: legitimate link can trip. A rule missing here gets no reason.
+BLOCKED_LINK_REASONS = {
+    "exfil_hard_credential": "credential",
+    "exfil_fixed_credential": "credential",
+    "exfil_encoded_credential": "encoded credential",
+    "exfil_decode_saturated": "heavy encoding",
+    "exfil_percent_encoding": "heavy encoding",
+    "exfil_query_length": "long query",
+    "exfil_query_pattern": "random-looking query",
+}
 
 
 def replace_blocked_links(text: str) -> tuple[str, int]:
@@ -336,7 +348,8 @@ def replace_blocked_links(text: str) -> tuple[str, int]:
 
     For app egress (``ctx.scrub.outbound``): an app renders its own page, which has no
     chip, so a link the chip would hold back is written as :data:`SUSPICIOUS_URL_TAG`
-    instead. The decision is :func:`blocked_links` itself under the hosts in effect
+    instead, followed by its reason from :data:`BLOCKED_LINK_REASONS` in parentheses.
+    The decision is :func:`blocked_links` itself under the hosts in effect
     here: a render scope's (:func:`allowed_link_hosts`), else the owner's allowed hosts
     for the default workspace; an allowed host relaxes exactly what it relaxes for the
     chip, and its use is audited the same way. Returns ``(text, links replaced)``.
@@ -356,11 +369,14 @@ def _replace_scoped(text: str) -> tuple[str, int]:
     out: list[str] = []
     cursor = 0
     count = 0
-    for start, flagged, _rules in _blocked(text, _SCOPED_HOSTS.get(), relaxed):
+    for start, flagged, link_rules in _blocked(text, _SCOPED_HOSTS.get(), relaxed):
         if start < cursor:
             continue
         out.append(text[cursor:start])
         out.append(SUSPICIOUS_URL_TAG.format(domain=flagged[0].group(1).lower()))
+        reason = BLOCKED_LINK_REASONS.get(link_rules[0] if link_rules else UNTRACED_RULE)
+        if reason:
+            out.append(f" ({reason})")
         cursor = start + len(flagged[1])
         count += 1
     for host, rules in relaxed.items():

@@ -46,8 +46,10 @@ vi.mock('../../components/MarkdownPanel', () => ({ default: () => null }))
 vi.mock('../../components/ArtifactPanel', () => ({ default: () => null }))
 vi.mock('../../components/WebPreviewPanel', () => ({ default: () => null }))
 vi.mock('../../components/McpAppFrame', () => ({ default: () => null }))
-vi.mock('../../components/CliPanel', () => ({
+vi.mock('../../components/LazyCliPanel', () => ({
   default: () => null,
+}))
+vi.mock('../../components/terminalSessions', () => ({
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))

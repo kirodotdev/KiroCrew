@@ -90,6 +90,40 @@ def test_a_column_type_follows_its_cells(cells, kind):
     assert f"c ({kind})" in str(sheet_digest.digest_text("t.csv", body, ",", partial=False))
 
 
+@pytest.mark.parametrize("cell", ["12_34", "1_000", "2024_01", "1_0.5", "1e1_0"])
+def test_a_cell_with_an_underscore_is_text_not_a_number(cell):
+    assert sheet_digest._kind(cell) == "text"
+
+
+@pytest.mark.parametrize(
+    ("cell", "kind"),
+    [
+        ("1000", "integer"),
+        ("-3", "integer"),
+        ("12.5", "number"),
+        ("1e5", "number"),
+        ("2026-01-02", "date"),
+        ("2026-01-02_10:30:00", "date"),
+        ("TRUE", "boolean"),
+        ("ab_12", "text"),
+    ],
+)
+def test_every_other_cell_keeps_its_kind(cell, kind):
+    assert sheet_digest._kind(cell) == kind
+
+
+def test_a_code_column_with_underscores_is_typed_text_in_the_prompt(uploads, digest_on):
+    path = _stage(uploads, "codes.csv", "code,qty\n12_34,1\n1_000,2\n2024_01,3\n")
+    lines = _text(f"[attached_file 1] {path}\nwhat is this?").split("\n")
+    assert "3 data rows; 2 columns: code (text), qty (integer)" in lines
+
+
+def test_an_underscore_timestamp_column_is_typed_date_in_the_prompt(uploads, digest_on):
+    path = _stage(uploads, "when.csv", "when,qty\n2026-01-02_10:30:00,1\n2026-01-03_11:00:00,2\n")
+    lines = _text(f"[attached_file 1] {path}\nwhat is this?").split("\n")
+    assert "2 data rows; 2 columns: when (date), qty (integer)" in lines
+
+
 def test_a_secret_in_a_cell_is_redacted_before_the_digest(uploads, digest_on):
     secret = github_classic()
     path = _stage(uploads, "ab12_keys.csv", f"name,token\nci,{secret}\n")
@@ -127,6 +161,138 @@ def test_a_large_file_is_read_in_part_and_its_count_is_a_floor(uploads, digest_o
     count = (sheet_digest.MAX_READ_BYTES - len("n,s,d\n")) // len(row)
     assert f"{count}+ data rows (first 256 KiB read)" in text
     assert f"types come from the first {sheet_digest.MAX_TYPED_ROWS} data rows" in text
+
+
+def test_a_quoted_multi_line_tsv_cell_stays_one_cell_and_the_ids_stay_integers(uploads, digest_on):
+    body = 'id\tnotes\n1\t"line one\nline two"\n2\tplain\n'
+    text = _text(str(_stage(uploads, "ab_q.tsv", body)))
+    assert "2 data rows; 2 columns: id (integer), notes (text)" in text
+    assert "sample: 1 | line one line two" in text
+
+
+def test_a_semicolon_csv_is_read_as_columns(uploads, digest_on):
+    body = 'id;name;price\r\n1;a;1,5\r\n2;"b;c";2,5\r\n'
+    text = _text(str(_stage(uploads, "eu_sheet.csv", body)))
+    assert "2 data rows; 3 columns: id (integer), name (text), price (text)" in text
+    assert "sample: 1 | a | 1,5\nsample: 2 | b;c | 2,5" in text
+
+
+@pytest.mark.parametrize(
+    ("name", "body", "shape"),
+    [
+        ("quoted.csv", '"a;b",c\n1,2\n', "2 columns: a;b (integer), c (integer)"),
+        ("single.csv", "notes\nfoo\nbar\n", "1 columns: notes (text)"),
+        ("tabbed.tsv", "a;b\n1;2\n", "1 columns: a;b (text)"),
+        ("lone.csv", "notes; more\nfoo\nbar\n", "1 columns: notes; more (text)"),
+        ("ragged.csv", "a;b;c\n1;2\n3;4;5\n", "1 columns: a;b;c (text)"),
+        ("mixed.csv", "a;b,c\n1;2,3\n", "2 columns: a;b (text), c (integer)"),
+        ("onlyquote.csv", '"a;b"\n"c;d"\n', "1 columns: a;b (text)"),
+    ],
+)
+def test_a_file_that_is_not_plainly_semicolon_separated_keeps_its_old_reading(
+    uploads, digest_on, name, body, shape
+):
+    assert shape in _text(str(_stage(uploads, name, body)))
+
+
+def test_a_comma_csv_with_a_quoted_multi_line_header_stays_comma_read(uploads, digest_on):
+    body = '"item\nname",cost;currency\nwidget,10;EUR\n'
+    text = _text(str(_stage(uploads, "multi_comma.csv", body)))
+    assert "1 data rows; 2 columns: item name (text), cost;currency (text)" in text
+
+
+def test_a_semicolon_csv_with_a_quoted_multi_line_header_is_read_with_semicolons(
+    uploads, digest_on
+):
+    for name, body in (
+        ("multi_semi.csv", '"item\nname";cost\nwidget;10\n'),
+        ("multi_semi_comma.csv", '"item,\nname";cost\nwidget;10\n'),
+    ):
+        text = _text(str(_stage(uploads, name, body)))
+        assert "1 data rows; 2 columns: item" in text and "cost (integer)" in text, name
+
+
+_NOTE_ROW = '1;"' + "line\n" * 1000 + '";ok\n'
+
+
+@pytest.mark.parametrize(
+    ("body", "shape"),
+    [
+        # The read stops inside a quoted field: the last record read is cut short.
+        (
+            "id;notes;flag\n" + _NOTE_ROW * 60,
+            "3 columns: id (integer), notes (text), flag (text)",
+        ),
+        # The read stops between records: only the header is left.
+        (
+            "id;notes;flag\n1;" + "x" * 300_000 + ";ok\n",
+            "3 columns: id (empty), notes (empty), flag (empty)",
+        ),
+        # The cut-short record lies past the sample, whose complete last record is kept.
+        (
+            "notes; more\n" + "foo;bar\n" * 199 + "plain\n" + ('"' + "line\n" * 1000 + '"\n') * 60,
+            "1 columns: notes; more (text)",
+        ),
+        # The read stops between records: a quote inside an unquoted field is literal.
+        (
+            'notes; more\nfoo;bar\n6" shelf\n' + "x" * 300_000 + "\n",
+            "1 columns: notes; more (text)",
+        ),
+    ],
+    ids=["inside-a-quoted-field", "after-the-header", "past-the-sample", "a-literal-quote"],
+)
+def test_a_large_semicolon_csv_keeps_its_columns_wherever_the_read_stops(
+    uploads, digest_on, body, shape
+):
+    text = _text(str(_stage(uploads, "eu_notes.csv", body)))
+    assert f"+ data rows (first 256 KiB read); {shape}" in text
+
+
+def test_an_oversized_field_past_the_sample_keeps_the_semicolon_guess():
+    # A record past the typing sample is never parsed, so its oversized field cannot raise.
+    text = "id;notes;flag\n" + "1;n;ok\n" * 200 + '2;"' + "entry," * 23000 + '";ok\n'
+    assert sheet_digest._csv_delimiter(text, partial=True) == ";"
+
+
+def test_a_csv_keeps_its_quote_rules_and_an_ordinary_digest_is_unchanged(uploads, digest_on):
+    body = 'k,v\n"a, b","line one\nline two"\nc,d\n'
+    text = _text(str(_stage(uploads, "ab_pin.csv", body)))
+    assert text.endswith(
+        "[sheet digest: ab_pin.csv]\n2 data rows; 2 columns: k (text), v (text)"
+        "\nsample: a, b | line one line two\nsample: c | d"
+    )
+
+
+@pytest.mark.parametrize("tail", [".", ":", "!", "?", ").", "`?", ".."])
+def test_a_sheet_path_ending_a_sentence_still_gets_its_digest(uploads, digest_on, tail):
+    path = _stage(uploads, "ab_data.csv", _GRID)
+    assert "[sheet digest: ab_data.csv]" in _text(f"please read {path}{tail}")
+
+
+def test_a_longer_name_that_only_starts_like_a_sheet_gets_no_digest(uploads, digest_on):
+    # Not a name ending in a dot: Windows drops a trailing dot when the file is made.
+    message = str(_stage(uploads, "ab_data.csv.bak", _GRID))
+    assert _text(message) == message
+
+
+def test_a_key_redacted_across_csv_rows_keeps_the_counts_and_shows_no_cells(uploads, digest_on):
+    body = [synth(64, B64, seed) for seed in (5, 6)]
+    pem = ["head", "-----BEGIN " "PRIVATE KEY-----", *body, "-----END " "PRIVATE KEY-----", "tail"]
+    text = _text(str(_stage(uploads, "ab_pem.csv", "".join(f"{v},1\n" for v in pem))))
+    assert not any(piece in text for piece in (*body, "head", "tail"))
+    assert text.endswith(
+        "[sheet digest: ab_pem.csv]\n5 data rows; 2 columns\n"
+        "column names, types and samples left out: a redacted value spans rows or cells"
+    )
+
+
+def test_a_key_redacted_inside_one_quoted_csv_cell_keeps_the_shape(uploads, digest_on):
+    body = synth(64, B64, 7)
+    key = "\n".join(["-----BEGIN " "PRIVATE KEY-----", body, "-----END " "PRIVATE KEY-----"])
+    text = _text(str(_stage(uploads, "ab_one.csv", f'name,key\nci,"{key}"\n')))
+    assert "1 data rows; 2 columns: name (text), key (text)" in text
+    assert "sample: ci | " in text
+    assert body not in text
 
 
 def test_a_cell_cannot_start_a_line_or_claim_a_picture(uploads, digest_on):

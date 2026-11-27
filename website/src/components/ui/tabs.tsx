@@ -67,6 +67,7 @@ import {
 interface TabsValue {
   current?: string
   layoutId: string
+  variant: 'pill' | 'underline'
   /** `guideProbe="local"` rails only: what a guide's probe drives. */
   probe?: { currentRef: React.MutableRefObject<string | undefined>; select: (value: string) => void }
 }
@@ -84,10 +85,12 @@ interface TabsProps extends React.ComponentPropsWithoutRef<typeof TabsPrimitive.
    * the person's to press.
    */
   guideProbe?: 'local'
+  /** `underline`: page sections on a rule, the selected one marked by an accent bar. Default `pill`. */
+  variant?: 'pill' | 'underline'
 }
 
 const Tabs = React.forwardRef<React.ComponentRef<typeof TabsPrimitive.Root>, TabsProps>(
-  function Tabs({ layoutId = 'tabs-indicator', value, defaultValue, onValueChange, guideProbe, ...props }, ref) {
+  function Tabs({ layoutId = 'tabs-indicator', value, defaultValue, onValueChange, guideProbe, variant = 'pill', ...props }, ref) {
     // Mirrors the value for the UNCONTROLLED case too, so a caller using
     // `defaultValue` still gets the sliding indicator rather than silently
     // falling back to no marker at all.
@@ -101,7 +104,7 @@ const Tabs = React.forwardRef<React.ComponentRef<typeof TabsPrimitive.Root>, Tab
     currentRef.current = current
     const local = guideProbe === 'local'
     const probe = React.useMemo(() => (local ? { currentRef, select: handleValueChange } : undefined), [local, handleValueChange])
-    const ctx = React.useMemo(() => ({ current, layoutId, probe }), [current, layoutId, probe])
+    const ctx = React.useMemo(() => ({ current, layoutId, variant, probe }), [current, layoutId, variant, probe])
 
     // Radix is always handed the value, so a probe's selection (state, not a
     // press) is what the rail shows.
@@ -123,8 +126,13 @@ const TabsList = React.forwardRef<
   React.ComponentRef<typeof TabsPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
 >(function TabsList({ className, ...props }, ref) {
+  const underline = React.useContext(TabsValueContext)?.variant === 'underline'
+  // The underline row scrolls sideways only. `overflow-x-auto` alone turns
+  // overflow-y to auto too, and the triggers' 1px overlap (-mb-px) would then
+  // let a phone drag their labels up and down. A vertical swipe that starts on
+  // the row still scrolls the page, so no touch-action here.
   return (
-    <TabsPrimitive.List ref={ref} className={cn(TABS_TRACK_CLASS, className)} {...props} />
+    <TabsPrimitive.List ref={ref} className={cn(underline ? 'flex max-w-full items-stretch overflow-x-auto overflow-y-hidden overscroll-x-contain border-b border-border' : TABS_TRACK_CLASS, className)} {...props} />
   )
 })
 TabsList.displayName = TabsPrimitive.List.displayName
@@ -136,6 +144,9 @@ const TabsTrigger = React.forwardRef<
   const ctx = React.useContext(TabsValueContext)
   const reduceMotion = useReducedMotion()
   const isActive = ctx?.current === value
+  const underline = ctx?.variant === 'underline'
+  // The underline form marks the selected tab with an accent bar on the rail's rule.
+  const indicatorClass = cn(underline ? 'absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-accent' : TABS_INDICATOR_CLASS)
   const el = React.useRef<HTMLButtonElement | null>(null)
   const setRef = React.useCallback((node: HTMLButtonElement | null) => {
     el.current = node
@@ -161,10 +172,12 @@ const TabsTrigger = React.forwardRef<
       ref={registeredRef}
       value={value}
       className={cn(
-        TABS_SEGMENT_CLASS,
+        underline
+          ? 'focus-ring group/tab relative -mb-px flex min-h-11 shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap px-3 text-[13px] text-muted transition-colors hover:text-text sm:min-h-10 data-[state=active]:font-medium data-[state=active]:text-text'
+          : TABS_SEGMENT_CLASS,
         // Radix marks the selected trigger itself, so the accent rides a
         // `data-state` variant here rather than a prop the caller passes.
-        'data-[state=active]:text-accent',
+        !underline && 'data-[state=active]:text-accent',
         // A disabled tab keeps its tooltip reachable, so it must stay focusable —
         // hence `aria-disabled` from the caller rather than the `disabled` prop,
         // and the greying is styled off that instead of `:disabled`.
@@ -175,11 +188,11 @@ const TabsTrigger = React.forwardRef<
     >
       {/* Reduced motion also excludes shared-layout projection, not only its duration. */}
       {isActive && (reduceMotion
-        ? <span aria-hidden="true" className={TABS_INDICATOR_CLASS} />
+        ? <span aria-hidden="true" className={indicatorClass} />
         : <motion.span
             layoutId={ctx?.layoutId}
             aria-hidden="true"
-            className={TABS_INDICATOR_CLASS}
+            className={indicatorClass}
             transition={TABS_INDICATOR_SPRING}
           />
       )}

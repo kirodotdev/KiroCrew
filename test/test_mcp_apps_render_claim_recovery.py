@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -637,9 +638,13 @@ class TestTheRestoreKeepsABoundedNumberOfClaims:
             def close(self):
                 closed.append(True)
 
-        # flake-ok: pre-existing os.scandir rebound process-wide through mcp_apps_render's os alias, scoped to this test by the patch, moved verbatim; tracked for a de-flake pass
+        def tracked_scandir(path):
+            return _Tracked(list(real_scandir(path)))
+
+        # mcp_apps_render's own os binding: mcp_apps_render.os is the worker's stdlib
+        # os, so another module's scan would record a close too.
         with mock.patch.object(
-            mcp_apps_render.os, "scandir", lambda path: _Tracked(list(real_scandir(path)))
+            mcp_apps_render, "os", SimpleNamespace(**{**vars(os), "scandir": tracked_scandir})
         ):
             mcp_apps_render.load_claimed_row_groups(self.KEY)
 

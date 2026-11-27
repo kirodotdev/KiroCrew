@@ -1508,13 +1508,12 @@ def _run_work_dispatch(args: dict[str, Any], ctx: ToolContext) -> str:
     created = opened.resp or {}
     crew_mode = bool(created.get("crew_mode") or created.get("folder_ignored"))
     filed = f" filed in `{opened.folder_label}`" if opened.folder_label and not crew_mode else ""
+    # The create and the seed each carry the same note; the seed's is the newer.
+    caps = _worker_capabilities_line(sent) or _worker_capabilities_line(created)
     return redact(
         f"\U0001f4cc Dispatched item `{item_id}` to `{target}`{filed}: created, opened, "
         f"bound, and seeded ({delivery}).{opened.made_note}\n"
-        f"item_id={item_id} worker_session_key={target}"
-        + reply_line(bound)
-        + _worker_capabilities_line(opened.resp or {})
-        + _worker_capabilities_line(sent)
+        f"item_id={item_id} worker_session_key={target}" + reply_line(bound) + caps
     )
 
 

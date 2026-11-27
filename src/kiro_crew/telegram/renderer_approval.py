@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S, adoptable_reservation
-from kiro_crew.messaging.renderer import new_approval_nonce, nonce_eq
+from kiro_crew.messaging.renderer import mcp_identity_line, new_approval_nonce, nonce_eq
 from kiro_crew.telegram.renderer_display import _display_safe
 
 if TYPE_CHECKING:
@@ -386,6 +386,13 @@ async def on_prompt_choice(  # noqa: D401 - imperative reads wrong for a handler
     # ever rejected.
     tool = await asyncio.to_thread(_display_safe, tool_title or self._last_tool or "this tool")
     body = f"🔐 Approve <code>{html.escape(tool)}</code>?"
+    # The trusted server and tool, so the operator sees where the call goes. Not
+    # model text, so only HTML-escaped (after the shared helper's cut), no scan.
+    identity = mcp_identity_line(
+        *self.prompt_mcp_identity, fmt=lambda name: f"<code>{html.escape(name)}</code>"
+    )
+    if identity:
+        body = f"{body}\n{identity}"
     # Show the arguments. "Approve bash?" is not a decision a user can make;
     # which command it wants to run is. Bounded so the prompt stays one message.
     detail = " ".join((tool_input or "").split())

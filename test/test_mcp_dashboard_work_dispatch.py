@@ -109,7 +109,16 @@ def test_the_success_reply_carries_the_worker_capabilities_lines() -> None:
         }
     )
     out, _ = _call("work_dispatch", dict(_ARGS), routes)
-    assert "CREATE-CAPS" in out and "SEND-CAPS" in out
+    # Both steps carry the same note; the reply prints it once, the seed's.
+    assert "SEND-CAPS" in out and "CREATE-CAPS" not in out
+
+
+def test_the_success_reply_falls_back_to_the_creates_capabilities_line() -> None:
+    routes = _routes(
+        **{_CREATE: {"target": _WORKER, "title": "t", "worker_capabilities": "CREATE-CAPS"}}
+    )
+    out, _ = _call("work_dispatch", dict(_ARGS), routes)
+    assert out.count("CREATE-CAPS") == 1
 
 
 def test_a_preflight_refusal_keeps_its_code() -> None:

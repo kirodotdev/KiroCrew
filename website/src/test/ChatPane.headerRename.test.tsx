@@ -65,7 +65,7 @@ function makeStore() {
   })
 }
 
-function renderPane() {
+function renderPane(onSplitRight?: () => void) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = makeStore()
   const utils = render(
@@ -73,7 +73,7 @@ function renderPane() {
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
-            <ChatPane slotKey={SLOT} onRemove={() => {}} />
+            <ChatPane slotKey={SLOT} onRemove={() => {}} onSplitRight={onSplitRight} />
           </MemoryRouter>
         </ThemeProvider>
       </QueryClientProvider>
@@ -208,6 +208,13 @@ describe('ChatPane header — rename and regenerate controls (#9727)', () => {
     await act(async () => { release({ title: 'Generated title' }) })
     expect(await screen.findByText('Generated title')).toBeTruthy()
     expect(screen.queryByTestId('chat-pane-title-error')).toBeNull()
+  })
+})
+
+describe('ChatPane header — split-right control', () => {
+  it('names the split chord the keyboard has in its hover text', async () => {
+    renderPane(() => {})
+    expect((await screen.findByRole('button', { name: 'Split right' })).getAttribute('title')).toBe('Split right (Ctrl+D)')
   })
 })
 

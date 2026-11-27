@@ -36,7 +36,7 @@ import {
   X,
 } from 'lucide-react'
 import type { McpServer } from '../../types'
-import type { ConnectionStatus } from '../../api/client/connections'
+import type { ConnectionAppManifest, ConnectionStatus } from '../../api/client/connections'
 import { fmtDate, fmtList, joinSentences } from '../../i18n/format'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -128,6 +128,10 @@ interface ConnectionCardProps {
   /** Where this card's sign-in returns, from the status row; shown beside the
    *  consent actions so the user can hand it to an org admin. */
   signInRedirect?: ConnectionStatus['signInRedirect']
+  /** The OAuth app the gateway generates for this card (GET
+   *  /api/connections/app-manifests). While the card needs its app, the
+   *  "Before you connect" tip offers to create it and to copy its manifest. */
+  appManifest?: ConnectionAppManifest
   busy?: ConnectionAction
   /** The provider NAME (not slug) of whichever card currently owns the single
    *  in-flight Connections Test, or undefined when none is running. Used only
@@ -203,11 +207,14 @@ const PREREQUISITE_KEYS = {
  * needs attention) or carry a form (the remote return-address relay) -- copy
  * about what an action will do or needs is neither, and goes here.
  */
-function PrerequisiteTip({ label, heading, text, redirect, link }: {
+function PrerequisiteTip({ label, heading, text, redirect, link, app }: {
   label: string
   heading: string
   /** A plain string, or a `Trans` when a step links somewhere. */
   text: ReactNode
+  /** The provider's OAuth app the gateway can generate: a button that opens
+   *  the vendor's create page with it filled in, and one that copies it. */
+  app?: { provider: string; manifest: ConnectionAppManifest; inSteps?: boolean }
   /** Where this card's sign-in returns, each value with its own copy control, so
    *  an org admin can be handed the whole address (`signInRedirect` on the
    *  status row). */
@@ -228,7 +235,7 @@ function PrerequisiteTip({ label, heading, text, redirect, link }: {
   const open = pinned || hovered
   // A bubble with a link or a copy control is something to operate, not just
   // read, so it is a non-modal dialog the icon's Tab moves into.
-  const interactive = !!(link || redirect)
+  const interactive = !!(link || redirect || app)
   // IMEs cycle candidates with Tab, so a Tab the bubble re-aims is claimed
   // first: one the IME owns keeps its composition (see useDocumentImeLatch).
   const tipImeLatch = useDocumentImeLatch(open && interactive)
@@ -370,7 +377,12 @@ function PrerequisiteTip({ label, heading, text, redirect, link }: {
           style={{ ...pos(), backgroundColor: 'var(--card)', boxShadow: 'var(--shadow-lg)' }}
         >
           <span id={headingId} className="block font-medium text-text-strong">{heading}</span>
-          {text && <span className="mt-0.5 block">{text}</span>}
+          {/* The app comes first: every later step needs its Client ID and
+              Client Secret. When the text already numbers the steps (step 1
+              creates the app), the buttons follow it with no line of their own. */}
+          {app && !app.inSteps && <CreateAppActions provider={app.provider} manifest={app.manifest} hint />}
+          {text && <span className={`${app && !app.inSteps ? 'mt-2' : 'mt-0.5'} block`}>{text}</span>}
+          {app?.inSteps && <CreateAppActions provider={app.provider} manifest={app.manifest} hint={false} />}
           {redirect && (
             <>
               <span className="mt-1.5 block text-muted">{redirect.caption}</span>
@@ -384,6 +396,58 @@ function PrerequisiteTip({ label, heading, text, redirect, link }: {
           )}
         </div>
       }</OverlayPortal>}
+    </>
+  )
+}
+
+/** Create the provider's OAuth app from the manifest the gateway generated, or
+ *  copy that manifest. The create link opens the vendor's page in a new tab,
+ *  and only an https link is offered. The copy acknowledgment and its refusal
+ *  work as `RedirectValue`'s do. */
+function CreateAppActions({ provider, manifest, hint }: { provider: string; manifest: ConnectionAppManifest; hint: boolean }) {
+  const { t } = useTranslation()
+  const [failed, setFailed] = useState(false)
+  const copyRef = useRef<HTMLButtonElement>(null)
+  const { copyStatus, copyPath } = useCopyAck(manifest.manifest, async () => {
+    const ok = await copyToClipboard(manifest.manifest)
+    setFailed(!ok)
+    return ok
+  })
+  const copied = copyStatus === 'copied'
+  const createUrl = manifest.create_url.startsWith('https://') ? manifest.create_url : ''
+  return (
+    <>
+      {hint && <span className="mt-0.5 block">{t('pages.connectionsPage.create_app_hint', { provider })}</span>}
+      <span className="mt-1.5 flex flex-wrap items-center gap-2">
+        {createUrl && (
+          <a
+            href={createUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-accent-fg hover:opacity-90"
+          >
+            {t('pages.connectionsPage.create_provider_app', { provider })} <ExternalLink className="lucide-inline" aria-hidden="true" />
+          </a>
+        )}
+        <button
+          ref={copyRef}
+          type="button"
+          onClick={() => void copyPath()}
+          className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-text hover:bg-bg-hover hover:text-text-strong"
+        >
+          {copied ? <Check className="h-3.5 w-3.5 text-ok" aria-hidden="true" /> : <Copy className="h-3.5 w-3.5" aria-hidden="true" />}
+          <span aria-live="polite">{copied ? t('pages.connectionsPage.app_manifest_copied') : t('pages.connectionsPage.copy_app_manifest')}</span>
+        </button>
+      </span>
+      {failed && (
+        <ErrorNotice
+          variant="inline"
+          message={t('pages.connectionsPage.app_manifest_copy_failed')}
+          askAgent={false}
+          onDismiss={() => { copyRef.current?.focus(); setFailed(false) }}
+          className="mt-0.5"
+        />
+      )}
     </>
   )
 }
@@ -512,6 +576,7 @@ function ConnectionCard({
   signInInChat = false,
   crewHeld = false,
   signInRedirect,
+  appManifest,
   busy,
   testingProvider,
   feedbackSlots,
@@ -837,6 +902,11 @@ function ConnectionCard({
   // in the same tip as the caveat that sends the user there.
   const adminGuide = docSectionHref(provider.org_admin_guide)
   const link = adminGuide ? { href: adminGuide, label: t('pages.connectionsPage.org_admin_checklist_link') } : undefined
+  // Only on a card that still needs its OAuth app; the page passes none once
+  // the app's client is saved.
+  const createApp = state === 'needs-configuration' && appManifest
+    ? { provider: provider.name, manifest: appManifest }
+    : undefined
   const prerequisiteTip = prerequisiteText || redirect ? (
     <PrerequisiteTip
       label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
@@ -861,12 +931,23 @@ function ConnectionCard({
         label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
         heading={t('pages.connectionsPage.before_you_connect')}
         text={(
-          <Trans
-            i18nKey="pages.connectionsPage.needs_crew_sign_in_help"
-            values={{ provider: provider.name }}
-            components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent" /> }}
-          />
+          // With an app to create, creating it is step 1 of the same numbered
+          // list, and its last step says where the Client ID and Secret go.
+          createApp ? (
+            <Trans
+              i18nKey="pages.connectionsPage.needs_crew_sign_in_with_app_help"
+              values={{ provider: provider.name, tab: t('settings.tabs.agent.label') }}
+              components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent" /> }}
+            />
+          ) : (
+            <Trans
+              i18nKey="pages.connectionsPage.needs_crew_sign_in_help"
+              values={{ provider: provider.name, tab: t('settings.tabs.agent.label') }}
+              components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent" /> }}
+            />
+          )
         )}
+        app={createApp && { ...createApp, inSteps: true }}
       />
       <Link
         to={settingsPath({ tab: 'developer', sub: 'feature-previews', highlight: CREW_SIGN_IN_SETTING_ID })}
@@ -1128,7 +1209,10 @@ function ConnectionCard({
                 <PrerequisiteTip
                   label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
                   heading={t('pages.connectionsPage.before_you_connect')}
-                  text={t('pages.connectionsPage.needs_configuration_help', { provider: provider.name })}
+                  // With an app to create, its line already says what Set up {provider}
+                  // does; the generic setup text would describe a second way.
+                  text={createApp ? '' : t('pages.connectionsPage.needs_configuration_help', { provider: provider.name })}
+                  app={createApp}
                 />
               )}
               {/* Not a Connect button: the missing step is the OAuth app part,

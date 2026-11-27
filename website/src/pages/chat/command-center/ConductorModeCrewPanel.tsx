@@ -20,8 +20,10 @@ import { artifactEntries } from '../../crewBoardRows'
 import { fmtList, fmtRelative } from '../../../i18n/format'
 import { fmtMinutes } from '../../../lib/crewWork'
 import ErrorNotice from '../../../components/ErrorNotice'
-import { isNotFoundError } from '../../../api/apiError'
+import TruncatedText from '../../../components/TruncatedText'
+import { isNotFoundError, isPermissionRefusal } from '../../../api/apiError'
 import { errMessage } from '../../../utils/thunkError'
+import { reportForError } from '../../../utils/errorReport'
 import { closeActivityPanel, pendingQuestionFor } from '../../../store/chatSlice'
 import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { useIsMobile } from '../../../hooks/useIsMobile'
@@ -30,7 +32,7 @@ import { CrewStatusDot } from '../../../components/crew/CrewModeMarks'
 import CrewApprovalCards, { crewApprovalRequests } from '../../../components/crew/CrewApprovalCards'
 import { crewRouteNotServed, crewSubDispatcher, crewWorkerGroup, mergeCrewWorkers, searchCrewWorkers } from '../../../lib/crewWorkers'
 import { fmtRelativeTime } from '../sessionOrder'
-import { CREW_FINISHED_OPEN_KEY, CREW_WORKER_SEARCH_MIN, CrewPanelBack, CrewWorkerSearch, openCrewSession, reopenCrewWorker, useCrewWorkerQuery, useCrewWorkers, useLiveCrewWorkers } from './CrewWorkerList'
+import { CREW_FINISHED_OPEN_KEY, CREW_WORKER_SEARCH_MIN, CrewPanelBack, CrewShowOlder, CrewWorkerSearch, openCrewSession, reopenCrewWorker, useCrewWorkerQuery, useCrewWorkers, useLiveCrewWorkers } from './CrewWorkerList'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { RadioChipGroup, radioChip } from '../../../components/RadioChipGroup'
 import { useCrewMode } from '../../../hooks/usePreviewFlag'
@@ -39,11 +41,12 @@ import { conductorModeRunState, type ConductorModeRunState } from '../../../lib/
 
 export interface ConductorModeCounts { total: number; done: number; running: number; approvals: number; questions: number }
 
-export function conductorModeCounts(workers: readonly CrewWorker[], approvals: number, questions: number): ConductorModeCounts {
+/** `closedOmitted`: the closed workers the list answer left out, all done. */
+export function conductorModeCounts(workers: readonly CrewWorker[], approvals: number, questions: number, closedOmitted = 0): ConductorModeCounts {
   const g = workers.map(crewWorkerGroup)
   return {
-    total: workers.length,
-    done: g.filter(x => x === 'done').length,
+    total: workers.length + closedOmitted,
+    done: g.filter(x => x === 'done').length + closedOmitted,
     running: g.filter(x => x === 'working').length,
     approvals,
     questions,
@@ -823,7 +826,8 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   // The same pending-question record the chat's own card reads.
   const pendingQuestion = useAppSelector(st => pendingQuestionFor(st.chat.pendingQuestions, root))
   const questionCount = pendingQuestion?.questions?.length ? 1 : 0
-  const c = conductorModeCounts(workers, approvals.length, questionCount)
+  const closedOmitted = listed.data?.closed_omitted ?? 0
+  const c = conductorModeCounts(workers, approvals.length, questionCount, closedOmitted)
   const waitingNames = [...new Set(approvals.map(a => a.title))]
   // Same query key and read as the side panel's Summary tab, so one cache serves both.
   const summary = useQuery({ queryKey: ['session-summary', root], queryFn: () => api.sessionSummary(root), enabled: !!root, staleTime: 30_000, retry: false })
@@ -863,6 +867,8 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   const unfinishedTops = tree.filter(n => !n.allDone)
   const finishedTops = tree.filter(n => n.allDone)
   const finishedCount = finishedTops.reduce((s, n) => s + n.size, 0)
+  // The closed members the answer left out are finished, but a search never read them.
+  const finishedOmitted = searching ? 0 : closedOmitted
   // Only a top-level row can have a crew when any row has one.
   const gutter = tree.some(n => n.kids.length > 0)
   const [foldChoices, setFoldChoices] = useState(readCrewBoardExpanded)
@@ -1039,7 +1045,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
       {viewing && viewing !== root && <CrewPanelBack root={root} />}
       {/* A failed crew read, shown in both views; a gateway that does not serve
           the route is not a failure (the live rows stand in). */}
-      {listed.isError && !crewRouteNotServed(listed.error) && <div className="shrink-0 px-3 pt-3"><ErrorNotice variant="inline" message={i18nT(live.length ? 'commandCenter.workers_error_live' : 'commandCenter.workers_error')} askAgent /></div>}
+      {listed.isError && !crewRouteNotServed(listed.error) && <div className="shrink-0 px-3 pt-3"><ErrorNotice variant="inline" impact={live.length ? 'partial' : 'blocking'} message={i18nT(live.length ? 'commandCenter.workers_error_live' : 'commandCenter.workers_error')} askAgent /></div>}
       <div className="shrink-0 px-3 pt-3">
         <RadioChipGroup ariaLabel={i18nT('commandCenter.workers_view_label')} className="flex gap-1 rounded-lg border border-border bg-bg-hover/40 p-0.5" data-testid="conductor-mode-view-switch">
           {(['status', 'list'] as const).map(v => (
@@ -1078,7 +1084,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
               : i18nT(stuck || quiet ? 'components.crewMode.conductor_mode_needs_you_none_stuck' : 'components.crewMode.conductor_mode_needs_you_none')}</p>}
             {pendingQuestion?.questions?.length ? (
               <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-2.5 py-2" data-testid="conductor-mode-main-question">
-                <span className="flex-1 min-w-0 text-[13px] text-text truncate" title={pendingQuestion.questions[0].question}>{pendingQuestion.questions[0].question}</span>
+                <TruncatedText full={pendingQuestion.questions[0].question} className="flex-1 min-w-0 text-[13px] text-text" />
                 <button type="button" onClick={answerInChat} data-testid="conductor-mode-answer-in-chat"
                   className="shrink-0 inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium conductor-mode-accent hover:bg-bg-hover">
                   {i18nT('components.crewMode.conductor_mode_answer_in_chat')}<ArrowDown size={12} aria-hidden="true" />
@@ -1101,7 +1107,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
             </div>
             {/* A ledger the root never opened (404) is the empty state; any
                 other failure says so and offers the agent hand-off. */}
-            {board.isError && !isNotFoundError(board.error) && <div className="mt-1"><ErrorNotice variant="inline" message={errMessage(board.error) || i18nT('pages.crewBoard.error_title')} askAgent /></div>}
+            {board.isError && !isNotFoundError(board.error) && <div className="mt-1"><ErrorNotice variant="inline" message={isPermissionRefusal(board.error) ? errMessage(board.error) || i18nT('pages.crewBoard.error_title') : i18nT('components.crewMode.conductor_mode_milestones_error')} report={reportForError(board.error)} askAgent testId="conductor-mode-milestones-error" /></div>}
             {board.isError && !isNotFoundError(board.error) ? null : items.length === 0
               ? <p className="text-[12px] text-muted mt-1">{i18nT('components.crewMode.conductor_mode_milestones_none')}</p>
               : <>
@@ -1140,16 +1146,17 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
           <ul className="space-y-1.5">
             {unfinished.map(memberRow)}
           </ul>
-          {finishedTops.length > 0 && (
+          {(finishedTops.length > 0 || finishedOmitted > 0) && (
             <details className="group" data-testid="conductor-mode-finished" open={searching || finishedOpen}
               onToggle={e => { if (!searching) setFinishedOpen((e.currentTarget as HTMLDetailsElement).open) }}>
               <summary className="flex items-center gap-1 cursor-pointer list-none text-[12px] text-muted hover:text-text py-1">
                 <ChevronRight size={14} className="transition-transform group-open:rotate-90" aria-hidden="true" />
-                {i18nT('components.crewMode.conductor_mode_finished', { n: finishedCount })}
+                {i18nT('components.crewMode.conductor_mode_finished', { n: finishedCount + finishedOmitted })}
               </summary>
               <ul className="space-y-1.5 mt-1">
                 {finished.map(memberRow)}
               </ul>
+              <CrewShowOlder root={root} omitted={closedOmitted} />
             </details>
           )}
         </div>

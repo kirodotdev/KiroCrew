@@ -16,7 +16,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Protocol, Tuple
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -456,6 +456,33 @@ class IdentityProvider(Protocol):
 
     def credential_watch_paths(self) -> List[Path]: ...
 
+    def credential_freshness(self) -> "CredentialFreshness | None":
+        """Whether the host's own sign-in, which the edition's tools use, has expired.
+
+        WIRED: the cron callback (``slack/gateway_runtime/cron_fire.py``) asks
+        before it starts a scheduled agent turn, through
+        ``kiro_crew.preflight.expired_host_credential``, off the event loop. When
+        the answer says ``expired``, the run is not started and its owner is
+        told ``remedy``; every scheduled agent turn waits, also one that calls
+        none of the edition's tools. ``None``: nothing to check. Public default
+        = ``None``, so every run starts. Read the credential, never
+        guess: a credential that cannot be read is not expired. v1 method
+        addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class CredentialFreshness:
+    """The host sign-in reading :meth:`IdentityProvider.credential_freshness` returns.
+
+    ``remedy`` is shown to the person as it is: what expired and how to sign in
+    again, in plain words.
+    """
+
+    expired: bool
+    remedy: str
+
 
 @dataclass(frozen=True)
 class WorkloadIdentity:
@@ -627,6 +654,50 @@ class McpToolingProvider(Protocol):
         spawns the server, so only the name crosses the wire. Return only names
         whose values carry no secret, such as a launcher's loopback address.
         The public Default returns an empty set.
+        """
+        ...
+
+    def custom_agent_servers(self) -> Tuple[str, ...]:
+        """Names of :meth:`extra_mcp_servers` entries a custom agent's session also mounts.
+
+        WIRED: ``acp.default_crew_servers.with_default_crew_servers`` adds each named
+        server that :meth:`extra_mcp_servers` supplies on this host to the spec a
+        session runs on a custom agent (a user-level spec Crew did not write), under
+        the same opt-outs as Crew's own servers. It is added at spawn, never written
+        into the user's file, and never auto-approved: where a wildcard in the
+        agent's own ``allowedTools`` would approve it unasked, KAS gets it with an
+        ``ask`` rule over its tools and kiro-cli does not get it. Which spawns add
+        it, and so the spec an edition check that reports where it is mounted
+        judges, is ``acp.default_crew_servers.session_spec_on(backend, agent, spec)``.
+        The public Default returns ``()``.
+        """
+        ...
+
+    def launch_token_normalizer(self, token: str) -> str:
+        """*token* (one argument of an MCP launch) with a known version folder folded.
+
+        WIRED: ``mcp_gateway.launch_approval_normalize.normalized_command_hash``
+        maps each argument through this in the gateway's rewrite pass and in the
+        operator's approval writer, so an approved launch whose only change is a
+        folded argument keeps its approval. The program path is never passed
+        here and stays literal in that digest, so a changed program is still
+        refused. It never reaches ``hashing.hash_command``: the pool key, the
+        broker stub and gatewayd's check stay literal. Fold only a segment that
+        names a version of the same program, such as a package manager's
+        per-update folder. A launch whose arguments this leaves unchanged, or a
+        call that raises or returns a non-string, folds nothing. The public
+        Default returns *token* unchanged.
+        """
+        ...
+
+    def folder_free_mcp_servers(self) -> FrozenSet[str]:
+        """MCP server names the edition knows do not work on the project folder.
+
+        WIRED: ``mcp_gateway.folder_use`` reads it, so MCP Management shares a
+        listed server with the page-wide switch like Kiro Crew's own, instead of
+        keeping it in each chat until the person turns its Share switch on. List
+        only servers that take full paths or call a service and never read the
+        folder they start in. The public Default returns an empty set.
         """
         ...
 
@@ -952,7 +1023,9 @@ class CapabilityManager(Protocol):
     mid-mutation, and a tight read bound on ``list_*``/``registry`` — the
     dashboard polls those, so a stalled unbounded read would accumulate pending
     gateway tasks, the same wedge class this prevents). Only the sync
-    ``available()`` probe is unwrapped (it does no I/O). That wrapper
+    ``available()`` probe (no subprocess or network call; at most a cheap PATH
+    lookup while a CLI is missing) and the optional, I/O-free
+    ``unavailable_reason()`` are unwrapped. That wrapper
     (``platform.capability_bound.BoundedCapabilityManager``)
     is applied at CONTEXT COMPOSITION — ``PlatformContext.__post_init__`` binds
     every ``CapabilityManager`` once — so EVERY reader of
@@ -966,7 +1039,19 @@ class CapabilityManager(Protocol):
     """
 
     def available(self) -> bool:
-        """True when this edition provides a capability manager."""
+        """True when this edition provides a capability manager.
+
+        Asked on every request, never cached by the core, so a manager whose
+        package-manager CLI is installed after the gateway started is used from
+        the next request. A manager that can be unavailable for a reason its user
+        can fix MAY also offer an OPTIONAL synchronous, I/O-free
+        ``unavailable_reason() -> str``: one short plain-text sentence saying why
+        and what to do, or ``""`` while available. It is asked only right after
+        ``available()`` returned False, so it reads the state that probe left.
+        MCP discovery search shows it as the edition provider's ``unavailable``
+        outcome; a manager without the op (the public Default) is left out of the
+        search silently.
+        """
         ...
 
     async def list_mcp(self) -> List[Dict[str, Any]]:

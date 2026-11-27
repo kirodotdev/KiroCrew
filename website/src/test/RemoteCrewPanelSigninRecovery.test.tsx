@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { renderWithProviders } from './helpers'
+import { createConnectedTestStore, renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 
 // The guarded helper, not `navigator.clipboard`: on a plain-HTTP dashboard the
@@ -501,7 +501,7 @@ describe('My Crews — an unsigned cloud crew', () => {
   it('still offers Connect, and flags the missing sign-in', async () => {
     // The user can sign in on the crew itself once connected, so the missing
     // sign-in is shown but never holds Connect back.
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
     expect(await screen.findByRole('button', { name: /^Connect$/i })).toBeEnabled()
     expect(screen.queryByRole('button', { name: /Connect after sign-in/i })).not.toBeInTheDocument()
     expect(screen.getByText(/Needs sign-in/i)).toBeInTheDocument()
@@ -585,7 +585,7 @@ describe('My Crews — an unsigned cloud crew', () => {
     // too. "Its chats will fail" would be a claim nobody checked; the failed
     // check itself is shown, as a minor notice with the hand-off.
     vi.mocked(api.cloudLaunchSignin).mockRejectedValue(err)
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
     await waitFor(() => expect(api.cloudLaunchSignin).toHaveBeenCalledWith('j-unsigned'))
     expect(await screen.findByRole('button', { name: /^Connect$/i })).toBeEnabled()
     const notice = (await screen.findByText(text)).closest('[data-crew-id="kc1"]') as HTMLElement
@@ -596,7 +596,7 @@ describe('My Crews — an unsigned cloud crew', () => {
 
   it('leaves a signed-in crew alone', async () => {
     useJob({ ...UNSIGNED_JOB, signin_detected: true })
-    renderWithProviders(<RemoteCrewPanel />)
+    renderWithProviders(<RemoteCrewPanel />, { store: createConnectedTestStore() })
 
     expect(await screen.findByRole('button', { name: /^Connect$/i })).toBeEnabled()
     expect(screen.queryByText(/Needs sign-in/i)).not.toBeInTheDocument()

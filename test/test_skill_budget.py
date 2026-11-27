@@ -8,10 +8,12 @@ import time
 from pathlib import Path
 
 import pytest
+from skills_helpers import _settled
 
 from kiro_crew import platform_compat, skill_trust
 from kiro_crew.skill_usage import SkillUsageLedger
 from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+from kiro_crew.testing.wait import wait_until
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1259,6 +1261,10 @@ class TestBudgetEndpointAgainstTheRealLoader:
     `_cached_frontmatter`. That is convenient, but it meant a required-argument
     change to the real method could crash this endpoint with every test green --
     which is precisely what happened. This test calls the real thing.
+
+    Every loader here is ``_settled`` before it is read: a fresh skills root
+    answers ``[]`` once the background walk outlasts the loader's two-second
+    cold-start budget, which a loaded Windows runner does.
     """
 
     def test_the_budget_computes_over_a_real_loader(self, tmp_path):
@@ -1277,7 +1283,7 @@ class TestBudgetEndpointAgainstTheRealLoader:
             encoding="utf-8",
         )
 
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
         result = _compute_budget(loader)
 
         keys = {row["key"] for row in result["rows"]}
@@ -1324,10 +1330,14 @@ class TestBudgetEndpointAgainstTheRealLoader:
         )
 
         skill_trust.grant_project_trust(project)
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
 
-        # The project IS trusted, and its skill IS enumerable when asked for.
-        assert "project-only" in {n for n, _, _ in loader._iter(project)}
+        # The project IS trusted, and its skill IS enumerable when asked for. The
+        # project scope has its own cold-start walk, so wait for it to publish.
+        wait_until(
+            lambda: "project-only" in {n for n, _, _ in loader._iter(project)},
+            describe=lambda: f"catalog_status={loader.catalog_status(project)!r}",
+        )
 
         keys = {row["key"] for row in _compute_budget(loader)["rows"]}
         assert "global-one" in keys, keys
@@ -1353,7 +1363,7 @@ class TestRowsExplainThemselves:
     def _loader(self, skills_root: Path):
         from kiro_crew.skills import SkillsLoader
 
-        return SkillsLoader(skills_path=skills_root, install_builtins=False)
+        return _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
 
     def test_description_and_origin_reach_the_row(self, tmp_path):
         from kiro_crew.dashboard.handlers.skill_budget import _compute_budget
@@ -1453,3 +1463,120 @@ class TestRowsExplainThemselves:
         row = _compute_budget(self._loader(skills_root))["rows"][0]
         assert planted not in row["description"], row["description"]
         assert "[REDACTED]" in row["description"]
+
+
+class TestStartupIndexCounts:
+    """``index_listed`` / ``index_total`` come from the loader's own render.
+
+    Each loader is ``_settled`` first. A fresh root of hundreds of skills is
+    exactly the walk that outlasts the two-second cold-start budget on a loaded
+    Windows runner, and the render then counts an empty catalog (``0 == 400``).
+    """
+
+    @staticmethod
+    def _seed(skills_root: Path, count: int) -> None:
+        for n in range(count):
+            d = skills_root / f"procedure-{n:03d}"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: procedure-{n:03d}\ndescription: synthetic procedure number {n} "
+                "that does a specific thing in a specific place\n---\n\nbody\n",
+                encoding="utf-8",
+            )
+
+    def test_counts_match_the_rendered_index(self, tmp_path, monkeypatch):
+        from kiro_crew import context as ctx
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.handlers.skill_budget import _budget_response
+        from kiro_crew.skills import SkillsLoader
+
+        skills_root = tmp_path / "skills"
+        self._seed(skills_root, 400)
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: KiroCrewConfig()))
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
+
+        result = _budget_response(loader)
+
+        assert result["index_budget_chars"] == ctx._resolve_caps(None).skills
+        assert result["index_total"] == 400
+        # The screen's figure IS the rendered index: the same rows the model sees.
+        text = loader.get_context(budget=result["index_budget_chars"])
+        shown = sum(1 for n in range(400) if f"- **procedure-{n:03d}**:" in text)
+        assert 0 < shown < 400
+        assert result["index_listed"] == shown
+        assert f"{400 - shown} more skill(s) not shown here" in text
+
+    def test_short_entry_mode_counts_its_eight_names(self, tmp_path, monkeypatch):
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.memory_sections import SkillsConfig
+        from kiro_crew.dashboard.handlers.skill_budget import _startup_index
+        from kiro_crew.skills import SkillsLoader
+
+        skills_root = tmp_path / "skills"
+        self._seed(skills_root, 12)
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(lambda cls: KiroCrewConfig(skills=SkillsConfig(lazy_load=False))),
+        )
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
+
+        counts = _startup_index(loader)
+
+        assert counts["index_total"] == 12
+        assert counts["index_listed"] == 8
+
+    def test_pinned_bodies_do_not_shrink_the_dashboard_count(self, tmp_path, monkeypatch):
+        """A large ``always: true`` body is not charged to the index allowance.
+
+        Session start keeps pinned bodies out of ``caps.skills`` through
+        ``required_parts_out``; the screen must run the same admission, or an
+        operator with one big pinned skill reads "0 of 12 listed" while every
+        session lists all twelve.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew import context as ctx
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.context_assembly import inclusion
+        from kiro_crew.dashboard.handlers.skill_budget import _startup_index
+        from kiro_crew.skills import SkillsLoader
+
+        skills_root = tmp_path / "skills"
+        self._seed(skills_root, 12)
+        pinned = skills_root / "pinned-rules"
+        pinned.mkdir()
+        (pinned / "SKILL.md").write_text(
+            "---\nname: pinned-rules\ndescription: standing rules\nalways: true\n---\n\n"
+            + ("Standing rule that every session carries.\n" * 800),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: KiroCrewConfig()))
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
+        caps = ctx._resolve_caps(None)
+        assert (pinned / "SKILL.md").stat().st_size > caps.skills
+
+        counts = _startup_index(loader)
+
+        # What a default-agent session start renders, through the same owner.
+        required, index = inclusion.skill_parts(
+            SimpleNamespace(skills=loader), globs=[], project=None, caps=caps, lazy_skills=True
+        )
+        listed_at_start = sum(1 for n in range(12) if f"- **procedure-{n:03d}**:" in index)
+        assert "pinned-rules" in "".join(required)
+        assert listed_at_start == 12
+        assert (counts["index_listed"], counts["index_total"]) == (listed_at_start, 12)
+
+    def test_a_complete_index_lists_everything(self, tmp_path, monkeypatch):
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.handlers.skill_budget import _startup_index
+        from kiro_crew.skills import SkillsLoader
+
+        skills_root = tmp_path / "skills"
+        self._seed(skills_root, 3)
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: KiroCrewConfig()))
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
+
+        counts = _startup_index(loader)
+
+        assert (counts["index_listed"], counts["index_total"]) == (3, 3)

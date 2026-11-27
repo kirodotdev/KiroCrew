@@ -856,6 +856,40 @@ def process_command_line(pid: int) -> str:
     return ""
 
 
+def process_argv(pid: int) -> list[str] | None:
+    """Return *pid*'s arguments as a list, or ``None`` when they cannot be read.
+
+    :func:`process_command_line` answers ``""`` both when the read failed and when
+    there is nothing to read; this keeps the two apart. Linux: the NUL-separated
+    ``/proc/<pid>/cmdline``, exact. macOS: ``KERN_PROCARGS2`` through
+    :func:`darwin_process_argv`, exact, for the same user or root. Windows: a
+    process has only one command-line string, so it is :func:`process_command_line`
+    split the way ``cli_server_stop`` splits it (``shlex``, non-POSIX): a quoted
+    argument keeps its quotes, so a caller that must know where a value with a
+    space ends treats a token with a quote as unreadable. An empty argv (a zombie)
+    is ``None`` too.
+    """
+    if type(pid) is not int or pid <= 0:
+        return None
+    try:
+        if sys.platform == "linux":
+            parts = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            if parts and parts[-1] == b"":
+                parts.pop()  # trailing NUL terminator
+            argv = [p.decode(errors="surrogateescape") for p in parts]
+        elif sys.platform == "darwin":
+            argv = darwin_process_argv(pid) or []
+        elif IS_WINDOWS:
+            import shlex
+
+            argv = shlex.split(process_command_line(pid), posix=False)
+        else:
+            return None
+    except (OSError, ValueError):
+        return None
+    return argv or None
+
+
 def process_owner_uid(pid: int) -> int | None:
     """Return the uid owning *pid*, or ``None`` when it cannot be determined.
 

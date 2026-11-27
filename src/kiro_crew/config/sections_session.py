@@ -26,15 +26,21 @@ from kiro_crew.config.sections_defaults import (
 # hand; it only bounds a hand-edited or hostile value.
 STAR_ORDER_MAX = 10_000
 
-# How many worker sessions one Bot may have open at once (``max_workers``). The
+# How many sessions that run as one Bot may be open at once (``max_workers``): its
+# workers and every session a session-control verb opened as the Bot, at any depth
+# (``bot_worker_cap``); sub-agent runs are not counted. The
 # owner sets it on the Bot's settings page; no Bot tool writes it. 0, the
 # default, sets no limit of the Bot's own: the bound on parallel work comes from
 # the host's resources unless the owner chooses a number
 # (rfc-work-ledger-concurrency-cap.md section 7). The ceiling is the work
 # ledger's own open bound (``work_ledger_records.MAX_ITEMS_PER_CONDUCTOR``).
+# While the Bot's ``worker_conducts`` switch is on, 0 is read as
+# ``BOT_MAX_WORKERS_CONDUCTING`` (``mate_worker_conducts.effective_worker_cap_refusal``),
+# so a tree of conducting workers is bounded even when the owner chose no number.
 BOT_MAX_WORKERS_DEFAULT = 0
 BOT_MAX_WORKERS_MIN = 0
 BOT_MAX_WORKERS_MAX = 32
+BOT_MAX_WORKERS_CONDUCTING = 4
 
 
 def _archive_retention_days(session_data: dict) -> int:
@@ -61,6 +67,17 @@ class SessionConfig:
     timeout_secs: int = field(
         default=DEFAULT_SESSION_TIMEOUT,
         metadata=_meta("Session Timeout", "Idle session timeout in seconds."),
+    )
+    automated_idle_timeout_secs: int = field(
+        default=0,
+        metadata=_meta(
+            "Idle Timeout After an Automated Turn",
+            "Idle timeout in seconds for a session whose last turn no person sent, such as "
+            "a scheduled job, a loop wake, a sub-agent completion or an app waking a chat. "
+            "Your next message puts the session back on the Session Timeout. Used only when "
+            "shorter than the Session Timeout, and not while that is 0. 0 (the default) "
+            "turns it off. Read at every idle sweep, so a change needs no restart.",
+        ),
     )
     idle_exempt_keys: list[str] = field(
         default_factory=list,
@@ -412,12 +429,15 @@ class KiroCrewAgentConfig:
         default=BOT_MAX_WORKERS_DEFAULT,
         metadata=_meta(
             "Workers at once",
-            "How many of this Bot's own worker sessions (on its worker template) "
-            "may be open at once. A session_create, session_revive or "
-            "session_fork past it is refused with bot_worker_cap_reached until "
-            "one of them is closed. Set by the owner on the Bot's settings page; "
-            "the Bot cannot change it. 0 (the default) sets no limit; otherwise "
-            "1 to 32.",
+            "How many sessions that run as this Bot may be open at once: its "
+            "worker sessions and the sessions they open, on any template or as "
+            "the Bot, at any depth (not the Bot's own chat, a person's chats or "
+            "sub-agent runs). A session_create, session_revive or session_fork "
+            "past it is refused with bot_worker_cap_reached until one of them is "
+            "closed. Set by the owner on the Bot's settings page; "
+            "the Bot cannot change it. 0 (the default) sets no limit while Workers "
+            "can conduct is off; while it is on, 0 means at most 4. Otherwise 1 "
+            "to 32, used as set.",
         ),
     )
     acp_backend: str = field(
@@ -440,6 +460,21 @@ class KiroCrewAgentConfig:
             "chat. Off (the default): only you add them, in this Bot's "
             "advanced settings, and it tells you when its worker lacks one. "
             "Read per request, so a change reaches the Bot's next session.",
+        ),
+    )
+    worker_conducts: bool = field(
+        default=False,
+        metadata=_meta(
+            "Workers can conduct",
+            "Off (the default): a worker this Bot opens does its task itself. On: "
+            "each worker the Bot's own thread opens can split its task into tracked "
+            "work-ledger items, open further workers of this Bot for them, follow "
+            "them and check their results. Those workers keep the Bot's identity, "
+            "memory, permissions and limits and count toward Workers at once. While "
+            "this is on and Workers at once is 0, at most 4 of the Bot's workers are "
+            "open at once. Set by the owner; the Bot cannot change it. A change "
+            "reaches each worker at its next start: saving it reloads the Bot's "
+            "workers, an idle one at once and a busy one when its turn ends.",
         ),
     )
     approval_mode: str = field(
@@ -515,6 +550,19 @@ class KiroCrewAgentConfig:
             "every card did before. A card-sent turn is tagged '[Dashboard "
             "card]', is never an approval, and is refused while the thread has an "
             "open approval or question.",
+        ),
+    )
+    # On by default: the sessions this Bot's thread opens are listed in its side
+    # panel and in the person's own session list too. Off leaves them out of the
+    # person's list (``crew_mode.list_view`` and the dashboard's ``crewModeView``).
+    # While ``dashboard.show_bot_sessions_in_list`` is on, every Bot's are listed
+    # and this switch does not apply.
+    show_sessions_in_list: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show in my Sessions list",
+            "List the sessions this bot opens in your Sessions list. Show all "
+            "bots in my Sessions lists every bot's, whatever this says.",
         ),
     )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``

@@ -784,6 +784,18 @@ export function tailNotInPage(tail: ChatMessage[], page: ChatMessage[]): ChatMes
   return tail.filter(m => !rowIdentities(m).some(id => seen.has(id)))
 }
 
+/** Whether `page` already holds a reply to the user row that `local`'s trailing
+ *  reply answers: that row is on the page by identity, and an assistant row
+ *  follows it there. A local prompt with no identity is never matched, by the
+ *  same "decline, not guess" rule `tailNotInPage` follows. */
+export function pageAnswersLocalPrompt(local: ChatMessage[], page: ChatMessage[]): boolean {
+  const prompt = local.findLast(m => m.role === 'user')
+  const ids = prompt ? rowIdentities(prompt) : []
+  if (!ids.length) return false
+  const at = page.findIndex(m => m.role === 'user' && rowIdentities(m).some(id => ids.includes(id)))
+  return at >= 0 && page.slice(at + 1).some(m => m.role === 'assistant')
+}
+
 /** Epoch ms for a transcript `ts`, or `null` when it cannot be read.
  *
  *  One transcript can carry both offset-aware and naive rows — current builds

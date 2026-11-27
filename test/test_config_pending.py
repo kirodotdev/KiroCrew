@@ -118,6 +118,20 @@ def _live_notes(state: _State) -> list[dict]:
     return [n for n in state._notification_log if not n.get("acked")]
 
 
+async def _beat(state: _State, now: float) -> None:
+    """One heartbeat sync, awaited to its end: the hook returns after its own bound."""
+    from kiro_crew.testing.wait import await_until
+
+    await config_pending.sync_pending_notes(state, now)
+    await await_until(getattr(state, config_pending._SYNC_TASK_ATTR), what="the sync")
+
+
+async def _settle(state: _State) -> None:
+    """Two heartbeat syncs: a leaf is announced once two scans in a row list it."""
+    await _beat(state, 0.0)
+    await _beat(state, 100.0)
+
+
 # ── detection ──
 
 
@@ -164,7 +178,7 @@ async def test_a_differing_endorsed_file_stays_pending() -> None:
     _seal("denied_commands.json", endorsed, _doc(disable_all=True))
     assert lp.endorsed_bytes("denied_commands.json") == endorsed
     state = _State()
-    await config_pending.sync_pending_notes(state, 0.0)
+    await _settle(state)
     assert [p["leaf"] for p in lp.pending_changes()] == ["denied_commands.json"]
     assert len(_live_notes(state)) == 1
 
@@ -177,7 +191,7 @@ async def test_apply_endorses_the_reviewed_version(leaf: str) -> None:
     path = _seal(leaf, _doc(enabled=False), _doc(enabled=True))
     sig = lp.disk_signature(path.read_bytes())
     state = _State()
-    await config_pending.sync_pending_notes(state, 0.0)
+    await _settle(state)
     async with TestClient(TestServer(_app(state))) as client:
         resp = await client.post(
             f"/api/security/config-pending/{leaf}/apply", json={"signature": sig}
@@ -196,7 +210,7 @@ async def test_discard_restores_the_endorsed_copy(leaf: str) -> None:
     path = _seal(leaf, _doc(enabled=False), _doc(enabled=True))
     sig = lp.disk_signature(path.read_bytes())
     state = _State()
-    await config_pending.sync_pending_notes(state, 0.0)
+    await _settle(state)
     async with TestClient(TestServer(_app(state))) as client:
         resp = await client.post(
             f"/api/security/config-pending/{leaf}/discard", json={"signature": sig}
@@ -419,18 +433,82 @@ async def test_no_agent_or_mcp_tool_names_these_routes() -> None:
 # ── bell note + nav count ──
 
 
+async def test_a_scan_inside_a_save_announces_nothing() -> None:
+    """A save endorses its copy before it renames the new file into place, so a scan
+    between the two lists the old file and the next scan does not; a version only one
+    scan saw is never announced."""
+    path = _seal("config.json", _doc(a=1), _doc(a=1))
+    state = _State()
+    with lp.endorsing("config.json", _doc(a=2)):
+        assert [p["leaf"] for p in lp.pending_changes()] == ["config.json"]
+        await _beat(state, 0.0)
+        path.write_bytes(_doc(a=2))
+    await _beat(state, 100.0)
+    assert state._notification_log == []
+    assert [data["count"] for _, data in state.ws] == [0]
+
+
+async def test_a_resolve_inside_another_save_announces_nothing_for_it() -> None:
+    """The snapshot an Apply or Discard publishes is a scan too."""
+    path = _seal("config.json", _doc(a=1), _doc(a=2))
+    sig = lp.disk_signature(path.read_bytes())
+    denied = _seal("denied_commands.json", _doc(disable_all=False), _doc(disable_all=False))
+    state = _State()
+    await _settle(state)
+    async with TestClient(TestServer(_app(state))) as client:
+        with lp.endorsing("denied_commands.json", _doc(disable_all=True)):
+            resp = await client.post(
+                "/api/security/config-pending/config.json/discard", json={"signature": sig}
+            )
+            assert resp.status == 200, await resp.text()
+            denied.write_bytes(_doc(disable_all=True))
+    assert _live_notes(state) == [] and len(state._notification_log) == 1
+
+
+@pytest.mark.parametrize("edit", ["changed", "removed", "rewritten between the scans"])
+async def test_an_outside_edit_is_announced_once_two_scans_see_it(edit: str) -> None:
+    path = _seal("config.json", _doc(a=1), _doc(a=2))
+    if edit == "removed":
+        path.unlink()
+    state = _State()
+    await _beat(state, 0.0)
+    assert _live_notes(state) == []
+    if edit == "rewritten between the scans":
+        path.write_bytes(_doc(a=3))
+    await _beat(state, 100.0)
+    [note] = _live_notes(state)
+    assert note["config_pending_leaf"] == "config.json"
+
+
+@pytest.mark.parametrize("read", [False, True], ids=["unread", "read"])
+async def test_a_restart_keeps_the_note_of_a_version_still_pending(read: bool) -> None:
+    """A new process has no earlier scan; the note it inherits, read or not, still
+    answers for the version on disk, so it is neither resolved nor sent again."""
+    _seal("config.json", _doc(a=1), _doc(a=2))
+    before = _State()
+    await _settle(before)
+    if read:
+        before._notification_log[0]["acked"] = True
+    after = _State()
+    after._notification_log.extend(before._notification_log)  # the persisted log
+    await _settle(after)
+    [note] = after._notification_log
+    assert bool(note.get("acked")) is read
+    assert not note[config_pending.NOTE_KEY].get("resolved")
+
+
 async def test_going_pending_notifies_once_per_version() -> None:
     path = _seal("config.json", _doc(a=1), _doc(a=2))
     state = _State()
-    await config_pending.sync_pending_notes(state, 0.0)
-    await config_pending.sync_pending_notes(state, 100.0)
+    await _settle(state)
     [note] = _live_notes(state)
     assert note["url"] == config_pending.SETTINGS_URL
     assert note["config_pending_leaf"] == "config.json"
-    assert state.ws == [(config_pending.WS_EVENT, {"count": 1})]
+    # The first scan saw the version once, so it published no pending leaf yet.
+    assert state.ws == [(config_pending.WS_EVENT, {"count": n}) for n in (0, 1)]
 
     path.write_bytes(_doc(a=3))  # a new edit notifies again and supersedes the old note
-    await config_pending.sync_pending_notes(state, 200.0)
+    await _beat(state, 200.0)
     [newer] = _live_notes(state)
     assert newer is not note and len(state._notification_log) == 2
 
@@ -442,10 +520,10 @@ async def test_a_deleted_note_is_not_sent_again_for_the_same_version() -> None:
     pushed: list[dict] = []
     # Delivered but never kept in the log: as if the owner deleted each note at once.
     state.notification_bus = NotificationBus(sink=pushed.append)
-    await config_pending.sync_pending_notes(state, 0.0)
+    await _settle(state)
     assert len(pushed) == 1
-    await config_pending.sync_pending_notes(state, 100.0)
-    await config_pending.sync_pending_notes(state, 200.0)
+    await _beat(state, 200.0)
+    await _beat(state, 300.0)
     assert len(pushed) == 1
 
 
@@ -454,15 +532,16 @@ async def test_the_same_version_going_pending_again_after_a_resolve_is_notified(
     going pending again later (a file removed twice, one edit re-applied) is new."""
     path = _seal("config.json", _doc(a=1), _doc(a=2))
     state = _State()
-    await config_pending.sync_pending_notes(state, 0.0)
+    await _settle(state)
     [first] = _live_notes(state)
 
     path.write_bytes(_doc(a=1))  # put back by hand: nothing is pending
-    await config_pending.sync_pending_notes(state, 100.0)
+    await _beat(state, 200.0)
     assert _live_notes(state) == []
 
     path.write_bytes(_doc(a=2))  # the very same edit, made again
-    await config_pending.sync_pending_notes(state, 200.0)
+    await _beat(state, 300.0)
+    await _beat(state, 400.0)
     [again] = _live_notes(state)
     assert again is not first
     assert again["config_pending_leaf"] == "config.json"
@@ -471,7 +550,7 @@ async def test_the_same_version_going_pending_again_after_a_resolve_is_notified(
 async def test_a_failed_resolve_write_is_retried_on_the_next_sync() -> None:
     path = _seal("config.json", _doc(a=1), _doc(a=2))
     state = _State()
-    await config_pending.sync_pending_notes(state, 0.0)
+    await _settle(state)
     writes: list[bool] = []
 
     async def disk_full_once() -> bool:
@@ -480,21 +559,21 @@ async def test_a_failed_resolve_write_is_retried_on_the_next_sync() -> None:
 
     state._rewrite_notifications_async = disk_full_once  # type: ignore[method-assign]
     path.write_bytes(_doc(a=1))  # resolved: its mark must reach the log
-    await config_pending.sync_pending_notes(state, 100.0)
+    await _beat(state, 200.0)
     assert writes == [True]
-    await config_pending.sync_pending_notes(state, 200.0)
+    await _beat(state, 300.0)
     assert writes == [True, True], "the failed write is tried again"
-    await config_pending.sync_pending_notes(state, 300.0)
+    await _beat(state, 400.0)
     assert writes == [True, True], "and not after it landed"
 
 
 async def test_a_read_note_still_pending_is_not_sent_again() -> None:
     _seal("config.json", _doc(a=1), _doc(a=2))
     state = _State()
-    await config_pending.sync_pending_notes(state, 0.0)
+    await _settle(state)
     [note] = _live_notes(state)
     note["acked"] = True  # the owner read it; the edit is still pending
-    await config_pending.sync_pending_notes(state, 100.0)
+    await _beat(state, 200.0)
     assert len(state._notification_log) == 1
 
 
@@ -549,7 +628,7 @@ async def test_muting_every_mutable_channel_does_not_silence_the_note() -> None:
     state.notification_bus = NotificationBus(
         sink=lambda note: state._notification_log.append(settings.apply(note))
     )
-    await config_pending.sync_pending_notes(state, 0.0)
+    await _settle(state)
     [note] = _live_notes(state)
     assert note["channel"] in PROTECTED_CHANNELS
     assert not note.get("silenced") and note["priority"] != "passive"
@@ -574,16 +653,17 @@ async def test_a_meta_forged_note_does_not_suppress_the_real_one() -> None:
             },
         )
     )
-    await config_pending.sync_pending_notes(state, 0.0)
+    await _settle(state)
     assert len(state._notification_log) == 2
 
 
 async def test_a_resolved_leaf_clears_its_note_on_the_next_sync() -> None:
     path = _seal("config.json", _doc(a=1), _doc(a=2))
     state = _State()
-    await config_pending.sync_pending_notes(state, 0.0)
+    await _settle(state)
+    assert len(_live_notes(state)) == 1
     path.write_bytes(_doc(a=1))  # reverted by hand
-    await config_pending.sync_pending_notes(state, 100.0)
+    await _beat(state, 200.0)
     assert _live_notes(state) == []
     assert state.ws[-1] == (config_pending.WS_EVENT, {"count": 0})
 
@@ -592,12 +672,141 @@ async def test_editing_a_pending_file_again_tells_the_dashboard() -> None:
     """Same count, new version: the card must re-read, or it keeps the old diff."""
     path = _seal("config.json", _doc(a=1), _doc(a=2))
     state = _State()
-    await config_pending.sync_pending_notes(state, 0.0)
+    await _settle(state)
     path.write_bytes(_doc(a=3))
-    await config_pending.sync_pending_notes(state, 100.0)
-    assert state.ws == [(config_pending.WS_EVENT, {"count": 1})] * 2
-    await config_pending.sync_pending_notes(state, 200.0)  # nothing new: no event
-    assert len(state.ws) == 2
+    await _beat(state, 200.0)
+    assert state.ws == [(config_pending.WS_EVENT, {"count": n}) for n in (0, 1, 1)]
+    await _beat(state, 300.0)  # nothing new: no event
+    assert len(state.ws) == 3
+
+
+# ── a held Slack edit says what is held and where to review it ──
+
+_SHARED_ON = {"shared_access": {"enabled": True, "user_ids": ["UFRIEND001"]}}
+
+
+def _held_log(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == lp.logger.name]
+
+
+@pytest.mark.parametrize(
+    "edited, row",
+    [
+        pytest.param(
+            {"enabled": True, "user_ids": ["UFRIEND001", "UNEW000001"]},
+            '"slack.shared_access.user_ids"',
+            id="add-an-id",
+        ),
+        pytest.param(
+            {"enabled": True, "user_ids": []}, '"slack.shared_access.user_ids"', id="remove-an-id"
+        ),
+        pytest.param(
+            {"enabled": False, "user_ids": ["UFRIEND001"]},
+            'changed "slack.shared_access.enabled": true -> false',
+            id="switch-off",
+        ),
+    ],
+)
+async def test_a_held_slack_edit_lists_its_keys_and_points_to_the_review(
+    edited: dict, row: str, caplog: pytest.LogCaptureFixture, _floor_monkeypatch
+) -> None:
+    _floor_monkeypatch.setattr(lp, "_reported", set())
+    path = _seal("config.json", _doc(slack=_SHARED_ON), _doc(slack={"shared_access": edited}))
+    [entry] = lp.pending_changes()
+    with caplog.at_level("WARNING", logger=lp.logger.name):
+        assert lp.reconciled_bytes("config.json", path) == _doc(slack=_SHARED_ON)
+        lp.reconciled_bytes("config.json", path)
+    lines = [m for m in _held_log(caplog) if "Slack settings" in m]
+    assert len(lines) == 1, "logged once"
+    assert row in lines[0] and "NOT in effect" in lines[0]
+    assert "`kirocrew config pending`" in lines[0]
+
+    state = _State()
+    await _settle(state)
+    [note] = _live_notes(state)
+    assert note["title"] == "A Slack settings edit is held for review"
+    assert row in note["body"] and "`kirocrew config pending`" in note["body"]
+    assert note["channel"] == config_pending.CHANNEL
+    # Review and Apply stay in the CLI or Settings: no paste-ready command anywhere.
+    for text in (lines[0], note["body"]):
+        assert "pending apply" not in text and entry["signature"] not in text
+
+
+async def test_a_held_edit_mixing_slack_and_other_keys_lists_every_key(
+    caplog: pytest.LogCaptureFixture, _floor_monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Slack row must not hide a sandbox change riding in the same file."""
+    _floor_monkeypatch.setattr(lp, "_reported", set())
+    edited = {"enabled": True, "user_ids": ["UFRIEND001", "UNEW000001"]}
+    path = _seal(
+        "config.json",
+        _doc(slack=_SHARED_ON, agent={"sandbox": "auto"}),
+        _doc(slack={"shared_access": edited}, agent={"sandbox": "off"}),
+    )
+    with caplog.at_level("WARNING", logger=lp.logger.name):
+        lp.reconciled_bytes("config.json", path)
+    [line] = [m for m in _held_log(caplog) if "Slack settings" in m]
+    assert '"agent.sandbox"' in line and '"slack.shared_access.user_ids"' in line
+
+    state = _State()
+    await _settle(state)
+    [note] = _live_notes(state)
+    assert '"agent.sandbox"' in note["body"] and "pending apply" not in note["body"]
+
+
+async def test_a_held_edit_that_is_not_json_lists_nothing(
+    caplog: pytest.LogCaptureFixture, _floor_monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _floor_monkeypatch.setattr(lp, "_reported", set())
+    path = _seal("config.json", _doc(slack=_SHARED_ON), b'{"slack": ')
+    with caplog.at_level("WARNING", logger=lp.logger.name):
+        lp.reconciled_bytes("config.json", path)
+    messages = _held_log(caplog)
+    assert any("held for review" in m and "kirocrew config pending" in m for m in messages)
+    assert not any("Slack settings" in m for m in messages)
+
+
+async def test_a_held_edit_of_other_keys_keeps_the_plain_note(
+    caplog: pytest.LogCaptureFixture, _floor_monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _floor_monkeypatch.setattr(lp, "_reported", set())
+    path = _seal(
+        "config.json",
+        _doc(slack=_SHARED_ON, agent={"model": "a"}),
+        _doc(slack=_SHARED_ON, agent={"model": "b"}),
+    )
+    with caplog.at_level("WARNING", logger=lp.logger.name):
+        lp.reconciled_bytes("config.json", path)
+    assert not any("Slack settings" in m for m in _held_log(caplog))
+    state = _State()
+    await _settle(state)
+    [note] = _live_notes(state)
+    assert note["title"] == "Your config was changed outside Kiro Crew"
+    assert "Changed keys" not in note["body"]
+
+
+async def test_a_large_held_slack_edit_still_rings_a_bounded_note() -> None:
+    """A diff too long for the bell's body cap lists what fits and says the rest is not shown."""
+    edited = {"enabled": True, "user_ids": ["UFRIEND001", "UNEW000001"]}
+    paths = [f"/srv/{i:02d}/" + "p" * 190 for i in range(50)]
+    _seal(
+        "config.json",
+        _doc(slack=_SHARED_ON, agent={"sandbox_readonly_paths": []}),
+        _doc(slack={"shared_access": edited}, agent={"sandbox_readonly_paths": paths}),
+    )
+    state = _State()
+    await _settle(state)
+    [note] = _live_notes(state)
+    assert note["title"] == "A Slack settings edit is held for review"
+    assert len(note["body"]) < 20_000
+    assert "more changes not shown" in note["body"]
+    assert '"slack.shared_access.user_ids"' in note["body"]
+
+
+def test_a_listed_value_cannot_close_the_code_block() -> None:
+    fenced = config_pending._fenced(['added "slack.x": "````[link](http://x)"'])
+    fence = fenced.splitlines()[0]
+    assert set(fence) == {"`"} and len(fence) == 5 and fenced.endswith(fence)
 
 
 # ── a file that is not valid JSON, or was deleted, can always be discarded ──

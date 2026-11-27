@@ -6,7 +6,9 @@ any request, an oversized response stopped within one chunk of the pinned size, 
 unreachable host leaving no staging descriptor, a mirror base URL, progress against the
 pinned total, cancellation, a redirect that may change host but never leave https), the
 store's escape hatch, a present model returned without a download but verified against
-its pin rather than its size or forgeable metadata, the digest read once per load, and the
+its pin rather than its size or forgeable metadata, a mismatched file that cannot be
+removed refused rather than downloaded over (and one another check removed first still
+downloaded), the digest read once per load, and the
 load path's digest stage kept apart from a first-run download. No test touches the
 network: each one that reaches the downloader answers its connection through
 ``opener_helpers.answer_with``, with ``_stub_urlopen`` from ``stt_engine_helpers.py`` or
@@ -16,6 +18,7 @@ redirect policy (``opener_helpers.redirect_to``).
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import urllib.error
@@ -298,6 +301,81 @@ async def test_a_present_model_is_verified_against_its_pin_not_just_its_size(mon
     assert await store.ensure(model) is None
     assert not path.exists(), "the unverified file must be removed, not left to be loaded"
     assert downloaded == ["fetch"], "it must fall through to a re-download"
+
+
+@pytest.mark.asyncio
+async def test_a_mismatched_model_that_cannot_be_removed_is_refused_not_downloaded(
+    monkeypatch, tmp_path
+):
+    """A download cannot replace a file the delete could not remove.
+
+    On Windows a program holding the file open fails the delete, and the download's
+    rename over it fails the same way, so each load started one transfer that could
+    not land and voice said "not downloaded". The load is refused, naming the file;
+    once it can be removed, the next load replaces it with one download.
+    """
+    model = _present_model(monkeypatch, tmp_path, b"the real weights")
+    path = tmp_path / model.filename
+    path.write_bytes(b"the FAKE weights")
+    real_unlink = models.Path.unlink
+
+    def _held(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(models.Path, "unlink", _held)
+    downloaded: list[str] = []
+    stub = _stub_urlopen(b"the real weights")
+
+    def _record(url, timeout=None):
+        downloaded.append("fetch")
+        return stub(url, timeout=timeout)
+
+    answer_with(monkeypatch, _record)
+    monkeypatch.delenv(models.SKIP_DOWNLOAD_ENV, raising=False)
+    store = models.ModelStore()
+
+    assert await store.ensure(model) is None
+    assert downloaded == [], "a file that cannot be removed cannot be downloaded over"
+    assert store.status["step"] == "failed"
+    assert store.status["refused"] is True
+    assert str(path) in str(store.status["error"])
+    assert path.read_bytes() == b"the FAKE weights", "a mismatch is never accepted"
+
+    monkeypatch.setattr(models.Path, "unlink", real_unlink)
+    assert await store.ensure(model) == path
+    assert downloaded == ["fetch"]
+    assert path.read_bytes() == b"the real weights"
+
+
+@pytest.mark.asyncio
+async def test_a_mismatched_model_another_check_removed_first_is_downloaded_not_refused(
+    monkeypatch, tmp_path
+):
+    """Two checks of one file can race to delete it; the second finds it gone.
+
+    A file that is already gone can be downloaded over, so that is not the
+    "could not be removed" refusal.
+    """
+    model = _present_model(monkeypatch, tmp_path, b"the real weights")
+    path = tmp_path / model.filename
+    path.write_bytes(b"the FAKE weights")
+    real_hash = models._sha256_verified_file
+
+    def _hash_then_lose_the_race(target):
+        digest = real_hash(target)
+        os.unlink(target)  # the other check's delete lands between our hash and ours
+        return digest
+
+    monkeypatch.setattr(models, "_sha256_verified_file", _hash_then_lose_the_race)
+    answer_with(monkeypatch, _stub_urlopen(b"the real weights"))
+    monkeypatch.delenv(models.SKIP_DOWNLOAD_ENV, raising=False)
+    store = models.ModelStore()
+
+    assert await store.ensure(model) == path
+    assert "refused" not in store.status
+    assert path.read_bytes() == b"the real weights"
 
 
 @pytest.mark.asyncio

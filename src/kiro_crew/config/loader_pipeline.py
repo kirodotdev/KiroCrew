@@ -32,6 +32,7 @@ from kiro_crew.config.integration_sections import (
 )
 from kiro_crew.config.loader_agents import _crew_autocompact_pct
 from kiro_crew.config.loader_builders import (
+    KIRO_CLI_PICK_STORED_ATTR,
     _build_agent_config,
     _build_dashboard_config,
     _build_session_config,
@@ -97,6 +98,7 @@ from kiro_crew.config.section_builders import (
     _build_cron_history_config,
     _build_discord_config,
     _build_feishu_config,
+    _build_heartbeat_config,
     _build_imessage_config,
     _build_instances_config,
     _build_knowledge_config,
@@ -131,7 +133,6 @@ from kiro_crew.config.sections import (
     BrowserConfig,
     ChannelConfig,
     DecisionsConfig,
-    HeartbeatConfig,
     InstancesConfig,
     KiroCrewAgentConfig,
     MemoryStoreConfig,
@@ -892,6 +893,7 @@ def build_config(
         # could not read what they configured". Carry the observation
         # through so the caller can tell them apart.
         cfg = config_cls(_degraded_sections=frozenset(_OBSERVED_DEGRADED_SECTIONS))
+        cfg._read_degraded_sections = frozenset()
         # An absent key, so an edition's ``default_stt()`` applies here too.
         cfg.stt.provider = _sections.default_stt_provider()
         agent_defaults = _sections.SectionReader(AgentConfig, {})
@@ -900,6 +902,7 @@ def build_config(
             agent_defaults, {}, "member_acp_backend", inherit=cfg.agent.acp_backend
         )
         mark_member_backend_inherited(cfg.agent, True)
+        setattr(cfg.agent, KIRO_CLI_PICK_STORED_ATTR, False)
         cfg._base_unreadable = doc.base_unreadable
         cfg._overlay_unreadable = doc.overlay_unreadable
         if (
@@ -1006,12 +1009,7 @@ def build_config(
     mint_timeout_raw = instances.get("mint_timeout_secs")
     mcp_gateway_data = _coerced_section(data, "mcp_gateway", _degraded)
     mcp_data = _coerced_section(data, "mcp", _degraded)
-    heartbeat = _sections.SectionReader(
-        HeartbeatConfig, _coerced_section(data, "heartbeat", _degraded)
-    )
-    heartbeat_default_deliver = str(heartbeat.get("default_deliver")).strip().lower()
-    if heartbeat_default_deliver not in ("slack", "dashboard"):
-        heartbeat_default_deliver = heartbeat.default("default_deliver")
+    heartbeat_data = _coerced_section(data, "heartbeat", _degraded)
     # A stored document written before this key existed has no "monitoring"
     # object at all, and that is the case that must keep working: the miss
     # resolves to the dataclass default, which is the off position. So an
@@ -1125,9 +1123,13 @@ def build_config(
                     star_order=crew.read("star_order", _safe_int, lo=0, hi=STAR_ORDER_MAX),
                     # Strictly a bool, like ``starred``: a stray string reads as off.
                     dynamic_capabilities=crew.read("dynamic_capabilities", _safe_bool),
+                    # The owner's switch for conducting workers: a stray string
+                    # reads as off, the way every other per-Bot bool does.
+                    worker_conducts=crew.read("worker_conducts", _safe_bool),
                     # Hand-editable, and a safety switch: only a real bool is
                     # honoured; anything else reads as the default (off).
                     dashboard_card_send=crew.read("dashboard_card_send", _safe_bool),
+                    show_sessions_in_list=crew.read("show_sessions_in_list", _safe_bool),
                     # Same guard family as model/triggers: config.json is
                     # hand-editable, so a junk value must collapse to 0
                     # (inherit the global window), never crash the load.
@@ -1343,7 +1345,7 @@ def build_config(
         mcp_gateway=_build_mcp_gateway_config(mcp_gateway_data),
         mcp=_build_mcp_config(mcp_data),
         instances=_build_instances_config(connect_timeout_raw, instances_data, mint_timeout_raw),
-        heartbeat=HeartbeatConfig(default_deliver=heartbeat_default_deliver),
+        heartbeat=_build_heartbeat_config(heartbeat_data),
         monitoring=_build_monitoring_config(monitoring_data, monitoring_prefer_structured_arming),
         decisions=DecisionsConfig.from_raw(decisions_data),
         browser=BrowserConfig.from_raw(browser_data),
@@ -1383,6 +1385,7 @@ def build_config(
 
     cfg._base_unreadable = doc.base_unreadable
     cfg._overlay_unreadable = doc.overlay_unreadable
+    cfg._read_degraded_sections = frozenset(_degraded)
     return cfg
 
 
@@ -1476,6 +1479,16 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
             if carried is not None:
                 cfg.agent.default_agent = dispatch_kiro_agent(carried)
                 pending.add(MIGRATE_STAR_DEFAULT_TEMPLATE)
+
+        # Shared Slack access that predates ``verify_with_slack`` keeps its Slack
+        # check (see MIGRATE_SHARED_ACCESS_VERIFY). Decided on the BASE document;
+        # skipped where the overlay names the key, which then wins. In memory at
+        # once: the move only keeps the stricter check this load already ran with.
+        if _migration.shared_access_verify_due(
+            data, overlay=local_data
+        ) is not None and _migration.base_shared_access_verify_due(path):
+            cfg.slack.shared_access.verify_with_slack = True
+            pending.add(_migration.MIGRATE_SHARED_ACCESS_VERIFY)
 
         # One-shot launch migration for ``connections_ui`` (see the marker
         # constant's docstring). Decided on the BASE document, not the

@@ -27,7 +27,7 @@ async function appliedQuitLog({ restartNow }) {
     child.stderr = new EventEmitter();
     setImmediate(() => {
       // Once applied, the check reports up to date (non-zero), as a real one does.
-      if (command === "check" && !applied) child.stdout.emit("data", Buffer.from("0.5.0.5"));
+      if (command === "check" && !applied) child.stdout.emit("data", Buffer.from("1.5.0.5"));
       child.emit("close", command === "check" && applied ? 1 : 0, null);
     });
     return child;

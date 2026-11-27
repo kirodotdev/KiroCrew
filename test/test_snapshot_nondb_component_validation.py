@@ -59,6 +59,17 @@ class TestComponentJsonIsValidatedBeforeInstall:
         assert "crons.json" in out and "could not be read as JSON" in out, out
         assert not (home / "crons.json").exists()
 
+    def test_a_byte_order_mark_is_refused_where_the_reader_keeps_it(self, home, tmp_path, capsys):
+        """The cron store's file reader parses the decoded text as is: a marked file is no jobs."""
+        bundle = _bundle(tmp_path, b'\xef\xbb\xbf{"jobs": []}', name="bom")
+        rc = snap.restore_main(
+            [str(bundle), "--mode", "replace", "--force", "--components", "crons"]
+        )
+        out = capsys.readouterr().out
+        assert rc == 1, out
+        assert "could not be read as JSON" in out, out
+        assert not (home / "crons.json").exists()
+
     def test_a_json_array_is_refused_because_the_reader_expects_an_object(
         self, home, tmp_path, capsys
     ):

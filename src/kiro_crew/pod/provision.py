@@ -617,6 +617,67 @@ def has_dist(checkout: Path) -> bool:
     return built[0] == want
 
 
+def _website_dirty(checkout: Path) -> bool:
+    """Whether ``website/`` has uncommitted or untracked changes in *checkout*.
+
+    False when git cannot answer (no trusted git, not a checkout): the caller
+    then has nothing to compare and keeps what is there. True, without running
+    git status, when the checkout names a ``filter.<name>.clean`` driver that
+    status would execute: the rebuild direction, as
+    ``frontend._write_build_source_fingerprint`` takes for the same probe."""
+    from kiro_crew.platform.update_governance import repo_exec_driver_reason
+
+    git = _git_exe()
+    if not git:
+        return False
+    if repo_exec_driver_reason(str(checkout), git=git):
+        return True
+    try:
+        out = subprocess.run(  # nosec B603 - trusted absolute git, argv list, no shell
+            [
+                git,
+                "-C",
+                str(checkout),
+                "status",
+                "--porcelain",
+                # A repo-local status.showUntrackedFiles=no would hide a new file.
+                "--untracked-files=normal",
+                "--",
+                "website",
+            ],
+            capture_output=True,
+            timeout=10,
+            env=hardened_git_env(),
+            **UTF8_TEXT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and bool(out.stdout.strip())
+
+
+def _dist_serves_current_source(checkout: Path) -> bool:
+    """Whether provision may keep the staged dist instead of rebuilding it.
+
+    Stricter than :func:`has_dist`, which reports a dist it cannot verify as
+    built so the Fleet view never hides one. Provision is the explicit request
+    to bring the bundle up to date, so it also rebuilds when the dist cannot
+    carry the source a pod would run: ``website/`` has uncommitted edits (the
+    stamp names HEAD, not the working tree), or the dist's ``build-id.json``
+    carries no tree id because Vite built it from a dirty tree. With no
+    resolvable ``HEAD:website`` (no trusted git, not a checkout) there is
+    nothing to compare, so it keeps the dist, as ``has_dist`` does."""
+    from kiro_crew.dashboard.stale_bundle_guard import read_dist_tree
+
+    if not has_dist(checkout):
+        return False
+    if _resolve_oid(checkout, "website") is None:
+        return True
+    if _website_dirty(checkout):
+        return False
+    dist = dist_dir(checkout)
+    return not ((dist / "build-id.json").is_file() and read_dist_tree(dist) is None)
+
+
 def _pump(stream, tail: "collections.deque[str] | None") -> None:
     """Relay one of a step's streams to our stderr, optionally keeping its tail.
 
@@ -1060,7 +1121,7 @@ def build_dist(checkout: Path) -> bool:
     """Build the worktree's SPA dist (the slow step): ``npm run build`` in
     ``website/`` (→ ``website/dist``), then stage it into the served
     ``src/kiro_crew/static/dist``. Returns True if the dist exists afterward."""
-    if has_dist(checkout):
+    if _dist_serves_current_source(checkout):
         return True
     website = checkout / "website"
     if not website.is_dir():

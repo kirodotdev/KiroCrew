@@ -62,6 +62,16 @@ def pool():
         executor.shutdown(wait=False)
 
 
+@pytest.fixture(scope="module")
+def single_worker_pool():
+    # Module-scoped: one interpreter child serves every case that requests it, not one per test.
+    executor = SubprocessPoolExecutor(workers=1, ceiling_secs=600.0)
+    try:
+        yield executor
+    finally:
+        executor.shutdown(wait=False)
+
+
 def _request_frame(request_id: int, op: int, payload: bytes) -> bytes:
     body = struct.pack(">IB", request_id, op) + payload
     return struct.pack(">I", len(body)) + body
@@ -501,6 +511,9 @@ class TestCallerBudget:
             def __init__(self, future) -> None:
                 self._future = future
 
+            def done(self) -> bool:
+                return self._future.done()
+
             def result(self, timeout: float | None = None):
                 _check("reader", timeout)
                 try:
@@ -798,6 +811,9 @@ class TestCallerBudget:
                 def __init__(self, future) -> None:
                     self._future = future
 
+                def done(self) -> bool:
+                    return self._future.done()
+
                 def result(self, timeout: float | None = None):
                     reader_waits.append(timeout)
                     assert timeout is not None, "the caller waited on the reader unbounded"
@@ -833,6 +849,58 @@ class TestCallerBudget:
         finally:
             release.set()
             executor.shutdown(wait=False)
+
+    @pytest.mark.xdist_group(name="subprocess_pool_single_worker")
+    def test_an_answer_the_reader_holds_when_the_expired_wait_is_handled_is_returned(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: pathlib.Path,
+        single_worker_pool: SubprocessPoolExecutor,
+    ) -> None:
+        # Windows arm: the caller can handle its expired wait on the reader late (it
+        # gets the GIL back after its deadline) while the reader already holds the
+        # child's answer.  That answer is the child's completed realpath, so it is
+        # returned, and the healthy child and its slot are kept.
+        monkeypatch.setattr(executor_mod, "_CAN_SELECT_PIPES", False)
+        executor = single_worker_pool
+        before = self._spawned(executor)
+        (slot,) = executor._children
+        real_readers = executor._bounded_readers
+        expired: list[float] = []
+
+        class _HandledLate:
+            # What the handler sees when the answer lands after the wait's own last
+            # check: the timed wait reports expiry and the reader holds the answer.
+            def __init__(self, future) -> None:
+                self._future = future
+
+            def done(self) -> bool:
+                return self._future.done()
+
+            def result(self, timeout: float | None = None):
+                if timeout is None:
+                    return self._future.result()
+                self._future.exception(timeout=FALLBACK_TIMEOUT_SECS)
+                expired.append(timeout)
+                raise TimeoutError
+
+        def _submit(fn, *a, **k):
+            return _HandledLate(real_readers.submit(fn, *a, **k))
+
+        monkeypatch.setattr(
+            executor,
+            "_bounded_readers",
+            types.SimpleNamespace(submit=_submit, shutdown=real_readers.shutdown),
+        )
+        try:
+            answer = executor.realpath_spellings(str(tmp_path), timeout=FALLBACK_TIMEOUT_SECS)
+        except SubprocessPoolTimeout:
+            pytest.fail("the answer the reader held was dropped and reported as a timeout")
+        assert len(expired) == 1, "the double never expired the caller's wait"
+        assert str(tmp_path.resolve()) in answer
+        assert executor._children == [slot], "the slot was retired"
+        assert {child.proc.pid for child in executor._children if child.proc} == set(before)
+        assert all(proc.poll() is None for proc in before.values()), "a child was killed"
 
     def test_an_emptied_slot_is_respawned_in_the_background(self, tmp_path: pathlib.Path) -> None:
         # The fork/exec of a replacement interpreter is paid on the reaper thread, not
@@ -1065,6 +1133,47 @@ class TestCallerBudget:
             assert first_note > 0 and events[first_note] == "marker queued", events
             with pytest.raises(FileNotFoundError):  # the marker stays for the next caller
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=5.0)
+        finally:
+            executor.shutdown(wait=False)
+
+    def test_a_spawn_raising_a_non_oserror_is_a_failed_spawn_not_a_dead_reaper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A spawn that raised anything but ``OSError`` ended the reaper, the only spawn
+        # site, and every later caller waited out its budget on an empty queue.
+        prefix = "test-nonoserror-spawn"
+        real = executor_mod._Child._spawn
+        attempts: list[None] = []
+
+        # Gated on the thread name: the reaper's first tick runs inside ``__init__``,
+        # before the test holds the instance an instance gate would need.  Another
+        # pool's reaper (the patch is class-wide) gets the real spawn.
+        def _broken(self: executor_mod._Child) -> subprocess.Popen[bytes]:
+            if threading.current_thread().name == f"{prefix}-reaper":
+                attempts.append(None)
+                raise AttributeError("'int' object has no attribute 'write'")
+            return real(self)
+
+        monkeypatch.setattr(executor_mod._Child, "_spawn", _broken)
+        executor = SubprocessPoolExecutor(workers=2, ceiling_secs=600.0, thread_name_prefix=prefix)
+        try:
+            with pytest.raises(OSError) as caught:
+                executor.call_op(
+                    OP_REALPATH_SPELLINGS,
+                    b"/x",
+                    timeout=5.0,  # flake-ok: the red case waits out this budget
+                )
+            # Exactly OSError: not the TimeoutError of a drained budget, not the raw type.
+            assert type(caught.value) is OSError, repr(caught.value)
+            assert "AttributeError" in str(caught.value)
+            assert executor._reaper.is_alive(), "the spawn failure ended the reaper"
+            # And a later reaper tick tries the spawn again.
+            seen = len(attempts)
+            wait_until(
+                lambda: len(attempts) > seen,
+                timeout=FALLBACK_TIMEOUT_SECS,
+                describe=lambda: f"the reaper never retried the spawn after {seen} attempts",
+            )
         finally:
             executor.shutdown(wait=False)
 

@@ -115,7 +115,8 @@ describe('AboutPanel channel switcher', () => {
       channelLockedByPolicy: true,
       packaged: true,
     })
-    await screen.findByTestId('locked-by-policy-badge')
+    // Only an LTS build requires a channel, and no policy moves it.
+    expect(await screen.findByTestId('locked-by-policy-badge')).toHaveTextContent('Set by this edition')
     expect(screen.queryByTestId('channel-switcher')).toBeNull()
   })
 
@@ -132,7 +133,8 @@ describe('AboutPanel channel switcher', () => {
       downloadUrl: 'https://downloads.example.dev/desktop/stable/latest/KiroCrew.dmg',
     })
     const notice = await screen.findByTestId('updates-policy-channel')
-    expect(notice.textContent).toContain("This nightly build can't switch to stable updates")
+    expect(notice.textContent).toContain("This nightly build can't switch to stable updates, which this edition requires")
+    expect(notice.textContent).not.toContain("organization's policy")
     expect(notice.textContent).toContain('Your settings, chats and files are kept.')
     const link = notice.querySelector('a')
     expect(link?.getAttribute('href')).toBe('https://downloads.example.dev/desktop/stable/latest/KiroCrew.dmg')

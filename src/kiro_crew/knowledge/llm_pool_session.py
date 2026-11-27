@@ -16,6 +16,7 @@ import functools
 import logging
 from typing import Any
 
+from kiro_crew.agent_spec_injections import WRITE_BACK_CAUSE
 from kiro_crew.knowledge import llm_pool as _pool
 
 logger = logging.getLogger("kiro_crew.knowledge.llm_pool")
@@ -159,7 +160,7 @@ async def _confirm_session(session: Any) -> None:
         raise unconfirmed(
             f"{unconfirmed.code}: the background session KAS opened registered an agent "
             "that mounts a tool, a server or a grant; refusing to send document text to "
-            f"it. The knowledge pool tries again after "
+            f"it. {WRITE_BACK_CAUSE}. The knowledge pool tries again after "
             f"{int(_pool.SPEC_REFUSAL_COOLDOWN_SECS)} seconds"
         )
 
@@ -221,8 +222,9 @@ class SessionWorker(_pool.Worker):
             raise unconfirmed(
                 f"{unconfirmed.code}: the background agent's spec could not be "
                 f"confirmed to mount nothing on {_pool._label(self._backend)} after Kiro "
-                "Crew's repair; refusing to send document text to it. The knowledge pool "
-                f"tries again after {int(_pool.SPEC_REFUSAL_COOLDOWN_SECS)} seconds"
+                f"Crew's repair; refusing to send document text to it. {WRITE_BACK_CAUSE}. "
+                f"The knowledge pool tries again after {int(_pool.SPEC_REFUSAL_COOLDOWN_SECS)} "
+                "seconds"
             )
 
     async def _confirm_session(self, session: Any, model: str | None) -> None:

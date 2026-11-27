@@ -148,6 +148,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _warn_unresolvable_stdio_command,
         _warn_unresolved_secret_refs,
         _zip_has_main,
+        is_app_backend_mcp_url,
         kiro_crew_file,
         registered_app_mcp_servers,
         reregister_app_mcp_servers,
@@ -299,6 +300,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.cron_script import (  # noqa: F401
         resolve_script_path,
     )
+    from kiro_crew.dashboard.urls import (  # noqa: F401
+        is_loopback,
+    )
     from kiro_crew.env import (  # noqa: F401
         emit_env,
     )
@@ -321,6 +325,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.mcp_provenance import (  # noqa: F401
         DERIVED_KEY,
+        SOURCE_KEY,
     )
     from kiro_crew.mcp_utils import (  # noqa: F401
         without_mcp_refs,

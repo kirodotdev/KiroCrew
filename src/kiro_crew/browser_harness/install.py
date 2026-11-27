@@ -40,13 +40,13 @@ import sysconfig
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, sdk_extras
 from kiro_crew.browser_harness import HARNESS_VERSION, build_deps, chromium
 from kiro_crew.platform_compat import IS_WINDOWS
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
@@ -113,9 +113,17 @@ _ISOLATED: tuple[str, ...] = ("-I",)
 #: Environment prefixes the children never inherit. ``-I`` already ignores the
 #: ``PYTHON*`` family inside the interpreter; pip reads ``PIP_*`` itself
 #: (``PIP_INDEX_URL``, ``PIP_FIND_LINKS``, a config file) and is given only the
-#: two values in :func:`_child_env`. The proxy variables ARE inherited: pip needs
-#: them to reach the index on a proxied network.
+#: two values in :func:`_child_env`, plus, on the first attempt against the user's
+#: own index, the index keys they set (:func:`_pip_install`). The proxy variables
+#: ARE inherited: pip needs them to reach the index on a proxied network.
 _SCRUBBED_ENV_PREFIXES: tuple[str, ...] = ("PYTHON", "PIP_")
+
+#: Added to the first attempt against the user's own index: pip builds nothing, so
+#: every file it installs is a locked wheel and no build requirement is fetched.
+_WHEELS_ONLY: tuple[str, ...] = ("--only-binary", ":all:")
+
+#: The most of a failed first attempt's (redacted) pip output the gateway log keeps.
+_LOGGED_OUTPUT_CAP = 20_000
 
 #: pip flags: hashes are mandatory, nothing is prompted, no version nag on stderr.
 _PIP_ARGS: tuple[str, ...] = (
@@ -219,6 +227,10 @@ def install_state(home: Path) -> InstallState:
         have_python = python.is_file()
     except OSError:
         have_python = False
+    # A Windows venv's ``python.exe`` is a copied launcher, not a link, so it stays
+    # a file after the base Python it starts is removed; ask ``pyvenv.cfg`` instead.
+    if have_python and IS_WINDOWS:
+        have_python = _venv_base_python_present(prefix)
     installed = have_python and version == HARNESS_VERSION
     return InstallState(
         prefix=prefix,
@@ -253,18 +265,32 @@ async def install(
     *,
     components: tuple[str, ...] = COMPONENTS,
     refresh: bool = False,
+    before_clear: Callable[[], Coroutine[Any, Any, None]] | None = None,
 ) -> InstallState:
     """Create or refresh the venv and download Chromium. Raises :class:`InstallError`.
 
     *refresh* replaces a Chromium that is already present (Settings' Redownload);
     without it a whole copy is kept. Runs its blocking steps in a worker thread;
     *progress* is called from that thread with ``(stage, detail)`` and must
-    marshal onto the loop itself.
+    marshal onto the loop itself. *before_clear* runs on the loop, and is waited
+    for, before an install that clears the venv removes anything.
     """
+    loop = asyncio.get_running_loop()
+
+    def clearing() -> None:
+        if before_clear is not None:
+            asyncio.run_coroutine_threadsafe(before_clear(), loop).result()
+
     stop = threading.Event()
     worker = asyncio.create_task(
         asyncio.to_thread(
-            install_sync, home, progress, components=components, refresh=refresh, stop=stop
+            install_sync,
+            home,
+            progress,
+            components=components,
+            refresh=refresh,
+            stop=stop,
+            before_clear=clearing,
         )
     )
     try:
@@ -291,8 +317,14 @@ def install_sync(
     refresh: bool = False,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     stop: threading.Event | None = None,
+    before_clear: Callable[[], None] | None = None,
 ) -> InstallState:
-    """The blocking body; *runner* replaces the owned subprocess in tests."""
+    """The blocking body; *runner* replaces the owned subprocess in tests.
+
+    *before_clear* is called before either arm that clears the venv (a rebuild, a
+    copy from the runtime) removes the marker; a stop set meanwhile keeps the marker.
+    A repair, and an install that keeps the venv, never call it.
+    """
 
     def notify(stage: str, detail: str) -> None:
         _check_stop(stop, stage)
@@ -304,7 +336,11 @@ def install_sync(
     notify(STAGE_PREPARING, str(prefix))
     if COMPONENT_HARNESS in components:
         _install_harness(
-            prefix, notify, runner or functools.partial(_run, cwd=prefix, stop=stop), stop=stop
+            prefix,
+            notify,
+            runner or functools.partial(_run, cwd=prefix, stop=stop),
+            stop=stop,
+            before_clear=before_clear,
         )
     if COMPONENT_CHROMIUM in components:
         try:
@@ -326,6 +362,7 @@ def _install_harness(
     run: Callable[..., subprocess.CompletedProcess[str]],
     *,
     stop: threading.Event | None = None,
+    before_clear: Callable[[], None] | None = None,
 ) -> None:
     if sys.version_info < MIN_PYTHON:
         raise InstallError(
@@ -341,6 +378,9 @@ def _install_harness(
     # nothing to build, so neither the pip checks nor the pillow refusal below apply.
     runtime_files = _runtime_harness_files()
     if runtime_files is not None:
+        if before_clear is not None:
+            before_clear()
+            _check_stop(stop, STAGE_CREATING_VENV)
         _copy_runtime_harness(prefix, notify, run, runtime_files, stop=stop)
         return
     # Interpreters differ in which half of pip they ship: the packaged app has
@@ -392,6 +432,9 @@ def _install_harness(
         repair_argv.append(str(venv_dir(prefix)))
         _step(run, repair_argv, _VENV_TIMEOUT_SECS, STAGE_CREATING_VENV)
     elif rebuild:
+        if before_clear is not None:
+            before_clear()
+            _check_stop(stop, STAGE_CREATING_VENV)
         # The marker goes first: a rebuild that fails part-way must read as
         # "not installed", never as a finished install of a venv now cleared.
         (prefix / MARKER_FILE).unlink(missing_ok=True)
@@ -408,14 +451,66 @@ def _install_harness(
         pip_argv = [sys.executable, *_ISOLATED, "-m", "pip", "--python", str(python)]
     else:
         pip_argv = [str(python), *_ISOLATED, "-m", "pip"]
-    _step(
-        run,
-        [*pip_argv, *_PIP_ARGS, str(LOCK_FILE)],
-        _PIP_TIMEOUT_SECS,
-        STAGE_INSTALLING_HARNESS,
-    )
+    _pip_install(run, [*pip_argv, *_PIP_ARGS, str(LOCK_FILE)])
     _check_stop(stop, STAGE_INSTALLING_HARNESS)
     _write_marker(prefix)
+
+
+def _pip_install(run: Callable[..., subprocess.CompletedProcess[str]], argv: list[str]) -> None:
+    """Install the lock with *argv*, first from the user's own pip index if they set one.
+
+    ``argv[0]`` is the interpreter whose pip runs *argv*; its ``pip config list``
+    (and the gateway's ``PIP_*`` index variables) give the index settings. With
+    none, *argv* runs once, as it always has. With some, a first attempt runs with
+    them and wheels only; a failed exit of it, a timeout, or a spawn that cannot
+    start (an index value the OS or ``Popen`` refuses in an environment) is logged and *argv*
+    runs once more against pypi.org. A stop is not retried: *run*'s own stop check
+    raises :class:`InstallError`, which the first attempt does not catch.
+    The first attempt's output stays in the gateway log: a failed retry's error
+    ends with one line naming the index tried first.
+    """
+    stage = STAGE_INSTALLING_HARNESS
+    index_env = sdk_extras._configured_index_env(argv[0])
+    if not index_env:
+        _step(run, argv, _PIP_TIMEOUT_SECS, stage)
+        return
+    configured = sdk_extras._describe_index(index_env)
+    logger.info("installing the browser harness, attempt 1, wheels only, from %s", configured)
+    first = [*argv, *_WHEELS_ONLY]
+    try:
+        result = run(first, _PIP_TIMEOUT_SECS, env={**_child_env(), **index_env})
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "pip from %s timed out after %.0fs, trying pypi.org", configured, _PIP_TIMEOUT_SECS
+        )
+    except (OSError, ValueError) as exc:
+        # The spawn never started, as when an index value passes the per-string
+        # exec limit (E2BIG) or carries a NUL Popen refuses; the fallback carries none.
+        logger.warning(
+            "pip from %s could not start, trying pypi.org: %s",
+            configured,
+            sdk_extras._redact_pip_output(str(exc), index_env),
+        )
+    else:
+        if result.returncode == 0:
+            return
+        output = ((result.stderr or "") + (result.stdout or "")).strip()
+        logger.warning(
+            "pip could not install the browser harness from %s, trying pypi.org:\n%s",
+            configured,
+            sdk_extras._redact_pip_output(output, index_env)[-_LOGGED_OUTPUT_CAP:],
+        )
+    logger.info(
+        "installing the browser harness, attempt 2, from %s", sdk_extras._describe_index({})
+    )
+    try:
+        _step(run, argv, _PIP_TIMEOUT_SECS, stage)
+    except InstallError as exc:
+        raise InstallError(
+            stage,
+            f"{exc.detail}\npip first tried {configured}, which failed too; "
+            "the gateway log has its reason",
+        ) from exc
 
 
 def _copy_runtime_harness(
@@ -633,6 +728,29 @@ def _venv_built_by_this_minor(prefix: Path) -> bool:
     return False
 
 
+def _venv_base_python_present(prefix: Path) -> bool:
+    """Whether the folder ``pyvenv.cfg`` names as ``home`` still holds ``python.exe`` (no spawn).
+
+    Windows only: there the venv's launcher starts that interpreter. A ``home`` that
+    cannot be read or checked is taken as present, as before this check existed.
+    ``lexists`` rather than ``is_file``: a Microsoft Store Python's ``python.exe``
+    under ``WindowsApps`` is an app execution alias, a reparse point that is not
+    a plain file, and it must still read as present.
+    """
+    try:
+        text = (venv_dir(prefix) / "pyvenv.cfg").read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return True
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "home" and value.strip():
+            try:
+                return os.path.lexists(Path(value.strip()) / "python.exe")
+            except OSError:
+                return True
+    return True
+
+
 def _drop_dangling_interpreter_links(prefix: Path) -> None:
     """Unlink each ``python*`` entry of the venv's script directory whose target is gone."""
     try:
@@ -678,7 +796,12 @@ def _check_stop(stop: threading.Event | None, stage: str) -> None:
 
 
 def _run(
-    argv: list[str], timeout: float, *, cwd: Path, stop: threading.Event | None = None
+    argv: list[str],
+    timeout: float,
+    *,
+    cwd: Path,
+    stop: threading.Event | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """The installer's one spawn: a fixed argv of our own interpreter and the venv's.
 
@@ -688,7 +811,8 @@ def _run(
     a caller chose. The working directory is the prefix (owner-only, never the
     gateway's own cwd), the interpreter runs isolated (``-I`` in the argv) and the
     environment is :func:`_child_env`: three fences against the same agent-writable
-    cwd.
+    cwd. Only :func:`_pip_install`'s first attempt passes *env*: that environment
+    with the user's pip index keys merged over it.
     """
     _check_stop(stop, STAGE_PREPARING)
     # Files rather than PIPEs let the shared synchronous tree-stop helper wait
@@ -702,7 +826,7 @@ def _run(
             stdout=stdout,
             stderr=stderr,
             cwd=str(cwd),
-            env=_child_env(),
+            env=dict(env) if env is not None else _child_env(),
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             **UTF8_TEXT,
@@ -733,12 +857,14 @@ def _child_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
 
     ``PIP_CONFIG_FILE`` is the null device because pip also reads config files it
     finds from ``HOME`` and the system (``~/.config/pip/pip.conf``,
-    ``~/.pip/pip.conf``, ``/etc/pip.conf``, the venv's own): an ``index-url`` there
-    replaces PyPI, and a CodeArtifact repository whose login expired answers 401 for
-    every locked wheel. Set to ``os.devnull``, pip loads none of them (``--isolated``
-    still loads the system and venv files), so the index is pip's default and the
-    lock's hashes pin every file it serves. The variable also reaches the pip that
-    builds an sdist's build environment, which a command-line flag would not.
+    ``~/.pip/pip.conf``, ``/etc/pip.conf``, the venv's own). Set to ``os.devnull``,
+    pip loads none of them (``--isolated`` still loads the system and venv files),
+    so no pip setting reaches either attempt of an install except the index keys
+    an installer passes to its first (:func:`_pip_install`,
+    ``sdk_extras._lay_down``), and the fallback is exactly the run with no
+    settings: pip's default index, the lock's hashes pinning every file it serves.
+    The variable also reaches the pip that builds an sdist's build environment,
+    which a command-line flag would not.
     """
     source = os.environ if base is None else base
     env = {k: v for k, v in source.items() if not k.upper().startswith(_SCRUBBED_ENV_PREFIXES)}

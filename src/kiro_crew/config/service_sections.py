@@ -12,7 +12,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from kiro_crew.config.fields import _meta, field_default
-from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, MAX_RUNTIME_CEILING_SECS
+from kiro_crew.monitoring.limits import (
+    DEFAULT_RUNTIME_CEILING_SECS,
+    MAX_BUDGET_NOTICE_PCT,
+    MAX_RUNTIME_CEILING_SECS,
+)
 from kiro_crew.work_vocab import (
     WORK_MAX_DEPTH_DEFAULT,
     WORK_MAX_DEPTH_MAX,
@@ -218,6 +222,21 @@ class MonitoringConfig:
         ),
     )
 
+    budget_notice_pct: int = field(
+        default=0,
+        metadata=_meta(
+            "Budget notice on a watch's wake (percent)",
+            "When a structured watch's wake arrives with this share or more of its agent "
+            "turns, tokens or runtime used, the wake carries one extra line stating the "
+            "used and the total of each bound, so the agent can ask for a larger budget "
+            "with monitor_update before the watch stops. 0 turns it off and the wake is "
+            "unchanged. Accepts 1 to 99; any other value reads as 0. Read on every wake, "
+            "so no restart is needed.",
+            min=0,
+            max=MAX_BUDGET_NOTICE_PCT,
+        ),
+    )
+
 
 @dataclass
 class HeartbeatConfig:
@@ -234,6 +253,19 @@ class HeartbeatConfig:
             # The loader reads any other value as 'slack', so the write gate
             # refuses it instead of storing what the reader drops.
             enum=["slack", "dashboard"],
+        ),
+    )
+    keep_backoff: bool = field(
+        default=False,
+        metadata=_meta(
+            "Space out a retained task",
+            "A heartbeat task that keeps being retained (it answers HEARTBEAT_KEEP, fails, "
+            "times out or is refused by fair admission) waits 1, 2, 4, 8 and then 15 minutes "
+            "between runs instead of running on every 60-second tick, and stays in "
+            "HEARTBEAT.md meanwhile. Each run starts a new session, so spacing the retries "
+            "saves the context it builds. A new or edited task runs on the next tick; a "
+            "restart starts the ladder again. Off by default: every retained task runs on "
+            "every tick.",
         ),
     )
 

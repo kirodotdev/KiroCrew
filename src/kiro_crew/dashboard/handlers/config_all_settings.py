@@ -38,7 +38,7 @@ WHY_OWNED = "owned"  # another step changes it together with other settings
 WHY_MARKER = "marker"  # Kiro Crew sets it itself as a step is finished
 WHY_ALIAS = "alias"  # read from another setting, so a write here changes nothing
 WHY_TEXT = "text"  # free text such as a path, address or command
-WHY_LOCKED = "locked"  # an organization's policy sets it
+WHY_LOCKED = "locked"  # this edition sets it; no policy term reaches it
 WHY_COMPOUND = "compound"  # several values that must change together
 
 #: Keys the page shows but never changes, each with the reason it shows. A key
@@ -76,10 +76,15 @@ READONLY_REASONS: dict[str, str] = {
     "skills.generate_scripts": WHY_SAFETY,
     "skills.approval_required": WHY_SAFETY,
     "dashboard.terminal.shell": WHY_SAFETY,
+    # Reads, a new chat runs read-only commands without asking; `PUT
+    # /api/dashboard/config` writes it with its own enum check.
+    "dashboard.default_approval_mode": WHY_SAFETY,
     # Sign-ins, credentials and governance.
     # The browser spec keeps the live view's password cover on, with no control.
     "browser.live.mask_passwords": WHY_SIGN_IN,
     "agent.kas_refuse_plain_http_mcp_headers": WHY_SIGN_IN,
+    # Which credential Crew's engine runs on (machine mode reads a host token file).
+    "agent.kas_auth": WHY_SIGN_IN,
     "agent.mcp_registry_mode": WHY_SIGN_IN,
     "dashboard.sso_login_flags": WHY_SIGN_IN,
     "dashboard.qr_session_until_restart": WHY_SIGN_IN,
@@ -88,6 +93,12 @@ READONLY_REASONS: dict[str, str] = {
     # Off, a vault read leaves no row in the security event log
     # (secrets/read_audit.py note_reads), so only the operator turns it.
     "dashboard.audit_secret_reads": WHY_SIGN_IN,
+    # Whether a session-less internal call from a sandboxed process is refused
+    # (dashboard/token_auth_sessionless.py): only the operator turns it.
+    "dashboard.sessionless_internal_calls": WHY_REACH,
+    # Whether an unattested declared session key over TCP is refused
+    # (token_auth_callers.unattested_session_key_mode): only the operator turns it.
+    "dashboard.unattested_session_keys": WHY_REACH,
     # The decision judge's provider timeout: its owner control lives behind the
     # consent route, not in config.json.
     "decisions.provider.timeout_ms": WHY_OWNED,
@@ -118,9 +129,13 @@ READONLY_REASONS: dict[str, str] = {
     "tunnel.relay_viewer_enabled": WHY_REACH,
     "dashboard.tailscale.bind_refresh_chains": WHY_REACH,
     "dashboard.tailscale.pin_scope": WHY_REACH,
+    "dashboard.tailscale.https_port": WHY_REACH,
     "dashboard.shared_crew.containment_enabled": WHY_REACH,
     "dashboard.shared_crew.hard_limits": WHY_REACH,
     "dashboard.shared_crew.ssm_port": WHY_REACH,
+    # A second loopback listener for a reverse proxy that forwards other machines
+    # (dashboard/entry_gate.py); the config file or `kirocrew config set` writes it.
+    "dashboard.entry_port": WHY_REACH,
     # Outbound activity reports.
     "wakatime.enabled": WHY_SHARE,
     "wakatime.send_heartbeats": WHY_SHARE,

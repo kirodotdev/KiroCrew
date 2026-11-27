@@ -88,6 +88,12 @@ name: CI Runner Watchdog
 # a per-commit or per-run concurrency key, by having no run-level group, or by a
 # constant group. Exempt runs stay classified, logged, and named in the summary
 # with `human-required-heal-exempt-workflow`; they are never cancelled or re-run.
+# Five of the per-tick classify reads are held for them (a run whose workflow is not
+# heal-safe for its event and whose attempt started past the orphan threshold),
+# because the rest of the bound goes to heal-eligible runs first and a saturated
+# fleet fills it with those. While CodeBuild is dispatching slowly such an orphan is
+# a warning (`human-held-heal-exempt-fleet-saturated`, counted per tick) until a job
+# of it has queued 60 minutes; from then on it fails the tick whatever the fleet does.
 # Immediately before cancelling a live orphan, the script re-derives heal-safety
 # from the workflow file at that run's own `head_sha` through the contents API.
 # Cancelled recovery applies the same revision check before re-running. A revision
@@ -171,7 +177,10 @@ name: CI Runner Watchdog
 # unread run that could hold such a start, up to 200 more (all or nothing: a partial
 # read cannot lift the hold, so a larger set is not read at all), so the hold is
 # reached only past that top-up bound; a tick with no orphan spends none of those
-# reads. Those unread runs
+# reads. A run the top-up reads is classified from that same read. Every tick prints
+# one line counting the listed `queued` runs whose attempt started past the orphan
+# threshold and that got no verdict; it costs no call and carries no outcome. Those
+# unread runs
 # are retained with their creation times and re-judged on age at each cancel rather
 # than counted once, since the cancel phase re-reads the listing once and then judges
 # several cancels against it.
@@ -387,5 +396,7 @@ jobs:
         # wrong, exactly what a hand dispatch on a PR branch did on 2026-09-25.
         # The kick's job stays green whatever the step did; the step's own status,
         # its log and its summary still carry the verdict, and the scheduled
-        # ticks, which run on the default branch, keep failing loudly.
+        # ticks, which run on the default branch, keep failing loudly. A kick that
+        # exits 1 writes an `::error::` line and a summary section saying that it
+        # failed and that its green job is by design.
         continue-on-error: ${{ github.event_name == 'workflow_run' }}

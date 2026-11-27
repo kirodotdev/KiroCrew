@@ -105,9 +105,9 @@ exit code are what they were.
 The command exits 0 only when every scenario passes. It exits 1 when any
 scenario fails (the report is still written first) or when a scenario name is
 unknown (nothing runs), so `kirocrew eval && next` stops on a failure. A backend
-that refuses to start a session (a signed-out kiro-cli, for one) also exits 1:
-it prints the refusal's own message as one line and writes no report or
-`--junit` file.
+that refuses to start a session (a signed-out kiro-cli, for one), or a host that
+cannot sandbox it, also exits 1: it prints the refusal's own message as one line
+and writes no report or `--junit` file.
 
 ## Task cases across harnesses
 
@@ -126,6 +126,15 @@ own eval home, and scores them PASSED / FAILED / VOID (`tasks.py`, `arms.py`).
 | `lesson_application` | 2 | 2 | lesson_application | ~30s |
 | `context_accumulation` | 3 | 3 | context_accumulation, memory_recall | ~2 min |
 | `subagent_policy` | 1 | 1 | delegation_value, delegation_lifecycle | provider-dependent |
+| `guide_first` | 1 | 1 | guide_first | ~30s |
+
+## Guide first
+
+`kirocrew eval guide_first` asks one real where-is question about Kiro Crew
+("How do I turn off the recurring 'Goal / Needs you / Doing' message?") and
+passes only when the turn calls `find_ui` and then `guide_start`, the rule the
+agent and bot prompts state. A turn that reads the source and answers in words
+fails it.
 
 ## Delegation decisions
 

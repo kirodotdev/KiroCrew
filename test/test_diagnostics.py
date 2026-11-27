@@ -81,6 +81,8 @@ def _isolate(monkeypatch, home: Path) -> None:
     # data-home resolve to this temp dir, so the test controls the full prefix.
     monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(diagnostics, "_macos_crash_reports", lambda: [])
+    # memory.txt reads the real /proc and the real process family; keep it off the host.
+    monkeypatch.setattr("kiro_crew.diag.memory_snapshot.render", lambda *a, **k: "")
     monkeypatch.setattr(diagnostics, "_kiro_cli_chat_log", lambda: None)
     monkeypatch.setattr(diagnostics, "_kiro_cli_extra_logs", lambda: [])
     monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
@@ -396,6 +398,8 @@ def test_nested_data_home_keeps_relative_tail(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.diagnostics.config_dir", lambda: data_home)
     monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(diagnostics, "_macos_crash_reports", lambda: [])
+    # memory.txt reads the real /proc and the real process family; keep it off the host.
+    monkeypatch.setattr("kiro_crew.diag.memory_snapshot.render", lambda *a, **k: "")
     monkeypatch.setattr(diagnostics, "_kiro_cli_chat_log", lambda: None)
     monkeypatch.setattr(diagnostics, "_kiro_cli_extra_logs", lambda: [])
     monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
@@ -1920,12 +1924,15 @@ def test_collect_handler_returns_download_url(tmp_path, monkeypatch):
         redaction_summary={"versions.txt": 0},
         github_issue_url="https://github.com/kirodotdev/KiroCrew/issues/new?title=x",
     )
-    monkeypatch.setattr(dh.diagnostics, "collect_bundle", lambda **kw: fake)
+    seen: dict = {}
+    monkeypatch.setattr(dh, "_staged_update_alignment", lambda: "aligned (9.9.9)")
+    monkeypatch.setattr(dh.diagnostics, "collect_bundle", lambda **kw: seen.update(kw) or fake)
 
     resp = asyncio.run(
         dh.api_diagnostics_collect(_CollectReq({"note": "hi", "include_logs": True}))
     )
     assert resp.status == 200
+    assert seen["version_alignment"] == "aligned (9.9.9)"
     body = json.loads(resp.text)
     assert body["download_url"] == "/api/diagnostics/download/b.zip"
     assert body["github_issue_url"].startswith("https://github.com/")
@@ -1951,6 +1958,24 @@ def test_note_is_redacted_everywhere(tmp_path, monkeypatch):
     assert "NOTEsecretVALUE1234567890" not in versions
     assert "NOTEsecretVALUE1234567890" not in manifest
     assert "NOTEsecretVALUE1234567890" not in r.github_issue_url
+
+
+@pytest.mark.parametrize("prefix", ["Bearer ", "Authorization: "], ids=["bearer", "header"])
+def test_note_secret_is_counted_in_redaction_tally(tmp_path, monkeypatch, prefix):
+    """A secret scrubbed from the note counts once toward the bundle's redaction total."""
+    _isolate(monkeypatch, tmp_path / "home")
+    secret = "NOTEsecretVALUE1234567890"
+    r = diagnostics.collect_bundle(
+        note=f"it broke, I sent {prefix}{secret}\nand got a 500", output_dir=tmp_path / "out"
+    )
+    with zipfile.ZipFile(r.zip_path) as z:
+        versions = z.read("versions.txt").decode()
+        manifest = json.loads(z.read("manifest.json"))
+    assert secret not in versions and "[REDACTED]" in versions
+    assert r.redaction_summary["versions.txt"] == 1, r.redaction_summary
+    assert r.total_redactions == manifest["total_redactions"] == 1, r.redaction_summary
+    context = parse_qs(urlsplit(r.github_issue_url).query)["context"][0]
+    assert "1 secret(s) auto-redacted" in context, context
 
 
 def test_old_bundles_are_pruned(tmp_path):

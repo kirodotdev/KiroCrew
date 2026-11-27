@@ -22,6 +22,7 @@ from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES
 from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, runtime_ceiling_secs
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_AGENT_TURNS,
+    MAX_MONITOR_ALSO_WAKE_ON,
     MAX_MONITOR_CADENCE_SECS,
     MAX_MONITOR_PROVIDER_ERRORS,
     MAX_MONITOR_TOKENS,
@@ -121,6 +122,22 @@ def _prefers_structured_arming() -> bool:
 def _ending_clause() -> str:
     """The one thing that ENDS a watch, capitalised to open a sentence."""
     return ending_phrase()
+
+
+def _also_wake_on_property(lead: str) -> dict[str, Any]:
+    """The ``also_wake_on`` property both structured-watch tools advertise."""
+    return {
+        "type": "array",
+        "items": {"type": "string"},
+        "maxItems": MAX_MONITOR_ALSO_WAKE_ON,
+        "description": (
+            lead + "Each wakes this session once when it merges, is closed, or is "
+            "retired after max_provider_errors failed reads; it never ends the watch. "
+            "Extras share this watch's budgets: for a slow one raise max_runtime_secs "
+            "(counted from arming) and, for a long wait, max_provider_errors in the same "
+            "call (a higher limit also slows retiring a mistyped one)."
+        ),
+    }
 
 
 def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
@@ -428,8 +445,11 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             "name": "monitor_watch",
             "description": (
                 "Watch a supported pull request with cheap provider probes. The owning session "
-                "is woken only when a new revision needs action; unchanged, pending, retry, "
-                "and terminal probes use no agent turn. Available from dashboard, Slack, and "
+                "is woken when a new revision needs action and, while the pull request is "
+                "pending (not ready and not blocked on its author), once when its checks finish "
+                "green outside draft and, on GitHub, once each time a person other than its "
+                "author comments or leaves a review with text; unchanged, retry, terminal and "
+                "other pending probes use no agent turn. Available from dashboard, Slack, and "
                 "Discord sessions. One structured monitor per session."
                 + (_WATCH_STEER_STRUCTURED_DEFAULT if prefer_structured else "")
             ),
@@ -487,6 +507,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "no agent turn."
                         ),
                     },
+                    "also_wake_on": _also_wake_on_property(
+                        "Other pull requests (github_pull_request only) this watch also "
+                        "waits on. "
+                    ),
                 },
                 "required": ["kind", "target", "objective"],
             },
@@ -759,10 +783,11 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "'progress', a worker ending its turn and a worker's session "
                             "closing all leave the interval as it is, so a worker that "
                             "crashed or went silent is found by the item's stale flag on "
-                            "an ordinary cycle. Closing every item does not end the "
-                            "watch: it wakes you once to say so and stays armed for "
-                            "the next item, until autonudge_stop, a person's stop or "
-                            "the loop's own bounds. For a conductor patrolling "
+                            "an ordinary cycle. Once every item is closed and your "
+                            "turn has ended with no new item, the gateway ends the "
+                            "watch itself: send your final report in the turn that "
+                            "closes the last item, and open the next item in that "
+                            "same turn to keep it. For a conductor patrolling "
                             "dispatched workers this is the field to use, and it fixes "
                             "interval_secs at the 300 s patrol interval -- the timer is "
                             "the liveness fallback, not the delivery path. Omit it and the "
@@ -865,6 +890,11 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                         "maxLength": MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
                         "description": "Replacement actionable-wake instructions",
                     },
+                    "also_wake_on": _also_wake_on_property(
+                        "REPLACES the other pull requests a structured github_pull_request "
+                        "watch also waits on; [] clears them. Allowed while a wake is in "
+                        "flight. "
+                    ),
                     "banner": {
                         "type": "string",
                         "description": (

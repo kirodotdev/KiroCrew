@@ -467,8 +467,9 @@ def status() -> str:
     loaded unit of ours that lags this build's unit gets one more line under its
     headline per lag, naming it and the command that fixes it
     (:func:`_stale_unit_lines`): a ``RestartPreventExitStatus`` that does not name
-    :data:`LIVE_HOLDER_EXIT_CODE`, or a start-rate cap other than the unit's;
-    and one advisory line for a ``Restart=`` other than ``always``
+    :data:`LIVE_HOLDER_EXIT_CODE`, a start-rate cap other than the unit's, or
+    an ``ExecStart`` in the installer's venv after an update moved the stable
+    link; and one advisory line for a ``Restart=`` other than ``always``
     (:func:`_restart_policy_line`); nothing is rewritten.
 
     Status is queryable without sudo. We avoid sudo here so
@@ -577,6 +578,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _UNIT_INTERVAL_SHOWN,
         _UP_STATES,
         ServiceInstallError,
+        _exec_start_line,
         _loaded_property,
         _loaded_restart_prevent,
         _loaded_start_limit,
@@ -653,6 +655,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.service.common import (  # noqa: F401
         kirocrew_bin,
+        service_attach_path,
         service_environment,
         systemctl_user_env,
         systemd_quote,

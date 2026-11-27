@@ -191,16 +191,24 @@ export function useTopbarCollapse(header: RefObject<HTMLElement | null>, enabled
       setLeft(settleTopbarSide(el, 'left'))
       setRight(settleTopbarSide(el, 'right'))
     }
-    run()
     const groups = [...el.children].filter(c => c.classList.contains('tb-left') || c.classList.contains('tb-right'))
     const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(run)
+    // The observer's first delivery settles both sides after the browser's own
+    // layout and before paint. Settling here as well would force a layout of the
+    // whole page inside the commit that mounts it.
+    if (!ro) run()
     ro?.observe(el)
     // Not `attributes` in the subtree: each read writes the measurement wrapper's
     // inline style. A group's own class is watched on its own: `tb-has-update`
     // moves the container rungs' thresholds, and so the floor, without any
     // mutation inside the group while the pill's chunk is still loading.
-    const mo = typeof MutationObserver === 'undefined' ? null : new MutationObserver(run)
-    const classes = typeof MutationObserver === 'undefined' ? null : new MutationObserver(run)
+    // Mutations are delivered as a microtask of the task that made them, which
+    // is often a React commit: settling there forces a layout of the page in
+    // that task. The next frame's animation callback runs before it paints.
+    let frame = 0
+    const later = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; run() }) }
+    const mo = typeof MutationObserver === 'undefined' ? null : new MutationObserver(later)
+    const classes = typeof MutationObserver === 'undefined' ? null : new MutationObserver(later)
     for (const g of groups) {
       ro?.observe(g)
       mo?.observe(g, { childList: true, subtree: true, characterData: true })
@@ -214,6 +222,7 @@ export function useTopbarCollapse(header: RefObject<HTMLElement | null>, enabled
     const fonts = typeof document === 'undefined' ? undefined : document.fonts
     fonts?.addEventListener?.('loadingdone', run)
     return () => {
+      cancelAnimationFrame(frame)
       ro?.disconnect()
       mo?.disconnect()
       classes?.disconnect()

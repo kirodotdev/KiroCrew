@@ -122,6 +122,8 @@ class TestCronServiceCancel:
         assert total == 1
         assert runs[0]["status"] == "cancelled"
         assert runs[0]["trigger"] == "manual"
+        # The run's marker token, which the next boot's breaker looks the run up by.
+        assert runs[0]["run_id"] == claim.marker_run
         mock_sel().log_tool_invocation.assert_called_once()
         assert mock_sel().log_tool_invocation.call_args.kwargs["tool_name"] == "cron_cancel"
 
@@ -589,6 +591,8 @@ class TestCronServiceCancel:
         assert row["error"] == "Interrupted: the cron service stopped before this run finished"
         assert row["summary"] == row["error"]
         assert prior_error not in json.dumps(row)
+        # The marker token, so a marker the best-effort clear left is not filed again.
+        assert row["run_id"] == claim.marker_run
         merged = mock_merge.call_args.args[0]
         assert (merged.last_status, merged.last_error) == ("error", prior_error)
         assert (job.last_status, job.last_error) == ("error", prior_error)

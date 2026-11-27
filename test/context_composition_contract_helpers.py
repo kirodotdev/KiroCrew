@@ -73,6 +73,9 @@ class _Rig:
         # Goldens pin composition, not reply style: start every scenario at
         # normal length; scenarios that test a level set it themselves.
         self.cfg.dashboard.verbosity = "default"
+        # The goldens were recorded under the old relevance tests; the rule's own
+        # tests pin what enforce changes.
+        self.cfg.memory.relevance_rule = "off"
         monkeypatch.setattr(ctx, "datetime", _FrozenClock)
         monkeypatch.setattr(ctx, "get_local_tz", lambda: ("UTC", timezone.utc))
         monkeypatch.setattr(ctx.KiroCrewConfig, "load", lambda *a, **k: self.cfg)

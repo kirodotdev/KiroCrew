@@ -28,6 +28,7 @@ import pytest
 
 import kiro_crew.apps.backend as bmod
 from kiro_crew.apps.backend import AppProcess
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 SIGTERM = bmod.platform_compat.SIGTERM
 SIGKILL = bmod.platform_compat.SIGKILL
@@ -490,6 +491,197 @@ class TestStopOnWindows:
         assert bmod.stop_app_backend("svc") is True
         assert pinned == [(6100, "ST-9", SIGTERM)]
         assert legacy == [(6100, SIGTERM), (6100, SIGKILL)]
+
+    @staticmethod
+    def _escalate(
+        monkeypatch: pytest.MonkeyPatch, sigkill_exc: OSError | None, *, root_exits: bool = False
+    ) -> MagicMock:
+        """Track a root that ignores SIGTERM, make its SIGKILL raise *sigkill_exc*
+        (or succeed), and return the audit sink the stop writes its SEL rows to.
+        With *root_exits* the root is gone once the SIGKILL has run. ``audit.events``
+        records each SEL row and each root wait, in the order they happened."""
+        events: list[tuple[str, Any]] = []
+        proc = _FakeProc(pid=UNALLOCATABLE_PID)
+        proc.wait_raises = True
+        fake_wait = proc.wait
+
+        def _wait(timeout: float | None = None) -> int:
+            events.append(("wait", timeout))
+            return fake_wait(timeout)
+
+        proc.wait = _wait  # type: ignore[method-assign]
+        _track("svc", proc, "ST-9")
+        _pinned_recorder(monkeypatch, result=False)
+
+        def _kill(_pid: int, sig: int) -> bool:
+            if sig == SIGKILL:
+                proc.wait_raises = not root_exits
+                if sigkill_exc is not None:
+                    raise sigkill_exc
+            return True
+
+        monkeypatch.setattr(bmod.platform_compat, "kill_process_tree", _kill)
+        audit = MagicMock()
+        audit.events = events
+        audit.log_api_access.side_effect = lambda **kw: events.append(("row", kw["outcome"]))
+        monkeypatch.setattr(bmod, "sel", lambda: audit)
+        return audit
+
+    @staticmethod
+    def _rows(audit: MagicMock) -> list[tuple[str, str]]:
+        return [
+            (c.kwargs["outcome"], c.kwargs.get("error", ""))
+            for c in audit.log_api_access.call_args_list
+        ]
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            PermissionError("[taskkill rc=5] Access is denied."),
+            OSError("taskkill /T invocation failed: timed out"),
+        ],
+    )
+    def test_a_refused_sigkill_on_an_ordinary_stop_is_audited_as_failed(
+        self,
+        windows: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        refusal: OSError,
+    ) -> None:
+        """The root is still running, so the row and the result say the stop failed;
+        the record stays dropped, because that pop is what ends the health watch."""
+        audit = self._escalate(monkeypatch, refusal)
+        log_fh = MagicMock()
+        bmod._processes["svc"].log_fh = log_fh
+        with caplog.at_level(logging.INFO, logger="kiro_crew.apps.backend"):
+            assert bmod.stop_app_backend("svc") is False
+        assert self._rows(audit) == [("sigterm", ""), ("sigkill_failed", str(refusal))]
+        assert "svc" not in bmod._processes
+        log_fh.close.assert_called_once()
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(f"SIGKILL of backend pid {UNALLOCATABLE_PID} was refused" in m for m in messages)
+        assert not any(m.startswith("Stopped app svc") for m in messages)
+
+    def test_a_refused_sigkill_under_a_withdrawn_ceiling_restores_tracking(
+        self, windows: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        audit = self._escalate(monkeypatch, PermissionError("[taskkill rc=5] Access is denied."))
+        monkeypatch.setattr(
+            bmod, "_health_probe", lambda *_a: pytest.fail("a live root needs no probe")
+        )
+        assert "svc" in bmod._processes
+        assert bmod.stop_app_backend("svc", _retry_if_serving="/health") is False
+        assert [row[0] for row in self._rows(audit)] == ["sigterm", "sigkill_failed"]
+        assert "svc" in bmod._processes
+        assert bmod._allocated_ports["svc"] == 9100
+
+    def test_a_sigkill_that_ends_the_root_but_errors_drains_and_succeeds(
+        self, windows: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``taskkill /T`` can end the root and fail on one descendant: the root's
+        exit decides, and what it left behind gets the exited-root drain."""
+        refusal = PermissionError("[taskkill rc=1] Access is denied.")
+        audit = self._escalate(monkeypatch, refusal, root_exits=True)
+        drained: list[int] = []
+
+        def _drain(_name: str, proc: Any, _st: str | None, _inst: str | None) -> bool:
+            drained.append(proc.pid)
+            return True
+
+        monkeypatch.setattr(bmod, "_drain_exited_root_tree", _drain)
+        assert bmod.stop_app_backend("svc") is True
+        assert self._rows(audit) == [("sigterm", ""), ("sigkill_failed", str(refusal))]
+        assert drained == [UNALLOCATABLE_PID]
+        assert "svc" not in bmod._processes
+
+    @pytest.mark.parametrize("root_exits", [False, True])
+    def test_the_sigkill_row_is_written_before_the_confirming_wait(
+        self, windows: None, monkeypatch: pytest.MonkeyPatch, root_exits: bool
+    ) -> None:
+        """A stop cut off inside the 1 s wait must already have audited the kill."""
+        audit = self._escalate(
+            monkeypatch, PermissionError("[taskkill rc=5] Access is denied."), root_exits=root_exits
+        )
+        monkeypatch.setattr(bmod, "_drain_exited_root_tree", lambda *_a: True)
+        bmod.stop_app_backend("svc")
+        assert audit.events == [
+            ("row", "sigterm"),
+            ("wait", 5),
+            ("row", "sigkill_failed"),
+            ("wait", 1),
+        ]
+
+    @staticmethod
+    def _partial(monkeypatch: pytest.MonkeyPatch, verdict: bool | None) -> MagicMock:
+        """A SIGKILL that raised but ended the root, with the drain reporting *verdict*."""
+        audit = TestStopOnWindows._escalate(
+            monkeypatch, PermissionError("[taskkill rc=1] Access is denied."), root_exits=True
+        )
+        drained: list[int] = []
+
+        def _drain(_name: str, proc: Any, _st: str | None, _inst: str | None) -> bool | None:
+            drained.append(proc.pid)
+            return verdict
+
+        monkeypatch.setattr(bmod, "_drain_exited_root_tree", _drain)
+        audit.drained = drained
+        return audit
+
+    def test_a_partial_sigkill_with_a_survivor_refuses_a_withdrawn_ceiling(
+        self, windows: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        audit = self._partial(monkeypatch, False)
+        monkeypatch.setattr(
+            bmod, "_health_probe", lambda *_a: pytest.fail("positive evidence needs no probe")
+        )
+        assert "svc" in bmod._processes
+        assert bmod.stop_app_backend("svc", _retry_if_serving="/health") is False
+        assert [row[0] for row in self._rows(audit)] == [
+            "sigterm",
+            "sigkill_failed",
+            "rejected_descendant_serving",
+        ]
+        assert "svc" in bmod._processes
+        assert bmod._allocated_ports["svc"] == 9100
+
+    def test_a_partial_sigkill_with_an_inconclusive_drain_asks_the_port(
+        self, windows: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        audit = self._partial(monkeypatch, None)
+        monkeypatch.setattr(bmod, "_health_probe", lambda *_a: SimpleNamespace(healthy=True))
+        assert bmod.stop_app_backend("svc", _retry_if_serving="/health") is False
+        assert [row[0] for row in self._rows(audit)] == [
+            "sigterm",
+            "sigkill_failed",
+            "rejected_descendant_serving",
+        ]
+        assert audit.drained == [UNALLOCATABLE_PID]
+        assert "svc" in bmod._processes
+
+    def test_a_partial_sigkill_with_a_survivor_on_an_ordinary_stop_says_so(
+        self, windows: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._partial(monkeypatch, False)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.backend"):
+            assert bmod.stop_app_backend("svc") is True
+        assert "svc" not in bmod._processes
+        assert any("survived the drain" in r.getMessage() for r in caplog.records)
+
+    def test_a_sigkill_that_finds_the_root_gone_says_so_and_succeeds(
+        self, windows: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        audit = self._escalate(monkeypatch, ProcessLookupError("[taskkill rc=128] not found"))
+        assert bmod.stop_app_backend("svc") is True
+        assert [row[0] for row in self._rows(audit)] == ["sigterm", "sigkill_root_gone"]
+        assert "svc" not in bmod._processes
+
+    def test_a_successful_sigkill_keeps_the_escalation_row(
+        self, windows: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        audit = self._escalate(monkeypatch, None)
+        assert bmod.stop_app_backend("svc") is True
+        assert self._rows(audit) == [("sigterm", ""), ("sigkill_escalation", "")]
+        assert "svc" not in bmod._processes
 
     def test_adopted_records_are_never_tree_drained(
         self, windows: None, monkeypatch: pytest.MonkeyPatch

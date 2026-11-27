@@ -153,7 +153,7 @@ class SendRaceRegistry:
         clock: Callable[[], float] = time.time,
         on_commit: Callable[[str, AcceptedSend], None] | None = None,
         settle_wait_seconds: float = SETTLE_WAIT_SECONDS,
-        owner_id: str = "",
+        owner_id: Callable[[], str] = lambda: "",
     ) -> None:
         self._clock = clock
         self._on_commit = on_commit
@@ -258,7 +258,7 @@ class SendRaceRegistry:
         # send accepted since is unseen.
         unseen = [a for a in entry.history if base > entry.revision or a.revision > base]
         others = [
-            a for a in unseen if not same_person(a.principal, principal, owner_id=self._owner_id)
+            a for a in unseen if not same_person(a.principal, principal, owner_id=self._owner_id())
         ]
         return others[0] if others else None
 
@@ -322,7 +322,9 @@ def send_race_for(state: Any) -> SendRaceRegistry:
         state.broadcast_ws(FRAME_SEND_STATE, frame)
 
     created.append(
-        SendRaceRegistry(on_commit=_announce, owner_id=str(getattr(state, "owner_id", "") or ""))
+        SendRaceRegistry(
+            on_commit=_announce, owner_id=lambda: str(getattr(state, "owner_id", "") or "")
+        )
     )
     state._shared_crew_send_race = created[0]
     return created[0]

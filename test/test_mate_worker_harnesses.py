@@ -623,7 +623,7 @@ def test_the_resolved_contract_block_carries_the_crewmates_prompt(
             project=None,
             mode="",
             session_key=session_key,
-            is_cc=is_cc,
+            provider_type="claude_code" if is_cc else None,
             private_owner=False,
             session_start=True,
         )

@@ -161,6 +161,7 @@ from kiro_crew.cron_service.fields import (  # noqa: F401
 )
 from kiro_crew.cron_service.grant_resurface import resurface_stale_grant
 from kiro_crew.dashboard import cautious_boot, start_dashboard, token_secret
+from kiro_crew.dashboard.bind_refresh import bind_refused_exit_code
 from kiro_crew.dashboard.chat_persistence import (
     rehydrate_slot_from_history_async,
     wait_for_unwinding_turns,
@@ -179,6 +180,7 @@ from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
     _queued_depth_off_loop,
+    cron_tab_name,
     dashboard_slot_key,
     mint_options_token,
     remember_slack_options,
@@ -232,6 +234,7 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
     DashboardState,
+    _normalize_slot_key,
     load_window_off_loop,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
@@ -338,6 +341,7 @@ from kiro_crew.messaging.dispatch import (
     build_directive_consumer,
     build_tool_gate,
     consume_reinjection,
+    open_turn_crew_log,
     rearm_reinjection,
     rollback_skill_bodies,
     stop_reason_landed,
@@ -363,6 +367,11 @@ from kiro_crew.messaging.renderer import (
 )
 from kiro_crew.messaging.spawn_approval_delivery import deliver_spawn_approval
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.metrics.usage_attrs import (
+    TRIGGER_MONITOR,
+    reset_current_trigger,
+    set_current_trigger,
+)
 from kiro_crew.monitoring.completion import (
     MonitorCompletionHook,
     disposition_for_stop_reason,
@@ -547,6 +556,7 @@ from kiro_crew.slack.gateway_runtime.cron_verdict import (
     _result_hash,
 )
 from kiro_crew.slack.gateway_runtime.exit_path import (
+    _CTRL_C_MARK_WAIT_SECS,
     _FORCE_EXIT_DEADLINE_SECS,
     _MARKER_WRITE_WAIT_SECS,
 )
@@ -566,6 +576,8 @@ from kiro_crew.slack.gateway_runtime.nudge_channel_fire import (
 from kiro_crew.slack.gateway_runtime.process_entry import (
     _SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS,
     BOOT_RESTART_HINT,
+    _ask_again_while_pick_open,
+    _kas_floor_defaulted,
     _kas_floor_gates_spawns,
     _live_session_agents,
     _live_session_work_dirs,
@@ -576,6 +588,7 @@ from kiro_crew.slack.gateway_runtime.process_entry import (
     _start_kas_cli_floor,
     _stop_session_environments,
     _sweep_predecessor_session_work_dirs,
+    _watch_saved_kiro_pick,
     run_gateway,
     signing_key_preflight,
 )
@@ -747,6 +760,7 @@ class GatewayOrchestrator:
     # The constructor's fields (gateway_runtime/orchestrator_init.py):
     _cfg: KiroCrewConfig
     _no_dashboard: bool
+    _headless: bool
     _no_crons: bool
     _no_open: bool
     _port_override: str | None
@@ -810,11 +824,15 @@ class GatewayOrchestrator:
     _memory_repair_task: asyncio.Task | None
     _memory_repair_stop: threading.Event
     _memory_repair_cursor: str
+    _memory_repair_fresh_cursor: str
+    _memory_repair_fresh_turn: bool
     _console_script_repair_task: "asyncio.Task[None] | None"
     _marker_write_task: "asyncio.Task[None] | None"
     _sign_in_refresher_task: "asyncio.Task[None] | None"
     _marker_clear_pending: threading.Event
     _force_exit_claimed: threading.Event
+    # Set only by the first Ctrl-C (exit_path); read with getattr(..., None).
+    _ctrl_c_marking: threading.Thread
     _dashboard_runner: web.AppRunner | None
     _handler_tasks: set[asyncio.Task]
     _session_tasks: dict[str, asyncio.Task]
@@ -898,6 +916,7 @@ class GatewayOrchestrator:
             cfg: KiroCrewConfig,
             *,
             no_dashboard: bool = False,
+            headless: bool = False,
             no_crons: bool = False,
             no_open: bool = False,
             port_override: str | None = None,
@@ -1003,6 +1022,7 @@ class GatewayOrchestrator:
     _cron_run_single = _cron_turn._cron_run_single
     # gateway_runtime/cron_delivery.py
     _deliver_cron_agent_result = _cron_delivery._deliver_cron_agent_result
+    _deliver_cron_reminder = _cron_delivery._deliver_cron_reminder
     # gateway_runtime/heartbeat_turns.py
     _init_heartbeat = _heartbeat._init_heartbeat
     # gateway_runtime/nudge_channel_fire.py
@@ -1103,6 +1123,7 @@ class GatewayOrchestrator:
     _schedule_memory_preparation = _memory_lifecycle._schedule_memory_preparation
     _wait_for_memory_preparation = _memory_lifecycle._wait_for_memory_preparation
     _repair_member_memory_once = _memory_lifecycle._repair_member_memory_once
+    _repair_store_once = _memory_lifecycle._repair_store_once
     _repair_member_memory = _memory_lifecycle._repair_member_memory
     _start_embeddings = _memory_lifecycle._start_embeddings
     _auto_migrate_memory = _memory_lifecycle._auto_migrate_memory

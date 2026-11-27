@@ -204,7 +204,7 @@ def test_aggregate_line_and_overall_state():
         _row("it_00000004", model.WAITING_ON_YOU),
         _row("it_00000005", model.DONE),
     ]
-    assert model.aggregate_line(rows) == "3 working · 1 waiting on you · 1 of 5 done"
+    assert model.aggregate_line(rows) == "1 needs you · 3 working · 1 of 5 done"
     assert model.overall_state(rows) == model.OVERALL_NEEDS_YOU
     assert model.aggregate_line([_row(state=model.WORKING)]) == "1 working · 0 of 1 done"
     assert model.aggregate_line([_row(state=model.CLOSED)]) == "1 closed · 0 of 1 done"
@@ -479,13 +479,14 @@ def test_board_blocks_show_header_rows_and_links():
     context, plan = blocks
     assert context["elements"][0]["text"].startswith("Work board · updated 10:00 UTC · <https://")
     assert "Open the lead session in the dashboard" in context["elements"][0]["text"]
-    assert plan["type"] == "plan" and plan["title"] == "1 working · 1 waiting on you · 0 of 2 done"
-    first, second = plan["tasks"]
-    assert first["task_id"] == "it_00000001" and first["title"] == "Fix login"
+    assert plan["type"] == "plan" and plan["title"] == "1 needs you · 1 working · 0 of 2 done"
+    # Most urgent first: the row that needs the owner leads the working one.
+    second, first = plan["tasks"]
+    assert first["task_id"] == "it_00000001" and first["title"] == "Working: Fix login"
     # Working keeps the spinner; the row waiting on the person gets the empty circle.
     assert first["status"] == "in_progress" and second["status"] == "pending"
     assert "output" not in first and "sources" not in first  # no PR on the board
-    assert second["title"] == "Waiting on you: Pick an icon"
+    assert second["title"] == "Needs you: Pick an icon"
     waiting = second["details"]["elements"][0]["elements"]
     # The row that needs the owner links to where they act on it; the others don't.
     waiting_row = _snapshot().rows[1]
@@ -498,7 +499,7 @@ def test_board_blocks_show_header_rows_and_links():
     working = first["details"]["elements"][0]["elements"]
     assert not any(e.get("type") == "link" for e in working)
     assert render.fallback_text(_snapshot()) == (
-        "Work board: 1 working · 1 waiting on you · 0 of 2 done"
+        "Work board: 1 needs you · 1 working · 0 of 2 done"
     )
     # No custom emoji anywhere: Slack's own status marks are the only ones.
     assert not re.search(r":[a-z_]+:", json.dumps(blocks))
@@ -1107,7 +1108,8 @@ def test_totals_count_every_item_and_open_rows_are_always_shown():
     snap = model.BoardSnapshot(rows=tuple(rows))
     assert snap.total == 26 and snap.done == 25 and snap.overall == model.OVERALL_NEEDS_YOU
     assert len(snap.shown) == model.MAX_SHOWN and snap.omitted == 6
-    assert snap.shown[-1].title == "Late question"
+    # The open row is always among the shown ones, and leads them.
+    assert snap.shown[0].title == "Late question"
     rows_look = render.board_blocks(snap, _link, look="rows")
     assert "+6 more items" in str(rows_look[-1])
     # The plan shows every row up to Slack's 50 tasks.
@@ -1413,8 +1415,8 @@ def test_a_pending_approval_row_says_what_it_asks_and_counts_as_waiting_on_you(m
     first, second = snap.rows
     assert first.state == model.WAITING_ON_YOU and first.approval_tool == "a command"
     assert second.approval_tool == ""  # no approval pending: nothing on the row
-    assert "*Waiting on you:* approve" in render.row_text(first, _link)
-    assert "1 waiting on you" in snap.aggregate and "1 working" in snap.aggregate
+    assert "*Needs you:* approve" in render.row_text(first, _link)
+    assert "1 needs you" in snap.aggregate and "1 working" in snap.aggregate
     assert render.needs_you_text(first, "U1", _link).count("approve a command") == 1
 
 
@@ -1471,7 +1473,7 @@ def test_the_approval_phrase_is_a_closed_vocabulary(monkeypatch, kind, words):
 def test_an_approval_of_an_unknown_kind_still_reads_as_waiting_on_you(monkeypatch):
     snap = _approval_board(monkeypatch, "rm -rf / <!here>")
     assert snap.rows[0].approval_tool == ""
-    assert model.row_label(snap.rows[0]) == "waiting on you: approve a tool"
+    assert model.row_label(snap.rows[0]) == "needs you: approve a tool"
 
 
 # ── first-dispatch edges ────────────────────────────────────────────────────

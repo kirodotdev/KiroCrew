@@ -72,6 +72,7 @@ from kiro_crew.validation_parts.core_agent_schemas import (
     TASK_RUN_SCHEMA,
 )
 from kiro_crew.validation_parts.core_turn_schemas import (
+    APP_STORE_SEARCH_SCHEMA,
     CHAT_RENAME_SCHEMA,
     CHAT_TAG_SCHEMA,
     DELETE_MESSAGE_SCHEMA,
@@ -155,6 +156,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "skill_search": SKILL_SEARCH_SCHEMA,
     "skill_discover": SKILL_DISCOVER_SCHEMA,
     "skill_fetch": SKILL_FETCH_SCHEMA,
+    "app_store_search": APP_STORE_SEARCH_SCHEMA,
     "task_run": TASK_RUN_SCHEMA,
     "send_message": SEND_MESSAGE_SCHEMA,
     "send_notification": SEND_NOTIFICATION_SCHEMA,

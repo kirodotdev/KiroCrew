@@ -111,6 +111,7 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
     exec_started_at = started_at
     # The last completed run's outcome, which a stopped run hands back (close_run).
     prior_status, prior_error = job.last_status, job.last_error
+    prior_error_kind = job.last_error_kind
     being_cancelled = False
     marker_write: "asyncio.Future[None] | None" = None
     # The finally below is the claim's only release (the timer path never
@@ -146,6 +147,20 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
         # must still reach the finally.
         if jitter > 0:
             logger.debug("Cron: applying %.0fs jitter to job '%s'", jitter, job.name)
+            # The same marker, written before the wait so a hard exit in it
+            # still leaves the claimed run on disk; the write below replaces it.
+            marker_write = asyncio.ensure_future(
+                asyncio.to_thread(
+                    cron_inflight.write_marker,
+                    self._dir,
+                    job.id,
+                    job.name,
+                    started_at,
+                    run=claim.marker_run,
+                    phase=cron_inflight.JITTER_PHASE,
+                )
+            )
+            await asyncio.shield(marker_write)
             await seams._sleep_out_jitter(jitter)
         exec_started_at = seams.time.time()
         # The record a hard exit leaves behind: an os._exit from the loop-stall
@@ -210,6 +225,7 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
                 being_cancelled=being_cancelled,
                 prior_status=prior_status,
                 prior_error=prior_error,
+                prior_error_kind=prior_error_kind,
                 dispatched=claim.outcome_reset,
             )
         # The release removes the claim only while it is still this run's
@@ -247,9 +263,14 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
                     self.defer_removal(terminal.id)
             except Exception:
                 logger.exception("Failed to merge result for job '%s'", job.name)
-            # A quiet run that ended as it should leaves no row: a gateway job
-            # ticking often would otherwise fill the shared, capped index.
-            quiet = terminal.quiet_run and status == "success"
+            # A quiet run that ended as it should leaves no row, and so does a
+            # quiet one that never started (a wait for the host sign-in that its
+            # notice already reports): a gateway job ticking often, or a one-shot
+            # retried on every timer pass, would otherwise fill the shared,
+            # capped index.
+            quiet = terminal.quiet_run and (
+                status == "success" or (status == "failure" and terminal.run_never_started)
+            )
             # The row's cause is this run's own. A stopped run with no
             # outcome carries the previous run's last_error (close_run),
             # so it gets the interruption note instead.
@@ -259,6 +280,9 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
                 row_error = interruption_note(dispatched=claim.outcome_reset)
             try:
                 record = CronRunRecord(
+                    # The marker token: the clear above is best-effort, and a
+                    # marker it left must not be filed again (``_file_cut_run``).
+                    run_id=claim.marker_run,
                     job_id=job.id,
                     trigger=trigger,
                     started_at=started_at,
@@ -270,6 +294,7 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
                     summary=run_result or row_error,
                     trace=run_result or "",
                     error=row_error,
+                    last_error_kind="" if interrupted else terminal.last_error_kind,
                     idle=terminal.idle_run and status == "success",
                 )
                 if not quiet:
@@ -386,6 +411,9 @@ def _alert_timeout(self: CronService, job: CronJob, detail: str) -> None:
 def _alert_interrupt(self: CronService, job: CronJob, detail: str) -> None:
     """Start the notice for *job*, whose run ``stop()`` cut short, and return.
 
+    The next ``start()`` sends the same notice for a run a hard exit cut
+    (:meth:`_file_cut_run`), which no ``stop()`` saw.
+
     ``stop()`` cancels every run without a cancel or reap flag, so a run that
     recorded no outcome of its own is filed ``cancelled`` with *detail* (the
     interruption note) and nothing retries it. The notice is the
@@ -406,6 +434,19 @@ def _alert_interrupt(self: CronService, job: CronJob, detail: str) -> None:
     task.add_done_callback(self._interrupt_alerts.discard)
 
 
+def _error_kind(exc: Exception) -> str:
+    """``CronJob.last_error_kind`` for a run that raised *exc*.
+
+    Read from the tags the ACP transport set from the raw error frame before it
+    worded the message, so an error whose text only quotes a throttle is no kind.
+    """
+    if getattr(exc, "throttle", None) is True:
+        return "throttle"
+    if getattr(exc, "model_unavailable", False) is True:
+        return "capacity"
+    return ""
+
+
 async def _execute(self: CronService, job: CronJob, claim: _RunClaim | None = None) -> None:
     """Run the job callback and update runtime fields (last_run_ts, last_status).
 
@@ -419,6 +460,7 @@ async def _execute(self: CronService, job: CronJob, claim: _RunClaim | None = No
     # Same for the fire-time denial marker.
     job.last_status = None
     job.last_error = None
+    job.last_error_kind = ""
     if claim is not None:
         claim.outcome_reset = True
     job.fire_time_denied = False
@@ -452,6 +494,7 @@ async def _execute(self: CronService, job: CronJob, claim: _RunClaim | None = No
     except Exception as exc:
         job.last_status = "error"
         job.last_error = str(exc)
+        job.last_error_kind = _error_kind(exc)
         logger.error("Cron job '%s' failed: %s", job.name, exc)
 
     job.last_run_ts = seams.time.time()

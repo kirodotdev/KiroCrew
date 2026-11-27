@@ -74,7 +74,7 @@ def _resolve(builder: ContextBuilder, *, is_cc: bool = False, start: bool = True
         project=None,
         mode="",
         session_key="dashboard:browser",
-        is_cc=is_cc,
+        provider_type="claude_code" if is_cc else None,
         private_owner=False,
         session_start=start,
     )

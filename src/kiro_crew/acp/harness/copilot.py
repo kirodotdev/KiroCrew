@@ -452,7 +452,7 @@ class CopilotLaunch(ProcessAdapter):
     backend = ACP_BACKEND_COPILOT
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
-        """Resolve the binary, warm the MCP array, write its stdio half, then mask."""
+        """Refuse or mask, then resolve the binary, warm MCP and write its stdio half."""
         session = ctx.session
         assert session is not None, "copilot is launched for one session"
         # Before anything is written or resolved: a project whose own Copilot CLI
@@ -465,6 +465,22 @@ class CopilotLaunch(ProcessAdapter):
             # A fact about the folder, so a retry refuses the same way: every surface
             # shows the remedy rather than a generic "try again".
             raise AcpToolGateUnroutable(repo_issue, transient=False, user_worded=True)
+        # The same refuse-then-mask preflight the other enforced hosts run, keyed on
+        # the routing question rather than on this harness's identity. ACP v1 cannot
+        # make Copilot CLI ask about a passive read inside its own directory, so the
+        # OS credential mask is the compensating control, as it is for Codex. Before
+        # the binary lookup, so a host that refuses the session never names an
+        # install command, and before the launch file below is written.
+        try:
+            hidden = await launch_mod._run_preflight_bounded(
+                launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
+            )
+        except BaseException:
+            # A refused spawn never starts a child to read a file an earlier spawn
+            # of this session left, and it carries a session credential, so it does
+            # not wait for a later sweep.
+            await session._discard_copilot_mcp_config()
+            raise
         (
             _bin,
             argv,
@@ -501,19 +517,6 @@ class CopilotLaunch(ProcessAdapter):
             # Appended AFTER the shared resolution, so the spawn label stays the
             # harness plus its ACP arguments and carries no per-session path.
             argv = [*argv, _ADDITIONAL_MCP_CONFIG_ARG, _FILE_VALUE_PREFIX + path]
-        # The same refuse-then-mask preflight the other enforced hosts run, keyed on
-        # the routing question rather than on this harness's identity. ACP v1 cannot
-        # make Copilot CLI ask about a passive read inside its own directory, so the
-        # OS credential mask is the compensating control, as it is for Codex.
-        try:
-            hidden = await launch_mod._run_preflight_bounded(
-                launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
-            )
-        except BaseException:
-            # A refused spawn never starts a child to read the file, and it carries
-            # a session credential, so it does not wait for a later sweep.
-            await session._discard_copilot_mcp_config()
-            raise
         return SpawnPlan(
             argv=argv,
             spawn_label=spawn_label,

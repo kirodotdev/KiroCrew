@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import time
+import types
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1117,7 +1118,6 @@ def test_the_scan_holds_one_descriptor_per_level_however_wide(tmp_path, monkeypa
     for i in range(300):
         (tree / f"d{i}" / "inner").mkdir(parents=True)
     live, most = set(), [0]
-    real_open, real_dup, real_close = os.open, os.dup, os.close
 
     def _track(fd):
         live.add(fd)
@@ -1126,12 +1126,17 @@ def test_the_scan_holds_one_descriptor_per_level_however_wide(tmp_path, monkeypa
 
     def _close(fd):
         live.discard(fd)
-        real_close(fd)
+        os.close(fd)
 
+    # ``tr.os`` is the process-wide ``os`` module, so patching it would also count
+    # a descriptor another thread or a garbage-collected finalizer opens during the
+    # walk: the walk reads a copy whose ``open``, ``dup`` and ``close`` are counted.
+    counting = types.SimpleNamespace(**vars(os))
+    counting.open = lambda *a, **kw: _track(os.open(*a, **kw))
+    counting.dup = lambda fd: _track(os.dup(fd))
+    counting.close = _close
     with monkeypatch.context() as patched:
-        patched.setattr(tr.os, "open", lambda *a, **kw: _track(real_open(*a, **kw)))
-        patched.setattr(tr.os, "dup", lambda fd: _track(real_dup(fd)))
-        patched.setattr(tr.os, "close", _close)
+        patched.setattr(tr, "os", counting)
         newest, socket, inodes, repository = tr._scan(tree)
     assert newest != float("inf") and not socket and not repository
     assert len(inodes) == 1 + 300 * 2

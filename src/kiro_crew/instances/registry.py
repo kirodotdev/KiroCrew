@@ -50,7 +50,7 @@ from kiro_crew.instances.constants import (
     TTL_PATTERN,
 )
 from kiro_crew.instances.validation import _AWS_PROFILE_RE as _validation_aws_profile_re
-from kiro_crew.instances.validation import split_ecs_target, ssm_target_matches
+from kiro_crew.instances.validation import split_ecs_target, split_ssm_resolver, ssm_target_matches
 from kiro_crew.slugs import slug_hash_fallback
 
 logger = logging.getLogger(__name__)
@@ -77,7 +77,8 @@ _REMOTE_BIN_RE = re.compile(r"^[A-Za-z0-9._/~\- ]{0,512}\Z")
 
 # ssm_target (i-<hex>, mi-<hex>, or ecs:<cluster>_<taskId>_<runtimeId> for Fargate)
 # is matched by validation.ssm_target_matches, imported rather than re-spelled so
-# both lanes always accept the same charset.
+# both lanes always accept the same charset; an ssm row's asg:/param: resolver by
+# validation.split_ssm_resolver, for the same reason.
 # aws_profile: named profile in ~/.aws/config; no shell metacharacters ('+' is
 # legal: SSO-derived profiles use "<account>+<permission-set>"). Owned by
 # validation.py; the empty "default credential chain" value is handled by the
@@ -365,12 +366,18 @@ class Instance:
             # ``ssm_target`` as typed, and ``validate_ssm_target`` (the layer that
             # strips) runs later, at connect time. A pasted ``i-``/``mi-`` id with
             # a trailing space or newline is refused here rather than stored.
-            if not self.ssm_target or not ssm_target_matches(self.ssm_target):
+            # An ``asg:``/``param:`` resolver is stored as typed and looked up
+            # each time a forward is built (never written back here).
+            if not self.ssm_target or not (
+                ssm_target_matches(self.ssm_target)
+                or split_ssm_resolver(self.ssm_target) is not None
+            ):
                 # No regex in the message — it reaches the Settings form verbatim.
                 raise InvalidInstanceError(
                     f"invalid ssm_target {self.ssm_target!r}: must be an EC2/SSM "
                     f"managed-instance id (i-... or mi-...) followed by 8 to 17 "
-                    f"hex digits"
+                    f"hex digits, asg:<Auto Scaling group name>, or "
+                    f"param:<SSM parameter name>"
                 )
             self._validate_aws_coordinates()
             if not _SSM_RUN_AS_RE.match(self.ssm_run_as):

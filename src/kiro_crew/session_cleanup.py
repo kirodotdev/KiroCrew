@@ -34,6 +34,7 @@ from kiro_crew.process_identity import (
 from kiro_crew.runtime_ownership import authorize_runtime_kill
 from kiro_crew.runtime_reconcile import build_reconciler
 from kiro_crew.session_background_hold import background_hold_secs, hold_expired_reason
+from kiro_crew.session_idle_clock import idle_limit as _idle_limit
 from kiro_crew.session_idle_clock import last_activity as _last_activity
 from kiro_crew.session_rss_rebound import (
     RssFootprint,
@@ -112,6 +113,7 @@ class CleanupOwner(Protocol):
     _watchdog: SessionWatchdog
     on_session_expire: Callable[[str], None] | None
     on_stuck_turn: Callable[[str, float], None] | None
+    on_idle_expired: Callable[[str], None] | None
     on_rss_hold: Callable[[str, RssHold], None] | None
 
     async def _cleanup_loop(self) -> None: ...
@@ -1683,6 +1685,7 @@ class SessionCleanup:
         persistent_keys = self._deps.get_persistent_keys()
         channel_prefix = self._deps.get_channel_prefix()
         idle_exempt_keys = self._idle_exempt_keys()
+        automated_timeout_secs = self._owner._cfg.session.automated_idle_timeout_secs
         async with self._owner._lock:
             for key, session in self._owner._sessions.items():
                 if key in persistent_keys or key.startswith(channel_prefix):
@@ -1690,10 +1693,8 @@ class SessionCleanup:
                 total_checked += 1
                 if session.semaphore.locked():
                     continue
-                idle = (
-                    key not in idle_exempt_keys
-                    and now - _last_activity(session, timeout_secs) > timeout_secs
-                )
+                limit = _idle_limit(session, timeout_secs, automated_timeout_secs)
+                idle = key not in idle_exempt_keys and now - _last_activity(session, limit) > limit
                 orphaned = self._owner_is_gone(key)
                 if idle or orphaned:
                     expired.append((key, orphaned, session))
@@ -1818,10 +1819,8 @@ class SessionCleanup:
             # finished inside the await released the semaphore again but bumped
             # ``last_used`` on its way in, so the session is not idle now.
             # The orphan axis ignores the clock and re-asks the live set below.
-            if (
-                not is_orphan
-                and self._deps.monotonic() - _last_activity(scanned, timeout_secs) <= timeout_secs
-            ):
+            limit = _idle_limit(scanned, timeout_secs, automated_timeout_secs)
+            if not is_orphan and self._deps.monotonic() - _last_activity(scanned, limit) <= limit:
                 self._deps.logger.info(
                     "Idle sweep: %s became active mid-sweep - left running",
                     key,
@@ -1973,5 +1972,12 @@ class SessionCleanup:
                 )
                 # Tell the chat, which otherwise resets with no explanation.
                 # After ``reset``, so nothing here reopens a pre-reset window.
+                if not is_orphan and self._owner.on_idle_expired:
+                    try:
+                        self._owner.on_idle_expired(key)
+                    except Exception:
+                        self._deps.logger.warning(
+                            "on_idle_expired callback failed for %s", key, exc_info=True
+                        )
                 if hold_reason is not None:
                     await self._owner._fire_recycle_callback(key, reason=hold_reason)

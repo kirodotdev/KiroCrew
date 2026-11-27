@@ -15,6 +15,7 @@ import { ApiError } from '../api/client'
 import { focusModeEnabled, __resetFocusMode } from '../hooks/useFocusMode'
 import { i18nT } from '../i18n/t'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
+import { saveQuickSearchConfig } from '../lib/quickSearchShortcut'
 import { kiroSignInSegment } from '../shell/topbar/kiroUsageReadout'
 
 /** A failure `POST /api/chat/slots/{slot}/agent` really can return today. */
@@ -198,6 +199,30 @@ describe('Show search in the top bar setting', () => {
     const header = centre.parentElement!
     expect(header).not.toHaveClass('topbar-no-search')
     expect(header.querySelectorAll('[data-testid="focus-mode-toggle"]')).toHaveLength(1)
+  })
+
+  it('names the search shortcut of this computer, not the Mac chord, off macOS', () => {
+    localStorage.removeItem('mc-topbar-search')
+    renderWithProviders(<App />, { route: '/chat' })
+    const trigger = screen.getByRole('button', { name: SEARCH })
+    expect(trigger).toHaveTextContent('Ctrl+K — Search for anything…')
+    expect(trigger).toHaveAccessibleDescription('Search everywhere (Ctrl+K)')
+    // A gesture picked in Settings → Shortcuts shows at once, without a reload.
+    act(() => { saveQuickSearchConfig({ mode: 'double-shift' }) })
+    expect(trigger).toHaveTextContent('Double Shift — Search for anything…')
+  })
+
+  it('names no shortcut while keyboard shortcuts are off, since none opens search', () => {
+    localStorage.setItem('mc-keyboard-shortcuts', '0')
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      const trigger = screen.getByRole('button', { name: SEARCH })
+      expect(trigger).toHaveTextContent(i18nT('app.search_sessions_files_and_commands'))
+      expect(trigger).toHaveAccessibleDescription(i18nT('components.commandPalette.search_everywhere'))
+      expect(trigger).not.toHaveTextContent('Ctrl+K')
+    } finally {
+      localStorage.removeItem('mc-keyboard-shortcuts')
+    }
   })
 
   it('leaves the focus-mode toggle alone in the centre cell when off', () => {
@@ -1245,8 +1270,8 @@ describe('top-bar hints render in the page, not as a native title', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const search = await screen.findByRole('button', { name: i18nT('app.search_sessions_files_and_commands') })
     // Described while the bubble is closed too, as the `title` was.
-    expect(search).toHaveAccessibleDescription(i18nT('app.search_everywhere_k'))
-    await expectInPageHint(search, i18nT('app.search_everywhere_k'))
+    expect(search).toHaveAccessibleDescription(i18nT('app.search_everywhere_k', { shortcut: 'Ctrl+K' }))
+    await expectInPageHint(search, i18nT('app.search_everywhere_k', { shortcut: 'Ctrl+K' }))
     const dot = await screen.findByRole('button', { name: new RegExp(i18nT('app.click_to_collapse_readouts')) })
     // The capsule's narrowest rung keys on its direct child `.tb-capsule-keep`,
     // which is the dot's HoverTip wrapper.

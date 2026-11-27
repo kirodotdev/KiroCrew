@@ -87,13 +87,36 @@ def test_an_enforced_harness_gets_a_pickup_on_kirocrew_core_only(bound, backend)
 
 
 @pytest.mark.parametrize("backend", ["codex", "opencode", "goose", "pi"])
-def test_an_enforced_harness_gets_a_pickup_on_the_dashboard_server_too(bound, backend):
-    """Its tools reach the gateway as core's do, so its direct launch needs one."""
-    dashboard = {"name": "kirocrew-dashboard", "command": "kirocrew", "args": ["mcp"], "env": []}
-    (out,) = _issue([dashboard], backend=backend)
+@pytest.mark.parametrize(
+    "name, verb",
+    [
+        ("kirocrew-cron", "mcp-cron"),
+        ("kirocrew-dashboard", "mcp-dashboard"),
+        ("kirocrew-panel", "mcp-panel"),
+    ],
+)
+def test_an_enforced_harness_gets_a_pickup_on_every_other_crew_server_it_starts(
+    bound, backend, name, verb
+):
+    """Their tools reach the gateway as core's do, so each direct launch needs one."""
+    element = {"name": name, "command": "kirocrew", "args": [verb], "env": []}
+    (out,) = _issue([element], backend=backend)
     assert len(_env(out)[PICKUP_ENV]) == 64
     (entry,) = bound._pickups.values()
-    assert entry.server == "kirocrew-dashboard" and entry.session_token == "tok"
+    assert entry.server == name and entry.session_token == "tok"
+
+
+def test_every_crew_server_an_enforced_array_starts_is_a_pickup_server():
+    """The control plane every session mounts, and the two a member session appends.
+
+    A server left out answers ``internal_secret_missing`` to every call under the mask,
+    while the servers beside it in the same session work.
+    """
+    from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
+    from kiro_crew.members import MEMBER_DISPATCH_SERVER, MEMBER_PANEL_SERVER
+
+    started = {*CONTROL_PLANE_SERVERS, MEMBER_DISPATCH_SERVER, MEMBER_PANEL_SERVER}
+    assert ipc_pickup.PICKUP_SERVERS == started
 
 
 def test_a_broker_stub_for_the_dashboard_gets_no_pickup(bound):
@@ -163,18 +186,35 @@ def test_the_runtime_session_path_issues_the_pickup():
     assert "with_ipc_pickups(" in source and "session_token=stub_token" in source
 
 
-def test_the_dashboard_server_redeems_its_pickup_before_it_serves(monkeypatch):
-    """An issued pickup nobody redeems leaves every dashboard tool refused."""
-    from kiro_crew import mcp_dashboard
+@pytest.mark.parametrize("server", sorted(ipc_pickup.PICKUP_SERVERS))
+def test_every_pickup_server_redeems_its_pickup_before_it_serves(monkeypatch, server):
+    """An issued pickup nobody redeems leaves every one of that server's tools refused.
 
-    assert "kirocrew-dashboard" in ipc_pickup.PICKUP_SERVERS
+    Through the server's own ``run`` function, which the full CLI calls; a server that
+    answers its first two requests early redeems in its declaration's step as well,
+    since that listing already reads the tool policy from the gateway.
+    """
+    import importlib
+
+    from kiro_crew import history_search, mcp_entry
+
+    command = "mcp-" + server[len("kirocrew-") :]
+    module_name, entry = mcp_entry.SLIM_SERVERS[command]
+    module = importlib.import_module(module_name)
     calls: list[str] = []
     monkeypatch.setattr(agent_ipc_client, "redeem_at_startup", lambda _port: calls.append("redeem"))
-    monkeypatch.setattr(
-        mcp_dashboard, "run_mcp_stdio_loop", lambda *_a, **_k: calls.append("serve")
-    )
-    mcp_dashboard.run_mcp_server()
+    monkeypatch.setattr(module, "run_mcp_stdio_loop", lambda *_a, **_k: calls.append("serve"))
+    # kirocrew-core's run also installs its segmenter; not what this test is about.
+    monkeypatch.setattr(history_search, "register_cjk_segmenter", lambda _words: None)
+    getattr(module, entry)()
     assert calls == ["redeem", "serve"]
+    declared = mcp_entry.EARLY_ANSWERS.get(command)
+    if declared is not None:
+        calls.clear()
+        step = getattr(importlib.import_module(declared[0]), declared[1]).before_first_request
+        assert step is not None, f"{server} lists before its handlers load, unredeemed"
+        step()
+        assert calls == ["redeem"]
 
 
 # --- the server side ---------------------------------------------------------------

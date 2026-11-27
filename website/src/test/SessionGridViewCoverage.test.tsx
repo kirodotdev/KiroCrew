@@ -806,6 +806,18 @@ describe('SessionGridView — picker controls', () => {
     expect(pickers()).toHaveLength(1)
   })
 
+  it('says why when the create is refused, instead of only stopping the spinner', async () => {
+    const m = seedApi([{ key: 'a' }])
+    m.createChatSlot = vi.fn().mockRejectedValue(new Error('Memory is still starting'))
+    renderGrid('a')
+
+    fireEvent.click(within(onlyPicker()).getByRole('button', { name: 'New session' }))
+
+    expect((await screen.findByTestId('grid-create-error')).textContent).toContain('Memory is still starting')
+    // The person's own New session asks for their stored start mode.
+    expect(m.createChatSlot.mock.calls[0][13]).toBe(true)
+  })
+
   it('disables the create button and shows a spinner while creating', async () => {
     const m = seedApi([{ key: 'a' }])
     let release: (v: { key?: string }) => void = () => {}
@@ -998,6 +1010,11 @@ describe('SessionGridView — picker controls', () => {
 
     fireEvent.click(within(pickers()[0]).getByLabelText('Split down'))
     await waitFor(() => expect(pickers()).toHaveLength(3))
+  })
+
+  it('names the split chord the keyboard has in the split-right hover text', () => {
+    renderGrid('a')
+    expect(within(onlyPicker()).getByRole('button', { name: 'Split right' }).getAttribute('title')).toBe('Split right (Ctrl+D)')
   })
 
   it('focuses the picker cell it is pressed in', async () => {

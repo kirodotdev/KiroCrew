@@ -23,7 +23,7 @@ from aiohttp import web
 
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import load_config_with_content_stamp
-from kiro_crew.dashboard import members_roster_goals
+from kiro_crew.dashboard import members_roster_agent, members_roster_goals
 from kiro_crew.dashboard.conditional_get import conditional_json_response
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.crew_board_flight import BoardAnswer, shared_board
@@ -462,6 +462,9 @@ async def _build_roster(state: DashboardState | None) -> BoardAnswer:
                 # The per-crewmate Dynamic capabilities preview, the profile
                 # card's switch (``kiro_crew.crewmate_dynamic_capabilities``).
                 "dynamic_capabilities": bool(getattr(agent_cfg, "dynamic_capabilities", False)),
+                # The owner's switch for conducting workers, read at each worker's
+                # session start (``members.conducting_worker_session``).
+                "worker_conducts": bool(getattr(agent_cfg, "worker_conducts", False)),
                 # Presentation-only, but `_safe_avatar` pins only the SHAPE:
                 # its `traits` and `expressions` values are free text, so the
                 # avatar is masked leaf-by-leaf (`_roster_avatar`) rather than
@@ -480,6 +483,9 @@ async def _build_roster(state: DashboardState | None) -> BoardAnswer:
                 # Whether a Dashboard-tab button may send its reply in one click
                 # (card_send); the Profile tab's switch reads and writes it.
                 "dashboard_card_send": bool(agent_cfg.dashboard_card_send),
+                # Whether the sessions its thread opens stay in the person's own
+                # session list (crew_mode.list_view); its Sessions list's switch.
+                "show_sessions_in_list": bool(agent_cfg.show_sessions_in_list),
                 # Whether the PERSON created this crewmate: the crew manager's
                 # own origin (`source == "kirocrew"`) AND a member id, which is
                 # assigned when its member memory is allocated. Both create
@@ -657,8 +663,15 @@ async def _build_roster(state: DashboardState | None) -> BoardAnswer:
     # the row's goal marker and its on-watch cue (with the slot's automation).
     # One thread hop for the roster, like the bindings and the transcript tails.
     goal_facts = await asyncio.to_thread(members_roster_goals.goal_facts_for_rows, rows)
+    # Whose bound agent file is gone (an uninstalled package, a deleted file):
+    # the row's "Agent missing" mark. The row itself is never dropped, because it
+    # holds the crewmate's memory, chats and schedules. Omitted when false, so
+    # the common row stays byte-for-byte what it is without it.
+    agent_missing = await asyncio.to_thread(members_roster_agent.members_missing_agent, cfg)
     for row in rows:
         row.update(goal_facts.get(row["name"], {}))
+        if row["name"] in agent_missing:
+            row["agent_missing"] = True
     # Slot keys whose speech-only read is trustworthy enough to correct the
     # member log with: a non-empty quote, or an empty one from a walk that
     # reached the start of the log -- and, either way, only for a slot whose

@@ -19,7 +19,7 @@ import { chatSlotDetailPath } from '../../api/chatSlotPaths'
 import { asFrontRead } from '../../api/readGate'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, finalizePageStreaming, floorForGen, olderHeadAbovePage, pageRegressesSupersededSteer, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, queueAfterSupersededDrain, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
+import { deduplicateByMid, finalizePageStreaming, floorForGen, olderHeadAbovePage, pageAnswersLocalPrompt, pageRegressesSupersededSteer, rowIdentities, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, queueAfterSupersededDrain, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
 import { abortActiveOlderFetch, pagingCursorAfterKeptHead, slotCoverageShortfall, slotSwitchFetchLimit } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans, type ThinkingAnchor } from './thinking'
 import { keepPendingCoordinatorApprovals } from './coordinatorApprovals'
@@ -76,8 +76,11 @@ import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
  *    are the page's own (a late `?sid=` recovery, a forwarded nav intent), and
  *    those must never count as the user having looked.
  *  - `leaveSplit`: this open must replace Split View with the requested
- *    session, because the grid may not contain it. */
-export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean; automatic?: boolean; requestSeq?: number; gesture?: boolean; leaveSplit?: boolean }
+ *    session, because the grid may not contain it.
+ *  - `quietOnMissing`: with `announceOnMissing`, a 404 raises no notice and
+ *    evicts nothing, because the caller checks the closed-session history
+ *    itself (an in-app session link). Other failures are still announced. */
+export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean; automatic?: boolean; requestSeq?: number; gesture?: boolean; leaveSplit?: boolean; quietOnMissing?: boolean }
 
 /** The slot key of a `switchSlot` argument, in either spelling. Non-object
  *  values pass through untouched: a hand-rolled test dispatch can omit
@@ -317,6 +320,9 @@ export const switchSlot = createAsyncThunk<
         // round-trip, and the next authoritative slots write reconciles either
         // way.
         const announce = typeof arg === 'object' && arg !== null && arg.announceOnMissing === true
+        if (typeof arg === 'object' && arg !== null && arg.quietOnMissing === true && isMissingSlotError(payload)) {
+          return rejectWithValue(payload)
+        }
         if (announce && isMissingSlotError(payload)) {
           // Read BEFORE the eviction below removes the row. Optional-chained
           // like the other dashboard reads in this thunk: a partial preloaded
@@ -652,6 +658,38 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         existing.slice(liveFrom).filter(m => m.role === 'user' && typeof m.meta?.sendId === 'string' && m.meta.sendId),
         preserved,
       )
+      // A page streaming row at or past the replay floor already folds every
+      // chunk this tab applied. The tab's own trailing streaming row can hold
+      // less: an open with no cached copy starts it at the first chunk after
+      // the open, and a cached copy stops growing while its chat is off screen.
+      // That row keeps its place (reasoning sits above it) and takes the page
+      // row's text, as in `hydrateSlotMessages` (#38617).
+      if (lastLocal?.role === 'streaming') {
+        const pageSeq = snapshotChunkSeq(messages)
+        const floor = floorForGen(state.lastChunkSeq, state.lastChunkGen, snapshotChunkGen(messages))
+        const pageRow = pageSeq !== undefined && (floor === undefined || pageSeq >= floor)
+          ? messages.findLast(m => m.role === 'streaming')
+          : undefined
+        if (pageRow) {
+          lastLocal.content = pageRow.content
+          lastLocal.rawText = pageRow.content
+        }
+      }
+      // A cached partial the tab never saw end: its chat was off screen when the
+      // turn finished, and the socket that would have carried the rest was down.
+      // It has no row identity (only the server's own reply frame brings a
+      // `mid`), and a slots snapshot that idled the slot may already have
+      // finalized it to `assistant`. When the server reports the slot idle, no
+      // chunk arrived during this fetch, and the page already answers the
+      // prompt the partial replies to, the page is the newer record of that
+      // turn. Re-attaching the partial below would append the frozen fragment
+      // after the page's finished reply.
+      const staleLocalPartial = !!lastLocal
+        && (lastLocal.role === 'streaming' || lastLocal.role === 'assistant')
+        && rowIdentities(lastLocal).length === 0
+        && !reportedRunning
+        && !state._wsChunkedDuringFetch
+        && pageAnswersLocalPrompt(state.messages, preserved)
       let next: ChatMessage[]
       if (
         state._wsChunkedDuringFetch
@@ -665,6 +703,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         && (lastLocal.role === 'assistant' || lastLocal.role === 'streaming')
         && !!lastLocal.content && lastLocal.content.length > 0
         && !serverHasLastLocal
+        && !staleLocalPartial
       ) {
         // The HTTP fetch resolved with a history that predates the reply we
         // already finalized locally (via applyNonActiveFrame while this slot

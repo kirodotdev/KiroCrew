@@ -149,17 +149,18 @@ class CrewBackendPin:
         The pre-gate check (H17): it reads ``selectable_backends()`` now, so a
         harness that has since been denied or marked unservable refuses.
 
-        A stored Kiro CLI pin (``kiro``) reads as a stored ``agent.acp_backend``
-        does in ``config.loader_builders._read_backend_choice``: off the KAS bundle
-        route, ``kiro_cli_pick_backend()`` decides, which answers KAS once the
-        host's kiro-cli is confirmed to offer v3 and while KAS is selectable
+        A stored Kiro CLI pin (``kiro``) reads kiro-cli's help verdict: off the KAS
+        bundle route, ``kiro_cli_listed_backend()`` decides, which answers KAS once
+        the host's kiro-cli is confirmed to offer v3 and while KAS is selectable
         (the decision record ``docs/decisions/*-a-kiro-cli-choice-runs-on-kas.md``).
+        A stored ``agent.acp_backend`` pick also waits for a v3 start
+        (``config.loader_builders._read_backend_choice``).
         This is a stored-value read, so the selection gate never moves a Kiro CLI id itself.
         """
         runtime = _backends.backend_from_stored(self.stored)
         if isinstance(runtime, str) and runtime in _backends.selectable_backends():
             if runtime == _backends.ACP_BACKEND_KIRO and not self.kas_bundle:
-                return _backends.kiro_cli_pick_backend()
+                return _backends.kiro_cli_listed_backend()
             return runtime
         raise CrewmateHarnessUnavailable(self.crew, self.stored)
 
@@ -922,11 +923,13 @@ def harness_pin_rejected(value: object, config: Any) -> str | None:
     allowed = crewmate_harnesses(config)
     if stored not in allowed:
         return "acp_backend must be one of: " + ", ".join(["(empty)", *allowed])
-    from kiro_crew import sandbox
-    from kiro_crew.agent_sdk.tool_gate import sandbox_floor_refusal
+    from kiro_crew.agent_sdk.tool_gate import (
+        configured_harness_sandbox_mode,
+        sandbox_floor_refusal,
+    )
 
     backend = str(_backends.backend_from_stored(stored))
-    return sandbox_floor_refusal(backend, sandbox.configured_sandbox_mode()) or None
+    return sandbox_floor_refusal(backend, configured_harness_sandbox_mode(backend)) or None
 
 
 def pinned_entitlement_backend(

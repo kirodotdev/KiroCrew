@@ -41,7 +41,7 @@ from typing import Any, Awaitable, Callable
 from aiohttp import web
 
 from kiro_crew import guide_catalog
-from kiro_crew.dashboard import chat_cards
+from kiro_crew.dashboard import chat_cards, full_chat_waits
 from kiro_crew.dashboard.guide_observe import MAX_PREDICATES as MAX_OBSERVE_PREDICATES
 from kiro_crew.dashboard.guide_observe import MAX_SCOPES as MAX_OBSERVE_SCOPES
 from kiro_crew.dashboard.guide_observe import MAX_TARGETS as MAX_OBSERVE_TARGETS
@@ -102,6 +102,8 @@ async def _broadcast(state: Any, guide: dict[str, Any]) -> int:
     # conversation learns the new status (and the crew log the outcome).
     await chat_cards.load_conversation_window(state, guide)
     chat_cards.record_guide_status(state, guide)
+    # The slot list's ``needs_full_chat`` reads the store this change just moved.
+    full_chat_waits.push_slot_list(state)
     deliver = getattr(state, "deliver_ws_owners", None)
     if deliver is None:
         return 0
@@ -564,19 +566,15 @@ async def _deliver_observe_request(state: Any, pending: Any) -> int:
 # ── browser half ──
 
 
-async def _require_owner(request: web.Request, operation: str) -> web.Response | None:
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-
-    return await require_owner_dashboard_request(request, operation)
-
-
 async def api_guide_pending(request: web.Request) -> web.Response:
     """GET /api/guide/pending[?slot=] — rehydrate guides after a reload.
 
     Live guides, plus each slot's newest recently ended one that was not
     dismissed, so the slot's chat keeps its result line across a reload.
     """
-    denied = await _require_owner(request, "guide.pending")
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "guide.pending")
     if denied is not None:
         return denied
     slot = request.query.get("slot") or None
@@ -590,7 +588,9 @@ def _browser_route(
     operation: str, act: Callable[[GuideStore, dict[str, Any]], dict[str, Any]]
 ) -> Callable[[web.Request], Awaitable[web.Response]]:
     async def _route(request: web.Request) -> web.Response:
-        denied = await _require_owner(request, operation)
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        denied = await require_owner_dashboard_request(request, operation)
         if denied is not None:
             return denied
         try:
@@ -696,7 +696,9 @@ async def api_guide_observe(request: web.Request) -> web.Response:
     (:meth:`ObservationHub.deliver`): exactly the ids asked, enum states and
     booleans only, so no page text can ride along. Nothing is stored.
     """
-    denied = await _require_owner(request, "guide.observe_reply")
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "guide.observe_reply")
     if denied is not None:
         return denied
     try:

@@ -74,6 +74,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   ...(REMOTE_GATEWAY ? {} : {
     clearPaneHttpCache: (origin) =>
       ipcRenderer.invoke("pane:clear-http-cache", String(origin || "")),
+    // Memory and CPU of the remote Crews loaded in this window (Settings -> Remote Crew).
+    remoteCrewUsage: (origins) =>
+      ipcRenderer.invoke("remote-crew:usage", Array.isArray(origins) ? origins.map(String) : []),
   }),
   // Copy the image drawn at a main-frame point (CSS pixels) to the OS clipboard.
   copyImageAt: (x, y) => ipcRenderer.invoke("image:copy-at", Number(x), Number(y)),
@@ -209,9 +212,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Second argument: whether the macOS menu bar can slide over the window.
   // Only an explicit `menuBarOverlap: false` from main turns it off, so a
   // missing or malformed payload keeps the renderer's menu-bar band.
+  // Third argument: true only when a page's video raised this fullscreen.
   onFullScreenChanged: (callback) => {
     const handler = (_event, isFullScreen, info) =>
-      callback(!!isFullScreen, !(info && info.menuBarOverlap === false));
+      callback(
+        !!isFullScreen,
+        !(info && info.menuBarOverlap === false),
+        !!(info && info.pageRaised === true),
+      );
     ipcRenderer.on("fullscreen-changed", handler);
     return () => ipcRenderer.removeListener("fullscreen-changed", handler);
   },
@@ -266,6 +274,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // shortcuts UI advertises what really works. Resolves
   // { accelerator, default } — accelerator is "" when nothing is bound.
   getGlobalHotkey: () => ipcRenderer.invoke("global-hotkey:get"),
+  // Store and bind a summon hotkey recorded in Settings ("" turns it off);
+  // resolves the same shape as getGlobalHotkey, read after the bind. Withheld
+  // from a window on a remote gateway, where the config file is the way to
+  // change it: the hotkey is grabbed on this machine, not on that host.
+  ...(REMOTE_GATEWAY ? {} : {
+    setGlobalHotkey: (accelerator) =>
+      ipcRenderer.invoke("global-hotkey:set", String(accelerator)),
+  }),
 });
 
 // Local-gateway switch for the Settings > Developer toggle. The choice lives in

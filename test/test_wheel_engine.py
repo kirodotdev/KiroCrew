@@ -1080,6 +1080,19 @@ class TestBinaryOnlyDependencies:
         others = [argv for argv in seen if str(wheel) not in argv]
         assert others and all("--only-binary=:all:" not in argv for argv in others), seen
 
+    def test_carried_extras_ride_on_the_one_binary_only_install(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.delenv("KIROCREW_ALLOW_SOURCE_BUILDS", raising=False)
+        seen = self._capture(monkeypatch)
+        wheel = tmp_path / "w.whl"
+
+        wheel_engine.build_shadow_venv(wheel, tmp_path / "crew-venv-1.0.0", extras=("feishu",))
+
+        install = [argv for argv in seen if f"{wheel}[feishu]" in argv]
+        assert len(install) == 1, seen
+        assert install[0][-2:] == ["--only-binary=:all:", f"{wheel}[feishu]"], install[0]
+
     def test_the_opt_in_restores_the_compile_fallback(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -1162,6 +1175,81 @@ class TestBinaryOnlyDependencies:
         # Nothing was compiled: the install command was the only pip install of
         # the wheel, and it carried the policy.
         assert isinstance(info.value.__cause__, wheel_engine.WheelUpdateError)
+
+    def test_a_carried_extra_with_no_wheel_names_the_extra_and_the_uninstall(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A package of an extra the running install carries gets one more way
+        out besides compiling: uninstall it, and the update stops carrying it."""
+        monkeypatch.delenv("KIROCREW_ALLOW_SOURCE_BUILDS", raising=False)
+        wheel = tmp_path / "w.whl"
+        # pip's own shape for an extra's requirement, with a non-canonical spelling.
+        tail = b'ERROR: No matching distribution found for Lark_OAPI<2,>=1.4; extra == "feishu"\n'
+        # The install argument is the wheel with its extras appended.
+        self._failing_install(monkeypatch, Path(f"{wheel}[feishu,perf]"), tail)
+
+        with pytest.raises(wheel_engine.WheelUpdateError) as info:
+            wheel_engine.build_shadow_venv(
+                wheel, tmp_path / "crew-venv-1.0.0", extras=("perf", "feishu")
+            )
+
+        text = str(info.value)
+        assert "pip found no prebuilt wheel of Lark_OAPI<2,>=1.4;" in text, text
+        assert "carries the optional extra feishu because the running install has it" in text
+        assert "uninstall lark-oapi from the running install" in text
+        assert "stops carrying it" in text
+        assert "perf" not in text
+
+    def test_the_uninstall_names_only_the_package_with_no_wheel(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`voice` shares boto3 and amazon-transcribe with `bedrock` and `voice-aws`;
+        removing pywhispercpp alone stops `voice` being carried, so the refusal must
+        not tell the owner to remove the packages the other two extras need."""
+        monkeypatch.delenv("KIROCREW_ALLOW_SOURCE_BUILDS", raising=False)
+        wheel = tmp_path / "w.whl"
+        tail = b'ERROR: No matching distribution found for pywhispercpp<2,>=1.5; extra == "voice"\n'
+        self._failing_install(monkeypatch, Path(f"{wheel}[bedrock,voice,voice-aws]"), tail)
+
+        with pytest.raises(wheel_engine.WheelUpdateError) as info:
+            wheel_engine.build_shadow_venv(
+                wheel, tmp_path / "crew-venv-1.0.0", extras=("bedrock", "voice", "voice-aws")
+            )
+
+        text = str(info.value)
+        assert "carries the optional extra voice because" in text, text
+        assert "uninstall pywhispercpp from the running install" in text, text
+        assert "boto3" not in text and "amazon-transcribe" not in text, text
+
+    def test_a_base_dependency_with_no_wheel_is_never_offered_as_an_uninstall(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`otlp`'s one package is also a base requirement, so the update always
+        carries `otlp`; uninstalling that package would not stop the next attempt
+        needing it, so the refusal keeps only the index and platform guidance."""
+        monkeypatch.delenv("KIROCREW_ALLOW_SOURCE_BUILDS", raising=False)
+        monkeypatch.setattr(
+            wheel_engine._metadata,
+            "requires",
+            lambda _name: [
+                "opentelemetry-exporter-otlp-proto-http==1.44.0",
+                'lark-oapi<2,>=1.4; extra == "feishu"',
+            ],
+        )
+        wheel = tmp_path / "w.whl"
+        pin = b"opentelemetry-exporter-otlp-proto-http==1.44.0"
+        tail = b"ERROR: No matching distribution found for " + pin + b"\n"
+        self._failing_install(monkeypatch, Path(f"{wheel}[feishu,otlp]"), tail)
+
+        with pytest.raises(wheel_engine.WheelUpdateError) as info:
+            wheel_engine.build_shadow_venv(
+                wheel, tmp_path / "crew-venv-1.0.0", extras=("feishu", "otlp")
+            )
+
+        text = str(info.value)
+        assert text.startswith(f"pip found no prebuilt wheel of {pin.decode()}"), text
+        assert "carries the optional extra" not in text, text
+        assert "uninstall" not in text, text
 
     def test_the_message_matches_the_installers_platform_floor(self) -> None:
         """Same supported-platform sentence as cli.sh's _report_pip_failure, so an
@@ -1261,3 +1349,28 @@ class TestBinaryOnlyDependencies:
         assert wheel_engine._no_wheel_packages(
             "ERROR: No matching distribution found for pkg0"
         ) == ["pkg0"]
+
+
+class TestCarriedExtras:
+    """The extras an update carries are the declared ones fully installed in this tree."""
+
+    @staticmethod
+    def _installed(monkeypatch: pytest.MonkeyPatch, names: set[str]) -> None:
+        def distribution(name: str) -> object:
+            if name not in names:
+                raise wheel_engine._metadata.PackageNotFoundError(name)
+            return object()
+
+        monkeypatch.setattr(wheel_engine._metadata, "distribution", distribution)
+
+    def test_an_installed_channel_sdk_carries_its_extra(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._installed(monkeypatch, {"lark-oapi"})
+        assert wheel_engine._carried_extras() == ("feishu",)
+
+    def test_an_extra_is_carried_only_when_all_its_packages_are_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._installed(monkeypatch, {"boto3", "amazon-transcribe"})
+        assert wheel_engine._carried_extras() == ("bedrock", "voice-aws")

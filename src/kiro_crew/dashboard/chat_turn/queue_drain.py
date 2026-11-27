@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.channel_prompt import PROMPT_ON_CHANNEL_META_KEY, batch_prompt_on_channel
 from kiro_crew.dashboard.chat_delivery import (
     BACKGROUND_START_TASKS,
+    EXPANSIONS_OFF_META_KEY,
     MIRROR_REPLY_ONLY_META_KEY,
     START_BACKGROUND_META_KEY,
 )
@@ -23,6 +24,7 @@ from kiro_crew.dashboard.chat_delivery import (
     queued_text_for_display,
     quote_meta,
 )
+from kiro_crew.dashboard.chat_paste_meta import PASTES_META_KEY, merged_pastes
 from kiro_crew.dashboard.chat_title import RESTORED_TURN_META_KEY
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
@@ -1211,9 +1213,7 @@ async def _start_next_queued_turn(
         row_cls = json.dumps({"cronLabel": cron_label})
     elif is_app_message:
         # The ONE row shape both delivery paths share (`app_inject_row`):
-        # plain CSS cls, identity in meta — a JSON cls would make
-        # `_prepare_messages` replace the stored meta on HTTP rebuild,
-        # dropping `injectKind` and the row's collapse/fold exemptions.
+        # plain CSS cls, identity in meta.
         row_cls = app_inject_row(app_label or "app")[1]
     elif is_resource_wake:
         row_cls = resource_inject_row("", "")[1]
@@ -1367,6 +1367,11 @@ async def _start_next_queued_turn(
     _commands_off = bool(_drained_meta.pop(COMMANDS_OFF_META_KEY, False)) or any(
         (item.get("meta") or {}).get(COMMANDS_OFF_META_KEY) is True for item in consumed
     )
+    # A chat option tap's label, read the same way: a merge never mixes stamped
+    # and unstamped entries, so typed mentions are never kept as text.
+    _expansions_off = bool(_drained_meta.pop(EXPANSIONS_OFF_META_KEY, False)) or any(
+        (item.get("meta") or {}).get(EXPANSIONS_OFF_META_KEY) is True for item in consumed
+    )
     # Start and mirror plumbing too, read per entry below; neither says anything about the row.
     _drained_meta.pop(START_BACKGROUND_META_KEY, None)
     _drained_meta.pop(MIRROR_REPLY_ONLY_META_KEY, None)
@@ -1392,6 +1397,8 @@ async def _start_next_queued_turn(
         # send the row stands for. Membership in `sendIds` is the proof a client
         # should read on a merged row; on a plain row `sendId` is the whole story.
         _drained_meta["sendIds"] = _drained_send_ids
+    if _row_pastes := merged_pastes(consumed):
+        _drained_meta[PASTES_META_KEY] = _row_pastes
     if len(_drained_decision_ids) > 1:
         # A merged row: `spec_decision_delivery_id` stays as the union left it
         # (last writer) and `spec_decision_delivery_ids` names every decision
@@ -1548,6 +1555,8 @@ async def _start_next_queued_turn(
         )
     if _commands_off:
         _run_kwargs["_commands_off"] = True
+    if _expansions_off:
+        _run_kwargs["_expansions_off"] = True
     # A verbatim replay of a dashboard prompt that died before its mirror echo:
     # set only when every consumed entry carries the stamp, so it is echoed once.
     if _batch_recovery_echo_owed(consumed):

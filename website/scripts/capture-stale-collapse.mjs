@@ -58,19 +58,20 @@ async function main() {
   const { srv, base } = await serveDist()
   const browser = await chromium.launch()
   const context = await browser.newContext({ viewport: { width: 1400, height: 980 }, deviceScaleFactor: 2 })
-  const page = await context.newPage()
+  let page = null
 
-  await stubDashboardApi(page, { folders, slots })
-  logPageProblems(page)
-
+  /** A fresh page per load, stubbed once with its seed. */
   async function load(thresholdMs) {
-    await page.addInitScript(t => {
-      localStorage.clear()
-      localStorage.setItem('mc-theme', 'dark')
-      localStorage.setItem('mc-onboarded', '1')
-      localStorage.setItem('mc-privacy-notice-v1', '1')
-      if (t !== null) localStorage.setItem('mc-session-stale-collapse-ms', String(t))
-    }, thresholdMs)
+    await page?.close()
+    page = await context.newPage()
+    await stubDashboardApi(page, {
+      folders, slots,
+      localStorageEntries: {
+        'mc-privacy-notice-v1': '1',
+        ...(thresholdMs === null ? {} : { 'mc-session-stale-collapse-ms': String(thresholdMs) }),
+      },
+    })
+    logPageProblems(page)
     await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2600)
   }
@@ -102,7 +103,7 @@ async function main() {
   // 4. Feature off (persisted 0): everything visible, no expanders.
   await load(0)
   await page.screenshot({ path: `${OUT}/04-off.png` })
-  console.log('off-state expanders:', await expanders.count())
+  console.log('off-state expanders:', await page.locator('[data-testid^="stale-expander-"]').count())
 
   await browser.close()
   srv.close()

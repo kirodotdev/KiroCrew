@@ -744,6 +744,56 @@ class TestApiSecretsOwnerAuthorization:
                 assert sorted(SecretVault(vault_dir).list_names()) == ["DB_PASS", "TEST_KEY"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "path", "json_body", "operation"),
+        [
+            ("get", "/api/secrets", None, "secrets_list"),
+            ("post", "/api/secrets", {"name": "EVIL", "value": "x"}, "secrets_set"),
+            ("delete", "/api/secrets/TEST_KEY", None, "secrets_delete"),
+        ],
+    )
+    @pytest.mark.parametrize("subject", ["local-app", "local-startup"])
+    async def test_session_from_before_the_owner_is_told_to_sign_in_again(
+        self,
+        vault_dir: Path,
+        method: str,
+        path: str,
+        json_body: object,
+        operation: str,
+        subject: str,
+    ) -> None:
+        """A session signed in before an owner was configured is still refused, and
+        the refusal is the 401 ``stale_session_reauth`` the other owner gates give
+        it, so the dashboard asks for a new sign-in. Nothing is read or written, and
+        the refusal is audited like any other."""
+        app = _app()
+        app["state"].owner_id = "U_OWNER"  # type: ignore[attr-defined]
+
+        from unittest.mock import MagicMock
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.handlers.source_providers import STALE_OWNER_SESSION_CODE
+
+        sel = MagicMock()
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(vault_dir)),
+            patch("kiro_crew.dashboard.handlers.secrets._sel", return_value=sel),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await getattr(client, method)(
+                    path, headers={"X-Test-User": subject}, json=json_body
+                )
+                assert resp.status == 401
+                data = await resp.json()
+                assert data["code"] == STALE_OWNER_SESSION_CODE
+                assert "names" not in data
+        assert sorted(SecretVault(vault_dir).list_names()) == ["DB_PASS", "TEST_KEY"]
+        sel.log_api_access.assert_called_once()
+        kwargs = sel.log_api_access.call_args.kwargs
+        assert (kwargs["outcome"], kwargs["operation"]) == ("denied", operation)
+
+    @pytest.mark.asyncio
     async def test_denial_is_audited(self, vault_dir: Path) -> None:
         """A non-owner denial writes a SEL audit record (outcome="denied"), so a
         rejected attempt on the vault is not silent — matching the sibling

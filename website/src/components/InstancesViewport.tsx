@@ -68,6 +68,7 @@ import { NATIVE_NOTIFY_TYPE, parseNativeNotifyEnvelope, postRelayedNativeNotific
 import {
   PANE_CLIPBOARD_IMAGE_TYPE, PANE_CLIPBOARD_RESULT_TYPE, PANE_CLIPBOARD_VERSION, parsePaneClipboardImageRequest,
 } from '../lib/paneClipboardRelay'
+import { CREW_POPOUT_VERSION } from '../lib/crewPopout'
 import { hasGesture } from '../hooks/useFrameOpenLink'
 import { copyImageToClipboard } from '../utils/clipboard'
 import { copyImageWithText } from '../pages/chat/share/shareSupport'
@@ -97,6 +98,10 @@ import { useChatCompleteNotify } from '../hooks/chatCompleteNotify'
 import { useCrewWarmSet } from '../hooks/useCrewWarmSet'
 
 import { i18nT } from '../i18n/t'
+// What a pane's frame delegates; why each grant, at the pane's <iframe> below.
+// The framed crew pop-out (pages/CrewPopoutFrame.tsx) delegates the same.
+export const PANE_FRAME_ALLOW = ['microphone', 'fullscreen', 'clipboard-write', 'display-capture'].join('; ')
+
 // Refresh the embedded token once elapsed reaches this fraction of its TTL
 // (mirrors the gateway's default 80% threshold). Proactive refresh reloads the
 // out-of-view iframe with a fresh token well before the gateway's TTL cap.
@@ -1260,7 +1265,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // only then can the id be checked against the switcher: a crew that is gone
   // (deleted, disconnected, no longer a tab) falls back to Local. A pick the
   // user made before that poll answered wins over the stored one (a crew deep
-  // link arriving first clears the stored id: lib/crewDeepLink.ts). The connect
+  // link, native or on the address, arriving first clears the stored id:
+  // lib/crewDeepLink.ts). The connect
   // goes through the viewport's own connectMutation (the one Retry and the
   // panel use), with the same condition as a tab click: no warm iframe yet, or
   // the listed status is not connected. Its error and pending state reach the
@@ -1445,6 +1451,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // This host performs image copies for the pane (mc-clipboard-image).
         // Advertised so a pane relays only to a host that will answer.
         clipboardRelay: PANE_CLIPBOARD_VERSION,
+        // This host serves /popout/crew, the window a desktop pane's pop-out opens.
+        crewPopout: CREW_POPOUT_VERSION,
       }
     },
     [instancesQuery.data, warm, unread, activeId, macInset, winInset, linuxInset, winCaptionReserve, focusMode, pinnedCrews, relayCrews, relayCrewsFailed, relayTabs, relayActive, stableOrder, chatCompleteNotify],
@@ -1691,7 +1699,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // left as a maintainer decision.
           // allowFullScreen mirrors the legacy attribute some engines still
           // require alongside the Permissions-Policy delegation.
-          allow="microphone; fullscreen; clipboard-write; display-capture"
+          allow={PANE_FRAME_ALLOW}
           allowFullScreen
           onLoad={e => {
             // Fires for the initial about:blank too, which is why a load event is

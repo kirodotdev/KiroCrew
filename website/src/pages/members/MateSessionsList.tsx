@@ -31,7 +31,7 @@ import {
   mergeCrewWorkers,
   type CrewWorkerGroup,
 } from '../../lib/crewWorkers'
-import { crewWorkersQueryKey } from '../chat/command-center/CrewWorkerList'
+import { CrewShowOlder, crewWorkersQueryKey } from '../chat/command-center/CrewWorkerList'
 import { crewWorkersGapMs, readCrewWorkers } from '../../lib/crewWorkersPoll'
 import { timeAgo } from '../../utils/timeAgo'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
@@ -93,6 +93,8 @@ export interface MateSessionsListProps {
   onOpen: (worker: CrewWorker) => void
   /** Shown above the groups (a failed reopen, say). */
   notice?: ReactNode
+  /** Shown first in every state, loading and empty included (the list's switches). */
+  header?: ReactNode
 }
 
 /** The mate's sessions: its `GET .../crew-workers` answer merged with the open
@@ -109,25 +111,31 @@ export function useMateSessionWorkers(root: string, liveSlots: readonly ChatSlot
   return { listed, workers }
 }
 
-export default function MateSessionsList({ root, mateName, liveSlots, slotsLoaded, empty, onOpen, notice }: MateSessionsListProps) {
+export default function MateSessionsList({ root, mateName, liveSlots, slotsLoaded, empty, onOpen, notice, header }: MateSessionsListProps) {
   const { t } = useTranslation()
   const { listed, workers } = useMateSessionWorkers(root, liveSlots)
   const groups = useMemo(() => groupCrewWorkers(workers), [workers])
   const [finishedOpen, setFinishedOpen] = useState(false)
   const failed = listed.isError && !crewRouteNotServed(listed.error)
+  // Closed sessions the answer left out: all done, so the Done count includes them.
+  const closedOmitted = listed.data?.closed_omitted ?? 0
 
   // No root (the thread slot is still resolving) reads nothing, so it is never pending.
   if (root && workers.length === 0 && (!slotsLoaded || listed.isPending) && !failed && !crewRouteNotServed(listed.error)) {
     return (
-      <div className="space-y-2" aria-hidden data-testid="mate-sessions-loading">
-        <div className="h-12 rounded-2xl bg-bg-hover animate-pulse" />
-        <div className="h-12 rounded-2xl bg-bg-hover animate-pulse" />
-      </div>
+      <>
+        {header}
+        <div className="space-y-2" aria-hidden data-testid="mate-sessions-loading">
+          <div className="h-12 rounded-2xl bg-bg-hover animate-pulse" />
+          <div className="h-12 rounded-2xl bg-bg-hover animate-pulse" />
+        </div>
+      </>
     )
   }
   if (workers.length === 0) {
     return (
       <>
+        {header}
         {/* No hand-off: the Members page holds unsaved Profile, schedule and
             crew-editor drafts, and Ask the agent navigates away from them. */}
         {failed && <ErrorNotice variant="inline" message={t('pages.membersPage.sessions_read_failed')} />}
@@ -139,6 +147,7 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
     group === 'with_conductor' ? t('pages.membersPage.sessions_group_waiting_on_mate', { name: mateName }) : t(CREW_GROUP_LABEL_KEY[group])
   return (
     <div className="flex flex-col gap-3" data-testid="mate-sessions">
+      {header}
       {/* No hand-off: the Members page holds unsaved Profile, schedule and
           crew-editor drafts, and Ask the agent navigates away from them. */}
       {failed && <ErrorNotice variant="inline" message={t('pages.membersPage.sessions_read_failed')} />}
@@ -158,9 +167,10 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
               onToggle={e => setFinishedOpen((e.currentTarget as HTMLDetailsElement).open)}>
               <summary className="flex items-center gap-1 cursor-pointer list-none text-[12px] text-muted hover:text-text py-1">
                 <ChevronRight size={14} className="transition-transform group-open:rotate-90" aria-hidden="true" />
-                {`${label(group)} · ${rows.length}`}
+                {`${label(group)} · ${rows.length + closedOmitted}`}
               </summary>
               <div className="mt-1">{list}</div>
+              <CrewShowOlder root={root} omitted={closedOmitted} />
             </details>
           )
         }

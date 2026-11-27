@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense, type ReactNode } from 'react'
+import { useEffect, useState, lazy, Suspense, isValidElement, type ReactNode } from 'react'
 import { TOPBAR_FOCUS_Z, TOPBAR_Z } from '../../lib/themeDecorLayer'
 import { kiroSignInSegment, kiroUsageSegment } from './kiroUsageReadout'
 import { metricsSegment, MetricsErrorNotice } from './metricsReadout'
@@ -17,6 +17,9 @@ import { getTopBarWidgets } from '../../apps/topBarWidgets'
 import { getCapsuleSegments } from '../../apps/capsuleSegments'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import { useNavShortcutHint } from '../../hooks/useNavShortcutHint'
+import { usePaletteShortcutsEnabled } from '../../hooks/useCommandPalette'
+import { useQuickSearchShortcut } from '../../hooks/useQuickSearchShortcut'
+import { formatQuickSearchShortcut } from '../../lib/quickSearchShortcut'
 import FeedbackPill from '../../components/FeedbackPill'
 import HoverTip from '../../components/HoverTip'
 import { Glass } from '../../components/Glass'
@@ -160,8 +163,8 @@ function NotificationsBellButton() {
  * The top bar: the left cluster (window menu, history arrows, the phone menu
  * button, the instance selector), the centre search and focus-mode toggle, the
  * readout capsule and the right cluster, and the phone chat page's single bar.
- * Markup only: it calls no hook, and every value it reads comes from
- * {@link useAppShell}.
+ * Markup only: apart from the Explore preview and the search gesture it names,
+ * every value it reads comes from {@link useAppShell}.
  */
 export function ShellHeader({ shell }: { shell: AppShell }) {
   const {
@@ -178,12 +181,21 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
   // Desktop only: the phone form has no full-width search to hide (its centre
   // track is already `auto`), and its layout is not this setting's to change.
   const searchHidden = !isMobile && !topbarSearch
+  // The search trigger names the gesture that opens search on this computer:
+  // ⌘K on a Mac, Ctrl+K elsewhere, or whatever Settings → Shortcuts picked;
+  // '' when no gesture opens it (shortcuts off, an unreachable custom chord).
+  const searchConfig = useQuickSearchShortcut().config
+  const searchShortcut = usePaletteShortcutsEnabled() ? formatQuickSearchShortcut(searchConfig) : ''
   // The search trigger's hint, gated on the same condition as the trigger's
   // label and aria-label, so the hint never contradicts the words under the
   // cursor or promises the corpus search the launcher deliberately omits. The
   // owned branch drops "(K)" because the chord is already printed in the
   // visible label.
-  const searchHint = quickSearchLauncher ? i18nT('app.open_command_bar') : i18nT('app.search_everywhere_k')
+  const searchHint = quickSearchLauncher
+    ? i18nT('app.open_command_bar')
+    : searchShortcut
+      ? i18nT('app.search_everywhere_k', { shortcut: searchShortcut })
+      : i18nT('components.commandPalette.search_everywhere')
   return (
     <>
       {/* The one Milestones panel; the top-bar indicator, the phone menu row
@@ -406,7 +418,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             <span className="text-[13px] truncate min-w-0">
               {quickSearchLauncher
                 ? i18nT('app.k_run_a_command')
-                : i18nT('app.k_search_for_anything')}
+                : searchShortcut
+                  ? i18nT('app.k_search_for_anything', { shortcut: searchShortcut })
+                  : i18nT('app.search_sessions_files_and_commands')}
             </span>
           </Glass>
           </HoverTip>
@@ -570,7 +584,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             segments.push(
               <HoverTip key="conn" label={capsuleActionMsg} className="tb-capsule-keep">
               <button
-                className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
+                className="flex items-center justify-center -mx-1 -my-0.5 px-1.5 py-0.5 rounded-md bg-transparent border-none cursor-pointer shrink-0"
                 onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
                 aria-label={capsuleActionMsg}
                 aria-expanded={!capsuleCollapsed}
@@ -641,8 +655,12 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                  a pulse: 0.25s right after an intentional collapse/expand
                  click, else 0s so header reflows (panel open/close, resize)
                  snap the capsule into place instead of sliding it. */
+              /* Measured only when the segment list changes, the one thing
+                 the pulse animates: measuring on every header render forced a
+                 layout of the page inside each task that re-rendered it. */
               <motion.div
                 layout
+                layoutDependency={segments.map(s => (isValidElement(s) ? s.key : '')).join(',')}
                 transition={{ layout: { duration: capsuleLayoutPulse ? 0.25 : 0, ease: 'easeOut' } }}
                 className="flex items-center shrink-0"
               >

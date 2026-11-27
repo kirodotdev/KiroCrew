@@ -42,6 +42,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
+    STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
 )
 from kiro_crew.agent_discovery import (
@@ -138,12 +139,19 @@ from kiro_crew.llm_helpers import (
     SESSION_NOT_FOUND_RETRY_NOTICE,
     acp_error_is_session_not_found,
     acp_error_needs_fresh_credentials,
+    annotate_model_fallback,
     credential_give_up_text,
     record_interaction_event,
     save_conversation_turn_off_loop,
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
+from kiro_crew.messaging.alternation_echo import (  # noqa: F401 - read by the owners
+    could_be_echo,
+    drop_echo,
+    echo_prefix_len,
+    is_echo,
+)
 from kiro_crew.messaging.commands import (  # noqa: F401 - read by the owners
     COMPACT_ACCOUNT_CHANGED_TEXT,
     compact_unsupported_backend,
@@ -172,6 +180,7 @@ from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.messaging.renderer import (  # noqa: F401 - read by the owners
     count_redaction_tags,
+    mcp_identity_line,
     redaction_notice,
     trusted_mcp_identity,
 )
@@ -192,6 +201,7 @@ from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
+    EVENT_MODEL_FALLBACK,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
@@ -229,6 +239,7 @@ from kiro_crew.session_lifecycle import (  # noqa: F401 - read by the owners
     consume_stop_declined,
     decline_stop,
 )
+from kiro_crew.slack import channel_handler  # noqa: F401 - read by the owners
 from kiro_crew.slack import script_hooks as slack_script_hooks  # noqa: F401 - read by the owners
 from kiro_crew.slack.agent_sessions.fence import (  # noqa: F401 - read by the owners
     _Reset as _TurnScopeReset,
@@ -242,11 +253,17 @@ from kiro_crew.slack.blocks import (  # noqa: F401 - read by the owners
     deprecation_warning_block,
 )
 from kiro_crew.slack.channel_crew import (  # noqa: F401 - read by the owners
+    bind_bot_memory,
+    bots_text,
     context_template,
+    crew_bots,
+    memory_binding_refusal,
+    resolve_bot_name,
     resolve_channel_crew,
 )
 from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.client import SlackClientOps
+from kiro_crew.slack.conductor_thread import THREAD_SWITCH_COMMANDS
 from kiro_crew.slack.format import (  # noqa: F401 - read by the owners
     SLACK_MSG_LIMIT,
     TRUNCATION_NOTICE,
@@ -316,6 +333,7 @@ from kiro_crew.slack.handler_runtime.approvals import (  # noqa: F401
     _LinkedApprovalEvent,
     _PendingApproval,
     _resolve_linked_click,
+    grant_own_trust,
     mcp_identity_text,
     post_linked_approval,
     resolve_linked_approval,
@@ -323,13 +341,16 @@ from kiro_crew.slack.handler_runtime.approvals import (  # noqa: F401
 from kiro_crew.slack.handler_runtime.commands import (  # noqa: F401
     _bang_agent,
     _bang_allowlist,
+    _bang_bot,
     _bang_channel,
+    _bang_conductor,
     _bang_dashboard,
     _bang_link_to_dashboard,
     _bang_project,
     _bang_stop,
     _bang_thread_agent,
     _bang_title,
+    _bang_trust,
     _bang_voice,
     _bang_yolo,
     _handle_compact_command,
@@ -377,6 +398,7 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     _persist_channel_config,
     _read_thread_overrides,
     _recorded_selection,
+    _route_linked_thread,
     _set_default_agent,
     adopt_dashboard_thread_agent,
     adopt_default_agent,
@@ -414,6 +436,7 @@ from kiro_crew.slack.handler_runtime.stream import (  # noqa: F401
     _comment_hold_is_protocol,
     _could_open_marker_line,
     _filter_options_brackets,
+    _final_update_landed,
     _resolve_comment_hold,
     _resolve_options_hold,
     _safe_final_update,
@@ -451,6 +474,13 @@ from kiro_crew.slack.sessions_view import (  # noqa: F401 - read by the owners
 from kiro_crew.slack.shared_access import (  # noqa: F401 - read by the owners
     SHARED_OWNER_ONLY_TEXT,
     shared_command_refused,
+)
+from kiro_crew.slack.stream_window import (  # noqa: F401 - read by the owners
+    CONTINUES_BELOW,
+    message_landed_since,
+    messages_noted,
+    stream_clock,
+    stream_due_for_renewal,
 )
 from kiro_crew.slack.thread_parent import (  # noqa: F401 - read by the owners
     fetch_thread_parent,
@@ -499,11 +529,19 @@ def _display_redactor(text: str) -> str:
     return redact_credentials(text)[0]
 
 
-# Mapping of bang commands to their /kirocrew slash equivalents.
-_BANG_TO_SLASH: dict[str, str] = {
+# Bang commands with no slash equivalent that the native router still answers in a thread
+# linked to a dashboard chat, so they are never delivered to it as a chat message: the
+# words that change what a thread is (``!bot``, ``!conductor``) and ``!trust``, which
+# changes its session's approval mode.
+_NATIVE_BANG_COMMANDS: frozenset[str] = THREAD_SWITCH_COMMANDS | {"!trust"}
+
+# Mapping of bang commands to their /kirocrew slash equivalents. None: not
+# deprecated, so no notice: the bang acts on the thread it is typed in (`!voice on`),
+# which a slash command cannot name.
+_BANG_TO_SLASH: dict[str, str | None] = {
     "!yolo": "/kirocrew yolo",
     "!stop": "/kirocrew stop",
-    "!voice": "/kirocrew voice",
+    "!voice": None,
     "!agent": "/kirocrew agent",
     "!dashboard": "/kirocrew dashboard",
     "!ta": "/kirocrew agent",
@@ -537,11 +575,6 @@ _SLACK_SECTION_TEXT_LIMIT = 2900
 
 # Truncation marker appended when tool_input exceeds the limit
 _TRUNCATION_MARKER = "\n… [truncated]"
-
-# Bound on each name an approval card's MCP identity line shows, taken before
-# escaping: a kept name runs to 512 characters and escaping can grow it fourfold,
-# so two unbounded names could pass the 3000 characters Slack allows one text.
-_IDENTITY_NAME_MAX = 200
 
 # Slack UX strings
 _THINKING = "_Thinking…_"
@@ -927,6 +960,9 @@ _OUTCOME_REJECTED = "rejected"
 _ACTION_APPROVE = "approve_tool"
 _ACTION_TRUST = "trust_tool"
 _ACTION_REJECT = "reject_tool"
+#: What ``handle_interaction`` answers when a shared user's Trust press granted
+#: Trust for that person's own turns only. Never a button's action id.
+_ACTION_TRUST_OWN = "trust_own_turns"
 
 
 #: The Slack-owned attributes of :class:`KiroCrewConfig` that a reload copies

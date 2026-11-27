@@ -1,10 +1,12 @@
-"""``kirocrew eval`` reports a backend that refuses to start a session as one line.
+"""``kirocrew eval`` reports a session that could not start as one line.
 
-A signed-out kiro-cli raises ``AcpAuthRequired`` (an ``AcpError``) and a KAS engine
-that cannot be installed raises ``AcpRuntimeError``, from a scenario session's start or
-from the ``--judge`` session's. ``cli.main()``'s eval branch prints that refusal's own
-text as one stderr line and exits 1, logging the traceback at DEBUG only. The
-scenario runner is stubbed, so no model is called and no report is written.
+A signed-out kiro-cli raises ``AcpAuthRequired`` (an ``AcpError``), a KAS engine that
+cannot be installed raises ``AcpRuntimeError``, and a host that cannot sandbox the
+session raises ``SandboxUnavailableError`` or ``SandboxCeilingUnsealable``, from a
+scenario session's start or from the ``--judge`` session's. ``cli.main()``'s eval
+branch prints that refusal's own text as one stderr line and exits 1, logging the
+traceback at DEBUG only. The scenario runner is stubbed, so no model is called and no
+report is written.
 """
 
 from __future__ import annotations
@@ -20,9 +22,12 @@ import pytest
 from kiro_crew import cli
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError
 from kiro_crew.acp.transport_errors import AcpAuthRequired
+from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
 
 _SIGNED_OUT = "Not signed in to kiro-cli. Run `kiro-cli login`, then retry."
 _KAS_INSTALL = "KAS engine bundle: the download failed (HTTP 503). Run `kirocrew kas install`."
+_NO_BACKEND = "No sandbox backend on this host. Run `kirocrew sandbox install-profile`."
+_UNSEALABLE = "Cannot seal computer_use.json: a dangling symlink sits there. Remove it."
 
 
 class _RefusingProvider:
@@ -43,8 +48,19 @@ class _RefusingProvider:
     [
         (False, AcpAuthRequired(_SIGNED_OUT, backend="kiro"), _SIGNED_OUT),
         (True, AcpRuntimeError(_KAS_INSTALL), _KAS_INSTALL),
+        (
+            False,
+            SandboxUnavailableError(_NO_BACKEND, kind="no_backend", detail="userns denied"),
+            _NO_BACKEND,
+        ),
+        (True, SandboxCeilingUnsealable(_UNSEALABLE), _UNSEALABLE),
     ],
-    ids=["scenario-session-signed-out", "judge-session-kas-install"],
+    ids=[
+        "scenario-session-signed-out",
+        "judge-session-kas-install",
+        "scenario-session-no-sandbox-backend",
+        "judge-session-unsealable-ceiling",
+    ],
 )
 def test_a_session_start_refusal_is_one_stderr_line_and_exit_1(
     judge: bool,

@@ -1622,6 +1622,8 @@ async def authorize_and_add_nudge(
                 "admission_check": admission_check,
                 "creation_surface": creation_surface,
             }
+            if monitor.also_wake_on:
+                add_monitor_kwargs["also_wake_on"] = list(monitor.also_wake_on)
             if not replace_existing:
                 add_monitor_kwargs["replace_existing"] = False
             if replace_stopped:

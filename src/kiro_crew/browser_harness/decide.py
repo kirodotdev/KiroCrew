@@ -103,6 +103,17 @@ def _probe(session_key: str) -> Armed:
     return Armed(text=True, image=gate.provider_supports(frozenset({"image"})))
 
 
+def _answers_in_time() -> bool:
+    """Whether the provider's declared typical answer time fits the text wait.
+
+    One that typically answers later is not asked for a pick or a check: the op
+    takes a timeout's path at once, without the wait or the provider's work.
+    ``reflex`` sizes its own wait from the same figure instead.
+    """
+    caps = capabilities()
+    return caps is None or caps.latency_ms <= TEXT_WAIT_S * 1000
+
+
 def _band(value: Any) -> str:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return "unsure"
@@ -197,7 +208,7 @@ class BrowserDecisions:
             )
         except asyncio.TimeoutError:
             armed = Armed()
-        if not armed.text:
+        if not armed.text or not _answers_in_time():
             return _ops.needs_ref() if wants_pick else await handler(ctx, args)
 
         try:

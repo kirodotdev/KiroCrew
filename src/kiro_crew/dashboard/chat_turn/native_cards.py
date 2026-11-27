@@ -30,6 +30,16 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     live_background_card_ids,
     on_background_cards_lost,
 )
+from kiro_crew.agent_sdk.kas_subagent_runs import liveness_key
+from kiro_crew.dashboard.engine_subagent_cards import (
+    ENGINE_TURN_FIELD,
+    EngineRow,
+    child_tool_frame,
+    engine_rows,
+    engine_turn_key,
+    remember_dispatch_tasks,
+    turn_runs_engine_children,
+)
 from kiro_crew.dashboard.native_child_stop import STOP_REQUESTED
 from kiro_crew.dashboard.state import (
     NATIVE_SUBAGENT_OUTPUT_HARD,
@@ -150,6 +160,28 @@ def _append_native_output(
     return total
 
 
+#: How many finished calls a turn remembers, to put each call's output on its card once.
+NATIVE_RESULT_SEEN_CAP = 256
+
+
+def _first_native_result(seen: "set[str]", call: str) -> bool:
+    """Whether *call* is a call's first result this turn, remembering it in *seen*.
+
+    The key is bounded (``liveness_key``: an id past its bound is held as its
+    digest) and the set by count: past :data:`NATIVE_RESULT_SEEN_CAP` it is cleared,
+    and the overflow logged, so only a repeated final frame of a call finished
+    before the clear can reach its card a second time.
+    """
+    key = liveness_key(call)
+    if not key or key in seen:
+        return False
+    if len(seen) >= NATIVE_RESULT_SEEN_CAP:
+        logger.info("native result set full (%d); cleared", len(seen))
+        seen.clear()
+    seen.add(key)
+    return True
+
+
 #: Bound on a card's label and model as shown.
 _NATIVE_CARD_FIELD_MAX = 200
 
@@ -161,14 +193,24 @@ def _native_card_field(value: object, limit: int = _NATIVE_CARD_FIELD_MAX) -> st
     return text[:limit]
 
 
-def _native_card_extras(info: dict) -> dict[str, str]:
-    """The optional ``label`` and ``model`` a card's frames carry, when it has them."""
-    return {key: info[key] for key in ("label", "model") if info.get(key)}
+def _native_card_extras(info: dict) -> dict[str, Any]:
+    """The optional ``label``, ``model``, ``engine`` mark and engine turn a card's frames carry."""
+    return {
+        key: info[key] for key in ("label", "model", "engine", ENGINE_TURN_FIELD) if info.get(key)
+    }
 
 
 def _native_card_result(card_output, card_id: str, info: dict) -> str:
-    """A closing card's result: its output, else the row's own result, else the marker."""
-    return _native_card_feed(card_output, card_id) or info.get("row_result") or "(output in chat)"
+    """A closing card's result: its output, else the row's own result, else the marker.
+
+    An engine card (``dashboard.engine_subagent_cards``) with neither has no result: its child's output
+    reaches the chat only as the parent's own answer, so the marker would not be true.
+    """
+    return (
+        _native_card_feed(card_output, card_id)
+        or info.get("row_result")
+        or ("" if info.get("engine") else "(output in chat)")
+    )
 
 
 def _native_card_feed(card_output, card_id: str) -> str:
@@ -195,6 +237,9 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
     changes.
 
     ``tracker`` is per-turn state: ``{session_id: {started, done, agent, task}}``.
+
+    An ``EngineRow`` is a KAS engine turn's own sub-agent
+    (``dashboard.engine_subagent_cards.engine_rows``): its card is marked ``engine``.
     """
     if not isinstance(subagents, list):
         return
@@ -248,6 +293,10 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
                 "last_activity": now,
                 "last_tool": "",
             }
+            if isinstance(sub, EngineRow):
+                tracker[sid]["engine"] = True
+                if sub.get(ENGINE_TURN_FIELD):
+                    tracker[sid][ENGINE_TURN_FIELD] = sub[ENGINE_TURN_FIELD]
             if isinstance(sub, BackgroundCardRow):
                 tracker[sid]["background"] = sub.get("background") is True
                 for key in ("label", "model"):
@@ -292,6 +341,10 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
                 err, _ = redact_credentials(err)
                 err = _clip_card_error(err)
             info["done"] = True
+            if info.get("engine"):
+                # The engine's own terminal status, which the turn's record keeps
+                # (``dashboard.engine_subagent_record``).
+                info["engine_end"] = stype
             row_result = sub.get("result") if isinstance(sub, BackgroundCardRow) else None
             if isinstance(row_result, str) and row_result.strip():
                 info["row_result"] = redact_and_truncate(row_result, 2000)
@@ -363,6 +416,7 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
                     "task": info.get("task", ""),
                     "agent": info.get("agent", ""),
                     "result": _result,
+                    **(_native_card_extras(info) if info.get("engine") else {}),
                 },
             )
             logger.info(
@@ -615,7 +669,12 @@ async def _on_subagent_list(turn: _ChatTurn, event) -> None:
     )
     # A co-tenant's roster, fanned out by a shared runtime, is not this turn's.
     turn._turn_native_activity = turn._turn_native_activity or not event.runtime_global
-    _native_subagent_sync(state, slot, event.subagents, _native_tracker, _native_card_output)
+    _rows = event.subagents
+    # Every KAS turn: a dispatch's approval card shows the task (approval_card_fields).
+    remember_dispatch_tasks(turn._engine_dispatch_tasks, _rows)
+    if turn_runs_engine_children(turn):
+        _rows = engine_rows(_rows, _native_tracker, engine_turn_key(turn))
+    _native_subagent_sync(state, slot, _rows, _native_tracker, _native_card_output)
 
 
 async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
@@ -645,18 +704,67 @@ async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
     # with no explanation. When the card cannot exist yet, persist
     # the explanation as a slot notice instead.
     if _sid not in _native_tracker and event.text and event.text.startswith(_REJECT_NOTICE_LEADS):
-        # Stays English: the ACP handle composes this permission-rejection line
-        # (its fixed reason fused with the redacted tool title) into
-        # ``event.text`` at its source, and the event carries no structured
-        # reason/title field to localize from. A token here needs a new field
-        # on the ACP event, read by other consumers too, so it is not threaded
-        # through here.
+        from kiro_crew.agent_sdk.drivers.acp_vocab import (
+            AUTO_REJECT_MISSING_SECURITY_CONTEXT,
+            AUTO_REJECT_STRANDED_BETWEEN_TURNS,
+        )
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        # A known reason localizes the row; any other rejection line stays English.
+        _token = {
+            AUTO_REJECT_STRANDED_BETWEEN_TURNS: gn.GATEWAY_NOTICE_PERMISSION_AUTO_REJECTED_STRANDED,
+            AUTO_REJECT_MISSING_SECURITY_CONTEXT: (
+                gn.GATEWAY_NOTICE_PERMISSION_AUTO_REJECTED_NO_SECURITY_CONTEXT
+            ),
+        }.get(getattr(event, "auto_reject_reason", ""))
         _txt = redact(event.text)
-        slot.append("notice", _txt, "msg msg-info")
+        if _token:
+            _meta = gn.gateway_notice_meta(_token, tool=redact(event.title or ""))
+            slot.append("notice", _txt, "msg msg-info", meta=_meta)
+        else:
+            slot.append("notice", _txt, "msg msg-info")
     # Some kiro-cli builds also stream the sub-agent's own text via
     # agent_message_chunk on this channel — surface it on the card.
     if _sid in _native_tracker and event.text:
         _native_card_text(turn, _sid, event.text)
+    # A KAS engine child's tool call reaches the turn only as this event, never as
+    # a flat tool event, so its card lists the call from here.
+    if _sid in _native_tracker and event.tool_call_id and event.title:
+        _info = _native_tracker[_sid]
+        if _info.get("engine") and not _info.get("done"):
+            _frame = child_tool_frame(_info, event.tool_call_id, event.title)
+            if _frame is not None:
+                turn.state.broadcast_ws(
+                    "subagent_tool",
+                    {"id": f"native:{_redact_tool_field(_sid)}", "slot": slot.key, **_frame},
+                )
+            _engine_child_result(turn, _sid, event)
+
+
+def _engine_child_result(turn: _ChatTurn, sid: str, event) -> None:
+    """Put a KAS engine child's finished call output on its card, once per call.
+
+    Only the activity event the session marked finished carries it
+    (``acp.kas_child_finished``): no flat tool result reaches the turn for such a
+    call, so ``tool_results._on_tool_result`` cannot. Redacted whole, for every
+    viewer, before the card's bound cuts it, as that path does.
+    """
+    from kiro_crew.agent_sdk.kas_child_finished import is_finished_child_call
+
+    if not event.tool_output or not is_finished_child_call(event, turn.client):
+        return
+    if not _first_native_result(turn._native_result_seen, f"{sid}\x00{event.tool_call_id}"):
+        return
+    out, _ = redact_exfiltration_urls(_redact_tool_field(event.tool_output))
+    out, _ = redact_credentials(out)
+    card_id = f"native:{_redact_tool_field(sid)}"
+    text = f"{out[:4000]}\n"
+    turn._native_card_output_len[card_id] = _append_native_output(
+        turn._native_card_output.setdefault(card_id, []),
+        text,
+        turn._native_card_output_len.get(card_id, 0),
+    )
+    turn.state.broadcast_ws("subagent_chunk", {"id": card_id, "slot": turn.slot.key, "text": text})
 
 
 def _native_card_text(turn: _ChatTurn, sid: str, text: str) -> None:

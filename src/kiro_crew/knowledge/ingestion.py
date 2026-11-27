@@ -740,6 +740,7 @@ class IngestionPipeline:
         on_committed_in_txn: bool = False,
         include_paths: frozenset[str] | None = None,
         included: set[str] | None = None,
+        keep_edited_group: bool = False,
     ) -> str | None:
         """Full pipeline. Returns job_id, or None if content hash unchanged.
 
@@ -794,6 +795,13 @@ class IngestionPipeline:
         cross-file explicit-import chunk budget (``knowledge.import_chunk_budget``).
         Explicit callers leave it True; the folder-watcher path passes False
         because it is already bounded by the per-sweep chunk budgets.
+
+        ``keep_edited_group`` (the folder watcher's file reads) keeps
+        ``old_item_ids`` when the user edited or archived one of them after the
+        gate hop read their ``updated_at``: that edit is newer than this read, so
+        this read's chunks are dropped and ``on_committed`` receives the kept
+        group; the file is read again on its next change. It takes the place of
+        the ``on_committed_in_txn`` branch, so the two do not combine.
         """
         # Cross-file cost ceiling for the explicit import paths. Reserved FIRST so
         # a refused import does no filesystem read, chunking or extraction, and a
@@ -828,6 +836,7 @@ class IngestionPipeline:
                     on_committed=on_committed, on_duplicate=on_duplicate,
                     embed_priority=embed_priority, on_committed_in_txn=on_committed_in_txn,
                     include_paths=include_paths, included=included,
+                    keep_edited_group=keep_edited_group,
                 )
             finally:
                 # Reclaim the reservation on EVERY exit that did not settle it: an
@@ -854,6 +863,7 @@ class IngestionPipeline:
         on_committed_in_txn: bool = False,
         include_paths: frozenset[str] | None = None,
         included: set[str] | None = None,
+        keep_edited_group: bool = False,
     ) -> str | None:
         p = Path(path)
         display_name = original_name or p.name
@@ -988,12 +998,14 @@ class IngestionPipeline:
         # deletes the superseded items, attaches the location and writes the
         # terminal job row, and its delete rebuilds the entity graph — seconds
         # of blocking SQLite on a large library.
-        def _gate() -> tuple[str | None, list[str]]:
+        def _gate() -> tuple[str | None, list[str], dict[str, str] | None]:
             ids = self._resolve_old_item_ids(source_id) if resolve_old_group else _old_item_ids
-            return self._skip_as_duplicate(
-                content_hash, source_id, ids, on_duplicate=on_duplicate), ids
+            dupe = self._skip_as_duplicate(content_hash, source_id, ids, on_duplicate=on_duplicate)
+            # Taken before extraction: an edit after this read is what keeps the old group.
+            stamps = self.store.items_updated_at(ids) if keep_edited_group and ids and not dupe else None
+            return dupe, ids, stamps
 
-        dupe_job, _old_item_ids = await run_to_completion(_gate)
+        dupe_job, _old_item_ids, old_stamps = await run_to_completion(_gate)
         if dupe_job:
             return dupe_job
         job_id = uuid4().hex[:12]
@@ -1028,6 +1040,7 @@ class IngestionPipeline:
                 embed_priority=embed_priority, on_committed=on_committed,
                 budget_token=budget_token,
                 on_committed_in_txn=on_committed_in_txn,
+                old_stamps=old_stamps,
             )
         except Exception as exc:
             if _is_harness_refusal(exc):
@@ -1061,7 +1074,7 @@ class IngestionPipeline:
                                 old_item_ids, _old_item_ids, path,
                                 on_progress, embed_priority,
                                 on_committed=None, budget_token=None,
-                                on_committed_in_txn=False) -> str | None:
+                                on_committed_in_txn=False, old_stamps=None) -> str | None:
         """Chunk/extract/store/finalize — split out so ingest_file can mark the
         pre-inserted job row 'failed' on ANY exception in one place."""
         # 4. Chunk (use per-source chunk size if configured)
@@ -1190,7 +1203,16 @@ class IngestionPipeline:
             # (isolation_level=None), so no enclosing transaction spans this,
             # and WAL + busy_timeout=10000 rides out write-lock contention.
             if processed == total:
-                if on_committed is not None and on_committed_in_txn:
+                if old_stamps:
+                    group, kept = self.store.delete_group_unless_edited(
+                        old_stamps, created_item_ids, owner_source_id=source_id)
+                    if kept:
+                        logger.info("Kept the indexed group of a file in source_id=%s: one of "
+                                    "its items was edited while its new version was extracted",
+                                    source_id)
+                    if on_committed is not None:
+                        on_committed(group)
+                elif on_committed is not None and on_committed_in_txn:
                     # ONE transaction for the old group's delete and the
                     # caller's ownership write (see ingest_file). Two commits
                     # leave a window where a crash or a raising callback

@@ -13,9 +13,11 @@
  *   `mc:app-nav-hidden-changed` window event (the same-tab path
  *   `lib/appNavHidden.ts` dispatches on every persisted write) hides and
  *   re-shows the row in place, without a remount.
- * - the Discover and Library BUILT-IN rows are never filtered, regardless of
- *   what the storage array contains — they are dedicated section rows
- *   (navIds `apps` / `apps-library`), not launchpad-managed app rows.
+ * - the Discover and Library BUILT-IN rows are never filtered by the app-row
+ *   filter — they are dedicated section rows (navIds `apps` / `apps-library`),
+ *   not launchpad-managed app rows. Discover's own id `apps` is the one entry
+ *   that hides a built-in: it is the off state of Settings > Display > View >
+ *   "Show Discover in the sidebar", and it hides Discover only.
  *
  * Same isolation shape as App.discoverUpdatesBadge.test.tsx: routed pages are
  * mocked so App mounts without real page trees.
@@ -187,24 +189,36 @@ describe('Sidebar Apps-group filtering — mc-app-nav-hidden', () => {
     await waitFor(() => expect(pinnerRow()).toBeInTheDocument())
   })
 
-  it('Discover and Library built-in rows are never filtered, whatever the storage holds', async () => {
-    // Every id shape that could plausibly point at the two built-ins,
-    // including their real navIds — none of them may remove the rows,
+  it('Discover and Library built-in rows are never filtered by any other id the storage holds', async () => {
+    // Every other id shape that could plausibly point at the two built-ins,
+    // including Library's real navId — none of them may remove the rows,
     // because Discover/Library are dedicated section rows, not
     // launchpad-managed app rows.
     localStorage.setItem(
       APP_NAV_HIDDEN_KEY,
-      JSON.stringify(['apps', 'apps-library', 'discover', 'library', 'app-apps', 'app-apps-library']),
+      JSON.stringify(['apps-library', 'discover', 'library', 'app-apps', 'app-apps-library']),
     )
     renderApp()
     await waitFor(() => expect(screen.getByRole('button', { name: /Discover/ })).toBeInTheDocument())
     expect(screen.getByRole('button', { name: /Library/ })).toBeInTheDocument()
 
     // And the same holds for a LIVE write after mount.
-    writeHiddenAndNotify(['apps', 'apps-library'])
+    writeHiddenAndNotify(['apps-library', 'library'])
     await waitFor(() => expect(api.listApps).toHaveBeenCalled())
     expect(screen.getByRole('button', { name: /Discover/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Library/ })).toBeInTheDocument()
+  })
+
+  it("Discover's own id hides the Discover row only, live, and leaves Library", async () => {
+    renderApp()
+    await waitFor(() => expect(screen.getByRole('button', { name: /Discover/ })).toBeInTheDocument())
+
+    writeHiddenAndNotify(['apps'])
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Discover/ })).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /Library/ })).toBeInTheDocument()
+
+    writeHiddenAndNotify([])
+    await waitFor(() => expect(screen.getByRole('button', { name: /Discover/ })).toBeInTheDocument())
   })
 
   it('hiding an app materializes the full order into mc-app-nav-order', async () => {

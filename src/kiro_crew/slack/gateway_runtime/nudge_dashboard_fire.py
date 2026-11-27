@@ -127,6 +127,16 @@ async def _fire_dashboard_nudge(
 
     if crew_pause.holds_slot(slot):
         return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
+    # A disabled app's slot takes no turn: stop the loop, for a disable this process
+    # never saw in the request (``apps.app_loops``).
+    from kiro_crew.apps.app_loops import stop_loop_if_app_disabled
+
+    if (
+        wake_message is None
+        and self.autonudge_svc is not None
+        and await stop_loop_if_app_disabled(self.autonudge_svc, loop, slot)
+    ):
+        return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
     # STRUCTURAL-TERMINAL GUARD (message loops only). If the slot's LAST
     # delivered turn ended on a malformed-request rejection, the backend
     # refused the payload's SHAPE, deterministically -- re-injecting the same
@@ -605,6 +615,18 @@ async def _start_dashboard_wake_turn(
         # runs no turn tail, so the exit marks itself and spawn_guarded_turn's
         # done callback hands off the queue a send built behind this task.
         if completion_hook is not None and not await completion_hook.authorize():
+            mark_turn_unstarted(turn_slot)
+            return
+        # The app may have been disabled while this turn waited for admission: the
+        # disable stopped the loop but not this queued turn, so recheck before it runs.
+        from kiro_crew.apps.app_loops import app_disabled_for_slot
+
+        if wake_message is None and await asyncio.to_thread(app_disabled_for_slot, turn_slot):
+            logger.info(
+                "AutoNudge: loop %s turn dropped on slot %s: its app was disabled",
+                loop.id,
+                loop.slot_key,
+            )
             mark_turn_unstarted(turn_slot)
             return
         # NO AUDIENCE FENCE for the work-ledger wake, by construction: the

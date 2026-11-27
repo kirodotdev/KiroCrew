@@ -679,8 +679,9 @@ class _PlacedRuntime(FakeRuntime):
     async def terminate_session(self, session_id: str) -> None:
         self.terminated.append(session_id)
 
-    async def evict_session(self, session_id: str) -> None:
+    async def evict_session(self, session_id: str) -> bool:
         self.evicted.append(session_id)
+        return True
 
 
 @pytest.fixture

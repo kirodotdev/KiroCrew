@@ -33,6 +33,16 @@ if TYPE_CHECKING:
 #: reap-echo arm in ``_run`` and ``_force_reap``'s own record synthesize an error.
 _NEUTRAL_REAP_REASONS = frozenset({"user_stop", "parent_end"})
 
+#: Crew's own MCP tools, as a sub-agent run's prompt and its parent's note name them
+#: when a settings file in the run's folder withheld them all
+#: (``SubagentInfo.crew_tools_withheld``).
+CREW_OWN_TOOLS = "Crew's own tools (its MCP servers, spawn_run and cron_add among them)"
+
+#: What a parent is told beside the result of such a run. Prefixed with the agent's
+#: label by each caller; ``{reason}`` is the session's ``settings_withheld_reason``, the
+#: fact without the remedy, since the parent is a model and the remedy is the person's.
+CREW_TOOLS_WITHHELD_NOTE = f"ran without {CREW_OWN_TOOLS} because {{reason}}."
+
 
 class _BareStateView(MutableMapping[str, Any]):
     """Live ``{toolCallId: ToolCallState}`` view over an :class:`InFlightToolTracker`.
@@ -428,6 +438,9 @@ class SubagentInfo:
     # first, which is the run's ``failed``, not ``reaped``.
     _deadline_ending: bool = False
     streaming_text: str = ""
+    # The run's reasoning so far, stream-redacted and bounded
+    # (``cap_streaming_text``); shown in its live status read, never the result.
+    streaming_thinking: str = ""
     elapsed: float = 0.0
     # Deadline captured when execution starts (``0`` until then). A config
     # reload changes the manager default for future runs only; it never
@@ -437,6 +450,8 @@ class SubagentInfo:
     # consumed credits before failing. Providers that do not bill in credits
     # report zero through the shared TurnUsage contract.
     credits: float = 0.0
+    # The run's summed dollar cost, from the same attempts; zero on a credit-billed harness.
+    cost_usd: float = 0.0
     # Shared with terminal reporters so a reap need not wait for a cancelled
     # consumer's state-write drain before settling the active attempt.
     _credit_accounting: _RunCreditAccounting | None = field(default=None, repr=False, compare=False)
@@ -545,6 +560,13 @@ class SubagentInfo:
     # ``CLAUDE.md``) resolve against this directory. Validated on spawn against
     # ``AgentConfig.subagent_cwd_allowed_roots``.
     cwd: str = ""
+    # ``spawn_run``'s ``isolate``: ``"worktree"`` gives the run a git worktree of
+    # its own, made at run start (``crewmate_worktree.make_run_worktree``), which
+    # then replaces ``cwd``. ``worktree`` is that ``RunWorktree``; ``worktree_note``
+    # is the completion event's line about it, computed when the run ends.
+    isolate: str = ""
+    worktree: Any = None
+    worktree_note: str = ""
     _pid: int | None = None  # PID of kiro-cli child process, for tombstone diagnostics
     # Wall-clock (time.time) when _run_inner actually began executing. Distinct
     # from ``started`` (set at registration): a subagent may sit in ``_agents``
@@ -649,6 +671,10 @@ class SubagentInfo:
     # on the _shared_provider directly.
     _session_sharing: bool = False
     _shared_provider: Any = None  # AcpSessionProvider when _session_sharing=True
+    # A place held on a KAS parent's process from the moment the run decides to
+    # share, before its session exists (``_kas_shared_slot_taken``); cleared when
+    # the run falls back to a dedicated process.
+    _shared_slot_reserved: bool = False
     # True when the run inherited a remote session environment: its cost samples
     # go to the ``@remote`` bucket.
     _remote_workspace: bool = False
@@ -669,6 +695,9 @@ class SubagentInfo:
     # session; a second loss is terminal.
     _session_not_found_retry_used: bool = False
     _force_dedicated: bool = False
+    # Why the last sharing check said no ("" when it said yes), for the run's
+    # placement log line (``run_start._should_use_session_sharing_impl``).
+    _placement_reason: str = ""
     # The run's completed-ending CLAIM, a one-shot token like ``_finalized``:
     # taken synchronously by a whole answer (a successful complete event,
     # post-processed into ``result``) when no stop got there first (``done``,
@@ -753,10 +782,13 @@ class SubagentInfo:
     _rowless_ended: set[str] = field(default_factory=set)
     # The run loop's wake-up for a yielded slot: set by ``resume_grant`` when
     # the pump hands the slot back, or by the dependency coordinator's
-    # ``on_fail`` when the wait ended in failure (``_wait_failed`` names why).
-    # None while the run holds its slot.
+    # ``on_fail`` when the wait ended in failure (``_wait_failed`` names why),
+    # or by the reaper sweep when the run's own runtime handle reads dead
+    # (``_runtime_gone`` is the (event, handle) pair it set, so only that wait
+    # honours it). None while the run holds its slot.
     _resume_event: Any = None
     _wait_failed: str = ""
+    _runtime_gone: Any = None
     # True while a dependency park's report is on the store's writer thread, the
     # window before ``yield_slot`` sets ``_slot_released``. The pump's live-waiter
     # snapshot (``taskq_sweep_pass``) counts it, so a wake that lands in that
@@ -798,6 +830,11 @@ class SubagentInfo:
     # Notice-only: the outcome stays completed (earlier calls may have taken
     # effect); the parent is told to check the work (LEAKED_TOOL_CALL_NOTE).
     leaked_tool_call: bool = False
+    # Why this run's session started without Crew's MCP tools, as one clause: a
+    # ``.claude`` settings file in its folder that Crew could not govern withheld
+    # the whole array. Recorded when the session is established; "" when the
+    # tools were delivered.
+    crew_tools_withheld: str = ""
     # Continue-nudges already spent recovering a ``stalled`` / ``recovering``
     # completion in place (``STOP_RECOVERY_MAX_RETRIES`` budget, shared with
     # the main chat's ``slot._tool_stall_retries``).
@@ -815,6 +852,12 @@ class SubagentInfo:
         and made no commit, whatever its text reports.
         """
         return self.tool_count == 0 and self.turns == 0
+
+    @property
+    def crew_tools_withheld_note(self) -> str:
+        """The note on this run's result when its session had no Crew tools, else ``""``."""
+        reason = self.crew_tools_withheld
+        return CREW_TOOLS_WITHHELD_NOTE.format(reason=reason) if reason else ""
 
     @property
     def served_model_unverified(self) -> bool:

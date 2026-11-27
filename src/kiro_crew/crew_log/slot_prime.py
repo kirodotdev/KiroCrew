@@ -45,7 +45,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final
+
+from kiro_crew.config import paths as _paths  # stdlib-only leaf, safe at import
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +87,9 @@ def _pool() -> ThreadPoolExecutor:
     return _executor
 
 
-def _key(slot: str, name: str) -> "tuple[str, str, str]":
-    from kiro_crew.config.paths import data_home
-
-    return (str(data_home()), slot, name)
+def _key(slot: str, name: str, home: "Path | None" = None) -> "tuple[str, str, str]":
+    """The state key of *slot*'s *name* under *home* (the live data home when ``None``)."""
+    return (str(home if home is not None else _paths.data_home()), slot, name)
 
 
 def schedule(slot: str, name: str, *, for_reader: bool = False) -> bool:
@@ -106,7 +108,10 @@ def schedule(slot: str, name: str, *, for_reader: bool = False) -> bool:
             # fold every unit for a value nobody keeps -- once per request. The eager
             # worker skips such a cell for the same reason.
             return False
-        key = _key(slot, name)
+        # The prime folds the home its key names: the pool thread runs through
+        # ``config.paths.run_with_data_home``, so it never reads ``KIROCREW_HOME``.
+        home = _paths.data_home()
+        key = _key(slot, name, home)
         now = time.monotonic()
         with _lock:
             held = _state.get(key)
@@ -129,7 +134,7 @@ def schedule(slot: str, name: str, *, for_reader: bool = False) -> bool:
                     del _state[oldest]
             held.running = True
             held.rerun = False
-        _pool().submit(_run, key, slot, name)
+        _pool().submit(_paths.run_with_data_home, home, _run, key, slot, name)
         return True
     except Exception:
         _log_exc("crew log slot prime could not be scheduled for %s/%s", slot, name)

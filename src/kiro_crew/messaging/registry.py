@@ -119,6 +119,16 @@ class ChannelDescriptor:
     #: ``test_channel_boot_keys_contract.py`` pins ``boot_keys`` against the schema's
     #: ``restart=True`` marks.
     boot_keys: frozenset[str] = frozenset()
+    #: Optional in-place reconnect, tried before a restart when only this
+    #: channel's credentials or ``reconnect_keys`` changed (no ``boot_keys``):
+    #: it returns True when it applied the change to the running client, and
+    #: False, or raises, to have the channel restarted as before. Discord's
+    #: swaps the token and the Gateway intents without dropping running turns.
+    reconnect: Optional[Callable[[Any], Awaitable[bool]]] = None
+    #: Live config keys that ALSO change what ``reconnect`` connects with (the
+    #: Discord allow-lists decide its intents). Applied live by the channel's
+    #: own ``reconfigure`` as well; only consulted when ``reconnect`` is set.
+    reconnect_keys: frozenset[str] = frozenset()
 
 
 def governed_members(descriptors: tuple[ChannelDescriptor, ...]) -> tuple[str, ...]:
@@ -144,9 +154,34 @@ def changed_boot_keys(
     Empty means "nothing that needs a restart changed" -- the answer the
     live-field appliers rely on so their fields never bounce a connection.
     """
+    return _changed_section_keys(desc, changed_paths) & desc.boot_keys
+
+
+def _changed_section_keys(
+    desc: ChannelDescriptor, changed_paths: "frozenset[str] | set[str]"
+) -> frozenset[str]:
     prefix = desc.channel_type + "."
-    keys = {p[len(prefix) :].split(".", 1)[0] for p in changed_paths if p.startswith(prefix)}
-    return frozenset(keys & desc.boot_keys)
+    return frozenset(
+        p[len(prefix) :].split(".", 1)[0] for p in changed_paths if p.startswith(prefix)
+    )
+
+
+def changed_reconnect_keys(
+    desc: ChannelDescriptor, changed_paths: "frozenset[str] | set[str]"
+) -> frozenset[str]:
+    """The ``reconnect_keys`` of *desc* that *changed_paths* touches (none without ``reconnect``)."""
+    if desc.reconnect is None:
+        return frozenset()
+    return _changed_section_keys(desc, changed_paths) & desc.reconnect_keys
+
+
+def reconnects_in_place(desc: ChannelDescriptor, keys: "frozenset[str]") -> bool:
+    """Whether a change to *keys* is first offered to ``desc.reconnect``.
+
+    Only when the channel has one and no boot key is among *keys*: a boot key
+    (the enable flag, a config-file token) still restarts the channel.
+    """
+    return desc.reconnect is not None and not (keys & desc.boot_keys)
 
 
 def changed_credential_keys(

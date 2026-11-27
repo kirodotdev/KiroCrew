@@ -256,7 +256,7 @@ class TestDoctorKasBundle:
         _floor_monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: None)
 
     def test_a_host_below_the_glibc_floor_is_told_so_not_to_install(self, monkeypatch, capsys):
-        """Amazon Linux 2 (glibc 2.26) with kiro-cli signed out: the bundle route is
+        """A glibc 2.17 host (below every floor) with kiro-cli signed out: the bundle route is
         automatic and the engine cannot run here, so the row names glibc instead of
         a first-chat download or an install that is refused every time."""
         from kiro_crew.acp import kas_route
@@ -270,16 +270,16 @@ class TestDoctorKasBundle:
         monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
         monkeypatch.setattr("platform.system", lambda: "Linux")
         monkeypatch.setattr("platform.machine", lambda: "x86_64")
-        monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: (2, 26))
+        monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: (2, 17))
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
         assert "bundle:      ❌" in out
-        assert "glibc (2.26)" in out
+        assert "glibc (2.17)" in out
         assert "first chat" not in out
         assert "kirocrew kas install" not in out
         assert len(issues) == 1
-        assert "glibc (2.26)" in issues[0]
+        assert "glibc (2.17)" in issues[0]
 
     def test_a_host_with_no_engine_build_is_told_so_not_to_install(self, monkeypatch, capsys):
         """A Linux host on an architecture the engine publishes no build for: every
@@ -583,6 +583,25 @@ class TestDoctorKasBundle:
         assert kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY in out
         assert "kiro-cli login" not in out
         assert "also installed" not in out
+        assert issues == []
+
+    def test_an_al2_host_reads_the_al2_pin_as_its_pin(self, monkeypatch, capsys, tmp_path):
+        """On a host whose pin is the AL2 one, that install is the pin (no ⚠), and
+        the normal pin left from before is listed as kept, not judged."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        al2 = kas_bundle.KAS_PIN_AL2_VERSION
+        installed = self._installed(tmp_path, al2)
+        monkeypatch.setattr(kas_bundle, "host_pin_version", lambda: al2)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
+        monkeypatch.setattr(
+            kas_bundle, "installed_versions", lambda: [kas_bundle.KAS_PIN_VERSION, al2]
+        )
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert f"pin:         ✅ KAS {al2} is this release's pin" in out
+        assert f"also installed: {kas_bundle.KAS_PIN_VERSION}" in out
         assert issues == []
 
     def test_an_overridden_engine_is_a_warning_naming_the_variable(

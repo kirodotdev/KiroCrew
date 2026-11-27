@@ -74,6 +74,7 @@ vi.mock('../api/client', () => ({
     connectionsCancel: (...a: unknown[]) => connectionsCancel(...a),
     connectionsDisconnect: (...a: unknown[]) => connectionsDisconnect(...a),
     connectionsTest: (...a: unknown[]) => connectionsTest(...a),
+    connectionsAppManifests: () => Promise.resolve({ schema_version: 1, apps: {} }),
   },
 }))
 
@@ -336,10 +337,10 @@ describe('the provider gallery', () => {
     expect(within(slack).queryByRole('button', { name: /Connect/ })).not.toBeInTheDocument()
     expect(within(slack).queryByRole('button', { name: 'Set up Slack' })).not.toBeInTheDocument()
 
-    // The link opens the switch that turns the sign-in on, so its name says
-    // what the user does there, in words a first-time user knows.
-    const open = within(slack).getByRole('link', { name: 'Turn on Kiro Crew sign-in' })
-    expect(open.textContent?.trim()).toBe('Turn on Kiro Crew sign-in')
+    // The link opens the switch that turns the sign-in on, so its name says it
+    // opens the setting, and whose sign-in it is.
+    const open = within(slack).getByRole('link', { name: 'Open Kiro Crew sign-in setting' })
+    expect(open.textContent?.trim()).toBe('Open Kiro Crew sign-in setting')
     const href = open.getAttribute('href') ?? ''
     expect(href.startsWith('/settings/developer/feature-previews')).toBe(true)
     // The id the Settings registry gives the preview's switch.
@@ -350,15 +351,15 @@ describe('the provider gallery', () => {
     fireEvent.focus(within(slack).getByRole('button', { name: 'Slack prerequisites' }))
     const tip = await screen.findByRole('tooltip')
     expect(tip.textContent).toContain(
-      'Slack signs in through Kiro Crew. To connect it: (1) turn on Kiro Crew sign-in with the button, (2) in Settings, set chats to run on Kiro Agent.',
+      'Slack signs in through Kiro Crew. To connect it: (1) open the Kiro Crew sign-in setting with the button and make sure it is on, (2) in Settings → Agent Harness, choose Kiro Agent.',
     )
     expect(tip.textContent).not.toMatch(/\bis off\b/)
     expect(tip.textContent).not.toContain('that preview')
-    // No setting jargon a first-time user cannot place.
+    // No 'MCP sign-in': the step names the setting by whose sign-in it is.
     expect(tip.textContent).not.toContain('MCP sign-in')
-    expect(tip.textContent).not.toContain('Agent Harness')
-    // Step 2 links to the tab where chats pick their agent, in every language the same tag.
-    const harness = within(tip).getByRole('link', { name: 'Settings' })
+    // Step 2 names and links the tab where chats pick their agent, by the label
+    // the Settings page shows, in every language the same tag.
+    const harness = within(tip).getByRole('link', { name: 'Settings → Agent Harness' })
     expect(harness.getAttribute('href')).toBe('/settings/agent')
     expect(document.body.textContent).not.toContain('settingsLink')
   })
@@ -377,9 +378,9 @@ describe('the provider gallery', () => {
     await waitFor(() => expect(slack).toHaveAttribute('data-state', 'needs-configuration'))
     expect(within(slack).queryByRole('button', { name: /Connect/ })).not.toBeInTheDocument()
     expect(within(slack).queryByRole('button', { name: 'Set up Slack' })).not.toBeInTheDocument()
-    expect(within(slack).queryByRole('link', { name: 'Turn on Kiro Crew sign-in' })).not.toBeInTheDocument()
+    expect(within(slack).queryByRole('link', { name: 'Open Kiro Crew sign-in setting' })).not.toBeInTheDocument()
     expect(within(slack).queryByRole('button', { name: 'Slack prerequisites' })).not.toBeInTheDocument()
-    expect(document.body.textContent).not.toContain('Turn on Kiro Crew sign-in')
+    expect(document.body.textContent).not.toContain('Open Kiro Crew sign-in setting')
     expect(document.body.textContent).not.toContain('Agent Harness')
     // Nothing is left to configure, so the badge is neutral and says where the
     // entry is managed instead of asking for configuration.
@@ -387,7 +388,7 @@ describe('the provider gallery', () => {
     expect(within(slack).queryByText('Needs configuration')).not.toBeInTheDocument()
     // One line says there is nothing to do, and links to the entry on MCP Servers.
     expect(within(slack).getByTestId('crew-sign-in-not-owned').textContent).toBe(
-      'Your own Slack entry in MCP Servers signs in by itself, so there is nothing to do here.',
+      'The Slack server listed in MCP Servers handles its own sign-in, so there is nothing to do here.',
     )
     const entry = within(slack).getByRole('link', { name: 'MCP Servers' })
     expect(entry.getAttribute('href')).toBe('/capabilities?tab=mcp-servers')
@@ -1697,7 +1698,7 @@ describe('a provider that needs attention', () => {
   })
 
   it.each([
-    { crewMintRefused: 'sign_in_off' as const, help: 'Turn on Kiro Crew sign-in' },
+    { crewMintRefused: 'sign_in_off' as const, help: 'Open Kiro Crew sign-in setting' },
     { crewMintRefused: 'not_owned' as const, help: 'MCP Servers' },
   ])('offers no Reconnect on a Slack card whose mint is refused: $crewMintRefused', async ({ crewMintRefused, help }) => {
     mcpServers.mockResolvedValue([server({ name: 'slack', url: SLACK_URL, status: 'error', enabled: false })])
@@ -1719,7 +1720,7 @@ describe('a provider that needs attention', () => {
     const slack = await waitFor(() => card('slack'))
     await waitFor(() => expect(slack).toHaveAttribute('data-state', 'not-connected'))
     expect(within(slack).queryByRole('button', { name: /Connect/ })).not.toBeInTheDocument()
-    expect(within(slack).getByRole('link', { name: 'Turn on Kiro Crew sign-in' })).toBeInTheDocument()
+    expect(within(slack).getByRole('link', { name: 'Open Kiro Crew sign-in setting' })).toBeInTheDocument()
     expect(mcpCustomAdd).not.toHaveBeenCalled()
     expect(connectionsMint).not.toHaveBeenCalled()
   })

@@ -98,13 +98,20 @@ def _begin_groups(rows: tuple[ArmourRow, ...]) -> tuple[tuple[str, tuple[ArmourR
 
 
 def detect_armour(
-    text: str, rows: tuple[ArmourRow, ...], final: bool
-) -> tuple[list[Hit], list[int]]:
+    text: str, rows: tuple[ArmourRow, ...], final: bool, start: int = 0
+) -> tuple[list[Hit], list[int], list[tuple[int, int]]]:
+    """``(hits, opens, blocks)``; *blocks* is ``(BEGIN, END line end)`` per ended block.
+
+    Scanning starts at *start*: a stream passes where the last block it committed
+    ended, so a BEGIN inside that block, read whole text consumed, is not read again
+    after the block's own BEGIN has left the stream's look-behind.
+    """
     n = len(text)
     hits: list[Hit] = []
     opens: list[int] = []
+    blocks: list[tuple[int, int]] = []
     for begin, group in cached(rows, _begin_groups):
-        p = text.find(begin)
+        p = text.find(begin, start)
         while p != -1:
             nxt = p + 1
             for row in group:
@@ -112,7 +119,7 @@ def detect_armour(
                 if found is True:
                     if not final:
                         opens.append(p)
-                        return hits, opens
+                        return hits, opens, blocks
                     continue
                 if not found:
                     continue
@@ -127,6 +134,7 @@ def detect_armour(
                     if end > start and not _is_tag(text, start, end):
                         hits.append(Hit(start, end, row.id, row.tier, "armour", "armour", anchor=p))
                     nxt = idx + len(end_line)
+                    blocks.append((p, nxt))
                     break
                 if final or n >= limit:
                     # Fail closed: the body runs to the end of the text.
@@ -148,8 +156,8 @@ def detect_armour(
                                 anchor=p,
                             )
                         )
-                    return hits, opens
+                    return hits, opens, blocks
                 opens.append(p)
-                return hits, opens
+                return hits, opens, blocks
             p = text.find(begin, nxt)
-    return hits, opens
+    return hits, opens, blocks

@@ -78,9 +78,15 @@ HEADLESS_ONLY = (
 
 #: Seconds between status reads. Overridable for tests.
 POLL_SECS = float(os.environ.get("KIROCREW_HEADLESS_POLL_SECS") or 5.0)
+#: The wall cap of a run given no ``--timeout`` (``--timeout 0`` turns it off), so a
+#: run that waits on an ask the poller does not recognise still ends.
+DEFAULT_TIMEOUT_SECS = 6 * 3600.0
 #: How long a finished background agent's result can be held before it reaches its
 #: parent: ``subagent_parts.run_limits._RESET_TIMEOUT + _TEARDOWN_REPORT_GRACE``.
 _DELIVERY_GRACE_SECS = 60.0
+#: How long each sign-in request waits: as long as ``kirocrew token`` waits for the
+#: same mint, since a gateway that is up but busy can take 12-14 s to answer.
+_SIGN_IN_TIMEOUT_SECS = 20.0
 
 #: A turn that ends with an option list is asking the person to pick.
 _OPTIONS_MARK = "[OPTIONS:"
@@ -114,7 +120,7 @@ class Options:
     until_done: bool = False
     idle_grace: float = 900.0
     cwd: str = ""
-    timeout: float = 0.0
+    timeout: float = DEFAULT_TIMEOUT_SECS
     budget: float = 0.0
     json: bool = False
 
@@ -198,7 +204,7 @@ def options_from_args(args: argparse.Namespace) -> Options:
         until_done=bool(args.until_done),
         idle_grace=900.0 if args.idle_grace is None else float(args.idle_grace),
         cwd=cwd,
-        timeout=float(args.timeout or 0),
+        timeout=DEFAULT_TIMEOUT_SECS if args.timeout is None else float(args.timeout),
         budget=float(args.budget or 0),
         json=bool(args.json),
     )
@@ -275,12 +281,12 @@ class GatewayClient:
             mint = urllib.request.Request(
                 f"{self.base}/api/token/local?ttl=1m", headers={"X-Local-Secret": secret}
             )
-            with self._open(mint, 10, "cli_headless_token") as resp:
+            with self._open(mint, _SIGN_IN_TIMEOUT_SECS, "cli_headless_token") as resp:
                 self._token = json.loads(resp.read())["token"]
             prime = urllib.request.Request(
                 f"{self.base}/api/status?token={urllib.parse.quote(self._token, safe='')}"
             )
-            with self._open(prime, 10, "cli_headless_session") as resp:
+            with self._open(prime, _SIGN_IN_TIMEOUT_SECS, "cli_headless_session") as resp:
                 jar = http.cookies.SimpleCookie()
                 for raw in resp.headers.get_all("Set-Cookie") or []:
                     jar.load(raw)
@@ -347,24 +353,20 @@ def transcript_path(slot: str) -> Path:
     return Path(data_home()) / "sessions" / f"dashboard_{slot}.jsonl"
 
 
-def transcript_credits(path: Path) -> float:
-    """Sum of ``meta.turn_stats.credits`` over a slot's transcript; 0 when absent."""
-    total = 0.0
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return 0.0
-    for line in lines:
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
-        meta = entry.get("meta") if isinstance(entry, dict) else None
-        stats = meta.get("turn_stats") if isinstance(meta, dict) else None
-        value = stats.get("credits") if isinstance(stats, dict) else None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            total += float(value)
-    return total
+def usage_credits(slots: set[str], since: float) -> float:
+    """The credits the per-turn usage store holds for *slots*' turns since *since*.
+
+    Read from the usage rows (``<data home>/usage/tokens``) every billed turn writes
+    when it ends, whether or not it left a reply. A transcript's ``meta.turn_stats``
+    is not enough: it sits on the turn's reply row, so a turn that ends on tool calls
+    with no reply (a conductor turn that stops after ``autonudge_stop``) has no
+    footer and its credits were missed. The window starts at the run's own start, so
+    a run of any length keeps every turn it paid for.
+    """
+    from kiro_crew.dashboard.handlers.usage import slot_turn_usage
+
+    days = max(time.time() - since, 0.0) / 86400
+    return sum(float(row.get("credits", 0.0)) for k in slots for row in slot_turn_usage(k, days))
 
 
 def ledger_items(client: "GatewayClient", slot: str) -> list[dict[str, Any]]:
@@ -585,13 +587,13 @@ def spawn_credits(client: GatewayClient, slots: set[str], settled: Spawns) -> fl
 
 
 def run_spend(client: GatewayClient, slots: set[str], since: float, settled: Spawns) -> float:
-    """The run's credits: its chats' saved turns plus its finished background agents.
+    """The run's credits: its chats' finished turns plus its finished background agents.
 
     Both halves use the same chat set, so the agents of a chat closed between two
     polls (found only from its transcript) count as well.
     """
     chats = spend_slots(slots, since)
-    spent = sum(transcript_credits(transcript_path(k)) for k in chats)
+    spent = usage_credits(chats, since)
     return spent + spawn_credits(client, chats, settled)
 
 
@@ -918,7 +920,8 @@ def _stop(client: GatewayClient, slots: set[str], res: Result, status: str) -> R
     gateway declines (the session is compacting) or leaves pending is pressed once
     more with ``force``, the dashboard's own second-press escape to a hard kill. The
     chat's Trust is left as is: the owner route's ``normal`` would also end a
-    process-wide YOLO grant, and a stopped chat with no automation starts no turn.
+    process-wide YOLO grant, and a stopped chat with no automation starts no turn, so
+    a Trust chat the gateway refuses to close is reported as left in Trust.
     *slots* is the last poll's view, so after each round of stops (root first) the
     slot list is read again and any chat created since then is stopped too; *slots*
     grows in place, so the caller's final spend count covers those chats.
@@ -949,7 +952,8 @@ def _stop(client: GatewayClient, slots: set[str], res: Result, status: str) -> R
                 # itself stays open, so the result names it.
                 res.unclosed.append(key)
     if res.unclosed:
-        note = "not closed: " + ", ".join(res.unclosed)
+        left = ", left in Trust" if res.approval_mode == "trust" else ""
+        note = f"not closed{left}: " + ", ".join(res.unclosed)
         res.error = f"{res.error}; {note}" if res.error else note
     return res
 

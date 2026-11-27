@@ -134,20 +134,24 @@ def normalized_hosts(raw: object) -> list[str]:
     has already refused the manifest that carried it.
     """
     out: list[str] = []
+    # A set beside the list: a provider may list any number of hosts.
+    seen: set[str] = set()
     for h in raw if isinstance(raw, list) else []:
         n = normalize_host(h) if isinstance(h, str) else None
-        if n and n not in out:
+        if n and n not in seen:
+            seen.add(n)
             out.append(n)
     return out
 
 
 def host_list_errors(
-    where: str, hosts: list[str], bad_hosts: bool, limit: int, required: bool = True
+    where: str, hosts: list[str], bad_hosts: bool, limit: int | None, required: bool = True
 ) -> list[str]:
     """The validation errors of a point entry's ``hosts``, already normalized.
 
-    *required* False lets ``hosts`` be empty, for a point that fires on something
-    else too (a link-preview provider with text patterns).
+    ``limit`` None: the point takes any number of hosts. *required* False lets
+    ``hosts`` be empty, for a point that fires on something else too (a
+    link-preview provider with text patterns).
     """
     errors: list[str] = []
     if bad_hosts:
@@ -156,7 +160,7 @@ def host_list_errors(
         errors.append(f"{where}: hosts must be an array of hostnames")
     elif not hosts and required:
         errors.append(f"{where}: hosts must list at least one hostname")
-    elif len(hosts) > limit:
+    elif limit is not None and len(hosts) > limit:
         errors.append(f"{where}: {len(hosts)} hosts exceeds the limit of {limit}")
     for host in hosts:
         if not HOST_RE.fullmatch(host):

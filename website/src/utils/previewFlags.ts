@@ -71,6 +71,10 @@ export const PREVIEW_SESSION_ENVIRONMENTS = `${PREVIEW_FLAG_PREFIX}session-envir
  */
 export const PREVIEW_CONNECTED_COMPUTERS = `${PREVIEW_FLAG_PREFIX}connected-computers`
 
+/** App tools in a Bot's chat (`bot_chat_app_tools`): lets a ticked Bot use an
+ *  app's servers in its own chat. Gateway-side toggle; per-app tick on the app page. */
+export const PREVIEW_BOT_CHAT_APP_TOOLS = `${PREVIEW_FLAG_PREFIX}bot-chat-app-tools`
+
 /** Inbound webhooks (`/webhooks`): functional, not yet polished enough to ship. */
 export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
 
@@ -223,6 +227,17 @@ export const PREVIEW_DASHBOARD_STALE_WAKE = `${PREVIEW_FLAG_PREFIX}dashboard-sta
 export const PREVIEW_CHAT_RUNTIME_SHARING = `${PREVIEW_FLAG_PREFIX}chat-runtime-sharing`
 
 /**
+ * KAS sub-agents: a KAS dashboard chat on the default agent runs the sub-agents
+ * that report back in the same reply inside the KAS engine instead of starting
+ * Kiro Crew's own. Server-only: the gateway reads
+ * `dashboard.feature_previews.kas_subagents` at each session start
+ * (`acp/kas_engine_subagents.kas_subagents_preview_on`), so nothing in the
+ * dashboard reads this key. Default OFF, and OFF is Kiro Crew's own sub-agents
+ * as before; a change applies to chats started after it.
+ */
+export const PREVIEW_KAS_SUBAGENTS = `${PREVIEW_FLAG_PREFIX}kas-subagents`
+
+/**
  * Worker grill: a conductor may offer to let two or three workers grill a costly
  * choice before it picks a path, answer a pick with a `[GRILL: {...}]` card line,
  * and dispatch one moderator worker that runs the fast talk
@@ -275,6 +290,7 @@ export const PREVIEW_CREW_CLIENT = `${PREVIEW_FLAG_PREFIX}crew-client`
  * {@link PREVIEW_INSTANCE_SESSIONS} is left out: the gateway never keeps it.
  */
 export const PREVIEW_FLAGS: readonly string[] = [
+  PREVIEW_BOT_CHAT_APP_TOOLS,
   PREVIEW_CONNECTED_COMPUTERS,
   PREVIEW_WEBHOOKS,
   PREVIEW_ARTIFACT_DEPLOY,
@@ -288,6 +304,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_CHAT_RUNTIME_SHARING,
+  PREVIEW_KAS_SUBAGENTS,
   PREVIEW_WORKER_GRILL,
   PREVIEW_APP_BROWSER_SDK,
   PREVIEW_VISUAL_REFRESH,

@@ -16,6 +16,7 @@ import {
   type ConductorRowView, type RowPlacement, type RowScene, type RowShell, type SidebarRowInputs, type SidebarRows,
 } from './rows'
 import type { SessionFilterKey, Slot } from './types'
+import { rowStatusOf, type RowStatus } from './rowStatus'
 import type { GuideStepPlan } from '../../guide/guideActions'
 
 const NOW = Date.parse('2026-10-05T12:00:00Z')
@@ -52,7 +53,7 @@ function inputs(rows: Slot[], over: InputOverrides = {}): SidebarRowInputs {
     rows,
     local: {
       folderOf: {}, pinned: new Set(), pinnedRank: new Map(), unread: new Set(), running: new Set(), recent: new Set(),
-      searchRanks: null, manualRank: new Map(), drawnIndex: new Map(),
+      searchRanks: null, manualRank: new Map(), drawnIndex: new Map(), openKey: null,
       ...over.local,
     },
     filters: {
@@ -80,9 +81,14 @@ const SHELL: RowShell = {
   guideOnRowControl: false,
 }
 
+/** The row-status store's values (./rowStatus), for the answers rows read from it. */
+function status(over: Partial<RowStatus> = {}): RowStatus {
+  return { activeSlot: null, crewWindow: null, crewParent: null, splitMode: false, openFailed: false, unread: new Set(), ...over }
+}
+
 function scene(over: Partial<Omit<RowScene, 'local'>> & { local?: Partial<RowScene['local']> } = {}): RowScene {
   return {
-    activeSlot: null, crewWindow: null, crewParent: null, shell: SHELL, drag: null,
+    crewWindow: null, shell: SHELL, drag: null,
     ...over,
     local: {
       recentRank: new Map(), subagentCounts: {}, subagentApprovalCounts: {}, poppedOut: new Set(), digits: null,
@@ -92,7 +98,7 @@ function scene(over: Partial<Omit<RowScene, 'local'>> & { local?: Partial<RowSce
   }
 }
 
-const AT: RowPlacement = { scope: 'list', navScope: 'list', holdContainer: 'tree:root', showDivider: false, orderStamp: 0, rowAnimEnabled: true }
+const AT: RowPlacement = { scope: 'list', navScope: 'list', holdContainer: 'tree:root', dividerNext: null, orderStamp: 0, rowAnimEnabled: true }
 const keys = (rows: Slot[]) => rows.map(s => s.peer_id ? `${s.peer_id}:${s.key}` : s.key)
 
 // ── peer isolation ───────────────────────────────────────────────────────────
@@ -101,7 +107,7 @@ const keys = (rows: Slot[]) => rows.map(s => s.peer_id ? `${s.peer_id}:${s.key}`
 const FULL_LOCAL: SidebarRowInputs['local'] = {
   folderOf: { k: 'F1' }, pinned: new Set(['k']), pinnedRank: new Map([['k', 0]]), unread: new Set(['k']),
   running: new Set(['k']), recent: new Set(['k']), searchRanks: null,
-  manualRank: new Map([['k', 0]]), drawnIndex: new Map([['k', 0]]),
+  manualRank: new Map([['k', 0]]), drawnIndex: new Map([['k', 0]]), openKey: 'k',
 }
 const FULL_SCENE_LOCAL: RowScene['local'] = {
   recentRank: new Map([['k', 1]]), subagentCounts: { k: 2 }, subagentApprovalCounts: { k: 1 }, poppedOut: new Set(['k']),
@@ -116,12 +122,12 @@ describe('a peer row never carries local state', () => {
   it('gets the same view and window whatever local state its key collides with', () => {
     const empty = buildSidebarRows(inputs([theLocal, thePeer])).views(scene())
     const full = buildSidebarRows(inputs([theLocal, thePeer], { local: FULL_LOCAL }))
-      .views(scene({ activeSlot: 'k', local: FULL_SCENE_LOCAL }))
+      .views(scene({ local: FULL_SCENE_LOCAL }))
     expect(full.view(thePeer, AT)).toEqual(empty.view(thePeer, AT))
     expect(full.windowOf(thePeer)).toEqual(empty.windowOf(thePeer))
     expect(full.view(thePeer, AT)).toMatchObject({
       identity: 'inst-a:k', localKey: '', peerId: 'inst-a', peerName: 'astro',
-      isActive: false, isOut: false, isPinned: false, isUnread: false,
+      isOut: false, isPinned: false,
       recent: undefined, subagentCount: 0, subagentApprovalCount: 0, digitBadge: undefined, isRenaming: false,
       renamingHere: false, renameValue: '', revealFlash: null, pinnedOrderIndex: -1, pinnedReorderEnabled: false,
       opensElsewhere: null,
@@ -129,18 +135,24 @@ describe('a peer row never carries local state', () => {
       isRunning: true,
     })
     expect(full.windowOf(thePeer).keepMounted).toBe(false)
+    expect(rowStatusOf(status({ activeSlot: 'k', unread: new Set(['k']), crewParent: 'k' }), thePeer)).toEqual({
+      isActive: false, isSidebarActiveSlot: false, reclickPanel: false, isCrewParent: false, isUnread: false, nextIsActive: false,
+    })
   })
 
   it('while the local row it collides with carries every piece of it', () => {
     const views = buildSidebarRows(inputs([theLocal, thePeer], { local: FULL_LOCAL }))
-      .views(scene({ activeSlot: 'k', local: FULL_SCENE_LOCAL }))
+      .views(scene({ local: FULL_SCENE_LOCAL }))
     expect(views.view(theLocal, AT)).toMatchObject({
       identity: 'k', localKey: 'k', peerId: undefined, peerName: undefined,
-      isActive: true, isOut: true, isPinned: true, isUnread: true, isRunning: true,
+      isOut: true, isPinned: true, isRunning: true,
       recent: 1, subagentCount: 2, subagentApprovalCount: 1, digitBadge: '1', isRenaming: true, renamingHere: true,
       renameValue: 'draft', revealFlash: 'flash', pinnedOrderIndex: 0, pinnedReorderEnabled: true,
     })
     expect(views.windowOf(theLocal).keepMounted).toBe(true)
+    expect(rowStatusOf(status({ activeSlot: 'k', unread: new Set(['k']) }), theLocal)).toEqual({
+      isActive: true, isSidebarActiveSlot: true, reclickPanel: true, isCrewParent: false, isUnread: true, nextIsActive: false,
+    })
   })
 
   it('names its crew by display name, falling back to the crew id', () => {
@@ -152,10 +164,9 @@ describe('a peer row never carries local state', () => {
 
   it('is never active, filed, pinned or counted through the local key', () => {
     const rows = buildSidebarRows(inputs([theLocal, thePeer], { local: FULL_LOCAL }))
-    const views = rows.views(scene({ activeSlot: 'k' }))
-    expect(views.isActive(theLocal)).toBe(true)
-    expect(views.isActive(thePeer)).toBe(false)
-    expect(views.isActive(null)).toBe(false)
+    const open = status({ activeSlot: 'k' })
+    expect(rowStatusOf(open, theLocal).isActive).toBe(true)
+    expect(rowStatusOf(open, thePeer).isActive).toBe(false)
     expect(rows.folderOf(theLocal)).toBe('F1')
     expect(rows.folderOf(thePeer)).toBeUndefined()
     expect(rows.isPinned(theLocal)).toBe(true)
@@ -180,37 +191,32 @@ describe('a peer row never carries local state', () => {
   describe('is active only for the crew window open on its own (crew, key) pair', () => {
     // The same raw key `k` on a local slot, on this crew and on another crew.
     const otherCrew = peer('k', { peer_id: 'inst-b', peer_name: 'beta', row_identity: 'inst-b:k' })
-    const rows = buildSidebarRows(inputs([theLocal, thePeer, otherCrew]))
-    const lit = (over: Parameters<typeof scene>[0]) => {
-      const views = rows.views(scene(over))
-      return [theLocal, thePeer, otherCrew].map(s => [views.isActive(s), views.view(s, AT).isActive, views.windowOf(s).keepMounted])
-    }
+    // The open row's never-stub hold reads the same answer (laneRows' OpenRowWindow).
+    const lit = (over: Pick<RowStatus, 'activeSlot'> & Partial<Pick<RowStatus, 'crewWindow'>>) =>
+      [theLocal, thePeer, otherCrew].map(s => rowStatusOf(status(over), s).isActive)
 
     it('lights the peer row its window names, and neither the colliding local nor the other crew', () => {
       expect(lit({ activeSlot: 'k', crewWindow: { instanceId: 'inst-a', key: 'k' } }))
-        .toEqual([[false, false, false], [true, true, true], [false, false, false]])
+        .toEqual([false, true, false])
       expect(lit({ activeSlot: 'k', crewWindow: { instanceId: 'inst-b', key: 'k' } }))
-        .toEqual([[false, false, false], [false, false, false], [true, true, true]])
+        .toEqual([false, false, true])
     })
 
     it('lights no row for a window on a key no row carries', () => {
       expect(lit({ activeSlot: 'k', crewWindow: { instanceId: 'inst-a', key: 'other' } }))
-        .toEqual([[false, false, false], [false, false, false], [false, false, false]])
+        .toEqual([false, false, false])
     })
 
     it('lights the local row by the active slot only while no window is open', () => {
-      expect(lit({ activeSlot: 'k' })).toEqual([[true, true, true], [false, false, false], [false, false, false]])
+      expect(lit({ activeSlot: 'k' })).toEqual([true, false, false])
     })
   })
 
   it('marks the Crew Mode root as the parent of the worker in the pane, never a peer or under a window', () => {
     const root = local('root', { crew_mode_root: true } as Partial<Slot>)
     const plain = local('plain')
-    const rows = buildSidebarRows(inputs([root, plain, thePeer]))
-    const parent = (over: Parameters<typeof scene>[0]) => {
-      const views = rows.views(scene(over))
-      return [root, plain, thePeer].map(s => [views.view(s, AT).isCrewParent, views.view(s, AT).isActive])
-    }
+    const parent = (over: Partial<RowStatus>) =>
+      [root, plain, thePeer].map(s => [rowStatusOf(status(over), s).isCrewParent, rowStatusOf(status(over), s).isActive])
     // The worker 'w1' is not listed; its root is marked, not lit as active.
     expect(parent({ activeSlot: 'w1', crewParent: 'root' })).toEqual([[true, false], [false, false], [false, false]])
     // A plain chat in the pane marks nothing.
@@ -460,6 +466,20 @@ describe('the lane order', () => {
     const rows = buildSidebarRows(inputs([local('m', { title: 'beta' }), local('n', { title: 'alpha' })], { sortKey: 'name-asc' }))
     expect(keys(rows.filteredSlots)).toEqual(['n', 'm'])
   })
+
+  it('lifts the running rows under "In progress, then newest" and drops one back when its turn ends', () => {
+    const longTurn = local('long', { last_turn_ts: iso(30 * MINUTE) })
+    const idle = local('idle', { last_turn_ts: iso(MINUTE) })
+    const working = peer('w', { running: true, last_turn_ts: iso(20 * MINUTE) })
+    const during = inputs([idle, longTurn, working], { local: { running: new Set(['long']) } })
+    // Newest first ranks a long turn by when it began, so an idle chat passes it.
+    expect(keys(buildSidebarRows(during).filteredSlots)).toEqual(['idle', 'inst-a:w', 'long'])
+    const lifted = buildSidebarRows({ ...during, sortKey: 'active-then-date' })
+    expect(keys(lifted.filteredSlots)).toEqual(['inst-a:w', 'long', 'idle'])
+    // Only the running set changes, so the next build re-sorts on it alone.
+    const after = { ...during, sortKey: 'active-then-date' as const, local: { ...during.local, running: new Set<string>() } }
+    expect(keys(buildSidebarRows(after, lifted).filteredSlots)).toEqual(['inst-a:w', 'idle', 'long'])
+  })
 })
 
 // ── lanes and folders ───────────────────────────────────────────────────────
@@ -507,6 +527,49 @@ describe('a pinned session is exempt from the property filters', () => {
     const rows = build({ status: { active: new Set<SessionFilterKey>(['running']) } })
     expect(rows.statusCounts.running).toBe(0)
     expect(rows.statusCounts.pinned).toBe(1)
+  })
+})
+
+describe('the open chat is exempt from the status chips', () => {
+  const opened = local('open', { title: 'alpha' })
+  const unreadRow = local('unread', { title: 'beta' })
+  const peerTwin = peer('open', { title: 'gamma' })
+  const build = (filters: InputOverrides['filters'], openKey: string | null = 'open') =>
+    buildSidebarRows(inputs([opened, unreadRow, peerTwin], { local: { unread: new Set(['unread']), openKey }, filters }))
+  const unreadOnly = { status: { active: new Set<SessionFilterKey>(['unread']) } }
+
+  it('stays listed under Unread after opening it marked it read', () => {
+    const rows = build(unreadOnly)
+    expect(keys(rows.filteredSlots)).toEqual(['open', 'unread'])
+    expect(rows.revealBlockingFilters[2].hides(opened)).toBe(false)
+  })
+
+  it('drops out once another chat is opened', () => {
+    expect(keys(build(unreadOnly, 'unread').filteredSlots)).toEqual(['unread'])
+  })
+
+  it('lends nothing to a peer row whose key collides with it', () => {
+    expect(keys(build(unreadOnly).filteredSlots)).not.toContain('inst-a:open')
+  })
+
+  it('gets no pass from a chip that opening a chat does not change', () => {
+    expect(keys(build({ status: { active: new Set<SessionFilterKey>(['running']) } }).filteredSlots)).toEqual([])
+  })
+
+  it('is not blamed on the status chips when the search drops it, so a reveal clears only the search', () => {
+    const rows = build({ ...unreadOnly, search: { text: 'beta' } })
+    expect(keys(rows.filteredSlots)).toEqual(['unread'])
+    expect(rows.revealBlockingFilters[1].hides(opened)).toBe(true)
+    expect(rows.revealBlockingFilters[2].hides(opened)).toBe(false)
+  })
+
+  it('is still dropped by the search and by a status hide', () => {
+    expect(keys(build({ ...unreadOnly, search: { text: 'beta' } }).filteredSlots)).toEqual(['unread'])
+    const hidden = buildSidebarRows(inputs([opened, unreadRow], {
+      local: { running: new Set(['open']), openKey: 'open' },
+      filters: { status: { hidden: new Set<SessionFilterKey>(['running']) } },
+    }))
+    expect(keys(hidden.filteredSlots)).toEqual(['unread'])
   })
 })
 
@@ -723,6 +786,11 @@ describe('the dormant split', () => {
     const byName = buildSidebarRows(inputs([fresh, dormant], { sortKey: 'name-asc' }))
     expect(byName.staleSplit([fresh, dormant], stale).stale).toEqual([])
   })
+
+  it('folds under "In progress, then newest" as under newest first', () => {
+    const rows = buildSidebarRows(inputs([fresh, dormant], { sortKey: 'active-then-date' }))
+    expect(keys(rows.staleSplit(rows.filteredSlots, stale).stale)).toEqual(['dormant'])
+  })
 })
 
 // ── identity ─────────────────────────────────────────────────────────────────
@@ -831,6 +899,9 @@ describe('each output keeps its identity while its own inputs hold still', () =>
     const second = buildSidebarRows(withLocal('unread', new Set(['c']))(rebuilt()), first)
     expect(second.laneOrder).toBe(first.laneOrder)
     expect(second.isRowFolderHidden).toBe(first.isRowFolderHidden)
+    // Only "In progress, then newest" orders by the running set.
+    const third = buildSidebarRows(withLocal('running', new Set(['c']))(rebuilt()), first)
+    expect(third.laneOrder).toBe(first.laneOrder)
   })
 
   // Exactly ONE leaf input changes per row. Built incrementally from the previous
@@ -847,6 +918,7 @@ describe('each output keeps its identity while its own inputs hold still', () =>
     ['local.running', withLocal('running', new Set(['b', 'c']))],
     ['local.recent', withLocal('recent', new Set(['a']))],
     ['local.searchRanks', withLocal('searchRanks', new Map([['b', 0], ['d', 1]]))],
+    ['local.openKey', withLocal('openKey', 'c')],
     ['filters.tags.resolved', withFilter('tags', 'resolved', new Set(['t2']))],
     ['filters.tags.raw', withFilter('tags', 'raw', new Set(['t2']))],
     ['filters.search.text', withFilter('search', 'text', 'beta')],
@@ -1001,8 +1073,8 @@ describe('the window a row stubs into', () => {
   })
 
   it('stubs a row only when nothing on it would be lost', () => {
+    // The open row never stubs either; laneRows reads that from the row-status store.
     expect(mounted({})).toBe(false)
-    expect(mounted({ activeSlot: 'a' })).toBe(true)
     expect(mounted({ local: { revealFlash: { kind: 'session', key: 'a', fading: true } } })).toBe(true)
     expect(mounted({ local: { revealFlash: { kind: 'folder', key: 'a', fading: false } } })).toBe(false)
     // Renaming in ANY placement keeps every copy of the row mounted.
@@ -1010,7 +1082,7 @@ describe('the window a row stubs into', () => {
     expect(mounted({ drag: { type: 'session', id: 'a' } })).toBe(true)
     expect(mounted({ drag: { type: 'folder', id: 'a' } })).toBe(false)
     expect(mounted({ local: { nativeDragKey: 'a' } })).toBe(true)
-    expect(mounted({ activeSlot: 'b', local: { nativeDragKey: 'b' } })).toBe(false)
+    expect(mounted({ local: { nativeDragKey: 'b' } })).toBe(false)
   })
 })
 

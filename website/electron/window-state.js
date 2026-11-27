@@ -14,6 +14,12 @@
 // The fix is to own the geometry: persist the normal (restore) bounds plus a
 // fullScreen flag, then recreate the window with those bounds and re-enter
 // fullscreen ourselves so the window fills its Space and the view lays out.
+//
+// That restore is for macOS only. On Windows and Linux fullscreen is a
+// borderless window with no caption buttons and no menu bar, and F11 is the
+// only way out. Bringing it back on launch leaves a user who pressed F11 once
+// with a window, splash included, that has no visible control to leave it.
+// The caller passes `restoreFullScreen: false` there.
 
 const DEFAULT_BOUNDS = { width: 1280, height: 860 };
 const MIN_SIZE = { width: 550, height: 600 };
@@ -55,9 +61,10 @@ function isVisibleOn(displays, b) {
  *   - Saved position not visible on any         -> drop x/y (OS centers it),
  *     connected display                            keep the (valid) size.
  *   - fullScreen is carried through as a boolean only — never the fs frame.
+ *   - restoreFullScreen: false                  -> fullScreen is always false.
  *
  * @param {*} saved  Raw value read from persistent storage (may be undefined).
- * @param {{displays?:Array, defaults?:{width:number,height:number}, minSize?:{width:number,height:number}}} [opts]
+ * @param {{displays?:Array, defaults?:{width:number,height:number}, minSize?:{width:number,height:number}, restoreFullScreen?:boolean}} [opts]
  * @returns {{width:number, height:number, fullScreen:boolean, x?:number, y?:number}}
  */
 function sanitizeWindowState(saved, opts = {}) {
@@ -65,7 +72,7 @@ function sanitizeWindowState(saved, opts = {}) {
   const minSize = opts.minSize || MIN_SIZE;
   const displays = Array.isArray(opts.displays) ? opts.displays : [];
 
-  const fullScreen = !!(saved && saved.fullScreen);
+  const fullScreen = opts.restoreFullScreen !== false && !!(saved && saved.fullScreen);
   // Legacy saved states predate the key; !! coerces missing/odd values to false.
   const alwaysOnTop = !!(saved && saved.alwaysOnTop);
 

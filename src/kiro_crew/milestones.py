@@ -870,18 +870,23 @@ def _count_chat_transcripts() -> int:
         TRANSCRIPT_HEADER_MAX_BYTES,
         memory_mode_from_header_line,
     )
-    from kiro_crew.history_files import ARCHIVE_DIR_NAME, ARCHIVE_SEGMENT_DELIMITER
+    from kiro_crew.history_files import ARCHIVE_DIR_NAME, archive_segment_stem
 
     base = config_dir() / "sessions"
     stems: set[str] = set()
     for directory in (base, base / ARCHIVE_DIR_NAME):
+        in_archive = directory != base
         try:
             with os.scandir(directory) as it:
                 for entry in it:
                     name = entry.name
                     if not name.startswith("dashboard_chat-") or not name.endswith(".jsonl"):
                         continue
-                    stem = name[: -len(".jsonl")].split(ARCHIVE_SEGMENT_DELIMITER)[0]
+                    # A live file's whole name is its stem; a segment's stem is
+                    # everything before its LAST delimiter, since a stem may hold one.
+                    stem = name[: -len(".jsonl")]
+                    if in_archive:
+                        stem = archive_segment_stem(name) or stem
                     if stem in stems:
                         continue
                     try:

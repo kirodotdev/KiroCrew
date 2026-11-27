@@ -28,6 +28,10 @@ from kiro_crew.monitoring.github_provider_errors import (
     shared_cooldown,
     shared_cooldown_summary,
 )
+from kiro_crew.monitoring.github_pull_request_people import (
+    person_comment_digest,
+    person_fingerprints,
+)
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET,
     MAX_MONITOR_CHECK_IDENTITY_CHARS,
@@ -112,9 +116,18 @@ reviewThreads(first:PAGE_SIZE,after:$CURSOR){
 }
 """.replace("PAGE_SIZE", str(_REVIEW_THREAD_PAGE_SIZE)).strip()
 _PR_COMMENTS_SELECTION = """
+author{login}
 comments(first:PAGE_SIZE,after:$CURSOR){
   pageInfo{hasNextPage endCursor}
-  nodes{body}
+  nodes{body author{login __typename}}
+}
+""".replace("PAGE_SIZE", str(_PR_COMMENT_PAGE_SIZE)).strip()
+# Read on the first comment page only, and not paged: it feeds the person digest
+# alone, and a pull request with more reviews than one page yields no digest.
+_PR_REVIEWS_SELECTION = """
+reviews(first:PAGE_SIZE){
+  pageInfo{hasNextPage}
+  nodes{body author{login __typename}}
 }
 """.replace("PAGE_SIZE", str(_PR_COMMENT_PAGE_SIZE)).strip()
 # GitHub meters GraphQL in points and REST in requests, and the two budgets are
@@ -228,6 +241,8 @@ class GitHubPullRequestResponse:
     #: or the comment read was incomplete. Set after the supplemental comment
     #: read via ``replace``; the primary-only and REST paths leave it empty.
     pr_comment_body_digest: str = ""
+    #: ``PullRequestFacts.person_comment_digest``, set from the same read.
+    person_comment_digest: str = ""
 
 
 GitHubPullRequestProbeResult = PullRequestProbeResult
@@ -431,7 +446,14 @@ class GitHubPullRequestProvider:
             unresolved, threads_complete, threads_error = (
                 (0, False, None) if member.raw in degraded else threads[member.raw]
             )
-            comment_digest = "" if member.raw in degraded else comments[member.raw]
+            comment_digest, person_digest = (
+                ("", "") if member.raw in degraded else comments[member.raw]
+            )
+            known_person_digest = (previous.get(member.raw) or {}).get("person_comment_digest")
+            if not person_digest and isinstance(known_person_digest, str):
+                # A failed read keeps the last digest it knew, so a comment posted
+                # during the failure still differs from it once the read recovers.
+                person_digest = known_person_digest
             if threads_error is ProviderErrorKind.RATE_LIMITED:
                 # Thread resolution is the ONE signal REST cannot express, so a
                 # refused thread read is reported as an incomplete COUNT rather
@@ -446,6 +468,7 @@ class GitHubPullRequestProvider:
                 unresolved_review_threads=unresolved,
                 review_threads_complete=threads_complete,
                 pr_comment_body_digest=comment_digest,
+                person_comment_digest=person_digest,
             )
             results[member.raw] = _build_result(
                 response,
@@ -856,32 +879,39 @@ class GitHubPullRequestProvider:
         gh: str,
         host: str,
         members: Sequence[_BatchSubject],
-    ) -> dict[str, str]:
+    ) -> dict[str, tuple[str, str]]:
         """Digest each subject's PR-level (issue) comment bodies in shared pages.
 
         Mirrors :meth:`_review_threads` in paging shape -- page size 100, the same
         page cap, cursor de-duplication and fail-closed handling -- but reports
-        ONLY a digest. PR-level comment completeness has no bearing on
+        ONLY digests. PR-level comment completeness has no bearing on
         review-readiness classification, so a refused, malformed or capped read is
         never a provider error and never forces a retry: it simply yields "" and
-        emits no condition (fail-closed). The digest is over ALL comment bodies,
-        human and bot alike, because a human editing a comment in place is exactly
-        as invisible to a count and as load-bearing as a bot rewriting a verdict;
-        filtering by author would encode "only bots matter", which is false. Known
-        bounded cost: the tick after the owning session posts its own comment, the
-        digest moves once and wakes once, then dedupes.
+        emits no condition (fail-closed). The first digest is over ALL comment
+        bodies, human and bot alike, because a human editing a comment in place is
+        exactly as invisible to a count and as load-bearing as a bot rewriting a
+        verdict; filtering by author would encode "only bots matter", which is
+        false. Known bounded cost: the tick after the owning session posts its own
+        comment, the digest moves once and wakes once, then dedupes.
+
+        The second is the person digest (``github_pull_request_people``): what a
+        person other than the author wrote, in a comment or a review. It is what a
+        pull request that waits on people wakes on, so a bot rewriting its verdict
+        does not move it.
         """
         bodies: dict[str, list[str]] = {member.raw: [] for member in members}
+        persons: dict[str, list[str]] = {member.raw: [] for member in members}
         complete: dict[str, bool] = dict.fromkeys((m.raw for m in members), True)
+        persons_complete: dict[str, bool] = dict.fromkeys((m.raw for m in members), True)
         pending = list(members)
         cursors: dict[str, str] = {}
         seen_cursors: dict[str, set[str]] = {member.raw: set() for member in members}
-        for _ in range(_PR_COMMENT_MAX_PAGES):
+        for page_index in range(_PR_COMMENT_MAX_PAGES):
             if not pending:
                 break
             document, argv_tail = _batch_document(
                 pending,
-                _PR_COMMENTS_SELECTION,
+                _PR_COMMENTS_SELECTION + ("\n" + _PR_REVIEWS_SELECTION if page_index == 0 else ""),
                 cursors=cursors,
             )
             payload, _group_failure = self._graphql(gh, host, document, argv_tail)
@@ -902,6 +932,9 @@ class GitHubPullRequestProvider:
                     complete[member.raw] = False
                     continue
                 bodies[member.raw].extend(page_bodies)
+                page_persons, persons_read = person_fingerprints(node, with_reviews=page_index == 0)
+                persons[member.raw].extend(page_persons)
+                persons_complete[member.raw] = persons_complete[member.raw] and persons_read
                 if member.raw in round_errors or not nodes_complete:
                     complete[member.raw] = False
                     continue
@@ -920,7 +953,16 @@ class GitHubPullRequestProvider:
             complete[member.raw] = False
         return {
             member.raw: (
-                _pr_comment_body_digest(bodies[member.raw]) if complete[member.raw] else ""
+                (
+                    _pr_comment_body_digest(bodies[member.raw]),
+                    (
+                        person_comment_digest(persons[member.raw])
+                        if persons_complete[member.raw]
+                        else ""
+                    ),
+                )
+                if complete[member.raw]
+                else ("", "")
             )
             for member in members
         }
@@ -1571,6 +1613,7 @@ def _build_result(
             unresolved_review_threads=response.unresolved_review_threads,
             review_threads_complete=response.review_threads_complete,
             pr_comment_body_digest=response.pr_comment_body_digest,
+            person_comment_digest=response.person_comment_digest,
         ),
         previous_observation=previous_observation,
         response=response,

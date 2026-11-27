@@ -396,8 +396,10 @@ class OrphanStallMonitor(ManagerComponent):
             callbacks: list[Any] = []
             # A run still parking counts: its report can reach the writer thread
             # ahead of this tick before ``yield_slot`` has set ``_slot_released``.
+            # ``or None`` is the generation the park's report recorded
+            # (``_dependency_verdict``), so a run with no row matches its waiter.
             live_waiters = frozenset(
-                (task_id, info._taskq_generation)
+                (task_id, info._taskq_generation or None)
                 for task_id, info in self._manager._agents.items()
                 if not info.done
                 and not info.reaped
@@ -1338,6 +1340,11 @@ class OrphanStallMonitor(ManagerComponent):
                     logger.debug("Reaper: owed tombstone retry failed", exc_info=True)
             # Periodic FIFO trim (also bounds a long-running gateway).
             await compact_cost_log_off_loop()
+            # A run parked on a wait whose own runtime died ends now, not at its wake.
+            try:
+                self._manager._run_events._release_dead_runtime_waits()
+            except Exception:
+                logger.debug("Reaper: dead-runtime wait release failed", exc_info=True)
             for agent_id, info in list(self._manager._agents.items()):
                 if info.done or info._ending_claimed:
                     continue

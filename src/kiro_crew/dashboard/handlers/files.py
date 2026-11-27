@@ -82,6 +82,7 @@ from kiro_crew.config.loader import (  # noqa: F401
     update_config_locked,
 )
 from kiro_crew.config.sections import (  # noqa: F401
+    DEFAULT_APPROVAL_MODES,
     LINK_PATTERN_PATTERN_MAX_LEN,
     LINK_PATTERN_URL_MAX_LEN,
     LINK_PATTERNS_MAX,
@@ -341,6 +342,9 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.handlers.messaging import _resolve_session_target  # noqa: F401
+from kiro_crew.dashboard.handlers.prompts_paths import (  # noqa: F401 - owner: uploads
+    _is_path_too_long_error,
+)
 from kiro_crew.dashboard.origin import is_direct_local_request  # noqa: F401
 from kiro_crew.dashboard.session_folders import (  # noqa: F401
     SESSION_FOLDER_ROOT_MAX_CHARS,
@@ -484,6 +488,8 @@ logger = logging.getLogger(__name__)
 # ``channel_upload`` owner. Bound by attribute: the one ``import`` of this name stays the
 # function-local one from ``kiro_crew.slack.handler``.
 is_tracked_channel = _owner_channel_upload.is_tracked_channel
+# Its code-channel sibling, bound the same way and for the same reason.
+code_channel_workdir = _owner_channel_upload.code_channel_workdir
 
 # The per-leg caption-ceiling refusal shared by the two upload legs, defined in the
 # ``channel_upload`` owner. Bound by attribute so the composed endpoints (which run

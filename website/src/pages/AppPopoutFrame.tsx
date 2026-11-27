@@ -4,7 +4,7 @@ import {
   type Navigator, type To,
 } from 'react-router-dom'
 import { AlertTriangle, Loader2 } from 'lucide-react'
-import { registerPopout, forwardToMain } from '../utils/appPopout'
+import { buildPopoutUrl, registerPopout, forwardToMain } from '../utils/appPopout'
 import { appRouteOf, routerParamForm } from '../utils/appPopoutRoute'
 import { withBase } from '../lib/basePath'
 import { chatDeepLinkSlot, claimChatLaunch } from '../utils/navIntent'
@@ -213,8 +213,10 @@ export default function AppPopoutFrame({ route }: {
     return ''
   }, [apps, route])
 
-  // Announce presence for `route` and wire the heartbeat/control responder.
-  useEffect(() => registerPopout(route), [route])
+  // Announce presence for `route` and wire the heartbeat/control responder. A
+  // link the main window sends here (a `linkOpen` page entry) loads this window
+  // at that path, so the app's page mounts with it.
+  useEffect(() => registerPopout(route, path => window.location.assign(buildPopoutUrl(route, path))), [route])
 
   // Remember the session the app activates for the exit that follows it (see
   // `uncarriedSlotSwitch`). An explicit switch is identified by its request id,

@@ -133,13 +133,15 @@ def _claude_child_events(
         self._native_child_sids.add(frame_sid)
     child_sid = self._native_child_of(frame_sid, update)
     if not child_sid:
-        if kind == UPDATE_TOOL_CALL:
+        stamped = str(children._parent_tool_use(update) or "")
+        if stamped and kind == UPDATE_TOOL_CALL:
             # A child's call on the parent's session whose Agent-call link this
             # session has none of (refused at its cap): marked as a child's, so its
             # directive cannot act on the parent's chat, as on the per-chat client.
-            stamped = children._parent_tool_use(update)
-            if stamped:
-                return children._untracked_child_call(str(stamped), update), False
+            return children._untracked_child_call(stamped, update), False
+        if stamped and kind == UPDATE_TOOL_CALL_UPDATE:
+            # The same call, first named a child's on an update.
+            return children._late_child_mark(stamped, update), False
         return None
     events: list[AcpEvent] = []
     if child_sid not in self._native_child_turn and child_sid in self._native_child_rows:
@@ -164,7 +166,7 @@ def _claude_child_events(
                 )
             return events, False
         if kind == UPDATE_TOOL_CALL_UPDATE:
-            return events, False
+            return events + children._late_child_mark(child_sid, update), False
         text = children._child_text(self.backend, kind, update)
         if text:
             self._prompt_or_tool_seen = True
@@ -177,6 +179,24 @@ def _claude_child_events(
             events.extend(self._child_text_activity(child_sid, text))
         return events, True
     return events, False
+
+
+def _child_session_call_marks(
+    self: AcpSessionHandle, update: dict[str, Any], child_sid: str
+) -> list[AcpEvent]:
+    """The mark a claude child's ``tool_call_update`` on its own session adds, or none.
+
+    The handle marks a child's ``tool_call`` on the child's session as it reads it.
+    The adapter routes a call to the child's session once it knows the child, so a
+    call it first emitted on the parent's session, naming no parent, can reach the
+    child's session only as an update (``client_native_children._late_child_mark``).
+    Only a session that reads claude children adds it.
+    """
+    if not self._claude_children_declared():
+        return []
+    if update.get("sessionUpdate") == UPDATE_TOOL_CALL_UPDATE:
+        return children._late_child_mark(child_sid, update)
+    return []
 
 
 def _note_native_child_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> None:

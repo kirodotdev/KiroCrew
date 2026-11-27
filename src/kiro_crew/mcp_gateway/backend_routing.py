@@ -130,7 +130,8 @@ async def _emit_call_metric(record: dict[str, Any]) -> None:
 # one tenant's content to co-tenants — a disclosure the non-pooled baseline
 # never had — so those are dropped instead. ``notifications/resources/updated``
 # is subscription-scoped, not request-scoped, and is routed by the
-# ``uri -> {stub_uuid}`` table instead (``Backend._resource_update_targets``).
+# ``uri -> {stub_uuid}`` table instead (``Backend._resource_update_targets``),
+# or, on a listen stream, to the listener that named its URI.
 _GLOBAL_BROADCAST_NOTIFICATIONS: frozenset[str] = frozenset(
     {
         "notifications/tools/list_changed",
@@ -711,14 +712,18 @@ async def _route_backend_message(
             return
         # Subscription-scoped: ``notifications/resources/updated`` carries
         # no request id, so it is attributed by URI — delivered to every
-        # stub subscribed to that URI and only those. This arm is
-        # TERMINAL: URI is the only permitted attribution for this
-        # notification, so an update for a URI nobody subscribed to is
-        # dropped here (deny-by-default, hazard recorded) and never falls
-        # through to request-scoped attribution — a server-supplied
-        # ``_meta.relatedRequestId`` must not hand one tenant a URI that
-        # only a co-tenant ever named.
+        # stub subscribed to that URI and only those. A stub subscribes with
+        # ``resources/subscribe``, or on the newer protocol by naming the URI
+        # in its ``subscriptions/listen``, whose stream tags the update with
+        # that listen's id. This arm is TERMINAL: an update for a URI nobody
+        # subscribed to is dropped here (deny-by-default, hazard recorded)
+        # and never falls through to request-scoped attribution — a
+        # server-supplied ``_meta.relatedRequestId`` must not hand one tenant
+        # a URI that only a co-tenant ever named.
         if method == _RESOURCES_UPDATED_NOTIFICATION:
+            if (listen_frame := _listen_stream_frame(self._pending_requests, msg)) is not None:
+                await self._deliver_to_stub(*listen_frame)
+                return
             targets = self._resource_update_targets(msg)
             for target_uuid in targets:
                 await self._deliver_to_stub(target_uuid, msg)
@@ -787,6 +792,9 @@ async def _route_backend_message(
     # Otherwise (multiple stubs, no relatedRequestId) we recycle the backend
     # rather than guess, to avoid a cross-tenant leak.
     if method is not None and msg_id is not None:
+        if method == "roots/list":
+            # Still routed below: the chat that owns it answers with its folder.
+            self._record_hazard(hazards.HAZARD_ROOTS_REQUESTED, any_client=True)
         target_stub: Optional[str] = None
         # Priority 1: _meta.relatedRequestId lookup
         params = msg.get("params")
@@ -829,8 +837,12 @@ async def _route_backend_message(
     logger.debug("backend pid=%s emitted malformed JSON-RPC: %r", self.pid, msg)
 
 
-def _record_hazard(self: Backend, code: str) -> None:
+def _record_hazard(self: Backend, code: str, *, any_client: bool = False) -> None:
     """Note that this server exhibited per-client behaviour while shared.
+
+    *any_client* records with one client attached, or on a private backend: for
+    a ``roots/list`` request the request itself is the evidence that the server
+    works on the chat's folder, whoever else shares the backend.
 
     Only meaningful once MORE THAN ONE client is attached. A backend serving
     a single client legitimately owns it, so an unattributable frame there
@@ -852,7 +864,7 @@ def _record_hazard(self: Backend, code: str) -> None:
 
     In-memory only — the flush is off-loop.
     """
-    if self.exclusive_token or self.refcount <= 1:
+    if not any_client and (self.exclusive_token or self.refcount <= 1):
         return
     key = self.pool_key
     name = key.server_name
@@ -924,7 +936,8 @@ def _listen_stream_frame(
 ) -> Optional[tuple[str, dict[str, Any]]]:
     """The stub a ``subscriptions/listen`` stream frame belongs to, and the frame
     tagged with that stub's own listen id. None when the tag names no pending
-    listen, so the caller's deny-by-default drop still applies."""
+    listen, or a resource update's URI is not one that listen named, so the
+    caller's deny-by-default drop still applies."""
     params = msg.get("params")
     if not isinstance(params, dict):
         return None
@@ -934,6 +947,12 @@ def _listen_stream_frame(
     tag = meta.get(_SUBSCRIPTION_ID_META_KEY)
     pending = pending_requests.get(str(tag)) if tag is not None else None
     if pending is None or pending.method != _LISTEN_METHOD:
+        return None
+    # The tag is the server's word; the URI must also be one the listen named.
+    uri = params.get("uri")
+    if msg.get("method") == _RESOURCES_UPDATED_NOTIFICATION and (
+        not isinstance(uri, str) or uri not in pending.listen_uris
+    ):
         return None
     retagged_meta = {**meta, _SUBSCRIPTION_ID_META_KEY: pending.original_id}
     return pending.stub_uuid, {**msg, "params": {**params, "_meta": retagged_meta}}

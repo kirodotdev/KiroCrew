@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.dashboard.urls import dashboard_socket_name
 from kiro_crew.platform_compat import IS_LINUX, IS_MACOS, IS_WINDOWS, file_lock, open_lock_file
 from kiro_crew.pod import env_overrides, launchd
@@ -176,6 +177,18 @@ class PodOwnershipUnproven(PodError):
 
 def validate_name(name: str) -> str:
     if not name or not _NAME_RE.match(name):
+        raise PodError(f"invalid pod name {name!r}")
+    return name
+
+
+def validate_new_name(name: str) -> str:
+    """:func:`validate_name`, plus a Windows device stem refusal, for a verb creating a pod.
+
+    ``nul`` or ``con.x`` can be no home, env file or ``feat/<name>`` ref on Windows. Verbs
+    on an existing pod keep :func:`validate_name`, so one made before stays stoppable.
+    """
+    validate_name(name)
+    if name.split(".", 1)[0].lower() in WINDOWS_DEVICE_STEMS:
         raise PodError(f"invalid pod name {name!r}")
     return name
 
@@ -1087,16 +1100,15 @@ def recent_journal(
         secs, usecs = divmod(since[JOURNAL_SINCE_USEC], 1_000_000)
         bound.append(f"--since=@{secs}.{usecs:06d}")
     unit = pod_unit(cfg, name)
+    journalctl_bin = platform_compat.trusted_system_bin("journalctl")
+    if journalctl_bin is None:
+        return "(could not read the pod journal: no journalctl in the trusted system directories)"
     try:
-        cp = subprocess.run(
-            ["journalctl", "--user", "-u", unit, "-n", str(lines), "--no-pager", *bound],
-            capture_output=True,
+        # _run decodes as UTF-8: journalctl prints the journal's UTF-8 raw even
+        # under the LC_ALL=C it pins, and a boot failure may name a non-ASCII path.
+        cp = _run(
+            [journalctl_bin, "--user", "-u", unit, "-n", str(lines), "--no-pager", *bound],
             timeout=10,
-            env=_systemctl_env(),
-            # The journal stores UTF-8 and journalctl prints it raw, even under the
-            # LC_ALL=C that _systemctl_env pins, so a locale decode can garble or
-            # raise on a non-ASCII path in the very boot failure this surfaces.
-            **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         # Said, not raised: `pod up` prints this tail and must still stop the unit.
@@ -1478,6 +1490,13 @@ def build_pod_env(
     # Same cross-plane guard for the companion host evidence (exported only
     # for specific-interface binds — see dashboard.server).
     env.pop("KIROCREW_BOUND_HOST", None)
+    # An agent session's temp dir is its scratch under the caller's data home,
+    # which every sandbox masks; a `pod exec` child that works there (`eval`
+    # builds its workspace under TMPDIR) would hand its agent a missing cwd.
+    # Only values under that scratch root go; the user's own temp dir stays.
+    from kiro_crew.agent_scratch import drop_inherited_scratch_env
+
+    drop_inherited_scratch_env(env)
     if skip_model_download:
         # Set AFTER the scrub loop so no present-or-future scrub pattern can strip
         # the guarantee back out.

@@ -16,6 +16,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from teammate_caller import enable_teammates, publish_relay_teammate, publish_teammate
 
 from kiro_crew import redaction_seams
 from kiro_crew.dashboard import redaction_audience
@@ -142,19 +143,37 @@ async def test_a_subagent_replay_is_raw_only_on_an_owner_socket_with_redaction_o
 
 
 def _as_caller(user: str):
-    """A layer outer to the test auth that names who sent the request."""
+    """A layer outer to the test auth that names who sent the request.
+
+    ``teammate-7`` is an admitted Shared Crew teammate (an SSM-invite guest) and
+    ``relay-7`` one the Kiro relay handed over: the
+    owner's chat routes answer the owner and teammates only, so a bare subject
+    that is neither would be refused before the redaction under test.
+    """
 
     @web.middleware
     async def caller(request, handler):
-        request["user"] = user
-        request["app"] = ""
+        if user == "teammate-7":
+            publish_teammate(request)
+        elif user == "relay-7":
+            publish_relay_teammate(request)
+        else:
+            request["user"] = user
+            request["app"] = ""
         return await handler(request)
 
     return caller
 
 
+@pytest.fixture(autouse=True)
+def _teammates_admitted(_floor_monkeypatch):
+    enable_teammates(_floor_monkeypatch)
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("user", ["local-app", "teammate-7"], ids=["owner", "teammate"])
+@pytest.mark.parametrize(
+    "user", ["local-app", "teammate-7", "relay-7"], ids=["owner", "teammate", "relay-teammate"]
+)
 async def test_a_chat_sse_stream_is_raw_only_for_the_owner_with_redaction_off(
     state, off, monkeypatch, user
 ):
@@ -191,7 +210,9 @@ async def test_a_chat_sse_stream_is_raw_only_for_the_owner_with_redaction_off(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("user", ["local-app", "teammate-7"], ids=["owner", "teammate"])
+@pytest.mark.parametrize(
+    "user", ["local-app", "teammate-7", "relay-7"], ids=["owner", "teammate", "relay-teammate"]
+)
 async def test_a_history_read_is_raw_only_for_the_owner_with_redaction_off(state, off, user):
     # A row the turn saved: as written with the setting off.
     state.get_slot(_SLOT).append("assistant", _produced(_TEXT))

@@ -96,6 +96,7 @@ Rules:
 | English | use | never |
 |---|---|---|
 | turn (one exchange in a chat) | `Durchlauf` / `Durchläufe` | `Zug` / `Züge` |
+| colour theme | `Farb-Theme` | `Farbthema` |
 
 Some strings still say `Runde` for a turn. It reads correctly, so no check holds them
 yet; they move to `Durchlauf` in a later pass over the catalog.
@@ -110,9 +111,10 @@ yet; they move to `Durchlauf` in a later pass over the catalog.
 | correct CLDR plural categories (2) | `catalogParity.test.ts` |
 | formal-address pattern debt does not exceed 12 | `deStyle.test.ts` |
 | changed values address the reader as du, never Sie | `deStyle.test.ts` (`I18N_BASE_REF`) |
-| the first-run blocks and the top bar address the reader as du | `deStyle.test.ts` |
+| the first-run blocks, the top bar and Settings address the reader as du | `deStyle.test.ts` |
 | umlauts, not `ae`/`oe`/`ue`, where the catalog spells the word with one | `deStyle.test.ts` |
 | `turn` is `Durchlauf`, never `Zug` | `deStyle.test.ts` |
+| `colour theme` is `Farb-Theme`, never `Farbthema` | `deStyle.test.ts` |
 | selected foreign-compound spacing debt does not exceed 12 | `deStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | balanced delimiters | `qa.test.ts` |
