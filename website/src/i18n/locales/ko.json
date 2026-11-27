@@ -22757,6 +22757,7 @@
       "pill_idle_since": "대기 중 · {{when}}",
       "notes_tab": "메모",
       "dashboard_tab": "대시보드",
+      "dashboard_link_refused": "이 링크는 열리지 않았습니다. {{target}}은(는) 저장된 아티팩트나 {{name}} 작업 공간의 파일이 아닙니다.",
       "notes_error": "메모를 불러오지 못했습니다.",
       "notes_refresh_error": "이 메모를 새로 고치지 못했습니다. 마지막으로 불러온 버전을 표시합니다.",
       "notes_unsupported": "이 컴퓨터에서는 메모를 읽을 수 없습니다.",

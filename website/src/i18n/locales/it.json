@@ -23931,6 +23931,7 @@
       "pill_idle_since": "Inattivo · {{when}}",
       "notes_tab": "Note",
       "dashboard_tab": "Dashboard",
+      "dashboard_link_refused": "Questo link non è stato aperto: {{target}} non è un artefatto salvato né un file nell'area di lavoro di {{name}}.",
       "notes_error": "Impossibile caricare le note.",
       "notes_refresh_error": "Impossibile aggiornare queste note. Viene mostrata l'ultima versione caricata.",
       "notes_unsupported": "Le note non possono essere lette su questo computer.",

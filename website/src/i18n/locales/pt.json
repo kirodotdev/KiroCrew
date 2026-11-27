@@ -23931,6 +23931,7 @@
       "pill_idle_since": "Inativo · {{when}}",
       "notes_tab": "Notas",
       "dashboard_tab": "Painel",
+      "dashboard_link_refused": "Este link não foi aberto: {{target}} não é um artefato salvo nem um arquivo no espaço de trabalho de {{name}}.",
       "notes_error": "Não foi possível carregar as notas.",
       "notes_refresh_error": "Não foi possível atualizar estas notas. Mostrando a última versão carregada.",
       "notes_unsupported": "As notas não podem ser lidas neste computador.",
