@@ -13039,7 +13039,14 @@
         "artifact_save_failed": "아티팩트를 저장할 수 없습니다",
         "workflow_runs_load_failed": "워크플로 실행을 불러올 수 없습니다",
         "engine_usage_not_reported": "채팅 안에서 실행되는 하위 에이전트의 크레딧 사용량과 모델은 보고되지 않습니다. 크레딧은 응답의 합계에 포함됩니다.",
-        "engine_no_output": "(출력 없음)"
+        "engine_no_output": "(출력 없음)",
+        "live_activity": "실시간 활동",
+        "full_result": "전체 결과",
+        "tool_call_failed": "도구 호출 실패",
+        "tool_call_failed_no_output": "출력이 반환되지 않았습니다.",
+        "ask_agent_about_failed_call": "이 실패한 호출에 대해 에이전트에게 질문",
+        "untitled_call": "이름 없는 도구 호출",
+        "transcript_steps_not_listed_other": "이전 단계 {{count}}개는 표시되지 않음"
       },
       "engineSubagentRecord": {
         "end_completed": "완료",

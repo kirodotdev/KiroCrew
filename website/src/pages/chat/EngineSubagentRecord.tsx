@@ -328,8 +328,9 @@ export const EngineSubagentLiveCard = memo(function EngineSubagentLiveCard({ slo
       task: a.task.slice(0, TASK_SHOWN),
       end,
       ...(end === 'failed' && a.error ? { reason: a.error.slice(0, 400) } : {}),
-      tools: (a.toolCalls ?? []).map(t => t.tool.slice(0, 80)),
-      toolCount: Math.max(a.toolCount ?? 0, a.toolCalls?.length ?? 0),
+      // The card's tool calls are the tool rows of its transcript, in order.
+      tools: (a.transcript ?? []).flatMap(r => (r.kind === 'tool' ? [r.tool.slice(0, 80)] : [])),
+      toolCount: Math.max(a.toolCount ?? 0, (a.transcript ?? []).filter(r => r.kind === 'tool').length),
       ...(Number.isFinite(ranMs) && ranMs >= 0 ? { ranMs } : {}),
     }
   })

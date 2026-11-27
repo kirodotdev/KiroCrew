@@ -176,6 +176,10 @@ def _to_llm_event(e: Any) -> LLMEvent:
         sub_session_id=e.sub_session_id,
         # Dropping this leaves the dashboard's auto-rejected notice in English.
         auto_reject_reason=e.auto_reject_reason,
+        # Which shape of child activity this is. Dropping it reaches the card
+        # untagged: a child's tool result is admitted as a new call and its
+        # reasoning is shown as its answer.
+        activity=e.activity,
         is_shell=e.is_shell,
         # The harness's own tool id for a permission request. Dropping it
         # leaves every KAS call unnamed, so no tool-scoped spec hook fires.

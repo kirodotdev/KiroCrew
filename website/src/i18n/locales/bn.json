@@ -13339,7 +13339,15 @@
         "artifact_save_failed": "আর্টিফ্যাক্ট সংরক্ষণ করা যায়নি",
         "workflow_runs_load_failed": "ওয়ার্কফ্লো রান লোড করা যায়নি",
         "engine_usage_not_reported": "চ্যাটের ভিতরে চলা সাব-এজেন্টের ক্রেডিট ব্যবহার ও মডেলের তথ্য পাওয়া যায় না। তার ক্রেডিট উত্তরের মোটের অংশ।",
-        "engine_no_output": "(কোনো আউটপুট নেই)"
+        "engine_no_output": "(কোনো আউটপুট নেই)",
+        "live_activity": "লাইভ কার্যকলাপ",
+        "full_result": "সম্পূর্ণ ফলাফল",
+        "tool_call_failed": "টুল কল ব্যর্থ হয়েছে",
+        "tool_call_failed_no_output": "কোনো আউটপুট ফেরত দেওয়া হয়নি।",
+        "ask_agent_about_failed_call": "এই ব্যর্থ কলটি সম্পর্কে এজেন্টকে জিজ্ঞাসা করো",
+        "untitled_call": "নামহীন টুল কল",
+        "transcript_steps_not_listed_one": "আগের {{count}}টি ধাপ দেখানো হয়নি",
+        "transcript_steps_not_listed_other": "আগের {{count}}টি ধাপ দেখানো হয়নি"
       },
       "engineSubagentRecord": {
         "end_completed": "সম্পন্ন",

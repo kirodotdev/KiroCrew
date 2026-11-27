@@ -1127,7 +1127,7 @@ def test_a_background_card_is_kept_open_only_while_the_harness_runs_it() -> None
     _native_subagent_sync(state, slot, [_background_row("w1"), _background_row("w2")], tracker)
     turn = _turn_of(state, slot, tracker, _harness_running("w1"))
     _keep_background_open(turn, STOP_REASON_END_TURN)
-    _native_subagent_close_all(state, slot, tracker)
+    _native_subagent_close_all(state, slot, tracker, card_output_len={}, streams={})
     assert (tracker["w1"]["done"], tracker["w2"]["done"]) == (False, True)
     # The one it does not run closes as interrupted, not as a clean completion.
     assert tracker["w2"]["error"] == NATIVE_SUBAGENT_INTERRUPTED_ERROR
@@ -1150,7 +1150,14 @@ def test_a_closed_background_card_is_not_drawn_again_by_a_later_roster() -> None
     """A Stop closes the cards; the run's own end arrives later and draws none."""
     state, slot, tracker = _state(), _slot(), {}
     _native_subagent_sync(state, slot, [_background_row("w1")], tracker)
-    _native_subagent_close_all(state, slot, tracker, error=NATIVE_SUBAGENT_INTERRUPTED_ERROR)
+    _native_subagent_close_all(
+        state,
+        slot,
+        tracker,
+        error=NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        card_output_len={},
+        streams={},
+    )
     next_turn = _carried_background_native(_retain_terminal_native(tracker))
     state.broadcast_ws.reset_mock()
     _native_subagent_sync(state, slot, [_background_row("w1", "failed")], next_turn)
@@ -1245,7 +1252,14 @@ def test_only_a_turn_crew_cut_short_closes_the_cards_the_harness_runs(
     state, slot, tracker = _state(), _slot(), {}
     _native_subagent_sync(state, slot, [_background_row("w1")], tracker)
     _keep_background_open(_turn_of(state, slot, tracker, _harness_running("w1")), stop_reason)
-    _native_subagent_close_all(state, slot, tracker, error=NATIVE_SUBAGENT_INTERRUPTED_ERROR)
+    _native_subagent_close_all(
+        state,
+        slot,
+        tracker,
+        error=NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        card_output_len={},
+        streams={},
+    )
     assert tracker["w1"]["done"] is not kept
     if not kept:
         assert tracker["w1"]["error"] == NATIVE_SUBAGENT_INTERRUPTED_ERROR
@@ -1304,7 +1318,7 @@ async def _kept_open(tmp_path) -> tuple[AcpClient, MagicMock, dict[str, dict]]:
     state, slot, tracker = _state(), _slot(), {}
     _native_subagent_sync(state, slot, roster, tracker)
     _keep_background_open(_turn_of(state, slot, tracker, client), STOP_REASON_END_TURN)
-    _native_subagent_close_all(state, slot, tracker)
+    _native_subagent_close_all(state, slot, tracker, card_output_len={}, streams={})
     assert not tracker[CARD_B]["done"]
     state.broadcast_ws.reset_mock()
     return client, state, tracker

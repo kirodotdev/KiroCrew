@@ -13939,7 +13939,17 @@
         "artifact_save_failed": "Не удалось сохранить артефакт",
         "workflow_runs_load_failed": "Не удалось загрузить запуски рабочих процессов",
         "engine_usage_not_reported": "Для субагента, работающего внутри чата, кредиты и модель не сообщаются. Его кредиты входят в общий итог ответа.",
-        "engine_no_output": "(нет вывода)"
+        "engine_no_output": "(нет вывода)",
+        "live_activity": "Текущая активность",
+        "full_result": "Полный результат",
+        "tool_call_failed": "Вызов инструмента не удался",
+        "tool_call_failed_no_output": "Вывод не был возвращён.",
+        "ask_agent_about_failed_call": "Спросить агента об этом неудачном вызове",
+        "untitled_call": "Вызов инструмента без имени",
+        "transcript_steps_not_listed_one": "{{count}} более ранний шаг не показан",
+        "transcript_steps_not_listed_few": "{{count}} более ранних шага не показаны",
+        "transcript_steps_not_listed_many": "{{count}} более ранних шагов не показаны",
+        "transcript_steps_not_listed_other": "{{count}} более ранних шага не показаны"
       },
       "engineSubagentRecord": {
         "end_completed": "Завершён",

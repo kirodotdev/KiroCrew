@@ -59,6 +59,8 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     STATUS_EXTENSION_KEY,
+    SUBAGENT_ACTIVITY_THINKING,
+    SUBAGENT_ACTIVITY_TOOL_RESULT,
     TERMINAL_TOOL_STATUSES,
     UPDATE_AGENT_MESSAGE_CHUNK,
     UPDATE_AGENT_THOUGHT_CHUNK,
@@ -337,10 +339,16 @@ def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[Ac
         # A claude child's call that first reaches its own session as an update.
         out: list[AcpEvent] = self._child_session_call_marks(update, frame_sid)
         for ev in child_events:
-            if ev.kind == EVENT_TOOL_CALL and ev.tool_call_id:
+            if ev.kind in (EVENT_TOOL_CALL, EVENT_TOOL_CALL_UPDATE) and ev.tool_call_id:
                 # A child's tool call is this session's side effect for
                 # replay purposes: the parent prompt spawned it, so a replay
                 # would re-run it. Close the registration-throttle window.
+                # A refinement (``tool_call_update`` carrying a title or the
+                # completed ``rawInput``) re-tags as the SAME call: the
+                # consumer keys on ``tool_call_id``, so it refines the row
+                # rather than listing the call twice. kiro-cli's initial
+                # child ``tool_call_chunk`` carries only the bare tool name;
+                # the refined title is what names the command.
                 self._prompt_or_tool_seen = True
                 out.append(
                     AcpEvent(
@@ -348,6 +356,26 @@ def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[Ac
                         sub_session_id=frame_sid,
                         tool_call_id=ev.tool_call_id,
                         title=ev.title,
+                        tool_kind=ev.tool_kind,
+                        tool_purpose=ev.tool_purpose,
+                        tool_input=ev.tool_input,
+                    )
+                )
+            elif ev.kind == EVENT_TOOL_RESULT and ev.tool_call_id:
+                # The call's result, so the card can close the row it opened
+                # and show what the tool returned. ``tool_output`` is the
+                # shared parser's redacted, bounded display text -- the same
+                # bytes the parent's own transcript pill would show -- never
+                # the raw frame.
+                out.append(
+                    AcpEvent(
+                        kind=EVENT_SUBAGENT_ACTIVITY,
+                        sub_session_id=frame_sid,
+                        activity=SUBAGENT_ACTIVITY_TOOL_RESULT,
+                        tool_call_id=ev.tool_call_id,
+                        tool_output=ev.tool_output,
+                        tool_status=ev.tool_status,
+                        tool_final=ev.tool_final,
                     )
                 )
             elif ev.kind == EVENT_TEXT_CHUNK and ev.text:
@@ -357,9 +385,21 @@ def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[Ac
                 # The native-children owner streams an announced child's
                 # text through that child's own redactor.
                 out.extend(self._child_text_activity(frame_sid, ev.text))
-            # Thinking chunks, tool results, and refinements update the
-            # caches above but emit nothing: the crew monitor only shows
-            # coarse activity, and the caches are the security payload.
+            elif ev.kind == EVENT_THINKING_CHUNK and ev.text:
+                # The child's reasoning, kept apart from its answer by the
+                # activity tag so the card can fold it the way the
+                # transcript folds the parent's.
+                out.append(
+                    AcpEvent(
+                        kind=EVENT_SUBAGENT_ACTIVITY,
+                        sub_session_id=frame_sid,
+                        activity=SUBAGENT_ACTIVITY_THINKING,
+                        text=ev.text,
+                    )
+                )
+            # Every other kind updates the caches above and emits nothing:
+            # the events out are crew-monitor activity, never the kinds a
+            # task runner acts on, and the caches are the security payload.
         return out
 
     session_update = update.get("sessionUpdate", "")

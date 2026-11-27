@@ -13339,7 +13339,15 @@
         "artifact_save_failed": "Artefakt konnte nicht gespeichert werden",
         "workflow_runs_load_failed": "Workflow-Ausführungen konnten nicht geladen werden",
         "engine_usage_not_reported": "Für einen Sub-Agent, der im Chat läuft, werden Credits und Modell nicht gemeldet. Seine Credits sind Teil der Gesamtsumme der Antwort.",
-        "engine_no_output": "(keine Ausgabe)"
+        "engine_no_output": "(keine Ausgabe)",
+        "live_activity": "Live-Aktivität",
+        "full_result": "Vollständiges Ergebnis",
+        "tool_call_failed": "Werkzeugaufruf fehlgeschlagen",
+        "tool_call_failed_no_output": "Es wurde keine Ausgabe zurückgegeben.",
+        "ask_agent_about_failed_call": "Agent zu diesem fehlgeschlagenen Aufruf fragen",
+        "untitled_call": "Unbenannter Tool-Aufruf",
+        "transcript_steps_not_listed_one": "{{count}} früherer Schritt nicht angezeigt",
+        "transcript_steps_not_listed_other": "{{count}} frühere Schritte nicht angezeigt"
       },
       "engineSubagentRecord": {
         "end_completed": "Abgeschlossen",
