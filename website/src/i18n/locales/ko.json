@@ -18236,6 +18236,8 @@
         "trend_growing": "증가",
         "trend_new": "신규",
         "trend_steady": "유지",
+        "unnamed_tool": "이름 없는 도구",
+        "logged_by": "기록한 곳: {{source}}",
         "notice_label": "종 알림으로 주 1회 알림",
         "notice_description": "도구 실패가 계속 반복되면 일주일에 한 번 종 알림으로 알려 줍니다. 기본값은 꺼짐입니다.",
         "notice_load_failed": "주 1회 알림 설정을 읽을 수 없습니다",

@@ -33,8 +33,16 @@ const TREND_VARIANT = { new: 'warn', growing: 'err', steady: 'muted' } as const
 /** Literal class names, so Tailwind sees each one. */
 const NOTE_CLASS = { ok: 'text-ok', warn: 'text-warn' } as const
 
+/** The tool kind `failure_recurrence` gives a log row that named none. */
+const UNNAMED_TOOL_KIND = 'unknown'
+
+/** True when the log row carried no tool kind, MCP tool or rule to name it by. */
+const isUnnamed = (row: RecurringFailure) => !row.tool && !row.rule_id && row.tool_kind === UNNAMED_TOOL_KIND
+
 /** The name a row goes by: the MCP tool or class error, else the rule, else the tool kind. */
-const failureName = (row: RecurringFailure) => row.tool || row.rule_id || row.tool_kind
+const failureName = (row: RecurringFailure) => isUnnamed(row)
+  ? i18nT('pages.overview.memoryFailuresCard.unnamed_tool')
+  : row.tool || row.rule_id || row.tool_kind
 
 /** This card's element id, the landing spot for that focus. */
 export const FAILURES_CARD_ID = 'memory-failures-card'
@@ -157,6 +165,9 @@ export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDi
   const draftButton = (row: RecurringFailure, className: string) => <Btn className={className} disabled={draft !== null} onClick={() => openDraft(row)}>
     <PenLine className="lucide-inline" aria-hidden="true" /> {i18nT('pages.overview.memoryFailuresCard.draft_lesson')}
   </Btn>
+  // No tool name to show (a shell row's operation is its command line, never
+  // read): the surface that logged it is the next best hint.
+  const loggedBy = (row: RecurringFailure) => isUnnamed(row) && !row.error && row.source && <span className="block text-[12px] text-muted break-words">{i18nT('pages.overview.memoryFailuresCard.logged_by', { source: row.source })}</span>
   const rowStatus = (row: RecurringFailure) => note?.signature === row.signature && <span role="status" className={`mt-1 block text-[13px] ${NOTE_CLASS[note.tone]}`}>{note.text}</span>
 
   return (
@@ -188,12 +199,12 @@ export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDi
         : <MemoryRowList rows={rows.map(row => ({
           id: row.signature,
           testId: 'recurring-failure-row',
-          title: <span className="font-mono">{failureName(row)}</span>,
+          title: <span className={isUnnamed(row) ? undefined : 'font-mono'}>{failureName(row)}</span>,
           badge: <Badge variant={TREND_VARIANT[row.trend]}>{i18nT(TREND_KEYS[row.trend])}</Badge>,
-          body: row.error && row.error !== row.tool && <>
+          body: row.error && row.error !== row.tool ? <>
             {/* No hand-off: this card can hold an unsaved lesson draft. */}
             <ErrorNotice message={row.error} variant="inline" className="max-w-full" />
-          </>,
+          </> : loggedBy(row),
           status: rowStatus(row),
           action: draft?.signature === row.signature ? undefined : { label: i18nT('pages.overview.memoryFailuresCard.draft_lesson'), icon: PenLine, disabled: draft !== null, onClick: () => openDraft(row) },
           meta: [
@@ -236,11 +247,12 @@ export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDi
                 <tr key={row.signature} className="hover:bg-bg-hover transition-colors" data-testid="recurring-failure-row">
                   <td className={td}>
                     {/* Stored text, rendered as React text children (never a key, never markup). */}
-                    <span className="block font-mono">{failureName(row)}</span>
+                    <span className={`block ${isUnnamed(row) ? '' : 'font-mono'}`}>{failureName(row)}</span>
                     {row.error && row.error !== row.tool && <>
                       {/* No hand-off: this card can hold an unsaved lesson draft. */}
                       <ErrorNotice message={row.error} variant="inline" className="max-w-full" />
                     </>}
+                    {loggedBy(row)}
                     {rowStatus(row)}
                     {/* In the first column, so a narrow screen never scrolls the action out of view. */}
                     {!editing && draftButton(row, 'whitespace-nowrap mt-1.5')}

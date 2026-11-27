@@ -19236,6 +19236,8 @@
         "trend_growing": "En aumento",
         "trend_new": "Nuevo",
         "trend_steady": "Estable",
+        "unnamed_tool": "Herramienta sin nombre",
+        "logged_by": "Registrado por {{source}}",
         "notice_label": "Aviso semanal en la campana",
         "notice_description": "Una vez por semana, la campana te avisa cuando un fallo de herramienta se sigue repitiendo. Desactivado por defecto.",
         "notice_load_failed": "No se pudo leer el ajuste del aviso semanal",

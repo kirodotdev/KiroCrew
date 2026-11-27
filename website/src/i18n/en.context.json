@@ -601,6 +601,8 @@
     "pages.overview.memoryFailuresCard.trend_new": "Badge in the Trend column of the Memory tab's Repeated failures table: this failure did not happen at all the week before. Adjective (newly appeared), not a button to create something.",
     "pages.overview.memoryFailuresCard.trend_growing": "Badge in the Trend column of the Memory tab's Repeated failures table: this failure happened more often this week than the week before. Adjective (increasing).",
     "pages.overview.memoryFailuresCard.trend_steady": "Badge in the Trend column of the Memory tab's Repeated failures table: this failure happened as often as, or less often than, the week before. Adjective (unchanged).",
+    "pages.overview.memoryFailuresCard.unnamed_tool": "Name shown in the Failure column of the Memory tab's Repeated failures table when the log rows did not record which tool failed.",
+    "pages.overview.memoryFailuresCard.logged_by": "Small line under an unnamed failure in the Repeated failures table. {{source}} is an untranslated code name for the part of the app that logged it, such as dashboard or agent.",
     "pages.overview.memoryFailuresCard.times": "Column header in the Memory tab's Repeated failures table: how many times the failure happened this week (a count), not clock time.",
     "pages.overview.memoryFailuresCard.days": "Column header in the Memory tab's Repeated failures table: on how many different days this week the failure happened (a count of days).",
     "pages.overview.memoryFailuresCard.chats": "Column header in the Memory tab's Repeated failures table: in how many different chat sessions the failure happened (a count).",

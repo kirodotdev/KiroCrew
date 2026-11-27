@@ -19236,6 +19236,8 @@
         "trend_growing": "Crescendo",
         "trend_new": "Nova",
         "trend_steady": "Estável",
+        "unnamed_tool": "Ferramenta sem nome",
+        "logged_by": "Registrado por {{source}}",
         "notice_label": "Aviso semanal no sino",
         "notice_description": "Uma vez por semana, o sino avisa você quando uma falha de ferramenta continua voltando. Desativado por padrão.",
         "notice_load_failed": "Não foi possível ler a configuração do aviso semanal",

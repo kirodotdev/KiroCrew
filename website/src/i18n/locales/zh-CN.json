@@ -18236,6 +18236,8 @@
         "trend_growing": "上升",
         "trend_new": "新出现",
         "trend_steady": "持平",
+        "unnamed_tool": "未命名的工具",
+        "logged_by": "记录来源：{{source}}",
         "notice_label": "铃铛每周提醒",
         "notice_description": "每周一次，当某个工具失败反复出现时，铃铛会提醒你。默认关闭。",
         "notice_load_failed": "无法读取每周提醒设置",

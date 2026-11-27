@@ -19236,6 +19236,8 @@
         "trend_growing": "En hausse",
         "trend_new": "Nouveau",
         "trend_steady": "Stable",
+        "unnamed_tool": "Outil sans nom",
+        "logged_by": "Enregistré par {{source}}",
         "notice_label": "Note hebdomadaire dans la cloche",
         "notice_description": "Une fois par semaine, la cloche te prévient quand un échec d’outil revient sans cesse. Désactivé par défaut.",
         "notice_load_failed": "Impossible de lire le réglage de la note hebdomadaire",
