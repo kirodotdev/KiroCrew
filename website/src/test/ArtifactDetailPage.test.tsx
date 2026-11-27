@@ -617,6 +617,29 @@ describe('ArtifactDetailPage', () => {
     expect(screen.queryByText(/→ v2/)).toBeNull()
   })
 
+  it('shows a stored actor and an unknown event type exactly as stored (#22834)', async () => {
+    // `by` and an unknown `type` are stored text: <Trans> must never parse
+    // them as markup or fill their placeholders.
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'markdown' }))
+    vi.mocked(api).artifactVersions = vi.fn().mockResolvedValue({ slug: 'cr-queue', versions: [1] })
+    vi.mocked(api).artifactEvents = vi.fn().mockResolvedValue({
+      slug: 'cr-queue',
+      events: [
+        { ts: '2026-05-25T22:00:00.000Z', type: 'created', by: '<i>x</i> {{action}}', version: 1 },
+        { ts: '2026-05-25T22:10:00.000Z', type: '<b>odd</b> {{name}}', by: 'agent', version: 1 },
+      ],
+    })
+    renderRoute()
+    await waitFor(() => {
+      const actorRow = screen.getByText('<i>x</i> {{action}}').parentElement
+      expect(actorRow).toHaveTextContent('Created by <i>x</i> {{action}}')
+      expect(actorRow!.querySelector('i')).toBeNull()
+      const oddRow = screen.getByText('<b>odd</b> {{name}}').parentElement
+      expect(oddRow).toHaveTextContent('<b>odd</b> {{name}} by agent')
+      expect(oddRow!.querySelector('b')).toBeNull()
+    })
+  })
+
   it('edit mode keeps Save and Cancel in the row and offers Snapshot from More', async () => {
     // Save = silent live update, Snapshot = bumps version. Both buttons
     // appear together in edit mode under the explicit-snapshot model. We can't

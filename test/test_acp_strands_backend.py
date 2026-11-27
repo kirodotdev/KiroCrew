@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import pytest
 from spawn_test_helpers import await_gone, await_pids, kill_leftovers
 
+from conftest import requires_symlinks
 from kiro_crew.acp._dispatch_parts.permission_requests import build_permission_event, gate_envelope
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness import strands as strands_mod
@@ -361,6 +362,66 @@ def test_a_mapping_this_harness_would_not_honour_is_refused(key, value, fragment
     assert value not in str(caught.value) or value.startswith("secret://")
 
 
+def _assert_literal_url_guidance(message: str) -> None:
+    # A literal under agent.strands_env is often not a key at all, so every refusal
+    # of one says a URL needs a reference too and names the card that writes it.
+    assert "'LITELLM_BASE_URL'" in message
+    assert "holds a literal value" in message
+    assert "including a URL, region or host" in message
+    assert "Model provider card under Settings > Agent Harness" in message
+    assert "Settings > Secrets" in message
+    assert "proxy.example" not in message, "the refusal must never carry the value"
+
+
+def test_a_literal_url_refuses_the_session_with_how_to_map_it() -> None:
+    with pytest.raises(ValueError) as caught:
+        strands_mod._validate_strands_env_mapping({"LITELLM_BASE_URL": "http://proxy.example"})
+    _assert_literal_url_guidance(str(caught.value))
+
+
+def test_a_literal_url_never_reaches_disk_and_the_refusal_says_how_to_map_it(tmp_path) -> None:
+    from kiro_crew.config.loader import ConfigWriteRefused, update_config_locked
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"agent": {"yolo": True}}), encoding="utf-8")
+    before = path.read_bytes()
+
+    def plant(existing: dict) -> dict:
+        existing.setdefault("agent", {})["strands_env"] = {
+            "LITELLM_BASE_URL": "http://proxy.example"
+        }
+        return existing
+
+    with pytest.raises(ConfigWriteRefused) as refused:
+        update_config_locked(path, mutate=plant)
+
+    _assert_literal_url_guidance(str(refused.value))
+    assert path.read_bytes() == before
+
+
+def test_a_literal_url_left_on_disk_is_logged_with_how_to_map_it(tmp_path, caplog) -> None:
+    import logging
+
+    from kiro_crew.config.loader import update_config_locked
+
+    path = tmp_path / "config.json"
+    stale = {"LITELLM_BASE_URL": "http://proxy.example"}
+    path.write_text(json.dumps({"agent": {"strands_env": stale}}), encoding="utf-8")
+
+    def unrelated(existing: dict) -> dict:
+        existing.setdefault("agent", {})["yolo"] = True
+        return existing
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+        update_config_locked(path, mutate=unrelated)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["agent"]["strands_env"] == stale
+    warned = [r.getMessage() for r in caplog.records if "strands_env" in r.getMessage()]
+    assert warned, "a literal left on disk must be named on the log"
+    _assert_literal_url_guidance(warned[0])
+    assert "a Strands session is refused while it stands" in warned[0]
+
+
 def test_no_mapped_name_is_one_the_agent_scrub_strips() -> None:
     from kiro_crew.sandbox import agent_env_scrub_prefixes
 
@@ -444,6 +505,42 @@ def test_an_unreadable_release_is_not_a_wrong_one(tmp_path) -> None:
     assert strands_mod._strands_version_issue(str(lone)) == ""
 
 
+@pytest.mark.parametrize(
+    ("prefix_dirs", "posix_shim"),
+    [((), False), pytest.param(("lib",), True, marks=requires_symlinks)],
+    ids=["windows-layout", "posix-layout"],
+)
+def test_a_volta_install_is_read_from_its_package_image(tmp_path, prefix_dirs, posix_shim) -> None:
+    volta = tmp_path / "volta"
+    image = volta / "tools" / "image" / "packages" / "@strands-agents" / "cli"
+    package = image.joinpath(*prefix_dirs, "node_modules", "@strands-agents", "cli")
+    package.mkdir(parents=True)
+    manifest = package / "package.json"
+    shim = volta / "bin" / ("strands" if posix_shim else "strands.cmd")
+    shim.parent.mkdir()
+    if posix_shim:
+        # A POSIX shim links to Volta's own executable, here outside the Volta home.
+        volta_shim = tmp_path / "volta-install" / "volta-shim"
+        volta_shim.parent.mkdir()
+        volta_shim.write_text("", encoding="utf-8")
+        shim.symlink_to(volta_shim)
+    else:
+        shim.write_text("", encoding="utf-8")
+
+    manifest.write_text(
+        json.dumps({"name": "@strands-agents/cli", "version": "9.9.9"}), encoding="utf-8"
+    )
+    assert strands_mod.strands_installed_version(str(shim)) == "9.9.9"
+    issue = strands_mod._strands_version_issue(str(shim))
+    assert "9.9.9" in issue and f"@strands-agents/cli@{STRANDS_VERIFIED_VERSION}" in issue
+
+    manifest.write_text(
+        json.dumps({"name": "@strands-agents/cli", "version": STRANDS_VERIFIED_VERSION}),
+        encoding="utf-8",
+    )
+    assert strands_mod._strands_version_issue(str(shim)) == ""
+
+
 def _venv(project: Path, *, with_harness: bool) -> None:
     python = Path(strands_mod.strands_python(str(project)))
     python.parent.mkdir(parents=True)
@@ -460,18 +557,138 @@ def test_no_python_environment_names_the_command_that_creates_it(tmp_path) -> No
     from kiro_crew.agent_sdk.host_auth import HOST_TERMINAL_NOTE
 
     issue = strands_mod.strands_python_env_issue(str(tmp_path))
-    assert "venv" in issue and "strands-harness==" in issue
+    assert "venv" in issue and "strands-harness[" in issue
+    assert '"botocore[crt]"' in issue
     assert "terminal on the gateway host" in issue and HOST_TERMINAL_NOTE in issue
 
 
-def test_an_environment_without_the_harness_names_the_install(tmp_path) -> None:
+@pytest.mark.parametrize("extra", ["anthropic", "gemini", "litellm", "ollama", "openai"])
+def test_the_install_command_carries_every_provider_sdk_extra(tmp_path, extra) -> None:
+    """strands-harness installs a provider's SDK only through its extra: without
+    ``openai``, ``bedrock-mantle`` and ``openai`` fail at ``session/new``."""
+    from kiro_crew.agent_sdk.backends_launch import STRANDS_PYTHON_REQUIREMENT
+
+    extras = STRANDS_PYTHON_REQUIREMENT.split("[", 1)[1].split("]", 1)[0].split(",")
+    assert extra in extras
+    assert STRANDS_PYTHON_REQUIREMENT in strands_mod.strands_python_setup_command(str(tmp_path))
     _venv(tmp_path, with_harness=False)
-    assert "pip install" in strands_mod.strands_python_env_issue(str(tmp_path))
+    assert STRANDS_PYTHON_REQUIREMENT in strands_mod.strands_python_env_issue(str(tmp_path))
+
+
+def test_an_environment_without_the_harness_names_the_install(tmp_path) -> None:
+    """A ``login`` AWS profile needs ``botocore[crt]``; without it the worker dies
+    before it loads the gate, so the install line carries it beside the harness."""
+    _venv(tmp_path, with_harness=False)
+    issue = strands_mod.strands_python_env_issue(str(tmp_path))
+    assert f'-m pip install "{strands_mod.STRANDS_PYTHON_REQUIREMENT}" "botocore[crt]"' in issue
 
 
 def test_a_ready_environment_has_no_issue(tmp_path) -> None:
     _venv(tmp_path, with_harness=True)
     assert strands_mod.strands_python_env_issue(str(tmp_path)) == ""
+
+
+def _site(project: Path) -> Path:
+    if sys.platform == "win32":
+        return project / ".venv" / "Lib" / "site-packages"
+    return project / ".venv" / "lib" / "python3.12" / "site-packages"
+
+
+@pytest.mark.parametrize(
+    ("model", "package", "directory"),
+    [
+        ("bedrock-mantle/some-model", "openai", "openai"),
+        ("openai/some-model", "openai", "openai"),
+        ("google/some-model", "google-genai", "google/genai"),
+    ],
+)
+def test_a_harness_without_the_providers_sdk_is_refused_by_name(
+    tmp_path, model, package, directory
+) -> None:
+    """An environment created before the install carried the provider extras has
+    ``strands_harness`` but not the provider's SDK: the spawn names both and the
+    install command that adds it, then accepts the environment once it is there."""
+    _venv(tmp_path, with_harness=True)
+    assert strands_mod.strands_python_env_issue(str(tmp_path)) == ""
+    issue = strands_mod._strands_provider_sdk_issue(str(tmp_path), model)
+    provider = model.split("/", 1)[0]
+    assert f"provider {provider!r}" in issue and f"{package!r} Python package" in issue
+    python = strands_mod.strands_python(str(tmp_path))
+    assert issue.endswith(f"Run: {strands_mod._pip_install_command(python)}")
+    (_site(tmp_path) / directory).mkdir(parents=True)
+    assert strands_mod._strands_provider_sdk_issue(str(tmp_path), model) == ""
+
+
+@pytest.mark.parametrize("model", ["bedrock/some-model", "some-model", ""])
+def test_bedrock_or_no_named_provider_needs_no_extra_sdk(tmp_path, model) -> None:
+    _venv(tmp_path, with_harness=True)
+    assert strands_mod._strands_provider_sdk_issue(str(tmp_path), model) == ""
+
+
+def test_every_provider_but_bedrock_names_the_sdk_it_needs() -> None:
+    """A provider added to the setting without a row here would skip the check."""
+    from kiro_crew.config.sections_agent_env import STRANDS_PROVIDER_CHOICES
+
+    assert set(strands_mod._STRANDS_PROVIDER_SDKS) == set(STRANDS_PROVIDER_CHOICES) - {"bedrock"}
+
+
+@pytest.mark.parametrize(
+    ("model", "refused"),
+    [
+        ("bedrock-mantle/some-model", True),
+        ("openai/some-model", True),
+        ("bedrock/some-model", False),
+    ],
+)
+def test_the_spawn_refuses_a_provider_whose_sdk_is_missing(
+    monkeypatch, tmp_path, model, refused
+) -> None:
+    """The spawn runs the provider check on the model it launches with: a harness-only
+    environment is refused for an ``openai`` provider and launches for ``bedrock``."""
+    from kiro_crew.acp.harness.base import SpawnContext
+    from kiro_crew.acp.transport_errors import AcpError
+
+    project = tmp_path / "strands"
+    _venv(project, with_harness=True)
+
+    async def preflight(*_args):
+        return ()
+
+    async def cli(_backend):
+        return "/opt/strands", ["/opt/strands", "--acp-server"], "strands", "strands"
+
+    class _PastTheCheck(Exception):
+        pass
+
+    async def mcp() -> None:
+        raise _PastTheCheck
+
+    monkeypatch.setattr(strands_mod.launch_mod, "_run_preflight_bounded", preflight)
+    monkeypatch.setattr(strands_mod.launch_mod, "resolve_self_served_launch", cli)
+    monkeypatch.setattr(strands_mod, "_strands_version_issue", lambda _bin: "")
+    monkeypatch.setattr(strands_mod, "strands_project_dir", lambda: str(project))
+    monkeypatch.setattr(strands_mod, "_seal_strands_gate", lambda: str(project / "agent.py"))
+    monkeypatch.setattr(strands_mod, "_strands_user_project", lambda: ("", ""))
+    monkeypatch.setattr(strands_mod, "_strands_vault_env_names", lambda: ())
+    session = SimpleNamespace(_model=model, _prepare_session_mcp=mcp)
+    ctx = SpawnContext(
+        agent="",
+        work_dir=tmp_path,
+        model=model,
+        environ={},
+        home=tmp_path,
+        sandbox_mode="off",
+        session=session,
+    )
+
+    with pytest.raises((AcpError, _PastTheCheck)) as stopped:
+        asyncio.run(strands_mod.StrandsLaunch().resolve_spawn(ctx))
+    if refused:
+        assert isinstance(stopped.value, AcpError), "launched past the SDK check"
+        assert "'openai' Python package" in str(stopped.value)
+        assert str(stopped.value).endswith(", then start a new chat.")
+    else:
+        assert isinstance(stopped.value, _PastTheCheck), str(stopped.value)
 
 
 def test_a_host_the_sandbox_floor_refuses_gets_no_python_setup_steps(monkeypatch, tmp_path) -> None:
@@ -1111,6 +1328,8 @@ class _ReadbackProbe:
 
     def __init__(self, *args, **kwargs) -> None:
         self.stdin = io.BytesIO()
+        self.stdout = None
+        self.stderr = None
         self.killed = False
         self.tree_killed = False
         self.waited = False

@@ -22,6 +22,8 @@ import {
   reconcileSubagentApprovalGone,
   clearSubagentsForSnapshot,
   subagentReplayDone,
+  subagentReplayTruncated,
+  clearTerminalSubagents,
 } from '../store/chatSlice'
 
 const ACTIVE = 'chat-active'
@@ -328,5 +330,58 @@ describe('reconnect replay reconcile', () => {
     s.dispatch(snapshot('run-s', ACTIVE, { stalled: true, idle_secs: 90 }))
     s.dispatch(subagentReplayDone())
     expect(s.getState().chat.subagents['run-s']).toBe(first)
+  })
+})
+
+describe('what the replay left out of a slot (subagent_replay_truncated)', () => {
+  const cut = (slots: Record<string, unknown>) => subagentReplayTruncated({ slots })
+
+  it('sets each named slot and leaves another slot as it was', () => {
+    const s = createTestStore()
+    s.dispatch(cut({ [ACTIVE]: { n: 12, at_least: false }, [OTHER]: { n: 3, at_least: false } }))
+    s.dispatch(cut({ [ACTIVE]: { n: 0, at_least: true } }))
+    expect(s.getState().chat.subagentReplayCut).toEqual({
+      [ACTIVE]: { n: 0, atLeast: true },
+      [OTHER]: { n: 3, atLeast: false },
+    })
+    // Set, not added: a second count replaces the first.
+    s.dispatch(cut({ [OTHER]: { n: 5, at_least: false } }))
+    expect(s.getState().chat.subagentReplayCut?.[OTHER]).toEqual({ n: 5, atLeast: false })
+  })
+
+  it('ignores an unsafe slot key and a count that is not a non-negative integer', () => {
+    const s = createTestStore()
+    // Parsed, as the frame is, so `__proto__` is an own key and not the prototype.
+    s.dispatch(cut(JSON.parse(`{
+      "__proto__": { "n": 4, "at_least": false },
+      "constructor": { "n": 4, "at_least": false },
+      "bad-negative": { "n": -1, "at_least": false },
+      "bad-fraction": { "n": 1.5, "at_least": false },
+      "bad-string": { "n": "7", "at_least": false },
+      "bad-entry": 7,
+      "${ACTIVE}": { "n": 2, "at_least": false }
+    }`)))
+    s.dispatch(cut({ 'bad-infinite': { n: Infinity, at_least: false } }))
+    expect(s.getState().chat.subagentReplayCut).toEqual({ [ACTIVE]: { n: 2, atLeast: false } })
+    expect(({} as Record<string, unknown>).n).toBeUndefined()
+  })
+
+  it('is cleared by a new subscription, keeping the map when it is already empty', () => {
+    const s = createTestStore()
+    const empty = s.getState().chat.subagentReplayCut
+    s.dispatch(clearSubagentsForSnapshot())
+    expect(s.getState().chat.subagentReplayCut).toBe(empty)
+    s.dispatch(cut({ [ACTIVE]: { n: 9, at_least: false } }))
+    s.dispatch(clearSubagentsForSnapshot())
+    expect(s.getState().chat.subagentReplayCut).toEqual({})
+  })
+
+  it('is cleared for the slot by Dismiss done, and only for that slot', () => {
+    const s = createTestStore()
+    s.dispatch(setActiveSlot(ACTIVE))
+    s.dispatch(sseSubagentDone({ slot: ACTIVE, id: 'done-c', elapsed: 4, task: 't', agent: 'kirocrew', outcome: 'completed' }))
+    s.dispatch(cut({ [ACTIVE]: { n: 9, at_least: false }, [OTHER]: { n: 1, at_least: true } }))
+    s.dispatch(clearTerminalSubagents({ slot: ACTIVE }))
+    expect(s.getState().chat.subagentReplayCut).toEqual({ [OTHER]: { n: 1, atLeast: true } })
   })
 })

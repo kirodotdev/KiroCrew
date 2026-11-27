@@ -519,8 +519,9 @@ def ssh_auth_sock_consent_path() -> Path:
     un-flippable from inside the sandbox.
 
     Holds ``{"enabled": bool, "mcp_gateway_backends": [str]}``; every read fails
-    soft to DISABLED (see ``ssh_auth_sock_consent``). The operator writes it by
-    hand from outside the agent sandbox; Kiro Crew only reads it. There is
+    soft to DISABLED (see ``ssh_auth_sock_consent``). The owner-gated dashboard
+    handler (``dashboard/handlers/ssh_auth_sock_consent.py``) is the only in-tree
+    writer; a hand edit from outside the agent sandbox still works. There is
     deliberately NO CLI verb -- a terminal command that records the grant on
     request is a grant an automated caller can take. Respects
     ``KIROCREW_HOME``.
@@ -736,6 +737,12 @@ def materialize_workspace_dir(validated: Path, *, leaf: Path, display: str) -> N
             "workspace_dir_uncreatable",
             f"Directory '{display}' could not be created: {exc.strerror or exc}",
         ) from exc
+    # A device name (Windows ``NUL``) takes the mkdir and leaves no directory.
+    if not validated.is_dir():
+        raise WorkspaceDirUnusable(
+            "workspace_dir_not_a_directory",
+            f"'{display}' exists and is not a directory; choose another dir or remove it first",
+        )
 
 
 def workspace_dir_from_entry(entry: WorkspaceConfig | None) -> Path:

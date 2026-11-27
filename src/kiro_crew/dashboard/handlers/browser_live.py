@@ -78,15 +78,20 @@ def _sel() -> Any:
     return sel()
 
 
-def _audit(request: web.Request, *, operation: str, outcome: str, error: str = "") -> None:
-    """Best-effort SEL audit; a logging failure never changes the answer."""
+def _audit(
+    request: web.Request, *, operation: str, outcome: str, error: str = "", resources: str = ""
+) -> None:
+    """Best-effort SEL audit; a logging failure never changes the answer.
+
+    *resources* defaults to the request path.
+    """
     try:
         _sel().log_api_access(
             caller=str(request.get("user") or "dashboard"),
             operation=operation,
             outcome=outcome,
             source="dashboard",
-            resources=request.path,
+            resources=resources or request.path,
             error=error,
         )
     except Exception:

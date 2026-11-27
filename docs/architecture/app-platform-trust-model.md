@@ -15,8 +15,10 @@ When an app's executable surfaces are **admitted** and enabled, its in-process b
 
 The `AppContext` capability permissions (`permissions.cron`,
 `permissions.events`, `permissions.spawn`, `permissions.storage`,
-`permissions.jobs`, `permissions.proposeCrewmate`, `permissions.agentTurns` and
-`permissions.workerAutoApprove`) gate only which SDK objects `context.py` populates.
+`permissions.jobs`, `permissions.proposeCrewmate`, `permissions.agentTurns`,
+`permissions.chatSlots`, `permissions.workerAutoApprove`,
+`permissions.webhookSource` and `permissions.browser`) gate only which SDK
+objects `context.py` populates.
 A non-empty `permissions.mcpTools` scopes the app's OWN agents: when they are
 materialized, every host-managed (`kirocrew-*`) tool the app did not declare is
 added to the agent spec's `managedToolPolicy.exclude`, which the managed servers

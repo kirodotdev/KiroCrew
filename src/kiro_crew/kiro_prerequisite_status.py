@@ -23,6 +23,7 @@ from kiro_crew.kiro_cli_bundle import (  # noqa: F401 - re-exported surface
     KIRO_CLI_SSO_LOGIN_COMMAND,
     _is_off_path_override,
     login_commands,
+    powershell_single_quoted,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -49,7 +50,7 @@ def config_set_hints_for_launcher(launcher: str, platform_name: str) -> dict[str
     virtual-environment executable or the desktop bundle's ``.cmd`` shim, so the
     gateway that resolved it names the prefix for each shell it can be pasted into.
     Windows lists Windows PowerShell / PowerShell 7 first (a single-quoted path
-    behind the call operator, spelled by :func:`_powershell_single_quoted`) and
+    behind the call operator, spelled by :func:`powershell_single_quoted`) and
     cmd.exe second, spelled by :func:`_cmd_launcher_prefix`, which leaves the row out
     when no spelling is safe. Any other platform has the one ``posix`` row. Pure
     string work, so a caller may run it anywhere.
@@ -59,25 +60,13 @@ def config_set_hints_for_launcher(launcher: str, platform_name: str) -> dict[str
     dropped by Windows PowerShell 5.1 before a ``.cmd`` shim, an attached token is not.
     """
     if platform_name == "win32":
-        shells = [{"id": "powershell", "prefix": f"& {_powershell_single_quoted(launcher)}"}]
+        shells = [{"id": "powershell", "prefix": f"& {powershell_single_quoted(launcher)}"}]
         cmd_prefix = _cmd_launcher_prefix(launcher)
         if cmd_prefix is not None:
             shells.append({"id": "cmd", "prefix": cmd_prefix})
     else:
         shells = [{"id": "posix", "prefix": shlex.quote(launcher)}]
     return {"version": 1, "encoding": "utf-8-base64", "shells": shells}
-
-
-# Every character PowerShell's tokenizer reads as a single quote: the ASCII apostrophe
-# and the four typographic ones (U+2018 to U+201B). Any of them ends a single-quoted
-# string, and a doubled one is that character once.
-_POWERSHELL_SINGLE_QUOTES = frozenset("'\u2018\u2019\u201a\u201b")
-
-
-def _powershell_single_quoted(text: str) -> str:
-    """*text* as a PowerShell single-quoted string, each single-quote character doubled."""
-    body = "".join(ch * 2 if ch in _POWERSHELL_SINGLE_QUOTES else ch for ch in text)
-    return f"'{body}'"
 
 
 def _cmd_launcher_prefix(launcher: str) -> str | None:

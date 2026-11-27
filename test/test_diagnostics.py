@@ -81,6 +81,8 @@ def _isolate(monkeypatch, home: Path) -> None:
     # data-home resolve to this temp dir, so the test controls the full prefix.
     monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(diagnostics, "_macos_crash_reports", lambda: [])
+    # memory.txt reads the real /proc and the real process family; keep it off the host.
+    monkeypatch.setattr("kiro_crew.diag.memory_snapshot.render", lambda *a, **k: "")
     monkeypatch.setattr(diagnostics, "_kiro_cli_chat_log", lambda: None)
     monkeypatch.setattr(diagnostics, "_kiro_cli_extra_logs", lambda: [])
     monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
@@ -396,6 +398,8 @@ def test_nested_data_home_keeps_relative_tail(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.diagnostics.config_dir", lambda: data_home)
     monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(diagnostics, "_macos_crash_reports", lambda: [])
+    # memory.txt reads the real /proc and the real process family; keep it off the host.
+    monkeypatch.setattr("kiro_crew.diag.memory_snapshot.render", lambda *a, **k: "")
     monkeypatch.setattr(diagnostics, "_kiro_cli_chat_log", lambda: None)
     monkeypatch.setattr(diagnostics, "_kiro_cli_extra_logs", lambda: [])
     monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
@@ -1920,12 +1924,15 @@ def test_collect_handler_returns_download_url(tmp_path, monkeypatch):
         redaction_summary={"versions.txt": 0},
         github_issue_url="https://github.com/kirodotdev/KiroCrew/issues/new?title=x",
     )
-    monkeypatch.setattr(dh.diagnostics, "collect_bundle", lambda **kw: fake)
+    seen: dict = {}
+    monkeypatch.setattr(dh, "_staged_update_alignment", lambda: "aligned (9.9.9)")
+    monkeypatch.setattr(dh.diagnostics, "collect_bundle", lambda **kw: seen.update(kw) or fake)
 
     resp = asyncio.run(
         dh.api_diagnostics_collect(_CollectReq({"note": "hi", "include_logs": True}))
     )
     assert resp.status == 200
+    assert seen["version_alignment"] == "aligned (9.9.9)"
     body = json.loads(resp.text)
     assert body["download_url"] == "/api/diagnostics/download/b.zip"
     assert body["github_issue_url"].startswith("https://github.com/")

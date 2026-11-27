@@ -192,7 +192,10 @@ def _sse_reply(queued: list[dict[str, Any]]) -> str:
 async def _openai_reply(queued: list[dict[str, Any]]) -> str:
     """The OpenAI-compatible (non-streaming) reply built from the queued rows."""
     slot = SimpleNamespace(
-        _pending=[*copy.deepcopy(queued), {"cls": "done"}], event=asyncio.Event(), task=None
+        _pending=[*copy.deepcopy(queued), {"cls": "done"}],
+        _stream_epoch=0,
+        event=asyncio.Event(),
+        task=None,
     )
 
     def _drain() -> list[dict[str, Any]]:

@@ -204,11 +204,12 @@ async def serve_sandbox_doc(request: web.Request) -> web.Response:
     The cost is that a frame the BROWSER reloads on its own (rather than a page
     reload, which remounts the app and mints again) finds its document spent and
     gets this 404 inside the frame. The parent cannot read the GET: the
-    document is served with an opaque origin. The crewmate Dashboard tab
-    detects it anyway: its document carries a host script that answers a ping
+    document is served with an opaque origin. Every visible frame that runs
+    script detects it anyway: its document carries a host script that answers a ping
     the parent sends on every frame ``load``, and a load with no answer before
-    a deadline makes the tab mint a new URL (``useFrameAliveRecovery``). Other
-    surfaces do not, so a spent URL there still needs a page reload.
+    a deadline makes the frame mint a new URL (``useFrameAliveRecovery``). A
+    frame that grants no script (the command-center session card) cannot
+    answer, so a spent URL there still needs a page reload.
     """
     doc_id = request.match_info.get("doc_id", "")
     token = request.match_info.get("token", "")

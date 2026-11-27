@@ -53,6 +53,7 @@ from kiro_crew.messaging.commands import (
     compact_unsupported_reply,
     context_recycle_warning,
     format_ttl,
+    is_channel_owner,
     parse_dashboard_ttl,
     recycle_backend,
     recycle_warning_should_send,
@@ -1086,6 +1087,9 @@ class TeamsDispatcher:
         candidates = self._click_session_keys(inbound, identity)
         if payload["kc"] == KIND_APPROVAL:
             decision = payload["decision"]
+            if not self._is_owner(inbound):
+                # Only the owner approves a tool; anyone else's press is a Deny.
+                decision = DECISION_DENY
             approved = decision in (DECISION_APPROVE, DECISION_TRUST)
             # At most one candidate can hold this (rid, nonce) pair, so trying them in
             # order resolves exactly the prompt that is waiting and no other.
@@ -1139,6 +1143,7 @@ class TeamsDispatcher:
                     "on",
                     source="teams_card",
                     caller=identity or "unknown",
+                    caller_is_owner=self._is_owner(inbound),
                     phrasing=YOLO_PHRASING_MARKDOWN,
                 )
                 await self._reply(inbound, grant)
@@ -1538,6 +1543,7 @@ class TeamsDispatcher:
             arg,
             source="teams",
             caller=identity or "unknown",
+            caller_is_owner=self._is_owner(inbound),
             phrasing=YOLO_PHRASING_MARKDOWN,
         )
         await self._reply(inbound, reply)
@@ -1562,6 +1568,7 @@ class TeamsDispatcher:
         from kiro_crew.dashboard.token_auth import (
             MAX_SESSION_TTL_SECS,
             generate_token,
+            owner_mint_extra,
             parse_duration,
         )
         from kiro_crew.dashboard.urls import dashboard_origin, parse_dashboard_url
@@ -1571,7 +1578,28 @@ class TeamsDispatcher:
             parse_dashboard_ttl(arg, parse_duration=parse_duration), MAX_SESSION_TTL_SECS
         )
         try:
-            token = generate_token(identity or "teams", ttl_seconds=ttl_secs)
+            # The owner's own link carries the owner's dashboard session, as the
+            # owner's Slack link does: the sender must be the identity the owner
+            # named as theirs (``teams.owner_id``, the KIROCREW_OWNER_ID of this
+            # channel), read live so a removed owner stops at once, and compared
+            # case-insensitively as the allow-list is, against both forms the
+            # activity attests (email and AAD object id): the allow-list may have
+            # admitted the sender on the other one. Being the only allow-listed
+            # identity is NOT that proof. The subject is the one the dashboard's
+            # owner gate admits (its owner id, else ``local-app``), so the link
+            # needs the dashboard attached. Every other link stays under the
+            # sender's own identity, which the owner's chat refuses.
+            owner_id = self._live_cfg().teams.owner_id
+            owner = owner_id.strip().lower() if isinstance(owner_id, str) else ""
+            attested = {f.lower() for f in (inbound.user_email, inbound.aad_object_id) if f}
+            state = getattr(self, "dashboard_state", None)
+            if state is not None and owner and owner in attested:
+                from kiro_crew.shared_crew.owner import DEFAULT_OWNER_SUBJECT
+
+                subject = str(getattr(state, "owner_id", "") or "") or DEFAULT_OWNER_SUBJECT
+                token = generate_token(subject, ttl_seconds=ttl_secs, extra=owner_mint_extra())
+            else:
+                token = generate_token(identity or "teams", ttl_seconds=ttl_secs)
             origin = dashboard_origin(self.cfg.dashboard.url)
             if not origin:
                 # No configured dashboard.url: fall back to the local port, which
@@ -1766,6 +1794,18 @@ class TeamsDispatcher:
         whenever only one form is present.
         """
         return inbound.resolved_identity or inbound.user_email or inbound.aad_object_id
+
+    def _is_owner(self, inbound: "TeamsInbound") -> bool:
+        """Whether the sender may change YOLO and answer approval prompts here.
+
+        ``teams.owner_id`` when it is set, else the only allow-listed identity
+        (:func:`is_channel_owner`), matched on either form Teams attests. Read live.
+        """
+        return is_channel_owner(
+            (inbound.resolved_identity, inbound.user_email, inbound.aad_object_id),
+            owner=getattr(self._live_cfg().teams, "owner_id", ""),
+            allowed=self._allowed_emails,
+        )
 
     async def _reply(self, inbound: "TeamsInbound", body: str) -> bool:
         """Send a command/notice reply into the inbound conversation; did it land?

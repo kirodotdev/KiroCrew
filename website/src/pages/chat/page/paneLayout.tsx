@@ -3,14 +3,14 @@ import type { HoverIntent } from '../../../hooks/useHoverIntent'
 import type { AppDispatch } from '../../../store'
 import type { ChatSlot, ChatFolder } from '../../../types'
 import { openActivityPanel, createSlot, deleteSlot, requestSlotFolderOpen, setSidePanelAlwaysOpen } from '../../../store/chatSlice'
-import { safeSetItem } from '../../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../../utils/safeStorage'
 import { notePanelShown } from '../../../hooks/usePanelTabs'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import type { useComposerChips } from './composerChips'
 import type { MemoryMode } from '../../../components/MemoryModeChip'
 import { anchorForSlot, sessionSlots, loadLayout } from '../../../hooks/splitLayoutStore'
 import type { SplitDir } from '../../../hooks/useSessionGrid'
-import { CHAT_PANE_MIN_W, sidePanelFillWidth } from '../SidePanel'
+import { sidePanelFillWidth } from '../SidePanel'
 import { useSidePanelDock } from '../../../hooks/useSidePanelDock'
 import { parseStoredSidebarWidth, SIDEBAR_MAX } from '../sidebarWidth'
 import { focusComposerAfter, focusComposer } from '../composerFocus'
@@ -88,8 +88,8 @@ export function usePaneLayoutState({
   }, [dispatch, companionEmbed, sidePanelAlwaysOpen, isMobile, sidePanelAlwaysOpenKnown])
   // Report the chat whose strip the side panel shows (null: none), so a show
   // ends when the panel closes or its chat changes. The report comes from this
-  // page, not from the panel's own mount, so a panel remount (the find pane
-  // closing, a resize across the phone breakpoint) is not a new show and does
+  // page, not from the panel's own mount, so a panel remount (a resize
+  // across the phone breakpoint) is not a new show and does
   // not move Pin Summary's tab. usePanelTabs keeps the last report (see
   // notePanelShown), so this page mounting again on the same chat ends nothing,
   // and a chat change made while it was unmounted ends the old chat's show.
@@ -109,7 +109,7 @@ export function usePaneLayoutState({
     // `autoOpenGitPanelKnown`.
     if (!autoOpenGitPanelKnown) return
     const key = `mc-git-panel-opened:${activeSlot}:${_slotProject}`
-    if (localStorage.getItem(key)) return
+    if (safeGetItem(key)) return
     // If the marker cannot be persisted, skip the auto-open entirely: opening
     // changes tabsCtl, which re-runs this effect, and an absent marker would
     // make it open again forever. safeSetItem reports whether the write landed
@@ -124,7 +124,7 @@ export function usePaneLayoutState({
     if (autoOpenGitPanel) dispatch(openActivityPanel())
   }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch, autoOpenGitPanel, autoOpenGitPanelKnown])
 
-  const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
+  const [sidebarPinned, setSidebarPinned] = useState(() => safeGetItem('mc-sidebar-pinned') !== 'false')
   const sidebarPinnedRef = useRef(sidebarPinned)
   sidebarPinnedRef.current = sidebarPinned
   // Pre-focus session-list state while the Web Preview expand mode auto-hides
@@ -140,7 +140,7 @@ export function usePaneLayoutState({
   // Until it reports, read the stored width as the list views cap it: the
   // sidebar's first layout effect corrects it before the frame paints.
   const [sidebarWidth, setSidebarWidth] = useState(() =>
-    Math.min(parseStoredSidebarWidth(localStorage.getItem('mc-sidebar-width')) ?? 260, SIDEBAR_MAX))
+    Math.min(parseStoredSidebarWidth(safeGetItem('mc-sidebar-width')) ?? 260, SIDEBAR_MAX))
   const [sidebarDragging, setSidebarDragging] = useState(false)
   // Pinned to the slot the rename opened on: activeSlot moves the instant the user
   // switches sessions, and a live-resolved commit would rename the wrong session.
@@ -303,16 +303,10 @@ export function usePanelLayout({
     }
   }, [slotsLoaded, filteredSlots.length, sidebarPinned, previewExpanded, setSidebarPinned])
 
-  // Horizontal space (px) the detail panel must keep clear so it never grows
-  // past its flex row and collapses the chat pane: the open sidebar's width
-  // plus a usable chat-pane minimum. On mobile the panel is full-screen (no
-  // shared row), so no reserve applies.
-  const CHAT_PANE_MIN = CHAT_PANE_MIN_W
-  const panelReserve = isMobile ? undefined : (sidebarOpen ? effectiveSidebarWidth : 0) + CHAT_PANE_MIN
   // The panel takes its maximum only while the session list is actually hidden.
   // That maximum is measured against the header's reserve, which knows nothing
   // about the session list's width — so keeping it while the user reopens the
-  // list inside expand mode pushes the chat pane below CHAT_PANE_MIN and clips
+  // list inside expand mode pushes the chat pane below CHAT_PANE_MIN_W and clips
   // its content. Reverting to the normal width maths there costs the preview a
   // few hundred px in a state the user asked for by reopening the list.
   const panelMaximized = previewExpanded && !sidebarOpen
@@ -501,7 +495,7 @@ export function usePanelLayout({
   // The welcome screen puts its memory chip directly above the composer.
   const showComposerMemoryChip = isWelcomeState
   return {
-    flyoutNew, panelReserve, panelMaximized, panelFillWidth, mobileSessionsToggle, topbarSessionsToggle, mobileNewSessionItem, switchMemoryMode, showComposerMemoryChip,
+    flyoutNew, panelMaximized, panelFillWidth, mobileSessionsToggle, topbarSessionsToggle, mobileNewSessionItem, switchMemoryMode, showComposerMemoryChip,
     memorySwitching, composerOptimizing, handleOptimizingChange,
   }
 }

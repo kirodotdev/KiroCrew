@@ -133,6 +133,9 @@ def _serialize(art: Any, *, include_content: bool = False, state: Any = None) ->
     pub = out.get("publication")
     if isinstance(pub, dict) and isinstance(pub.get("last_error"), str) and pub["last_error"]:
         pub["last_error"] = _redact_text(pub["last_error"])
+    # Read-time, by this gateway's clock, so the page and the publish route agree.
+    if isinstance(pub, dict) and art.publication is not None:
+        pub["expired"] = art.publication.is_expired()
     if isinstance(out.get("webapp_metadata"), dict):
         out["webapp_metadata"] = _redact_webapp_metadata(out["webapp_metadata"])
     # Image block: ``alt`` and ``original_filename`` are derived from markdown the

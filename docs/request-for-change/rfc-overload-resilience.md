@@ -861,7 +861,7 @@ Question text is kept as asked; the decision below it is final for this PR.
   `agent.spawn_min_memory_gb=4.0` restores the previous bar; `0` disables the
   floor and the cold-start reserve together (unchanged). Not decided here: a
   platform-aware floor (scaling to total RAM, or gating on the kernel's
-  pressure level on macOS) stays open under #15244. **Partly decided by Q10
+  pressure level on macOS) was left open under #15244 (closed 2026-10-02). **Partly decided by Q10
   (2026-10-01):** the macOS pressure-level gate. **Superseded by Q9:** the
   3.0 default never shipped (the code stayed at 4.0), and on 2026-10-01 the
   owner set a different direction: the only capacity guarantee is that at least

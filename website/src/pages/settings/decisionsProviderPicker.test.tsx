@@ -5,7 +5,7 @@
 // the write -- a preset id, never an address or a port -- and how the card follows
 // the gateway while it downloads, installs and runs a local model.
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { namedCeiling } from '../../test/namedCeiling'
 
@@ -540,6 +540,22 @@ describe('refused hosted default (round-14 repro)', () => {
     await renderPicker({ data: { ...providerOf('none'), hosted_permitted: false } })
     const line = await screen.findByText(/Jev, hosted by TypeSafe is still saved in your settings, but your administrator does not allow it/)
     expect(line.textContent).toContain('Clear it to stop using decision models')
+  })
+
+  it('names the surfaces that still send to the refused model under the recorded consent', async () => {
+    await renderPicker({
+      data: { ...providerOf('none'), hosted_permitted: false, still_sending: { surfaces: ['slack', 'cron'], unbound: true } },
+    })
+    const block = await screen.findByTestId('decisions-saved-refused')
+    expect(within(block).getByTestId('decisions-still-sending').textContent).toBe(
+      'Your messages are still sent to this model from Slack, scheduled jobs, and anywhere else your administrator set no separate rules for. Turn off Decisions to stop.',
+    )
+  })
+
+  it('says nothing about other surfaces when none still sends', async () => {
+    await renderPicker({ data: { ...providerOf('none'), hosted_permitted: false, still_sending: null } })
+    await screen.findByTestId('decisions-saved-refused')
+    expect(screen.queryByTestId('decisions-still-sending')).toBeNull()
   })
 
   it('names SageMaker, not Jev, when only the SageMaker host is refused', async () => {

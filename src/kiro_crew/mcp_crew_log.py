@@ -78,7 +78,8 @@ import re as _re
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from kiro_crew.mcp_core import _get, _resolve_session_key, require_strict_session_key
+from kiro_crew.mcp_core_parts.gateway import _get
+from kiro_crew.mcp_core_parts.identity import _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import MCP_CREW_LOG_SCHEMAS, validate_tool_args

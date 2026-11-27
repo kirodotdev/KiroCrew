@@ -1,18 +1,24 @@
 # Smoke: the "Show Timestamps" switch on Settings > Chat, judged where it
-# matters -- in a transcript. The switch is on by default and is a per-device
-# preference (the chat config in localStorage). A message's time lives in the
-# small action row under its bubble, which fades in only while the pointer
-# rests on the message, so the tester hovers one message to read it; the `rich`
-# seed's messages all carry a January 15 timestamp, so with the switch on the
-# hovered bubble's row reads "Jan 15, …" and with it off the row holds icons and
-# no date. The flow is off -> hover -> on -> hover, so the scenario ends with
-# the switch where it found it (on) and a retry against the un-reseeded target
-# reads the same; each switch step names the position to leave the switch in
-# rather than "click it", so a retry that starts from a half-finished attempt
-# still converges. The final expectations read only the last hover; the "off"
-# hover in the middle is guidance for the tester, not an assertion, because the
-# harness keeps just the newest three screenshots. Two transcript visits make
-# this the longest smoke flow, hence the tier's ceiling on actions.
+# matters -- in a transcript. The switch is on by default, sits on the Chat
+# tab's Transcript pane with its description in the label's info tip, and is a
+# per-device preference (the chat config in localStorage). A message's time
+# lives in the small action row under its bubble, which fades in only while the
+# pointer rests on the message, so the tester hovers one message to read it:
+# the first answer, not the question above it. In a full run an earlier
+# scenario (chat-turn-stats-footer) has already sent a message in this chat, so
+# its transcript scrolls and that question becomes the pinned prompt, a card
+# whose "Jump to this turn" tooltip covers the row under it; an answer is never
+# pinned. The `rich` seed's messages all carry a January 15 timestamp, so with
+# the switch on the hovered answer's row reads "Jan 15, …" and with it off the
+# row holds icons and no date. The flow is off -> hover -> on -> hover, so the
+# scenario ends with the switch where it found it (on) and a retry against the
+# un-reseeded target reads the same; each switch step names the position to
+# leave the switch in rather than "click it", so a retry that starts from a
+# half-finished attempt still converges. The final expectations read only the
+# last hover; the "off" hover in the middle is guidance for the tester, not an
+# assertion, because the harness keeps just the newest three screenshots. Two
+# transcript visits make this the longest smoke flow, hence the tier's ceiling
+# on actions.
 name: settings-chat-toggle-show-timestamps
 tier: smoke
 feature: settings
@@ -26,14 +32,14 @@ preconditions:
   members: [nova-sky]
   start_url: /settings/chat
 steps:
-  - You are on the Settings page with its Chat tab selected. Scroll down until the section titled "Messages" is on screen and find its row labelled "Show Timestamps" (description "Display time on each message"). Make sure its switch is OFF -- click it once if it is on.
-  - Click "Sessions" in the left rail to open the chat page, then click the session titled "Welcome to KiroCrew" in the sidebar (pinned near the top). Move the mouse over its first message, "Where does KiroCrew store my data?", and hold it there; a small row of icons appears under the bubble with no date or time in it.  # brand-ok: verbatim seeded session title and message from the rich fixture
-  - Click "Settings" in the left rail; it reopens on the Chat tab (if it does not, click the "Chat" tab in the settings navigation). Scroll down to the "Show Timestamps" row again and make sure its switch is ON -- click it once if it is off.
-  - Click "Sessions" in the left rail again; if the "Welcome to KiroCrew" conversation is not already showing, click its row in the sidebar. Move the mouse over the first message, "Where does KiroCrew store my data?", and hold it there.  # brand-ok: verbatim seeded session title and message from the rich fixture
+  - You are on the Settings page with its Chat tab selected, which opens on its "Transcript" pane. Find the row labelled "Show Timestamps" (scroll down if it is not on screen; its description is behind a small "i" icon beside the label). Make sure its switch is OFF -- click it once if it is on.
+  - Click "Sessions" in the left rail to open the chat page, then click the session titled "Welcome to KiroCrew" in the sidebar (pinned near the top). Move the mouse onto the last sentence of the first answer (it ends "is exactly such a sandbox.") and hold it there; a small row of icons appears under the answer with no date or time in it.  # brand-ok: verbatim seeded session title from the rich fixture
+  - Click "Settings" in the left rail; it reopens on the Chat tab (if it does not, click the "Chat" tab in the settings navigation). Find the "Show Timestamps" row again and make sure its switch is ON -- click it once if it is off.
+  - Click "Sessions" in the left rail again; if the "Welcome to KiroCrew" conversation is not already showing, click its row in the sidebar. Move the mouse onto the last sentence of the first answer (it ends "is exactly such a sandbox.") and hold it there.  # brand-ok: verbatim seeded session title from the rich fixture
   - Wait a second without moving the mouse.
 expectations:
   - The conversation area shows the "Welcome to KiroCrew" transcript, which begins with the question "Where does KiroCrew store my data?".  # brand-ok: verbatim seeded session title and message from the rich fixture
-  - Under the message the pointer rests on, a small row is showing with a grey date and time that begins with "Jan 15" beside its icons.
+  - Under the answer the pointer rests on, a small row is showing with a grey date and time that begins with "Jan 15" beside its icons.
   - No red error banner is visible and no text is clipped or overlapping.
 max_steps: 14
 max_seconds: 360

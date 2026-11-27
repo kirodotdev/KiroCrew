@@ -327,6 +327,9 @@ class _PinnedDir:
 
     The path is pinned exactly as handed in, so the CALLER owns
     :func:`_pinned_ancestors`: splitting it here would guess this one's depth.
+    *what* and *during* name the directory and the transaction in a refusal; an
+    app update pins its app directory and swap trees with the same class
+    (``kiro_crew.apps.manager_tree``).
 
     A path-based check-then-use is a TOCTOU window: a RUNNING app can swap
     ``data/`` for a symlink after the validation and have every later rename
@@ -340,22 +343,26 @@ class _PinnedDir:
     stands, backed by symlink creation being privileged there.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self, path: Path, *, what: str = "app data directory", during: str = "provisioning"
+    ) -> None:
         self.path = path
+        self.what = what
+        self.during = during
         self.fd: int | None = None
         self._win_id: tuple[int, int] | None = None
         if pinned_fs.supports_pinned_walk():
             # pin_parent walks every component openat+O_NOFOLLOW (see
             # kiro_crew.pinned_fs for the invariants); a link anywhere on
             # the way - or at the target - is refused, not followed.
-            self.fd = pinned_fs.pin_parent(str(path), what="app data directory", refusal=OSError)
+            self.fd = pinned_fs.pin_parent(str(path), what=what, refusal=OSError)
         else:
             # Windows: capture the directory identity (volume serial + file
             # index via st_dev/st_ino) so verify() can detect a junction
             # swapped in mid-transaction - junction creation needs no
             # privilege, so the pre-check alone is a TOCTOU window there.
             if platform_compat.is_link_or_junction(path):
-                raise OSError("app data directory is a symlink/junction; refusing")
+                raise OSError(f"{what} is a symlink/junction; refusing")
             st = os.stat(str(path))
             self._win_id = (st.st_dev, st.st_ino)
 
@@ -379,13 +386,13 @@ class _PinnedDir:
             st_fd = os.fstat(self.fd)
             st_path = os.lstat(str(self.path))
             if (st_fd.st_dev, st_fd.st_ino) != (st_path.st_dev, st_path.st_ino):
-                raise OSError("app data directory was replaced mid-provisioning; refusing")
+                raise OSError(f"{self.what} was replaced mid-{self.during}; refusing")
             return
         if platform_compat.is_link_or_junction(self.path):
-            raise OSError("app data directory was replaced mid-provisioning; refusing")
+            raise OSError(f"{self.what} was replaced mid-{self.during}; refusing")
         st_now = os.stat(str(self.path))
         if self._win_id is not None and (st_now.st_dev, st_now.st_ino) != self._win_id:
-            raise OSError("app data directory was replaced mid-provisioning; refusing")
+            raise OSError(f"{self.what} was replaced mid-{self.during}; refusing")
 
     def rename(self, src_name: str, dst_name: str) -> None:
         """Rename WITHIN the pinned dir, immune to a swapped path.

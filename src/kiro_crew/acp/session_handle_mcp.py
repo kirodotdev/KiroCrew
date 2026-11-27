@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp._dispatch import classify_notification, classify_tool_call
 from kiro_crew.acp.client import _is_safe_oauth_url
+from kiro_crew.acp.kas_mcp_lazy_sign_in import REPLACES_LINK
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS as REATTEMPT_MAX
 from kiro_crew.acp.mcp_reattempt import (
@@ -359,7 +360,8 @@ def _accept_oauth_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> dict[s
     if not server_name:
         logger.warning("ACP: dropping MCP OAuth request with empty serverName")
         return None
-    if server_name in self._oauth_emitted_servers:
+    # A KAS mid-session link that replaces the one shown (kas_mcp_lazy_sign_in) passes.
+    if server_name in self._oauth_emitted_servers and params.get(REPLACES_LINK) is not True:
         logger.debug("ACP: dropping duplicate MCP OAuth request for %s", server_name)
         return None
     self._oauth_emitted_servers.add(server_name)
@@ -791,7 +793,9 @@ class _QueueWait:
         return True
 
 
-async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple[str, ...]:
+async def wait_for_declared_mcp(
+    self: AcpSessionHandle, timeout: float, skip: tuple[str, ...] = ()
+) -> tuple[str, ...]:
     """Hold until every server the agent spec declares has reported; never raises.
 
     For an unattended run, before its first prompt. ``drain_init`` stops a
@@ -800,10 +804,11 @@ async def wait_for_declared_mcp(self: AcpSessionHandle, timeout: float) -> tuple
     Nobody is there to notice or retry, so this keeps draining init frames
     (exactly as ``drain_init`` handles them) until each declared server has
     reported initialized, failed or awaiting authorization, or *timeout*
-    seconds pass. Returns the declared servers that are not ready, in spec
-    order; empty when all are.
+    seconds pass. A server in *skip* is not waited for. Returns the declared
+    servers that are not ready, in spec order; empty when all are.
     """
-    await _drain_until_reported(self, self._mcp_report.declared, timeout)
+    waited = tuple(name for name in self._mcp_report.declared if name not in skip)
+    await _drain_until_reported(self, waited, timeout)
     return self._mcp_report.declared_not_ready()
 
 
@@ -825,6 +830,19 @@ async def wait_mounted_mcp(self: AcpSessionHandle, names: tuple[str, ...], timeo
             timeout,
             ", ".join(late),
         )
+
+
+async def wait_own_app_servers(
+    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float
+) -> None:
+    """Best effort: hold a start for an app agent's own app servers, at most *timeout*.
+
+    As :func:`wait_mounted_mcp`, except a server the host already settled
+    (disabled, dropped by a registry) ends the wait for it at once. Never fails
+    the start; runtime death still raises.
+    """
+    if await _drain_until_reported(handle, names, timeout, settled=True):
+        raise AcpRuntimeDead("Runtime exited while waiting for the app's own MCP servers")
 
 
 #: Late servers the first-turn hold names in its log line; the rest are counted.
@@ -924,7 +942,7 @@ async def hold_untold_first_turn(handle: AcpSessionHandle, prompt_text: str = ""
 
 
 async def _drain_until_reported(
-    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float
+    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float, *, settled: bool = False
 ) -> bool:
     """Drain init frames until every one of *names* has reported; True if the runtime died.
 
@@ -932,12 +950,15 @@ async def _drain_until_reported(
     name a server whose frame is still queued. The frames that are queued are
     consumed all the same: each may carry a sign-in request or a config update
     this start owes its session. Only the WAIT for more ends once every name
-    has reported.
+    has reported. With *settled*, a name also counts once the report says it
+    never will (``McpSessionReport.still_starting``: host-disabled or dropped
+    by a registry).
     """
     report = handle._mcp_report
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
-        if not report.unreported(names):
+        pending = report.still_starting(names) if settled else report.unreported(names)
+        if not pending:
             if handle._queue.empty():
                 break
             msg = handle._queue.get_nowait()
@@ -1043,9 +1064,10 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
             and name not in self._mcp_sign_in_needed
             and name not in self._mcp_reattempt_waiting
         ):
-            if is_recoverable_auth_failure(server.get("errorMessage")):
+            error = server.get("errorMessage")
+            if is_recoverable_auth_failure(error) or is_start_timeout_failure(error):
                 self._mcp_reattempt_waiting.add(name)
-            elif is_sse_fallback_failure(server.get("errorMessage")):
+            elif is_sse_fallback_failure(error):
                 self._probe_mcp_sign_in(name)
     self._mcp_sign_in_needed &= present
     self._mcp_sign_in_wanted &= self._mcp_sign_in_needed
@@ -1389,11 +1411,12 @@ def _note_mcp_call_disconnected(self: AcpSessionHandle, update: dict[str, Any]) 
 
 
 def _reattempt_failed_mcp_servers(self: AcpSessionHandle) -> None:
-    """Re-attempt servers that failed for want of a credential or dropped.
+    """Re-attempt servers that lacked a credential, ran out of time starting, or dropped.
 
     Called at turn start, beside the sign-in offer: by then the user or
-    the agent may have obtained the credential the server lacked, or
-    brought back what a dropped server's connection needed. Each
+    the agent may have obtained the credential the server lacked, a slow
+    start may finish in time, or what a dropped server's connection
+    needed may be back. Each
     waiting server is re-attempted at most ``REATTEMPT_MAX`` times per
     session, and at most ``BUCKET_CAP`` distinct servers are ever counted,
     so the budget holds however many names the engine reports. A healthy

@@ -172,6 +172,15 @@ export interface ModelInfo {
    * is absent.
    */
   rateMultiplier?: number
+  /**
+   * The account hid this model from its Kiro model picker (on Kiro Web or in
+   * the Kiro CLI), as the KAS engine states it (`hidden_by_account` on the
+   * `GET /api/models` row). The chat picker leaves such a model out, on top of
+   * Crew's own hidden list; the Bot and role model pickers keep it, since hiding
+   * is a view preference and the model stays usable. Absent when the engine
+   * states no list, or on another harness.
+   */
+  hiddenByAccount?: boolean
 }
 
 export interface PermissionMode {
@@ -196,10 +205,6 @@ export interface ProviderAdapter {
   /** The provider-level default model for NEW sessions ('' when none is set).
    *  Distinct from resolveModel, which resolves a specific agent template. */
   resolveDefaultModel(): Promise<string>
-  /** The provider-level default reasoning effort for NEW sessions ('' = none,
-   *  i.e. let the model choose). A per-session override always outranks it.
-   *  `readConfig` supplies the gateway config body from a shared query cache. */
-  resolveDefaultEffort(readConfig: () => Promise<unknown>): Promise<string>
 
   fetchUsage(): Promise<NormalizedUsage>
 
@@ -220,6 +225,7 @@ export interface ProviderAdapter {
 
   /** The configured backend's model list, or `backend`'s own when a session runs another harness. */
   fetchAvailableModels(backend?: string): Promise<ModelInfo[]>
+  /** The model's context window in tokens, or 0 when no source knows it. */
   getContextWindow(model: string): number
   getDefaultModel(): string
   getPermissionModes(): PermissionMode[]

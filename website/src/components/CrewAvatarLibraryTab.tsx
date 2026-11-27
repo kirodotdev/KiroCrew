@@ -437,16 +437,16 @@ export default function CrewAvatarLibraryTab({
                 danger
                 disabled={busy}
                 onClick={() => void remove(pack.id, pack.name)}
-                className="w-full justify-center whitespace-nowrap"
+                className="w-full justify-center whitespace-nowrap border-border-strong bg-bg-elevated"
                 data-testid={`avatar-pack-delete-confirm-${pack.id}`}
               >
                 {t('components.avatarBuilder.lib_delete_confirm')}
               </Btn>
               {/* Filled, not outlined: a Btn's default 1px border is the theme's
-                  `--border`, which vanishes against a card of the same family —
-                  so the safe half of a destructive confirm read as plain text.
-                  The danger half keeps the outline idiom the rest of the app
-                  uses for a destructive action. */}
+                  `--border`, which vanishes against a card of the same family and
+                  against a selected card's accent tint, so either half of this
+                  confirm would read as plain text. Both take the opaque fill and
+                  the strong edge; the danger half keeps its red text. */}
               {/* What the destructive half actually costs, next to the button that
                   does it. The reader refused to click because nothing said whether a
                   delete could be undone — and the honest answer is that it cannot, but
@@ -458,7 +458,7 @@ export default function CrewAvatarLibraryTab({
               <Btn
                 ref={keepRef}
                 onClick={() => setArmedDelete(null)}
-                className="w-full justify-center whitespace-nowrap bg-bg-elevated"
+                className="w-full justify-center whitespace-nowrap border-border-strong bg-bg-elevated"
                 data-testid={`avatar-pack-delete-cancel-${pack.id}`}
               >
                 {t('components.avatarBuilder.lib_delete_keep')}

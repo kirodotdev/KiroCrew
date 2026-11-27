@@ -568,22 +568,30 @@ async def api_project_git_status(request: web.Request) -> web.Response:
         # Merge numstat for line counts (staged + unstaged vs HEAD)
         try:
             numstat_rc, numstat_out, _ = _run_git_bounded(
-                [*_git_cmd, "diff", "--numstat", "--no-textconv", "--no-ext-diff", "HEAD"],
+                [*_git_cmd, "diff", "--numstat", "-z", "--no-textconv", "--no-ext-diff", "HEAD"],
                 cwd=base,
                 env=_env,
                 timeout=10,
             )
             if numstat_rc == 0:
                 stats: dict[str, tuple[int | None, int | None]] = {}
-                for ns_line in numstat_out.splitlines():
-                    parts = ns_line.split("\t", 2)
-                    if len(parts) == 3:
-                        add_s, del_s, ns_path = parts
-                        adds = int(add_s) if add_s != "-" else None
-                        dels = int(del_s) if del_s != "-" else None
-                        # numstat C-quotes the same class of paths status does;
-                        # unquote so the merge key matches the parsed rows.
-                        stats[_porcelain_unquote(ns_path)] = (adds, dels)
+                # ``-z`` records end in NUL and name paths raw (never C-quoted):
+                # ``<added>\t<deleted>\t<path>``, or for a rename an empty path
+                # field followed by the old and the new path as two more records.
+                records = numstat_out.split("\0")
+                idx = 0
+                while idx < len(records):
+                    parts = records[idx].split("\t", 2)
+                    idx += 1
+                    if len(parts) != 3:
+                        continue
+                    add_s, del_s, ns_path = parts
+                    if not ns_path:
+                        ns_path = records[idx + 1] if idx + 1 < len(records) else ""
+                        idx += 2
+                    adds = int(add_s) if add_s != "-" else None
+                    dels = int(del_s) if del_s != "-" else None
+                    stats[ns_path] = (adds, dels)
                 for f in files:
                     if f["path"] in stats:
                         adds, dels = stats[f["path"]]

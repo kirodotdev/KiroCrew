@@ -16,6 +16,7 @@ slot-owned fields belong in ``metadata_codec``.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import threading
@@ -478,14 +479,19 @@ def merge_empty_window(
     refusal_under_lock: Callable[[dict], str | None] | None = None,
     mutes_opened_override: bool | None = None,
     muted_override: bool | None = None,
+    source_links_off_override: bool | None = None,
     after_commit_under_lock: Callable[[], None] | None = None,
     queue_deferred_under_lock: Callable[[dict], bool] | None = None,
     turn_timeout_override: tuple[int | None] | None = None,
     autocompact_override: tuple[float | None] | None = None,
     after_commit_on_transcript: Callable[[], None] | None = None,
     routed_binding: TranscriptBinding,
+    unless_unchanged: bool = False,
 ) -> str | None:
     """Commit a forced or closing save of a message-less slot as a metadata merge.
+
+    ``unless_unchanged`` skips the write when every merged field already holds
+    its value on disk (see ``_save_slot_to_history``).
 
     ``refusal_under_lock`` is evaluated against the line read under the
     cross-process lock, after the existence check. A non-``None`` reason skips
@@ -610,6 +616,7 @@ def merge_empty_window(
             # here would write the stale live flag.
             mutes_opened=mutes_opened_override,
             muted=muted_override,
+            source_links_off=source_links_off_fold(slot, source_links_off_override, meta),
             # The turn-time-limit and threshold endpoints' staged values, the same way.
             turn_timeout_secs=turn_timeout_fold(
                 slot, turn_timeout_override, meta, routed_binding, history_key
@@ -623,6 +630,11 @@ def merge_empty_window(
             # A merge never deletes a key, so dropping it keeps the on-disk
             # queue, and the witness below then has nothing to credit.
             merged_fields.pop("queued_prompts", None)
+        if unless_unchanged and not slot._dirty:
+            # Compared as written, so a tuple and the list it is stored as match.
+            merged = json.loads(json.dumps(merged_fields))
+            if all(meta.get(k) == v for k, v in merged.items()):
+                return False
         return True
 
     def _after_commit_under_lock() -> None:
@@ -745,6 +757,21 @@ def turn_timeout_fold(
     return (cp._validate_turn_timeout_secs(on_disk.get("turn_timeout_secs")),)
 
 
+def source_links_off_fold(slot: _ChatSlot, override: bool | None, on_disk: dict) -> bool | None:
+    """The ``source_links_off`` a save writes, or ``None`` for the live slot's.
+
+    The toggle's staged value wins. A slot re-bound without its line read back
+    (``_source_links_off_hydrated`` False) holds a default that does not reflect
+    disk, so the on-disk value is carried forward instead: a stored True is never
+    written over with False before a readable read restores it.
+    """
+    if override is not None:
+        return override
+    if getattr(slot, "_source_links_off_hydrated", True):
+        return None
+    return bool(on_disk.get("source_links_off"))
+
+
 def _stamp_delivered_merge_cards(entries: Iterable[dict], window_note_ids: set[str]) -> list[dict]:
     """Mark held merge cards whose rows commit in the saved window."""
     return [
@@ -798,6 +825,7 @@ def build_full_line(
     rows_only: bool,
     mutes_opened_override: bool | None = None,
     muted_override: bool | None = None,
+    source_links_off_override: bool | None = None,
     turn_timeout_override: tuple[int | None] | None = None,
     autocompact_override: tuple[float | None] | None = None,
 ) -> tuple[dict, str, list[dict], set[str], str | None]:
@@ -998,6 +1026,7 @@ def build_full_line(
             # session has a window or not.
             mutes_opened=mutes_opened_override,
             muted=muted_override,
+            source_links_off=source_links_off_fold(slot, source_links_off_override, existing_meta),
             turn_timeout_secs=turn_timeout_override,
             autocompact_pct=autocompact_override,
         ),

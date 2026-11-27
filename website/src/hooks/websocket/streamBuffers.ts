@@ -4,7 +4,7 @@
  *  the O(N) displayItems / index maps (and re-rank the sidebar) per token.
  *  Three buffers absorb them instead:
  *   - the chat stream: per-slot content chunks plus reasoning text;
- *   - subagent streams: per-(slot, agent) text;
+ *   - subagent streams: per-(slot, agent) text and reasoning;
  *   - slot recency: the newest activity timestamp per slot.
  *  All three land together as ONE `streamFlush` action per animation frame
  *  (store/streamFlush.ts), whatever the number of streaming slots. Every
@@ -55,6 +55,18 @@ const pendingStatus = (entry: ChunkBufEntry, slot: string): PendingSlotStatus =>
  *  entire turn. The subagent buffer (bufferSubagentChunk) flushes at this
  *  same 50 KB threshold for the same reason. */
 const CHUNK_BUF_FLUSH_CHARS = 50_000
+
+/** One agent's buffered output text and reasoning, landed as one flush item. */
+type SubagentBufEntry = { slot: string; id: string; text: string; thinking: string }
+/** The flush item for *entry*, carrying `thinking` only when it holds some. */
+const subagentItem = (entry: SubagentBufEntry): StreamFlushPayload['subagents'][number] =>
+  entry.thinking
+    ? { id: entry.id, slot: entry.slot, text: entry.text, thinking: entry.thinking }
+    : { id: entry.id, slot: entry.slot, text: entry.text }
+/** The flush item landing *entry*'s reasoning alone, for a path that drops its
+ *  text: no snapshot or refetch carries the reasoning. */
+const subagentThinkingItem = (entry: SubagentBufEntry): StreamFlushPayload['subagents'][number] =>
+  ({ id: entry.id, slot: entry.slot, text: '', thinking: entry.thinking })
 
 /** The pending frame flush: at most one animation frame or timer per burst. */
 type PendingFlush = {
@@ -145,11 +157,14 @@ export interface StreamBuffers {
   /** Same flush as flushChunks; named for callers that need recency landed. */
   flushSlotActivity(): void
   bufferSubagentChunk(slot: string, id: string, text: string): void
+  /** Buffer `subagent_thinking` reasoning in the agent's entry, beside its text. */
+  bufferSubagentThinking(slot: string, id: string, text: string): void
   /** Same flush as flushChunks; named for callers that need sub-agent text landed. */
   flushSubagentChunks(): void
-  /** Land one agent's buffered text ahead of a frame that must follow it. */
+  /** Land one agent's buffered text and reasoning ahead of a frame that must follow it. */
   flushSubagentKey(slot: string, id: string): void
-  /** Forget one agent's buffered text: a snapshot already includes it. */
+  /** Forget one agent's buffered text, which a snapshot already includes; its
+   *  reasoning, which no snapshot carries, lands first. */
   dropSubagentKey(slot: string, id: string): void
   /** Reconnect: drop pre-disconnect partial buffers; the catch-up refetch
    *  recovers them, except reasoning, which is salvaged first. */
@@ -175,8 +190,8 @@ export function useStreamBuffers({ dispatch, socket, onVoiceSlotFlushed }: Strea
   // the ones a snapshot already holds. The hook has no view of that floor and
   // needs none.
 
-  // Subagent-chunk coalescing: buffer per-agent text.
-  const subagentChunkBufRef = useRef<Map<string, { slot: string; id: string; text: string }>>(new Map())
+  // Subagent-chunk coalescing: buffer per-agent text, and its reasoning apart.
+  const subagentChunkBufRef = useRef<Map<string, SubagentBufEntry>>(new Map())
 
   // Slot-recency coalescing: last ts seen per slot, plus whether the burst
   // contained a SETTLING row (a prompt) — one settled event anywhere in the
@@ -240,8 +255,8 @@ export function useStreamBuffers({ dispatch, socket, onVoiceSlotFlushed }: Strea
       const subagents: StreamFlushPayload['subagents'] = []
       if (sel.subagents) {
         for (const entry of subagentChunkBufRef.current.values()) {
-          if (!entry.text) continue
-          subagents.push({ id: entry.id, slot: entry.slot, text: entry.text })
+          if (!entry.text && !entry.thinking) continue
+          subagents.push(subagentItem(entry))
           if (entry.slot === activeSlot) openSlotText = true
         }
         subagentChunkBufRef.current.clear()
@@ -373,35 +388,58 @@ export function useStreamBuffers({ dispatch, socket, onVoiceSlotFlushed }: Strea
           // Flush through reducer on overflow: the reducer's 50KB→40KB truncation
           // preserves the marker. A hidden tab suspends rAF, so flush synchronously.
           if (prev.text.length > 50_000) {
-            dispatch(sseSubagentBatchChunks({ chunks: [{ id: prev.id, slot: prev.slot, text: prev.text }] }))
+            dispatch(sseSubagentBatchChunks({ chunks: [subagentItem(prev)] }))
             subagentChunkBufRef.current.delete(key)
             return
           }
         } else {
-          subagentChunkBufRef.current.set(key, { slot, id, text })
+          subagentChunkBufRef.current.set(key, { slot, id, text, thinking: '' })
         }
         // Same hold as the chat stream — several subagents streaming at once is
         // exactly the reported worst case for the drawer slide.
+        scheduleFrame()
+      },
+      bufferSubagentThinking(slot, id, text) {
+        const key = `${slot}:${id}`
+        const prev = subagentChunkBufRef.current.get(key)
+        if (prev) {
+          prev.thinking += text
+          // The same hidden-tab bound as the agent's text; the reducer caps it.
+          if (prev.thinking.length > CHUNK_BUF_FLUSH_CHARS) {
+            dispatch(sseSubagentBatchChunks({ chunks: [subagentItem(prev)] }))
+            subagentChunkBufRef.current.delete(key)
+            return
+          }
+        } else {
+          subagentChunkBufRef.current.set(key, { slot, id, text: '', thinking: text })
+        }
         scheduleFrame()
       },
       flushSubagentChunks() { flush(FLUSH_SUBAGENTS) },
       flushSubagentKey(slot, id) {
         const key = `${slot}:${id}`
         const entry = subagentChunkBufRef.current.get(key)
-        if (entry?.text) {
-          dispatch(sseSubagentBatchChunks({ chunks: [{ id: entry.id, slot: entry.slot, text: entry.text }] }))
+        if (entry && (entry.text || entry.thinking)) {
+          dispatch(sseSubagentBatchChunks({ chunks: [subagentItem(entry)] }))
         }
         subagentChunkBufRef.current.delete(key)
       },
       dropSubagentKey(slot, id) {
-        subagentChunkBufRef.current.delete(`${slot}:${id}`)
+        const key = `${slot}:${id}`
+        const entry = subagentChunkBufRef.current.get(key)
+        // A snapshot carries the text, never the reasoning: land that alone.
+        if (entry?.thinking) dispatch(sseSubagentBatchChunks({ chunks: [subagentThinkingItem(entry)] }))
+        subagentChunkBufRef.current.delete(key)
       },
       dropForReconnect() {
         // Reasoning is client-only, so unlike content the refresh cannot
         // recover it: land it before the drop.
         flush(FLUSH_RECONNECT, true)
         chunkBufRef.current.clear()  // drop pre-disconnect partial chunks; refreshSlot recovers state
-        // Same for subagent chunks: pre-disconnect text must not cross a reconnect.
+        // Same for subagent chunks: pre-disconnect text must not cross a
+        // reconnect, but the reasoning beside it lands first.
+        const reasoning = [...subagentChunkBufRef.current.values()].filter(e => e.thinking).map(subagentThinkingItem)
+        if (reasoning.length > 0) dispatch(sseSubagentBatchChunks({ chunks: reasoning }))
         subagentChunkBufRef.current.clear()
         // Same for pending recency bumps: the slot refetch carries authoritative last_ts.
         slotActivityBufRef.current.clear()

@@ -13,7 +13,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from overload_fakes import wait_taskq_open
+from overload_fakes import backoff, wait_taskq_open
 from subagent_turn_resilience_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _close_subagent_managers,
     _complete_event,
@@ -828,6 +828,49 @@ async def test_throttle_fallback_chain_exhausted_propagates():
 
 
 @pytest.mark.asyncio
+async def test_per_user_rate_limit_does_not_walk_the_fallback_chain():
+    """Kiro's per-user rate limit is shared by every model: once the same-model
+    budget is spent the run fails on its own error, with no swap and no line
+    saying the model was throttled."""
+    calls: list[str] = []
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            err = AcpError("You're sending requests faster than your rate limit allows.")
+            err.transient = True
+            err.throttle = True
+            err.user_rate_limit = True
+            raise err
+            yield  # noqa: unreachable — async generator marker
+
+        return _gen()
+
+    sessions = _mock_sessions(stream_factory)
+    provider = sessions._provider
+    provider.available_models = MagicMock(return_value=[{"modelId": "fb-1"}])
+    provider.served_model = "primary-model"
+    provider._model = "primary-model"
+    provider.set_model = AsyncMock()
+
+    mgr = _manager(sessions)
+    # The in-turn ladder, where the zero-activity walk runs.
+    mgr.dependency_coordinator_async = AsyncMock(return_value=None)
+    with (
+        patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0),
+        patch("kiro_crew.subagent.configured_fallback_chain", return_value=("fb-1",)),
+    ):
+        info = await _spawn_and_wait(mgr)
+
+    assert info.done is True
+    assert "rate limit" in info.error
+    assert "throttled" not in info.error
+    assert len(calls) == 1 + TRANSIENT_RETRIES
+    provider.set_model.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_throttle_fallback_ladder_routes_through_shared_budget_body():
     """DRIFT PIN: the ladder must consult
     FallbackState.should_retry_active for the per-candidate budget. Forcing
@@ -1117,17 +1160,22 @@ async def _spawn_with_queue(mgr: SubagentManager, **spawn_kw) -> SubagentInfo:
 
 
 @pytest.mark.asyncio
-async def test_throttle_on_a_run_with_no_task_row_retries_in_turn():
-    """A run whose memory mode keeps no durable row cannot wait on the dependency
-    coordinator (its wait has nowhere to be recorded), so the throttle takes the
-    in-turn ladder instead of failing the run. The throttle answered the prompt
-    before any text or tool call, so the same prompt is sent again."""
+async def test_throttle_on_a_run_with_no_task_row_waits_on_the_coordinator():
+    """A run whose memory mode keeps no durable row survives the throttle the way a
+    persistent run does: the coordinator holds it on the scope's schedule in memory
+    (no row records the wait) and wakes it through admission. The throttle answered
+    the prompt before any text or tool call, so the same prompt is sent again."""
     calls, factory = _throttle_first_prompt()
     mgr, parks = await _queued_manager(factory)
+    coordinator = await mgr.dependency_coordinator_async()
+    # A millisecond backoff: the wait is the coordinator's own, so nothing here
+    # waits on the default 2 s schedule.
+    coordinator._backoff = backoff(0.01, 0.02)
 
     info = await _spawn_with_queue(mgr, _memory_mode="temporary")
 
-    assert len(parks) == 1, "the coordinator was not consulted"
+    assert parks == [True], parks
+    assert mgr._admission.taskq_store().get(info.id) is None, "premise: no row"
     assert info.error == "", info.error
     assert "finished after the throttle" in info.result
     assert calls == ["built_message", "built_message"]

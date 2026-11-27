@@ -53,6 +53,23 @@ FILE_CHANGES_ARCHIVE_REASON = "file-changes"
 # pre-filters ahead of the one ``json.loads`` that decides.
 _FILE_CHANGES_ROW = re.compile(r'"file_changes"\s*:\s*\[\s*\{')
 _FILE_CHANGE_COPY = re.compile(r'"(?:before|after)"\s*:\s*"(?!")')
+_FILE_CHANGES_ROW_BYTES = re.compile(_FILE_CHANGES_ROW.pattern.encode())
+_FILE_CHANGE_COPY_BYTES = re.compile(_FILE_CHANGE_COPY.pattern.encode())
+# Bytes the full read folds or splits on besides ``\n`` (``\r`` and the other
+# ``str.splitlines`` breaks, raw or UTF-8 encoded). A prefix holding one is read
+# the full way, so both reads always yield the same lines. The six single-byte
+# breaks come first: an ASCII chunk can hold only those.
+_OTHER_LINE_BREAKS = (
+    b"\r",
+    b"\x0b",
+    b"\x0c",
+    b"\x1c",
+    b"\x1d",
+    b"\x1e",
+    b"\xc2\x85",
+    b"\xe2\x80\xa8",
+    b"\xe2\x80\xa9",
+)
 
 
 def _is_file_change_row(entry: object) -> bool:
@@ -138,6 +155,15 @@ def _file_changes_keep_turns() -> int:
     return value
 
 
+def _file_change_keep_rows(window_entries: list[dict[str, Any]]) -> int | None:
+    """Prefix file-change rows the bound leaves whole, or None when it is off."""
+    keep_turns = _file_changes_keep_turns()
+    if keep_turns <= 0:
+        return None
+    in_window = sum(1 for e in window_entries if _is_file_change_row(e))
+    return max(0, keep_turns - in_window)
+
+
 def _file_change_prefix_bound(
     state: DashboardState,
     history_key: str,
@@ -160,13 +186,10 @@ def _file_change_prefix_bound(
     """
 
     def bound(lines: list[str]) -> list[str]:
-        keep_turns = _file_changes_keep_turns()
-        if keep_turns <= 0:
+        keep_rows = _file_change_keep_rows(window_entries)
+        if keep_rows is None:
             return lines
-        in_window = sum(1 for e in window_entries if _is_file_change_row(e))
-        compacted, originals = compact_older_file_change_copies(
-            lines, keep_rows=max(0, keep_turns - in_window)
-        )
+        compacted, originals = compact_older_file_change_copies(lines, keep_rows=keep_rows)
         if not originals:
             return lines
         base = state.conversation_log._dir if state.conversation_log else None
@@ -187,7 +210,7 @@ def _file_change_prefix_bound(
         logger.info(
             "Dropped the file-change copies of %d row(s) older than the newest %d in %s",
             len(originals),
-            keep_turns,
+            _file_changes_keep_turns(),
             history_key,
         )
         return compacted
@@ -632,6 +655,95 @@ def _verified_prefix_source(path: Path, where: tuple, size: int) -> tuple[Prefix
     return PrefixSource(path, start, psize, crc, msgs), text
 
 
+def _checked_prefix_rows(rows: bytes, copies: list[bool]) -> bool:
+    """Whether whole prefix *rows* read the same split on ``\\n`` as the full read.
+
+    Notes on *copies*, in file order, whether each file-change row still holds
+    a before/after copy.
+    """
+    # Rows are written with ``json.dumps``' default ASCII escaping, so the usual
+    # chunk is pure ASCII: valid UTF-8 with no multi-byte break, which leaves
+    # only the single-byte ones to look for. Each check holds the GIL, and on a
+    # 110 MB transcript the full set cost the event loop ~250 ms against ~16 ms.
+    if rows.isascii():
+        if any(brk in rows for brk in _OTHER_LINE_BREAKS[:6]):
+            return False
+    else:
+        if any(brk in rows for brk in _OTHER_LINE_BREAKS):
+            return False
+        try:
+            rows.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+    at = rows.find(b'"file_changes"')
+    while at >= 0:
+        start = rows.rfind(b"\n", 0, at) + 1
+        end = rows.find(b"\n", at) + 1
+        if _FILE_CHANGES_ROW_BYTES.search(rows, start, end):
+            copies.append(bool(_FILE_CHANGE_COPY_BYTES.search(rows, start, end)))
+        at = rows.find(b'"file_changes"', end)
+    return True
+
+
+def _streamed_prefix_source(
+    path: Path, disk_older: int, keep_rows: int | None
+) -> tuple[PrefixSource, str] | None:
+    """The frozen prefix of a file with no cached range, found by reading it in chunks.
+
+    The prefix is the *disk_older* rows after the metadata line. They are read
+    a chunk at a time and checked, never held together, and only the rows after
+    them come back decoded. None sends the caller to the full read: a damaged
+    head, a row that is not UTF-8 or carries a line break the full read treats
+    differently, a file with fewer rows, or an older file-change row that still
+    holds a copy the bound (*keep_rows*) would drop.
+    """
+    copies: list[bool] = []
+    try:
+        with open(path, "rb") as fh:
+            head = fh.readline()
+            if not head.endswith(b"\n") or b'"_type"' not in head:
+                return None
+            head.decode("utf-8")
+            start, psize, left = len(head), 0, disk_older
+            pending: list[bytes] = []  # an unfinished row, in pieces
+            while left:
+                chunk = fh.read(_PREFIX_CHUNK)
+                if not chunk:
+                    return None
+                if b"\n" not in chunk:
+                    pending.append(chunk)
+                    continue
+                buf = b"".join([*pending, chunk]) if pending else chunk
+                end = buf.rfind(b"\n") + 1
+                count = buf.count(b"\n", 0, end)
+                if count > left:
+                    end = 0
+                    for _ in range(left):
+                        end = buf.index(b"\n", end) + 1
+                    count = left
+                if not _checked_prefix_rows(buf[:end], copies):
+                    return None
+                psize += end
+                left -= count
+                pending = [buf[end:]] if end < len(buf) else []
+            rest = b"".join([*pending, fh.read()])
+    except (OSError, UnicodeDecodeError):
+        return None
+    if keep_rows is not None and any(copies[: max(0, len(copies) - keep_rows)]):
+        return None
+    try:
+        text = rest.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    del rest
+    if "\r" in text:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # The copy computes the CRC as it reads, for the next save to find this range.
+    # The prefix's row count stays unknown, as after the full read: counting it
+    # here would parse every row after it once more.
+    return PrefixSource(path, start, psize, None, None), text
+
+
 def post_write_span(meta_str: str, frozen_prefix: str | tuple | PrefixSource) -> tuple:
     """The cache entry for the frozen prefix of the file a save just wrote."""
     if isinstance(frozen_prefix, PrefixSource):
@@ -818,6 +930,29 @@ def _frozen_prefix_and_foreign_appends(
             archive_dedup=archive_dedup,
             retired_entries=retired_entries,
         )
+    if stream and verified is None and collect_foreign:
+        # No usable cached range (the first save after a restart): find the
+        # prefix by reading row by row instead of holding the whole file, its
+        # text and its lines at once.
+        first = _streamed_prefix_source(
+            path,
+            disk_older,
+            _file_change_keep_rows(window_entries) if bound_prefix is not None else None,
+        )
+        if first is not None:
+            prefix, rest = first
+            return _scan_foreign(
+                slot,
+                path,
+                mtime,
+                size,
+                disk_older,
+                window_entries,
+                prefix,
+                rest.splitlines(keepends=True),
+                archive_dedup=archive_dedup,
+                retired_entries=retired_entries,
+            )
     try:
         # Bytes, so a first line that is not UTF-8 (which the save is about to
         # rewrite as CORRUPT) does not raise here; the rows decode strictly.

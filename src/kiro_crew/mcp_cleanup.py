@@ -23,6 +23,7 @@ from typing import Any
 
 from kiro_crew.atomic_write import atomic_write, open_access_control_source
 from kiro_crew.config.paths import kiro_home
+from kiro_crew.mcp_provenance import SOURCE_KEY
 from kiro_crew.user_json import loads_user_json
 
 #: kiro-cli's enterprise-governance discriminator. The spec WRITER owns the
@@ -52,6 +53,30 @@ def mcp_entry_is_registry_governed(entry: Any) -> bool:
     if not isinstance(entry, dict):
         return False
     return entry.get("type") == MCP_REGISTRY_TYPE
+
+
+def mcp_entry_names_launch(entry: Any) -> bool:
+    """Whether one ``mcpServers`` entry launches its server: a non-empty ``command`` or ``url``.
+
+    The MCP page writes a placeholder (``{}``, ``{"disabled": true}``,
+    ``{"disabledTools": [...]}``) into a scope file for a server that file does not
+    name. It holds that server's mute and per-tool disables and starts nothing. A
+    registry pointer launches nothing here either: the admin's catalog does
+    (:func:`mcp_entry_is_registry_governed`).
+    """
+    if not isinstance(entry, Mapping):
+        return False
+    return any(isinstance(entry.get(key), str) and entry.get(key) for key in ("command", "url"))
+
+
+def mcp_entry_installs_server(entry: Any) -> bool:
+    """Whether one ``mcpServers`` entry is the user installing its server, not a placeholder.
+
+    An entry that launches the server (:func:`mcp_entry_names_launch`) or points at
+    the admin's catalog for it (a registry pointer) installs it, and earns the
+    grant an installed server gets. The MCP page's placeholder does neither.
+    """
+    return mcp_entry_names_launch(entry) or mcp_entry_is_registry_governed(entry)
 
 
 #: ``type`` values that name a remote transport, as the agent spec schema and the
@@ -97,6 +122,28 @@ def mcp_entry_is_remote(entry: Any) -> bool:
     return mcp_transport_is_remote(
         url=entry.get("url"), command=entry.get("command"), declared_type=entry.get("type")
     )
+
+
+#: ``mcpServers`` entry keys that never change which process a server launches or
+#: which endpoint it reaches: tool switches, approval lists, a start budget
+#: (``timeout`` and its ``timeoutMs`` alias), the pooling hint ``poolable``, and the
+#: mute, which decides WHETHER an entry starts (:func:`mcp_entry_is_muted`), not what,
+#: and the app-source stamp (:data:`~kiro_crew.mcp_provenance.SOURCE_KEY`), which
+#: records which app declared the entry. Every other key counts as launch input, so a
+#: key not named here is never ignored by a site that compares launches
+#: (``acp.kas_subagent_targets``,
+#: ``project_mcp_approvals.fingerprint``).
+NOT_LAUNCH_KEYS = frozenset(
+    {
+        "autoApprove",
+        "disabled",
+        "disabledTools",
+        "poolable",
+        "timeout",
+        "timeoutMs",
+        SOURCE_KEY,
+    }
+)
 
 
 def mcp_entry_is_muted(entry: Any) -> bool:

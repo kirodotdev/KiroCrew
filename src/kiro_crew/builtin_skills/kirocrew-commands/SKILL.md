@@ -67,14 +67,16 @@ Signs in and runs without kiro-cli: `kas` installs Kiro Crew's own engine bundle
 | `kirocrew gateway --seed-replace` | Wipe a non-empty target home and re-seed it (paired with `--seed`) |
 | `kirocrew gateway --no-tunnel` | Never publish a tunnel for this process's whole life, whatever `tunnel.enabled` says. Scoped to TUNNELS: it does not change where the dashboard binds |
 | `kirocrew gateway --json-ready` | Print one `KIROCREW_READY:{...}` line (port, token, pid, KIROCREW_HOME) once the dashboard is bound |
-| `kirocrew gateway --test-mode` | Alias for `--port auto --no-open --json-ready --approval reads` |
+| `kirocrew gateway --test-mode` | Alias for `--port auto --no-open --json-ready --no-tunnel --approval reads` |
 | `kirocrew stop` | Stop a running gateway |
 | `kirocrew stop --port 9999` | Stop gateway on specific port |
-| `kirocrew restart` | Restart gateway (service-aware) |
+| `kirocrew restart` | Restart gateway (service-aware); names `kirocrew resume` when its stop cut chats, resumes none |
+| `kirocrew resume` | Resume the chats the last stop cut (a stop never resumes them itself); `SESSION...` presses each named session's own tab Resume, `--all` resumes every interrupted one |
 | `kirocrew status` | Show runtime stats (uptime, sessions, crons, lessons) |
 | `kirocrew usage` | Recent credit spend per day; `--by model\|agent\|channel\|session`, `--days N` / `--since YYYY-MM-DD`, `--json` |
 | `kirocrew trace show KEY` | Print one traced turn as a waterfall of its model calls, tool calls and sub-agents, read from the local span files (written while `telemetry.traces_enabled` is on); `KEY` is a turn id, session key or id, ACP session id or trace id |
 | `kirocrew gateway-pid` | Print the PID holding this home's gateway lock (JSON) |
+| `kirocrew mcp reload SERVER` | Reload one MCP server's running processes without a restart: idle ones stop now, busy ones finish first (`SERVER` is its `mcp.json` name or slash-free alias) |
 | `kirocrew open SESSION` | Open the desktop app on a session through a `kirocrew://` deep link (`SESSION` is the `?sid=` value in the dashboard URL); `--print` shows the URL and opens nothing |
 
 The token in a `--json-ready` line grants dashboard access for up to 20 hours, so
@@ -97,7 +99,8 @@ transcripts.
 ## Pods (Isolated Worktree Test Instances)
 
 Read `references/pods-and-browsing.md` for every `kirocrew pod` command (up,
-down, ls, status, logs, provision, install, token, restart, exec, api, prune).
+down, ls, status, logs, provision, install, token, restart, exec, api, prune,
+url, scenarios).
 
 ## Dashboard Access
 
@@ -120,7 +123,7 @@ down, ls, status, logs, provision, install, token, restart, exec, api, prune).
 | `kirocrew chat` | Interactive chat (REPL mode) |
 | `kirocrew chat -m "message"` | Single message (non-interactive); `-m -` reads it from a piped stdin (up to 1 MiB) |
 | `kirocrew chat --model MODEL_ID` | Use a specific model (default from config; `kirocrew models` lists the names) |
-| `kirocrew chat --headless -m "task"` | Run one unattended task on this data home's running gateway and exit with a result code; never reads the terminal. `--message-file PATH` reads the seed from a file, `--mode conductor`, `--approval-mode trust`, `--until-done` (with `--idle-grace SECS`, default 900), `--cwd DIR`, `--timeout SECS` (exit 4), `--budget CREDITS` (exit 5), `--json`. A request for a person ends the run (exit 3). Refused (exit 2) inside an agent session: run it from a normal terminal, or use `spawn_run` |
+| `kirocrew chat --headless -m "task"` | Run one unattended task on this data home's running gateway and exit with a result code; never reads the terminal. `--message-file PATH` reads the seed from a file, `--mode conductor`, `--approval-mode trust`, `--until-done` (with `--idle-grace SECS`, default 900), `--cwd DIR`, `--timeout SECS` (exit 4; default 6 hours, 0 = no cap), `--budget CREDITS` (exit 5), `--json`. A request for a person ends the run (exit 3). Refused (exit 2) inside an agent session: run it from a normal terminal, or use `spawn_run` |
 
 When `kirocrew chat` asks to run a tool, answer `y` to allow that call once or
 `n` to deny it, the same keys `kiro-cli chat` uses. `o` denies it and lets you
@@ -128,8 +131,8 @@ type a reply to the agent instead. Anything else denies.
 
 ## Browsing (`browser` MCP tool)
 
-Read `references/pods-and-browsing.md` for the `browser` tool's actions and the
-`kirocrew browser` commands.
+Read `references/pods-and-browsing.md` for the `browser` tool's actions.
+Browsing is not a `kirocrew` subcommand.
 
 ## Autonomous Task Runner
 
@@ -168,7 +171,7 @@ Read `references/pods-and-browsing.md` for the `browser` tool's actions and the
 | `kirocrew cron add NAME "" --every 600 --command "df -h /" --no-persistent-session --minimal-context` | Zero-token job: run a vetted shell command |
 | `kirocrew cron add ... --timeout 30 --timeout-secs 60` | Subprocess timeout (script/command) and whole-wake budget |
 | `kirocrew cron add ... --[no-]persistent-session --[no-]minimal-context --hide-in-chat --model ID` | Session shape and model; defaults are persistent session on, minimal context off, so pass `--no-persistent-session --minimal-context` for a script/command job |
-| `kirocrew cron add ... --project-path /abs/repo` | Run the agent session in that repo, so its `.kiro/steering/` and `AGENTS.md` load (agent jobs only; `cron update JOB_ID --project-path ''` clears it) |
+| `kirocrew cron add ... --project-path /abs/repo` | Run the agent session in that repo, so its `.kiro/steering/` and `AGENTS.md` load (agent jobs only; `cron update JOB_ID --project-path=` clears it) |
 | `kirocrew cron update JOB_ID --message "new msg"` | Update job message |
 | `kirocrew cron update JOB_ID --agent myagent` | Update job agent |
 | `kirocrew cron update JOB_ID --approval-mode auto` | Set auto-approval |
@@ -202,7 +205,7 @@ A session subscribes with the `resource_subscribe` MCP tool once `mcp_gateway.re
 | `kirocrew learn add "rule text" --category tool` | Save with category (tool/preference/knowledge) |
 | `kirocrew learn add "rule text" --negative "avoid X"` | Save with negative example |
 | `kirocrew learn add "rule text" --applies on_topic` | Save as a past finding loaded only when relevant (`always`: a standing rule for every session) |
-| `kirocrew learn remove "query"` | Remove lessons matching substring (add `--repo-scope FRAG` to remove only that scope, `--repo-scope ""` for global only) |
+| `kirocrew learn remove "query"` | Remove lessons matching substring (add `--repo-scope FRAG` to remove only that scope, `--repo-scope=` for global only) |
 | `kirocrew memory list` | Show semantic memory entries |
 | `kirocrew memory search "query"` | Search episodic memories |
 | `kirocrew memory stats` | Show memory statistics |
@@ -245,7 +248,7 @@ Read `references/apps-and-artifacts.md` for the `kirocrew artifact` commands.
 | `kirocrew agent create --name NAME` | Create a new agent |
 | `kirocrew agent create --name NAME --kiro-agent kirocrew --workspace default` | Full options |
 | `kirocrew agent update NAME --kiro-agent new-agent` | Update agent settings |
-| `kirocrew agent update NAME --display-name "Label"` | Change the name the dashboard shows (`""` clears it); the agent name stays |
+| `kirocrew agent update NAME --display-name "Label"` | Change the name the dashboard shows (`--display-name=` clears it); the agent name stays |
 | `kirocrew agent delete NAME` | Delete an agent |
 | `kirocrew agent reset-model [--agent kirocrew]` | Clear a pinned model so the agent tracks the shipped default |
 | `kirocrew agent pin [NAME FILE]` | Choose which spec file an agent name runs when several declare it (`agent.spec_pins`); with no arguments, list the pins. `--clear` removes the pin for `NAME` |
@@ -314,6 +317,24 @@ Read `references/cloud-network-desktop.md` for the tailnet commands.
 ## Computer Use (Desktop Automation)
 
 Read `references/cloud-network-desktop.md` for the computer-use commands.
+
+## Connected Computers (feature preview, Linux only)
+
+Share a folder on this computer with a remote gateway. Off unless
+`dashboard.feature_previews.connected_computers` is on. Some commands run on
+the remote gateway (called over SSH), others on the computer that shares.
+
+| Command | Description |
+|---------|-------------|
+| `kirocrew connected-computer status [--json]` | (this computer) list its grants |
+| `kirocrew connected-computer off` | (this computer) turn off every grant now |
+| `kirocrew connected-computer reset-protection` | (this computer) start over after the OS keyring lost this computer's key |
+| `kirocrew connected-computer desktop-host` | (this computer) the desktop app's local controller, on stdin/stdout only |
+| `kirocrew connected-computer devices [--json]` | (remote gateway) list enrolled computers |
+| `kirocrew connected-computer revoke DEVICE_ID` | (remote gateway) refuse a computer's credentials |
+| `kirocrew connected-computer remove DEVICE_ID` | (remote gateway) retire a computer; its files are untouched |
+| `kirocrew connected-computer enroll --stdin` | (remote gateway, over SSH) enroll the calling computer |
+| `kirocrew connected-computer forget --stdin` | (remote gateway, over SSH) revoke the calling computer |
 
 ## Snapshot & Restore
 

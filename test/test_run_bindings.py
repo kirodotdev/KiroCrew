@@ -255,12 +255,21 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_fire_queue_depth_retry": ("function", "(self, parent_session_key: 'str') -> 'None'", "run"),
     "_disarm_queue_depth_retry": ("function", "(self, parent_session_key: 'str') -> 'None'", "run"),
     "_read_queue_depth": ("coroutine", "(self, parent_session_key: 'str') -> 'int | None'", "run"),
+    "_crew_tools_withheld_reason": (
+        "coroutine",
+        "(self, info: 'SubagentInfo', client: 'LLMProvider') -> 'str'",
+        "run",
+    ),
     "_warn_unusable_mcp_servers": (
         "function",
         "(self, info: 'SubagentInfo', client: 'LLMProvider') -> 'str'",
         "run",
     ),
-    "_spawn_mcp_notice": ("function", "(self, summary: 'str') -> 'str'", "run"),
+    "_spawn_mcp_notice": (
+        "function",
+        "(self, summary: 'str', withheld: 'str' = '') -> 'str'",
+        "run",
+    ),
     "_crew_log_approval_id": (
         "function",
         "(self, info: 'SubagentInfo', request_id: 'object') -> 'str'",
@@ -315,7 +324,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     ),
     "_dependency_report_db": (
         "staticmethod",
-        "(coordinator: 'Any', store: 'Any', task_id: 'str', signal: 'Any', generation: 'int | None') -> 'Any'",
+        "(coordinator: 'Any', store: 'Any', task_id: 'str', signal: 'Any', generation: 'int | None', hold_rowless: 'bool' = False) -> 'Any'",
         "run_yields",
     ),
     "_dependency_verdict": (
@@ -356,6 +365,21 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_aws_profile_split_possible": (
         "function",
         "(self, info: 'SubagentInfo') -> 'bool'",
+        "run_start",
+    ),
+    "_aws_profile_rules_out_sharing": (
+        "function",
+        "(self, info: 'SubagentInfo', child_aws_profile: 'ResolvedAwsProfile | None') -> 'bool'",
+        "run_start",
+    ),
+    "_kas_shared_slot_taken": (
+        "function",
+        "(self, info: 'SubagentInfo') -> 'bool'",
+        "run_start",
+    ),
+    "_kas_shared_places_left": (
+        "function",
+        "(self, info: 'SubagentInfo', *, admitted: 'bool') -> 'int | None'",
         "run_start",
     ),
     "_resolve_child_aws_profile": (

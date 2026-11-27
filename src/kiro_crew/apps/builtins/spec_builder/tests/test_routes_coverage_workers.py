@@ -708,6 +708,36 @@ class TestTeardownWorkerSlot:
             assert await r._teardown_worker_slot(state, "demo", require_archive=True) is False
         assert state._slots["spec-builder-demo"] is minted
 
+    @pytest.mark.asyncio
+    async def test_a_tag_deleted_during_a_failed_archive_is_not_put_back(self, _quiet_sel):
+        # A tag delete strips the slots in ``_slots`` and in the close-in-flight
+        # registry. The popped slot must be in the registry, or the put-back brings
+        # the deleted id back and its next save makes it durable.
+        from kiro_crew.dashboard.snapshot_commit import slots_with_a_close_in_flight
+
+        slot = _Slot("spec-builder-demo")
+        slot.tags = ["doomed", "kept"]
+        state = _State(**{"spec-builder-demo": slot})
+        reached: list[str] = []
+
+        async def _delete_tag_then_fail(*_a, **_kw):
+            assert "spec-builder-demo" not in state._slots
+            for name, s in [*state._slots.items(), *slots_with_a_close_in_flight(state)]:
+                if "doomed" in s.tags:
+                    s.tags = [t for t in s.tags if t != "doomed"]
+                    reached.append(name)
+            raise OSError("disk full")
+
+        with mock.patch(
+            "kiro_crew.dashboard.chat_persistence.save_slot_off_loop",
+            mock.AsyncMock(side_effect=_delete_tag_then_fail),
+        ):
+            assert await r._teardown_worker_slot(state, "demo", require_archive=True) is False
+        assert reached == ["spec-builder-demo"], "the tag delete could not see the popped slot"
+        assert state._slots["spec-builder-demo"] is slot
+        assert slot.tags == ["kept"]
+        assert slots_with_a_close_in_flight(state) == []
+
 
 class TestHaltActiveTurn:
     @pytest.mark.asyncio

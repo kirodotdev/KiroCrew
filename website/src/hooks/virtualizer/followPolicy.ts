@@ -1225,10 +1225,13 @@ export function useFollowPlacementPins<T>(ctx: {
   shiftRetainedRange: (delta: number) => void
   follow: Pick<FollowState, 'stickRef' | 'lastHardInputAtRef' | 'pinCascadeUntilRef' | 'writeScrollTop'>
   pinning: Pick<Pinning, 'pinAuto' | 'forcePin'>
+  /** Caps the rows mounted above the viewport for a few frames (see
+   *  WindowOperations.stageLeadingOverscan). */
+  stageLeadingOverscan: () => void
 }): void {
   const {
     itemCount, overscan, sessionId, scrollerRef, leadingOffset, itemsRef, getKeyRef, getStableIdRef,
-    setWindowRange, shiftRetainedRange,
+    setWindowRange, shiftRetainedRange, stageLeadingOverscan,
   } = ctx
   const { stickRef, lastHardInputAtRef, pinCascadeUntilRef, writeScrollTop } = ctx.follow
   const { pinAuto, forcePin } = ctx.pinning
@@ -1333,6 +1336,10 @@ export function useFollowPlacementPins<T>(ctx: {
     const bulkPrepend = prevTail !== null && prevTail.session === sessionId && prevTail.key === tailKey
     if (growth > overscan + 1 && stickRef.current && !bulkPrepend) {
       setWindowRange(tailWindow(itemCount, overscan))
+      // The rows above the viewport are only overscan: mount them over the
+      // next frames, so the frame that shows the opened session is not held
+      // up by rendering rows nobody can see yet.
+      stageLeadingOverscan()
       forcePin()
       const id = requestAnimationFrame(() => {
         // Recheck stick: the user can scroll up between the synchronous pin

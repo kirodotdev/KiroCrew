@@ -51,14 +51,18 @@ def _mcp_content_text(payload: dict[str, Any]) -> str | None:
     visually but stops matching, so the effect is dropped with no error.
     Extracting the inner text keeps the payload byte-exact.
 
-    Returns None for anything that is not a pure text envelope, so genuinely
-    structured payloads still fall back to ``json.dumps``.
+    Returns None for anything that is not a text envelope, so genuinely
+    structured payloads still fall back to ``json.dumps``. An image block beside
+    the text (the browser ``screenshot`` op's ``inline: true``) is the model's to
+    see, not the row's: it is skipped, so the row shows the text, not the base64.
     """
     blocks = payload.get("content")
     if not isinstance(blocks, list) or not blocks:
         return None
     parts: list[str] = []
     for block in blocks:
+        if isinstance(block, dict) and block.get("type") == "image":
+            continue
         if not isinstance(block, dict) or block.get("type") != "text":
             return None
         text = block.get("text")

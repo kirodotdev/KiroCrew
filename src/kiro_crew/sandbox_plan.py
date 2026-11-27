@@ -120,6 +120,10 @@ class SandboxRequest:
     #: own working directory (an app agent's launch copy sets it,
     #: ``apps.agent_launch.launch_process_cwd``).
     exec_cwd: str = ""
+    #: The folder the spawn works in. Its project MCP files
+    #: (``project_mcp_files.project_mcp_targets``) join the kiro-cli seals, so a
+    #: server planted there cannot start in the next session. Empty: none sealed.
+    project_folder: str = ""
 
 
 @dataclass(frozen=True)
@@ -189,8 +193,20 @@ class PlanHost:
     voice_runtime_parents: tuple[str, ...] = ()
     #: Every rename-sensitive ancestor of those parents.
     voice_runtime_ancestor_guards: tuple[str, ...] = ()
-    #: The resolved kiro agents tree, sealed read-only.
+    #: kiro-cli's own trusted files, sealed read-only: the agents tree, its user MCP
+    #: registry (``settings/mcp.json``) and every installed app's ``app.json``.
     kiro_agents_targets: tuple[str, ...] = ()
+    #: The project MCP files of :attr:`SandboxRequest.project_folder`, sealed
+    #: read-only. Two FILES in the person's own folder, so unlike the other seals they
+    #: never refuse a writable exception, window or carve-out that holds the folder:
+    #: the seal is applied after those and lands on top of them.
+    project_mcp_targets: tuple[str, ...] = ()
+    #: The existing folders above :attr:`project_mcp_targets` and above the gateway
+    #: checkouts' git control files (:attr:`git_control_readonly`), guarded against rename
+    #: like :attr:`readonly_ancestor_guards` (namespace: those this uid could rename).
+    #: Emitted only, never checked against an exception, window or carve-out, for the
+    #: same reason as the targets: the person's project folder must stay writable.
+    project_ancestor_guards: tuple[str, ...] = ()
     #: The running gateway's packaged install tree (both spellings), sealed read-only.
     #: Empty for an editable or from-source checkout.
     install_root_targets: tuple[str, ...] = ()
@@ -205,8 +221,16 @@ class PlanHost:
     caller_ancestor_guards: tuple[str, ...] = ()
     #: Namespace only: the ``apps/<app>`` folder of each app that declares a credential
     #: mask, taken out of :attr:`readonly_ancestor_guards` and pinned AFTER the masks,
-    #: so the masks and ``data/``'s pin stay on the mount an update's rename keeps.
+    #: so the masks and ``data/``'s pin stay on the mount the rename keeps when a keep-data
+    #: uninstall or an install over kept data replaces that folder.
     mask_parent_pins: tuple[str, ...] = ()
+    #: The gateway's own checkouts' git control files (``config``, ``hooks/``,
+    #: ``info/`` ...), sealed read-only (``sandbox_git_control``). Like
+    #: :attr:`project_mcp_targets` they sit in the person's own folder, so they never
+    #: refuse an operator's write exception that holds the checkout: the seal is applied
+    #: after the exception and lands on top of it. Their parents are guarded through
+    #: :attr:`project_ancestor_guards`.
+    git_control_readonly: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()
     #: The operator's ``agent.sandbox_readonly_paths``, one probe per configured entry
@@ -1157,6 +1181,12 @@ def _namespace_plan(
     # liftable by ``extra_visible_dirs`` (that list lifts masks, never seals), and the
     # updater that legitimately writes it runs in the gateway process, unwrapped.
     readonly.extend(path for path in host.install_root_targets if path not in kept)
+    # The seals an operator's write exception is refused for holding: every one above,
+    # and not the git control files below (:attr:`PlanHost.git_control_readonly`).
+    exception_guards = list(readonly)
+    # The gateway's own checkouts' git control files: the gateway runs git there
+    # itself, unsandboxed, and git executes what they name.
+    readonly.extend(path for path in host.git_control_readonly if path not in kept)
     # The launcher re-applies a mask nested inside a private window after binding the
     # window, from a descriptor it already holds, so such a window is admitted here.
     windows, window_refusals = private_windows(
@@ -1183,7 +1213,7 @@ def _namespace_plan(
         host.operator_exception_probes,
         crew_subtree_guards=kept
         + unhidden
-        + list(readonly)
+        + exception_guards
         + ([os.path.join(home, ".ssh")] if hide_ssh else []),
         crew_literal_guards=[fold(os.path.join(home, f)) for f in files],
         protected_roots=stand_in_roots(host.uid),
@@ -1237,12 +1267,15 @@ def _namespace_plan(
         tier=tier,
         home=home,
         masks=masks,
-        readonly=tuple(dict.fromkeys(readonly)),
+        readonly=tuple(
+            dict.fromkeys((*readonly, *(p for p in host.project_mcp_targets if p not in kept)))
+        ),
         runtime_parents=tuple(runtime_parents),
         runtime_ancestor_guards=tuple(
             dict.fromkeys(
                 (
                     *host.readonly_ancestor_guards,
+                    *host.project_ancestor_guards,
                     *(
                         fold(guard)
                         for guard in host.caller_ancestor_guards
@@ -1358,12 +1391,15 @@ def _seatbelt_plan(
                 literal_write_sealed=is_crew_secret,
             )
         )
-    readonly = (
+    # The seals an operator's write exception is refused for holding; the git control
+    # files join the profile without that check (:attr:`PlanHost.git_control_readonly`).
+    exception_guards = (
         [os.path.join(home, rel) for rel in host.crew_readonly_targets]
         + list(host.relocated_crew_readonly)
         + list(host.kiro_agents_targets)
         + list(host.install_root_targets)
     )
+    readonly = exception_guards + list(host.git_control_readonly)
     caller_targets = list(
         dict.fromkeys(absolute(path, host.cwd) for path in request.extra_hidden_dirs)
     )
@@ -1439,7 +1475,7 @@ def _seatbelt_plan(
         host.operator_readonly_probes,
         host.operator_exception_probes,
         crew_subtree_guards=masked_targets
-        + readonly
+        + exception_guards
         + caller_targets
         + runtime_parents
         + ([ssh_dir] if hide_ssh else []),
@@ -1452,9 +1488,11 @@ def _seatbelt_plan(
         tier=tier,
         home=home,
         masks=tuple(masks),
-        readonly=tuple(readonly),
+        readonly=tuple(dict.fromkeys((*readonly, *host.project_mcp_targets))),
         runtime_parents=tuple(runtime_parents),
-        runtime_ancestor_guards=tuple(ancestor_guards),
+        runtime_ancestor_guards=tuple(
+            dict.fromkeys((*ancestor_guards, *host.project_ancestor_guards))
+        ),
         files=tuple(home_files),
         expose=tuple((path, os.path.basename(path)) for path in sorted(expose_abs)),
         windows=tuple(dict.fromkeys([*windows_for, *caller_windows])),

@@ -103,6 +103,11 @@ class Policy:
     # when the next tick lists? Below one interval of window the answer is no, and
     # "the rest are left for the next tick" stops being true for that run.
     schedule_interval: timedelta = timedelta(minutes=10)
+    # How long saturation may keep a heal-exempt orphan a warning. A job queued this
+    # long fails the tick even while the fleet is dispatching slowly: the slowest
+    # served CodeBuild wait measured here is 22 minutes, so an hour is not a slow
+    # start, and saturation must not hide a run that has waited for hours.
+    exempt_saturation_cap: timedelta = timedelta(minutes=60)
 
     @property
     def saturation_wait(self) -> timedelta:

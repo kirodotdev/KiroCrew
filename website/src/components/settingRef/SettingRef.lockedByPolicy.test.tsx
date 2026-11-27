@@ -32,9 +32,11 @@ function renderRef(configKey: string) {
 describe('SettingRef locked by policy', () => {
   it('shows the badge and explains the lock instead of a set command', async () => {
     renderRef('slack.use_tunnel_url')
-    expect(screen.getByTestId('locked-by-policy-badge')).toHaveTextContent('Locked by policy')
+    // No policy term reaches a schema lock, so it names the edition.
+    expect(screen.getByTestId('locked-by-policy-badge')).toHaveTextContent('Not available in this edition')
     await userEvent.setup().click(screen.getByRole('button'))
-    expect(await screen.findByText(/organization's policy controls this setting/i)).toBeInTheDocument()
+    expect(await screen.findByText(/an admin cannot turn it on/i)).toBeInTheDocument()
+    expect(screen.queryByText(/organization's policy/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/kirocrew config set/)).not.toBeInTheDocument()
   })
 

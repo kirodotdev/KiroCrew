@@ -118,7 +118,7 @@ describe('ArtifactsPage scroll ownership with and without remote providers', () 
     // could reach either. `shrink-0` stops the squeeze, `max-h` leaves the
     // gallery a floor.
     const src = readFileSync(join(__dirname, '..', 'pages', 'ArtifactsPage.tsx'), 'utf8')
-    expect(src).toMatch(/galleryOwnsScroll \? 'shrink-0 max-h-\[\d+%\] overflow-y-auto' : ''/)
+    expect(src).toMatch(/galleryOwnsScroll \? 'shrink-0 max-h-\[\d+%\] overflow-y-auto(?: px-1)?' : ''/)
   })
 
   it('leaves the page column scrolling while the gallery is content-sized', async () => {

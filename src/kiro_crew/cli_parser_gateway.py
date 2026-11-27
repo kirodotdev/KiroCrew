@@ -1,8 +1,9 @@
 """Argparse definitions for the ``Start here``, ``Run the gateway`` and ``Set it up`` commands.
 
 One registrar per command of those ``cli_help.COMMAND_GROUPS`` sections: doctor, service,
-status, usage, restart, stop, gateway-pid, logs, token, logout, ledger-sweep, tmp, update,
-setup, config, sandbox, kas and manifest. ``kiro_crew.cli.main`` builds the top-level parser and
+status, usage, restart, stop, gateway-pid, mcp, logs, token, logout, ledger-sweep, tmp,
+update, setup, config, sandbox, kas and manifest. ``kiro_crew.cli.main`` builds the top-level
+parser and
 calls every registrar in the command line's registration order, so a new command of these
 sections gets a registrar here and a call there. The ``gateway`` command's own arguments
 stay in ``cli.py``: ``pod.runtime_boot.target_supports_flag`` reads them from that file.
@@ -209,8 +210,9 @@ def register_stop_parser(sub: _Commands) -> None:
 
 def register_restart_parser(sub: _Commands) -> None:
     # restart — service-aware: restarts the systemd/launchd service if active,
-    # otherwise SIGTERMs the foreground gateway and respawns it detached so the
-    # shell returns immediately. Mirrors `stop`.
+    # otherwise asks the foreground gateway to restart itself in place (POSIX),
+    # falling back to a stop and a detached spawn, so the shell returns
+    # immediately. Mirrors `stop`.
     restart_parser = cli_help.add_command(sub, "restart")
     restart_parser.add_argument(
         "--port",
@@ -245,6 +247,30 @@ def register_restart_parser(sub: _Commands) -> None:
     )
 
 
+def register_resume_parser(sub: _Commands) -> None:
+    resume_parser = cli_help.add_command(sub, "resume")
+    resume_parser.add_argument(
+        "sessions",
+        nargs="*",
+        metavar="SESSION",
+        help=(
+            "Session ids to resume (the ?sid= value), as each tab's Resume button. "
+            "Without any, resume the chats the last gateway stop cut."
+        ),
+    )
+    resume_parser.add_argument(
+        "--all",
+        action="store_true",
+        help='Resume every interrupted session, as the sidebar\'s "Resume N sessions".',
+    )
+    resume_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Dashboard port (default: resolved from KIROCREW_PORT env or dashboard.url config).",
+    )
+
+
 def register_gateway_pid_parser(sub: _Commands) -> None:
     # gateway-pid — read-only: print the PID holding this home's gateway.lock as
     # JSON, resolved through the same socket-independent lock_holder oracle that
@@ -261,6 +287,23 @@ def register_gateway_pid_parser(sub: _Commands) -> None:
             "mandatory lock), name it from the gateway's fresh run record for "
             "this port."
         ),
+    )
+
+
+def register_mcp_parser(sub: _Commands) -> None:
+    # mcp reload <server> -- retire one MCP server's pooled backends on the
+    # running MCP gateway daemon, so the next session to attach boots a fresh
+    # process. For a boot-time input the pool key cannot see (a token file, an
+    # env key left out of the identity hash); config edits already apply live.
+    mcp_parser = cli_help.add_command(sub, "mcp")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_action")
+    reload_parser = mcp_sub.add_parser(
+        "reload",
+        help="Recycle one server's running backends; idle ones stop now, busy ones finish first",
+    )
+    reload_parser.add_argument(
+        "server",
+        help="MCP server name, as it appears in mcp.json (its slash-free alias also works)",
     )
 
 
@@ -418,6 +461,17 @@ def register_logout_parser(sub: _Commands) -> None:
         type=int,
         default=None,
         help="Dashboard port (default: resolved from KIROCREW_PORT env or dashboard.url config)",
+    )
+    # ``None`` is "no --link was given", which is a different ask from a given
+    # value: omitting it revokes every session, so an empty default would make
+    # ``--link ""`` indistinguishable from omitting it and sign everyone out.
+    logout_parser.add_argument(
+        "--link",
+        default=None,
+        help=(
+            "Revoke only this dashboard link (the URL or its token): the link, every "
+            "session it opened and their refresh chains. Other sessions stay signed in."
+        ),
     )
 
 

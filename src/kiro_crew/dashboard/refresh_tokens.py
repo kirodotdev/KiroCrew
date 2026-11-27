@@ -104,6 +104,10 @@ REFRESH_GRACE_SECS = 60
 # that has not settled.
 REFRESH_PENDING_WAIT_SECS = 15.0
 
+#: Why :func:`validate_refresh_token` refuses a chain with no ``family`` claim: one
+#: minted before credential families, which cannot be told from an app's chain.
+PRE_FAMILY_CHAIN_REASON = "chain predates credential families"
+
 # Grace acceptance is CHAIN-HEAD-ONLY. We retain exactly ONE recently-consumed
 # jti per chain — the single most-recently-rotated one (the chain head) — as
 # the authenticator for a same-IP, in-window replay. A bounded history of the
@@ -972,6 +976,8 @@ def generate_refresh_token(
     require_peer: bool = False,
     peer_key: str = "",
     owner_mint: bool = False,
+    family: str = "",
+    ancestors: str = "",
     embed_parent_port: str = "",
     embed_forward_port: str = "",
 ) -> tuple[str, str, str, float]:
@@ -1033,6 +1039,14 @@ def generate_refresh_token(
         # Carried across rotation like ``boot`` so the access token a refresh
         # mints keeps the owner-mint claim (see token_auth_tokens.OWNER_MINT_CLAIM).
         payload_dict["owner_mint"] = "1"
+    if family:
+        # The link this chain descends from (``token_auth_tokens.FAMILY_CLAIM``), carried
+        # across rotation so ``revoke_token_family`` ends the chain with its link.
+        payload_dict["family"] = family
+    if ancestors:
+        # The families that link descends from (``token_auth_tokens.ANCESTORS_CLAIM``),
+        # carried with ``family`` so revoking any of them ends the chain too.
+        payload_dict["ancestors"] = ancestors
     if embed_parent_port:
         # The embedding parent dashboard's port (``token_embed_parent_port``).
         # Carried across rotation so the access token a refresh mints keeps the
@@ -1056,7 +1070,9 @@ def validate_refresh_token(token: str) -> tuple[bool, str, str, str, str, float]
     Validates HMAC, ``kind=refresh``, ``session_exp``, that the chain has not
     been revoked, and that the token's revocation generation is current (a
     ``revoke_all_sessions()`` bump rejects it with reason ``"session
-    revoked"``). Does NOT consult the consumed-jti map — callers decide whether
+    revoked"``), and that the chain carries a ``family`` that is not revoked (a chain
+    without one predates families and is refused, :data:`PRE_FAMILY_CHAIN_REASON`).
+    Does NOT consult the consumed-jti map — callers decide whether
     to apply consumption semantics (the refresh endpoint does, the ``/auth/me``
     peek does not).
     """
@@ -1122,7 +1138,53 @@ def validate_refresh_token(token: str) -> tuple[bool, str, str, str, str, float]
     token_boot = str(payload.get("boot", ""))
     if token_boot and token_boot != current_boot_id():
         return False, user_id, "session ended at gateway restart", chain_id, jti, session_exp
+    family = payload.get("family", "")
+    ancestors = payload.get("ancestors", "")
+    family = family if isinstance(family, str) else ""
+    ancestors = ancestors if isinstance(ancestors, str) else ""
+    if not family:
+        # Every chain the exchange mints carries ``family`` (the link's nonce, which
+        # every signed token has) and every rotation carries it on, so a chain without
+        # one predates families. It may be one an app token opened when app exchanges
+        # were given a chain: its rotations drop the ``app`` claim and nothing on it
+        # names the app, so a disable or uninstall cannot end it, and it cannot be
+        # told from an owner's chain. Every one is refused: a browser that signed in
+        # before the upgrade signs in again once.
+        return False, user_id, PRE_FAMILY_CHAIN_REASON, chain_id, jti, session_exp
+    # Deferred: the access-token module owns the family denylist and is the heavier
+    # import, and this module must stay importable without it.
+    from kiro_crew.dashboard.token_auth_tokens import credential_family_refusal
+
+    family_refusal = credential_family_refusal(family, ancestors)
+    if family_refusal:
+        return False, user_id, family_refusal, chain_id, jti, session_exp
     return True, user_id, "", chain_id, jti, session_exp
+
+
+def _refresh_token_str_claim(token: str, claim: str) -> str:
+    """A refresh token's string *claim*, or ``""`` when it is absent or not a string."""
+    try:
+        payload = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return ""
+    value = payload.get(claim, "") if isinstance(payload, dict) else ""
+    return value if isinstance(value, str) else ""
+
+
+def refresh_token_family(token: str) -> str:
+    """A refresh chain's ``family`` claim, or ``""`` when it has none.
+
+    Same read-only, validate-first contract as :func:`refresh_token_boot`.
+    """
+    return _refresh_token_str_claim(token, "family")
+
+
+def refresh_token_ancestors(token: str) -> str:
+    """A refresh chain's ``ancestors`` claim, or ``""`` when it has none.
+
+    Same read-only, validate-first contract as :func:`refresh_token_boot`.
+    """
+    return _refresh_token_str_claim(token, "ancestors")
 
 
 def refresh_token_boot(token: str) -> str:

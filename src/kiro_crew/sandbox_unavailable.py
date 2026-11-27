@@ -139,6 +139,50 @@ def _unsandboxed_exec_key_declared() -> bool:
         return False
 
 
+def _platform_allows_unsandboxed() -> bool:
+    """Whether an undeclared opt-in resolves to ``True`` on this platform, for wording."""
+    try:
+        from kiro_crew.config.loader import (  # circular import: sandbox is a low-level dep
+            unsandboxed_exec_platform_default,
+        )
+
+        return unsandboxed_exec_platform_default()
+    except Exception:
+        return False
+
+
+#: :func:`_config_not_read` verdicts.
+CONFIG_UNREADABLE = "unreadable"
+CONFIG_MISSING = "missing"
+
+
+def _config_not_read() -> str:
+    """Why the opt-in was not read from a config file, for wording only.
+
+    ``CONFIG_UNREADABLE`` when ``config.json`` or its overlay exists but could not be
+    read (a load that raises counts too), ``CONFIG_MISSING`` when neither file
+    exists, ``""`` when the config was read. In the first two cases the gate keeps
+    its fail-closed ``False`` whatever the platform default is, so a refusal must
+    not tell the reader the opt-in "is not set". Diagnostic only, like
+    :func:`_unsandboxed_exec_key_declared`.
+    """
+    try:
+        from kiro_crew.config.loader import (  # circular import: sandbox is a low-level dep
+            KiroCrewConfig,
+            config_local_path,
+            config_path,
+        )
+
+        cfg = KiroCrewConfig.load()
+        if getattr(cfg, "_base_unreadable", False) or getattr(cfg, "_overlay_unreadable", False):
+            return CONFIG_UNREADABLE
+        if not config_path().exists() and not config_local_path().exists():
+            return CONFIG_MISSING
+        return ""
+    except Exception:
+        return CONFIG_UNREADABLE
+
+
 #: Tiers whose sandbox leaves ``~/.ssh`` readable to the agent child. On these
 #: the forward is the default: a child that can already open the private key
 #: files gains nothing new from the agent socket except reach to keys that never
@@ -293,7 +337,8 @@ def ssh_auth_sock_consent_notice(
         f"ssh-agent not forwarded to the {backend} agent: its sandbox hides ~/.ssh, "
         "so SSH_AUTH_SOCK is kept there only with the ssh-agent forward consent, "
         "which is not granted. git over SSH and SSH commit signing inside that "
-        'session will report no keys. To allow it, write {"enabled": true} to '
+        "session will report no keys. To allow it, press Allow in Settings > "
+        'Security > SSH agent, or write {"enabled": true} to '
         f"{consent_path} from a terminal outside Kiro Crew; the next {backend} "
         "agent that starts picks it up. The consent applies to every agent whose "
         "sandbox hides ~/.ssh, and lets the commands those agents run use the keys "
@@ -408,6 +453,18 @@ def _no_backend_guidance(include_optout: bool = True) -> str:
         "~/.kiro/crew/config.json allows unsandboxed execution, but that removes "
         "the isolation this check exists to protect. "
     )
+    if sys.platform == "win32":
+        # Nothing can be installed on Windows to give Kiro Crew a backend, so
+        # "install one" is no step there. The opt-in is this platform's default,
+        # which is why a refusal here means it was set false or could not be read.
+        if not include_optout:
+            return "Windows has no OS sandbox backend Kiro Crew can use. "
+        return (
+            "Windows has no OS sandbox backend Kiro Crew can use, so "
+            "agent.sandbox_allow_unsandboxed_exec is true by default here. Remove a "
+            "false value for it from ~/.kiro/crew/config.json, or set "
+            "agent.sandbox_allow_unsandboxed_exec=true there, then retry. "
+        )
     if sys.platform.startswith("linux") and _apparmor_userns_restricted():
         base = (
             "This host restricts unprivileged user namespaces via AppArmor "

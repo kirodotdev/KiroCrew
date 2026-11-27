@@ -115,12 +115,15 @@ declare global {
     getNaturalScrolling?: () => unknown
     /** `menuBarOverlap` is false when macOS placed the fullscreen window below
      *  the menu bar (a notched display), so no band needs keeping clear. */
-    onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean) => void) => () => void
+    onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean, pageRaised: boolean) => void) => () => void
     setBadgeCount: (count: number) => void
     reportMicDenied: () => void
     reportMemorySample: (sample: ElectronMemorySample) => void
     heapStatisticsKB: () => { usedHeapKB: number | null } | null
     getGlobalHotkey: () => Promise<ElectronGlobalHotkeyInfo>
+    /** Store and bind a recorded summon hotkey ("" turns it off); resolves what is bound afterwards.
+     *  Absent on a remote gateway window and an older shell, where the config file is the way to change it. */
+    setGlobalHotkey?: (accelerator: string) => Promise<ElectronGlobalHotkeyInfo>
     /** Evict the HTTP cache of one loopback pane origin; resolves to whether a purge ran. */
     clearPaneHttpCache?: (origin: string) => Promise<boolean>
     /** Memory and CPU of the remote Crews loaded in this window. Absent on a remote gateway window and an older shell. */

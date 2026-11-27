@@ -62,7 +62,7 @@ function harness(opts: { isPopout?: boolean; isEmbed?: boolean; activeSlot?: str
   )
   renderHook(() => useShellKeyboard({
     toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout: !!opts.isPopout,
-    isEmbed: !!opts.isEmbed, terminalPoppedOut: false, activeSlotProject: undefined,
+    isEmbed: !!opts.isEmbed, terminalPoppedOut: false,
   }), { wrapper })
 }
 
@@ -109,6 +109,18 @@ describe('⌘O / Ctrl+O in the main window', () => {
     expect(press()).toBe(true)
     expect(popout.focus).toHaveBeenCalledWith('chat-a')
     expect(popout.open).not.toHaveBeenCalled()
+  })
+
+  it('follows the letter the layout types: on Dvorak the R key stays the browser\'s, the key that types O pops out', () => {
+    harness()
+    // Dvorak types 'r' on QWERTY's O position and 'o' on its S position.
+    expect(press({ code: 'KeyO', key: 'r' })).toBe(false)
+    expect(popout.open).not.toHaveBeenCalled()
+    expect(press({ code: 'KeyS', key: 'o' })).toBe(true)
+    expect(popout.open).toHaveBeenCalledTimes(1)
+    const cmd = { metaKey: true, ctrlKey: false, altKey: false, shiftKey: false }
+    expect(matchShortcutEvent({ ...cmd, code: 'KeyO', key: 'r' }, resolveShortcuts({}, 'mac'), 'mac')).toBeNull()
+    expect(matchShortcutEvent({ ...cmd, code: 'KeyS', key: 'o' }, resolveShortcuts({}, 'mac'), 'mac')).toBe('pop-out-session')
   })
 
   it('ignores the auto-repeat of a held chord', () => {

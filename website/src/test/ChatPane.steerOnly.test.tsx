@@ -225,7 +225,8 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
     Object.defineProperty(fileInput, 'files', { value: [new File(['x'], 'q3 report.pdf', { type: 'application/pdf' })] })
     fireEvent.change(fileInput)
-    expect(await screen.findByText('q3 report.pdf')).toBeInTheDocument()
+    // The staged file, not its upload chip, which shows the same name.
+    expect(await screen.findByRole('group', { name: '/tmp/uploads/q3 report.pdf' })).toBeInTheDocument()
     fireEvent.change(box, { target: { value: 'read this' } })
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))

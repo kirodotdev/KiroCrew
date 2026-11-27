@@ -64,6 +64,13 @@ ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
         }
     ),
     "kiro_crew.snapshot_order": frozenset(),
+    "kiro_crew.snapshot_agent_config": frozenset(
+        {
+            "kiro_crew.snapshot_components",
+            "kiro_crew.snapshot_archive",
+            "kiro_crew.snapshot_restore",
+        }
+    ),
 }
 
 _OWNER_MODULES = tuple(m for m in _MODULES if m != "kiro_crew.snapshot")

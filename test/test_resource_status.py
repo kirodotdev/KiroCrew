@@ -45,6 +45,8 @@ def _unmeasurable_slice(monkeypatch: pytest.MonkeyPatch) -> None:
     # A pressured probe also asks whether the agent slice binds; a host whose
     # slice is near its ceiling would otherwise reword every pressured line.
     monkeypatch.setattr(rs, "_read_agent_ceiling", lambda: None, raising=False)
+    # A synthetic host reading in this file must not inherit the runner's cgroup view.
+    monkeypatch.setattr(rs, "_memory_limit_out_of_view", lambda: False, raising=False)
     # The pull tool also reads the spawn gate's own figure; pin it clear of any
     # floor so a tool case never turns on the CI host's free memory.
     monkeypatch.setattr(rs, "_read_spawn_floor_figure", lambda _min_gb: (32.0, ""))

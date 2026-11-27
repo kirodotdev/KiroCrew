@@ -3,6 +3,7 @@ import { Download, Eye, Image as ImageIcon, ImageOff, RotateCw } from 'lucide-re
 import { useTheme } from '../hooks/useTheme'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
 import { useFrameSrc } from '../hooks/useFrameSrc'
+import { FRAME_ALIVE_TIMEOUT_MS, useFrameAliveRecovery } from '../hooks/useFrameAliveRecovery'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 import { useScrollMemory } from '../hooks/useScrollMemory'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
@@ -57,15 +58,14 @@ const NO_DOCUMENT_BOX_HEIGHT = 480
  * the last one; silence past this window therefore means the frame is showing
  * something that is not ours.
  *
- * Deliberately NOT an automatic re-mint: a second `load` also happens when a
- * link inside an artifact navigates the frame, and silently pulling the reader
- * back would fight an action they took. Offering the re-mint is the right
- * response to either cause — in both, the frame has stopped showing the artifact
- * — which is why the window re-arms on EVERY load rather than only on a new url.
- * The two causes cannot be told apart from outside the opaque sandbox, so the
- * notice for this state is cause-neutral ("no longer showing" / "Show artifact")
+ * This window outlasts `useFrameAliveRecovery`'s deadline, so its automatic
+ * re-mint starts first and the notice is the reader's way back once those tries
+ * stop (docs/system-specs/modules/artifacts.md). It re-arms on EVERY load rather
+ * than only on a new url: whatever moved the frame, it has stopped showing the
+ * artifact. The causes cannot be told apart from outside the opaque sandbox, so
+ * the notice for this state is cause-neutral ("no longer showing" / "Show artifact")
  * rather than the `failed` state's failure claim. */
-const DOC_REPORT_GRACE_MS = 3000
+const DOC_REPORT_GRACE_MS = FRAME_ALIVE_TIMEOUT_MS + 1000
 
 
 /** Map an artifact `kind` to the FileType the ContentRenderer expects.
@@ -333,6 +333,7 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
         offlineScripts: frame.offlineScripts, rewriteBareLinks: frame.rewriteBareLinks,
         pageScripts: frame.pageScripts,
         relayWheel,
+        aliveReply: true,
       })
       : null,
     [artifact.content, themeVars, theme, frame.linkBridge, frame.offlineScripts, frame.rewriteBareLinks, frame.pageScripts, relayWheel],
@@ -347,6 +348,9 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   // Later documents replace the first in place: an attribute change would leave
   // the spent url in the page's history for Back to 404 on (hooks/useFrameSrc.ts).
   const frameSrc = useFrameSrc(iframeRef, blobUrl)
+  // The browser can reload this frame by itself onto its spent url: re-mint when
+  // the document stops answering (both artifactFrame grants allow scripts).
+  useFrameAliveRecovery(iframeRef, blobUrl, true, retry)
   // ArtifactBody has always carried `docSilent`, but it covers a DIFFERENT
   // silent condition: a frame that loaded and then never reported its height
   // (its timer arms only once `loadedUrlRef.current === blobUrl`, i.e. after
@@ -421,8 +425,8 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
           accurate and the action is honestly a retry. `docSilent` means the frame
           navigated to something that is not ours, and from outside the opaque
           sandbox an engine renavigation onto a spent url (a failure) is
-          indistinguishable from the reader following a link inside the artifact
-          (deliberate). The copy must not assert a failure the surface cannot
+          indistinguishable from the page moving itself in place (see
+          DOC_REPORT_GRACE_MS). The copy must not assert a failure the surface cannot
           verify, and the action — the same re-mint — is labeled by what it does
           for the user (bring the artifact back), not as a "retry" of an error
           they may not have had. `failed` wins when both are set: a known failed

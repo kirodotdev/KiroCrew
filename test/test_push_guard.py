@@ -553,12 +553,12 @@ class TestPushGuardNarrowRefspec:
             "origin/main was NOT updated by the fetch — the explicit refspec " "did not work."
         )
 
-    def test_narrow_refspec_require_single_on_base_refused(self, repo_pair):
-        """Narrow refspec + --require-single-on-base + stale base → refused.
+    def test_narrow_refspec_require_single_on_base_reads_the_fresh_base(self, repo_pair):
+        """Narrow refspec + --require-single-on-base + a base that moved on → fetched.
 
         Same narrow-refspec scenario but in post-squash mode. The guard must
-        update origin/main via the explicit refspec and then refuse because
-        HEAD~1 does not equal the (now-advanced) origin/main.
+        update origin/main via the explicit refspec: it then sees HEAD's parent
+        one commit behind the advanced origin/main, which merges cleanly.
         """
         clone_dir, origin_dir = repo_pair
 
@@ -587,15 +587,14 @@ class TestPushGuardNarrowRefspec:
             "+refs/heads/unrelated:refs/remotes/origin/unrelated",
         )
 
-        # The guard MUST fetch with the explicit refspec, update origin/main,
-        # see that HEAD~1 != (new) origin/main, and refuse.
+        # The guard MUST fetch with the explicit refspec and update origin/main:
+        # only the fresh tip is one commit past HEAD's parent.
         rc, stdout, stderr = _run_push_guard(clone_dir, ["--require-single-on-base"])
-        assert rc == 40, (
-            f"Expected refused (40), got {rc}. The guard fail-opened on a "
-            f"narrow refspec clone in --require-single-on-base mode.\n"
-            f"stdout: {stdout}\nstderr: {stderr}"
+        assert rc == 0, f"stdout: {stdout}\nstderr: {stderr}"
+        assert "base moved:      1 commit(s)" in stdout, (
+            f"The guard did not read the fetched origin/main on a narrow refspec "
+            f"clone.\nstdout: {stdout}\nstderr: {stderr}"
         )
-        assert "are not exactly origin/main" in stderr
 
     def test_narrow_refspec_fresh_rebase_passes(self, repo_pair):
         """Narrow refspec but branch correctly rebased → safe.
@@ -678,33 +677,40 @@ class TestPushGuardRequireSingleOnBase:
         rc, stdout, stderr = _run_push_guard(clone_dir, ["--require-single-on-base"])
         assert rc == 40, f"Expected refused (40), got {rc}.\nstdout: {stdout}\nstderr: {stderr}"
         assert "REFUSED" in stderr
-        assert "does not sit directly" in stderr
+        assert "does not sit on the" in stderr
 
-    def test_stale_base_after_squash_refused(self, repo_pair):
-        """Squashed onto a stale origin/main (before upstream advanced) → refused."""
-        clone_dir, origin_dir = repo_pair
-
-        # Create and squash a feature branch onto origin/main.
+    @staticmethod
+    def _squash_then_advance_base(clone_dir, origin_dir, upstream: tuple[str, str]):
+        """One guard-built commit editing fix.py, then origin/main advanced by ``upstream``
+        (a path and its content), as when the base moves while the commit waits to push."""
         _git(clone_dir, "checkout", "-b", "feature/stale-squash")
         Path(clone_dir, "fix.py").write_text("# fix\n")
-        _git(clone_dir, "add", "fix.py")
-        _git(clone_dir, "commit", "-m", "fix: the bug")
-
-        # Now advance origin/main AFTER the squash — simulating base movement
-        # between squash and push.
+        rc, _, stderr = _run_push_guard(
+            clone_dir, ["--commit", "-m", "fix: the bug", "--", "fix.py"]
+        )
+        assert rc == 0, stderr
         work2 = os.path.dirname(clone_dir) + "/work2"
         _git(os.path.dirname(clone_dir), "clone", origin_dir, "work2")
-        Path(work2, "upstream.txt").write_text("upstream advance\n")
-        _git(work2, "add", "upstream.txt")
+        Path(work2, upstream[0]).write_text(upstream[1])
+        _git(work2, "add", upstream[0])
         _git(work2, "commit", "-m", "feat: upstream advance")
         _git(work2, "push", "origin", "main")
 
-        # Now HEAD~1 points at the OLD origin/main, but a fresh fetch will
-        # update origin/main → HEAD~1 != origin/main → refused.
+    def test_a_base_that_moved_on_without_a_conflict_passes(self, repo_pair):
+        """HEAD's parent is an older origin/main and HEAD merges cleanly → safe, no rebuild."""
+        clone_dir, origin_dir = repo_pair
+        self._squash_then_advance_base(clone_dir, origin_dir, ("upstream.txt", "advance\n"))
         rc, stdout, stderr = _run_push_guard(clone_dir, ["--require-single-on-base"])
-        assert rc == 40, f"Expected refused (40), got {rc}.\nstdout: {stdout}\nstderr: {stderr}"
-        assert "REFUSED" in stderr
-        assert "does not sit directly" in stderr
+        assert rc == 0, f"stdout: {stdout}\nstderr: {stderr}"
+        assert "base moved:      1 commit(s)" in stdout and "SAFE TO PUSH" in stdout
+
+    def test_a_base_that_moved_on_into_a_conflict_is_refused(self, repo_pair):
+        """The base changed the same lines HEAD changes → refused, naming the conflict."""
+        clone_dir, origin_dir = repo_pair
+        self._squash_then_advance_base(clone_dir, origin_dir, ("fix.py", "# theirs\n"))
+        rc, stdout, stderr = _run_push_guard(clone_dir, ["--require-single-on-base"])
+        assert rc == 40, f"stdout: {stdout}\nstderr: {stderr}"
+        assert "conflicts with origin/main" in stderr and "SAFE TO PUSH" not in stdout
 
     def test_fetch_failure_refuses(self, tmp_path):
         """When fetch fails in --require-single-on-base mode → refused."""

@@ -4,14 +4,17 @@
 the owner (:mod:`kiro_crew.slack.shared_access`). These routes are how the owner
 turns it on, off, and edits the list:
 
-* ``GET /api/slack/shared-access`` -- the switch and each listed id with the name
-  Slack gives it and whether Slack confirmed it.
+* ``GET /api/slack/shared-access`` -- the switch, ``verify_with_slack``, and each
+  listed id with whether it is admitted and why: ``listed`` (on the list, Slack
+  not asked, the default) or, with ``verify_with_slack`` on, the name Slack gives
+  it and whether Slack confirmed it.
 * ``PUT /api/slack/shared-access`` -- ``{"enabled": bool}``. Turning it on also
   needs ``"confirm": true``, which the page sends only after its warning dialog.
 * ``POST /api/slack/shared-access/users`` -- ``{"user_id": "U..."}`` or
   ``{"email": "..."}`` (looked up with ``users.lookupByEmail``; the list keeps the
-  member id). Refused while no owner id is saved, and unless Slack confirms the id
-  now (same workspace as the bot, a person, not deactivated, not the owner).
+  member id). Refused while no owner id is saved, for the owner's own id and, with
+  ``verify_with_slack`` on, unless Slack confirms the id now (same workspace as the
+  bot, a person, not deactivated).
 * ``DELETE /api/slack/shared-access/users/{user_id}``.
 
 Every route is the dashboard owner's (``require_owner_dashboard_request``). Writes
@@ -90,18 +93,21 @@ async def api_shared_access_get(request: web.Request) -> web.Response:
     if gate_refusal is not None:
         return gate_refusal
     shared = _live_shared()
+    verify = shared.verify_with_slack
     token, owner_id = await _slack_identity()
     client = _web_client(token)
     gate = asyncio.Semaphore(_LOOKUP_CONCURRENCY)
 
     async def _one(user_id: str) -> dict[str, Any]:
         async with gate:
-            return _user_view(await shared_access.lookup(client, user_id, owner_id=owner_id))
+            verdict = await shared_access.lookup(client, user_id, owner_id=owner_id, verify=verify)
+            return _user_view(verdict)
 
     users = await asyncio.gather(*(_one(uid) for uid in shared.user_ids))
     return web.json_response(
         {
             "enabled": shared.enabled,
+            "verify_with_slack": verify,
             "users": list(users),
             "read_only": bool(_write_refusal(request)),
         }
@@ -130,6 +136,9 @@ async def _commit(mutate_shared: Any) -> dict[str, Any]:
             "enabled": current.get("enabled") is True,
             "user_ids": shared_user_ids(current.get("user_ids")),
         }
+        # Kept as the owner wrote it: an edit here never drops it.
+        if "verify_with_slack" in current:
+            section["verify_with_slack"] = current.get("verify_with_slack") is True
         mutate_shared(section)
         slack["shared_access"] = section
         doc["slack"] = slack
@@ -210,6 +219,10 @@ async def api_shared_access_put(request: web.Request) -> web.Response:
         return _deny(caller, op, "turning shared access on needs confirm", code="confirm_required")
 
     def _set(section: dict) -> None:
+        # Turned on with the key unnamed: store the default, so the next load does
+        # not take this for an install that predates the key (it would write true).
+        if enabled and not section["enabled"] and "verify_with_slack" not in section:
+            section["verify_with_slack"] = False
         section["enabled"] = enabled
 
     stored = await _commit(_set)
@@ -272,7 +285,13 @@ async def api_shared_access_add(request: web.Request) -> web.Response:
         user_id, reason = await shared_access.find_by_email(client, email)
         if not user_id:
             return _deny(caller, op, "Slack did not find that email", code=reason)
-    verdict = await shared_access.lookup(client, user_id, owner_id=owner_id, refresh=True)
+    verdict = await shared_access.lookup(
+        client,
+        user_id,
+        owner_id=owner_id,
+        verify=_live_shared().verify_with_slack,
+        refresh=True,
+    )
     if not verdict.ok:
         return _deny(caller, op, f"Slack did not confirm {user_id}", code=verdict.reason)
 

@@ -95,12 +95,12 @@ export function useAppRailOrder(
   const { sortedAppGroup, sortedAppGroupAllIds } = useMemo(() => {
     // Drop rows the user unpinned in the Library launchpad BEFORE the
     // APPS_NAV_LIMIT slice downstream, so a hidden row never consumes a
-    // visible slot. The hidden set only ever contains ids written by the
-    // Library grid — `appNavTarget(app).id` values, byte-identical to the
-    // ids these rows carry — so set membership can only hide grid-managed
-    // app rows. The Discover/Library built-ins are not list rows here
-    // (`hiddenFromNav`, rendered as the section-header accent links) and
-    // can never be filtered out by this.
+    // visible slot. Apart from Discover's `apps`, every id in the hidden set
+    // is one these rows carry (`appNavTarget(app).id` values), so here it can
+    // only hide app rows. The Discover/Library built-ins are not list rows
+    // here (`hiddenFromNav`, drawn as the rows under the Apps label); the
+    // Display setting "Show Discover in the sidebar" writes `apps`, and the
+    // rail reads it as `discoverInRail` where it draws the Discover row.
     //
     // `sortedAppGroupAllIds` is the same effective order WITHOUT the hidden
     // filter — what the rail would show if everything were pinned. It seeds

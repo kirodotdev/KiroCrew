@@ -36,6 +36,13 @@ vi.mock('../lib/widgetSrcdoc', () => ({
   },
 }))
 
+// The automatic re-mint has its own tests (sandboxFrameSpentUrl.test.tsx); this
+// file pins the manual notice, so the hook stays out of the way.
+vi.mock('../hooks/useFrameAliveRecovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/useFrameAliveRecovery')>()),
+  useFrameAliveRecovery: () => {},
+}))
+
 const mintSpy = vi.fn()
 vi.mock('../api/client', () => ({
   api: { sandboxDocUrl: (html: string) => mintSpy(html) },
@@ -43,6 +50,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import { ArtifactBodyIframe } from '../components/ArtifactBody'
+import { FRAME_ALIVE_TIMEOUT_MS } from '../hooks/useFrameAliveRecovery'
 
 /** Follow where the frame is pointed. The first document comes from the `src`
  * attribute; every later one through `location.replace`, so the attribute is
@@ -412,6 +420,9 @@ describe('ArtifactBodyIframe frame height follows its document', () => {
 // and no way out. Every document this surface builds carries the injected height
 // reporter, so silence is the signal.
 describe('ArtifactBodyIframe surfaces a frame showing something that is not ours', () => {
+  // Past DOC_REPORT_GRACE_MS, which outlasts the alive ping's deadline.
+  const PAST_GRACE_MS = FRAME_ALIVE_TIMEOUT_MS + 2000
+
   beforeEach(() => {
     mintSpy.mockReset()
     mintSpy.mockResolvedValue({ url: DOC_URL })
@@ -446,7 +457,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     await loadedFrame('<p>silent</p>')
     expect(screen.queryByText(/no longer showing/i)).toBeNull()
 
-    await act(async () => { vi.advanceTimersByTime(4000) })
+    await act(async () => { vi.advanceTimersByTime(PAST_GRACE_MS) })
 
     // Cause-neutral copy: from outside the opaque sandbox a spent-url 404 is
     // indistinguishable from the reader following a link inside the artifact,
@@ -465,7 +476,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     const frame = await loadedFrame('<p>healthy</p>')
     reportHeight(frame, 420)
 
-    await act(async () => { vi.advanceTimersByTime(4000) })
+    await act(async () => { vi.advanceTimersByTime(PAST_GRACE_MS) })
 
     expect(screen.queryByText(/no longer showing/i)).toBeNull()
     expect(screen.queryByText(/couldn't render this artifact/i)).toBeNull()
@@ -479,13 +490,13 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     // previous document's report suppressed the window exactly when it mattered.
     const frame = await loadedFrame('<p>evicted</p>')
     reportHeight(frame, 420)
-    await act(async () => { vi.advanceTimersByTime(4000) })
+    await act(async () => { vi.advanceTimersByTime(PAST_GRACE_MS) })
     expect(screen.queryByText(/no longer showing/i)).toBeNull()
 
     // Same url, second load — nothing reports this time, because what the frame
     // is showing is not ours.
     fireEvent.load(frame)
-    await act(async () => { vi.advanceTimersByTime(4000) })
+    await act(async () => { vi.advanceTimersByTime(PAST_GRACE_MS) })
     expect(screen.getByText(/this artifact is no longer showing/i)).toBeTruthy()
     expect(screen.getByRole('button', { name: /show artifact/i })).toBeTruthy()
   })
@@ -494,7 +505,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     // Re-pointing the frame at the same spent URL recovers nothing — it 404s
     // again. Recovery is a fresh mint.
     const pointedAt = trackNavigation(await loadedFrame('<p>silent</p>'))
-    await act(async () => { vi.advanceTimersByTime(4000) })
+    await act(async () => { vi.advanceTimersByTime(PAST_GRACE_MS) })
 
     mintSpy.mockResolvedValue({ url: '/sandbox-doc/fresh/tok' })
     act(() => { screen.getByRole('button', { name: /show artifact/i }).click() })
@@ -524,7 +535,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
       return el as HTMLIFrameElement
     })
     fireEvent.load(frame)
-    await act(async () => { vi.advanceTimersByTime(4000) })
+    await act(async () => { vi.advanceTimersByTime(PAST_GRACE_MS) })
     const silentMessage = screen.getByText(/no longer showing/i).textContent
     const silentAction = screen.getByRole('button', { name: /show artifact/i }).textContent
     silent.unmount()
@@ -552,7 +563,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
       return el as HTMLIFrameElement
     })
     fireEvent.load(frame)
-    await act(async () => { vi.advanceTimersByTime(4000) })
+    await act(async () => { vi.advanceTimersByTime(PAST_GRACE_MS) })
     expect(screen.getByText(/no longer showing/i)).toBeTruthy()
 
     mintSpy.mockRejectedValueOnce(new Error('gateway said no'))
@@ -582,7 +593,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     // acknowledged by disabling the button while the mint is in flight, never
     // by hiding the notice.
     await loadedFrame('<p>silent</p>')
-    await act(async () => { vi.advanceTimersByTime(4000) })
+    await act(async () => { vi.advanceTimersByTime(PAST_GRACE_MS) })
     expect(screen.getByText(/no longer showing/i)).toBeTruthy()
 
     // Same-url outcome under explicit settlement control: the default mock
@@ -619,7 +630,7 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     // aria-disabled + aria-busy, NOT native disabled, so a keyboard press does
     // not drop focus to the page while the re-mint runs.
     await loadedFrame('<p>silent</p>')
-    await act(async () => { vi.advanceTimersByTime(4000) })
+    await act(async () => { vi.advanceTimersByTime(PAST_GRACE_MS) })
 
     let settle: (v: { url: string }) => void = () => {}
     mintSpy.mockImplementationOnce(() => new Promise((res) => { settle = res }))

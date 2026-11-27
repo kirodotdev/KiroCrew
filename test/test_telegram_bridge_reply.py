@@ -367,6 +367,24 @@ async def test_untrusted_input_stays_literal_in_the_reply_prompt(gateway, telegr
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("server", "shown"),
+    [("corpsmtp", "<code>corpsmtp</code>"), ("corp`smtp", "<code>corp\u02cbsmtp</code>")],
+    ids=["plain", "backtick"],
+)
+async def test_the_reply_prompt_names_the_mcp_server_the_call_goes_to(
+    gateway, telegram, server, shown
+):
+    # Two servers can expose one tool name: the prompt names the proven server and
+    # tool above what the call runs, and a backtick cannot end a name's code span.
+    await _open(gateway, tool_title="email_send", mcp_identity=(server, "email_send"))
+    text = _posted_text(telegram[1])
+    line = f"MCP tool: {shown} / <code>email_send</code>"
+    assert line in text, text
+    assert text.index(line) < text.index("git status --short") < text.index("Reply")
+
+
+@pytest.mark.asyncio
 async def test_the_dispatcher_takes_the_reply_before_any_turn(gateway):
     decision = await _open(gateway)
     d, cli, sess = _dispatcher({int(_OWNER)})

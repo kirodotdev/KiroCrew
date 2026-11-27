@@ -121,11 +121,15 @@ from kiro_crew.config.sections_agent_env import (  # noqa: F401
     CHILD_ENV_DEFAULT_MAX,
     CHILD_ENV_DEFAULT_MIN,
     CHILD_ENV_DEFAULT_NAMES,
+    DASHBOARD_KEYED_ENV_MAPS,
+    DEEPSEEK_ENV_NAMES,
+    STRANDS_ENV_LITERAL_GUIDANCE,
     STRANDS_ENV_NAMES,
     STRANDS_PROVIDER_CHOICES,
     _agent_env_denied,
     _agent_env_entry_refusal,
     _agent_env_home_override_names,
+    _validate_env_patch,
     agent_env_refusal,
     agent_env_scrub_removes,
     agent_env_write_refusals,
@@ -133,7 +137,8 @@ from kiro_crew.config.sections_agent_env import (  # noqa: F401
     coerce_child_env_defaults,
     coerce_deepseek_env,
     deepseek_env_plaintext_keys,
-    merge_strands_env_patch,
+    merge_env_patch,
+    validate_deepseek_env_patch,
     validate_strands_env_patch,
 )
 from kiro_crew.config.sections_agent_fields import (  # noqa: F401
@@ -222,6 +227,7 @@ from kiro_crew.config.sections_browser import (  # noqa: F401
     BrowserLiveConfig,
     BrowserRecordingConfig,
     BrowserRunConfig,
+    _spelled_int,
     _validated_choice,
     _validated_isolation,
     _validated_max_fps,
@@ -265,6 +271,7 @@ from kiro_crew.config.sections_dashboard import (  # noqa: F401
     CHAT_ENTRY_CACHE_ENTRIES_DEFAULT,
     CHAT_ENTRY_CACHE_ENTRIES_MAX,
     CHAT_ENTRY_CACHE_ENTRIES_MIN,
+    DEFAULT_APPROVAL_MODES,
     EXTERNAL_TERMINAL_APPS,
     FEATURE_PREVIEW_FLAGS,
     LEGACY_VERBOSITY_ALIASES,
@@ -403,6 +410,7 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
     parse_autocompact_pct,
 )
 from kiro_crew.config.sections_session import (  # noqa: F401
+    BOT_MAX_WORKERS_CONDUCTING,
     BOT_MAX_WORKERS_DEFAULT,
     BOT_MAX_WORKERS_MAX,
     BOT_MAX_WORKERS_MIN,
@@ -459,6 +467,7 @@ from kiro_crew.config.sections_slack import (  # noqa: F401
     _validate_activation,
     _validate_allowed_users,
     _validate_tracking_channels,
+    drop_stale_shared_agents,
     is_slack_user_id,
     shared_user_ids,
 )

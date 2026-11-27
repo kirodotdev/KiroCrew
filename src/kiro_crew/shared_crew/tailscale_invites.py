@@ -326,10 +326,10 @@ def _waiting_by_email(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
 async def create_invites(
     emails: list[str], *, multi_use: bool, alias: str, avatar_id: str, actor: str
 ) -> list[dict[str, Any]]:
-    api, device_id = await asyncio.to_thread(_api)
-    # One create at a time: the waiting check and the store write must not
-    # interleave with another request for the same address.
+    # One create at a time: the connection read, the waiting check and the
+    # store write must not interleave with another request's write.
     async with _commit_lock():
+        api, device_id = await asyncio.to_thread(_api)
         return await _create_locked(
             api,
             device_id,
@@ -491,8 +491,11 @@ async def sync(*, actor: str = "crew", force: bool = False) -> dict[str, Any]:
     """
     if await asyncio.to_thread(_governance_pinned):
         raise InviteError(CODE_GOVERNANCE_PINNED, POLL_MAX_SECS)
-    api, device_id = await asyncio.to_thread(_api)
-    state = await asyncio.to_thread(store.load_state)
+    # The connection and state are read under the commit lock so neither read
+    # overlaps a locked write; the lock is released before the network call.
+    async with _commit_lock():
+        api, device_id = await asyncio.to_thread(_api)
+        state = await asyncio.to_thread(store.load_state)
     now = store.now()
     if not force and now < float(state.get("backoff_until") or 0.0):
         raise InviteError(CODE_BACKING_OFF, float(state["backoff_until"]) - now)
@@ -762,8 +765,8 @@ async def revoke(invite_id: str, actor: str) -> dict[str, Any]:
 
 async def revoke_with_logins(invite_id: str, actor: str) -> tuple[dict[str, Any], frozenset[str]]:
     """:func:`revoke`, plus every login it withdrew (for closing their open sockets)."""
-    api, _ = await asyncio.to_thread(_api)
     async with _commit_lock():
+        api, _ = await asyncio.to_thread(_api)
         row, members, withdrawn = await _revoke_locked(api, invite_id, actor)
     await _audit_async("revoke", "granted", actor, email=row.get("email", ""))
     return {"revoked": invite_id, "member_removed": bool(members)}, withdrawn

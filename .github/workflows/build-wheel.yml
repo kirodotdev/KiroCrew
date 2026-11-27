@@ -73,6 +73,10 @@ jobs:
         with:
           persist-credentials: false
 
+      # A caller in another repository checks out its own tree, which does not
+      # hold this action; the step is skipped there before the action is loaded.
+      - if: github.repository == 'kirodotdev/KiroCrew'
+        uses: ./.github/actions/seed-python-tool-cache
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"

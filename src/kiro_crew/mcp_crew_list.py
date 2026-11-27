@@ -34,7 +34,7 @@ def _number(value: object, unit: str) -> str:
 def _line(row: dict[str, Any]) -> str:
     name, cid = row.get("name") or "", row.get("id") or ""
     head = f"- `{name}` (crew=`{cid}`): {row.get('crew_state') or 'unknown'}"
-    # The verdict comes from the version gate, the text from a separate read:
+    # The verdict comes from the version read, the text from a separate one:
     # either can be missing without the other.
     flag = row.get("version_match")
     if flag is not None or row.get("version"):

@@ -157,9 +157,9 @@ describe('chat sidebar — sort-and-filter menu announces the checked row (#1417
     // The session-sort rows carry no test ids, so find them by their visible
     // labels among the menuitemradios. Exactly the active sort is checked.
     const radios = getAllByRole('menuitemradio')
-    // Ten mutually exclusive rows in all: seven session sorts (Manual among
-    // them) + three folder orders.
-    expect(radios.length).toBe(10)
+    // Eleven mutually exclusive rows in all: eight session sorts (Manual and
+    // "In progress, then newest" among them) + three folder orders.
+    expect(radios.length).toBe(11)
     const checked = radios.filter(r => r.getAttribute('aria-checked') === 'true')
     // One per group: the active session sort and the (default) custom folder order.
     expect(checked.length).toBe(2)
@@ -167,6 +167,7 @@ describe('chat sidebar — sort-and-filter menu announces the checked row (#1417
     // The chosen session sort ("A → Z") announces checked; another sort does not.
     expect(radioStateByText(getAllByRole, 'A → Z')).toBe('true')
     expect(radioStateByText(getAllByRole, 'Oldest')).toBe('false')
+    expect(radioStateByText(getAllByRole, 'In progress, then newest')).toBe('false')
   })
 
   it('the visible check mark is hidden from assistive tech (aria-checked carries the state)', async () => {

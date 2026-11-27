@@ -105,6 +105,20 @@ def live_quality_resolution(value: object) -> str:
     return LIVE_QUALITY_AUTO
 
 
+def _spelled_int(value: object) -> int | None:
+    """The int a digit string spells, else None.
+
+    ``str.isdigit`` also passes ``"\u00b2"`` and a run past Python's integer-string
+    limit, which ``int`` refuses; both read as no number, so the caller falls back.
+    """
+    if not isinstance(value, str) or not value.strip().isdigit():
+        return None
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
 def live_max_fps_resolution(value: object) -> int:
     """The ceiling ``browser.live.max_fps`` of *value* selects. Pure; never logs.
 
@@ -115,8 +129,9 @@ def live_max_fps_resolution(value: object) -> int:
     """
     if isinstance(value, bool):
         return LIVE_MAX_FPS_DEFAULT
-    if isinstance(value, str) and value.strip().isdigit():
-        value = int(value.strip())
+    spelled = _spelled_int(value)
+    if spelled is not None:
+        value = spelled
     if isinstance(value, int) and value in LIVE_MAX_FPS_CHOICES:
         return value
     return LIVE_MAX_FPS_DEFAULT
@@ -145,7 +160,8 @@ def _validated_quality(value: object) -> str:
 
 def _validated_max_fps(value: object) -> int:
     resolved = live_max_fps_resolution(value)
-    spelled = int(value.strip()) if isinstance(value, str) and value.strip().isdigit() else value
+    number = _spelled_int(value)
+    spelled = value if number is None else number
     if value is not None and not (
         isinstance(spelled, int) and not isinstance(spelled, bool) and spelled == resolved
     ):

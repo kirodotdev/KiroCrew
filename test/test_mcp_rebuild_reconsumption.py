@@ -22,7 +22,7 @@ from mcp_merge_helpers import bundled_defaults as _bundled_defaults
 from mcp_merge_helpers import run_install_mcp_merge as _run_install_mcp_merge
 
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
-from kiro_crew.mcp_provenance import DERIVED_KEY
+from kiro_crew.mcp_provenance import DERIVED_KEY, SOURCE_KEY
 
 
 @pytest.fixture(autouse=True)
@@ -343,6 +343,34 @@ class TestTheRecordIsNotPartOfSpecIdentity:
         recorded = dict(plain)
         recorded[DERIVED_KEY] = {"from": "srv", "emitted": "/abs/srv"}
         assert _norm_mcp_spec(recorded) == _norm_mcp_spec(plain)
+
+    def test_the_app_source_stamp_is_excluded_from_the_dedup_comparison(self) -> None:
+        from kiro_crew.agent import _norm_mcp_spec
+
+        plain = {"command": "/abs/srv", "args": ["--x"]}
+        stamped = {**plain, SOURCE_KEY: "chorus:srv"}
+        assert _norm_mcp_spec(stamped) == _norm_mcp_spec(plain)
+
+    @pytest.mark.parametrize("user_key", ["team/service", "longer-user-scope:team/service"])
+    def test_an_equivalent_user_entry_converging_onto_the_alias_keeps_the_stamp(
+        self, user_key: str
+    ) -> None:
+        # The user's declaration is placed before or after the app's (longest
+        # slash key first); either way the surviving alias entry stays stamped.
+        from kiro_crew.agent_materialization import mcp_aliases
+
+        spec = {"url": "http://127.0.0.1:1/mcp"}
+        config = {
+            "mcpServers": {
+                "chorus:team/service": {**spec, SOURCE_KEY: "chorus:team/service"},
+                user_key: dict(spec),
+            },
+            "tools": [],
+        }
+        mounted = mcp_aliases.normalize_server_keys(config, set())
+        assert set(config["mcpServers"]) == {"team-service"}
+        assert config["mcpServers"]["team-service"][SOURCE_KEY] == "chorus:team/service"
+        assert mounted["chorus:team/service"] == "team-service"
 
     def test_a_real_difference_still_differs(self) -> None:
         """The exclusion must not flatten specs that genuinely disagree."""

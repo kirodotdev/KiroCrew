@@ -31,6 +31,7 @@ import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { WARM_SET_CAP_AUTO_CEILING, usesSsmTransport } from '../../utils/remoteCrew'
 import { Card, Btn } from '../../components/ui'
 import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
+import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { removeWarm, setCrewAddForm } from '../../store/instancesSlice'
 
 import { i18nT } from '../../i18n/t'
@@ -45,6 +46,7 @@ import {
   isBlankInstanceForm,
   instanceFormFromLink,
   EMPTY_INSTANCE_FORM,
+  newInstanceForm,
 } from './InstanceFormFields'
 const STATE_DOT: Record<InstanceTunnelStatus['state'], string> = {
   connected: 'bg-ok',
@@ -119,7 +121,10 @@ export function AddInstanceForm({ onAdded }: { onAdded: () => void }) {
   // successful add or a cleared form drops it.
   const link = useAppSelector(s => s.instances.crewForms?.addLink ?? null)
   const [restored] = useState(() => stored ?? (link ? instanceFormFromLink(link) : null))
-  const form = useInstanceFormState(EMPTY_INSTANCE_FORM, restored)
+  const platform = useGatewayPlatform()
+  // A link names an SSH host, so a form that mounts with one is measured against the SSH form.
+  const [blank] = useState(() => (link ? EMPTY_INSTANCE_FORM : newInstanceForm(platform)))
+  const form = useInstanceFormState(blank, restored)
   // The link opened this page for this form, which sits below the crew list, so
   // it comes into view once: on the mount that takes the link's values.
   const [openedByLink] = useState(() => stored === null && link !== null)
@@ -142,8 +147,8 @@ export function AddInstanceForm({ onAdded }: { onAdded: () => void }) {
   useEffect(() => {
     // Erasing the form erases the held values, or navigating away and back would
     // restore text the user deliberately cleared.
-    dispatch(setCrewAddForm(isBlankInstanceForm(form.values) ? null : { ...form.values }))
-  }, [form.values, dispatch])
+    dispatch(setCrewAddForm(isBlankInstanceForm(form.values, blank) ? null : { ...form.values }))
+  }, [form.values, blank, dispatch])
 
   const addMutation = useMutation({
     mutationFn: () => api.addInstance(form.body()),
@@ -154,7 +159,7 @@ export function AddInstanceForm({ onAdded }: { onAdded: () => void }) {
       // values and the line naming the link stay.
       if ((appStore.getState().instances.crewForms?.addLinkSeq ?? 0) === mountLinkSeq) {
         dispatch(setCrewAddForm(null))
-        form.reset(EMPTY_INSTANCE_FORM)
+        form.reset(blank)
       }
       onAdded()
     },

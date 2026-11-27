@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.context import ContextBuilder
     from kiro_crew.memory import MemoryStore
+    from kiro_crew.memory_provider.render import SessionParts
     from kiro_crew.vector_memory import VectorMemoryStore
 
 logger = logging.getLogger("kiro_crew.context")
@@ -269,37 +270,12 @@ def session_memory_parts(
             injection_receipts.replay(reads.receipts)
             memory_ctx = reads.memory_ctx
             if memory_ctx:
-                # Preferences are read complete below the model-safe ceiling.
-                # The ceiling itself is the one bound they cannot cross: a
-                # preferences file the agent grew past it would otherwise
-                # overflow the window with no notice in the prompt.
                 protected_so_far = len(essentials) + sum(
                     len(parts[index]) for index in protected_parts
                 )
-                room = caps.protected_context - protected_so_far
-                if len(memory_ctx) > room:
-                    omitted_chars = len(memory_ctx) - max(0, room)
-                    notice = (
-                        f"\n[Context budget: omitted {omitted_chars} chars of "
-                        "preferences above the model-safe protected-content ceiling; "
-                        f"read {memory._preferences_file} for the complete file.]\n"
-                    )
-                    logger.warning(
-                        "Preferences exceed model-safe ceiling: chars=%d room=%d; "
-                        "keeping the head",
-                        len(memory_ctx),
-                        room,
-                    )
-                    # Imported at call time, like every Kiro Crew name an owner reads.
-                    from kiro_crew import context_omissions
-
-                    context_omissions.record(
-                        context_omissions.PREFERENCES_FILE,
-                        "cap",
-                        omitted_chars=omitted_chars,
-                        budget_chars=max(0, room),
-                    )
-                    memory_ctx = memory_ctx[: max(0, room - len(notice))] + notice
+                memory_ctx = _fit_preferences(
+                    memory_ctx, memory, caps.protected_context - protected_so_far
+                )
                 # Bounded by the model-safe ceiling (its ``pref.*`` rows by
                 # ``_PREFS_STARTUP_CAP``), not by the background pool the
                 # activity block below competes for, so it does not use that pool up.
@@ -846,6 +822,90 @@ def _lessons_renderer(
         return _render_default_jsonl_lessons
 
 
+def _fit_preferences(memory_ctx: str, memory: MemoryStore, room: int) -> str:
+    """The preferences block, cut to *room* with an in-prompt notice when it is over.
+
+    Preferences are read complete below the model-safe ceiling. The ceiling itself
+    is the one bound they cannot cross: a preferences file the agent grew past it
+    would otherwise overflow the window with no notice in the prompt.
+    """
+    if len(memory_ctx) <= room:
+        return memory_ctx
+    omitted_chars = len(memory_ctx) - max(0, room)
+    notice = (
+        f"\n[Context budget: omitted {omitted_chars} chars of "
+        "preferences above the model-safe protected-content ceiling; "
+        f"read {memory._preferences_file} for the complete file.]\n"
+    )
+    logger.warning(
+        "Preferences exceed model-safe ceiling: chars=%d room=%d; keeping the head",
+        len(memory_ctx),
+        room,
+    )
+    # Imported at call time, like every Kiro Crew name an owner reads.
+    from kiro_crew import context_omissions
+
+    context_omissions.record(
+        context_omissions.PREFERENCES_FILE,
+        "cap",
+        omitted_chars=omitted_chars,
+        budget_chars=max(0, room),
+    )
+    return memory_ctx[: max(0, room - len(notice))] + notice
+
+
+def compaction_preferences_block(
+    builder: ContextBuilder,
+    *,
+    private: bool,
+    blocks_reads: bool,
+    context_groups: frozenset[str] | None,
+    workspace: str | None,
+    memory_store: str | None,
+    model_window: int | None,
+    essentials: str,
+    query_text: str,
+    session_key: str | None = None,
+) -> str:
+    """The session-start preferences block again, for the first turn after a compaction.
+
+    The same read as session start (:func:`read_session_memory`'s
+    ``get_context(include_activity=False)``): the whole preferences document and
+    the ``pref.*`` rows under the startup allowance, ranked against *query_text*,
+    with the same omission notice. The same gates too: nothing on a read-blocked
+    turn, when memory is withheld, for a private member (session start reads it
+    none) or on a provider route that replaces Crew's memory. A store that cannot
+    be read costs the block, never the turn.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    if blocks_reads or private:
+        return ""
+    if not _inclusion._group_included(
+        ctx._config_scoped_groups(context_groups), _inclusion.CONTEXT_GROUP_MEMORY
+    ):
+        return ""
+    from kiro_crew.memory_provider import chokepoints as _memory_provider
+
+    if _memory_provider.session_route(memory_store, session_key).replaces:
+        return ""
+    try:
+        memory = builder.get_memory_for(workspace, memory_store)
+        caps = ctx._resolve_caps(model_window)
+        memory_ctx = memory.get_context(
+            prefs_cap=caps.prefs,
+            query=query_text,
+            include_activity=False,
+            prefs_startup_cap=caps.prefs_startup,
+        )
+        if not memory_ctx:
+            return ""
+        return _fit_preferences(memory_ctx, memory, caps.protected_context - len(essentials))
+    except (OSError, ValueError, RuntimeError, ctx.sqlite3.Error, _stdlib_sqlite3.Error):
+        logger.warning("Post-compaction preferences skipped: the memory store could not be read")
+        return ""
+
+
 def compaction_lessons_block(
     builder: ContextBuilder,
     *,
@@ -1004,6 +1064,214 @@ def session_lessons_part(
             # (``_LESSONS_STARTUP_CAP``); it is not charged to the background pool.
             blocks.append_authored(lessons_ctx)
     return lessons_renderer, lessons_part_index
+
+
+def routed_memory_parts(
+    builder: ContextBuilder,
+    blocks: _budgets.ContextParts,
+    route: Any,
+    *,
+    private: bool,
+    blocks_reads: bool,
+    effective_groups: frozenset[str] | None,
+    workspace: str | None,
+    memory_store: str | None,
+    session_key: str | None,
+    execution_context: Any,
+    project: str | None,
+    caps: _budgets._ResolvedCaps,
+    essentials: str,
+    cfg: KiroCrewConfig,
+    query_text: str,
+) -> tuple[MemoryStore | None, VectorMemoryStore | None, bool, SessionParts]:
+    """Admit the session-start memory family from the memory *route* names.
+
+    A provider that replaces Crew's memory admits its own memory and lessons blocks
+    (``replace_session_parts``); otherwise Crew's own :func:`session_memory_parts`
+    runs. Returns ``(memory, member vectors, activity ranked, provider parts)``:
+    where a replacing provider put its rules and its whole lessons family, empty
+    on Crew's own route.
+    """
+    from kiro_crew.memory_provider import render as _provider_render
+
+    no_provider_parts = _provider_render.SessionParts(None, range(0))
+    if not route.replaces:
+        return (
+            *session_memory_parts(
+                builder,
+                blocks,
+                private=private,
+                blocks_reads=blocks_reads,
+                effective_groups=effective_groups,
+                workspace=workspace,
+                memory_store=memory_store,
+                caps=caps,
+                essentials=essentials,
+                cfg=cfg,
+                query_text=query_text,
+            ),
+            no_provider_parts,
+        )
+    if blocks_reads:
+        return None, None, False, no_provider_parts
+    from kiro_crew.memory_provider import chokepoints as _memory_provider
+
+    return (
+        None,
+        None,
+        False,
+        _memory_provider.replace_session_parts(
+            blocks,
+            route,
+            memory_store=memory_store,
+            session_key=session_key,
+            execution_context=execution_context,
+            project=project,
+            query_text=query_text,
+            caps=caps,
+            include_memory=_inclusion._group_included(
+                effective_groups, _inclusion.CONTEXT_GROUP_MEMORY
+            ),
+            include_lessons=_inclusion._group_included(
+                effective_groups, _inclusion.CONTEXT_GROUP_LESSONS
+            ),
+        ),
+    )
+
+
+def augment_memory_part(
+    blocks: _budgets.ContextParts,
+    route: Any,
+    *,
+    blocks_reads: bool,
+    effective_groups: frozenset[str] | None,
+    memory_store: str | None,
+    session_key: str | None,
+    execution_context: Any,
+    project: str | None,
+    caps: _budgets._ResolvedCaps,
+    query_text: str,
+) -> None:
+    """Add a read-only provider's one background block after Crew's own blocks."""
+    if (
+        not route.augments
+        or blocks_reads
+        or not _inclusion._group_included(effective_groups, _inclusion.CONTEXT_GROUP_MEMORY)
+    ):
+        return
+    from kiro_crew.memory_provider import chokepoints as _memory_provider
+
+    _memory_provider.augment_session_part(
+        blocks,
+        route,
+        memory_store=memory_store,
+        session_key=session_key,
+        execution_context=execution_context,
+        project=project,
+        query_text=query_text,
+        caps=caps,
+    )
+
+
+#: The families Test recall labels a session-start part with.
+PREVIEW_MEMORY = "memory"
+PREVIEW_LESSONS = "lessons"
+PREVIEW_PROVIDER = "provider"
+
+
+def session_start_store_preview(
+    builder: ContextBuilder, memory_store: str | None, *, private: bool, query_text: str = ""
+) -> list[tuple[str, str]]:
+    """The memory-family parts a session start admits from one store, each with its family.
+
+    For the dashboard's Test recall. It runs the admissions
+    ``build_session_context`` runs, on the memory route a session start takes:
+    :func:`routed_memory_parts` (Crew's :func:`session_memory_parts`, whose V1
+    reads are :func:`read_session_memory`, or a replacing provider's blocks),
+    :func:`session_lessons_part` and :func:`augment_memory_part`, with the same
+    config gates and caps, so the preview is the prompt's own text rather than a
+    copy of its wiring. *query_text* is the session's first message; empty means
+    a session that starts with none. *private* is whether a member owns the
+    store, as for that member's sessions.
+
+    Returns ``[(family, text)]``, one per block in prompt order, so each text
+    stands in the build as returned and a first message's effect shows as the
+    blocks it adds or changes. The family is
+    :data:`PREVIEW_MEMORY`, :data:`PREVIEW_LESSONS` or :data:`PREVIEW_PROVIDER`
+    (a read-only provider's block), taken from the helper that appended the part:
+    a replacing provider reports its lessons span itself, and its Crew documents
+    after that span are memory.
+
+    shortcut: the default window's caps, no project (so a project-scoped lesson is
+    left out) and no later admission pass, which can drop the background
+    ``[Memory activity]`` block when the rest of a session's context is large; take
+    those as inputs when the preview gains a session or project to preview.
+
+    Blocking: a first message may be embedded. Run it in the embed pool.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.memory_provider import chokepoints as _memory_provider
+
+    cfg = ctx.KiroCrewConfig.load()
+    caps = ctx._resolve_caps(None)
+    groups = ctx._config_scoped_groups(None, cfg)
+    blocks = _budgets.ContextParts()
+    route = _memory_provider.session_route(memory_store, None)
+    memory, member_vectors, activity_ranked, provider_parts = routed_memory_parts(
+        builder,
+        blocks,
+        route,
+        private=private,
+        blocks_reads=False,
+        effective_groups=groups,
+        workspace=None,
+        memory_store=memory_store,
+        session_key=None,
+        execution_context=None,
+        project=None,
+        caps=caps,
+        essentials="",
+        cfg=cfg,
+        query_text=query_text,
+    )
+    crew_lessons_start = len(blocks.parts)
+    session_lessons_part(
+        builder,
+        blocks,
+        memory=memory,
+        member_vectors=member_vectors,
+        activity_ranked=activity_ranked,
+        effective_groups=groups,
+        workspace=None,
+        memory_store=memory_store,
+        project=None,
+        caps=caps,
+        essentials="",
+        query_text=query_text,
+    )
+    augment_start = len(blocks.parts)
+    augment_memory_part(
+        blocks,
+        route,
+        blocks_reads=False,
+        effective_groups=groups,
+        memory_store=memory_store,
+        session_key=None,
+        execution_context=None,
+        project=None,
+        caps=caps,
+        query_text=query_text,
+    )
+    families: list[tuple[str, str]] = []
+    for index, text in enumerate(blocks.parts):
+        if index >= augment_start:
+            family = PREVIEW_PROVIDER
+        elif index >= crew_lessons_start or index in provider_parts.lessons:
+            family = PREVIEW_LESSONS
+        else:
+            family = PREVIEW_MEMORY
+        families.append((family, text))
+    return families
 
 
 def refit_lessons(

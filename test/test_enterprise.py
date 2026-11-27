@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 import types
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from kiro_crew.slack import enterprise
+from kiro_crew.testing.module_table import patched_sys_modules
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +62,7 @@ def _install_fake_slack_sdk(resp: dict | None = None, *, raise_exc: bool = False
 
     web_mod.WebClient = _FakeWebClient
     mod.web = web_mod
-    return patch.dict(sys.modules, {"slack_sdk": mod, "slack_sdk.web": web_mod})
+    return patched_sys_modules({"slack_sdk": mod, "slack_sdk.web": web_mod})
 
 
 def _write_allowlist(home, allowed_ids: list[str]) -> None:
@@ -1144,7 +1144,7 @@ def _probing_slack_sdk(seen: list[tuple[str, bool]], resp: dict):
 
     web_mod.WebClient = _ProbingWebClient
     mod.web = web_mod
-    return patch.dict(sys.modules, {"slack_sdk": mod, "slack_sdk.web": web_mod})
+    return patched_sys_modules({"slack_sdk": mod, "slack_sdk.web": web_mod})
 
 
 def test_revalidation_keeps_an_armed_allowlist_while_it_probes(tmp_path):
@@ -1194,7 +1194,7 @@ def test_revalidation_keeps_the_bot_identity_while_it_probes(tmp_path):
 
     web_mod.WebClient = _ProbingWebClient
     mod.web = web_mod
-    with patch.dict(sys.modules, {"slack_sdk": mod, "slack_sdk.web": web_mod}):
+    with patched_sys_modules({"slack_sdk": mod, "slack_sdk.web": web_mod}):
         assert enterprise.validate_enterprise("xoxb-token") is True
     assert seen == [("B1", "U1")]
     assert (enterprise.validated_self_bot_id(), enterprise.validated_self_user_id()) == ("B1", "U1")
@@ -1230,7 +1230,7 @@ def test_a_validation_holds_the_state_lock_a_reload_takes(tmp_path):
 
     web_mod.WebClient = _ProbingWebClient
     mod.web = web_mod
-    with patch.dict(sys.modules, {"slack_sdk": mod, "slack_sdk.web": web_mod}):
+    with patched_sys_modules({"slack_sdk": mod, "slack_sdk.web": web_mod}):
         assert enterprise.validate_enterprise("xoxb-token") is True
     assert others_could_take_it == [False]
 

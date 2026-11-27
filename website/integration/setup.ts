@@ -10,6 +10,7 @@ import { __resetStagingForTests } from '../src/components/pierreStaging'
 import { clearSideChatDrafts } from '../src/chat-core/composer/sideChatDrafts'
 import { __resetSharedUnreadQueueForTests } from '../src/store/dashboard/unread'
 import { __setFeaturePreviewLockKnownForTests } from '../src/utils/editionLocks'
+import { __resetUploadQueueForTests } from '../src/utils/uploadQueue'
 
 // The Pierre mount queue is MODULE state — in a browser that is per-page, but a
 // vitest worker runs many test files in one process, so without this a file that
@@ -31,6 +32,10 @@ beforeEach(() => { __resetSharedUnreadQueueForTests() })
 // dashboard whose gateway already answered as oss, so conductor mode is on.
 // A test of the not-yet-known state turns it off in its own body.
 beforeEach(() => { __setFeaturePreviewLockKnownForTests(true) })
+// The upload in-flight limit is MODULE state (utils/uploadQueue): a request a
+// previous test left on the wire would hold one of its places, and the next
+// test's files would wait behind it. One test is one "page".
+beforeEach(() => { __resetUploadQueueForTests() })
 
 // lottie-web registers a module-scoped `setInterval(checkReady, 100)` purely by
 // being IMPORTED (`readyStateCheckInterval` in the prebuilt player bundles). That

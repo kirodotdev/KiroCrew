@@ -70,18 +70,17 @@ interface AppPanelRevealOptions {
   dispatch: AppDispatch
   activeSlot: string | null
   boundStore: AppStore
-  search: ReturnType<typeof useChatPageResourcesController>['search']
   tabsCtlRef: MutableRefObject<ReturnType<typeof useChatPageResourcesController>['tabsCtl']>
 }
 
 /**
  * Brings an MCP App's panel tab back from a bubble placeholder: re-opens the tab if
- * the user closed it and clears the find pane that would hide it.
+ * the user closed it; an open history search stays behind it.
  *
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useAppPanelReveal({
-  dispatch, activeSlot, boundStore, search, tabsCtlRef,
+  dispatch, activeSlot, boundStore, tabsCtlRef,
 }: AppPanelRevealOptions) {
   /** Bring an app's panel tab back — focusing it if open, re-creating it if the
    *  user closed it (`openApp` upserts).
@@ -90,28 +89,16 @@ export function useAppPanelReveal({
    *  closed, which is why the bubble placeholder has to be a real control rather
    *  than static text. Note the effect's once-per-tool-call guard holds only
    *  PER CHATPAGE MOUNT: `openedAppTabsRef` is not persisted, so navigating away
-   *  and back re-arms it. Closing the find pane is part of the action: `isSidePanelHidden`
-   *  keeps the panel hidden while search owns the dock, so without this the click
-   *  would open a tab the user cannot see and look broken.
-   *
-   *  `close()` runs unconditionally, exactly as handleFileOpen / handleArtifactOpen /
-   *  handleOpenDiff do. Guarding it on `search.isOpen` would pull that value into the
-   *  closure, and `renderMessage` (transcriptRendering.tsx) holds this callback across renders where the
-   *  find pane opens — so a captured `isOpen === false` would skip the close entirely
-   *  and open the tab behind the hidden dock. `close()` is already safe with nothing
-   *  open: it only hands focus back `if (wasOpen)`. */
+   *  and back re-arms it. An open history search keeps its Search tab and query
+   *  behind the app tab, as at every other tab this page opens from the chat. */
   const revealAppInPanel = useCallback((toolCallId: string) => {
-    search.close()
     dispatch(openActivityPanel())
     // Same title derivation as the auto-open effect: an event-time read from
     // the Provider-bound store keeps the payload out of this callback's deps.
     const payload = activeSlot ? boundStore.getState().chat.mcpApps?.[mcpAppKey(activeSlot, toolCallId)] : undefined
     tabsCtlRef.current?.openApp(toolCallId, mcpAppTabTitle(payload, i18nT('pages.chatPage.mcp_app_tab_title')), activeSlot ?? null)
-    // As at handleFileOpen: the rule asks for the whole `search` object only because
-    // `close` is INVOKED and a called member is attributed to its receiver, not
-    // because this body reads `search` itself.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `search.close` is a useCallback([]) in useMessageSearch, so the listed member already pins everything this body calls; naming the enclosing object would make this a new function every render and churn renderMessage below
-  }, [dispatch, activeSlot, boundStore, search.close])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `tabsCtlRef` is a ref, read at call time; listing it changes nothing
+  }, [dispatch, activeSlot, boundStore])
   return {
     revealAppInPanel,
   }

@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from kas_agents_helpers import _spec
+from kas_agents_helpers import _spec, without_own_agents_deny
 
 from kiro_crew.acp import kas_agents
 from kiro_crew.acp.kas_agents import hoist_servers_for_session, to_client_custom_agent
@@ -167,10 +167,10 @@ class TestMcpServersProjection:
         assert out["mcpServers"]["kirocrew-core"] == {"command": "x"}
 
     def test_a_relayed_reference_reaches_a_third_party_server(self, relayed_names):
-        """KAS starts an MCP child with a minimal environment of its own, so a
-        launcher's per-process value reaches the child only through a reference
-        to a name the edition relays. The credential-keyed literal beside it, and
-        a reference wrapped in literal text, do not."""
+        """A reference to a name the edition relays stays on the wire, so KAS
+        fills it in from its own environment, where a launcher's per-process value
+        lives. The credential-keyed literal beside it, and a reference wrapped in
+        literal text, do not."""
         out = to_client_custom_agent(
             "a",
             _spec(
@@ -1148,6 +1148,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             forward_ssh_auth_sock=False,
             governance_app=None,
             scope_muted=None,
+            prereg_out=None,
         ):
             seen.append(stub_server_names)
             return [{"id": agent}]
@@ -1178,6 +1179,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             forward_ssh_auth_sock=False,
             governance_app=None,
             scope_muted=None,
+            prereg_out=None,
         ):
             seen.append((session_key, member_dispatch))
             return [{"id": agent}]
@@ -1244,7 +1246,8 @@ class TestRuntimeSuppliesTheStubbedSet:
         from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
 
         assert [
-            {k: v for k, v in a.items() if k != CREW_SETTINGS_MCP_KEY} for a in out.custom_agents
+            {k: v for k, v in without_own_agents_deny(a).items() if k != CREW_SETTINGS_MCP_KEY}
+            for a in out.custom_agents
         ] == [{"id": "kirocrew"}]
 
 
@@ -1304,7 +1307,7 @@ class TestNativeManagedMcpIdentity:
         assert "env" not in unrelated["mcpServers"]["kirocrew-work"]
 
     def test_a_central_ceiling_puts_managed_stdio_children_in_cache_only_mode(self, monkeypatch):
-        """KAS gives managed children a minimal env; the gateway supplies the markers."""
+        """On KAS the gateway puts the markers on a managed child's entry itself."""
         from kiro_crew.platform import policy_distribution as pd
 
         monkeypatch.setattr(pd, "central_ceiling_installed", lambda: True)

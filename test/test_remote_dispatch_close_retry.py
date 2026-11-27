@@ -161,6 +161,18 @@ def test_a_slot_the_peer_no_longer_holds_is_destroyed_on_the_first_sweep(recorde
     asyncio.run(go())
 
 
+def test_a_version_skewed_crew_still_has_its_retired_slot_closed(recorded, peer):
+    async def go() -> None:
+        state, item_id = await _retired(peer)
+        peer.state = "connected"
+        peer.version = "0.0.1"
+        await _sweep(state)
+        assert [m for m, _p, _b in _close_calls(peer)] == ["PATCH", "DELETE"]
+        assert _entry(item_id)["state"] == "destroyed"
+
+    asyncio.run(go())
+
+
 def test_a_crew_that_is_not_connected_costs_no_try(recorded, peer):
     async def go() -> None:
         state, item_id = await _retired(peer)

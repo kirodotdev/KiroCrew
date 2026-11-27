@@ -197,11 +197,32 @@ def test_the_owner_only_list_is_read_before_the_table() -> None:
     assert refusal is not None and refusal.audit == "owner_only"
 
 
-# ── through token auth: no row admits an app credential to a handler ─────────
+# ── through token auth: only a listed route serves an app credential ─────────
+
+
+def test_the_routes_that_serve_an_app_credential() -> None:
+    """The whole list, so a route joins it only by a change to this test."""
+    assert crew_api_auth.APP_SERVED_ROUTES == {
+        MODELS,
+        ("GET", "/v1/crew/grant"),
+        ("GET", "/v1/crew/bots"),
+        ("GET", "/v1/crew/capabilities"),
+        ("GET", "/v1/crew/info"),
+    }
+    for key in crew_api_auth.APP_SERVED_ROUTES:
+        assert ROUTES[key].api_tier == PUBLIC and not ROUTES[key].entitlements
+    assert crew_api_auth.app_owner_only_routes() == {
+        "/v1/responses",
+        "/v1/responses/{response_id}",
+        "/v1/responses/{response_id}/input_items",
+        "/v1/conversations",
+        "/v1/conversations/{conversation_id}",
+        "/v1/conversations/{conversation_id}/items",
+    }
 
 
 @pytest.mark.asyncio
-async def test_an_app_credential_holding_every_scope_reaches_no_route_of_the_table(
+async def test_an_app_credential_holding_every_scope_reaches_only_the_listed_routes(
     store, clock, audit
 ) -> None:
     token = _grant(store, clock, scope=ALL_SCOPES)["access_token"]
@@ -210,11 +231,12 @@ async def test_an_app_credential_holding_every_scope_reaches_no_route_of_the_tab
         resp, _request, ran = await _send(
             router, path=_concrete(pattern), method=method, headers=_bearer(token)
         )
-        assert (resp.status, ran) == (403, False), (method, pattern)
+        served = (method, pattern) in crew_api_auth.APP_SERVED_ROUTES
+        assert (resp.status, ran) == ((200, True) if served else (403, False)), (method, pattern)
 
 
 @pytest.mark.asyncio
-async def test_an_app_credential_reaches_no_crew_api_route_the_gateway_registers(
+async def test_an_app_credential_reaches_only_the_listed_routes_the_gateway_registers(
     tmp_path, monkeypatch, store, clock, audit
 ) -> None:
     """Checked against the live router, so a route registered anywhere is covered."""
@@ -237,6 +259,9 @@ async def test_an_app_credential_reaches_no_crew_api_route_the_gateway_registers
         resp, _request, ran = await _send(
             router, path=_concrete(pattern), method=method, headers=_bearer(token)
         )
+        if (method, pattern) in crew_api_auth.APP_SERVED_ROUTES:
+            assert (resp.status, ran) == (200, True), (method, pattern)
+            continue
         assert (resp.status, ran) == (403, False), (method, pattern)
         assert _error(resp)["code"] == "owner_only", (method, pattern)
 
@@ -247,28 +272,30 @@ async def test_an_app_credential_reaches_no_crew_api_route_the_gateway_registers
     [
         # The row admits it, and no route serves an app: refused, and the row says why.
         (
-            "POST",
-            "/v1/responses",
-            "responses:write",
+            "GET",
+            "/v1/crew/approvals/{approval_id}",
+            "conversations:read",
             "owner_only",
             "owner_only:no-app-route",
             crew_api_auth.APP_CREDENTIAL_REFUSED,
         ),
         (
             "GET",
-            "/v1/crew/info",
-            "bots:read",
-            "owner_only",
-            "owner_only:no-app-route",
-            crew_api_auth.APP_CREDENTIAL_REFUSED,
-        ),
-        (
-            "GET",
-            "/v1/conversations",
+            "/v1/crew/approvals/{approval_id}",
             "responses:write",
             "insufficient_scope",
             "insufficient_scope",
             "needs conversations:read",
+        ),
+        # A route that serves the owner alone today is refused by tier, whatever
+        # the row would admit.
+        (
+            "POST",
+            "/v1/conversations",
+            "responses:write",
+            "owner_only",
+            "owner_only",
+            crew_api_auth.APP_CREDENTIAL_REFUSED,
         ),
         (
             "POST",
@@ -327,22 +354,6 @@ async def test_the_answer_and_the_audit_row_come_from_the_row(
         why,
     )
     assert row["resources"] == f"{path} client_id={CLIENT}"
-
-
-@pytest.mark.asyncio
-async def test_models_is_refused_by_the_owner_only_list_and_not_by_its_row(
-    store, clock, audit, monkeypatch
-) -> None:
-    token = _grant(store, clock)["access_token"]
-    resp, _request, ran = await _send(path="/v1/models", headers=_bearer(token))
-    assert (resp.status, ran, _error(resp)["code"]) == (403, False, "owner_only")
-    assert audit.log_api_access.call_args.kwargs["error"] == "owner_only"
-
-    # Without the list the row alone would admit it, and it is still refused.
-    monkeypatch.setattr(crew_api_auth, "OWNER_ONLY_PUBLIC_ROUTES", {})
-    resp, _request, ran = await _send(path="/v1/models", headers=_bearer(token))
-    assert (resp.status, ran, _error(resp)["code"]) == (403, False, "owner_only")
-    assert audit.log_api_access.call_args.kwargs["error"] == "owner_only:no-app-route"
 
 
 @pytest.mark.asyncio

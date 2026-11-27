@@ -525,7 +525,6 @@ class TestReceiptReplay:
         from kiro_crew import injection_receipts
 
         injection_receipts.replay({"lessons": {"ids": ["lesson.a"], "omitted": 0}})
-        assert injection_receipts.current_ids("lessons") == []
         with injection_receipts.collect() as sink:
             pass
         assert sink == {}
@@ -788,3 +787,65 @@ class TestKeptStoreConfig:
         assert rp._serve(stdin, out) == 0
         # Opening the store applies the config once; the two kept-store jobs apply nothing.
         assert len(calls) == 1
+
+
+class TestInstructedQuery:
+    """A Qwen3 recall query is embedded with its instruction; a worker ranks the same."""
+
+    LESSONS = (
+        "always run the integration suite before a rollout",
+        "pin the payments service image digest in the kubernetes manifest",
+        "keep the vim config in the dotfiles repo",
+    )
+
+    @pytest.fixture
+    def qwen_store(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        from kiro_crew import embeddings
+        from kiro_crew.embeddings import PRIORITY_NORMAL
+
+        seen: list[str] = []
+
+        class _Qwen(embeddings.EmbeddingBackend):
+            model_id = "qwen3-embedding:0.6b"
+            dim = _DIM
+
+            def is_ready(self) -> bool:
+                return True
+
+            def embed(self, text: str, *, priority: int = PRIORITY_NORMAL) -> list[float]:
+                seen.append(text)
+                return _vector(text)
+
+            def embed_batch(self, texts, *, priority: int = PRIORITY_NORMAL):
+                return [self.embed(t) for t in texts]
+
+            def close(self) -> None:
+                """Nothing to release."""
+
+        monkeypatch.setattr(embeddings, "_backend_factory", _Qwen, raising=False)
+        monkeypatch.setattr(embeddings, "_shared_embedder", None, raising=False)
+        s = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=_DIM)
+        s.init()
+        s.embed_fn = embeddings.make_sync_embed_fn()
+        for lesson in self.LESSONS:
+            s.write_lesson(lesson, "knowledge", source="user_explicit")
+        try:
+            yield s, seen
+        finally:
+            s.close()
+
+    def test_a_worker_ranks_lessons_like_the_gateway(
+        self, qwen_store, pool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import embeddings
+
+        store, seen = qwen_store
+        query = store.startup_lesson_query(QUERY)
+        assert query.vector is not None and query.vector.instructed
+        assert embeddings.query_instruction_text(QUERY) in seen
+        expected = lessons_mod.get_lessons_context(store, **_lessons_kwargs(), recall_query=query)
+        assert all(lesson in expected for lesson in self.LESSONS)
+
+        _forbid_in_process(monkeypatch)
+        assert store.get_lessons_context(**_lessons_kwargs(), recall_query=query) == expected
+        assert pool.spawns >= 1

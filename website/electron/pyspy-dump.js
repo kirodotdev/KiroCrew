@@ -29,7 +29,9 @@ const PYSPY_CANDIDATES = [
   path.join(os.homedir(), ".local", "bin", "py-spy"),
 ];
 
-function resolvePySpy(existsSync = fs.existsSync) {
+function resolvePySpy(existsSync = fs.existsSync, platform = process.platform) {
+  // POSIX-only candidates; on Windows PATH (+.exe) is the only lookup, as in perf_sampler.
+  if (platform === "win32") return "py-spy";
   for (const c of PYSPY_CANDIDATES) {
     try {
       if (existsSync(c)) return c;
@@ -58,6 +60,7 @@ function defaultRun(bin, args, timeoutMs, cb) {
  * @param {number} [o.timeoutMs=5000] hard cap so a hung py-spy can't delay the kill
  * @param {(msg: string) => void} [o.log]
  * @param {string} [o.bin]            py-spy path (defaults to resolved/PATH)
+ * @param {string} [o.platform]       process.platform -- injectable for tests
  * @param {Function} [o.run]          (bin, args, timeoutMs, cb) -- injectable for tests
  * @param {Function} [o.writeFileSync]
  * @param {() => Date} [o.now]
@@ -71,6 +74,7 @@ function capturePySpyDump({
   timeoutMs = 5000,
   log = () => {},
   bin,
+  platform = process.platform,
   run = defaultRun,
   writeFileSync = fs.writeFileSync,
   now = () => new Date(),
@@ -83,7 +87,7 @@ function capturePySpyDump({
       resolve({ ok: false, reason: "no pid" });
       return;
     }
-    const exe = bin || resolvePySpy();
+    const exe = bin || resolvePySpy(fs.existsSync, platform);
     let settled = false;
     let backstop = null;
     const done = (r) => {
@@ -111,7 +115,7 @@ function capturePySpyDump({
           const first = (((stderr && stderr.toString()) || err.message || "").split("\n")[0]) || "unknown error";
           const why =
             err.code === "ENOENT"
-              ? "py-spy not installed (brew install py-spy)"
+              ? `py-spy not installed (${platform === "darwin" ? "brew" : "pip"} install py-spy)`
               : `py-spy failed: ${first}`;
           log(`py-spy dump skipped — ${why}`);
           done({ ok: false, reason: why });

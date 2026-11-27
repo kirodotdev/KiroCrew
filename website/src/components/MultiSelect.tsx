@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { ChevronDown, Search } from 'lucide-react'
+import { ChevronDown, ExternalLink, Search } from 'lucide-react'
 
 import { Btn, Checkbox, Input } from './ui'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
@@ -13,6 +13,8 @@ export interface MultiSelectOption {
   hint?: string
   description?: string
   locked?: boolean
+  /** Why a locked row cannot be toggled here, with where it is managed; takes the description's line, the description after it. */
+  lockedReason?: { text: string; link: { label: string; href: string } }
 }
 
 interface Props {
@@ -175,15 +177,26 @@ export default function MultiSelect({
                       with no hint can be a raw id too (a cold model cache). Label and
                       description stop at two lines, so the gateway's 400-char label
                       bound cannot grow a row past that. */}
-                  {option.hint ? (
-                    <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-                      <span className={`min-w-0 break-words line-clamp-2 text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
-                      <span data-multi-select-hint className="min-w-0 break-all text-[11px] font-mono text-muted">{option.hint}</span>
+                  <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                    <span className={`min-w-0 break-words line-clamp-2 text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
+                    {option.hint && <span data-multi-select-hint className="min-w-0 break-all text-[11px] font-mono text-muted">{option.hint}</span>}
+                  </span>
+                  {option.locked && option.lockedReason ? (
+                    <span data-multi-select-locked-reason className="break-words line-clamp-2 text-[11px] text-muted">
+                      {option.lockedReason.text}{' · '}
+                      <a
+                        href={option.lockedReason.link.href}
+                        target="_blank" rel="noopener noreferrer"
+                        className="text-accent hover:underline inline-flex items-center gap-1"
+                      >
+                        {option.lockedReason.link.label}
+                        <ExternalLink size={11} aria-hidden />
+                      </a>
+                      {option.description && <>{' · '}{option.description}</>}
                     </span>
                   ) : (
-                    <span className={`break-words line-clamp-2 text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
+                    option.description && <span className="break-words line-clamp-2 text-[11px] text-muted">{option.description}</span>
                   )}
-                  {option.description && <span className="break-words line-clamp-2 text-[11px] text-muted">{option.description}</span>}
                 </span>
               </label>
             )

@@ -26,6 +26,10 @@ cards and commands (:func:`queue_user_action`,
 then the reports, then the refs installed apps sent while the thread was busy
 (:func:`app_wakes`, written by :mod:`kiro_crew.dashboard.app_bot_wake`) as one
 turn with crew-log actor ``app``, so app wakes never hold a report back.
+After a person's Stop (:func:`hold_after_stop`) the flush starts nothing until
+the next turn starts in the thread (a person's message, a scheduled check-in, a
+cron or patrol turn, a queued entry; :func:`release_stop_hold`), and that turn's
+end delivers what was held.
 Per-gateway state lives on the dashboard state object, never in module globals.
 """
 
@@ -217,6 +221,7 @@ def report_prompt(
     *,
     manual: bool | None = None,
     worker_spec: dict[str, Any] | None = None,
+    sign_ins: dict[str, tuple[list[str], str]] | None = None,
 ) -> str:
     """The hidden turn that hands crewmate *member* its workers' latest replies.
 
@@ -225,9 +230,12 @@ def report_prompt(
     when not given it is read here (a config read), and no crewmate named reads
     as off. The wake loop reads it off the event loop and passes it in, and with
     it *member*'s *worker_spec*, which picks the servers a report names as ones
-    its worker could not use (``mate_capability_catalog.unusable_line``).
+    its worker could not use (``mate_capability_catalog.unusable_line``), and
+    *sign_ins* (:func:`_sign_ins`): per worker key, the servers that wait for a
+    person to sign in and where that person does it, one line under that report
+    (``mate_capability_catalog.sign_in_line``).
     """
-    from kiro_crew.mate_capability_catalog import unusable_line
+    from kiro_crew.mate_capability_catalog import sign_in_line, unusable_line
 
     if manual is None:
         from kiro_crew import crewmate_dynamic_capabilities
@@ -261,6 +269,9 @@ def report_prompt(
         unusable = unusable_line(worker_spec or {}, report.get("unusable") or {})
         if unusable:
             lines.append(unusable)
+        names, where = (sign_ins or {}).get(report["key"], ([], ""))
+        if names:
+            lines.append(sign_in_line(names, where))
         lines.append("")
     lines.append(_GUIDANCE)
     return "\n".join(lines)
@@ -275,6 +286,73 @@ def _worker_spec(member: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - an unreadable spec names no server; the report still goes
         logger.debug("worker report for %s: worker spec unreadable", member, exc_info=True)
         return {}
+
+
+def _sign_in_told(state: Any) -> dict[str, set[str]]:
+    """Per Bot thread, the servers a wake already named as waiting for a sign-in.
+
+    A server is named once per thread, until a worker session of that Bot reports
+    it ready (:func:`_record_report`). Held in memory: a restart names it again.
+    """
+    told = getattr(state, "_mate_sign_in_told", None)
+    if not isinstance(told, dict):
+        told = {}
+        state._mate_sign_in_told = told
+    return told
+
+
+def _sign_ins(
+    state: Any, thread_key: str, reports: list[dict[str, Any]], worker_spec: dict[str, Any]
+) -> dict[str, list[str]]:
+    """Per worker key, the servers its report names as waiting for a sign-in, not yet told.
+
+    Only servers *worker_spec* mounts (``mate_capability_catalog.sign_in_servers``),
+    each once across *reports*: one sign-in serves every worker of the Bot, since a
+    remote server's sign-in is kept per url, not per session. Only a worker with a
+    chat on this gateway, the place the owner signs in: a scheduled run's report
+    (``note_cron_result``) has none and keeps the plain unusable line. No I/O.
+    """
+    from kiro_crew.mate_capability_catalog import sign_in_servers
+
+    told = _sign_in_told(state).get(thread_key, set())
+    seen: set[str] = set()
+    out: dict[str, list[str]] = {}
+    for report in reports:
+        if state.get_slot(report["key"]) is None:
+            continue
+        names = [
+            name
+            for name in sign_in_servers(worker_spec, report.get("unusable") or {})
+            if name not in told and name not in seen
+        ]
+        if names:
+            seen.update(names)
+            out[report["key"]] = names
+    return out
+
+
+def _sign_in_where(keys: list[str]) -> dict[str, str]:
+    """Per worker key, where its owner signs in: the worker chat's dashboard link. Blocking.
+
+    The link is built like the code channel board's (``board.links.link_builder``):
+    the configured dashboard origin, or the tunnel when ``slack.use_tunnel_url`` opts
+    in, and NEVER a click token, because the wake's reply is mirrored to a Slack
+    thread or Discord DM other people may read. It opens the chat only for someone
+    already signed in to the dashboard. With no configured origin the chat is named
+    by its session key instead.
+    """
+    from kiro_crew.slack.code_channels.board.links import link_builder
+
+    link = link_builder()
+    where: dict[str, str] = {}
+    for key in keys:
+        url = link(key)
+        where[key] = (
+            crewmate_prompts.fill("worker_report.sign_in_link", url=url)
+            if url
+            else crewmate_prompts.fill("worker_report.sign_in_key", key=key)
+        )
+    return where
 
 
 def _pending(state: Any) -> dict[str, dict[str, dict[str, Any]]]:
@@ -503,6 +581,39 @@ async def offer_upgrade_notices(state: Any) -> None:
             )
 
 
+def _stop_holds(state: Any) -> set[str]:
+    """Threads a person stopped from the dashboard, until the next turn starts in one."""
+    holds = getattr(state, "_mate_stop_holds", None)
+    if not isinstance(holds, set):
+        holds = set()
+        state._mate_stop_holds = holds
+    return holds
+
+
+def hold_after_stop(state: Any, slot: Any) -> None:
+    """A person pressed Stop on *slot*: a crewmate thread starts no wake turn for now."""
+    if is_crewmate_thread(slot):
+        _stop_holds(state).add(slot.key)
+
+
+def release_stop_hold(state: Any, key: str) -> None:
+    """A new turn starts in thread *key*: end its hold, schedule the delivery for that turn's end.
+
+    The flush waits on that turn whatever its depth, as on any busy thread
+    (:func:`_flush`); an upgrade or kept notice keeps its own rule, the next idle
+    turn end. A thread that held nothing starts no task.
+    """
+    holds = _stop_holds(state)
+    if key in holds:
+        holds.remove(key)
+        schedule_flush(state, key)
+
+
+def stop_held(state: Any, key: str) -> bool:
+    """Whether a person's Stop holds thread *key* (:func:`hold_after_stop`)."""
+    return key in _stop_holds(state)
+
+
 def _idle(slot: Any) -> bool:
     return not slot.running and not getattr(slot, "_queue", None)
 
@@ -530,6 +641,10 @@ async def _flush(state: Any, key: str) -> None:
             # A restart cuts the worker whose turn end brought us here; a wake
             # started now would be cut too and leave the crewmate's thread
             # reading as interrupted. Nothing is popped.
+            return
+        if stop_held(state, key):
+            # A person stopped this thread: all of it waits for the end of the
+            # next turn that starts in it.
             return
         if _idle(slot) and key in _notices(state):
             # The upgrade notice goes first, as its own turn; the loop then
@@ -578,9 +693,10 @@ async def _flush(state: Any, key: str) -> None:
                 state.get_slot(key) is not slot
                 or not is_crewmate_thread(slot)
                 or getattr(slot, "is_closing", False)
+                or stop_held(state, key)
             ):
-                # The same fence as the report turn below: the thread was closed or
-                # replaced during the read, so nothing starts on it and the refs stay.
+                # The same fence as the report turn below: the thread was closed,
+                # replaced or stopped during the read, so nothing starts and the refs stay.
                 return
             _take_app_refs(state, key, snapshot)
             dropped = sorted(set(snapshot) - set(granted))
@@ -616,13 +732,31 @@ async def _flush(state: Any, key: str) -> None:
         worker_spec = None
         if reports and any(r.get("unusable") for r in reports.values()):
             worker_spec = await asyncio.to_thread(_worker_spec, slot.agent)
+        # A server waiting for a sign-in gets where its owner signs in: the
+        # link reads the config, so it is built off the loop too.
+        sign_in_names = (
+            _sign_ins(state, key, list(reports.values()), worker_spec)
+            if reports and worker_spec
+            else {}
+        )
+        sign_in_where = (
+            await asyncio.to_thread(_sign_in_where, list(sign_in_names)) if sign_in_names else {}
+        )
+        if sign_in_names and (
+            not reports
+            or _sign_ins(state, key, list(reports.values()), worker_spec or {}) != sign_in_names
+        ):
+            # A worker's report changed during the read (it signed in, or a new
+            # one arrived): build the lines again from what is held now.
+            continue
         if (slug or gap or worker_spec is not None) and (
             state.get_slot(key) is not slot
             or not is_crewmate_thread(slot)
             or getattr(slot, "is_closing", False)
+            or stop_held(state, key)
         ):
-            # The thread was closed or replaced during the read: no wake on it, and
-            # what is pending stays for the thread's next turn end.
+            # The thread was closed, replaced or stopped during the read: no wake on
+            # it, and what is pending stays for the thread's next turn end.
             return
         # A rebind notice is offered from inside the thread's own turn, and the
         # turn-end tail schedules app wakes before that turn has released the
@@ -637,12 +771,21 @@ async def _flush(state: Any, key: str) -> None:
                 slot,
                 with_page(
                     report_prompt(
-                        list(reports.values()), slot.agent, manual=manual, worker_spec=worker_spec
+                        list(reports.values()),
+                        slot.agent,
+                        manual=manual,
+                        worker_spec=worker_spec,
+                        sign_ins={
+                            worker: (names, sign_in_where.get(worker, ""))
+                            for worker, names in sign_in_names.items()
+                        },
                     ),
                     page,
                 ),
                 human_seen=False,
             )
+            for names in sign_in_names.values():
+                _sign_in_told(state).setdefault(key, set()).update(names)
             logger.info("worker report woke %s (%d worker(s))", key, len(reports))
             return
         task = getattr(slot, "task", None)
@@ -709,6 +852,12 @@ def _record_report(
         "turns": (prior["turns"] + 1) if prior else 1,
         "unusable": session_unusable(mcp_report),
     }
+    # A server this worker's session reports ready is signed in: a later
+    # sign-in it waits for is news again.
+    ready = (mcp_report or {}).get("ready")
+    told = _sign_in_told(state).get(thread_key)
+    if told and isinstance(ready, list):
+        told.difference_update(name for name in ready if isinstance(name, str))
     schedule_flush(state, thread_key)
 
 

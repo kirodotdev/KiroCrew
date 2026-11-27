@@ -297,6 +297,8 @@ async def _fire_slack_inner_nudge(
                 ),
                 audit_caller="slack_nudge",
             )
+            from kiro_crew.channel_spec_hooks import SessionSpecGate
+
             response = await asyncio.wait_for(
                 stream_and_collect(
                     client,
@@ -315,6 +317,8 @@ async def _fire_slack_inner_nudge(
                     on_complete=_capture_raw_completion,
                     undelivered_watch_key=key,
                     on_event=directive_event_observer(_directives),
+                    # The thread agent's own spec PreToolUse hooks, asked first.
+                    spec_hooks=SessionSpecGate(client, key),
                 ),
                 timeout=_NUDGE_TURN_TIMEOUT,
             )

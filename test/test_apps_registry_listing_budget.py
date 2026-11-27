@@ -25,6 +25,7 @@ from apps_registry_helpers import unsandboxed_spawn  # noqa: F401 - fixture
 from kiro_crew.apps import registry
 from kiro_crew.apps.registry_pipeline import catalog, store_art
 from kiro_crew.testing.wait import await_until, finished
+from kiro_crew.user_json import MAX_DOCUMENT_NESTING
 
 
 def _external_rows(count: int) -> list[dict]:
@@ -576,25 +577,6 @@ def _fails(call, value) -> bool:
     return False
 
 
-def _depth_past_copy_only(row: dict) -> int | None:
-    """A nesting depth that ``copy.deepcopy`` cannot copy but ``json`` encodes.
-
-    ``copy.deepcopy`` spends about two Python frames a level and ``json``'s encoder
-    about one C level, so such a depth exists where the encoder's limit is above
-    half the recursion limit; ``None`` on a platform where it is not.
-    """
-    import copy
-    import json
-    import sys
-
-    limit = sys.getrecursionlimit()
-    for depth in (limit, limit * 2, limit * 4):
-        crafted = _nested_row(row, depth)
-        if _fails(copy.deepcopy, crafted) and not _fails(json.dumps, crafted):
-            return depth
-    return None
-
-
 def _depth_past_json(row: dict) -> int:
     """A nesting depth that ``json`` cannot encode, so the row cannot be keyed."""
     import json
@@ -644,16 +626,21 @@ async def _assert_the_nested_row_fails_alone(monkeypatch, depth: int, *, keyed: 
 
 @pytest.mark.asyncio
 async def test_a_row_nested_past_the_copy_limit_fails_alone(monkeypatch):
-    # An index row may nest a value under a registry key past the recursion limit.
-    # ``json`` encodes it, so the row gets a fetch, but ``copy.deepcopy`` cannot copy
-    # it: that row answers bare and every other row as usual. Where no depth fails
-    # the copy alone, the row is nested past ``json`` instead.
+    # An index row may nest a value under a registry key past the copy limit.
+    # ``json`` encodes it, so the row gets a fetch, but the listing does not copy
+    # it: that row answers bare and every other row as usual.
+    # ``_nested_row(row, n)`` nests the row n + 2 levels deep.
+    depth = MAX_DOCUMENT_NESTING - 1
+    await _assert_the_nested_row_fails_alone(monkeypatch, depth, keyed=True)
+
+
+def test_a_row_nested_to_the_copy_limit_is_copied():
+    # The limit refuses only what lies past it, and the copy owns every level.
     (row,) = _external_rows(1)
-    depth = _depth_past_copy_only(row)
-    if depth is None:
-        await _assert_the_nested_row_fails_alone(monkeypatch, _depth_past_json(row), keyed=False)
-    else:
-        await _assert_the_nested_row_fails_alone(monkeypatch, depth, keyed=True)
+    crafted = _nested_row(row, MAX_DOCUMENT_NESTING - 2)
+    owned = catalog._own_listing_row(crafted)
+    assert owned == crafted
+    assert owned["detectInstalled"] is not crafted["detectInstalled"]
 
 
 @pytest.mark.asyncio

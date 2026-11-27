@@ -45,6 +45,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_COMPACT,
 )
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.session import SessionManager
@@ -355,7 +356,9 @@ class TestMemberBackendsUnchanged:
         rather than streaming a prompt, and the gate must not intercept it."""
         async with _managed(cfg, _provider_factory(unsupported=None)) as mgr:
             provider, _, spy = await _live_session(mgr)
-            monkeypatch.setattr("kiro_crew.session._is_claude_backend", lambda p: True)
+            monkeypatch.setattr(
+                provider, "capabilities", capabilities_for(ACP_BACKEND_CLAUDE), raising=False
+            )
 
             assert await mgr.compact_if_needed(KEY) in ("ok", "reset")
 

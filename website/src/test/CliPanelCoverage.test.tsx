@@ -164,6 +164,14 @@ const registry = vi.hoisted(() => ({
   useTerminalWrongMachine: vi.fn<() => boolean>(),
   useTerminalAtLimit: vi.fn<() => boolean>(),
   retryTerminalConnection: vi.fn<(id: string, manual?: boolean, cwd?: string) => void>(),
+  // What the stand-ins typed into the shell, in order (the real buffer is
+  // terminalKeysDuringLoad.test.tsx's subject).
+  typeIntoTerminal: vi.fn<(id: string, data: string) => void>(),
+  pasteIntoTerminal: vi.fn<(id: string, text: string) => void>(),
+  takesEarlyInput: vi.fn(() => false),
+  useTerminalInputCapped: vi.fn(() => false),
+  dismissTerminalInputCapped: vi.fn(),
+  EARLY_INPUT_CAP: 64 * 1024,
 }))
 registry.useTerminalConnStatus.mockImplementation(() => registry.connStatus.value)
 registry.useTerminalManualRetry.mockImplementation(() => registry.manualRetry.value)
@@ -184,6 +192,8 @@ const touch = vi.hoisted(() => ({ value: false }))
 vi.mock('../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => touch.value }))
 
 import { skipFocusOnNextShow } from '../utils/terminalQuietShow'
+import LazyCliPanel from '../components/LazyCliPanel'
+import { __forgetTerminalModuleForTests } from '../components/terminalSessions'
 import CliPanel, {
   prewarmTerminal,
   __resetTerminalThemeSyncForTests,
@@ -459,7 +469,7 @@ describe('CliPanel mount', () => {
     expect(second.term.focusedAt.at(-1)).toEqual({ left: '18px', top: '36px' })
   })
 
-  it('holds a first-open terminal behind a focused stand-in, then opens xterm and hands focus and typed text over', () => {
+  it('holds a first-open terminal behind a focused stand-in that types each key into the shell, then opens xterm and hands focus over', () => {
     const sessionId = nextId()
     const view = mount({ sessionId, deferOpen: true })
     const { term } = view
@@ -468,14 +478,23 @@ describe('CliPanel mount', () => {
     expect(document.activeElement).toBe(proxy)
     expect(term.openCalls).toBe(0)
     expect(term.focusCalls).toBe(0)
-    // A paste with a newline must not run a command: it is handed over as a paste.
-    fireEvent.change(proxy, { target: { value: 'ls\nrm' } })
+    registry.typeIntoTerminal.mockClear()
+    registry.pasteIntoTerminal.mockClear()
+    fireEvent.input(proxy, { target: { value: 'ls' } })
+    fireEvent.keyDown(proxy, { key: 'Enter' })
+    fireEvent.keyDown(proxy, { key: 'ArrowLeft' })
+    // A paste with a newline must not run a command: it goes as a paste, which
+    // the shell's bracketed paste guards (terminalKeysDuringLoad.test.tsx).
+    fireEvent.input(proxy, { target: { value: 'ls\nrm' }, inputType: 'insertFromPaste' })
+    expect(registry.typeIntoTerminal.mock.calls).toEqual([[sessionId, 'ls'], [sessionId, '\r'], [sessionId, '\x1b[D']])
+    expect(registry.pasteIntoTerminal.mock.calls).toEqual([[sessionId, 'ls\nrm']])
+    expect(proxy.value).toBe(' ') // only the sentinel a soft keyboard's Backspace deletes
 
     view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} />)
     expect(term.openCalls).toBe(1)
     expect(term.focusCalls).toBe(1)
     expect(document.activeElement).toBe(term.textarea)
-    expect(term.pastes).toEqual(['ls\nrm'])
+    expect(term.pastes).toEqual([])
     expect(screen.queryByTestId('terminal-focus-proxy')).toBeNull()
   })
 
@@ -515,6 +534,66 @@ describe('CliPanel mount', () => {
       expect(view.term.focusCalls).toBe(0)
       expect(document.activeElement).toBe(composer)
     } finally { composer.remove() }
+  })
+
+  // The real lazy boundary, not a mock: keys typed while the chunk loads must
+  // reach the shell, and must not land on the control that opened the pane
+  // (a Space there toggled the dock shut again).
+  it('keeps what is typed while the terminal chunk loads and hands it to the shell', async () => {
+    __forgetTerminalModuleForTests()
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    try {
+      opener.focus()
+      const sessionId = nextId()
+      live.add(sessionId)
+      renderWithProviders(<LazyCliPanel sessionId={sessionId} visible />)
+      const standIn = screen.getByTestId('terminal-loading-focus-proxy')
+      expect(document.activeElement).toBe(standIn)
+      registry.typeIntoTerminal.mockClear()
+      fireEvent.input(standIn, { target: { value: 'echo hi' } })
+      expect(registry.typeIntoTerminal.mock.calls).toEqual([[sessionId, 'echo hi']])
+      // Waits on LazyCliPanel's `import('./CliPanel')`; 1000 ms races a loaded shard.
+      await waitFor(() => expect(screen.queryByTestId('terminal-loading-focus-proxy')).toBeNull(), { timeout: 5000 })
+      const term = xt.FakeTerminal.instances[xt.FakeTerminal.instances.length - 1]
+      await waitFor(() => expect(document.activeElement).toBe(term.textarea), { timeout: 5000 })
+      expect(term.pastes).toEqual([])
+    } finally { opener.remove() }
+  })
+
+  // LazyCliPanel passes `focusBeforeLoad` when the pane waited for this chunk.
+  it('does not take the focus from a field the user moved to while the chunk loaded', () => {
+    const row = document.createElement('button')
+    const composer = document.createElement('textarea')
+    document.body.append(row, composer)
+    try {
+      row.focus()
+      const before = document.activeElement
+      composer.focus()
+      const sessionId = nextId()
+      live.add(sessionId)
+      const view = renderWithProviders(<CliPanel sessionId={sessionId} visible focusBeforeLoad={before} />)
+      const term = xt.FakeTerminal.instances[xt.FakeTerminal.instances.length - 1]
+      expect(term.focusCalls).toBe(0)
+      expect(document.activeElement).toBe(composer)
+      // The next show is an ordinary one and takes the focus.
+      view.rerender(<CliPanel sessionId={sessionId} visible={false} focusBeforeLoad={before} />)
+      view.rerender(<CliPanel sessionId={sessionId} visible focusBeforeLoad={before} />)
+      expect(term.focusCalls).toBe(1)
+    } finally { row.remove(); composer.remove() }
+  })
+
+  it('takes the focus after the chunk loaded when the user stayed where they asked for it', () => {
+    const row = document.createElement('button')
+    document.body.append(row)
+    try {
+      row.focus()
+      const sessionId = nextId()
+      live.add(sessionId)
+      renderWithProviders(<CliPanel sessionId={sessionId} visible focusBeforeLoad={row} />)
+      const term = xt.FakeTerminal.instances[xt.FakeTerminal.instances.length - 1]
+      expect(term.focusCalls).toBe(1)
+    } finally { row.remove() }
   })
 
   it('focuses a tab that was held while hidden when the user switches to it', () => {

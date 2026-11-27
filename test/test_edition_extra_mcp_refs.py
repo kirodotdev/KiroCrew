@@ -5,8 +5,10 @@ first install (its program is installed later, or a newer edition adds one). The
 rebuild seeds the entry into ``mcpServers``; these tests pin that its ``@name``
 ref follows once, and that a ref the user then removes stays removed. The last tests
 pin that a same-named Kiro-global or store entry cannot replace or drop the
-edition's args/env, that a spec that already lost the env gets it back, and that
-the store's env reaches the specs derived from the template too.
+edition's args/env, that a spec that already lost the env gets it back, that
+the store's env reaches the specs derived from the template too, that a
+same-named entry naming another server is recorded as not used, and that the
+placeholder the MCP page writes for the server never grants it in ``allowedTools``.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from typing import Any
 import pytest
 
 import kiro_crew.config.paths as paths_mod
-from kiro_crew import agent
+from kiro_crew import agent, mcp_dropped_servers
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
     MATE_WORKER_AGENT_FILENAME,
@@ -26,7 +28,9 @@ from kiro_crew.agent_files import (
     TEAM_LEAD_AGENT_FILENAME,
 )
 from kiro_crew.agent_materialization import guide_platform, mcp_aliases
+from kiro_crew.dashboard.side_readonly_spec import _home_relative
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
+from kiro_crew.mcp_utils import mcp_server_alias
 
 EXTRA = "edition-late"
 EXTRA_REF = f"@{EXTRA}"
@@ -399,3 +403,268 @@ def test_a_store_entry_does_not_replace_an_edition_servers_invocation(
         assert spec["args"] == _EDITION_ARGS
         # Only the invocation is the edition's: the store's other keys still land.
         assert spec["timeout"] == 7000
+
+
+def _own_program(tmp_path: Path) -> str:
+    """A runnable program of the user's, other than the edition's."""
+    own = tmp_path / "own-bin" / "own-edition-late"
+    own.parent.mkdir(exist_ok=True)
+    own.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    own.chmod(0o755)
+    return str(own)
+
+
+def _write_servers(path: Path, servers: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+
+
+def test_an_own_entry_naming_another_program_is_recorded_as_unused(
+    rebuildable: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    edition = {"command": agent._KIROCREW_BIN, "args": _EDITION_ARGS}
+    _supply(monkeypatch, {EXTRA: edition})
+    own = _own_program(tmp_path)
+    kiro_global = tmp_path / "kiro-global-mcp.json"
+    _write_servers(kiro_global, {EXTRA: {"command": own, "args": ["--all-tools"]}})
+
+    agent.rebuild_agent_config()
+    entry = _spec(rebuildable)["mcpServers"][EXTRA]
+    # The precedence is unchanged: the edition's invocation runs.
+    assert entry["command"] == agent._KIROCREW_BIN
+    assert entry["args"] == _EDITION_ARGS
+    assert mcp_dropped_servers.load_unused_own() == {
+        EXTRA: {"file": _home_relative(kiro_global), "command": own}
+    }
+
+    # Renamed, it runs beside the edition's server and the record clears.
+    _write_servers(kiro_global, {"own-late": {"command": own}})
+    agent.rebuild_agent_config()
+    assert _spec(rebuildable)["mcpServers"]["own-late"]["command"] == own
+    assert mcp_dropped_servers.load_unused_own() == {}
+
+
+def test_an_own_entry_under_a_slash_name_is_read_at_its_mount(
+    rebuildable: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``/`` name runs under its alias, so the comparison reads the entry there."""
+    name = "ns/edition-late"
+    _supply(monkeypatch, {name: {"command": agent._KIROCREW_BIN, "args": _EDITION_ARGS}})
+    own = _own_program(tmp_path)
+    kiro_global = tmp_path / "kiro-global-mcp.json"
+    _write_servers(kiro_global, {name: {"command": own}})
+
+    agent.rebuild_agent_config()
+    servers = _spec(rebuildable)["mcpServers"]
+    assert name not in servers
+    assert servers[mcp_server_alias(name)]["command"] == agent._KIROCREW_BIN
+    assert mcp_dropped_servers.load_unused_own() == {
+        name: {"file": _home_relative(kiro_global), "command": own}
+    }
+
+
+def test_the_store_entry_is_the_one_named_when_both_files_declare_the_name(
+    rebuildable: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _supply(monkeypatch, {EXTRA: {"command": agent._KIROCREW_BIN, "args": _EDITION_ARGS}})
+    _write_servers(tmp_path / "kiro-global-mcp.json", {EXTRA: {"command": "global-program"}})
+    store = agent._user_dir() / "mcp.json"
+    _write_servers(store, {EXTRA: {"url": "https://mcp.example.test/mcp"}})
+
+    agent.rebuild_agent_config()
+    assert mcp_dropped_servers.load_unused_own() == {
+        # A URL is stored cut to its scheme and host: any other part can carry a token.
+        EXTRA: {"file": _home_relative(store), "command": "https://mcp.example.test"}
+    }
+
+
+@pytest.mark.parametrize("source", ["kiro-global-url", "provider-global-command"])
+def test_an_own_entry_in_either_global_is_recorded_with_its_file(
+    rebuildable: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    _supply(monkeypatch, {EXTRA: {"command": agent._KIROCREW_BIN, "args": _EDITION_ARGS}})
+    if source == "kiro-global-url":
+        file, declared = tmp_path / "kiro-global-mcp.json", "https://mcp.example.test/mcp"
+        _write_servers(file, {EXTRA: {"url": declared}})
+    else:
+        file, declared = tmp_path / "provider-global.json", _own_program(tmp_path)
+        _write_servers(file, {EXTRA: {"command": declared}})
+        monkeypatch.setattr(agent, "_extra_mcp_scope_globals", lambda: [file])
+
+    agent.rebuild_agent_config()
+    entry = _spec(rebuildable)["mcpServers"][EXTRA]
+    assert entry["command"] == agent._KIROCREW_BIN
+    assert "url" not in entry
+    shown = "https://mcp.example.test" if source == "kiro-global-url" else declared
+    assert mcp_dropped_servers.load_unused_own() == {
+        EXTRA: {"file": _home_relative(file), "command": shown}
+    }
+
+
+@pytest.mark.parametrize(
+    "own_entry",
+    [
+        pytest.param({"args": ["--include-tools", "OnlyRead"]}, id="same-program-other-args"),
+        pytest.param({"disabledTools": ["write"]}, id="no-declaration"),
+    ],
+)
+def test_an_own_entry_for_the_same_server_is_not_recorded(
+    rebuildable: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, own_entry: dict
+) -> None:
+    _supply(monkeypatch, {EXTRA: {"command": agent._KIROCREW_BIN, "args": _EDITION_ARGS}})
+    declared = {"command": "kirocrew", **own_entry} if "args" in own_entry else own_entry
+    _write_servers(tmp_path / "kiro-global-mcp.json", {EXTRA: declared})
+
+    agent.rebuild_agent_config()
+    assert mcp_dropped_servers.load_unused_own() == {}
+
+
+def test_an_own_entry_the_rebuild_falls_back_to_is_not_recorded(
+    rebuildable: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The edition's program is not on this host, so resolution runs the user's.
+    missing = str(tmp_path / "absent" / "edition-late")
+    _supply(monkeypatch, {EXTRA: {"command": missing, "args": _EDITION_ARGS}})
+    own = _own_program(tmp_path)
+    _write_servers(tmp_path / "kiro-global-mcp.json", {EXTRA: {"command": own}})
+
+    agent.rebuild_agent_config()
+    assert _spec(rebuildable)["mcpServers"][EXTRA]["command"] == own
+    assert mcp_dropped_servers.load_unused_own() == {}
+
+
+@pytest.mark.parametrize(
+    ("entry", "launches", "installs"),
+    [
+        pytest.param({"command": "x"}, True, True, id="command"),
+        pytest.param({"url": "https://x.test/mcp"}, True, True, id="url"),
+        # The admin's catalog launches it: an install, with no launch of its own.
+        pytest.param({"type": "registry"}, False, True, id="registry-pointer"),
+        pytest.param({}, False, False, id="empty"),
+        pytest.param({"disabledTools": ["x"]}, False, False, id="tool-off"),
+        pytest.param({"disabled": True}, False, False, id="muted"),
+        pytest.param({"command": ""}, False, False, id="blank-command"),
+        pytest.param("x", False, False, id="not-a-mapping"),
+    ],
+)
+def test_only_an_entry_that_launches_or_points_at_the_catalog_installs_a_server(
+    entry: Any, launches: bool, installs: bool
+) -> None:
+    from kiro_crew.mcp_cleanup import mcp_entry_installs_server, mcp_entry_names_launch
+
+    assert mcp_entry_names_launch(entry) is launches
+    assert mcp_entry_installs_server(entry) is installs
+
+
+def _write_global(tmp_path: Path, servers: dict[str, Any]) -> None:
+    (tmp_path / "kiro-global-mcp.json").write_text(
+        json.dumps({"mcpServers": servers}), encoding="utf-8"
+    )
+
+
+def _edition_grants(agents_dir: Path) -> list[str]:
+    """The default spec's ``allowedTools`` entries naming the edition server."""
+    return [
+        ref
+        for ref in _spec(agents_dir)["allowedTools"]
+        if ref == EXTRA_REF or str(ref).startswith(f"{EXTRA_REF}/")
+    ]
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        pytest.param({"disabledTools": ["write_note"]}, id="one-tool-off"),
+        pytest.param({}, id="empty"),
+    ],
+)
+def test_a_page_placeholder_never_grants_the_edition_server(
+    rebuildable: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, placeholder: dict
+) -> None:
+    """Turning one tool off on the MCP page writes a placeholder to the Kiro global.
+
+    It names no launch, so it is not the user installing the server: the server
+    stays mounted, and no tool of it is auto-approved by that entry.
+    """
+    _supply(monkeypatch, {EXTRA: _extra_spec()})
+    agent.rebuild_agent_config()
+    _write_global(tmp_path, {EXTRA: placeholder})
+
+    for _ in range(2):
+        agent.rebuild_agent_config()
+        assert EXTRA_REF in _spec(rebuildable)["tools"]
+        assert _edition_grants(rebuildable) == []
+
+
+def test_a_grant_the_spec_holds_beside_a_placeholder_stays_and_a_removed_one_stays_gone(
+    rebuildable: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A grant in ``allowedTools`` is the user's (or another tool's), whoever wrote it.
+
+    The rebuild cannot tell it from one it added, so it keeps it in both
+    spellings; once the user deletes it, no rebuild writes it back.
+    """
+    _supply(monkeypatch, {EXTRA: _extra_spec()})
+    _write_global(tmp_path, {EXTRA: {"disabledTools": ["write_note"]}})
+    agent.rebuild_agent_config()
+    spec = _spec(rebuildable)
+    spec["allowedTools"] += [EXTRA_REF, f"{EXTRA_REF}/read_note"]
+    (rebuildable / AGENT_FILENAME).write_text(json.dumps(spec), encoding="utf-8")
+
+    agent.rebuild_agent_config()
+    assert _edition_grants(rebuildable) == [EXTRA_REF, f"{EXTRA_REF}/read_note"]
+
+    spec = _spec(rebuildable)
+    spec["allowedTools"].remove(EXTRA_REF)
+    (rebuildable / AGENT_FILENAME).write_text(json.dumps(spec), encoding="utf-8")
+    agent.rebuild_agent_config()
+    assert EXTRA_REF in _spec(rebuildable)["tools"]
+    assert _edition_grants(rebuildable) == [f"{EXTRA_REF}/read_note"]
+
+
+def test_a_real_kiro_global_entry_keeps_the_whole_server_grant(
+    rebuildable: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An entry that launches the server is the user installing it, so it is granted."""
+    _supply(monkeypatch, {EXTRA: _extra_spec()})
+    _write_global(
+        tmp_path, {EXTRA: {"command": agent._KIROCREW_BIN, "disabledTools": ["write_note"]}}
+    )
+
+    agent.rebuild_agent_config()
+    spec = _spec(rebuildable)
+    assert _edition_grants(rebuildable) == [EXTRA_REF]
+    assert spec["mcpServers"][EXTRA]["disabledTools"] == ["write_note"]
+
+
+def test_a_placeholder_beside_an_installing_store_entry_keeps_its_grant(
+    rebuildable: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A server the store installs keeps its grant when the Kiro global holds a placeholder."""
+    _supply(monkeypatch, {})
+    _write_global(tmp_path, {"own-notes": {"disabledTools": ["write_note"]}})
+    store = agent._user_dir() / "mcp.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(
+        json.dumps({"mcpServers": {"own-notes": {"command": agent._KIROCREW_BIN}}}),
+        encoding="utf-8",
+    )
+
+    for _ in range(2):
+        agent.rebuild_agent_config()
+        spec = _spec(rebuildable)
+        assert "@own-notes" in spec["tools"]
+        assert "@own-notes" in spec["allowedTools"]
+
+
+def test_a_registry_pointer_keeps_the_whole_server_grant(
+    rebuildable: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A registry pointer is the user installing the server from the admin's catalog."""
+    _supply(monkeypatch, {})
+    _write_global(tmp_path, {"catalog-notes": {"type": "registry"}})
+
+    agent.rebuild_agent_config()
+    spec = _spec(rebuildable)
+    assert "@catalog-notes" in spec["tools"]
+    assert "@catalog-notes" in spec["allowedTools"]

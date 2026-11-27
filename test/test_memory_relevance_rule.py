@@ -1,12 +1,11 @@
 """``memory.relevance_rule``: one relevance matcher for findings, task facts and activity.
 
-Pinned: ``off`` renders today's blocks byte for byte and records no stage field;
-``shadow`` renders the same blocks and records which ids the shared rule would
-add or drop; ``enforce`` stops a short word (``a``, ``hi``) from admitting a
-finding, a fact or an activity section, keeps a CJK pair match, on the default
-and the private store alike; a fact with no comparable vector is judged on its
-lexical evidence alone; an unknown value reads as ``off``; and the receipt merges
-the blocks' records without one block erasing another's.
+Pinned: ``enforce`` (the default) stops a short word (``a``, ``hi``) from
+admitting a finding, a fact or an activity section and keeps a CJK pair match,
+on the default and the private store alike; ``off`` renders the old blocks; a
+fact with no comparable vector is judged on its lexical evidence alone; an
+unknown value, a stored ``shadow`` included, reads as ``enforce``; and no mode
+writes a receipt field.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ from kiro_crew.memory import MemoryStore
 from kiro_crew.recall_pool import lessons_args
 from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
-STAGE = injection_receipts.RELEVANCE_RULE
+STAGE = "relevance_rule"
 
 
 @pytest.fixture(params=["default", "private"])
@@ -61,26 +60,11 @@ def _seed_findings(store) -> None:
 
 
 class TestFindings:
-    def test_off_is_todays_block_and_records_no_stage(self, store):
-        _seed_findings(store)
-        default, default_receipts = _findings(store, "a", None)
-        off, off_receipts = _findings(store, "a", "off")
-        assert off == default
-        assert "quokka" in off, "today's gate admits the tier on the word 'a'"
-        assert STAGE not in off_receipts and off_receipts == default_receipts
-
-    def test_shadow_keeps_the_block_and_records_the_old_only_rows(self, store):
+    def test_off_admits_on_a_short_word_and_records_no_stage(self, store):
         _seed_findings(store)
         off, off_receipts = _findings(store, "a", "off")
-        shadow, receipts = _findings(store, "a", "shadow")
-        assert shadow == off
-        assert receipts[injection_receipts.FINDINGS] == off_receipts[injection_receipts.FINDINGS]
-        stage = receipts[STAGE]
-        assert stage["mode"] == "shadow"
-        assert stage["policy"] == memory_relevance_rule.POLICY_VERSION
-        assert stage["would_add"] == []
-        assert set(stage["would_drop"]) == set(off_receipts[injection_receipts.FINDINGS]["ids"])
-        assert stage["would_drop"] and all(k.startswith("lesson.") for k in stage["would_drop"])
+        assert "quokka" in off, "the old gate admits the tier on the word 'a'"
+        assert STAGE not in off_receipts
 
     @pytest.mark.parametrize("query", ["a", "hi", "hi a"])
     def test_enforce_withholds_on_a_short_word(self, store, query):
@@ -88,7 +72,7 @@ class TestFindings:
         out, receipts = _findings(store, query, "enforce")
         assert "quokka" not in out
         assert "[Withheld all 2 past findings" in out
-        assert receipts[STAGE]["mode"] == "enforce"
+        assert STAGE not in receipts
 
     def test_enforce_keeps_a_long_word_and_a_cjk_pair(self, store):
         _seed_findings(store)
@@ -105,11 +89,6 @@ class TestFindings:
         off, _ = _findings(store, query, "off")
         out, _ = _findings(store, query, "enforce")
         assert lesson in off and lesson in out
-
-    def test_shadow_records_nothing_when_both_rules_agree(self, store):
-        _seed_findings(store)
-        _, receipts = _findings(store, "quokka", "shadow")
-        assert receipts[STAGE]["would_drop"] == []
 
     def test_enforce_never_withholds_what_the_old_test_admits_on_a_long_word(self, store):
         assert store.write_lesson("api_timeout retries need bounded polling", applies="on_topic")
@@ -134,18 +113,16 @@ def _seed_facts(store) -> None:
 
 
 class TestFacts:
-    def test_off_is_todays_block_and_records_no_stage(self, store):
+    def test_off_records_no_stage(self, store):
         _seed_facts(store)
-        default, default_receipts = _facts(store, "hi a quokka", None)
-        off, off_receipts = _facts(store, "hi a quokka", "off")
-        assert off == default
-        assert STAGE not in off_receipts and STAGE not in default_receipts
+        _, off_receipts = _facts(store, "hi a quokka", "off")
+        assert STAGE not in off_receipts
 
     def test_enforce_drops_a_short_word_match_and_keeps_real_ones(self, store):
         _seed_facts(store)
         out, receipts = _facts(store, "a", "enforce")
         assert "quokka" not in out
-        assert receipts[STAGE]["mode"] == "enforce"
+        assert STAGE not in receipts
         assert "quokka" in _facts(store, "quokka east", "enforce")[0]
         cjk_off = _facts(store, "检查磁盘", "off")[0]
         cjk_enforce = _facts(store, "检查磁盘", "enforce")[0]
@@ -156,17 +133,14 @@ class TestFacts:
             # gate, which only filters its candidates, keeps what it had.
             assert cjk_enforce == cjk_off
 
-    def test_shadow_keeps_the_block_and_records_what_would_change(self, tmp_path):
-        # The default store admits any shared word, so "a" reaches the block today.
+    def test_off_lets_a_short_word_in_on_the_default_store(self, tmp_path):
+        # The default store's old gate admits any shared word, so "a" reaches the block.
         store = VectorMemoryStore(db_path=tmp_path / "memory.db")
         store.init()
         try:
             _seed_facts(store)
-            off, _ = _facts(store, "a", "off")
-            shadow, receipts = _facts(store, "a", "shadow")
-            assert shadow == off and "quokka" in off
-            assert receipts[STAGE]["would_drop"] == ["project.east.wing"]
-            assert receipts[STAGE]["would_add"] == []
+            assert "quokka" in _facts(store, "a", "off")[0]
+            assert "quokka" not in _facts(store, "a", "enforce")[0]
         finally:
             store.close()
 
@@ -217,24 +191,15 @@ def activity_store(tmp_path):
 
 
 class TestActivity:
-    def test_off_is_todays_block_and_records_no_stage(self, activity_store):
-        default, default_receipts = _activity(activity_store, "hi", None)
+    def test_off_keeps_every_section_and_records_no_stage(self, activity_store):
         off, off_receipts = _activity(activity_store, "hi", "off")
-        assert off == default and "east wing move" in off
-        assert STAGE not in off_receipts and STAGE not in default_receipts
-
-    def test_shadow_keeps_the_block_and_records_section_ids(self, activity_store):
-        off, _ = _activity(activity_store, "hi", "off")
-        shadow, receipts = _activity(activity_store, "hi", "shadow")
-        assert shadow == off
-        dropped = receipts[STAGE]["would_drop"]
-        assert dropped and all(i.split(":")[0] in {"projects", "history"} for i in dropped)
-        # Ids only, never the section text.
-        assert not any("quokka" in i for i in dropped)
+        assert "east wing move" in off
+        assert STAGE not in off_receipts
 
     def test_enforce_drops_every_section_for_a_greeting(self, activity_store):
-        out, _ = _activity(activity_store, "hi", "enforce")
+        out, receipts = _activity(activity_store, "hi", "enforce")
         assert "## Active Projects" not in out and "## Recent History" not in out
+        assert STAGE not in receipts
 
     def test_enforce_keeps_the_matching_section_and_its_heading(self, activity_store):
         out, _ = _activity(activity_store, "quokka", "enforce")
@@ -306,192 +271,90 @@ class TestGateDocument:
     def test_sections_join_back_and_a_parent_follows_its_children(self):
         text = "# Day\n\n#### 10:00\nquokka\n\n#### 11:00\nother\n"
         tokens = memory_relevance_rule.request_tokens("quokka")
-        kept, add, drop = memory_relevance_rule.gate_document("history", text, tokens, 10_000)
+        kept = memory_relevance_rule.gate_document(text, tokens)
         assert kept == "# Day\n\n#### 10:00\nquokka\n\n"
-        assert add == [] and len(drop) == 1
         everything = memory_relevance_rule.request_tokens("quokka other")
-        assert memory_relevance_rule.gate_document("history", text, everything, 10_000)[0] == text
-
-    def test_a_dropped_section_lets_a_later_one_into_the_cap(self):
-        text = "## A\n" + "x" * 50 + "\n## B\nquokka\n"
-        tokens = memory_relevance_rule.request_tokens("quokka")
-        _, add, drop = memory_relevance_rule.gate_document("projects", text, tokens, 20)
-        assert len(add) == 1 and len(drop) == 1
+        assert memory_relevance_rule.gate_document(text, everything) == text
 
 
-class TestReceipt:
-    def test_parts_merge_and_a_rerender_replaces_only_its_part(self):
-        with injection_receipts.collect() as sink:
-            for part, ids in (("facts", ["f1"]), ("findings", ["l1", "l2"]), ("findings", ["l1"])):
-                injection_receipts.record_stage(
-                    STAGE, mode="shadow", policy=1, would_drop=ids, part=part
-                )
-        line = injection_receipts.build_line(
-            {**sink, injection_receipts.LESSONS: {"ids": [], "omitted": 0}},
-            session_key="dashboard:x",
-            turn_index=0,
-            user_msg_id="",
-            model="",
-            agent="",
-            phase="",
-            store="",
-        )
-        assert line is not None
-        assert line[STAGE] == {
-            "mode": "shadow",
-            "policy": 1,
-            "would_add": [],
-            "would_drop": ["f1", "l1"],
-        }
+class TestAStoredShadowReadsAsEnforce:
+    """A ``shadow`` left in a config renders the default ``enforce`` blocks."""
 
-    def test_a_stage_record_alone_still_writes_a_line(self):
-        # Lessons switched off: the activity block's shadow ids must not be lost.
-        with injection_receipts.collect() as sink:
-            injection_receipts.record_stage(
-                STAGE, mode="shadow", policy=1, would_drop=["projects:abc"], part="activity"
-            )
-        line = injection_receipts.build_line(
-            sink,
-            session_key="dashboard:x",
-            turn_index=0,
-            user_msg_id="",
-            model="",
-            agent="",
-            phase="",
-            store="",
-        )
-        assert line is not None and line[STAGE]["would_drop"] == ["projects:abc"]
-        assert (
-            injection_receipts.build_line(
-                {},
-                session_key="dashboard:x",
-                turn_index=0,
-                user_msg_id="",
-                model="",
-                agent="",
-                phase="",
-                store="",
-            )
-            is None
-        )
-
-    def test_replay_merges_into_parts_already_recorded(self):
-        with injection_receipts.collect() as child:
-            injection_receipts.record_stage(
-                STAGE, mode="shadow", policy=1, would_drop=["l1"], part="findings"
-            )
-        with injection_receipts.collect() as sink:
-            injection_receipts.record_stage(
-                STAGE, mode="shadow", policy=1, would_drop=["f1"], part="facts"
-            )
-            injection_receipts.replay(child)
-        assert sink[STAGE]["would_drop"] == ["f1", "l1"]
-
-
-class TestShadowIsOffByteForByte:
-    """Shadow may only add receipt fields: every block it renders is off's, exactly."""
-
-    QUERIES = [
-        "",
-        "hi",
-        "a",
-        "hi a quokka",
-        "quokka east wing",
-        "检查磁盘",
-        "api_timeout",
-        "山﨑",
-        "설정 해줘",
-    ]
+    QUERIES = ["", "hi", "a", "hi a quokka", "quokka east wing", "检查磁盘", "山﨑", "설정 해줘"]
 
     @pytest.mark.parametrize("query", QUERIES)
     def test_findings_and_rules(self, store, query):
         _seed_findings(store)
         assert store.write_lesson("always keep the quokka fed", applies="always")
-        assert _findings(store, query, "shadow")[0] == _findings(store, query, "off")[0]
+        assert _findings(store, query, "shadow")[0] == _findings(store, query, "enforce")[0]
 
     @pytest.mark.parametrize("query", QUERIES)
     def test_task_facts(self, store, query):
         _seed_facts(store)
-        assert _facts(store, query, "shadow")[0] == _facts(store, query, "off")[0]
+        assert _facts(store, query, "shadow")[0] == _facts(store, query, "enforce")[0]
 
     @pytest.mark.parametrize("query", QUERIES)
     def test_activity(self, activity_store, query):
         assert (
             _activity(activity_store, query, "shadow")[0]
-            == _activity(activity_store, query, "off")[0]
+            == _activity(activity_store, query, "enforce")[0]
         )
 
-    @pytest.mark.parametrize("query", QUERIES)
-    def test_the_whole_session_start_read(self, activity_store, query, monkeypatch):
+
+class TestTheSessionStartRead:
+    @pytest.mark.parametrize("mode", ["off", "enforce"])
+    def test_no_mode_records_a_stage_field(self, activity_store, monkeypatch, mode):
+        from kiro_crew import context as ctx
+        from kiro_crew.context_assembly import store_admission
+
+        monkeypatch.setattr(memory_relevance_rule, "configured_mode", lambda: mode)
+        reads = store_admission.read_session_memory(
+            activity_store, ctx._resolve_caps(None), "hi", inject_activity=True
+        )
+        assert STAGE not in reads.receipts
+
+    def test_enforce_gates_the_whole_session_start_read(self, activity_store, monkeypatch):
         from kiro_crew import context as ctx
         from kiro_crew.context_assembly import store_admission
 
         caps = ctx._resolve_caps(None)
         reads = {}
-        for mode in ("off", "shadow"):
+        for mode in ("off", "enforce"):
             monkeypatch.setattr(memory_relevance_rule, "configured_mode", lambda m=mode: m)
             reads[mode] = store_admission.read_session_memory(
-                activity_store, caps, query, inject_activity=True
+                activity_store, caps, "hi", inject_activity=True
             )
-        off, shadow = reads["off"], reads["shadow"]
-        assert (shadow.memory_ctx, shadow.activity, shadow.activity_ctx) == (
-            off.memory_ctx,
-            off.activity,
-            off.activity_ctx,
-        )
-        assert shadow.omissions == off.omissions
-        # Only the receipt differs, and only by the stage field.
-        assert STAGE not in off.receipts
-        assert {k: v for k, v in shadow.receipts.items() if k != STAGE} == off.receipts
-
-
-class TestTheSessionStartRead:
-    def test_the_read_returns_its_stage_record_for_the_build_to_replay(
-        self, activity_store, monkeypatch
-    ):
-        # A prefetch runs this read on another thread, outside the build's
-        # collection, so the record must travel with the result.
-        from kiro_crew import context as ctx
-        from kiro_crew.context_assembly import store_admission
-
-        monkeypatch.setattr(memory_relevance_rule, "configured_mode", lambda: "shadow")
-        reads = store_admission.read_session_memory(
-            activity_store, ctx._resolve_caps(None), "hi", inject_activity=True
-        )
-        assert reads.receipts[STAGE]["mode"] == "shadow"
-        assert reads.receipts[STAGE]["would_drop"]
-        with injection_receipts.collect() as sink:
-            injection_receipts.replay(reads.receipts)
-        assert sink[STAGE]["would_drop"] == reads.receipts[STAGE]["would_drop"]
-
-    def test_off_reads_record_nothing(self, activity_store, monkeypatch):
-        from kiro_crew import context as ctx
-        from kiro_crew.context_assembly import store_admission
-
-        monkeypatch.setattr(memory_relevance_rule, "configured_mode", lambda: "off")
-        reads = store_admission.read_session_memory(
-            activity_store, ctx._resolve_caps(None), "hi", inject_activity=True
-        )
-        assert STAGE not in reads.receipts
+        assert "east wing move" in reads["off"].activity_ctx
+        assert "east wing move" not in reads["enforce"].activity_ctx
 
     def test_a_mode_flip_invalidates_a_prefetched_read(self, activity_store, monkeypatch):
         from kiro_crew import context as ctx
         from kiro_crew.context_assembly import store_admission
 
         caps = ctx._resolve_caps(None)
-        monkeypatch.setattr(memory_relevance_rule, "configured_mode", lambda: "shadow")
+        monkeypatch.setattr(memory_relevance_rule, "configured_mode", lambda: "off")
         before = store_admission._memory_read_inputs(activity_store, caps, "hi", True)
         monkeypatch.setattr(memory_relevance_rule, "configured_mode", lambda: "enforce")
         assert store_admission._memory_read_inputs(activity_store, caps, "hi", True) != before
 
 
 class TestTheFlag:
-    def test_default_is_off_and_unknown_reads_as_off(self):
-        assert MemoryConfig().relevance_rule == "off"
-        assert relevance_rule_mode_from("ENFORCE") == "off"
-        assert relevance_rule_mode_from(None) == "off"
-        assert _build_memory_config({"relevance_rule": "bogus"}).relevance_rule == "off"
-        assert _build_memory_config({"relevance_rule": "shadow"}).relevance_rule == "shadow"
+    def test_default_is_enforce_and_unknown_reads_as_enforce(self):
+        assert MemoryConfig().relevance_rule == "enforce"
+        assert relevance_rule_mode_from("ENFORCE") == "enforce"
+        assert relevance_rule_mode_from(None) == "enforce"
+        assert relevance_rule_mode_from("off") == "off"
+        assert _build_memory_config({"relevance_rule": "bogus"}).relevance_rule == "enforce"
+        assert _build_memory_config({"relevance_rule": "off"}).relevance_rule == "off"
+
+    def test_a_stored_shadow_reads_as_the_default_enforce(self):
+        assert relevance_rule_mode_from("shadow") == "enforce"
+        assert _build_memory_config({"relevance_rule": "shadow"}).relevance_rule == "enforce"
+
+    def test_the_receipts_carry_no_relevance_stage(self):
+        assert STAGE not in injection_receipts.STAGE_KINDS
+        with pytest.raises(ValueError):
+            injection_receipts.record_stage(STAGE, mode="enforce", policy=1)
 
     def test_the_recall_child_gets_the_mode(self, tmp_path):
         store = VectorMemoryStore(db_path=tmp_path / "memory.db")

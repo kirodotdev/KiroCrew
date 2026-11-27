@@ -89,7 +89,8 @@ name: Sign and Notarize macOS (reusable)
 #     auto-update to a build Gatekeeper blocks.
 #
 # Split calls (`stage`). A caller that gates PUBLICATION on jobs of its own
-# (nightly.yml holds every publish behind platform-tests) cannot add a
+# (nightly.yml holds every publish behind platform-tests, release-lts.yml
+# behind release-candidate-tests) cannot add a
 # `needs:` to a job inside this workflow, so a single call would hold
 # signing and notarization behind that gate too. On the nightly that put
 # about 80 minutes of signing + Apple notarization after the macOS test
@@ -101,8 +102,8 @@ name: Sign and Notarize macOS (reusable)
 # fail-closed property above holds across the split: a notarize job that
 # failed its gate attached nothing, so the publish half fails at its
 # download, and the caller's publish call also `needs:` its prepare call
-# so it never starts after a red one. Empty `stage` is the single call release.yml and
-# release-lts.yml make, byte-for-byte the chain it was.
+# so it never starts after a red one. Empty `stage` is the single call
+# release.yml makes, byte-for-byte the chain it was.
 
 on:
   workflow_call:

@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_RUNTIME_CEILING_SECS = 604_800
 MAX_RUNTIME_CEILING_SECS = 2_592_000
+MAX_BUDGET_NOTICE_PCT = 99
 
 _DURATION_UNITS: tuple[tuple[int, str], ...] = (
     (86_400, "day"),
@@ -63,6 +64,35 @@ def runtime_ceiling_secs() -> int:
     if config is None:
         config = KiroCrewConfig.load()
     return coerce_runtime_ceiling(getattr(config.monitoring, "max_runtime_secs", None))
+
+
+def coerce_budget_notice_pct(value: object) -> int:
+    """Read ``monitoring.budget_notice_pct``: a whole number from 1 to 99, else off.
+
+    Zero is off. A value this read cannot honour (a string, a bool, a number out of
+    range) also reads as off, silently: the setting only adds a line to a wake, so
+    the safe reading of a bad value is the envelope main already sends.
+    """
+    if type(value) is int and 1 <= value <= MAX_BUDGET_NOTICE_PCT:
+        return value
+    return 0
+
+
+def budget_notice_pct() -> int:
+    """The live share of a watch's budget at which a wake names it; 0 is off.
+
+    Reads the applied config snapshot only. A wake is built on the event loop, so
+    this never loads the config file: with no snapshot (a process whose gateway has
+    not started) the notice is off.
+    """
+    # Local to avoid a cycle: config.service_sections and config.section_builders
+    # import this module.
+    from kiro_crew.config.live import snapshot
+
+    config = snapshot()
+    if config is None:
+        return 0
+    return coerce_budget_notice_pct(getattr(config.monitoring, "budget_notice_pct", None))
 
 
 def validate_runtime_secs(value: object, *, allow_unbounded: bool = False) -> int:

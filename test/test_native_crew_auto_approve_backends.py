@@ -1,11 +1,11 @@
 """The native-crew auto-approve rung runs only on backends that keep a child's requests apart.
 
 ``dashboard.chat_turn.tool_approval`` approves a request with no card while a native
-sub-agent's card is open and ``hooks.auto_approve_subagent_tools`` is on. It does not
-ask which session sent the request, so it is only right where every request raised
-while the card is open is the sub-agent's: kiro-cli and KAS
+sub-agent's card is open and ``hooks.auto_approve_subagent_tools`` is on, only for a
+request the transport marks as the sub-agent's, and only on kiro-cli and KAS
 (``SessionCapabilities.permission_requests_name_child``). On any other backend, a
-backend this build does not know included, the parent's own call keeps its card.
+backend this build does not know included, and on kiro-cli and KAS too, the parent's
+own call keeps its card.
 """
 
 from __future__ import annotations
@@ -48,6 +48,24 @@ NOT_TAGGED = (
 )
 TAGGED = (ACP_BACKEND_KIRO, ACP_BACKEND_KAS)
 
+#: How each tagged transport marks a child's request: a kiro-cli child's frame names
+#: its own session (with its structured params, or it is a low-fidelity child call);
+#: a native KAS child shares the parent's and is told apart by its tool-call id.
+CHILD_MARKS = {
+    ACP_BACKEND_KIRO: {
+        "sub_session_id": CHILD,
+        "child_calls_marked": True,
+        "raw_tool_params": {"command": "touch out.txt"},
+        "raw_params_trusted": True,
+        "shell_classified": True,
+    },
+    ACP_BACKEND_KAS: {
+        "native_child_call": True,
+        "tool_call_id": "tc-1",
+        "child_calls_marked": True,
+    },
+}
+
 
 def _provider(backend: str) -> type[ScriptedProvider]:
     return type("_Provider", (ScriptedProvider,), {"capabilities": capabilities_for(backend)})
@@ -73,7 +91,7 @@ def _card() -> AcpEvent:
     return AcpEvent(kind=EVENT_SUBAGENT_LIST, subagents=[entry])
 
 
-def _shell_request() -> AcpEvent:
+def _shell_request(**marks) -> AcpEvent:
     return AcpEvent(
         kind=EVENT_PERMISSION_REQUEST,
         request_id="r1",
@@ -82,12 +100,14 @@ def _shell_request() -> AcpEvent:
         tool_kind="execute",
         is_shell=True,
         tool_input=json.dumps({"command": "touch out.txt"}),
+        **marks,
     )
 
 
-async def _run(backend: str, *, hook: bool = True, **slot):
+async def _run(backend: str, *, hook: bool = True, child: bool = False, **slot):
     done = AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
-    steps = [Do(_hook_on if hook else _hook_off), _card(), _shell_request()]
+    request = _shell_request(**(CHILD_MARKS[backend] if child else {}))
+    steps = [Do(_hook_on if hook else _hook_off), _card(), request]
     return await run_turn(
         TurnScript(
             events=[*steps, Do(_hook_off), done],
@@ -105,7 +125,7 @@ def test_only_kiro_and_kas_say_their_requests_name_the_child() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("backend", NOT_TAGGED)
+@pytest.mark.parametrize("backend", (*NOT_TAGGED, *TAGGED))
 async def test_an_open_card_leaves_the_parents_request_on_a_card(backend: str) -> None:
     record = await _run(backend)
     assert len(record.approval_cards) == 1
@@ -115,8 +135,10 @@ async def test_an_open_card_leaves_the_parents_request_on_a_card(backend: str) -
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", TAGGED)
-async def test_an_open_card_still_auto_approves_on_kiro_and_kas(backend: str) -> None:
-    record = await _run(backend)
+async def test_an_open_card_still_auto_approves_a_childs_request_on_kiro_and_kas(
+    backend: str,
+) -> None:
+    record = await _run(backend, child=True)
     assert record.approval_cards == []
     assert len(record.calls("approve_tool")) == 1
 
@@ -124,7 +146,7 @@ async def test_an_open_card_still_auto_approves_on_kiro_and_kas(backend: str) ->
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", TAGGED)
 async def test_kiro_and_kas_ask_with_the_hook_off(backend: str) -> None:
-    record = await _run(backend, hook=False)
+    record = await _run(backend, hook=False, child=True)
     assert len(record.approval_cards) == 1
     assert record.calls("approve_tool") == []
 

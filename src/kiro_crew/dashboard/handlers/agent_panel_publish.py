@@ -132,6 +132,32 @@ async def _resolve_publishing_crew(
         return None, web.json_response(
             {"error": "forbidden", "code": "internal_secret_required"}, status=403
         )
+    # Imported here rather than at module level, so the facade does not serve it.
+    from kiro_crew.member_memory_auth import session_key_is_attested
+
+    # The secret says only that the caller is local. Any process holding it can
+    # name another session's key over TCP loopback, where there is no kernel
+    # peer check, so every route through here, the publish routes and the
+    # dynamic dashboard's alike, takes the key only behind an attestation: the
+    # Unix-socket peer check or the signed per-session token, which every
+    # ``kirocrew-panel`` call carries. Off the loop: the token branch reads a
+    # mapping file.
+    if not await asyncio.to_thread(session_key_is_attested, request, sk):
+        sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="session key not attested",
+        )
+        return None, web.json_response(
+            {
+                "error": "this session could not be verified as the caller",
+                "code": "session_unattested",
+            },
+            status=403,
+        )
     # The operator ceiling, read HERE and synchronously, right before the act.
     # The mount sites read it too, but a mount answers only for a session being
     # established: a member whose session was already running when the switch

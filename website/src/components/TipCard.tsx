@@ -18,6 +18,31 @@ import { Btn, IconButton } from './ui'
 // dependencies along with it.
 import { tipDocHref } from '../utils/docsLink'
 
+// The curated-tip copy (100 catalog keys) is needed only once a tip is fetched,
+// so it loads with the tip and stays off the dashboard's first load.
+type CuratedTips = typeof import('../utils/curatedTips')
+
+let curatedTips: CuratedTips | null = null
+let curatedTipsLoad: Promise<void> | null = null
+
+/** Settles once the curated-tip copy has loaded or failed to; never rejects,
+ *  so a failed load leaves every tip as served. */
+export function loadCuratedTips(): Promise<void> {
+  if (!curatedTipsLoad) {
+    curatedTipsLoad = import('../utils/curatedTips').then(
+      (loaded) => { curatedTips = loaded },
+      () => {},
+    )
+  }
+  return curatedTipsLoad
+}
+
+/** Exported for tests, which need to clear the module-scope cache between cases. */
+export function __resetCuratedTipsCache(): void {
+  curatedTips = null
+  curatedTipsLoad = null
+}
+
 // Optional one-click action button on a tip. A single 'route' kind for now:
 // navigate to an internal dashboard path (an exact settings tab/control via
 // ?highlight=, a page, etc.).
@@ -59,7 +84,8 @@ interface TipCardProps {
   onDismiss: () => void
 }
 
-export function TipCard({ tip, onDismiss }: TipCardProps) {
+export function TipCard({ tip: servedTip, onDismiss }: TipCardProps) {
+  const tip = curatedTips ? curatedTips.localizedTip(servedTip) : servedTip
   const queryClient = useQueryClient()
   const feedbackMutation = useMutation({
     mutationFn: ({ id, action }: { id: string; action: 'dismiss' }) =>
@@ -398,7 +424,8 @@ export function useTipTrigger(isRunning: boolean, suppressed = false, slotKey: s
 
   const { data: tipResponse } = useQuery({
     queryKey: ['tips-next'],
-    queryFn: api.tipsNext,
+    // A tip waits for the curated copy's load, so it shows localized from its first frame.
+    queryFn: () => Promise.all([api.tipsNext(), loadCuratedTips()]).then(([next]) => next),
     enabled: enabled && isRunning && !suppressed && !blocked && !shownThisTurnRef.current,
     staleTime: 20 * 60 * 1000,
     retry: false,

@@ -1,6 +1,6 @@
 # Requirements Document
 
-Status: implemented in `src/kiro_crew/config/loader_agents.py` (`resolve_agent_bindings`), `src/kiro_crew/config/sections_session.py` (`KiroCrewAgentConfig`, `WorkspaceConfig`), `src/kiro_crew/config/memory_sections.py` (`MemoryStoreConfig`, `resolve_memory_store_config`), `src/kiro_crew/config/migration.py` (the workspace and default-agent write-back migrations) and `src/kiro_crew/memory_stores.py`.
+Status: implemented in `src/kiro_crew/config/loader_agents.py` (`resolve_agent_bindings`), `src/kiro_crew/config/sections_session.py` (`KiroCrewAgentConfig`, `WorkspaceConfig`), `src/kiro_crew/config/memory_sections.py` (`MemoryStoreConfig`, `resolve_memory_store_config`), `src/kiro_crew/config/migration.py` (the workspace and default-agent write-back migrations) and `src/kiro_crew/memory_stores.py`. Not wired: Requirement 8's load-time warning (`validate_kiro_agent_references` in `src/kiro_crew/config/loader.py` exists, but nothing in `src/` calls it, so no warning is logged).
 
 ## Introduction
 
@@ -15,7 +15,7 @@ KiroCrew currently treats agent selection as a thin pass-through to kiro-cli's `
 - **Workspace_Config**: A structured workspace definition containing at minimum a directory path. Replaces the current flat `dict[str, str]` workspace mapping.
 - **Memory_Store_Config**: A named memory store definition with its own embedding and memory settings, independent from workspaces.
 - **Agent_Resolver**: The logic that resolves the effective workspace and memory store for a session by reading the active KiroCrew_Agent's bindings, falling back to top-level defaults.
-- **AIM_Discovery**: The existing `aim_agents.py` module that scans `~/.kiro/agents/` for installed Kiro_Agent configs.
+- **AIM_Discovery**: The agent discovery in `src/kiro_crew/agent_discovery.py` that finds installed Kiro_Agent configs.
 
 ## Requirements
 
@@ -53,7 +53,7 @@ KiroCrew currently treats agent selection as a thin pass-through to kiro-cli's `
 1. THE Config_Loader SHALL define a `WorkspaceConfig` dataclass with a `dir` field (str) specifying the workspace directory path, with appropriate field metadata.
 2. THE `KiroCrewConfig.workspaces` field type SHALL change from `dict[str, str]` to `dict[str, WorkspaceConfig]`.
 3. THE Workspace_Config SHALL NOT contain any agent or memory store references — the binding flows from KiroCrew_Agent to workspace, not from workspace to agent.
-4. WHEN a workspace `dir` value starts with `/` or `~`, THE Config_Loader SHALL treat the path as absolute. WHEN the value is a relative path, THE Config_Loader SHALL resolve it relative to the KiroCrew config directory (`~/.kirocrew/`).
+4. WHEN a workspace `dir` value starts with `/` or `~`, THE Config_Loader SHALL treat the path as absolute. WHEN the value is a relative path, THE Config_Loader SHALL resolve it relative to the Kiro Crew data home (`~/.kiro/crew/`, or `KIROCREW_HOME` when set).
 5. THE `KiroCrewConfig` SHALL retain a `default_workspace` field (str) naming the fallback workspace when no KiroCrew_Agent binding applies.
 
 ### Requirement 4: Workspace Migration from Flat Format

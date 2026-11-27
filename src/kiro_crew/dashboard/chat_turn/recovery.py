@@ -28,6 +28,7 @@ from kiro_crew.dashboard.chat_utils import (
     _remove_queued_by_id,
     build_recovery_requeue,
     is_synthetic_payload_item,
+    payload_for_replay,
 )
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
@@ -122,9 +123,13 @@ def _model_unentitled_meta(exc: BaseException) -> dict[str, object] | None:
     rejected = getattr(exc, "rejected_model", None)
     if not isinstance(rejected, str) or not rejected.strip():
         return None
-    # ONE shared predicate (see its docstring): an empty/None advertised list is
-    # "unknowable" and answers False, which is the None this path wants — the
-    # formatter treats that case as transient wording too, so no fix affordance.
+    # ``_raise_acp_error`` stamps the verdict its formatter used (``unentitled``):
+    # the backend's own entitlement token decides with no served list at all.
+    # Without the stamp, ONE shared predicate (see its docstring): an empty/None
+    # advertised list is "unknowable" and answers False, which is the None this
+    # path wants — the formatter treats that case as transient wording too.
+    if getattr(exc, "unentitled", False) is True:
+        return {"kind": MODEL_UNENTITLED_KIND}
     if not model_is_unusable(rejected, getattr(exc, "advertised", None)):
         return None
     return {"kind": MODEL_UNENTITLED_KIND}
@@ -786,11 +791,11 @@ async def _rearm_turn_episode(
         slot._refusal_fallback_attempted = False
     # The episode ends on a dispatch the drain did not re-queue as recovery.
     # `_synthetic_payload` is true for a CONTINUATION-tagged entry and for an untagged
-    # one (`is_synthetic_payload_item` falls through to the kind), which is why the
-    # auth-required and poisoned-conversation requeues count despite carrying the
-    # user's own text. It is false for an ORIGINAL-tagged verbatim replay, which only
-    # rung 1 queues -- and rung 1 needs the counter below 1 while the flag is only set
-    # with it at 2 or more, so the flag is already clear there.
+    # one (`is_synthetic_payload_item` falls through to the kind). It is false for an
+    # ORIGINAL-tagged verbatim replay of the person's words (rung 1, the
+    # poisoned-conversation and sign-in requeues among them), and each is queued by a
+    # turn that ran those words: rung 1 needs the counter below 1 while the flag is
+    # only set with it at 2 or more, and the others' own dispatch already cleared it.
     # Keyed here, not on the continuation bodies, because three controls discard a
     # queued continuation WITHOUT resetting the counter (the hard-kill Stop's queue
     # clear, a plan Cancel's owner-scoped discard, a rewind commit's rebuild).
@@ -897,11 +902,15 @@ async def _requeue_auth_retry(
     with its delivery provenance.
     """
     _auth_retry_kind = ""
+    _auth_retry_payload = ""
     if _synthetic_recovery_turn or (_synthetic_payload and message == SUBAGENT_SYNTHESIS_PROMPT):
         # A synthesis turn is runner-authored even though its ledger actor is
         # ``subagent``. Preserve inject provenance across login; classifying
         # from the broad actor would drain the internal prompt as user text.
         _auth_retry_kind = SYNTHETIC_RECOVERY_KIND
+        # Verbatim replay, tagged like its siblings: a recovery turn's re-send of
+        # the person's words stays theirs, a continuation or synthesis stays the runner's.
+        _auth_retry_payload = payload_for_replay(_synthetic_payload)
     elif _turn_actor == "subagent":
         _auth_retry_kind = SUBAGENT_COMPLETION_KIND
     if (
@@ -921,6 +930,7 @@ async def _requeue_auth_retry(
             0,
             message,
             kind=_auth_retry_kind,
+            payload=_auth_retry_payload,
             extra_meta=_current_meta,
         )
 

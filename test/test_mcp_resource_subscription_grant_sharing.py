@@ -45,6 +45,7 @@ from mcp_resource_subscription_helpers import (
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.claim import build_claim_frame, mint_stub_session_token, send_claim
+from kiro_crew.session_pid_sig import publish_session_pid
 from kiro_crew.testing.wait import async_wait_until, finished
 
 pytestmark = [
@@ -206,6 +207,10 @@ async def test_a_pid_claim_for_a_second_connection_retargets_another_sessions_st
     The last assertion pins that open misattribution; update it if ``_apply_claim`` changes.
     """
     other = "dashboard:another-session"
+    # The stranger is named the way the daemon names a tokenless stub: the
+    # gateway publishes its runtime's (this process's) session, and the daemon's
+    # own peer walk reads it. Its KIROCREW_SESSION_KEY alone names nothing.
+    publish_session_pid(os.getpid(), other)
     async with _daemon(monkeypatch, paths):
         stranger = StubProcess(
             await spawn_stub(paths["sock"], paths["work"], paths["home"], session_key=other)

@@ -47,13 +47,14 @@ describe('RemoteControlCard', () => {
     expect(screen.queryByTestId('remote-control-card')).toBeNull()
   })
 
-  it('says the build manages it, not restart-to-connect, on a locked build', async () => {
+  it('says the build manages it, not the not-connected line, on a locked build', async () => {
     get.mockResolvedValue(state({ requested: true, locked: true }))
     renderWithProviders(<RemoteControlCard />)
     expect(await screen.findByRole('status')).toHaveTextContent(
       'Remote Control is managed by this build and cannot be turned on here.',
     )
     expect(screen.queryByText(/Restart/)).toBeNull()
+    expect(screen.queryByText(/on but not connected/)).toBeNull()
     // Off still clears the stored setting; no turn-on hint, since `on` is refused here.
     expect(screen.getByRole('button', { name: 'Turn off' })).toBeInTheDocument()
     expect(screen.queryByTestId('remote-control-off-effect')).toBeNull()
@@ -70,35 +71,42 @@ describe('RemoteControlCard', () => {
     expect(done.querySelector('code')).toBeNull()
   })
 
-  it('says on only while the relay is running, and restart-to-connect otherwise', async () => {
+  it('says on only while the relay is running, and what connects a waiting Crew otherwise', async () => {
     get.mockResolvedValue(state({ requested: true, running: false }))
     renderWithProviders(<RemoteControlCard />)
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'Remote Control is set to on but not connected. Restart',
+    // The card cannot see why a Crew waits: a personal Crew on by default waits for a
+    // sign-in it rechecks on its own, and only some waits need a restart.
+    const line = await screen.findByRole('status')
+    expect(line).toHaveTextContent(
+      'Remote Control is on but not connected. If Remote Control was turned on or set up since Kiro Crew last started, restart Kiro Crew. If the Tunnel tile on Overview shows an error, that error says why.',
     )
+    expect(line).toHaveTextContent(
+      "If Remote Control uses this Crew's Kiro sign-in and that isn't a current company SSO sign-in, sign in with your company SSO from Settings → Kiro account.",
+    )
+    expect(screen.queryByText(/Restart Kiro Crew to connect/)).toBeNull()
     expect(screen.queryByText(/Remote Control is on\./)).toBeNull()
     expect(screen.getByRole('button', { name: 'Turn off' })).toBeInTheDocument()
-    // The card reports only the setting and the connection, never the sign-in.
-    expect(screen.getByTestId('remote-control-card')).not.toHaveTextContent(/sign/i)
   })
 
-  it("says why config keeps the relay from starting, not restart-to-connect", async () => {
+  it("says why config keeps the relay from starting, not the not-connected line", async () => {
     const problem = 'A stand-in reason: set tunnel.relay_lease_region.'
     get.mockResolvedValue(state({ requested: true, running: false, problem }))
     renderWithProviders(<RemoteControlCard />)
     expect(await screen.findByText(problem)).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent(problem)
     expect(screen.queryByText(/Restart/)).toBeNull()
+    expect(screen.queryByText(/on but not connected/)).toBeNull()
     expect(screen.queryByText(/Remote Control is on\./)).toBeNull()
   })
 
-  it('says it is connecting, not restart-to-connect, while the relay connects on its own (Bug Bash row 51)', async () => {
+  it('says it is connecting, not the not-connected line, while the relay connects on its own (Bug Bash row 51)', async () => {
     get.mockResolvedValue(state({ requested: true, running: false, connecting: true }))
     renderWithProviders(<RemoteControlCard />)
     expect(await screen.findByRole('status')).toHaveTextContent(
       "Remote Control is on and connecting. It connects on its own, so you don't need to restart.",
     )
     expect(screen.queryByText(/Restart Kiro Crew to connect/)).toBeNull()
+    expect(screen.queryByText(/on but not connected/)).toBeNull()
   })
 
   it('shows a later read failure even while an earlier read is cached', async () => {

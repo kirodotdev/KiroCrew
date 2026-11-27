@@ -43,8 +43,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_apply import _quiescence_of  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _read_force_flag  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _read_update_request  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _release_admission  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _resolve_restart_target  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _restart_gateway  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _restart_running  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_apply import _start_gateway_restart  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import _update_record_busy  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_gateway_restart  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_apply import api_update_apply  # noqa: F401
@@ -62,13 +65,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_channel import api_update_revalidate  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import logger  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _CLI_MANIFEST_SCHEMA  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import _DIST_INFO_STEMS  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _FEED_MAX_BYTES  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _FEED_TIMEOUT_SECS  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _GIT_FETCH_TIMEOUT_S  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import _METADATA_HEAD_BYTES  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _MIN_VERSION_RE  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _PUB_DATE_RE  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _UPDATE_CHECK_INTERVAL  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _VERSION_RE  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import _already_noted  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _can_arm_this_install  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _cancel_update_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _check_generation  # noqa: F401
@@ -85,12 +91,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_check import _last_update_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _read_feed_manifest  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _release_update_check_task  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import _restart_tree_holds_settled  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import _restart_tree_version  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _run_update_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _upcoming_for_feed  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _update_policy_file  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import api_update_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import last_checked_at  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import note_installed_beside  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import status_update_fields  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import unnoted_offer  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_step_up import _OFFERED_MAX_CHARS  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_step_up import _arm_packaged_app  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_step_up import _audit_update_event  # noqa: F401
@@ -240,6 +250,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform_compat import reexec_launcher  # noqa: F401
     from kiro_crew.platform_compat import reexec_python_module  # noqa: F401
     from kiro_crew.pre_exec_stops import run_pre_exec_stops  # noqa: F401
+    from kiro_crew.restart_admission import REASON_PAUSE_HELD  # noqa: F401
     from kiro_crew.restart_session_close import close_sessions_for_restart  # noqa: F401
     from kiro_crew.safety_override import flush_breadcrumb_writes  # noqa: F401
     from kiro_crew.security import redact_credentials  # noqa: F401

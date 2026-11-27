@@ -1598,10 +1598,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _format_idle,
         _notify_shell_failed,
         _orphan_timeout_s,
+        _push_reap_note,
         _record_orphan_reap,
         _shell_failure_note,
         _shell_to_evict,
         _sweep_terminals,
+        _timed_out_note_body,
         end_shells_if_policy_refuses,
         reap_orphaned_terminals,
     )

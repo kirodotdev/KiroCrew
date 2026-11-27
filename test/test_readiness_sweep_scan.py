@@ -354,9 +354,10 @@ def test_a_pr_page_failing_down_to_one_ends_the_walk_loudly_with_exit_zero(
 ) -> None:
     # Three attempts at 25 rule out a transient; then 12, 6, 3 and 1 are each
     # probed once at the SAME cursor, and only the failure at 1 ends the walk.
+    # Each size that fails is asked once more without the optional fields.
     first = _page([_pr(1, statuses=[])], has_next=True, cursor="p2")
     boom = RuntimeError("gh: HTTP 504")
-    fake = FakeGh([first] + [boom] * 7)
+    fake = FakeGh([first] + [boom] * 12)
     sleeps: list[float] = []
     monkeypatch.setattr(scan.time, "sleep", sleeps.append)
     records, err, rc = _run(monkeypatch, fake, capsys)
@@ -366,9 +367,13 @@ def test_a_pr_page_failing_down_to_one_ends_the_walk_loudly_with_exit_zero(
     assert "a page of 1 pull request failed" in err
     assert "after 1 pull requests were emitted" in err
     assert "HTTP 504" in err
-    assert len(fake.calls) == 8
     assert all(call["cursor"] == "p2" for call in fake.calls[1:])
-    assert [call["first"] for call in fake.calls] == ["25"] + ["25"] * 3 + ["12", "6", "3", "1"]
+    sizes = ["25"] * 3 + ["12", "6", "3", "1"]
+    plain = [call["first"] for call in fake.calls[1:] if call["query"] == scan.PR_PAGE_QUERY_PLAIN]
+    full = [call["first"] for call in fake.calls[1:] if call["query"] == scan.PR_PAGE_QUERY]
+    assert full == sizes
+    assert plain == ["25", "12", "6", "3", "1"]
+    assert len(fake.calls) == 1 + len(full) + len(plain)
     # Backoff only between the three attempts at 25; the probes do not wait.
     assert sleeps == [2.0, 4.0]
     assert "4 page-size reductions (ending at 1)" in err
@@ -388,6 +393,7 @@ def test_a_failed_page_is_retried_smaller_from_the_same_cursor_and_the_walk_goes
             boom,
             boom,
             boom,
+            boom,
             _page([_pr(2, statuses=[])], has_next=True, cursor="p3"),
             _page([_pr(3, statuses=[])]),
         ]
@@ -395,8 +401,19 @@ def test_a_failed_page_is_retried_smaller_from_the_same_cursor_and_the_walk_goes
     records, err, rc = _run(monkeypatch, fake, capsys)
     assert rc == 0
     assert [r["number"] for r in records] == [1, 2, 3]
-    assert [call.get("cursor") for call in fake.calls] == [None, "p2", "p2", "p2", "p2", "p3"]
-    assert [call["first"] for call in fake.calls] == ["25", "25", "25", "25", "12", "12"]
+    assert [call.get("cursor") for call in fake.calls] == [None, "p2", "p2", "p2", "p2", "p2", "p3"]
+    assert [call["first"] for call in fake.calls] == ["25", "25", "25", "25", "25", "12", "12"]
+    # The fifth request is the one without the optional fields; it failed too,
+    # so the walk keeps asking for them at the smaller size.
+    assert [call["query"] == scan.PR_PAGE_QUERY_PLAIN for call in fake.calls] == [
+        False,
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+    ]
     assert "a page of 25 pull requests failed" in err and "retrying the same cursor at 12" in err
     assert "the walk ends here" not in err
     assert "1 page-size reductions (ending at 12)" in err
@@ -621,3 +638,130 @@ def test_the_workflow_runs_this_script_from_a_sparse_checkout() -> None:
     # The withheld-verdict recovery re-runs the owing lane via the republisher,
     # not by dispatching the aggregator.
     assert "python3 .github/scripts/republish_withheld_verdict.py" in code
+
+
+# ── The two optional fields, and what a record says when they were not read ──
+
+
+def _with_fields(pr: dict[str, Any], *, description: Any, comments: Any) -> dict[str, Any]:
+    for context in pr["commits"]["nodes"][0]["commit"]["status"]["contexts"]:
+        context["description"] = description
+    pr["comments"] = comments
+    return pr
+
+
+def _verdict(state: str = "PENDING") -> list[dict[str, str]]:
+    return [{"context": "PR Readiness", "state": state, "createdAt": "2026-09-15T05:00:00Z"}]
+
+
+def test_the_plain_query_is_the_full_one_minus_the_two_fragments() -> None:
+    # Derived, not restated: removing exactly the two fragments from the full
+    # query must give the plain one, so the fallback cannot ask for less.
+    assert scan.COMMENTS_FRAGMENT in scan.PR_PAGE_QUERY
+    assert "contexts { context state createdAt description }" in scan.PR_PAGE_QUERY
+    stripped = scan.PR_PAGE_QUERY.replace(scan.COMMENTS_FRAGMENT, "").replace(
+        "createdAt description }", "createdAt }"
+    )
+    assert stripped == scan.PR_PAGE_QUERY_PLAIN
+    assert "description" not in scan.PR_PAGE_QUERY_PLAIN
+    assert "comments(" not in scan.PR_PAGE_QUERY_PLAIN
+    # The newest CHANGE to any issue comment: one node, ordered by update time.
+    assert "comments(first: 1, orderBy: {field: UPDATED_AT, direction: DESC})" in (
+        scan.COMMENTS_FRAGMENT
+    )
+
+
+def test_a_record_carries_the_description_and_the_newest_comment(monkeypatch, capsys, fast) -> None:
+    pr = _with_fields(
+        _pr(60, statuses=_verdict()),
+        description="[read-failed] could not be evaluated",
+        comments={"nodes": [{"updatedAt": "2026-09-15T06:00:00Z"}]},
+    )
+    records, _err, _rc = _run(monkeypatch, FakeGh([_page([pr])]), capsys)
+    assert records[0]["readiness"]["description"] == "[read-failed] could not be evaluated"
+    assert records[0]["comments_read"] is True
+    assert records[0]["newest_comment_at"] == "2026-09-15T06:00:00Z"
+
+
+def test_an_answered_null_is_an_answer(monkeypatch, capsys, fast) -> None:
+    # A status with no description and a pull request with no comment were both
+    # READ: the description is the empty string, and there is no comment time.
+    pr = _with_fields(_pr(61, statuses=_verdict()), description=None, comments={"nodes": []})
+    records, _err, _rc = _run(monkeypatch, FakeGh([_page([pr])]), capsys)
+    assert records[0]["readiness"]["description"] == ""
+    assert records[0]["comments_read"] is True
+    assert records[0]["newest_comment_at"] is None
+
+
+@pytest.mark.parametrize(
+    "comments",
+    [None, {}, {"nodes": None}, {"nodes": [{}]}, {"nodes": [{"updatedAt": None}]}, "x"],
+)
+def test_a_comments_connection_that_is_not_an_answer_is_not_read(
+    monkeypatch, capsys, fast, comments
+) -> None:
+    pr = _with_fields(_pr(62, statuses=_verdict()), description="d", comments=comments)
+    records, _err, _rc = _run(monkeypatch, FakeGh([_page([pr])]), capsys)
+    assert records[0]["comments_read"] is False
+    assert records[0]["newest_comment_at"] is None
+
+
+def test_an_answer_without_the_fields_says_neither_was_read(monkeypatch, capsys, fast) -> None:
+    # The shape the plain query gets: no `description` key, no `comments` key.
+    records, _err, _rc = _run(monkeypatch, FakeGh([_page([_pr(63, statuses=_verdict())])]), capsys)
+    assert "description" not in records[0]["readiness"]
+    assert records[0]["comments_read"] is False
+
+
+def test_a_field_error_under_comments_keeps_the_pull_request(monkeypatch, capsys, fast) -> None:
+    # Not the status and not the rollup: the record is emitted, its checks are
+    # complete, and only the comment answer is withdrawn.
+    pr = _with_fields(_pr(64, statuses=_verdict()), description="d", comments=None)
+    page = _page([pr])
+    page["errors"] = [
+        {
+            "message": "Something went wrong while executing your query.",
+            "path": ["repository", "pullRequests", "nodes", 0, "comments"],
+        }
+    ]
+    records, err, rc = _run(monkeypatch, FakeGh([page]), capsys)
+    assert rc == 0
+    assert [r["number"] for r in records] == [64]
+    assert records[0]["comments_read"] is False
+    assert records[0]["checks_complete"] is True
+    assert records[0]["readiness"]["description"] == "d"
+    assert "Left out, readiness status unreadable: none" in err
+
+
+def test_a_page_the_full_query_cannot_get_is_scanned_without_the_fields(
+    monkeypatch, capsys, fast
+) -> None:
+    # The full query fails its three attempts; the plain one answers. Every
+    # later page is asked plainly too, and every record says "not read", so the
+    # sweep makes its REST reads and skips none.
+    boom = RuntimeError("gh: Field 'description' doesn't exist on type 'StatusContext'")
+    fake = FakeGh(
+        [
+            boom,
+            boom,
+            boom,
+            _page([_pr(70, statuses=_verdict())], has_next=True, cursor="p2"),
+            _page([_pr(71, statuses=_verdict())]),
+        ]
+    )
+    records, err, rc = _run(monkeypatch, fake, capsys)
+    assert rc == 0
+    assert [r["number"] for r in records] == [70, 71]
+    assert [call["query"] == scan.PR_PAGE_QUERY_PLAIN for call in fake.calls] == [
+        False,
+        False,
+        False,
+        True,
+        True,
+    ]
+    assert [call["first"] for call in fake.calls] == ["25"] * 5
+    assert all(r["comments_read"] is False for r in records)
+    assert all("description" not in r["readiness"] for r in records)
+    assert "answered without them" in err
+    assert "0 page-size reductions (ending at 25)" in err
+    assert "2 pages without the description and comment fields" in err

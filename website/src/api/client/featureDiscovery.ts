@@ -192,6 +192,9 @@ export function createFeatureDiscoveryEndpoints({ get, post, j, jfetch: fetch, j
     tipsFeedback: (id: string, action: 'shown' | 'ack' | 'dismiss' | 'snooze' | 'helpful' | 'optout' | 'optin') => post('/api/tips/feedback', { id, action }).then(j),
     /** Every curated tip, dismissed ones included, for the Settings list. Read-only. */
     tipsAll: () => get('/api/tips/all').then(j) as Promise<{ tips: { id: string; title: string; body: string; action?: { kind: 'route'; label: string; route: string } | null }[] }>,
+    /** The exploratory tips the thinking row may show: the shipped bank minus
+     *  dismissed tips; empty when tips are off or opted out. Read-only. */
+    tipsExploratory: () => get('/api/tips/exploratory').then(j) as Promise<{ tips: { id: string; body: string; requires: string[] }[] }>,
   }
 
   return { suggestions, featureVideos, tips, milestones }

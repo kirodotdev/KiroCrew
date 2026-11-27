@@ -244,7 +244,7 @@ def test_the_index_is_built_once_per_set_and_patched_by_a_write(
     monkeypatch.setattr(
         term_index.RowTermIndex,
         "build",
-        classmethod(lambda cls, texts, np: builds.append(1) or real_build(texts, np)),
+        classmethod(lambda cls, texts, np, **kw: builds.append(1) or real_build(texts, np, **kw)),
     )
     for query in ("tokyo", "paris", "rust"):
         store._semantic_candidates_v1(query)

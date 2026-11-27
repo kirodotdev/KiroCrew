@@ -142,17 +142,22 @@ async def test_excerpts_and_titles_are_redacted(tmp_path, monkeypatch):
     seen: list[str] = []
 
     def _fake(text):
+        # Wraps rather than replaces, so the query still matches the redacted
+        # text it is gated on and each output shows which input it came from.
         seen.append(text)
-        return "[REDACTED]"
+        return f"[R] {text}"
 
     monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions.redact", _fake)
+    # Messages are redacted through the search memo, which the conftest floor
+    # empties before each test.
+    monkeypatch.setattr("kiro_crew.search_shown_text.redact", _fake)
 
     _, body = await _get(log, "q=guava")
 
-    assert body["results"][0]["hits"][0]["snippet"] == "[REDACTED]"
+    assert body["results"][0]["hits"][0]["snippet"].startswith("[R] guava")
     # The whole message is redacted before the excerpt is cut from it.
     assert content in seen
-    assert body["results"][0]["title"] == "[REDACTED]"
+    assert body["results"][0]["title"] == "[R] Guava title"
     assert "Guava title" in seen
 
 
@@ -368,12 +373,10 @@ async def test_an_app_skips_a_chain_that_changed_before_its_locks_were_held(tmp_
     assert body["results"] == []
 
 
-async def test_a_rotated_chat_ranks_on_its_live_file_as_the_sidebar_search_does(
-    tmp_path, monkeypatch
-):
-    # The route takes the shared ranking, which reads each chat's live file: a
-    # word only the rotated archive holds lists nothing here or in the sidebar
-    # search, while a word in the live file is found with its message.
+async def test_a_word_only_the_rotated_archive_holds_finds_its_message(tmp_path, monkeypatch):
+    # The shared ranking reads each chat's rotated archive head with its live
+    # file, so a word only the moved rows hold ranks the chat here and in the
+    # sidebar search, and the hit indexes the chat's own paging corpus.
     monkeypatch.setattr("kiro_crew.history._SESSION_MAX_BYTES", 400)
     monkeypatch.setattr("kiro_crew.history._SESSION_KEEP_LINES", 3)
     log = ConversationLog(base_dir=tmp_path)
@@ -387,11 +390,13 @@ async def test_a_rotated_chat_ranks_on_its_live_file_as_the_sidebar_search_does(
     _, archived = await _get(log, "q=tamarind")
     _, live = await _get(log, "q=jackfruit")
 
-    assert archived["results"] == []
-    assert log.search_sessions("tamarind", 10) == []
+    corpus = log.read_messages_chained_full("alpha")
+    assert [r["key"] for r in log.search_sessions("tamarind", 10)] == ["alpha"]
+    assert [r["key"] for r in archived["results"]] == ["alpha"]
+    [old] = archived["results"][0]["hits"]
+    assert corpus[old["index"]]["content"] == "tamarind is the word only the first message holds"
     assert [r["key"] for r in live["results"]] == ["alpha"]
     [hit] = live["results"][0]["hits"]
-    corpus = log.read_messages_chained_full("alpha")
     assert corpus[hit["index"]]["content"] == "jackfruit sits in the newest message"
 
 

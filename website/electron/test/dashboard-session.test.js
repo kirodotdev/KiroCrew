@@ -107,4 +107,15 @@ describe("openDashboardSession", () => {
     assert.deepEqual(order, []);
     assert.deepEqual(win.calls, []);
   });
+
+  it("opens a crew's session through the crew link's route, never as a local session", () => {
+    const win = makeDashboardWindow();
+    assert.equal(openDashboardSession(win, BASE, "cos-quick-chat", {}, "build-box"), true);
+    assert.deepEqual(win.calls.at(-1), ["send", "navigate", "/chat?crew=build-box&crewSid=cos-quick-chat"]);
+
+    // A key the crew link cannot carry fails whole: the window does not move.
+    const refused = makeDashboardWindow();
+    assert.equal(openDashboardSession(refused, BASE, "a b", {}, "build-box"), false);
+    assert.deepEqual(refused.calls, []);
+  });
 });

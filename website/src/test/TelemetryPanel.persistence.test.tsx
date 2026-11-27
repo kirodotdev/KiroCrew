@@ -238,7 +238,7 @@ describe('TelemetryPanel — Context rows name the conversation', () => {
     localStorage.setItem('telemetry:tab', 'context')
     // A Telegram thread is a real, often titled conversation, but `?sid=` resolves
     // against the live dashboard slot list -- so linking it lands on "not found".
-    await mount({ cost: cost({ conversations: [convo({ category: 'telegram' })] }) })
+    await mount({ cost: cost({ conversations: [convo({ category: 'telegram', channel: 'telegram' })] }) })
     await waitFor(() => expect(screen.getByText(/152,341|152341/)).toBeTruthy())
     expect(screen.getByText('Porting the trash containment')).toBeTruthy()
     expect(screen.queryByRole('link', { name: 'Porting the trash containment' })).toBeNull()

@@ -126,6 +126,9 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(sandbox, "config_dir", lambda: pinned.crew)
     monkeypatch.setattr(sandbox, "kiro_agents_dir", lambda: pinned.home / ".kiro" / "agents")
+    # kiro-cli's MCP registry rides the agents tree's field; its own tests pin that, and
+    # pinning it off here keeps these goldens to the output they were taken from.
+    monkeypatch.setattr(sandbox, "_resolved_kiro_mcp_registry_targets", lambda: [])
     monkeypatch.setattr(sandbox, "carveout_chain_has_planted_link", lambda _path: False)
     # The seal-parent walk stops inside the pinned root, so no golden names this machine.
     walk = sandbox._literal_ancestor_guards
@@ -145,6 +148,12 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     # machine-independent one (the volatile /run/user/$UID leads where it is coherent);
     # test_sandbox_plan covers the no-manager order.
     monkeypatch.setattr(sandbox, "_runtime_dir_is_durable", lambda _root: True)
+    # The checkout running the tests is a git checkout whose layout varies by host.
+    from kiro_crew import sandbox_git_control
+
+    monkeypatch.setattr(
+        sandbox_git_control, "resolved_git_control_layout", sandbox_git_control.GitControlLayout
+    )
     for name, table in _PINNED_TABLES.items():
         monkeypatch.setattr(sandbox, name, table)
     # The shipped built-ins' ``credentialMasks`` are a table too: a declaration added to

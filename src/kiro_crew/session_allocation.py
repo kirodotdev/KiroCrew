@@ -103,7 +103,7 @@ class AllocationDeps:
     first_turn_fresh: object
     first_turn_resumed: object
     runtime_types: Callable[[], tuple[Callable[..., Any], type[BaseException]]]
-    session_provider_type: Callable[[], Callable[[Any, Any], LLMProvider]]
+    session_provider_type: Callable[[], Callable[..., LLMProvider]]
     unlink_session_queue: Callable[[Any], None]
     unlink_queued_temp_paths: Callable[[dict[str, Any]], None]
     # (cfg, agent, crew_agent, *, app_name, session_key, backend_override)
@@ -865,12 +865,19 @@ class SessionAllocationService:
         approval_policy: str = "",
         _won_race_retries: int = 0,
         start_priority: StartPriority = StartPriority.BACKGROUND,
+        runtime: Any = None,
     ) -> tuple[LLMProvider, bool, bool]:
         """Open a per-step session on the task run's shared runtime.
 
         A descriptor-bound macOS runtime cannot safely serve a later exact cwd
         through ACP's string-only session request. In that case the facade's
         normal dedicated-provider path binds a runtime at the requested cwd.
+
+        *runtime*, when given, is a live process the caller already chose (a
+        workflow step on its launching chat's KAS process,
+        ``workflows/shared_nodes.py``): the session opens there instead of on a
+        bootstrapped run runtime, and its provider carries *session_key*, so its
+        per-turn tenancy claim binds that key on a pid whose owner holds a lease.
         """
         # Circular import: runtime imports the session provider path indirectly.
         from kiro_crew.acp.runtime import AcpWorkspaceBindingError
@@ -955,9 +962,11 @@ class SessionAllocationService:
                 cwd=cwd,
                 start_priority=start_priority,
             )
-        runtime = await owner._get_or_bootstrap_run_runtime(
-            parent_session_key, agent=agent, cwd=cwd, start_priority=start_priority
-        )
+        host_chosen = runtime is not None
+        if not host_chosen:
+            runtime = await owner._get_or_bootstrap_run_runtime(
+                parent_session_key, agent=agent, cwd=cwd, start_priority=start_priority
+            )
         # Reserve the key for the create-and-register window, as
         # ``get_or_create`` does, so ``has_allocation_reservation`` and
         # ``session_keys`` see a per-step session that is still being created.
@@ -966,6 +975,13 @@ class SessionAllocationService:
             self._refuse_if_ending(key, None)
             self._allocation_reservations.setdefault(key, set()).add(token)
             self.advance_ownership_generation(key)
+        # On a runtime the caller chose (another chat's process), the step states
+        # its own crew identity, "" for none, so it never inherits the host's.
+        identity = (
+            {"crew_agent": prepared.member or "", "member_context": bool(prepared.member)}
+            if host_chosen
+            else {}
+        )
         try:
             handle = await runtime.create_session(
                 cwd=cwd or None,
@@ -977,6 +993,7 @@ class SessionAllocationService:
                 session_key=key,
                 memory_mode=execution.memory_mode if execution is not None else "persistent",
                 start_priority=start_priority,
+                **identity,
             )
         except AcpWorkspaceBindingError:
             self._remove_reservation_now(key, token)
@@ -999,7 +1016,15 @@ class SessionAllocationService:
         if handle.delete_delay_secs > 0:
             owner._ensure_cleanup_task()
         try:
-            provider = self._deps.session_provider_type()(handle, runtime)
+            provider = (
+                # The step's own agent, so a fresh conversation (a pool worker's
+                # reuse) keeps it instead of falling back to the host's.
+                self._deps.session_provider_type()(
+                    handle, runtime, session_key=key, agent=agent or "", **identity
+                )
+                if host_chosen
+                else self._deps.session_provider_type()(handle, runtime)
+            )
             # A live reload re-sends exactly the policy this SID stated.
             setattr(provider, "kas_memory_mode", handle.kas_memory_mode)
             setattr(
@@ -1077,6 +1102,7 @@ class SessionAllocationService:
                 approval_policy=approval_policy,
                 _won_race_retries=_won_race_retries + 1,
                 start_priority=start_priority,
+                runtime=runtime if host_chosen else None,
             )
         assert won_race_session is session
         await session.semaphore.acquire()
@@ -1385,6 +1411,11 @@ class SessionAllocationService:
             return True
         return False
 
+    def has_queued(self, key: str) -> bool:
+        """Read whether a folded session has queued entries without consuming them."""
+        session = self._sessions.get(self._owner._fold_key(key))
+        return bool(session and session.queue)
+
     def dequeue(self, key: str) -> tuple[str, str, dict[str, Any]] | None:
         key = self._owner._fold_key(key)
         session = self._sessions.get(key)
@@ -1647,6 +1678,7 @@ class SessionAllocationService:
 #: The allocation owner modules, lowest layer first.
 _ALLOCATION_OWNERS: tuple[str, ...] = (
     "kiro_crew.session_allocation_parts.errors",
+    "kiro_crew.session_allocation_parts.cold_start_reads",
     "kiro_crew.session_allocation_parts.companions",
     "kiro_crew.session_allocation_parts.memory_policy",
     "kiro_crew.session_allocation_parts.eviction",

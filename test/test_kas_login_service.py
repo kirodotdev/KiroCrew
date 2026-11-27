@@ -838,6 +838,8 @@ async def test_poll_idc_resolves_profile_arn(tmp_path, monkeypatch):
                 200,
                 {"profiles": [{"arn": "arn:aws:kiro:us-east-1:1:profile/p1", "profileName": "P1"}]},
             ),
+            # Every control plane is asked; the other one lists nothing.
+            _FakeResp(200, {"profiles": []}),
         ],
     )
     begin = await _begin_oidc(
@@ -851,7 +853,7 @@ async def test_poll_idc_resolves_profile_arn(tmp_path, monkeypatch):
     assert saved.profile_arn == "arn:aws:kiro:us-east-1:1:profile/p1"
     # The control-plane call went to the regional CPS (the host kiro-cli itself
     # uses) with the fresh bearer token and the CodeWhisperer-family target.
-    cp_url, cp_body, cp_headers = session.calls_with_headers[-1]
+    cp_url, cp_body, cp_headers = session.calls_with_headers[1]
     assert cp_url == "https://management.us-east-1.kiro.dev/"
     assert cp_body == {"maxResults": 10}
     assert cp_headers["X-Amz-Target"] == "AmazonCodeWhispererService.ListAvailableProfiles"
@@ -1031,7 +1033,7 @@ async def test_poll_oidc_expired_token_reports_expired(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_poll_oidc_multi_profile_picks_first(tmp_path, monkeypatch):
+async def test_poll_oidc_multi_profile_asks_which_to_use(tmp_path, monkeypatch):
     service, _ = _service(
         tmp_path,
         responses=[
@@ -1045,17 +1047,17 @@ async def test_poll_oidc_multi_profile_picks_first(tmp_path, monkeypatch):
                     ]
                 },
             ),
+            _FakeResp(200, {"profiles": []}),
         ],
     )
     begin = await _begin_oidc(
         service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
     )
-    assert await service.poll_device(begin["login_id"]) == {
-        "status": "authorized",
-        "provider": "Enterprise",
-    }
-    saved = TokenStore(tmp_path).resolve()
-    assert saved is not None and saved.profile_arn == "arn:one"
+    result = await service.poll_device(begin["login_id"])
+    assert result["status"] == "choose_profile"
+    assert [p["arn"] for p in result["profiles"]] == ["arn:one", "arn:two"]
+    assert result["selected"] == "arn:one"
+    assert TokenStore(tmp_path).resolve() is None
 
 
 _PROFILE_ARN = "arn:aws:codewhisperer:us-east-1:305277579777:profile/W9XPAPWM3D77"
@@ -1081,6 +1083,7 @@ async def test_poll_idc_follows_next_token_past_an_empty_first_page(tmp_path, mo
             _FakeResp(200, {"accessToken": "at-pg", "refreshToken": "rt-pg", "expiresIn": 3600}),
             _page([], next_token="tok-1"),
             _page([{"arn": _PROFILE_ARN, "profileName": "Kiro"}]),
+            _page([]),
         ],
     )
     begin = await _begin_oidc(
@@ -1090,7 +1093,7 @@ async def test_poll_idc_follows_next_token_past_an_empty_first_page(tmp_path, mo
     assert result == {"status": "authorized", "provider": "Enterprise"}
     saved = TokenStore(tmp_path).resolve()
     assert saved is not None and saved.profile_arn == _PROFILE_ARN
-    first, second = session.calls_with_headers[-2:]
+    first, second = session.calls_with_headers[1:3]
     assert first[0] == second[0] == "https://management.us-east-1.kiro.dev/"
     assert first[1] == {"maxResults": 10}
     assert second[1] == {"maxResults": 10, "nextToken": "tok-1"}
@@ -1098,28 +1101,29 @@ async def test_poll_idc_follows_next_token_past_an_empty_first_page(tmp_path, mo
 
 
 @pytest.mark.asyncio
-async def test_list_available_profiles_stops_at_the_first_page_with_a_profile():
+async def test_list_available_profiles_reads_every_page_of_every_host():
     session = _FakeSession(
         [
             _page([], next_token="t1"),
             _page([{"arn": "arn:a", "profileName": "A"}], next_token="t2"),
             _page([{"arn": "arn:b", "profileName": "B"}]),
+            _page([]),
         ]
     )
     listing = await control_plane.list_available_profiles("at", region="us-east-1", session=session)
-    assert [p.arn for p in listing.profiles] == ["arn:a"]
-    assert listing.pages == 2
+    assert [p.arn for p in listing.profiles] == ["arn:a", "arn:b"]
+    assert listing.pages == 3
     assert listing.url == "https://management.us-east-1.kiro.dev/"
-    assert len(session.calls) == 2
+    assert [u for u, _ in session.calls] == [_US_CPS, _US_CPS, _US_CPS, _EU_CPS]
 
 
 @pytest.mark.asyncio
 async def test_list_available_profiles_single_page_reads_one_page():
-    session = _FakeSession([_page([{"arn": "arn:a", "profileName": "A"}])])
+    session = _FakeSession([_page([{"arn": "arn:a", "profileName": "A"}]), _page([])])
     listing = await control_plane.list_available_profiles("at", region="us-east-1", session=session)
     assert [p.arn for p in listing.profiles] == ["arn:a"]
     assert listing.pages == 1
-    assert len(session.calls) == 1
+    assert [u for u, _ in session.calls] == [_US_CPS, _EU_CPS]
 
 
 @pytest.mark.asyncio
@@ -1185,8 +1189,8 @@ async def test_poll_idc_bad_later_page_is_error_and_saves_nothing(
 
 @pytest.mark.asyncio
 async def test_poll_idc_uses_a_profile_found_before_a_bad_later_page(tmp_path, monkeypatch):
-    """Page 1 lists a profile and offers a nextToken: sign-in uses that profile and
-    never asks for page 2, so a bad page 2 cannot fail it."""
+    """Page 1 lists a profile and offers a nextToken: a bad page 2 ends that host's
+    listing but keeps the page-1 profile, and the next host is still asked."""
     service, session = _service(
         tmp_path,
         responses=[
@@ -1205,7 +1209,11 @@ async def test_poll_idc_uses_a_profile_found_before_a_bad_later_page(tmp_path, m
     }
     saved = TokenStore(tmp_path).resolve()
     assert saved is not None and saved.profile_arn == _PROFILE_ARN
-    assert [url for url, _ in session.calls if url in (_US_CPS, _EU_CPS)] == [_US_CPS]
+    assert [url for url, _ in session.calls if url in (_US_CPS, _EU_CPS)] == [
+        _US_CPS,
+        _US_CPS,
+        _EU_CPS,
+    ]
 
 
 @pytest.mark.asyncio
@@ -1326,6 +1334,7 @@ async def test_control_plane_tolerates_amz_json_content_type(tmp_path, monkeypat
     session._responses = [
         _FakeResp(200, {"accessToken": "at-ct", "expiresIn": 3600}),
         _AmzResp(200, {"profiles": [{"arn": "arn:ct", "profileName": "CT"}]}),
+        _AmzResp(200, {"profiles": []}),
     ]
     begin = await _begin_oidc(
         service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
@@ -1678,6 +1687,7 @@ async def test_poll_idc_falls_through_to_prod_when_the_viewer_host_has_nothing(
             _FakeResp(200, {"accessToken": "at-f", "expiresIn": 3600}),
             viewer_answer,
             _page([{"arn": arn, "profileName": "Prod"}]),
+            _page([]),
         ],
     )
     begin = await _begin_oidc(
@@ -1689,7 +1699,7 @@ async def test_poll_idc_falls_through_to_prod_when_the_viewer_host_has_nothing(
     }
     saved = TokenStore(tmp_path).resolve()
     assert saved is not None and saved.profile_arn == arn
-    assert [u for u, _ in session.calls if "kiro" in u] == [_GAMMA_CPS, _US_CPS]
+    assert [u for u, _ in session.calls if "kiro" in u] == [_GAMMA_CPS, _US_CPS, _EU_CPS]
 
 
 @pytest.mark.asyncio

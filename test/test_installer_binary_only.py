@@ -158,6 +158,7 @@ if [ -z "${FAKE_PIP_INSTALL_EMPTY:-}" ]; then
   printf '#!/bin/sh\\necho kirocrew\\n' > "$_venv_root/bin/kirocrew"
   chmod 755 "$_venv_root/bin/kirocrew"
   : > "$_venv_root/.kiro_crew_installed"
+  mkdir -p "$_venv_root/lib/python3/site-packages"
 fi
 """
 
@@ -247,6 +248,7 @@ def _prepare_installer(
     injected: bool = False,
     runpip_added: bool = False,
     cp_fails: bool = False,
+    wheel_bytes: bytes = b"verified wheel",
 ) -> tuple[list[str], dict[str, str], Path, Path]:
     """Stage one installer run without starting it: returns the argv, its
     environment, the run root (cwd) and the file the fakes record pip's argv
@@ -255,7 +257,7 @@ def _prepare_installer(
         pytest.skip("cli.sh is supported on macOS and Linux only")
     case.mkdir(exist_ok=True)
     wheel = case / WHEEL_NAME
-    wheel.write_bytes(b"verified wheel")
+    wheel.write_bytes(wheel_bytes)
     manifest = _build_manifest(case, key, wheel)
     cdn = _stage_cdn(case, manifest, wheel)
     script = _patched_installer(case, key)
@@ -337,6 +339,7 @@ def _run_installer(
     injected: bool = False,
     runpip_added: bool = False,
     cp_fails: bool = False,
+    wheel_bytes: bytes = b"verified wheel",
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     argv, env, run_root, argv_file = _prepare_installer(
         case,
@@ -351,6 +354,7 @@ def _run_installer(
         injected=injected,
         runpip_added=runpip_added,
         cp_fails=cp_fails,
+        wheel_bytes=wheel_bytes,
     )
     result = run_bounded(argv, env, cwd=str(run_root))
     recorded = argv_file.read_text(encoding="utf-8").splitlines() if argv_file.exists() else []
@@ -571,6 +575,146 @@ def test_venv_rebuild_that_lands_a_usable_venv_commits_and_drops_the_backup(
     assert (venv / "bin" / "kirocrew").read_text(encoding="utf-8") == "#!/bin/sh\necho kirocrew\n"
     assert (venv / ".kiro_crew_installed").exists()
     assert not list(case.glob("run/data-home-venv.pre-rebuild.*"))
+
+
+# A re-run carries the declared optional extras the install being replaced has
+
+#: The stub ``kiro_crew.extras`` an existing install's tree holds: the read runs that
+#: tree's own interpreter and imports its own map.
+_STUB_EXTRAS = (
+    "REQUIREMENTS = {\n"
+    '    "otlp": ("opentelemetry-exporter-otlp-proto-http==1.44.0",),\n'
+    '    "feishu": ("lark-oapi>=1.4,<2",),\n'
+    '    "voice": ("boto3>=1.34,<2", "pywhispercpp>=1.5,<2"),\n'
+    "}\n"
+)
+
+
+def _real_tree(tree: Path, *dists: str) -> None:
+    """A minimal REAL venv at *tree* whose ``bin/python`` runs the base interpreter,
+    holding a stub ``kiro_crew.extras`` and an empty ``.dist-info`` per ``name-version``.
+
+    Its ``pyvenv.cfg`` says ``include-system-site-packages = false`` as every real
+    venv's does: without the key ``site`` reads it as true, and the base
+    interpreter's own packages would count as the tree's."""
+    if os.name == "nt":
+        pytest.skip("cli.sh is supported on macOS and Linux only")
+    base = Path(getattr(sys, "_base_executable", sys.executable)).resolve()
+    (tree / "bin").mkdir(parents=True, exist_ok=True)
+    (tree / "pyvenv.cfg").write_text(
+        f"home = {base.parent}\ninclude-system-site-packages = false\n", encoding="utf-8"
+    )
+    (tree / "bin" / "python").symlink_to(base)
+    (tree / "bin" / "kirocrew").write_text("#!/bin/sh\necho previous\n", encoding="utf-8")
+    (tree / "bin" / "kirocrew").chmod(0o755)
+    site = tree / "lib" / f"python{sys.version_info[0]}.{sys.version_info[1]}" / "site-packages"
+    (site / "kiro_crew").mkdir(parents=True)
+    (site / "kiro_crew" / "__init__.py").write_text("", encoding="utf-8")
+    (site / "kiro_crew" / "extras.py").write_text(_STUB_EXTRAS, encoding="utf-8")
+    for dist in dists:
+        name, version = dist.rsplit("-", 1)
+        info = site / f"{name.replace('-', '_')}-{version}.dist-info"
+        info.mkdir()
+        (info / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding="utf-8"
+        )
+
+
+def _data_home(case: Path) -> Path:
+    data_home = case / "run" / "data-home"
+    data_home.mkdir(parents=True)
+    return data_home
+
+
+def test_venv_rerun_carries_the_extras_the_existing_install_has(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """The extra rides on the wheel argument of the one pip step, and a package that
+    is not an extra is named with the command that adds it back."""
+    case = tmp_path / "case"
+    _data_home(case)
+    venv = case / "run" / "data-home-venv"
+    _real_tree(venv, "lark-oapi-1.4.0", "faiss-cpu-1.9.0")
+
+    result, argv = _run_installer(case, signing_key, with_pipx=False)
+
+    assert result.returncode == 0, result.stderr
+    assert argv[-2] == ONLY_BINARY, argv
+    assert argv[-1].endswith(f"{WHEEL_NAME}[feishu]"), argv
+    # The fake pip installs nothing, so the note names lark-oapi as well here.
+    note = next((ln for ln in result.stdout.splitlines() if ln.startswith("Note: ")), "")
+    assert "does not carry: faiss-cpu" in note, result.stdout
+    assert f"back with: {venv}/bin/python -m pip install faiss-cpu" in note
+
+
+def test_venv_rerun_reads_the_versioned_tree_the_stable_link_names(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """After an in-app update the live tree is the versioned sibling behind
+    ``${VENV}-current``, not ``$VENV``: its extras are the ones carried."""
+    case = tmp_path / "case"
+    _data_home(case)
+    venv = case / "run" / "data-home-venv"
+    _real_tree(venv)
+    sibling = case / "run" / "data-home-venv-0.0.2"
+    _real_tree(sibling, "lark-oapi-1.4.0")
+    (case / "run" / "data-home-venv-current").symlink_to(sibling)
+
+    result, argv = _run_installer(case, signing_key, with_pipx=False)
+
+    assert result.returncode == 0, result.stderr
+    assert argv[-1].endswith(f"{WHEEL_NAME}[feishu]"), argv
+
+
+def _wheel_requiring(*requires: str) -> bytes:
+    """A wheel archive whose METADATA declares *requires*."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as wheel:
+        lines = "".join(f"Requires-Dist: {r}\n" for r in requires)
+        wheel.writestr(
+            "kirocrew-1.2.3.dist-info/METADATA",
+            f"Metadata-Version: 2.1\nName: kirocrew\nVersion: 1.2.3\n{lines}",
+        )
+    return buf.getvalue()
+
+
+def test_venv_rerun_failure_names_the_carried_extra_but_not_a_base_one(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """A carried extra that cannot be installed fails the re-run and the previous
+    install is restored; the added line names the extra an uninstall stops carrying,
+    and leaves out one whose packages the release requires anyway."""
+    case = tmp_path / "case"
+    _data_home(case)
+    venv = case / "run" / "data-home-venv"
+    _real_tree(venv, "lark-oapi-1.4.0", "opentelemetry-exporter-otlp-proto-http-1.44.0")
+    wheel = _wheel_requiring(
+        "opentelemetry-exporter-otlp-proto-http==1.44.0",
+        'lark-oapi<2,>=1.4; extra == "feishu"',
+        'opentelemetry-exporter-otlp-proto-http==1.44.0; extra == "otlp"',
+    )
+
+    result, argv = _run_installer(
+        case,
+        signing_key,
+        with_pipx=False,
+        fail_with="ERROR: No matching distribution found for lark-oapi<2,>=1.4\n",
+        wheel_bytes=wheel,
+    )
+
+    assert result.returncode == 1
+    assert argv[-1].endswith(f"{WHEEL_NAME}[feishu,otlp]"), argv
+    line = next(
+        (ln for ln in result.stderr.splitlines() if "carries the optional extras" in ln), ""
+    )
+    assert "extras feishu because" in line, result.stderr
+    assert "otlp" not in line
+    assert "stops the installer carrying it" in line
+    assert "The previous install was restored" in result.stderr
+    assert (venv / "bin" / "kirocrew").read_text(encoding="utf-8") == "#!/bin/sh\necho previous\n"
 
 
 def test_venv_rebuild_verifies_before_dropping_the_backup() -> None:

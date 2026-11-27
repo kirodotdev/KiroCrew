@@ -211,9 +211,9 @@ def test_the_cut_runs_after_redaction_so_no_part_of_a_key_survives():
 
 
 def test_a_key_a_control_character_split_is_caught_before_the_cut():
-    """The first pass cannot see a key with a bidi override inside it; removing the
-    override joins it, and it is redacted again before the cut."""
-    hidden = TOKEN[:12] + "\u202e" + TOKEN[12:]
+    """The first pass cannot see a key with a C0 control inside it; removing the
+    control joins it, and it is redacted again before the cut."""
+    hidden = TOKEN[:12] + "\x07" + TOKEN[12:]
     assert redact_via_context(hidden) == hidden, "the fixture must slip the first pass"
     text = "x" * (LIMIT - 15) + " " + hidden
     snap = _default(FieldRead(fields={"waiting_items": [text], "workers_total": 0}))

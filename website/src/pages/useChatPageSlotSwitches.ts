@@ -12,6 +12,7 @@ import { markChallengeAutoSend } from '../utils/channelChallengeSend'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import { errMessage } from '../utils/thunkError'
 import { showTranscriptForkFailure } from '../utils/forkFailure'
+import type { PrivateForkMemoryMode } from '../utils/forkMemoryModes'
 import { withReason } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import type { FollowupStartMode } from '../components/FollowUpCard'
@@ -38,7 +39,7 @@ export function useForkSession({
   // history; with it off the plain entry already forks with history. A primitive, so it can sit in
   // the transcript renderer's dependency list.
   const forkDirectionChoice = forkCfg?.tail_fork_enabled === true
-  const handleFork = useCallback(async (visibleIndex: number, messageId?: string, explicitDirection?: 'head'): Promise<boolean> => {
+  const handleFork = useCallback(async (visibleIndex: number, messageId?: string, explicitDirection?: 'head', memoryMode?: PrivateForkMemoryMode): Promise<boolean> => {
     if (!activeSlot) return false
     let direction: 'head' | 'tail' = 'head' // hoisted so the catch advises the same way
     let control: string | undefined
@@ -71,7 +72,7 @@ export function useForkSession({
       if (resolvedCfg?.tail_fork_enabled === true) {
         control = i18nT(direction === 'head' ? 'pages.chat.assistantMessage.fork_earlier_messages' : 'pages.chat.assistantMessage.fork_later_messages_only')
       }
-      const result = await dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, messageId, direction })).unwrap()
+      const result = await dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, messageId, direction, ...(memoryMode ? { memoryMode } : {}) })).unwrap()
       if (result.ok) {
         if (forkMayOpen(store.getState(), origin)) {
           const switching = dispatch(switchSlot({ key: result.key, requestSeq: origin.seq }))
@@ -165,8 +166,8 @@ export function useSignedLinkAnchor({
     const token = takeUrlToken()
     if (!token) { tokenConsumingRef.current = false; return }
     const prompt = extractPromptFromToken(token)
-    if (!prompt) { tokenConsumingRef.current = false; return }
     const { sessionKey, channel, threadTs, msgTs } = extractSlackContextFromToken(token)
+    if (!prompt && !sessionKey && !(channel && threadTs)) { tokenConsumingRef.current = false; return }
     // Backend session keys are history keys (dashboard:chat-…); the frontend
     // slot key is the bare form.
     const targetSlot = sessionKey ? sessionKey.replace(/^dashboard:/, '') : null
@@ -227,11 +228,16 @@ export function useSignedLinkAnchor({
       if (slotKey) {
         newSessionRef.current = false
         dispatch(switchSlot(slotKey))
-        safeSetSessionItem(
-          PREFILL_STORAGE_KEY,
-          JSON.stringify({ slotKey, prompt, ts: Date.now() }),
-        )
+        if (prompt) {
+          safeSetSessionItem(
+            PREFILL_STORAGE_KEY,
+            JSON.stringify({ slotKey, prompt, ts: Date.now() }),
+          )
+        }
       }
+      // A long link can omit its prompt while keeping the Slack session route.
+      // Leave the target's draft intact and do not send a replacement message.
+      if (!prompt) return
       // While the switch to `slotKey` has not committed yet, the composer still
       // belongs to the old session and a write here would persist the prompt
       // into ITS draft. The slot-change effect restores the prompt from the

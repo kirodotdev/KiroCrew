@@ -61,7 +61,7 @@ function renderWindow() {
 
 /** A peer row lands only after two chained queries (capabilities, then the slot detail). */
 const PEER_ROW_WAIT = { timeout: 5000 }
-const sentCard = async () => screen.findByTestId('quote-card-sent', {}, PEER_ROW_WAIT)
+const sentCard = async () => screen.findByTestId('quote-card-sent-jump', {}, PEER_ROW_WAIT)
 
 beforeEach(() => {
   vi.stubGlobal('EventSource', QuietEventSource)
@@ -215,9 +215,9 @@ describe('CrewChatWindow quote card jump', () => {
     Element.prototype.scrollIntoView = function () { if (scroller) scroller.scrollTop = 568 }
     onTestFinished(() => { Element.prototype.scrollIntoView = original })
     renderWindow()
-    const cards = await screen.findAllByTestId('quote-card-sent', {}, PEER_ROW_WAIT)
+    const cards = await screen.findAllByTestId('quote-card-sent-jump', {}, PEER_ROW_WAIT)
     const dock = screen.getByTestId('crew-window-dock')
-    scroller = dock.parentElement!.querySelector<HTMLElement>('[aria-live="polite"]')
+    scroller = dock.previousElementSibling as HTMLElement | null
     expect(scroller).not.toBeNull()
     let top = 0
     Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => 2000 })
@@ -264,7 +264,7 @@ describe('CrewChatWindow quote card jump', () => {
     onTestFinished(() => { Element.prototype.scrollIntoView = original })
     renderWindow()
     const card = await sentCard()
-    const scroller = screen.getByTestId('crew-window-dock').parentElement!.querySelector<HTMLElement>('[aria-live="polite"]')!
+    const scroller = screen.getByTestId('crew-window-dock').previousElementSibling as HTMLElement
     // The reader is at the bottom of 2000px of rows in a 400px viewport.
     let height = 2000
     let top = 1600
@@ -305,7 +305,7 @@ describe('CrewChatWindow quote card jump', () => {
     renderWindow()
     const card = await sentCard()
     const dock = screen.getByTestId('crew-window-dock')
-    const scroller = dock.parentElement!.querySelector<HTMLElement>('[aria-live="polite"]')!
+    const scroller = dock.previousElementSibling as HTMLElement
     let height = 2000
     let top = 0
     Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => height })

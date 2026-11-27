@@ -126,6 +126,15 @@ export interface TailnetMobileConfigure {
   restart_required: boolean
 }
 
+/** One `config.local.json` key a `409 config_overlay_conflict` setup answer
+ *  names: the value that file holds and the `config.json` value that applies
+ *  once it is removed. */
+export interface TailnetMobileOverride {
+  field: string
+  local: unknown
+  applies: unknown
+}
+
 /** A minted mobile-access QR. Carries a LIVE session token in both fields, so
  *  it is fetched only on explicit user action and never cached. */
 export interface TailnetMobileQr {
@@ -195,6 +204,12 @@ export function createRemoteAccessEndpoints({ get, post, put, j }: ClientTranspo
     tailnetMobile: () => get('/api/tailnet/mobile').then(j) as Promise<TailnetMobileData>,
     tailnetMobileConfigure: () =>
       post('/api/tailnet/mobile/configure', {}).then(j) as Promise<TailnetMobileConfigure>,
+    // Removes only the listed keys from config.local.json; the card calls it
+    // after the owner confirms the overrides a setup conflict listed.
+    tailnetMobileClearOverrides: (fields: string[]) =>
+      post('/api/tailnet/mobile/clear-overrides', { fields }).then(j) as Promise<{
+        removed: string[]
+      }>,
     tailnetMobilePublish: () =>
       post('/api/tailnet/mobile/publish', {}).then(j) as Promise<TailnetMobileMutation>,
     tailnetMobileUnpublish: () =>

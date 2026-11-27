@@ -8,6 +8,7 @@
 
 import { isNotFoundError } from '../api/apiError'
 import { i18nT } from '../i18n/t'
+import { supportsEffort } from '../providers/modelRegistry'
 
 /**
  * Catalog KEY for each effort level's display label. '' = provider/model default.
@@ -72,12 +73,14 @@ const HAIKU_VERSION_RE = /haiku[-_.]?(\d{1,2})(?:[-_.](\d{1,2}))?(?!\d)/
 
 /**
  * True when the Haiku id `model` is version 5.5 or later — mirrors the backend
- * `haiku_supports_effort`. A missing minor counts as 0; an id whose version
- * cannot be read answers false, so an unknown Haiku keeps the control hidden.
+ * `haiku_supports_effort`. A missing minor counts as 0. An id with no readable
+ * version is the bare `haiku` alias Claude Code resolves to its current Haiku,
+ * so the registry row that owns the alias answers; a spelling no row owns
+ * answers false, so an unknown Haiku keeps the control hidden.
  */
 export function haikuSupportsEffort(model: string): boolean {
   const match = HAIKU_VERSION_RE.exec(model.toLowerCase())
-  if (!match) return false
+  if (!match) return supportsEffort(model) === true
   const major = Number(match[1])
   const minor = Number(match[2] ?? 0)
   const [minMajor, minMinor] = HAIKU_EFFORT_MIN_VERSION

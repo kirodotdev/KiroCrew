@@ -26,8 +26,15 @@ function creditUsageAccountKey(usage: KiroAccountUsage): string {
  * can hold an unsaved Company SSO URL and region, which leaving for the chat
  * would drop. With no sign-in card there is no draft, so a failed read keeps
  * its "Ask the agent" way out.
+ *
+ * `showIdentity` (default true) names the account above the usage. It is false
+ * when the account header beside this card already names the same account.
  */
-export function KiroCreditsCard({ usage, handoff }: { usage: KiroAccountUsage, handoff: boolean }) {
+export function KiroCreditsCard({ usage, handoff, showIdentity = true }: {
+  usage: KiroAccountUsage
+  handoff: boolean
+  showIdentity?: boolean
+}) {
   return (
     <Card data-testid="kiro-credits-card">
       <CardTitle>
@@ -35,8 +42,8 @@ export function KiroCreditsCard({ usage, handoff }: { usage: KiroAccountUsage, h
         {i18nT('pages.developer.kiroAccountCredits.title')}
       </CardTitle>
       <div className="flex flex-col gap-4">
-        <AccountIdentity usage={usage} />
-        <CreditUsage key={creditUsageAccountKey(usage)} usage={usage} onClose={noop} handoff={handoff} />
+        {showIdentity && <AccountIdentity usage={usage} />}
+        <CreditUsage key={creditUsageAccountKey(usage)} usage={usage} onClose={noop} handoff={handoff} quiet />
         <ManageKiroAccountLink />
       </div>
     </Card>

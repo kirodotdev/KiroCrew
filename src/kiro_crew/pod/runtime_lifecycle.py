@@ -324,7 +324,7 @@ def restart_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
 def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     """Stop pod *name* and reclaim its isolated HOME, or say why it could not.
 
-    Teardown lives HERE on both platforms rather than in a post-stop service hook.
+    Teardown lives HERE on every backend rather than in a post-stop service hook.
     systemd runs ``ExecStopPost`` before the final kill of the unit's cgroup, so a
     hook-based delete raced the pod's own surviving subprocesses — they reopened
     their audit log in append mode and recreated the directory behind it — and it
@@ -452,7 +452,7 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
                 stdout=cp.stdout or "",
                 stderr=(
                     f"pod stopped and its HOME was reclaimed, but the boot override at "
-                    f"{unit_mod.dropin_path(cfg, name)} could not be removed — this pod "
+                    f"{dropin_path} could not be removed — this pod "
                     f"is NOT zero-residue. Delete it, then run `systemctl --user "
                     "daemon-reload`."
                 ),

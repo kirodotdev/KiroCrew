@@ -5,6 +5,7 @@ import ChatInput from '../components/ChatInput'
 import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import { SlotProvider } from '../providers/SlotContext'
 import { addStashEntry, makeStashEntry } from '../utils/promptStash'
+import { registerComposerUpload, unregisterComposerUpload } from '../utils/composerSendHolds'
 
 /**
  * `inlineToolbarWhileFits` (#19608): the Crewmates DM composer is ONE row --
@@ -111,7 +112,22 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     expect(inline()).toBe(false)
   })
 
-  // Without the dictation panel (setting off, no WebGL2, or reduced motion) a
+  // The running uploads' chips draw even with an empty draft (no send-held
+  // line then); on the single row they would squeeze the text to nothing.
+  it('opens to two rows while an upload runs with an empty draft, and returns once it ends', () => {
+    const controller = new AbortController()
+    onTestFinished(() => { unregisterComposerUpload('chat-up', controller) })
+    renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits uploadSlot="chat-up" onUploadFiles={vi.fn()} />)
+    expect(inline()).toBe(true)
+    act(() => registerComposerUpload('chat-up', controller, 'a.png'))
+    expect(screen.getByTestId('composer-upload-chip')).toBeInTheDocument()
+    expect(inline()).toBe(false)
+    act(() => unregisterComposerUpload('chat-up', controller))
+    expect(screen.queryByTestId('composer-upload-chip')).toBeNull()
+    expect(inline()).toBe(true)
+  })
+
+  // Without the dictation panel (setting off, or reduced motion) a
   // recording draws the voice bar's Recording strip; on the single row it would
   // sit beside the text and squeeze both.
   it('opens to two rows while recording draws the Recording strip', () => {
@@ -156,6 +172,20 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     // The touch font floor (16px, keyed on this attribute) must reach the
     // probe too, or it measures at 14px while the textarea wraps at 16px.
     expect(probe.hasAttribute('data-composer-typo')).toBe(true)
+  })
+
+  // The probe holds the whole draft. A long one (Quote on a long reply)
+  // wrapped it a thousand pixels tall inside the box, so revealing the caret
+  // scrolled the box itself and left it blank. Zero height keeps it out of
+  // the box's scrollable area; the fit is read from `scrollHeight`, which
+  // still reports the wrapped height. The real-layout half is the
+  // `capture-bot-chat-long-quote.mjs` harness.
+  it('gives the fit probe no height of its own, so a long draft cannot scroll the box', () => {
+    renderWithProviders(<ChatInput value={'word '.repeat(400)} onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits />)
+    const probe = screen.getByTestId('composer-one-row-probe')
+    expect(probe.className.split(/\s+/)).toContain('h-0')
+    expect(probe.className).toContain('overflow-y-auto')
+    expect(probe.className).toContain('absolute')
   })
 
   // One row centres the text line on the buttons: equal padding above and

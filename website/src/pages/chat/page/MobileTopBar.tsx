@@ -1,6 +1,6 @@
 import { type ComponentProps, type Dispatch, type MutableRefObject, type ReactNode, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
-import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, Rows2, VenetianMask } from 'lucide-react'
+import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, Rows2, Search, VenetianMask } from 'lucide-react'
 
 import { generateSlotTitle } from '../../../hooks/slotTitleGeneration'
 import type { SplitDir } from '../../../hooks/useSessionGrid'
@@ -69,6 +69,10 @@ interface MobileTopBarProps {
   onPromote: ComponentProps<typeof ChatHeaderMenu>['onPromote']
   promoting: boolean
   dispatch: AppDispatch
+  /** Opens the chat's history search, a full-screen sheet on a phone. */
+  onOpenSearch: () => void
+  /** The Sessions list's rows (`personChatPageSlots`). */
+  personSlots: ChatSlot[]
 }
 
 /**
@@ -107,9 +111,14 @@ export default function MobileTopBar({
   onPromote,
   promoting,
   dispatch,
+  onOpenSearch,
+  personSlots,
 }: MobileTopBarProps) {
   const explore = useExplorePreview()
   const slackLink = slackLinkTarget(currentSlot)
+  // A Bot's session the list leaves out, or a crew member under its listed
+  // conductor, has no row to reveal; the wide header offers no menu for those.
+  const listed = personSlots.some(s => s.key === activeSlot)
   return (
     <>
     {/* Phone: this page's share of the shell's single top bar. Leading cell:
@@ -144,13 +153,13 @@ export default function MobileTopBar({
               <ChatHeaderMenu
                 activeSlot={activeSlot}
                 agent={currentSlot?.agent}
-                onReveal={() => {
+                onReveal={listed ? () => {
                   // Same as the inline row's reveal: the phone drives its own
                   // drawer, and the store carries the request (#912).
                   sidebarAutoHidden.current = null
                   openSidebar()
                   dispatch(requestSlotReveal(activeSlot))
-                }}
+                } : undefined}
                 onRename={() => setEditingTitleSlot(activeSlot)}
                 // The phone bar does not render the title row's hover-revealed
                 // Auto-title button (an opacity-0 control has no touch home), so
@@ -230,6 +239,11 @@ export default function MobileTopBar({
               actions: renders nothing while no cut is in force. */}
           <ConcurrencyCutMenuItem Item={DropdownMenuItem} />
           {explore && <MilestonesMenuItem Item={DropdownMenuItem} />}
+          {/* The chat's history search: the bar holds two controls, so it is
+              a row here, not a button of its own. */}
+          <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={onOpenSearch} data-testid="mobile-topbar-search">
+            <span className="flex items-center gap-2"><Search size={14} className="shrink-0 text-muted" /><span>{i18nT('components.chatHistorySearch.open')}</span></span>
+          </DropdownMenuItem>
           {/* The session header's Slack link (code channel or thread), which
               the phone draws no header for. */}
           {slackLink && (

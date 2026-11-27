@@ -19,8 +19,9 @@ Tools
 -----
 
 ``code_channel_set_view``
-    an ``html`` or ``block_kit`` tab. The Code tab's diff is the workspace's,
-    the plan tab comes with the plan canvas, and the Workers tab and the pull
+    an ``html`` or ``block_kit`` tab, or ``diff``: the workspace publishes the
+    Code tab (its one writer) now, as a turn's end would, and says whether it
+    holds a diff. The plan tab comes with the plan canvas, and the Workers tab and the pull
     request tabs are the channel's own (:mod:`.tabs`); their keys are reserved,
     and the agent's tabs are the first to make room at Slack's cap
     (:mod:`.views`). HTML is self-contained (no
@@ -150,6 +151,21 @@ CHANNEL_REFUSED_TEXT = (
 CHANNEL_OFF_TEXT = (
     "Error: the bot is off (or in review mode) in this code channel or the channel it "
     "came from, so nothing was posted there."
+)
+NO_CODE_TAB_TEXT = (
+    "Error: this channel's Code tab has no diff to show: the change is not in this "
+    "channel's worktree or in its helper agents' commits (a pull request made in another "
+    "checkout, say). Show the diff as an html view instead (type html, one self-contained "
+    "page), and reply in the channel with a one-line summary and the PR link."
+)
+CODE_TAB_PENDING_TEXT = (
+    "Error: the Code tab could not be confirmed in time (this channel's pull request and "
+    "CI reads are slow). Send the diff as an html view now (type html, one self-contained "
+    "page), and reply in the channel with a one-line summary and the PR link."
+)
+THREAD_NO_CODE_TAB_TEXT = (
+    "Error: this is a Conductor thread, which has no Code tab or view tabs. Reply here "
+    "with a one-line summary of the change and the PR link; do not paste the diff."
 )
 TOO_MANY_VIEWS_TEXT = (
     "Error: this channel already has Slack's maximum of five tabs and none of them is one "
@@ -720,10 +736,7 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
     )
     kind = _text(args, "type") or "html"
     if kind == "diff":
-        raise ArgumentError(
-            "the Code tab's diff is published from the worktree automatically; "
-            "use html or block_kit"
-        )
+        return await _show_code_tab(call, args)
     if kind == "pull_request":
         raise ArgumentError(
             "pull request tabs are opened automatically for the channel's newest open "
@@ -732,7 +745,7 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
     if kind == "canvas":
         raise ArgumentError("the plan canvas tab comes with code_channel_publish_plan_canvas")
     if kind not in ("html", "block_kit"):
-        raise ArgumentError("type must be html or block_kit")
+        raise ArgumentError("type must be html, diff or block_kit")
     name = _redact(_text(args, "name", max_len=_MAX_VIEW_NAME))
     view_key = _text(args, "view_key", required=True)
     if not _VIEW_KEY_RE.match(view_key):
@@ -789,6 +802,38 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
     label = name or view_key
     note = f" To make room, your older view {removed!r} was removed." if removed else ""
     return f"Published the {kind} view {label!r} in this channel (view {view_id}).{note}"
+
+
+async def _show_code_tab(call: Call, args: dict[str, Any]) -> str:
+    """The Code tab (Slack's one ``diff`` view) published now, by the workspace.
+
+    The workspace is the tab's only writer (its turn-end pass builds it from the
+    channel's worktree and its helper agents' commits, screened and scoped), so
+    the agent asks it to publish rather than sending a diff of its own.
+    """
+    given = sorted(k for k, v in args.items() if k != "type" and v not in (None, "", []))
+    if given:
+        raise ArgumentError(
+            "a diff view takes no content or view_key: the Code tab shows this channel's "
+            "own changes and its helper agents' commits"
+        )
+    if call.binding.thread:
+        # No Code tab, and its workspace pass would cut a worktree and move the
+        # thread's session onto it: never asked from a thread.
+        raise ToolRefusal(THREAD_NO_CODE_TAB_TEXT, "thread_room")
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    service = workspace.service()
+    shown = await service.show_code_tab(call.binding) if service is not None else False
+    if shown is None:
+        # The pass goes on, but it may find nothing to show: never promise the tab.
+        raise ToolRefusal(CODE_TAB_PENDING_TEXT, "code_tab_pending")
+    if not shown:
+        raise ToolRefusal(NO_CODE_TAB_TEXT, "no_code_tab")
+    return (
+        "The diff is in this channel's Code tab. Reply with a one-line summary and the "
+        "PR link; do not paste the diff."
+    )
 
 
 async def _publish_plan_canvas(call: Call, args: dict[str, Any]) -> str:

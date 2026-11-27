@@ -508,6 +508,7 @@ class TestHandlers:
             "enabled": True,
             "changed_at": "",
             "locked_by_policy": False,
+            "locked_by_edition": False,
         }
 
     @pytest.mark.asyncio

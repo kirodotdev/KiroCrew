@@ -98,7 +98,7 @@ async def _client_as(reader: str, *, owner_gate=None, state=None):
     """A started client whose requests carry *reader* as ``request["user"]``.
 
     A front middleware stands in for token auth, so one route can be driven as two
-    identities. *owner_gate* replaces ``routes._owner_only`` to test its order against
+    identities. *owner_gate* replaces ``routes.require_owner_dashboard_request`` to test its order against
     the 304 shortcut (the autouse fixture otherwise opens the gate).
     """
     seen_order: list[str] = []
@@ -112,14 +112,14 @@ async def _client_as(reader: str, *, owner_gate=None, state=None):
     app = web.Application(middlewares=[_mark_reader])
     if state is not None:
         app["state"] = state
-    saved = routes._owner_only
+    saved = routes.require_owner_dashboard_request
     if owner_gate is not None:
 
         async def _gate(request, operation):
             seen_order.append("owner_gate")
             return await owner_gate(request, operation)
 
-        routes._owner_only = _gate
+        routes.require_owner_dashboard_request = _gate
     routes.register_member_dashboard_routes(app)
     c = TestClient(TestServer(app))
     await c.start_server()
@@ -127,7 +127,7 @@ async def _client_as(reader: str, *, owner_gate=None, state=None):
         yield c, seen_order
     finally:
         await c.close()
-        routes._owner_only = saved
+        routes.require_owner_dashboard_request = saved
 
 
 async def test_the_conditional_get_is_safe_on_a_per_user_authenticated_page():

@@ -469,6 +469,8 @@ def _artifact(args: argparse.Namespace) -> None:
             # for the cli_commands facade, as in `spawn list`.
             from kiro_crew.loopback_http import deadline_expired
 
+            if isinstance(getattr(exc, "reason", exc), ConnectionRefusedError):
+                return {"error": f"gateway not running (cannot reach dashboard on port {port})"}
             if not deadline_expired(exc):
                 return {"error": str(exc)}
             busy = f"gateway on port {port} is up but did not answer in time (busy)"
@@ -573,10 +575,62 @@ def _artifact(args: argparse.Namespace) -> None:
         path = f"/api/artifacts/{seg}"
         if version is not None:
             path = f"/api/artifacts/{seg}/versions/{int(version)}"
+        docx_arg = getattr(args, "docx", None)
+        xlsx_arg = getattr(args, "xlsx", None)
+        out_arg = docx_arg if docx_arg is not None else xlsx_arg
+        noun = "Word file" if docx_arg is not None else "spreadsheet file"
+        shown = ""
+        if out_arg is not None:  # an empty name is refused below, never swallowed
+            shown = safe_terminal_line(Path(out_arg).name) or "an empty name"
+            try:
+                target = Path(out_arg).expanduser()
+                refused = not target.name or is_sensitive_path(str(target.resolve()))
+            except (OSError, RuntimeError, ValueError):
+                refused = True
+            if refused:
+                print(f"Error: cannot write a {noun} to {shown}", file=sys.stderr)
+                sys.exit(1)
         d = _request("GET", path)
         if d.get("error"):
             print(f"Error: {d['error']}", file=sys.stderr)
             sys.exit(1)
+        if out_arg is not None:
+            kind = str(d.get("kind"))
+            if kind not in ("markdown", "text"):
+                print(
+                    f"Error: a {safe_terminal_line(kind)} artifact cannot be written as a "
+                    f"{noun} (markdown or text only)",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            from kiro_crew.artifact_docx import DocxTooLarge, write_docx, write_new_file
+            from kiro_crew.artifact_xlsx import NoTables, XlsxTooLarge
+            from kiro_crew.artifact_xlsx import build as build_xlsx
+
+            source = d.get("content")
+            source = source if isinstance(source, str) else ""
+            try:
+                if docx_arg is not None:
+                    write_docx(source, target, kind == "markdown")
+                else:
+                    write_new_file(build_xlsx(source), target)
+            except (DocxTooLarge, XlsxTooLarge):
+                print(f"Error: too large to write as a {noun}", file=sys.stderr)
+                sys.exit(1)
+            except NoTables:
+                print("Error: the artifact has no table to write", file=sys.stderr)
+                sys.exit(1)
+            except FileExistsError:
+                print(f"Error: {shown} already exists; nothing written", file=sys.stderr)
+                sys.exit(1)
+            except (OSError, RuntimeError, ValueError) as exc:  # never str(exc): it quotes a path
+                print(
+                    f"Error: could not write {shown}: {type(exc).__name__}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(f"Wrote {shown}")
+            return
         if getattr(args, "meta", False):
             d.pop("content", None)
             print(json.dumps(d, indent=2))

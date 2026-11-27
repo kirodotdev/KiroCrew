@@ -8,6 +8,7 @@ import { settingsPath } from './settingsPath'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
 import { DropdownMenuItem } from './ui/dropdown-menu'
 import { useGuardedLeave } from './NavigationLeaveGuard'
+import HoverTip from './HoverTip'
 
 /**
  * Top-bar update pill: the persistent, passive home for update state.
@@ -109,6 +110,9 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
   }
 
   return (
+    // An in-page hint, not a native `title`: the pill sits in the desktop
+    // window's drag band, where a `title` never paints.
+    <HoverTip label={showLabel ? label : i18nT('components.updatePill.open_update_settings')}>
     <button
       type="button"
       data-testid="update-pill"
@@ -117,7 +121,6 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
       // Crewmates header needs beside it, even on a 320px bar.
       className={`flex items-center gap-1.5 h-7 px-2.5 rounded-xl shrink-0 cursor-pointer text-[12px] whitespace-nowrap border border-accent/30 bg-accent-subtle text-accent hover:opacity-90 transition-opacity${showLabel ? ' min-w-0 max-w-[88px]' : ''}`}
       onClick={openAbout}
-      title={showLabel ? label : i18nT('components.updatePill.open_update_settings')}
       aria-label={i18nT('components.updatePill.open_update_settings')}
     >
       <Icon size={13} className="lucide-inline shrink-0" />
@@ -128,5 +131,6 @@ export default function UpdatePill({ variant = 'pill', showLabel = false }: { va
           With `showLabel` it stays, truncated to the capped pill. */}
       <span className={showLabel ? 'min-w-0 truncate' : 'tb-drop-update-label hidden sm:inline'}>{label}</span>
     </button>
+    </HoverTip>
   )
 }

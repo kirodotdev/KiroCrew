@@ -493,9 +493,11 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
               />
             </div>
           </div>
+          {/* Filled, with the strong edge: the plain edge vanishes on the tint. */}
           <div className="flex items-center gap-2 justify-end">
-            <Btn onClick={() => { setAdding(false); setError('') }}>{i18nT('components.registryManager.cancel')}</Btn>
+            <Btn className="border-border-strong bg-bg-elevated" onClick={() => { setAdding(false); setError('') }}>{i18nT('components.registryManager.cancel')}</Btn>
             <Btn
+              className="border-border-strong bg-bg-elevated"
               onClick={handleAdd}
               disabled={mutation.isPending || !connected}
               {...offlineProps(connected, offlineVerb, i18nT('components.registryManager.add_registry'))}

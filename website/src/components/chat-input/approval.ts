@@ -248,6 +248,11 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     return entry ? { purpose: entry.purpose || '', ts: entry.ts || 0 } : null
   }, shallowEqual)
   const approvalPurpose = approvalToolEntry?.purpose || ''
+  // Display only (`engine_subagent_cards.approval_card_fields`): the task a KAS engine
+  // sub-agent dispatch was given, and the sub-agent whose call this is. Neither is
+  // read by a decide.
+  const approvalSubagentTask = typeof approvalMeta?.subagent_task === 'string' ? approvalMeta.subagent_task.slice(0, 600) : ''
+  const approvalAskedBySubagent = typeof approvalMeta?.asked_by_subagent === 'string' ? approvalMeta.asked_by_subagent.slice(0, 80) : ''
   const approvalTs = approvalToolEntry?.ts || 0
 
   // The same label rule as the tool pill (ToolCallLine): simplified mode shows
@@ -458,7 +463,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalBrowserTrustClass, approvalAlwaysAllowRef, approvalAlwaysAllowRefusal,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
-    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
+    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, approvalSubagentTask, approvalAskedBySubagent, showGhost, showInChat, handleApprovalAction,
     approvalActionsRef,
   }
 }

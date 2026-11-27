@@ -41,6 +41,11 @@ from kiro_crew.acp.image_dimension_wedge import (
     format_many_image_dimension_message,
     is_many_image_dimension,
 )
+from kiro_crew.acp.malformed_request_errors import (
+    _RE_MALFORMED_REQUEST,
+    ADAPTER_INVALID_JSON_BODY_TEXT,
+    is_adapter_invalid_json_body,
+)
 from kiro_crew.acp.model_registry_errors import (
     MODEL_REGISTRY_UNAVAILABLE_TEXT,
     is_model_registry_unavailable,
@@ -71,6 +76,14 @@ from kiro_crew.acp.structured_error_data import (
 from kiro_crew.acp.thinking_binding_errors import (
     _is_thinking_binding_mismatch,
     _is_tools_list_refusal,
+)
+from kiro_crew.acp.transport_errors_model import (  # noqa: F401 - re-exported via this module's facade
+    _RE_INVALID_MODEL_ID,
+    _RE_MODEL_TEMP_UNAVAILABLE,
+    _RE_MODEL_UNAVAILABLE,
+    _auto_remedy,
+    _model_is_unentitled,
+    _rejected_model_from_error,
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -140,6 +153,8 @@ class AcpError(Exception):
             self.rejected_model: str | None = None
         if not hasattr(self, "advertised"):
             self.advertised: list[str] = []
+        if not hasattr(self, "unentitled"):
+            self.unentitled: bool = False
         # Sign-in failure tags, set by :func:`_raise_acp_error` from a session-expiry or
         # rejected-credential frame: ``sign_in_needed`` (every harness) fails the task
         # row as auth unread; ``auth_required`` (signs in through Crew) offers the Kiro
@@ -613,22 +628,6 @@ del _raised
 # the provider `data` field only (it extracts the model name from a structured
 # string); throttle, auth, and the 5xx family match the combined
 # `data + message` haystack so a 5xx token in either field is caught.
-_RE_MODEL_UNAVAILABLE = re.compile(r"[Tt]he model '([^']+)' is not available")
-# kiro-cli >= 2.16 rewording of the same capacity/rollout rejection, which
-# names NO model: "The model you've selected is temporarily unavailable.
-# Please use '/model' to select a different model and try again." Without its
-# own pattern this wording fell through to the unknown-shape branch and was
-# classified terminal, so unattended callers (cron, subagents, consolidation)
-# failed fast on a momentary blip their retry ladder exists to absorb — the
-# exact drift hazard the marker-coupling note above warns about. The quote
-# class covers both the straight and typographic apostrophe in "you've".
-_RE_MODEL_TEMP_UNAVAILABLE = re.compile(
-    r"[Tt]he model you['\u2019]ve selected is temporarily unavailable"
-)
-# MPS ValidationException wording for a model the partition/account does not
-# serve — distinct from the "is not available" capacity string above. Covers the
-# ``auto`` sentinel in partitions that do not serve it.
-_RE_INVALID_MODEL_ID = re.compile(r"[Ii]nvalid model ID:\s*([^\s,;'\"]+)")
 _RE_THROTTLE_NAMED = re.compile(
     r"\b(ThrottlingException|TooManyRequestsException|ServiceQuotaExceededException)\b"
 )
@@ -1053,20 +1052,6 @@ _RE_GENERATE_FAILED = re.compile(r"failed to generate a response", re.IGNORECASE
 # so the two branches can word their guidance for the moment each one fails.
 _RE_PROCESS_FAILED = re.compile(r"failed to process the request", re.IGNORECASE)
 
-# kiro-cli's structural rejection of a payload the backend could not parse:
-# "Improperly formed request". This string has NO source-side handling and
-# passes through the unknown-shape branch verbatim, so the user gets
-# the raw provider text with no repair affordance. This is a DETERMINISTIC
-# rejection (the payload was rejected for its shape, not a momentary backend
-# fault), so retrying the identical payload can only reproduce the same
-# rejection: it is TERMINAL (non-retryable). Matched against the provider `data`
-# field only (like model-unavailable / generate-failed), so a stray echo of the
-# phrase in the JSON-RPC `message` cannot flip an unrelated error into this
-# branch. Drives BOTH _format_acp_error (repair guidance) and
-# _is_transient_raw_error (terminal verdict) so wording and retry-eligibility
-# never drift.
-_RE_MALFORMED_REQUEST = re.compile(r"[Ii]mproperly formed request", re.IGNORECASE)
-
 # kiro-cli's deterministic context-window rejection. It can arrive before the
 # first model event, when a custom agent's prompt, resources, and MCP schemas
 # already fill the window, or mid-conversation, when accumulated history does.
@@ -1118,47 +1103,6 @@ def _provider_detail(data: str) -> str:
     return detail
 
 
-def _model_is_unentitled(data: str, available_models: Sequence[str] | None) -> str | None:
-    """Return the rejected model name iff the account is not entitled to it.
-
-    Upstream reports entitlement failures and transient capacity failures with
-    the SAME string ("The model 'X' is not available"), so the string alone
-    cannot tell them apart. The advertised model list can: it is captured at
-    session init from what this account is actually served, so a rejected model
-    that is absent from it was never on offer -- an entitlement problem no retry
-    can fix. A rejected model that IS advertised really is a transient
-    capacity/rollout blip.
-
-    Returns None when the model is advertised, when nothing was rejected, or
-    when *available_models* is None/empty (entitlement unknowable -- treat as
-    transient rather than telling a user their plan lacks a model on no
-    evidence).
-
-    Both :func:`_format_acp_error` and :func:`_is_transient_raw_error` route
-    through this single helper so the user-facing wording and the retry verdict
-    cannot drift apart -- see the drift warning above.
-    """
-    # Two wordings name the rejected id: kiro-cli's "The model 'X' is not
-    # available" and the MPS validation frame "Invalid model ID: X" (the shape
-    # the background path's ``_rejected_model_from_error`` already accepts).
-    # Both are judged against the same served list so the entitlement wording
-    # and the retry verdict cannot depend on which frame the backend emitted.
-    match = _RE_MODEL_UNAVAILABLE.search(data) or _RE_INVALID_MODEL_ID.search(data)
-    if not match:
-        return None
-    if not available_models:
-        return None
-    rejected = match.group(1)
-    # Route the served-list membership through the canonical helper: casing has
-    # no meaning in these ids, and an entitled-but-differently-cased match must
-    # not be reported as unentitled. The empty-list guard above preserves the
-    # None-on-empty contract, so the helper's empty-means-usable answer is
-    # never consulted here.
-    if not model_is_unusable(rejected, available_models):
-        return None
-    return rejected
-
-
 def _is_transient_raw_error(error: object, available_models: Sequence[str] | None = None) -> bool:
     """True iff a raw ACP JSON-RPC ``error`` is a retryable transient backend
     failure (Bedrock 5xx / throttle / model-unavailable rollout) rather than an
@@ -1169,7 +1113,8 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     wording. :class:`AcpError` carries this verdict (``.transient``) to the
     retry layer (``llm_helpers``, ``chat_runner``). Precedence:
     unentitled-model(terminal) → usage-limit(terminal) →
-    malformed-request(terminal) → context-window-overflow(terminal) →
+    malformed-request(terminal) → adapter invalid-JSON-body(terminal) →
+    context-window-overflow(terminal) →
     unsupported-image(terminal) → oversized-request(terminal) →
     adapter input-too-long(terminal) → request-size-exceeded(terminal) →
     model-unavailable → throttle →
@@ -1215,6 +1160,8 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
         # fall-through, and so a future transient marker added below cannot
         # accidentally match malformed-request wording.
         return False
+    if is_adapter_invalid_json_body(message):
+        return False  # the claude adapter's unparsable body: the same history every time
     if is_many_image_dimension(data):
         # Terminal on this conversation: an image already in the native history
         # exceeds the provider's 2000px many-image cap, so replaying the same
@@ -1324,7 +1271,9 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
     *haystack* is the message text (formatted or raw); *data* is the raw JSON-RPC
     ``error.data`` field when the caller has it (defaults to *haystack*), because
     the malformed-request and model-unavailable patterns are matched against the
-    provider's own field only, never against a phrase echo in ``message``.
+    provider's own field only, never against a phrase echo in ``message``. The
+    one exception is the claude adapter's invalid-JSON-body refusal, which only
+    ever rides in ``message`` and is read from *haystack*, anchored at its start.
 
     Precedence mirrors :func:`_is_transient_raw_error` exactly: usage-limit →
     malformed-request → model-unavailable → throttle → credential-propagation →
@@ -1338,7 +1287,7 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
     data_field = text if data is None else data
     if _RE_USAGE_LIMIT.search(text):
         return ProviderErrorClass(PROVIDER_ERROR_USAGE_LIMIT, False, "usage limit")
-    if _RE_MALFORMED_REQUEST.search(data_field):
+    if _RE_MALFORMED_REQUEST.search(data_field) or is_adapter_invalid_json_body(text):
         return ProviderErrorClass(PROVIDER_ERROR_MALFORMED_REQUEST, False, "malformed request")
     if _RE_MODEL_UNAVAILABLE.search(data_field) or _RE_MODEL_TEMP_UNAVAILABLE.search(data_field):
         return ProviderErrorClass(PROVIDER_ERROR_MODEL_UNAVAILABLE, True, "model unavailable")
@@ -1369,24 +1318,6 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
     if match:
         return ProviderErrorClass(PROVIDER_ERROR_HTTP_5XX, True, match.group(0))
     return ProviderErrorClass(PROVIDER_ERROR_UNKNOWN, False)
-
-
-def _auto_remedy(available_models: Sequence[str] | None) -> str:
-    """The "set agent.model to 'auto'" remediation step, or nothing when the
-    partition does not serve ``auto``.
-
-    The capacity-blip messages list three remedies, and the second is the
-    ``auto`` sentinel. On a partition whose advertised list lacks ``auto`` that
-    advice re-opens the circle the unentitled-``auto`` branch closes: the user
-    follows it and the next turn dies on "no access to model 'auto'". So the
-    step is emitted only when ``auto`` is served, or when the served list is
-    unknown (nothing to check against, keep the historical advice). The
-    numbering of the remaining step shifts so the list still reads (1)(2)(3)
-    or (1)(2).
-    """
-    if model_is_unusable(DEFAULT_MODEL, available_models):
-        return "or (2) "
-    return f"(2) set agent.model to '{DEFAULT_MODEL}' in ~/.kiro/crew/config.json, or (3) "
 
 
 def _format_acp_error(
@@ -1458,7 +1389,20 @@ def _format_acp_error_worded(
             # message, and the picker shows the full set anyway.
             shown = ", ".join(usable[:8])
             more = f" (+{len(usable) - 8} more)" if len(usable) > 8 else ""
-            if unentitled.strip().lower() == DEFAULT_MODEL:
+            if not usable:
+                # KAS named the cause without a served list to offer: the model
+                # is not one this account is served, whether hidden from a picker
+                # or not, misspelled or retired. Name it and the two places a
+                # pin lives; the picker already shows what can be chosen.
+                formatted = (
+                    f"The model '{unentitled}' is not available on your account. "
+                    f"Pick another model in the model picker for this session, and "
+                    f"change the default model under Settings → Chat (agent.model in "
+                    f"~/.kiro/crew/config.json) or the agent's own model if it is set "
+                    f"to '{unentitled}'. Retrying will not help."
+                    f"{req_id_suffix}"
+                )
+            elif unentitled.strip().lower() == DEFAULT_MODEL:
                 # The rejected id IS the "let the backend choose" sentinel: some
                 # partitions do not serve it, so the usual "set agent.model to
                 # 'auto'" advice would send the user in a circle. Every layer
@@ -1539,6 +1483,8 @@ def _format_acp_error_worded(
                 "tools already fill the window, so reduce them."
                 f"{req_id_suffix}"
             )
+        elif is_adapter_invalid_json_body(message):
+            formatted = f"{ADAPTER_INVALID_JSON_BODY_TEXT}{req_id_suffix}"
         elif _RE_ADAPTER_INPUT_TOO_LONG.search(message):
             # The provider's sentence first (it is what the CLI prints), then
             # the fix. Surface-blind like its kiro-cli sibling above: it names
@@ -1822,23 +1768,6 @@ def _format_acp_error_worded(
 
 
 # ---------------------------------------------------------------------------
-def _rejected_model_from_error(error: object) -> str | None:
-    """Return the model id a prompt-time error reports as invalid/unavailable.
-
-    Powers the reactive fallback in ``run_bg_oneliner``: on the SUBSTITUTE
-    (background) path, a rejected model is retried once against the account's
-    advertised list. Matches both the MPS ``Invalid model ID: X``
-    ValidationException (including the ``auto`` sentinel where a partition does
-    not serve it) and the ``The model 'X' is not
-    available`` wording. Returns None when the error names no specific model.
-    """
-    if not isinstance(error, dict):
-        return None
-    data = f"{error.get('data', '')} {error.get('message', '')}"
-    m = _RE_INVALID_MODEL_ID.search(data) or _RE_MODEL_UNAVAILABLE.search(data)
-    return m.group(1) if m else None
-
-
 def _raise_acp_error(
     error: object,
     available_models: Sequence[str] | None = None,
@@ -1931,6 +1860,7 @@ def _raise_acp_error(
     if (
         _context_overflow
         or _RE_MALFORMED_REQUEST.search(raw_data_field)
+        or is_adapter_invalid_json_body(raw_message_field)
         or _image_format_unsupported
         or _image_dimension_wedge
         or _RE_OVERSIZED_REQUEST.search(raw_data_field)
@@ -1963,6 +1893,13 @@ def _raise_acp_error(
     if rejected:
         err.rejected_model = rejected
         err.advertised = list(available_models or [])
+        # The entitlement verdict the formatter and the retry judgement used, kept
+        # on the error so the row's kind cannot disagree with its prose: the
+        # backend's own token makes a rejection terminal with no served list,
+        # where a membership test on that list would answer "unknowable".
+        err.unentitled = (
+            _model_is_unentitled(provider_data_text(error), available_models) is not None
+        )
     # Tag a session-expiry / rejected-credential answer so the dashboard can offer
     # the fix -- the Kiro sign-in card -- instead of a Continue that hits the same
     # wall. Decided from the raw frame, never from the prose, and only when the

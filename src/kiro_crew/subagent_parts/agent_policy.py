@@ -611,7 +611,7 @@ def _vet_parent_available_agents(
         if not parent_template:
             return (
                 "the parent session's execution record could not be read, so its agent "
-                "spec's toolsSettings.subagent.availableAgents is unknown; refusing "
+                "spec's availableAgents is unknown; refusing "
                 "(fail-closed)"
             )
         unreadable = policy[2] if len(policy) > 2 else ()
@@ -620,13 +620,13 @@ def _vet_parent_available_agents(
             named = "; ".join(redact_via_context(item) for item in unreadable)
             return (
                 f"the parent agent {redact_via_context(parent_template)!r} spec could not be "
-                "read, so its toolsSettings.subagent.availableAgents is unknown; refusing "
+                "read, so its availableAgents is unknown; refusing "
                 f"(fail-closed) -- these agent spec files could not be read: {named}; "
                 "fix or remove them"
             )
         return (
             f"the parent agent {redact_via_context(parent_template)!r} spec could not be "
-            "read, so its toolsSettings.subagent.availableAgents is unknown; refusing "
+            "read, so its availableAgents is unknown; refusing "
             "(fail-closed) -- fix or remove the unreadable spec file"
         )
     if not allowlists:
@@ -660,8 +660,7 @@ def _vet_parent_available_agents(
     )
     return (
         f"agent {shown_agent!r} is not in the parent agent {shown_parent!r} spec's "
-        f"toolsSettings.subagent.availableAgents"
-        + (f" (allowed: {roster})" if roster else " (the list is empty)")
+        "availableAgents" + (f" (allowed: {roster})" if roster else " (the list is empty)")
     )
 
 

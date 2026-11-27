@@ -10,12 +10,15 @@ proxies, and a credential there would be kept with it. The dashboard's own page 
 it for every ``/v1/`` request that sends the header, then runs the same pin check,
 app-scope check and audit as for a cookie. A new credential kind is added here.
 
-:func:`refuse_app_credential` recognises the second kind, the access token local
-authorization issues to an app, and refuses it from the matched route's row in
-:mod:`kiro_crew.dashboard.crew_api_scopes`: no route serves an app yet.
+:func:`judge_app_credential` recognises the second kind, the access token local
+authorization issues to an app, and judges it by the matched route's row in
+:mod:`kiro_crew.dashboard.crew_api_scopes`. It admits the credential on the routes
+:data:`APP_SERVED_ROUTES` names and refuses it on every other.
 
-:data:`OWNER_ONLY_PUBLIC_ROUTES` names the Public routes (``/v1/models``) that serve
-the owner alone, through :func:`kiro_crew.dashboard.crew_api_owner.owner_route`.
+:data:`OWNER_ONLY_PUBLIC_ROUTES` names the Public routes (``/v1/models``,
+``/v1/responses`` and the two that read a response back, the two conversation routes,
+``/v1/crew/capabilities``, ``/v1/crew/info``) served through
+:func:`kiro_crew.dashboard.crew_api_owner.owner_route`.
 
 The frozen ``/v1/chat/completions`` is outside this module: it keeps the credentials
 it has always read.
@@ -25,11 +28,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Final
 
 from aiohttp import web
 
 from kiro_crew.dashboard import crew_api_scopes, local_authorization
-from kiro_crew.dashboard.crew_api_errors import is_crew_api_path
+from kiro_crew.dashboard.crew_api_errors import contract_error, is_crew_api_path, request_id_for
 from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.dashboard.origin import is_direct_local_request, is_proxied_request
 from kiro_crew.dashboard.token_auth_tokens import validate_token_with_app_off_loop
@@ -46,8 +50,18 @@ APP_CREDENTIAL_USER_PREFIX = "app:"
 APP_CREDENTIAL_APP_PREFIX = "local-grant:"
 APP_CREDENTIAL_OPERATION = "crew_api.app_credential"
 APP_CREDENTIAL_REFUSED = crew_api_scopes.APP_REFUSED
-#: The audit word for a route whose row admits the credential while no route serves apps.
+#: The audit word for a route whose row admits the credential and which serves no app.
 NO_APP_ROUTE = "no-app-route"
+#: The 401 for each reason ``LocalAuthorization.refused_as`` gives: the error code, the
+#: message and the audit row's error.
+_APP_CREDENTIAL_REFUSALS: Final = {
+    local_authorization.EXPIRED: (
+        "invalid_token",
+        "The access token has expired.",
+        "token-expired",
+    ),
+    local_authorization.REVOKED: ("token_revoked", "The grant was revoked.", "token-revoked"),
+}
 _AUDIT_TEXT_MAX = 64
 
 #: The refusal a ``?token=`` gets on a Crew API path.
@@ -56,7 +70,53 @@ QUERY_TOKEN_REFUSED = "Send the credential in the Authorization header, not in ?
 #: Public routes served by the owner gate, mapped to their audit operations.
 #: The route registers through owner_route with this operation, and the app-scope
 #: refusal reads the same map.
-OWNER_ONLY_PUBLIC_ROUTES = {"/v1/models": "crew_api.models.list"}
+OWNER_ONLY_PUBLIC_ROUTES = {
+    "/v1/models": "crew_api.models.list",
+    "/v1/responses": "crew_api.responses.create",
+    # Not ``.read`` / ``.list``: a read removes a record whose retention is over and
+    # moves a damaged file aside.
+    "/v1/responses/{response_id}": "crew_api.responses.resolve",
+    "/v1/responses/{response_id}/input_items": "crew_api.responses.input_items.resolve",
+    "/v1/conversations": "crew_api.conversations.create",
+    # Not a ``.read``, for the same reason as a response's.
+    "/v1/conversations/{conversation_id}": "crew_api.conversations.resolve",
+    "/v1/conversations/{conversation_id}/items": "crew_api.conversations.items.resolve",
+    "/v1/crew/capabilities": "crew_api.capabilities.read",
+    # Not a ``.read``: the first call on a data home makes and keeps the instance id.
+    "/v1/crew/info": "crew_api.info.resolve",
+    "/v1/crew/bots": "crew_api.bots.list",
+}
+
+#: The routes that serve an app credential, by their ``crew_api_scopes.ROUTES`` key.
+#: A route joins this set in the change that makes its handler call
+#: ``crew_api_scopes.require_scope``. On every other route a credential its row
+#: admits is still refused.
+APP_SERVED_ROUTES: Final = frozenset(
+    {
+        ("GET", "/v1/models"),
+        ("GET", "/v1/crew/grant"),
+        ("GET", "/v1/crew/bots"),
+        ("GET", "/v1/crew/capabilities"),
+        ("GET", "/v1/crew/info"),
+    }
+)
+
+
+class AppAdmitted:
+    """What :func:`judge_app_credential` answers for a credential its route serves."""
+
+
+ADMITTED: Final = AppAdmitted()
+
+
+def app_owner_only_routes() -> frozenset[str]:
+    """The Public patterns an app credential is refused on by tier.
+
+    Every :data:`OWNER_ONLY_PUBLIC_ROUTES` pattern that no :data:`APP_SERVED_ROUTES`
+    key names.
+    """
+    served = {pattern for _method, pattern in APP_SERVED_ROUTES}
+    return frozenset(OWNER_ONLY_PUBLIC_ROUTES) - served
 
 
 def bearer_credential(request: web.Request) -> str | None:
@@ -104,11 +164,14 @@ def _audit_text(value: str) -> str:
 async def _audit_app_credential(
     request: web.Request, caller: str, error: str, resources: str
 ) -> None:
+    """Write the decision's audit row: ``allowed`` when *error* is empty."""
+    outcome = "denied" if error else "allowed"
+
     def write() -> None:
         sel().log_api_access(
             caller=caller,
             operation=APP_CREDENTIAL_OPERATION,
-            outcome="denied",
+            outcome=outcome,
             source="token_auth",
             resources=resources,
             error=error,
@@ -119,33 +182,71 @@ async def _audit_app_credential(
         await asyncio.to_thread(write)
     except Exception:
         logger.warning(
-            "No audit row written for %s (denied, %s) by %s",
+            "No audit row written for %s (%s, %s) by %s",
             APP_CREDENTIAL_OPERATION,
+            outcome,
             error,
             caller,
         )
 
 
-async def refuse_app_credential(request: web.Request, credential: str) -> web.Response | None:
-    """The refusal for a bearer that is an app credential, ``None`` when it is not one.
+async def _refused_app_credential(request: web.Request, credential: str) -> web.Response | None:
+    """The 401 for an app credential that failed for a reason the app may be told.
+
+    Only a token this gateway signed gets one: ``invalid_token`` with a message that
+    names the expiry, or ``token_revoked`` when the token is still in date and its
+    grant's record says revoked. A token with any other signature, a grant with no
+    record and a record that cannot be read get ``None``, so the caller's own 401
+    answers them exactly as it answers a credential that is no app credential.
+
+    Through any forwarder this returns ``None`` as well, as it does for a credential
+    that verifies: the forwarded answer never shows which of these the token was.
+    That is decided first, so such a request does not have the token looked at here.
+    """
+    if not is_direct_local_request(request) or published_relay_caller(request) is not None:
+        return None
+    try:
+        reason, grant_id = await asyncio.to_thread(
+            lambda: local_authorization.gateway_local_authorization().refused_as(credential)
+        )
+    except Exception:
+        logger.warning("Crew API app credential check failed")
+        return None
+    refusal = _APP_CREDENTIAL_REFUSALS.get(reason)
+    if refusal is None:
+        return None
+    code, message, audit = refusal
+    await _audit_app_credential(
+        request, f"{APP_CREDENTIAL_USER_PREFIX}{_audit_text(grant_id)}", audit, request.path
+    )
+    return contract_error(401, code, message, request_id_for(request), {"X-Auth-Required": "true"})
+
+
+async def judge_app_credential(
+    request: web.Request, credential: str
+) -> web.Response | AppAdmitted | None:
+    """The answer for a bearer that is an app credential, ``None`` when it is not one.
 
     An app credential is the access token local authorization issued for a grant the
     owner approved (:mod:`kiro_crew.dashboard.local_authorization`). It is verified
     there: signature, expiry, and that its grant is still active. A credential that
-    fails is not an app credential, so the caller's own 401 answers it.
+    fails is not an app credential, so the caller's own 401 answers it. The two
+    exceptions are in :func:`_refused_app_credential`: a token this gateway signed
+    that is past its expiry, or whose grant is revoked, gets a 401 that says so.
 
     A verified one is a known caller, and :func:`crew_api_scopes.refusal_for` says why it may
-    not call the route it matched: the tier, the entitlement or the scope. No Crew API
-    route serves that caller yet, so a route whose row admits it is refused too,
-    ``403 owner_only`` with :data:`NO_APP_ROUTE` on the audit row, and the request never
-    reaches a handler. It is accepted only from this machine, like the routes
-    that issued it: through any forwarder this returns ``None`` as well, so the answer
-    is byte for byte the 401 of a credential that does not verify.
+    not call the route it matched: the tier, the entitlement or the scope. A route whose
+    row admits it answers :data:`ADMITTED` only when :data:`APP_SERVED_ROUTES` names the
+    route, after the ``allowed`` audit row. On any other route it is
+    refused ``403 owner_only`` with :data:`NO_APP_ROUTE` on the audit row, and the
+    request never reaches a handler. It is accepted only from this machine, like the
+    routes that issued it: through any forwarder this returns ``None`` as well, so the
+    answer is byte for byte the 401 of a credential that does not verify.
 
-    The caller's identity is published on the request before the refusal, for the audit
-    middleware outside token auth. It is built from the gateway's own grant id. The
-    ``client_id`` is the calling program's choice, so it is recorded as audit text
-    only and never becomes part of an identity.
+    The caller's identity is published on the request before the answer, for the handler
+    and for the audit middleware outside token auth. It is built from the gateway's own
+    grant id. The ``client_id`` is the calling program's choice, so it is recorded as
+    audit text only and never becomes part of an identity.
     """
     if credential.count(".") != 2:
         return None
@@ -157,7 +258,7 @@ async def refuse_app_credential(request: web.Request, credential: str) -> web.Re
         logger.warning("Crew API app credential check failed")
         return None
     if found is None:
-        return None
+        return await _refused_app_credential(request, credential)
     caller = f"{APP_CREDENTIAL_USER_PREFIX}{found.grant_id}"
     resources = f"{request.path} client_id={_audit_text(found.client_id)}"
     if not is_direct_local_request(request) or published_relay_caller(request) is not None:
@@ -168,10 +269,15 @@ async def refuse_app_credential(request: web.Request, credential: str) -> web.Re
     request["app"] = f"{APP_CREDENTIAL_APP_PREFIX}{found.grant_id}"
     request["is_dashboard_user"] = False
     request[crew_api_scopes.CREDENTIAL_KEY] = found
-    refusal = crew_api_scopes.refusal_for(
-        crew_api_scopes.route_key(request), found.scopes, OWNER_ONLY_PUBLIC_ROUTES
-    ) or crew_api_scopes.Refusal("owner_only", APP_CREDENTIAL_REFUSED, NO_APP_ROUTE)
-    await _audit_app_credential(request, caller, refusal.audit, resources)
+    key = crew_api_scopes.route_key(request)
+    refusal = crew_api_scopes.refusal_for(key, found.scopes, app_owner_only_routes())
+    if refusal is None and key not in APP_SERVED_ROUTES:
+        refusal = crew_api_scopes.Refusal("owner_only", APP_CREDENTIAL_REFUSED, NO_APP_ROUTE)
+    await _audit_app_credential(
+        request, caller, "" if refusal is None else refusal.audit, resources
+    )
+    if refusal is None:
+        return ADMITTED
     # Signing in again cures no missing scope or entitlement, so only the tier
     # refusal carries the header every other token auth refusal has.
     return refusal.response(

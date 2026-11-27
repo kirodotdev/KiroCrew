@@ -507,6 +507,7 @@ class _WorkerOnlySupervisor(HarnessSupervisor):
             worker=None,
             browser=None,
         )
+        self._handle = self.handle  # the live handle, as the real ensure() returns
         self.workers_started = 0
 
     async def ensure(self) -> supervisor.HarnessHandle:

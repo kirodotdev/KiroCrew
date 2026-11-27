@@ -1439,3 +1439,25 @@ async def test_two_creates_for_one_address_at_once_make_one_invite(fake) -> None
     assert len(store.load_state()["invites"]) == 1
     posts = [b for m, p, b in fake.requests if m == "POST" and p.endswith("/device-invites")]
     assert len(posts) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_second_create_reads_the_connection_after_the_first_write(
+    fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The connection read is under the commit lock, so it never overlaps a create's write."""
+    await invites.connect(KEY, "owner")
+    real_api = invites._api
+    seen: list[int] = []
+
+    def api_spy() -> Any:
+        seen.append(len(store.load_state()["invites"]))
+        return real_api()
+
+    monkeypatch.setattr(invites, "_api", api_spy)
+
+    def one(email: str) -> Any:
+        return invites.create_invites([email], multi_use=False, alias="", avatar_id="", actor="o")
+
+    await asyncio.gather(one("ann@example.com"), one("bob@example.com"))
+    assert seen == [0, 1]

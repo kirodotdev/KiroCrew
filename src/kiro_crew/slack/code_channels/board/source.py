@@ -453,20 +453,28 @@ def project(
         worker = str(item.worker_session_key or "")
         live = live_of(worker)
         item_state = str(item.state or "open")
-        state = model.row_state(
-            item_state=item_state,
-            status=item.status,
-            reason=item.reason,
-            live=live,
-            verdict=getattr(item, "verdict", None),
-            handed_back=_handed_back(item),
-        )
+        facts = {
+            "item_state": item_state,
+            "status": item.status,
+            "reason": item.reason,
+            "live": live,
+            "verdict": getattr(item, "verdict", None),
+            "handed_back": _handed_back(item),
+        }
+        # The store seam's mark: the conductor's ``ask`` record still stands.
+        state = model.row_state(**facts, asked=getattr(item, "asks_person", False) is True)
         artifacts = item.artifacts if isinstance(item.artifacts, dict) else {}
         branch = str(artifacts.get("branch") or "").strip()
         waiting_on = ""
         approval_tool = ""
         if state == model.WAITING_ON_YOU:
-            waiting_on = "approval" if live == model.LIVE_APPROVAL else "report"
+            if live == model.LIVE_APPROVAL:
+                waiting_on = "approval"
+            else:
+                # ``ask`` only when the record alone holds the row: a report that
+                # names a person keeps its own wording and its page.
+                reported = model.row_state(**facts) == model.WAITING_ON_YOU
+                waiting_on = "report" if reported else "ask"
         if waiting_on == "approval" and tool_of is not None:
             approval_tool = model.approval_words(tool_of(worker))
         step, turn_started_at, approval_key = "", "", ""

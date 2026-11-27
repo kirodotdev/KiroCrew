@@ -53,8 +53,10 @@ from kiro_crew.sandbox_leaves import (
 from kiro_crew.sandbox_plan import scrub_prefixes as _agent_scrub_prefixes
 from kiro_crew.sandbox_seals import (
     SandboxCeilingUnsealable,
+    _materialize_kiro_mcp_registry,
     _materialize_sealable_ceilings,
     _refuse_linked_models_leaf,
+    _resolved_kiro_mcp_registry_targets,
 )
 from kiro_crew.sandbox_staging import (
     _materialize_declared_mask_dirs,
@@ -473,7 +475,46 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
             *(t for t in _relocated_crew_targets(app_readonly_leaves) if _sealed(t)),
         )
     )
-    kiro_agents_targets = tuple(_resolved_kiro_agents_targets())
+    # kiro-cli's own trusted files ride one host field: its agents tree, its user MCP
+    # registry and every installed app's ``app.json`` (it names the MCP servers that app
+    # brings, and only the gateway's own app install and update writes it), each sealed
+    # read-only with its parents guarded against rename. The spawn folder's project MCP
+    # files get their own field (``PlanHost.project_mcp_targets``).
+    # Call-time imports: kept off this module's names, which ``kiro_crew.sandbox`` forwards.
+    from kiro_crew.app_manifest_files import app_manifest_targets
+    from kiro_crew.project_mcp_files import project_mcp_targets
+
+    kiro_cli_targets = (
+        *_resolved_kiro_agents_targets(),
+        *_resolved_kiro_mcp_registry_targets(),
+        *app_manifest_targets(home),
+    )
+    kiro_agents_targets = tuple(dict.fromkeys(kiro_cli_targets))
+    project_targets = tuple(
+        t for t in project_mcp_targets(request.project_folder) if t not in kiro_cli_targets
+    )
+    # A project file's guards are only the entries that exist. A Seatbelt deny on an
+    # absent ``.kiro`` would stop the agent creating its project's ``.kiro`` folder.
+    # shortcut: on macOS a prepared folder moved in where none existed sidesteps the
+    # path rule on a file not created yet; the file-edit refusal still holds. Upgrade:
+    # seal the absent name inside the sandbox view (security.md, project MCP files).
+    # Call-time import, so the facade's census of this module's names is unchanged.
+    from kiro_crew.sandbox_git_control import resolved_git_control_layout
+
+    # The gateway checkouts' git control files are guarded the same way: sealed files
+    # in the person's own folder, whose parents no exception is checked against.
+    git_control = resolved_git_control_layout()
+    project_parents = tuple(
+        entry
+        for target in project_targets
+        for entry in (os.path.dirname(target), *_resolution_entries(target))
+        if os.path.lexists(entry)
+    ) + tuple(
+        entry
+        for name in git_control.names
+        for entry in (os.path.dirname(name), *_resolution_entries(name))
+        if os.path.lexists(entry)
+    )
     install_root_targets = tuple(_resolved_install_root_targets())
     # A renamed parent carries a seal away on both backends, so every entry resolving a
     # seal steps on is guarded, and so are the parents of its own spelling, which keep a
@@ -484,7 +525,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         entry
         for target in (
             *voice_runtime_parents,
-            *kiro_agents_targets,
+            *kiro_cli_targets,
             *(os.path.join(home, rel) for rel in (*_CREW_READONLY_TARGETS, *app_readonly)),
             *relocated_crew_readonly,
             *install_root_targets,
@@ -527,16 +568,28 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         if namespace
         else _literal_ancestor_guards((*seal_parents, *hidden_leaf_parents))
     )
+    # Their own field, so no operator exception, window or carve-out that holds the
+    # project is checked against them (``PlanHost.project_ancestor_guards``).
+    project_ancestor_guards = tuple(
+        guard
+        for guard in (
+            _renameable_ancestor_guards(project_parents, uid)
+            if namespace
+            else _literal_ancestor_guards(project_parents)
+        )
+        if guard not in readonly_ancestor_guards
+    )
     # On the namespace backend, the folder of each app that declares a credential mask,
     # ``apps/<app>``, is pinned AFTER every mask instead of with the other pins before
-    # them; the set of pinned folders stays the same. An update replaces that folder from
-    # the gateway's namespace and renames ``data/`` into the new one. A mount placed
+    # them; the set of pinned folders stays the same. A keep-data uninstall, and an install
+    # over the data it kept, replace that folder from the gateway's namespace and rename
+    # ``data/`` into the new one (an update leaves the folder in place). A mount placed
     # through a pin of the old folder stays on the old folder's mount, so a running
     # session would read the restored credential plain. With the app folder unpinned
     # while the rest are placed, ``data/``'s pin and the masks sit on the mount the rename
     # keeps, and the app folder's pin, bound last, only adds one copy of them: one pin per
     # app spelling, nothing pinned above another after the masks.
-    # shortcut: the replacement ``apps/<app>`` an update creates is not pinned in a
+    # shortcut: the replacement ``apps/<app>`` either one creates is not pinned in a
     # session already running, so that session can rename it until its next spawn;
     # closing that needs a layout change (one top-level credentials folder).
     # Matched by the folder each guard resolves to, not by its spelling: a linked data
@@ -602,6 +655,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         if guard in caller_after_masks:
             app_dir_pins.setdefault(os.path.realpath(guard), guard)
     caller_ancestor_guards = tuple(g for g in caller_ancestor_guards if g not in caller_after_masks)
+
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     operator_paths, operator_exceptions = configured_readonly_layer()
     operator_readonly_probes = _operator_layer_probes(operator_paths, keep_unprobeable=True)
@@ -653,8 +707,10 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         *voice_runtime_parents,
         *voice_runtime_ancestor_guards,
         *kiro_agents_targets,
+        *project_targets,
         *install_root_targets,
         *readonly_ancestor_guards,
+        *project_ancestor_guards,
     ]
     return sandbox_plan.PlanHost(
         home=home,
@@ -679,10 +735,13 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         voice_runtime_parents=voice_runtime_parents,
         voice_runtime_ancestor_guards=voice_runtime_ancestor_guards,
         kiro_agents_targets=kiro_agents_targets,
+        project_mcp_targets=project_targets,
         install_root_targets=install_root_targets,
         readonly_ancestor_guards=readonly_ancestor_guards,
+        project_ancestor_guards=project_ancestor_guards,
         caller_ancestor_guards=caller_ancestor_guards,
         mask_parent_pins=mask_parent_pins,
+        git_control_readonly=git_control.readonly,
         carveout_probes=carveout_probes,
         operator_readonly_probes=operator_readonly_probes,
         operator_exception_probes=operator_exception_probes,
@@ -732,6 +791,7 @@ def _spawn_plan(
     crew_home_aliases: tuple[tuple[str, str, int, int], ...] = (),
     published_file_record: tuple[str, str, tuple[str, ...]] | tuple[()] = (),
     exec_cwd: str = "",
+    project_folder: str = "",
 ) -> sandbox_plan.ConfinementPlan:
     """Plan one spawn for *backend* against this host, logging what the plan refused.
 
@@ -758,6 +818,7 @@ def _spawn_plan(
         crew_home_aliases=tuple(crew_home_aliases),
         published_file_record=published_file_record,
         exec_cwd=exec_cwd,
+        project_folder=project_folder,
     )
     plan = sandbox_plan.plan_confinement(request, _live_plan_host(request))
     _log_refusals(plan.refusals)
@@ -784,6 +845,7 @@ def _build_launcher_script(
     crew_home_aliases: tuple[tuple[str, str, int, int], ...] = (),
     published_file_record: tuple[str, str, tuple[str, ...]] | tuple[()] = (),
     exec_cwd: str = "",
+    project_folder: str = "",
 ) -> str:
     """The Linux namespace launcher program for one spawn, as Python source text.
 
@@ -813,6 +875,7 @@ def _build_launcher_script(
             crew_home_aliases=crew_home_aliases,
             published_file_record=published_file_record,
             exec_cwd=exec_cwd,
+            project_folder=project_folder,
         )
     )
 
@@ -826,6 +889,7 @@ def _build_seatbelt_profile(
     extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    project_folder: str = "",
 ) -> str:
     """The macOS Seatbelt profile for one spawn, as ``sandbox-exec`` profile text.
 
@@ -842,6 +906,7 @@ def _build_seatbelt_profile(
             extra_private_dirs=extra_private_dirs,
             extra_writable_dirs=extra_writable_dirs,
             extra_expose_files=extra_expose_files,
+            project_folder=project_folder,
         )
     )
 
@@ -862,6 +927,7 @@ def namespace_argv(
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     exec_cwd: str = "",
+    project_folder: str = "",
 ) -> list[str]:
     """Wrap *argv* via the Python namespace launcher.
 
@@ -884,6 +950,8 @@ def namespace_argv(
     # with a keystone the seal could not cover.
     _required_targets: list[str] = []
     _materialize_sealable_ceilings(_required_targets)
+    # kiro-cli's MCP registry the same way, but best-effort: never a refusal.
+    _materialize_kiro_mcp_registry()
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs(_required_targets)
@@ -1038,6 +1106,7 @@ def namespace_argv(
         # substitution rather than refused. See ``config.write_provenance``.
         published_file_record=_published_file_record(),
         exec_cwd=exec_cwd,
+        project_folder=project_folder,
     )
     run_dir = _ensure_run_dir()
     # Prefix and suffix from the module constants, not a second spelling of them: the
@@ -1096,6 +1165,7 @@ def sandbox_exec_argv(
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    project_folder: str = "",
 ) -> tuple[list[str], str | None]:
     """Wrap *argv* with ``sandbox-exec -f <profile>``.
 
@@ -1232,6 +1302,7 @@ def sandbox_exec_argv(
         extra_private_dirs=extra_private_dirs,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
+        project_folder=project_folder,
     )
     run_dir = _ensure_run_dir()
     # Constants, not a second spelling: the run-dir sweep reclaims this family by prefix

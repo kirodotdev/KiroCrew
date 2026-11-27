@@ -152,7 +152,6 @@ class CompactionDeps:
     """
 
     logger: logging.Logger
-    is_claude_backend: Callable[[Any], bool]
     is_cc_managed: Callable[[Any], bool]
     get_recorder: Callable[[], Any]
     context_pct_is_unknown: Callable[[LLMProvider], bool]
@@ -1008,8 +1007,8 @@ class CompactionCoordinator:
                 # ``compact_if_idle`` checked both in the step it committed; a
                 # change since then is activity, and the idle trigger yields to it.
                 return "absent" if session is None else "busy"
-            if session and self._deps.is_claude_backend(session.provider):
-                # Claude keeps the same native session across its compact
+            if session and capabilities_of(session.provider).keeps_session_across_compaction:
+                # The harness keeps the same native session across its compact
                 # boundary, so the durable mapping remains untouched.
                 claude_session = session
 

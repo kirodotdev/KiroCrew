@@ -138,6 +138,8 @@ def test_an_app_tokens_spawn_is_handed_to_the_gate_as_the_apps(sel_calls) -> Non
     kwargs = manager.spawn.call_args.kwargs
     # The gate proves a named agent is the app's own only when it is told the app.
     assert (kwargs["app"], kwargs["agent"]) == (APP, OWN_AGENT)
+    # An app's unattended run of its own agent keeps the mode the App Kit SDK passes.
+    assert kwargs["approval_mode"] == "auto"
     assert _denials(sel_calls) == []
 
 
@@ -649,7 +651,7 @@ async def test_queued_terminal_preserves_app_scope(
     monkeypatch.setattr(sa, "_validate_agent", lambda *args: (OWN_AGENT, "", ""))
     mgr = sa.SubagentManager(sessions=MagicMock(), ctx_builder=None, on_done=AsyncMock())
     monkeypatch.setattr(mgr, "_emit_queue_depth", MagicMock())
-    monkeypatch.setattr(mgr, "_should_stagger_queue", lambda now: (True, False))
+    monkeypatch.setattr(mgr, "_should_stagger_queue", lambda now, **_: (True, False))
     monkeypatch.setattr(mgr, "_memory_pressure_hold", lambda **kw: None)
     monkeypatch.setattr(
         messaging, "read_panel_records", lambda **kw: messaging.PanelRecords([], 0, False)

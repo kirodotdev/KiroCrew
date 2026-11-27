@@ -3,6 +3,7 @@ import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'reac
 import { createImeLatch } from './useImeGuard'
 import { useLocalCrewHidden } from '../components/overlayRoot'
 import { usePointerMotion } from './usePointerMotion'
+import { ESCAPE_PRIORITY, useEscapeLayer } from './useEscapeLayer'
 
 /**
  * Shared list keyboard-navigation hook for picker-menu / palette surfaces
@@ -29,7 +30,10 @@ import { usePointerMotion } from './usePointerMotion'
  *  - `Alt`/`Option`+`Enter`  — `onAltEnter(selected)` when provided; if it
  *    returns `true` the event is treated as handled.
  *  - `Escape`                — `onClose()`, unless the shared IME latch owns
- *                              the key for candidate dismissal.
+ *                              the key for candidate dismissal. Answered as a
+ *                              layer on the page-wide Escape stack
+ *                              (useEscapeLayer), above the flyout, so one
+ *                              press never closes both.
  *
  * With zero rows and a mounted `emptyActionRef`, forward Tab focuses that
  * control without closing. Its own keys retain native behavior, except Tab
@@ -228,22 +232,14 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
   const onKey = useCallback((e: KeyboardEvent) => {
     const n = countRef.current
     const emptyAction = n === 0 ? emptyActionRef?.current : null
-    if (e.key === 'Escape') {
-      // Escape dismisses an IME candidate list too. Let the shared latch own
-      // that key while composition is live and in WebKit's short
-      // post-composition window, so cancelling a candidate does not also close
-      // the picker and discard the user's query.
-      if (!imeLatchRef.current!.claimKey(e)) return
-      e.preventDefault()
-      e.stopPropagation()
-      if (emptyAction && e.target === emptyAction) restoreEmptyFocus()
-      onCloseRef.current()
-      return
-    }
+    // Escape is answered by the Escape layer below, not here.
+    if (e.key === 'Escape') return
     if (n === 0) {
       if (emptyAction) {
         if (e.target === emptyAction) {
           if (e.key === 'Tab') {
+            // A Tab the IME owns stays with the IME, like every choose key.
+            if (!imeLatchRef.current!.claimKey(e)) return
             e.preventDefault()
             e.stopPropagation()
             restoreEmptyFocus()
@@ -366,6 +362,20 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
   }, [open, crewHidden, onKey])
+
+  // Escape closes the list through the page-wide Escape stack, which also
+  // stands the layer down while the local Crew is hidden.
+  useEscapeLayer(open, e => {
+    // Escape dismisses an IME candidate list too. Let the shared latch own
+    // that key while composition is live and in WebKit's short
+    // post-composition window, so cancelling a candidate does not also close
+    // the picker and discard the user's query.
+    if (!imeLatchRef.current!.claimKey(e)) return 'yield'
+    const emptyAction = countRef.current === 0 ? emptyActionRef?.current : null
+    if (emptyAction && e.target === emptyAction) restoreEmptyFocus()
+    onCloseRef.current()
+    return 'take'
+  }, ESCAPE_PRIORITY.menu)
 
   // Expose a synced setter that keeps selectedRef in lockstep with the state,
   // so external callers (e.g. resetting to 0 after new results) don't leave the

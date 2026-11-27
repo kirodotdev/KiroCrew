@@ -79,11 +79,15 @@ recall would have returned rather than what was asked about.
 itself.
 
 ``jev_keys`` -- KEPT BY JEV. The memories Jev's answer kept, in the search's order,
-plus every row it was never offered (``candidates`` against ``baseline_keys`` tells
-how many). The DECISION's own output, before anything downstream touches it. It is
-not the set that shipped, and it must not be quietly narrowed into one: a receipt
-whose kept count silently absorbed a later removal is what makes the numbers stop
-adding up.
+plus every row it was never offered (``unasked_keys`` names those). The DECISION's
+own output, before anything downstream touches it. It is not the set that shipped,
+and it must not be quietly narrowed into one: a receipt whose kept count silently
+absorbed a later removal is what makes the numbers stop adding up.
+
+``unasked_keys`` -- NOT ASKED. The rows of ``baseline_keys`` the screen never
+offered, so they are in ``jev_keys`` without Jev having chosen them. ``jev_keys``
+minus these is what Jev's answer itself kept; a receipt that skipped the
+subtraction would credit Jev with rows it never saw.
 
 ``bounded_omitted`` -- DROPPED BY BOUNDING. How many of ``jev_keys`` the response
 budget then removed (``memory_recall.bound_recall_payload`` clips the largest text
@@ -332,9 +336,16 @@ def kept_memories(
         # ``_recall_once`` validates the embedding generation AFTER applying this hook,
         # and answers a moved generation by running the whole recall again.
         if pending is not None:
+            offered = {row["key"] for row in screened}
             pending.append(
                 (
-                    build_outcome(baseline=rows, injected=injected, trace=trace, store=store),
+                    build_outcome(
+                        baseline=rows,
+                        injected=injected,
+                        unasked=[row for row in rows if key_of(row) not in offered],
+                        trace=trace,
+                        store=store,
+                    ),
                     int((time.monotonic() - started) * 1000),
                 )
             )
@@ -638,11 +649,15 @@ def build_outcome(
     injected: Sequence[Mapping[str, Any]],
     trace: Mapping[str, Any],
     store: str | None = None,
+    unasked: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Both arms of one turn as the fields the row and the publish hook share.
 
     ``store`` lets the strip's id popover look ids up in the right store; ``None``
     reads as the default store on the wire.
+
+    *unasked* is the baseline rows the oracle was never offered; they become
+    ``unasked_keys``, so a reader can tell them apart from what Jev kept.
 
     The lists are ``baseline_keys`` and ``jev_keys``, not ``baseline`` and ``jev``:
     the skill strip's reader keys on those two names and would render this record
@@ -666,6 +681,7 @@ def build_outcome(
         "store": store,
         "baseline_keys": baseline_keys,
         "jev_keys": jev_keys,
+        "unasked_keys": [key for key in (key_of(row) for row in unasked) if key],
         "agree": set(baseline_keys) == set(jev_keys),
         "p": trace.get("p"),
         # Non-negative by construction: the point only ever removes, so a negative

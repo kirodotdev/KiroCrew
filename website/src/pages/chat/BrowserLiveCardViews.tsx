@@ -231,7 +231,8 @@ export function BrowserLiveLiveView({ turn, onScreen, canvasRef, onClaim, onRele
         <div className="flex items-center gap-2 px-3 py-1.5 bg-accent-subtle text-[13px] text-text border-b border-border" role="status">
           <LogIn size={14} aria-hidden="true" className="text-accent shrink-0" />
           <span className="flex-1">{i18nT('pages.chat.browserLiveCard.take_over_to_sign_in')}</span>
-          <Btn onClick={onClaim}>{i18nT('pages.chat.browserLiveCard.take_over')}</Btn>
+          {/* Filled, with the strong edge: the plain edge vanishes on the tint. */}
+          <Btn className="border-border-strong bg-bg-elevated" onClick={onClaim}>{i18nT('pages.chat.browserLiveCard.take_over')}</Btn>
         </div>
       )}
 

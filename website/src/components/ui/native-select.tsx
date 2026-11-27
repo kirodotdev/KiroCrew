@@ -30,6 +30,8 @@ interface NativeSelectProps extends React.ComponentPropsWithoutRef<'select'> {
    *  `aria-busy` attrs and the change guard; this only owns the look, so the
    *  dimming stays in the primitive rather than a restyle at the call site. */
   busy?: boolean
+  /** A borderless control that reads as a page title, as ui/select.tsx's trigger. */
+  variant?: 'title'
 }
 
 /**
@@ -46,7 +48,7 @@ const NativeSelect = React.forwardRef<HTMLSelectElement, NativeSelectProps>(
   // React infers the devtools name from the function, and the assignment form would
   // add a bare string literal that the i18n gate counts (eslint-rules/i18n-strict.js
   // re-surfaces literals the upstream rule exempts).
-  function NativeSelect({ className, wrapperStyle, busy, children, ...props }, ref) {
+  function NativeSelect({ className, wrapperStyle, busy, variant, children, ...props }, ref) {
     return (
       // The wrapper is the layout box: it owns the chevron's positioning context,
       // so a caller's sizing (a flex basis, a min-width) has to land HERE to have
@@ -67,6 +69,7 @@ const NativeSelect = React.forwardRef<HTMLSelectElement, NativeSelectProps>(
             'hover:border-border-strong transition-all cursor-pointer outline-hidden appearance-none',
             'focus-visible:border-accent disabled:opacity-40 disabled:pointer-events-none',
             busy && 'opacity-40 pointer-events-none',
+            variant === 'title' && 'gap-1 rounded-lg border-none bg-transparent py-0 pl-0 pr-1.5 text-[15px] font-semibold leading-5 shadow-none sm:pr-2',
             className
           )}
           // The gutter the chevron below sits in. It is a constant of THIS

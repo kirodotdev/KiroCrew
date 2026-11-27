@@ -78,6 +78,34 @@ def test_composer_newcomer_questions_find_their_control(query: str, lang: str, t
     assert d["results"][0]["id"] == target, [r["id"] for r in d["results"]]
 
 
+@pytest.mark.parametrize(
+    ("query", "lang"),
+    [
+        ("AWS profile", "en"),
+        ("which AWS profile does a chat use", "en"),
+        ("AWS profile for this project", "en"),
+        ("这个项目用哪个 AWS profile", "zh-CN"),
+    ],
+)
+def test_aws_profile_questions_find_the_project_picker_row(query: str, lang: str) -> None:
+    d = ui_index.find_ui(query, lang)
+    assert d["status"] == "ok", d
+    hit = d["results"][0]
+    assert hit["id"] == "composer.project-aws-profile", [r["id"] for r in d["results"]]
+    (p,) = hit["placements"]
+    assert p["route"] == "/chat"
+    assert _reqs(p) == ["session_open", EXPAND, "project_aws_profile_shown"]
+    # The row's own text is the folder and profile name, so the answer is a
+    # description that names the picker and the docs section.
+    if lang == "en":
+        assert "label" not in hit
+        assert "project picker" in hit["description"]
+        assert "pick a profile from your AWS config" not in hit["description"]
+        assert "only in the computer's AWS config are not listed" in hit["description"]
+        assert "registered in the AWS Control app" in hit["description"]
+        assert "An AWS profile per project" in hit["description"]
+
+
 @pytest.mark.parametrize(("query", "lang"), [("how do I attach a file", "en"), ("附件", "zh-CN")])
 def test_attaching_names_the_desktop_menu_and_the_phone_control(query: str, lang: str) -> None:
     d = ui_index.find_ui(query, lang)

@@ -5,7 +5,7 @@ import { HardDriveDownload, RotateCcw, Save, ShieldAlert } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, EmptyState } from '../../components/ui'
 import { SettingsLink } from '../../components/SettingsLink'
-import { fmtBytes, fmtNumber, fmtDateTimeNumeric } from '../../i18n/format'
+import { fmtBytes, fmtNumber, fmtDateTime, fmtDateTimeNumeric } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { MEMORY_QUERY_PREFIXES, MemoryScopeNotice, memoryQueryRetry } from './MemoryStoreCard'
 import { queryReadFailed } from '../../utils/queryReadFailed'
@@ -197,7 +197,7 @@ export default function MemoryBackupsCard({ store, privateMemory = false }: { st
               </tr>
             ) : rows.map(row => (
               <tr key={row.name} className="hover:bg-bg-hover transition-colors">
-                <td className="px-2.5 py-2 border-b border-border text-sm">{fmtDateTimeNumeric(row.taken_at)}</td>
+                <td className="px-2.5 py-2 border-b border-border text-sm"><time dateTime={row.taken_at} title={fmtDateTimeNumeric(row.taken_at)}>{fmtDateTime(row.taken_at)}</time></td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">{fmtBytes(row.size_bytes)}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">
                   <div className="flex flex-col items-start gap-2">

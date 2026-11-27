@@ -1,0 +1,8 @@
++28
+The ssh-to-self floor reads each frame's run positions twice -- once on the
+unsplit boundaries and once on the glued-split ones (glue_split, through
+argv_rules._expand_glued_boundaries, the reading the git/tar floor already
+uses) -- and the glob verb test reads their union, so a glob verb after a
+separator glued inside a word keeps its glob host check. The added lines pass
+glue_split through _executed_program_indices and _case_arm_pattern_indices, so
+a case glued after a separator still reads its arm patterns as patterns.

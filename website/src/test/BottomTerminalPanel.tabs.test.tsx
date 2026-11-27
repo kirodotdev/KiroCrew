@@ -5,8 +5,11 @@ import { probeTargets } from '../guide/probeRegistry'
 import { TerminalTabsView } from '../components/BottomTerminalPanel'
 import { __resetBottomTerminal, addTab } from '../hooks/useBottomTerminal'
 
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: () => null,
+}))
+vi.mock('../components/terminalSessions', () => ({
+  preloadTerminal: vi.fn(),
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))

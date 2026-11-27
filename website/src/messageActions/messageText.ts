@@ -20,6 +20,10 @@ import { visibleText } from '../utils/visibleText'
 /** Marks a renderer's content root inside a message bubble. */
 export const MESSAGE_BODY_ATTR = 'data-message-body'
 
+/** Marks a quoted card inside a message bubble: content roots inside it are
+ *  another message's text, so they are not read. */
+export const MESSAGE_QUOTE_ATTR = 'data-message-quote'
+
 /**
  * The visible text of a message bubble's content, or `null` when it cannot be
  * read: the bubble is gone from the page (scrolled out of a virtualized list, or
@@ -31,6 +35,8 @@ export function readMessageText(bubble: Element | null | undefined): string | nu
   const roots = Array.from(bubble.querySelectorAll(`[${MESSAGE_BODY_ATTR}]`))
     // Outermost roots only: a nested one is already inside its parent's text.
     .filter((el) => {
+      const quote = el.closest(`[${MESSAGE_QUOTE_ATTR}]`)
+      if (quote && bubble.contains(quote)) return false
       const outer = el.parentElement?.closest(`[${MESSAGE_BODY_ATTR}]`)
       return !outer || !bubble.contains(outer)
     })

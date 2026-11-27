@@ -12,6 +12,7 @@ import {
   type QuickSearchConfig,
   type QuickSearchMode,
 } from '../lib/quickSearchShortcut'
+import { announceShortcutRecording, useCancelWhenAnotherRecorderStarts } from './useExclusiveShortcutRecording'
 
 export interface UseQuickSearchShortcut {
   /** The live preference (re-read on same-tab change and cross-tab storage sync). */
@@ -64,6 +65,7 @@ export function useQuickSearchShortcut(): UseQuickSearchShortcut {
   const selectMode = useCallback((mode: QuickSearchMode) => {
     if (mode === 'custom') {
       // Defer persistence until a chord is captured — see the interface doc.
+      announceShortcutRecording()
       setRecording(true)
       return
     }
@@ -71,8 +73,12 @@ export function useQuickSearchShortcut(): UseQuickSearchShortcut {
     saveQuickSearchConfig({ mode })
   }, [])
 
-  const startRecording = useCallback(() => setRecording(true), [])
+  const startRecording = useCallback(() => {
+    announceShortcutRecording()
+    setRecording(true)
+  }, [])
   const cancelRecording = useCallback(() => setRecording(false), [])
+  useCancelWhenAnotherRecorderStarts(recording, cancelRecording)
 
   useEffect(() => {
     if (!recording) return

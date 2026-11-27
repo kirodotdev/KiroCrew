@@ -4,10 +4,9 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
-import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
 import { takeSkipFocusOnShow } from '../utils/terminalQuietShow'
-import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, useTerminalAtLimit, retryTerminalConnection } from '../utils/terminalRegistry'
+import { ensureTerminalConnection, pasteIntoTerminal, takesEarlyInput, useTerminalInputCapped, dismissTerminalInputCapped, EARLY_INPUT_CAP, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, useTerminalAtLimit, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
 import { ansiPaletteFromVars, toHexColor } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
@@ -18,12 +17,13 @@ import TerminalTouchHandles from './TerminalTouchHandles'
 import TerminalFindBar from './TerminalFindBar'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
-import { setTerminalCloseFailed } from '../hooks/useBottomTerminal'
 import { useTerminalSearch } from '../hooks/useTerminalSearch'
 import { copyToClipboard } from '../utils/clipboard'
 import { attachOsc52Copy, type Osc52CopyHandle } from '../lib/terminalOsc52'
 
 import { i18nT } from '../i18n/t'
+import { searchOpeners, registerDestroyTerm } from './terminalSessions'
+import { useStandInKeys } from '../utils/terminalStandInKeys'
 import { apiTransport } from '../api/apiTransport'
 /* ── Per-session xterm instance cache ──
  * Keyed by PTY session id. Instances persist across tab switches / chat
@@ -268,59 +268,8 @@ export function prewarmTerminal(id: string, width: number, height: number): void
   fit.fit()
 }
 
-/**
- * Tear down a terminal tab's LOCAL state: close its persistent WS and dispose
- * the cached xterm instance. Killing the backend PTY is a separate server call
- * routed through useDeleteTerminalSession() (per the use-react-query guideline);
- * SidePanel.handleCloseTab fires both.
- */
-export function disposeTerminalSession(sessionId: string): void {
-  disposeTerminalConnection(sessionId)
-  destroyTerm(sessionId)
-}
-
-/** Each mounted terminal pane's "open the find bar" action, by session id. */
-const searchOpeners = new Map<string, () => void>()
-
-/** Open the scrollback find bar on a mounted terminal pane (the overflow
- *  menu's Find item). Returns false when no pane for that id is mounted. */
-export function openTerminalSearch(sessionId: string): boolean {
-  const open = searchOpeners.get(sessionId)
-  if (!open) return false
-  open()
-  return true
-}
-
-/**
- * React Query mutation that kills a terminal's backend PTY
- * (DELETE /api/terminal/sessions/:id). Best-effort — a failed delete is
- * backstopped by the server-side orphan reaper — but routing it through a
- * mutation gives it the standard write lifecycle instead of a bare fetch.
- * Local teardown stays synchronous in disposeTerminalSession().
- *
- * `keepalive` lets the request outlive the document that issued it: the
- * terminal popout returns itself to the main window the moment its last tab
- * closes, and without it that final DELETE would be aborted with the window.
- * A rejection is recorded in the shared close-failed flag (every consumer
- * reports it the same way), which the always-mounted panel root renders.
- */
-export function useDeleteTerminalSession() {
-  return useMutation({
-    mutationFn: async (sessionId: string) => {
-      const res = await apiTransport.request(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE', keepalive: true })
-      // 404 means the server has no such session any more: the PTY was already
-      // reaped (idle sweep, gateway restart, a second close racing this one).
-      // The shell is stopped, which is the outcome the user asked for, so this
-      // is success, not a failure to report.
-      if (res.status === 404) return
-      if (!res.ok) throw new Error(`Failed to delete terminal session (${res.status})`)
-    },
-    // Mutation-level (not per-`mutate`) so it still fires after the caller has
-    // unmounted — closing the LAST tab hides the strip that would otherwise
-    // render the failure.
-    onError: () => setTerminalCloseFailed(true),
-  })
-}
+registerDestroyTerm(destroyTerm)
+export { disposeTerminalSession, openTerminalSearch, useDeleteTerminalSession } from './terminalSessions'
 
 /**
  * Force xterm to re-measure the character cell, then refit. xterm measures the
@@ -372,7 +321,7 @@ function cellKey(term: Terminal): string {
 }
 
 /* ── Terminal view for one session ── */
-function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat, deferOpen, onToggleFullscreen }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void; deferOpen?: boolean; onToggleFullscreen?: () => void }) {
+function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat, deferOpen, onToggleFullscreen, focusBeforeLoad }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void; deferOpen?: boolean; onToggleFullscreen?: () => void; focusBeforeLoad?: Element | null }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   // The terminal plus its overlays: the touch listeners and the selection
@@ -479,15 +428,25 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
     if (!visible) { quietShow.current = false; return }
     if (takeSkipFocusOnShow(sessionId)) quietShow.current = true
   }, [visible, sessionId])
+  // A pane that waited for this chunk (LazyCliPanel) must not take the focus
+  // from a field the user moved to while it loaded. Read on the first show only.
+  const lateFocus = useRef(focusBeforeLoad)
+  const focusMovedDuringLoad = (): boolean => {
+    const before = lateFocus.current
+    lateFocus.current = undefined
+    if (before === undefined) return false
+    const active = document.activeElement
+    return !!active && active !== document.body && active !== before && !wrapperRef.current?.contains(active)
+  }
   const proxyRef = useRef<HTMLTextAreaElement>(null)
+  const standIn = useStandInKeys(sessionId)
+  const inputCapped = useTerminalInputCapped(sessionId)
   useLayoutEffect(() => {
-    if (holding && visible && !quietShow.current) proxyRef.current?.focus({ preventScroll: true })
+    if (holding && visible && !quietShow.current && !focusMovedDuringLoad()) proxyRef.current?.focus({ preventScroll: true })
   }, [holding, visible])
-  // Hand-off: whatever reached the stand-in goes to the shell as a paste, so
-  // the shell's bracketed-paste guard holds and a newline in it does not run
-  // a command; the focus moves to xterm's own field (the focus effect below),
-  // field to field, so the keyboard stays up.
-  const proxyText = useRef('')
+  // Hand-off: the stand-in sends each key to the shell as typed (standInKeys),
+  // so nothing is left to hand over; the focus moves to xterm's own field (the
+  // focus effect below), field to field, so the keyboard stays up.
   const handingOff = useRef(false)
   // Only a hold the user could see hands off: a hidden held tab opens later
   // and takes focus like any tab switched to.
@@ -511,9 +470,19 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
       measuredWith.set(term, cellKey(term))
     }
     fit.fit()
-    const pending = proxyText.current
-    proxyText.current = ''
-    if (pending) term.paste(pending)
+    // A paste into xterm before its first socket settles joins the early-input
+    // queue as a paste, so it waits for bracketed paste like a stand-in's;
+    // xterm's own handler would turn it into key bytes and its newlines would run.
+    const field = term.textarea
+    const onPaste = (ev: ClipboardEvent) => {
+      if (!takesEarlyInput(sessionId)) return
+      ev.preventDefault()
+      ev.stopImmediatePropagation()
+      const text = ev.clipboardData?.getData('text/plain')
+      if (text) pasteIntoTerminal(sessionId, text)
+    }
+    field?.addEventListener('paste', onPaste, true)
+    return () => field?.removeEventListener('paste', onPaste, true)
   }, [term, fit, holding, sessionId])
 
   // Focus + refit when becoming visible. Re-measure here too so a pane that
@@ -532,7 +501,8 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
     const fromHold = handingOff.current
     handingOff.current = false
     const active = document.activeElement
-    const movedAway = fromHold && !!active && active !== document.body && !wrapperRef.current?.contains(active)
+    const movedDuringLoad = focusMovedDuringLoad()
+    const movedAway = movedDuringLoad || (fromHold && !!active && active !== document.body && !wrapperRef.current?.contains(active))
     const raf = requestAnimationFrame(doRefit)
     const input = term.textarea
     if (input && !input.style.left) {
@@ -738,6 +708,17 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
             onDismiss={() => setOsc52Result('idle')}
           />
         )}
+        {inputCapped && (
+          // No hand-off: a terminal pane sits beside the chat composer's unsent draft,
+          // and the dropped input is gone; the notice only says so.
+          <ErrorNotice
+            variant="inline"
+            testId="cli-panel-early-input-capped"
+            className="absolute top-2 left-2 z-20 max-w-[calc(100%-1rem)] rounded-md border border-border bg-bg-elevated px-2 py-1 shadow-sm"
+            message={i18nT('components.cliPanel.early_input_capped', { size: EARLY_INPUT_CAP / 1024 })}
+            onDismiss={() => dismissTerminalInputCapped(sessionId)}
+          />
+        )}
         {osc52Result === 'copied' && (
           <div
             role="status"
@@ -758,7 +739,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            onChange={e => { proxyText.current = e.currentTarget.value }}
+            {...standIn}
           />
         )}
         {/* Owns xterm's SINGLE `attachCustomKeyEventHandler` slot for this term
@@ -936,7 +917,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
  * Sessions are chat-specific by virtue of living in usePanelTabs' per-slot
  * bucket; the module-level termCache keeps them warm across tab/chat switches.
  */
-export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible = true, onSendToChat, deferOpen, onToggleFullscreen }: {
+export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible = true, onSendToChat, deferOpen, onToggleFullscreen, focusBeforeLoad }: {
   sessionId: string
   cwd?: string
   /** Open the shell in this chat's REMOTE session workspace instead of locally. */
@@ -947,10 +928,13 @@ export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible
   onSendToChat?: (text: string) => void
   /** Hold a never-opened terminal behind a focus stand-in until this turns false. */
   deferOpen?: boolean
-  /** Toggle the app-wide dock panel fullscreen (Cmd+Shift+F on macOS; the menu item elsewhere). Passed ONLY
+  /** Toggle the app-wide dock panel fullscreen (Cmd+Shift+F on macOS; the header button elsewhere). Passed ONLY
    *  by the dock's TerminalTabsView — a chat side-panel terminal leaves it
    *  undefined so its chord does not maximize the unrelated dock panel. */
   onToggleFullscreen?: () => void
+  /** Set by LazyCliPanel when this pane waited for its chunk: where the focus
+   *  was when it asked. A focus moved elsewhere meanwhile is left alone. */
+  focusBeforeLoad?: Element | null
 }) {
   useEffect(() => { ensureThemeObserver(); ensureTerminalFontSync() }, [])
   return (
@@ -961,7 +945,7 @@ export default function CliPanel({ sessionId, cwd, remoteSlot, chatSlot, visible
       className="flex flex-col w-full h-full overflow-hidden px-3 pt-2"
       style={{ background: 'var(--term-bg, var(--bg))' }}
     >
-      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} chatSlot={chatSlot} visible={visible} onSendToChat={onSendToChat} deferOpen={deferOpen} onToggleFullscreen={onToggleFullscreen} />
+      <TerminalView sessionId={sessionId} cwd={cwd} remoteSlot={remoteSlot} chatSlot={chatSlot} visible={visible} onSendToChat={onSendToChat} deferOpen={deferOpen} onToggleFullscreen={onToggleFullscreen} focusBeforeLoad={focusBeforeLoad} />
     </div>
   )
 }

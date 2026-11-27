@@ -369,7 +369,7 @@ class TestPushGuardGitFailures:
                 ["--require-single-on-base"],
                 lambda a: "cat-file" in a,
                 "cat-file",
-                "not exactly",
+                "not one commit of",
                 id="head-parents",
             ),
             pytest.param(

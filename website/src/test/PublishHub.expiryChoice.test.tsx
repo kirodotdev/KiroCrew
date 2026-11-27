@@ -187,6 +187,34 @@ describe('PublishHub expiry choice for a built-in destination', () => {
     expect(publishBodies(fetchSpy)[0]).not.toHaveProperty('expires_in_days')
   })
 
+  it('publishes an expired publication afresh on its own destination, choosing an expiry', async () => {
+    const other = { ...coreDescriptor(EXPIRING), name: 'other', display_name: 'Other service' }
+    mockRegistries(fetchSpy, [other, coreDescriptor(EXPIRING)])
+    const expired = {
+      ...fakeArtifact,
+      publication: {
+        provider: 'paste',
+        visibility: 'PUBLIC',
+        view_url: 'https://paste/x',
+        expires_at: '2026-11-20T12:00:00+00:00',
+        expired: true,
+      },
+    } as unknown as Artifact
+    render(<PublishHub artifact={expired} />, { wrapper })
+
+    // Opens on the expired publication's destination, with a first publish's choices.
+    expect(await screen.findByLabelText(/^expires$/i)).toBeTruthy()
+    expect(screen.getByText(/the previous link expired on/i)).toBeTruthy()
+    expect(screen.getByRole('radio', { name: /private/i })).toBeTruthy()
+    expect(screen.queryByText('Other service')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /^publish$/i }))
+    expect(screen.getByText(/after 30 days/i)).toBeTruthy()
+    fireEvent.click(await screen.findByRole('button', { name: /confirm/i }))
+    await waitFor(() => expect(publishBodies(fetchSpy)).toHaveLength(1))
+    expect(publishBodies(fetchSpy)[0]).toMatchObject({ provider: 'paste', expires_in_days: 30 })
+  })
+
   it('names the period in the public-exposure acknowledgment', async () => {
     mockRegistries(fetchSpy, [coreDescriptor(EXPIRING, true)])
     render(<PublishHub artifact={fakeArtifact} />, { wrapper })

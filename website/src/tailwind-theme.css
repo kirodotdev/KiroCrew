@@ -49,16 +49,16 @@
  * set there. `useIsMobile.ts` writes `data-layout-form="phone"` on <html> while
  * the phone form is drawn; these four keep Tailwind's own widths and order. */
 @custom-variant md {
-  @media (width >= 48rem) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
+  @media (width >= 768px) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
 }
 @custom-variant lg {
-  @media (width >= 64rem) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
+  @media (width >= 1024px) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
 }
 @custom-variant xl {
-  @media (width >= 80rem) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
+  @media (width >= 1280px) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
 }
 @custom-variant 2xl {
-  @media (width >= 96rem) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
+  @media (width >= 1536px) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
 }
 
 /* ── Theme ──
@@ -147,6 +147,34 @@
   /* Type. `font-body` / `font-mono` read the two runtime font stacks; the
      Preflight default for <code>/<pre>/<kbd> follows the mono stack too, so an
      unstyled code element renders in the same face as `font-mono`. */
+  /* Every breakpoint in px, and ONLY the breakpoints. The content text size
+     tier sets Chromium's default font size, which is also the rem base, so a
+     rem breakpoint moves with the tier. `useIsMobile.ts` reads the same
+     boundaries through matchMedia in px, and a px query never moves: at the
+     Very Large tier `md:` reached 1152px while the query stayed at 767px, so
+     between those two widths the stylesheet drew the phone form while the
+     JavaScript reported desktop. Breakpoints are the only length CSS and
+     JavaScript must agree on — nothing in JavaScript reads spacing, radius,
+     line height or type size — so the rest of the scale stays in rem and
+     scales with the tier, which is the feature. The four `@custom-variant`s
+     above cover `md:`-and-up; these also give `sm:` and the `max-*` variants,
+     which the custom variants do not reach. */
+  /* The spacing base in px. Tailwind's default is 0.25rem, which at a 16px root
+     is this exact value, so nothing renders differently at Medium. It is pinned
+     because the Goal is text sizing "without the layout coarsening that Zoom
+     brings": left in rem it follows the content text size tier, so every `p-*`,
+     `gap-*`, `w-*`, `h-*` and icon box grows with the text and the user pays
+     Zoom's density cost for a control that promises not to charge it. Type
+     stays in rem — that part IS the feature — so the tier moves text and
+     leaves geometry alone. `--radius` is pinned for the same reason. */
+  --spacing: 4px;
+
+  --breakpoint-sm: 640px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1280px;
+  --breakpoint-2xl: 1536px;
+
   --font-body: var(--font-body);
   --font-mono: var(--mono);
   --default-mono-font-family: var(--mono);
@@ -158,7 +186,9 @@
      inside a `text-sm` row, `.msg-content code` at `.9em` — then gets a line
      box scaled to ITS size instead of the parent's fixed 20px, and every
      sidebar row and transcript line lands 1-2px higher than it did. Pinning the
-     rem values keeps inheritance, and therefore layout, identical. */
+     rem values keeps inheritance, and therefore layout, identical. They stay in
+     rem rather than px so a line box grows with the content text size tier; a
+     px line height under rem text clips the glyphs at the larger tiers. */
   --text-xs--line-height: 1rem;
   --text-sm--line-height: 1.25rem;
   --text-base--line-height: 1.5rem;
@@ -167,6 +197,13 @@
   --text-2xl--line-height: 2rem;
   --text-3xl--line-height: 2.25rem;
   --text-4xl--line-height: 2.5rem;
+  /* The `text-*` FONT sizes keep Tailwind's rem defaults, so every `text-*`
+     utility follows Chromium's default font size and moves with the content
+     text size tier. That IS the feature, so it must not be pinned. `--text-xs`
+     alone carries a floor: 0.75rem is 9px at the Small tier, under the 10px
+     minimum in website/AGENTS.md, and max() holds it at 10px there while
+     leaving every larger root untouched (12px at the 16px default). */
+  --text-xs: max(10px, 0.75rem);
   --text-5xl--line-height: 1;
   --text-6xl--line-height: 1;
   --text-7xl--line-height: 1;
@@ -181,7 +218,7 @@
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
   --radius-xl: var(--radius-xl);
-  --radius: 0.25rem;
+  --radius: 4px;
   --shadow-sm: var(--shadow-sm);
   --shadow-md: var(--shadow-md);
   --shadow-lg: var(--shadow-lg);

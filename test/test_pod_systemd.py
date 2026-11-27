@@ -664,6 +664,27 @@ class TestPlatformGuard:
         with pytest.raises(rt.PodError, match="trusted system"):
             rt.systemctl("list-units")
 
+    def test_recent_journal_never_runs_a_path_journalctl(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(rt, "IS_MACOS", False)
+        monkeypatch.setattr(rt, "IS_WINDOWS", False)
+        monkeypatch.setattr(rt, "require_systemd", lambda: None)
+        impostor_dir = tmp_path / "bin"
+        impostor_dir.mkdir()
+        marker = tmp_path / "impostor-ran"
+        impostor = impostor_dir / "journalctl"
+        impostor.write_text(f'#!/bin/sh\necho ran > "{marker}"\n', encoding="utf-8")
+        impostor.chmod(0o755)
+        monkeypatch.setenv("PATH", str(impostor_dir))
+        monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda _name: None)
+
+        said = rt.recent_journal(cfg, "alpha", 5)
+
+        assert not marker.exists(), "a journalctl found on PATH was run"
+        assert said.startswith("(could not read the pod journal:")
+        assert "trusted system directories" in said
+
     def test_recent_journal_gated(self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch) -> None:
         """journalctl is a sibling of systemctl, not routed through it — gate it too."""
         monkeypatch.setattr(rt, "IS_LINUX", False)
@@ -1143,13 +1164,10 @@ class TestSessionBus:
             ):
                 continue
             literal_systemd += 1
-            assert _uses_systemctl_env(
-                node
-            ), f"line {node.lineno}: {head.value} spawned without env=_systemctl_env()"
 
-        # journalctl in recent_journal is the one literal systemd spawn; if that
-        # drops to zero the scan above has stopped covering anything.
-        assert literal_systemd >= 1, "no literal systemd spawn found — scan is inert"
+        # A bare systemctl/journalctl head would be resolved from PATH; every systemd
+        # spawn names a trusted absolute binary and goes through _run instead.
+        assert literal_systemd == 0, "a systemd tool is spawned by bare name, not via _run"
         # The variable-argv chokepoint every systemctl() call funnels through.
         chokepoint = next(
             n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_run"
@@ -1159,3 +1177,13 @@ class TestSessionBus:
             for n in ast.walk(chokepoint)
             if isinstance(n, ast.Call)
         ), "_run no longer passes env=_systemctl_env()"
+        # The journal read is a systemd spawn too, so the chokepoint check covers it.
+        recent = next(
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "recent_journal"
+        )
+        assert any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_run"
+            for n in ast.walk(recent)
+        ), "recent_journal no longer spawns journalctl through _run"

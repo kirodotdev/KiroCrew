@@ -11,12 +11,15 @@ behind NAT and firewalls with no webhook, public address, or inbound port.
 | **DMs** | Responds to messages from an allow-listed user. No `@mention` needed. |
 | **Approved server threads** | Responds when both the sender's user ID and the exact thread ID are allow-listed. Everyone who can view the thread can read replies and tool output. |
 | **Allowed server channels** | Opt-in. An allow-listed user's message in an allow-listed channel opens a fresh public thread and the turn runs there, never in the shared channel itself. Off unless you add channel IDs. |
+| **Allowed forum channels** | Opt-in, through the same `allowed_channel_ids` list. Each post an allow-listed user opens in the forum is its own session, answered in the post. A post someone else opened stays ignored, even when an allow-listed user replies in it. Needs `auto_thread` on, like allowed channels. |
 | **Every other server channel** | Ignored, including a channel ID entered in the *thread* allow-list by mistake: Kiro Crew verifies the Discord channel type before running a turn. |
 | **Unknown users, threads or channels** | Denied. Security-relevant attempts are audited; unrelated guild chatter is discarded silently. Empty user allow-list denies everything; empty thread and channel allow-lists mean DMs only. |
 
 Discord represents threads as specialized guild channels with their own channel
-IDs. Forum posts are threads too. Group DMs are different and are not supported
-by Discord's bot API.
+IDs. Forum posts are threads too: add one post's ID to `allowed_thread_ids`, or
+the forum's own ID to `allowed_channel_ids` to answer every post an allow-listed
+user opens there (media channels work the same way). Group DMs are different and
+are not supported by Discord's bot API.
 
 ## Setup
 
@@ -60,6 +63,8 @@ For DMs only, no guild permissions are required. For server threads, grant:
 - **Create Public Threads** (only if you use `allowed_channel_ids`, which answers
   in a thread opened from your message)
 
+Once the bot is connected, Settings -> Messaging Channels -> Discord shows both invite
+links (DMs only, and with thread access) with your application id filled in.
 A manual thread-capable install URL is:
 
 ```text
@@ -114,18 +119,37 @@ Omit `allowed_thread_ids` and `allowed_channel_ids`, or leave them empty, for
 DMs only. `allowed_channel_ids` lets an approved user start a turn from a shared
 server channel; the turn itself always runs in a public thread opened from that
 message, so `auto_thread` (default `true`) must stay on for those channels to
-work at all. `soft_threshold_pct` defaults to `80` and is clamped to 1-100; `reactions_enabled` defaults to `true`, `show_thinking` defaults to `false`, and `session_folder` defaults to empty. The bot token belongs in the `DISCORD_BOT_TOKEN` credential (env / `.env` / credential store), not in `config.json`, which an agent can read. A `discord.bot_token` value is still honoured as a legacy fallback, but the credential takes precedence and is the supported place for it.
+work at all. `soft_threshold_pct` defaults to `80` and is clamped to 1-100; `reactions_enabled` defaults to `true`, `show_thinking` defaults to `false`, `show_timing_footer` defaults to `true`, and `session_folder` defaults to empty. The bot token belongs in the `DISCORD_BOT_TOKEN` credential (env / `.env` / credential store), not in `config.json`, which an agent can read. A `discord.bot_token` value is still honoured as a legacy fallback, but the credential takes precedence and is the supported place for it.
 
-### 6. Restart the gateway
+### 6. Save, or start the gateway
+
+A running gateway applies Discord settings when you save them in Settings, or
+when you edit `config.json` or `.env`, with no restart:
+
+- The allow-lists, `auto_thread`, the reaction, thinking and footer toggles, the
+  threshold and the session folder apply to the next message.
+- A new bot token for the same bot reconnects the running bot with it. The
+  token is checked with Discord first. Settings does not save one Discord
+  rejects, and a rejected token edited into `.env` is not applied: the current
+  connection keeps running either way. Turns already running finish.
+- Adding the first server thread or channel, or removing the last one,
+  reconnects with the intents that needs: a DM-only connection asks for direct
+  messages alone, and a thread-capable one adds Message Content.
+- Turning Discord on or off, a token for a different bot, or clearing the token
+  restarts the Discord channel inside the gateway.
+
+If the gateway is not running yet, start it:
 
 ```bash
 kirocrew restart
 ```
 
-Discord settings and Gateway intents are read at startup. The Settings page
-shows **Connected** once Discord accepts the IDENTIFY handshake and sends READY.
-If Discord closes with code 4014, enable Message Content Intent in the Developer
-Portal or clear the thread allow-list and restart in DM-only mode.
+The Settings page shows **Connected** once Discord accepts the IDENTIFY
+handshake and sends READY. If Discord refuses the thread intents with close
+code 4014 on a save, the bot stays connected for DMs only and the save says
+so. If it refuses them when the gateway starts, the Discord channel stops. In
+both cases, enable Message Content Intent in the Developer Portal, then save
+again; the save reconnects with the thread intents.
 
 ### 7. Test both paths
 
@@ -137,11 +161,11 @@ Portal or clear the thread allow-list and restart in DM-only mode.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Enabled, but no Discord activity | Token missing or gateway not restarted | Set `DISCORD_BOT_TOKEN`, then `kirocrew restart` |
-| Gateway closes with 4004 | Bad or reset token | Reset the token, update `.env`, restart |
-| Gateway closes with 4014 after adding a thread | Message Content Intent is disabled | Enable it on the Bot page, then restart |
+| Enabled, but no Discord activity | Token missing, or the gateway is not running | Save the bot token in Settings (or set `DISCORD_BOT_TOKEN`); start the gateway if it is stopped |
+| Gateway closes with 4004 | Bad or reset token | Reset the token and save the new one in Settings; the bot reconnects with it |
+| A save warns about close 4014 after adding a thread | Message Content Intent is disabled, so the bot stays on DMs only | Enable it on the Bot page, then save again |
 | DMs are ignored | User ID is missing/wrong | Add the numeric user ID; inspect `kirocrew security events` |
-| Thread is ignored but DMs work | Thread ID missing/wrong, bot cannot view it, or Message Content Intent is off. For a thread the bot opened: its parent channel was removed from `allowed_channel_ids`, or someone else opened the thread | Copy the thread's Channel ID, check permissions/membership, enable the intent, restart. A thread a person opened needs its ID in `allowed_thread_ids` |
+| Thread is ignored but DMs work | Thread ID missing/wrong, bot cannot view it, or Message Content Intent is off. For a thread the bot opened: its parent channel was removed from `allowed_channel_ids`, or someone else opened the thread. For a forum post: the forum is not in `allowed_channel_ids`, or the post's opener is not in `allowed_user_ids` | Copy the thread's Channel ID, check permissions/membership, enable the intent, save again. A thread a person opened outside an allowed forum needs its ID in `allowed_thread_ids` |
 | Parent channel is ignored | The channel is not in `allowed_channel_ids` | Use an approved thread, or add the parent channel ID to `allowed_channel_ids` to open public turn threads |
 | Bot can read but cannot reply in a thread | Missing guild permission or private-thread membership | Grant View Channel, Read Message History, Send Messages in Threads; add the bot to private threads |
 | Logs are silent on successful connection | `agent.log_level` is `WARNING` | Trust the Connected badge or lower the log level |
@@ -173,6 +197,14 @@ Portal or clear the thread allow-list and restart in DM-only mode.
   the gateway. A config reload alone keeps those threads answering until the
   next restart. Removing one thread's ID from `allowed_thread_ids` stops that
   thread at once, and the bot does not re-admit it until the next restart.
+- **Forum posts follow the same rules.** A post in an allowed forum is admitted
+  once Discord confirms the parent is a forum and the post's opener is in
+  `allowed_user_ids`. Like an allowed channel, a forum needs `auto_thread` on:
+  with it off, its posts get no reply. The grant is recorded in the audit log
+  (`forum_post_authorized`) and survives a restart the same way. Removing the
+  forum or the opener takes effect at the next restart; to stop one post at
+  once, add its ID to `allowed_thread_ids` and then remove it. Anyone who can
+  see the forum can read every admitted post.
 - **Slash commands answer privately.** Every `/` command reply is ephemeral, so
   only the person who ran it sees it, which is what keeps a refusal, a status
   line or the `/model` list out of a shared thread. A reply that is not ready
@@ -207,8 +239,10 @@ before the `applications.commands` scope is installed.
 |---------|--------|
 | `!new` / `!start` | Start a fresh conversation (shared for the current thread) |
 | `!compact` | Compress the current conversation context |
-| `!model` / `!models` | Pick the model from a button list of what your account can use |
-| `!agent [name]` | Show the agent and the ones you can pick; `!agent <name>` switches, `!agent default` goes back |
+| `!model [name]` / `!models` | Pick the model from a button list of what your account can use; `!model <name>` switches straight to a model on that list (`auto` for Auto) |
+| `!agent [name]` / `!agents` | Show the agent and the ones you can pick; `!agent <name>` switches, `!agent default` goes back. A Bot is not an agent here: use `!bot` |
+| `!temporary <msg>` | Make this conversation temporary, then answer `<msg>`: it reads no memory and saves nothing |
+| `!incognito <msg>` | Make this conversation incognito, then answer `<msg>`: it can read memory but saves nothing |
 | `!status` | Show runtime stats, the active agent, and whether auto-approve is on |
 | `!sessions` / `!session` | In a DM, pick a recent dashboard or same-DM session and continue it here (owner only) |
 | `!bot [name]` / `!bots` | In a DM, talk to one of your Bots here, in its own thread (owner only) |
@@ -216,9 +250,40 @@ before the `applications.commands` scope is installed.
 | `!stop` / `!cancel` | Stop the current reply and clear your queued messages (the reply's ⏹ Stop button does the same) |
 | `!help` | Show commands |
 
+In the `/` menu, the argument of `/agent`, `/model`, `/sessions` and `/bot`
+suggests matches as you type (up to 25). `/agent` and `/model` suggest in a DM
+and in an approved thread. `/sessions` and `/bot` suggest session and Bot titles
+only to the owner, and only in a DM; anywhere else the list stays empty, since
+those titles are private. A suggestion only fills the argument in: the command
+you send is checked as usual.
+
 `!queue <msg>` and `!steer <msg>` control a reply that is already running. They
 are message prefixes rather than commands, so they are deliberately absent from
 the `/` menu: a menu tap sends the bare word, which has no message to act on.
+
+### Private conversations
+
+These work as Slack's `!temporary` and `!incognito` do, with the same limits.
+
+- **`!temporary` / `!incognito`** apply to the whole conversation from that message
+  on, not only to the one message. While a conversation is private, Kiro Crew keeps
+  no transcript of it and does not mirror it to the dashboard, and the agent cannot
+  write Kiro Crew memory. A temporary conversation also takes no Kiro Crew memory or
+  lessons into its prompt. Sent with nothing after it (or as `/temporary` or
+  `/incognito`), the modifier only turns the mode on. `!new` starts a new
+  conversation, which is no longer private.
+- **What they do not cover.** The agent process is not told about the mode: if
+  ACP frame recording is on, it still records the conversation, and a Claude Code
+  agent still uses its own automatic memory. Slack and Telegram have the same limit
+  today, so do not treat a modified conversation as fully private.
+- **On a file.** A modifier at the start of a file's caption applies too, and the
+  file is answered in the private conversation.
+- **Refusals.** Both are refused while a reply is running: send them again once it
+  finishes. They are also refused in a conversation that continues a dashboard
+  session or a Bot (`!sessions`, `!bot`), whose mode is set on the dashboard, and in
+  a conversation that also ran in its dashboard tab: send `!new` first there. They
+  cannot follow `!queue` or `!steer`. When a modifier is refused, Kiro Crew does
+  not process your message.
 
 ### Continuing a Discord conversation from the dashboard
 
@@ -261,8 +326,8 @@ to continue that thread here. `!bot <name>` connects the Bot it names at once
 the same owner-only rule and the same `!unlink` to leave: your messages go to the
 Bot's own thread, and its replies there, including the ones that follow a
 worker's report, come back to this DM. Because the Bot runs in its own thread, it
-keeps its worker. A Bot whose thread is not open is not listed: open it once from
-the Bots page. Cards, guides and the Bot's changes to its own name or face still
+keeps its worker. A Bot whose thread is not open is not listed, and the list says
+so: open it once from the Bots page and send it a message. Cards, guides and the Bot's changes to its own name or face still
 need a message you send in the dashboard. A reply the Bot was already writing
 when you connected is not sent here, because that turn read its work under the
 thread's earlier, unmirrored state; the next reply is.
@@ -304,6 +369,11 @@ refuses the command instead of guessing. Incognito and temporary sessions are
 never listed, and session titles plus replayed messages are scrubbed of
 credentials, inside URLs too, before they reach Discord.
 
+Each reply ends with a small "Finished in 12s · ctx 8%" line showing how long the
+turn took and how full the context is. Turn off **Reply time and context line**
+in Settings -> Messaging Channels -> Discord (or set `discord.show_timing_footer` to
+`false`) to hide it from the next reply on; choice buttons still post.
+
 While a reply is running, prefix a message with `!steer` to fold it into the
 running turn or `!queue` to answer it afterward. The reply being written carries a
 ⏹ Stop button that does what `!stop` does, for anyone who could send `!stop` there; it
@@ -321,6 +391,8 @@ formatting that disguises a credential. The tool name, MCP names and purpose
 are never shortened: one that holds a backtick, starts or ends with a space,
 or is longer than 200 characters (100 for an MCP name) is hidden instead. A
 long input is cut to fit one Discord message and marked `… [truncated]`. A
+prompt waits `agent.tool_approval_timeout_secs` (default 600 seconds), as on
+Slack, and an unanswered one is denied. A
 sub-agent spawn started from Discord asks for approval the same way, with
 Approve/Deny buttons in the DM or thread it came from; there is no Trust button,
 because standing trust is granted only on the dashboard. With `messaging.dm_scope` set to `unified`, a DM session cannot be traced back to

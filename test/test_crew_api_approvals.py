@@ -4,6 +4,7 @@ approvals, each under one ``apr_`` id that names one request in this gateway pro
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import threading
 from pathlib import Path
@@ -18,6 +19,8 @@ from chat_test_helpers import _make_state
 from jsonschema import Draft202012Validator
 from test_shared_crew_teammate_owner_access import _publish
 
+from conftest import requires_symlinks
+from kiro_crew.dashboard import crew_api_approval_records as records
 from kiro_crew.dashboard import crew_api_approvals as approvals
 from kiro_crew.dashboard.deny_override import DENY_OVERRIDE_META_KEY
 from kiro_crew.dashboard.routes import crew_api
@@ -41,6 +44,11 @@ def _valid(name: str, body: Any) -> None:
 
 def _decision(approval_id: str) -> str:
     return f"{LIST}/{approval_id}/decision"
+
+
+def _record_file(home: Path) -> Path:
+    """Where a gateway whose data home is *home* keeps the approval records."""
+    return home / "member-records" / records.APPROVALS_KIND / "state.json"
 
 
 @web.middleware
@@ -328,35 +336,840 @@ async def test_an_ending_made_elsewhere_is_read_from_the_request_itself(client):
 
 
 @pytest.mark.asyncio
-async def test_after_a_restart_old_ids_are_unknown_and_waiting_requests_get_new_ids(
+async def test_after_a_restart_old_ids_read_expired_and_waiting_requests_get_new_ids(
     client, tmp_path, monkeypatch
 ):
     task = await _background(client.state, "rid", slot=SLOT)
-    _native(client.state, "rid")
+    _native(client.state, "rid", tool_input="ls /secret-place")
+    answered_future = _native(client.state, "answered", slot_key="other")
     before = await _listed(client)
+    assert [r["conversation"] for r in before] == [SLOT, SLOT, "other"]
+    done = await client.post(
+        _decision(before[2]["id"]), json={"decision": "allow"}, headers=AS_OWNER
+    )
+    assert done.status == 200 and answered_future.done()
+    # The gateway closes its sessions for good, then the turns are cut.
+    client.state.sessions.final_drain_started = True
     await _cancel(task)
+    assert (await _listed(client))[0]["id"] == before[0]["id"]
+
+    # Only ids, states, times and sessions are in the file: no tool, no argument.
+    text = _record_file(tmp_path).read_text(encoding="utf-8")
+    stored = json.loads(text)["approvals"]
+    assert [set(row) for row in stored] == [set(records.FIELDS)] * 3
+    assert [row["state"] for row in stored] == ["pending", "pending", "allowed"]
+    for hidden in ("secret-place", "shell", "fs_write", "a.txt", OWNER):
+        assert hidden not in text
+
     # A new process has a new state and index. The caller ids can repeat.
     restarted = _state(tmp_path / "restarted", monkeypatch)
-    again = await _background(restarted, "rid", slot=SLOT)
-    future = _native(restarted, "rid")
-    try:
-        async with _serve(restarted) as second:
-            assert await _listed(second, state="expired") == []
-            for row in before:
-                read = await second.get(f"{LIST}/{row['id']}", headers=AS_OWNER)
-                assert (read.status, (await read.json())["error"]["code"]) == (404, "not_found")
-                answered = await second.post(
-                    _decision(row["id"]), json={"decision": "allow"}, headers=AS_OWNER
-                )
-                assert (answered.status, (await answered.json())["error"]["code"]) == (
-                    404,
-                    "not_found",
-                )
-            assert not again.done() and not future.done()
-            waiting = await _listed(second)
-            assert len(waiting) == 2 and not {r["id"] for r in waiting} & {r["id"] for r in before}
-    finally:
+    async with _serve(restarted) as second:
+        assert await _listed(second) == []
+        old = await _listed(second, state="expired")
+        assert [r["id"] for r in old] == [r["id"] for r in before[:2]]
+        for row in old:
+            _valid("OwnerApproval", row)
+            assert row["expired_reason"] == "gateway_restart"
+            assert (row["tool"], row["reason"], row["arguments"]) == ("", "", {"input": ""})
+            assert (row["conversation"], row["client_id"], row["decided_by"]) == (SLOT, None, None)
+            assert row["decided_at"] is not None
+            answered = await second.post(
+                _decision(row["id"]), json={"decision": "allow"}, headers=AS_OWNER
+            )
+            assert (answered.status, (await answered.json())["error"]["code"]) == (
+                409,
+                "approval_already_resolved",
+            )
+        kept = await second.get(f"{LIST}/{before[2]['id']}", headers=AS_OWNER)
+        assert (await kept.json())["state"] == "allowed"
+
+        # A turn resumed in the session asks again under new ids; the old records
+        # stay expired as they were.
+        again = await _background(restarted, "rid", slot=SLOT)
+        future = _native(restarted, "rid")
+        waiting = await _listed(second)
+        assert not again.done() and not future.done()
+        assert len(waiting) == 2 and not {r["id"] for r in waiting} & {r["id"] for r in before}
+        assert await _listed(second, state="expired") == old
         await _cancel(again)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not json",
+        '{"approvals": [{"id": "apr_x"}]}',
+        '{"approvals": "none"}',
+        json.dumps({"approvals": [dict.fromkeys(records.FIELDS, "x")]}),
+        json.dumps(
+            {
+                "approvals": [
+                    {
+                        **dict.fromkeys(records.FIELDS),
+                        "id": "apr_" + "a" * 32,
+                        "state": "pending",
+                        "created_at": 1,
+                        "slot": "s",
+                        "extra": None,
+                    }
+                ]
+            }
+        ),
+        "[" * 100_000,
+    ],
+    ids=[
+        "not-json",
+        "missing-fields",
+        "not-a-list",
+        "wrong-values",
+        "an-extra-field",
+        "nested-too-deep",
+    ],
+)
+async def test_a_record_file_that_cannot_be_believed_is_set_aside_and_live_approvals_go_on(
+    client, tmp_path, content, caplog
+):
+    path = _record_file(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    future = _native(client.state, "rid")
+    # The nested case ends in RecursionError on purpose, so the cyclic collector is
+    # held off for the read (testing-conventions: no sweep at the recursion limit).
+    gc.collect()
+    gc.disable()
+    try:
+        with caplog.at_level("WARNING", logger=approvals.logger.name):
+            (row,) = await _listed(client)
+    finally:
+        gc.enable()
+        gc.collect()
+    # The damaged file is kept under a dated name, and a new one holds the live id.
+    (aside,) = [p for p in path.parent.iterdir() if p.name.startswith("state.json.damaged-")]
+    assert aside.read_text(encoding="utf-8") == content
+    assert str(aside) in caplog.text and content not in caplog.text
+    assert [r["id"] for r in json.loads(path.read_text())["approvals"]] == [row["id"]]
+    # An id from before the damage is unknown; the live request is answered.
+    old = await client.get(f"{LIST}/apr_{'0' * 32}", headers=AS_OWNER)
+    assert (old.status, (await old.json())["error"]["code"]) == (404, "not_found")
+    answered = await client.post(_decision(row["id"]), json={"decision": "allow"}, headers=AS_OWNER)
+    assert answered.status == 200 and future.result() == "approved"
+    assert row["id"].startswith("apr_") and len(row["id"]) == 36
+
+
+@pytest.mark.asyncio
+async def test_a_record_file_that_is_not_valid_and_cannot_be_moved_is_503_and_gives_no_id(
+    client, tmp_path, monkeypatch
+):
+    content = "not json"
+    path = _record_file(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(records, "set_aside", Mock(side_effect=OSError("read-only")))
+    future = _native(client.state, "rid")
+    for response in (
+        await client.get(LIST, headers=AS_OWNER),
+        await client.get(f"{LIST}/apr_{'0' * 32}", headers=AS_OWNER),
+        await client.post(
+            _decision(f"apr_{'0' * 32}"), json={"decision": "allow"}, headers=AS_OWNER
+        ),
+    ):
+        body = await response.json()
+        assert (response.status, body["error"]["code"]) == (503, "instance_unavailable")
+        _valid("Error", body)
+    assert not future.done() and path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.asyncio
+async def test_a_record_file_that_cannot_be_read_is_left_in_place_and_read_once_it_can_be(
+    client, tmp_path, monkeypatch, caplog
+):
+    path = _record_file(tmp_path)
+    old = {
+        **dict.fromkeys(records.FIELDS),
+        "id": "apr_" + "a" * 32,
+        "state": "allowed",
+        "created_at": 1,
+        "decided_at": 2,
+        "slot": "s",
+    }
+    records.save(path, [old])
+    content = path.read_bytes()
+    future = _native(client.state, "rid")
+    with monkeypatch.context() as broken, caplog.at_level("WARNING", logger=approvals.logger.name):
+        # A read that fails says nothing about the content: it may be a good record.
+        broken.setattr(records, "load", Mock(side_effect=PermissionError("held open")))
+        for response in (
+            await client.get(LIST, headers=AS_OWNER),
+            await client.get(f"{LIST}/{old['id']}", headers=AS_OWNER),
+            await client.post(_decision(old["id"]), json={"decision": "deny"}, headers=AS_OWNER),
+        ):
+            body = await response.json()
+            assert (response.status, body["error"]["code"]) == (503, "instance_unavailable")
+            _valid("Error", body)
+    assert path.read_bytes() == content
+    assert not [p for p in path.parent.iterdir() if p.name.startswith("state.json.damaged-")]
+    assert str(path) in caplog.text and old["id"] not in caplog.text
+    assert content.decode("utf-8").strip() not in caplog.text
+    assert not future.done()
+    # Once the file can be read, the next call reads it and the old id is back.
+    kept = await client.get(f"{LIST}/{old['id']}", headers=AS_OWNER)
+    assert (kept.status, (await kept.json())["state"]) == (200, "allowed")
+    late = await client.post(_decision(old["id"]), json={"decision": "deny"}, headers=AS_OWNER)
+    assert (late.status, (await late.json())["error"]["code"]) == (409, "approval_already_resolved")
+
+
+@pytest.mark.asyncio
+async def test_an_id_that_cannot_be_written_is_not_announced_and_an_answer_still_lands(
+    client, monkeypatch
+):
+    future = _native(client.state, "rid")
+    with monkeypatch.context() as broken:
+        broken.setattr(records, "save", Mock(side_effect=OSError("disk")))
+        listed = await client.get(LIST, headers=AS_OWNER)
+        assert (listed.status, (await listed.json())["error"]["code"]) == (
+            503,
+            "instance_unavailable",
+        )
+    row = (await _listed(client))[0]
+    monkeypatch.setattr(records, "save", Mock(side_effect=OSError("disk")))
+    answered = await client.post(_decision(row["id"]), json={"decision": "allow"}, headers=AS_OWNER)
+    assert answered.status == 200 and (await answered.json())["state"] == "allowed"
+    assert future.result() == "approved"
+
+
+def _stored_states(home: Path) -> list[str]:
+    # The gateway's own reader: off the loop it rides out the Windows window in which
+    # a concurrent save's replace denies the open.
+    return [row["state"] for row in records.load(_record_file(home))]
+
+
+def _stopping(state: Any, monkeypatch) -> Any:
+    """A gateway about to run its graceful stop's teardown over *state*."""
+    from slack_gateway_helpers import _make_orchestrator, _mock_sessions
+
+    from kiro_crew.slack import gateway
+
+    async def unwound(_state: Any) -> None:
+        return None
+
+    monkeypatch.setattr(gateway, "wait_for_unwinding_turns", unwound)
+    orch = _make_orchestrator(test_mode=True)
+    orch.sessions = _mock_sessions()
+    orch.dashboard_state = state
+    return orch
+
+
+async def _states_after_restart(home: Path, monkeypatch, ids: list[str]) -> list[tuple[str, Any]]:
+    """What the next gateway process over *home*'s record reads for *ids*."""
+    async with _serve(_state(home / "restarted", monkeypatch)) as second:
+        read = [await (await second.get(f"{LIST}/{i}", headers=AS_OWNER)).json() for i in ids]
+    return [(row["state"], row["expired_reason"]) for row in read]
+
+
+@pytest.mark.asyncio
+async def test_an_ending_made_on_another_surface_is_written_when_it_happens(
+    client, tmp_path, monkeypatch
+):
+    task = await _background(client.state, "bg", slot=SLOT)
+    approved = _native(client.state, "approved")
+    rejected = _native(client.state, "rejected")
+    unanswered = await _background(client.state, "unanswered")
+    before = await _listed(client)
+    assert _stored_states(tmp_path) == ["pending"] * 4
+    # The dashboard's resolvers settle the same futures; no Owner route runs afterwards.
+    client.state._approval_futures["bg"].set_result(True)
+    approved.set_result("approved")
+    rejected.set_result("rejected_once")
+    await _cancel(unanswered)
+    await async_wait_until(
+        lambda: _stored_states(tmp_path) == ["allowed", "expired", "allowed", "denied"],
+        describe=lambda: f"the file holds {_stored_states(tmp_path)}",
+        off_loop=True,
+    )
+    assert await task is True
+
+    restarted = _state(tmp_path / "restarted", monkeypatch)
+    async with _serve(restarted) as second:
+        after = {}
+        for row in before:
+            read = await (await second.get(f"{LIST}/{row['id']}", headers=AS_OWNER)).json()
+            after[row["id"]] = (read["state"], read["expired_reason"])
+        assert list(after.values()) == [
+            ("allowed", None),
+            ("expired", "timeout"),
+            ("allowed", None),
+            ("denied", None),
+        ]
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_while_the_gateway_is_not_closing_is_written_as_timeout(
+    client, tmp_path, monkeypatch
+):
+    # No session is closing. The wait's own timer is not run here: when it runs out,
+    # ``wait_for`` cancels the request's future, and the test does that at a moment
+    # it chooses, after the owner has listed the request.
+    task = await _background(client.state, "slow", slot=SLOT)
+    (row,) = await _listed(client)
+    client.state._approval_futures["slow"].cancel()
+    assert await await_until(task, what="the approval wait to end") is False
+    await async_wait_until(
+        lambda: _stored_states(tmp_path) == ["expired"],
+        describe=lambda: f"the file holds {_stored_states(tmp_path)}",
+        off_loop=True,
+    )
+    restarted = _state(tmp_path / "restarted", monkeypatch)
+    async with _serve(restarted) as second:
+        _native(restarted, "new")
+        assert len(await _listed(second)) == 1
+        read = await (await second.get(f"{LIST}/{row['id']}", headers=AS_OWNER)).json()
+        assert (read["state"], read["expired_reason"]) == ("expired", "timeout")
+
+
+@pytest.mark.asyncio
+async def test_an_update_pause_is_not_the_gateway_closing(client, tmp_path):
+    # An update pauses turn admission and can resume it: no session ends for good.
+    client.state.sessions.admission_closed = True
+    client.state.sessions.final_drain_started = False
+    task = await _background(client.state, "paused", slot=SLOT)
+    (row,) = await _listed(client)
+    await _cancel(task)
+    await async_wait_until(
+        lambda: _stored_states(tmp_path) == ["expired"],
+        describe=lambda: f"the file holds {_stored_states(tmp_path)}",
+        off_loop=True,
+    )
+    read = await (await client.get(f"{LIST}/{row['id']}", headers=AS_OWNER)).json()
+    assert (read["state"], read["expired_reason"]) == ("expired", "timeout")
+
+
+@pytest.mark.asyncio
+async def test_a_loaded_index_does_not_wait_for_a_blocked_store(client, monkeypatch):
+    index = approvals.gateway_approval_index(client.state)
+    await index.load()
+    save, entered, release = records.save, threading.Event(), threading.Event()
+
+    def slow_save(path, rows):
+        entered.set()
+        if not release.wait(60):
+            raise TimeoutError("the test never released the write")
+        save(path, rows)
+
+    monkeypatch.setattr(records, "save", slow_save)
+    loop = asyncio.get_running_loop()
+    writing = loop.create_task(index.store())
+    loading = None
+    try:
+        await async_wait_until(entered.is_set, describe=lambda: "the write did not start")
+        assert index._loaded and index._file_lock.locked()
+        loading = loop.create_task(index.load())
+        progressed = asyncio.Event()
+        # Queued after the load task: it has returned or yielded on the held lock.
+        loop.call_soon(progressed.set)
+        await await_until(progressed, what="the loaded index to get its loop turn")
+        assert loading.done(), "an already loaded index waited for the blocked write"
+        await loading
+        assert not release.is_set() and not writing.done() and index._file_lock.locked()
+    finally:
+        release.set()
+        await await_until(writing, what="the blocked store to finish")
+        if loading is not None:
+            await await_until(loading, what="the index load to finish")
+
+
+async def _cancel_delivered(task: asyncio.Task) -> None:
+    task.cancel()
+    # A loop callback queued after cancel observes its delivery, not elapsed time.
+    delivered = asyncio.Event()
+    asyncio.get_running_loop().call_soon(delivered.set)
+    await await_until(delivered, what="the cancellation to be delivered")
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_first_load_keeps_the_file_lock_until_its_read_ends(client, monkeypatch):
+    index = approvals.gateway_approval_index(client.state)
+    load, entered, release = records.load, threading.Event(), threading.Event()
+
+    def slow_load(path):
+        entered.set()
+        if not release.wait(60):
+            raise TimeoutError("the test never released the read")
+        return load(path)
+
+    monkeypatch.setattr(records, "load", slow_load)
+    loading = asyncio.get_running_loop().create_task(index.load())
+    try:
+        await async_wait_until(entered.is_set, describe=lambda: "the read did not start")
+        await _cancel_delivered(loading)
+        # The worker still runs, so a later load or store must still wait for it.
+        assert index._file_lock.locked() and not loading.done()
+    finally:
+        release.set()
+        await await_until(
+            asyncio.gather(loading, return_exceptions=True), what="the cancelled load to end"
+        )
+    assert loading.cancelled() and not index._file_lock.locked() and not index._loaded
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_store_whose_write_fails_still_reports_the_cancellation(
+    client, monkeypatch, caplog
+):
+    index = approvals.gateway_approval_index(client.state)
+    await index.load()
+    entered, release = threading.Event(), threading.Event()
+
+    def failing_save(path, rows):
+        entered.set()
+        if not release.wait(60):
+            raise TimeoutError("the test never released the write")
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(records, "save", failing_save)
+    writing = asyncio.get_running_loop().create_task(index.store())
+    try:
+        await async_wait_until(entered.is_set, describe=lambda: "the write did not start")
+        await _cancel_delivered(writing)
+        assert index._file_lock.locked() and not writing.done()
+    finally:
+        with caplog.at_level("WARNING", logger=approvals.logger.name):
+            release.set()
+            await await_until(
+                asyncio.gather(writing, return_exceptions=True), what="the cancelled store to end"
+            )
+    assert writing.cancelled(), "the write's error replaced the cancellation"
+    assert "write failed after its wait was cancelled" in caplog.text
+    assert not index._file_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_store_whose_write_landed_writes_the_same_rows_once_more(
+    client, monkeypatch
+):
+    _native(client.state, "rid")
+    (row,) = await _listed(client)
+    index = approvals.gateway_approval_index(client.state)
+    save, entered, release = records.save, threading.Event(), threading.Event()
+    calls: list[list[dict[str, Any]]] = []
+
+    def counted_save(path, rows):
+        calls.append([dict(r) for r in rows])
+        if len(calls) == 1:
+            entered.set()
+            if not release.wait(60):
+                raise TimeoutError("the test never released the write")
+        save(path, rows)
+
+    monkeypatch.setattr(records, "save", counted_save)
+    # The listing wrote the row; a changed record makes the next store write.
+    index._records[row["id"]]["state"] = "denied"
+    writing = asyncio.get_running_loop().create_task(index.store())
+    try:
+        await async_wait_until(entered.is_set, describe=lambda: "the write did not start")
+        await _cancel_delivered(writing)
+    finally:
+        release.set()
+        await await_until(
+            asyncio.gather(writing, return_exceptions=True), what="the cancelled store to end"
+        )
+    assert writing.cancelled() and len(calls) == 1
+    (first,) = calls
+    await index.store()
+    assert len(calls) == 2 and calls[1] == first
+    stored = records.load(records.record_path())
+    assert stored == first and [r["id"] for r in stored] == [row["id"]]
+    assert index._saved == first
+    await index.store()
+    assert len(calls) == 2, "an unchanged record was written a third time"
+
+
+@pytest.mark.asyncio
+async def test_a_planned_restart_waits_for_a_record_still_being_written(
+    client, tmp_path, monkeypatch
+):
+    from kiro_crew.dashboard import restart_resume
+
+    native = _native(client.state, "rid")
+    # A turn is running, so the restart has a record of its own to write.
+    client.state._slots[SLOT]._turn_in_flight_generation = 1
+    await _listed(client)
+    save, release = records.save, threading.Event()
+
+    def slow_save(path, rows):
+        if not release.wait(60):
+            raise TimeoutError("the test never released the write")
+        save(path, rows)
+
+    monkeypatch.setattr(records, "save", slow_save)
+    # No bound here: this test is about the wait, and the bound has its own test below.
+    monkeypatch.setattr(approvals, "RESTART_WRITE_WAIT_SECS", None)
+    native.set_result("approved")
+    # The restart reaches its record step while the ending's write is still running.
+    index = approvals.gateway_approval_index(client.state)
+    await async_wait_until(lambda: bool(index._writes), describe=lambda: "no write started")
+    finish_writes, waiting = index.finish_writes, asyncio.Event()
+
+    async def finish_writes_seen():
+        waiting.set()
+        await finish_writes()
+
+    monkeypatch.setattr(index, "finish_writes", finish_writes_seen)
+    recording = asyncio.get_running_loop().create_task(
+        restart_resume.record_running_slots(client.state)
+    )
+    try:
+        # The restart is past its own record and inside the wait for this one.
+        await await_until(waiting, what="the restart to reach the wait")
+        assert _stored_states(tmp_path) == ["pending"] and not recording.done()
+    finally:
+        release.set()
+    await await_until(recording, what="the restart's record step")
+    assert _stored_states(tmp_path) == ["allowed"]
+
+
+@pytest.mark.asyncio
+async def test_a_planned_restart_waits_for_the_write_of_an_answer_a_route_gave(
+    client, tmp_path, monkeypatch
+):
+    native = _native(client.state, "rid")
+    (row,) = await _listed(client)
+    save, release, entered = records.save, threading.Event(), threading.Event()
+
+    def slow_save(path, rows):
+        entered.set()
+        if not release.wait(60):
+            raise TimeoutError("the test never released the write")
+        save(path, rows)
+
+    monkeypatch.setattr(records, "save", slow_save)
+    monkeypatch.setattr(approvals, "RESTART_WRITE_WAIT_SECS", None)
+    loop = asyncio.get_running_loop()
+    answering = loop.create_task(
+        client.post(_decision(row["id"]), json={"decision": "allow"}, headers=AS_OWNER)
+    )
+    try:
+        # The tool has its answer; the route's own write of it is still running.
+        await async_wait_until(entered.is_set, describe=lambda: "the route's write did not start")
+        assert native.result() == "approved"
+        index = approvals.gateway_approval_index(client.state)
+        store, waiting = index.store, asyncio.Event()
+
+        async def store_seen():
+            waiting.set()
+            await store()
+
+        monkeypatch.setattr(index, "store", store_seen)
+        draining = loop.create_task(approvals.finish_writes_before_restart(client.state))
+        await await_until(waiting, what="the restart to reach the write")
+        assert _stored_states(tmp_path) == ["pending"] and not draining.done()
+    finally:
+        release.set()
+    await await_until(draining, what="the restart's wait")
+    assert _stored_states(tmp_path) == ["allowed"]
+    assert (await await_until(answering, what="the owner's answer")).status == 200
+
+
+@pytest.mark.asyncio
+async def test_a_write_that_never_ends_does_not_hold_the_restart(client, monkeypatch, caplog):
+    native = _native(client.state, "rid")
+    await _listed(client)
+    release = threading.Event()
+    monkeypatch.setattr(records, "save", lambda path, rows: release.wait(10))
+    # flake-ok: a zero bound runs out at once whatever the host's speed; no race is timed.
+    monkeypatch.setattr(approvals, "RESTART_WRITE_WAIT_SECS", 0)  # flake-ok: see above
+    native.set_result("approved")
+    index = approvals.gateway_approval_index(client.state)
+    await async_wait_until(lambda: bool(index._writes), describe=lambda: "no write started")
+    with caplog.at_level("WARNING", logger=approvals.logger.name):
+        await approvals.finish_writes_before_restart(client.state)
+    release.set()
+    # The warning counts the rows the file lacks, and names nothing else.
+    assert "were not all written before the restart: 1 not written" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_graceful_stop_waits_for_answers_made_just_before_it(client, tmp_path, monkeypatch):
+    from kiro_crew.slack import gateway
+
+    allowed = _native(client.state, "yes")
+    denied = _native(client.state, "no", slot_key="other")
+    ids = [row["id"] for row in await _listed(client)]
+    save, release = records.save, threading.Event()
+
+    def slow_save(path, rows):
+        if not release.wait(60):
+            raise TimeoutError("the test never released the write")
+        save(path, rows)
+
+    monkeypatch.setattr(records, "save", slow_save)
+    # No bound here: this test is about the wait, and the bound has its own test below.
+    monkeypatch.setattr(gateway, "PERSISTENCE_DRAIN_GRACE_SECS", None)
+    # Answered on another surface: the write is a task nothing but the stop waits for.
+    allowed.set_result("approved")
+    denied.set_result("rejected_once")
+    index = approvals.gateway_approval_index(client.state)
+    await async_wait_until(lambda: bool(index._writes), describe=lambda: "no write started")
+    finish_writes, waiting = index.finish_writes, asyncio.Event()
+
+    async def finish_writes_seen():
+        waiting.set()
+        await finish_writes()
+
+    monkeypatch.setattr(index, "finish_writes", finish_writes_seen)
+    orch = _stopping(client.state, monkeypatch)
+    stopping = asyncio.get_running_loop().create_task(orch._stop_services_and_sessions())
+    try:
+        await await_until(waiting, what="the stop to reach the wait")
+        # The sessions are closed by now, so no later answer can arrive.
+        orch.sessions.close_all.assert_awaited_once()
+        assert _stored_states(tmp_path) == ["pending", "pending"] and not stopping.done()
+    finally:
+        release.set()
+    await await_until(stopping, what="the stop's teardown")
+    assert await _states_after_restart(tmp_path, monkeypatch, ids) == [
+        ("allowed", None),
+        ("denied", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_write_that_never_ends_does_not_hold_the_stop_and_its_row_reads_expired(
+    client, tmp_path, monkeypatch, caplog
+):
+    from kiro_crew.slack import gateway
+
+    native = _native(client.state, "rid")
+    (row,) = await _listed(client)
+    save, release, stuck = records.save, threading.Event(), iter([True])
+
+    def save_stuck_once(path, rows):
+        # Only this process's write never ends; the next process writes as usual.
+        if next(stuck, False):
+            release.wait(10)
+        else:
+            save(path, rows)
+
+    monkeypatch.setattr(records, "save", save_stuck_once)
+    # flake-ok: a zero bound runs out at once whatever the host's speed; no race is timed.
+    monkeypatch.setattr(gateway, "PERSISTENCE_DRAIN_GRACE_SECS", 0)  # flake-ok: see above
+    native.set_result("approved")
+    index = approvals.gateway_approval_index(client.state)
+    await async_wait_until(lambda: bool(index._writes), describe=lambda: "no write started")
+    orch = _stopping(client.state, monkeypatch)
+    try:
+        with caplog.at_level("WARNING", logger=approvals.logger.name):
+            await await_until(
+                asyncio.create_task(orch._stop_services_and_sessions()),
+                what="the stop's teardown",
+            )
+        assert "were not all written before the stop: 1 not written" in caplog.text
+        # The answer never reached the file, so the next process reads the row as cut.
+        assert await _states_after_restart(tmp_path, monkeypatch, [row["id"]]) == [
+            ("expired", "gateway_restart")
+        ]
+    finally:
+        release.set()
+        await await_until(index._exit_write, what="the drain the stop left running")
+
+
+@pytest.mark.asyncio
+async def test_a_graceful_stop_with_nothing_to_write_leaves_the_record_alone(
+    client, tmp_path, monkeypatch
+):
+    _native(client.state, "rid")
+    await _listed(client)
+    save = Mock()
+    monkeypatch.setattr(records, "save", save)
+    # A gateway whose record is written, and one whose Owner routes were never called.
+    for state in (client.state, _state(tmp_path / "unused", monkeypatch)):
+        orch = _stopping(state, monkeypatch)
+        await await_until(
+            asyncio.create_task(orch._stop_services_and_sessions()), what="the stop's teardown"
+        )
+    save.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", ["restart", "caller"])
+async def test_a_cancelled_wait_never_lets_an_older_write_replace_a_later_answer(
+    client, tmp_path, monkeypatch, caplog, cancel
+):
+    first = _native(client.state, "first")
+    later = _native(client.state, "later", slot_key="later")
+    _, row = await _listed(client)
+    index = approvals.gateway_approval_index(client.state)
+    save = records.save
+    entered, release, finished, later_written = (threading.Event() for _ in range(4))
+
+    def slow_save(path, rows):
+        if rows[1]["state"] == "pending":
+            entered.set()
+            if not release.wait(60):
+                raise TimeoutError("the test never released the older write")
+            try:
+                save(path, rows)
+            finally:
+                finished.set()
+        else:
+            save(path, rows)
+            later_written.set()
+
+    monkeypatch.setattr(records, "save", slow_save)
+    # flake-ok: zero expires immediately; the worker-entry event establishes the order.
+    monkeypatch.setattr(approvals, "RESTART_WRITE_WAIT_SECS", 0)
+    first.set_result("approved")
+    answering = None
+    writing = None
+    try:
+        await async_wait_until(entered.is_set, describe=lambda: "the older write did not start")
+        (writing,) = index._writes
+        if cancel == "restart":
+            finish_writes, draining_seen = index.finish_writes, asyncio.Event()
+
+            async def drain_started():
+                draining_seen.set()
+                await finish_writes()
+
+            draining = asyncio.create_task(drain_started())
+            await await_until(draining_seen, what="the drain to enter its write wait")
+            monkeypatch.setattr(index, "finish_writes", lambda: draining)
+        if cancel == "caller":
+            writing.cancel()
+            # A loop callback queued after cancel observes its delivery, not elapsed time.
+            delivered = asyncio.Event()
+            asyncio.get_running_loop().call_soon(delivered.set)
+            await await_until(delivered, what="the store caller's cancellation to be delivered")
+        with caplog.at_level("WARNING", logger=approvals.logger.name):
+            await await_until(
+                asyncio.create_task(approvals.finish_writes_before_restart(client.state)),
+                what="the restart's bound",
+            )
+        assert "Owner approval records were not all written before the restart" in caplog.text
+        assert not release.is_set()
+        store, store_entered = index.store, asyncio.Event()
+
+        async def later_store_seen():
+            store_entered.set()
+            await store()
+
+        monkeypatch.setattr(index, "store", later_store_seen)
+        answering = asyncio.get_running_loop().create_task(
+            client.post(_decision(row["id"]), json={"decision": "allow"}, headers=AS_OWNER)
+        )
+        await await_until(store_entered, what="the later answer to reach its write")
+        assert later.result() == "approved"
+        # The wrapper enters store before yielding back to the test. Fixed code
+        # still holds the lock; broken code can finish the later write first.
+        if not writing.done():
+            assert index._file_lock.locked() and not later_written.is_set()
+        else:
+            await async_wait_until(
+                later_written.is_set, describe=lambda: "the later write did not finish"
+            )
+            assert (await await_until(answering, what="the later owner's response")).status == 200
+            assert _stored_states(tmp_path) == ["allowed", "allowed"]
+    finally:
+        release.set()
+        if writing is not None:
+            await await_until(
+                asyncio.gather(writing, return_exceptions=True), what="the older store to end"
+            )
+        await async_wait_until(finished.is_set, describe=lambda: "the older worker did not finish")
+        if answering is not None:
+            assert (await await_until(answering, what="the later owner's response")).status == 200
+        if draining := getattr(index, "_exit_write", None):
+            await await_until(draining, what="the retained restart drain")
+    assert _stored_states(tmp_path) == ["allowed", "allowed"]
+    assert [record["state"] for record in index._saved] == ["allowed", "allowed"]
+    await index.store()
+    assert _stored_states(tmp_path) == ["allowed", "allowed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("broken", ["the record", "the write"])
+async def test_a_failing_record_never_changes_what_the_tool_is_told(
+    client, monkeypatch, caplog, broken
+):
+    task = await _background(client.state, "bg")
+    native = _native(client.state, "rid")
+    rows = await _listed(client)
+    index = approvals.gateway_approval_index(client.state)
+    if broken == "the record":
+        monkeypatch.setattr(index, "_clock", Mock(side_effect=RuntimeError("clock")))
+    else:
+        monkeypatch.setattr(records, "save", Mock(side_effect=OSError("disk")))
+    with caplog.at_level("WARNING", logger=approvals.logger.name):
+        client.state._approval_futures["bg"].set_result(True)
+        native.set_result("approved")
+        assert await task is True and native.result() == "approved"
+        await async_wait_until(
+            lambda: all(row["id"] in caplog.text for row in rows),
+            describe=lambda: f"logged: {caplog.text!r}",
+        )
+    assert "disk" not in caplog.text and "clock" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_decision_whose_write_fails_is_200_and_the_warning_names_the_id(
+    client, monkeypatch, caplog
+):
+    future = _native(client.state, "rid")
+    row = (await _listed(client))[0]
+    monkeypatch.setattr(records, "save", Mock(side_effect=OSError("disk")))
+    with caplog.at_level("WARNING", logger=approvals.logger.name):
+        answered = await client.post(
+            _decision(row["id"]), json={"decision": "deny"}, headers=AS_OWNER
+        )
+    assert answered.status == 200 and (await answered.json())["state"] == "denied"
+    assert future.result() == "rejected_once"
+    assert f"write for {row['id']} failed" in caplog.text
+
+
+def test_the_record_file_round_trips_and_refuses_a_repeated_id(tmp_path):
+    path = tmp_path / "kind" / "state.json"
+    assert records.load(path) == []
+    row = dict.fromkeys(records.FIELDS)
+    row.update(id="apr_" + "a" * 32, state="pending", created_at=7, slot="s")
+    records.save(path, [{**row, "tool": "never stored"}])
+    assert records.load(path) == [row]
+    assert "never stored" not in path.read_text(encoding="utf-8")
+    records.save(path, [row, row])
+    with pytest.raises(ValueError):
+        records.load(path)
+    # Two files set aside in the same second are both kept.
+    first = records.set_aside(path, 0)
+    path.write_text("second", encoding="utf-8")
+    second = records.set_aside(path, 0)
+    assert first != second and not path.exists()
+    assert (first.name, second.read_text(encoding="utf-8")) == (
+        "state.json.damaged-19700101T000000Z",
+        "second",
+    )
+
+
+def test_a_record_too_large_to_be_read_back_is_not_written(tmp_path, monkeypatch):
+    path = tmp_path / "kind" / "state.json"
+    row = dict.fromkeys(records.FIELDS)
+    row.update(id="apr_" + "a" * 32, state="pending", created_at=7, slot="s")
+    records.save(path, [row])
+    kept = path.read_bytes()
+    # The reader's ceiling: a file of exactly that size is still written and read.
+    monkeypatch.setattr(records, "_MAX_BYTES", len(kept))
+    records.save(path, [row])
+    with pytest.raises(ValueError):
+        records.save(path, [row, {**row, "id": "apr_" + "b" * 32}])
+    assert path.read_bytes() == kept and records.load(path) == [row]
+
+
+@requires_symlinks
+def test_a_dangling_symlink_takes_the_name_of_a_record_set_aside(tmp_path):
+    path = tmp_path / "state.json"
+    # A name held by a link that points nowhere is taken too.
+    taken = path.with_name("state.json.damaged-19700101T000001Z")
+    taken.symlink_to(tmp_path / "nowhere")
+    path.write_text("third", encoding="utf-8")
+    assert records.set_aside(path, 1).name == taken.name + "-2" and taken.is_symlink()
 
 
 @pytest.mark.asyncio
@@ -414,7 +1227,7 @@ def test_the_record_keeps_its_pending_rows_and_drops_the_oldest_ended_ones(tmp_p
     index = approvals.ApprovalIndex()
 
     def live(name: str) -> approvals.LiveApproval:
-        return approvals.LiveApproval(("native", "s", name), name, None, "t", "", "", None)
+        return approvals.LiveApproval(("native", "s", name), name, Mock(), "t", "", "", None)
 
     index.sync([live("a"), live("b")], {})
     index.sync([live("b"), live("c")], {})
@@ -430,7 +1243,7 @@ def test_the_record_keeps_its_pending_rows_and_drops_the_oldest_ended_ones(tmp_p
 @pytest.mark.parametrize("outcome", ["allowed", "denied", "expired"])
 def test_a_stale_snapshot_never_mints_an_id_for_an_ended_target(tmp_path, outcome):
     index = approvals.ApprovalIndex(clock=lambda: 42)
-    live = [approvals.LiveApproval(("native", "s", "a"), "rid", None, "t", "", "", None)]
+    live = [approvals.LiveApproval(("native", "s", "a"), "rid", Mock(), "t", "", "", None)]
     (approval_id,) = index.sync(live, {})
     index.settle(approval_id, outcome, OWNER)
     records = index.sync(live, {})
@@ -549,7 +1362,7 @@ async def test_a_failed_audit_does_not_change_the_decision_response(client, stat
 
 def test_a_missing_watched_ending_expires_as_timeout():
     index = approvals.ApprovalIndex(clock=lambda: 42)
-    live = [approvals.LiveApproval(("native", "s", "a"), "rid", None, "t", "", "", None)]
+    live = [approvals.LiveApproval(("native", "s", "a"), "rid", Mock(), "t", "", "", None)]
     (approval_id,) = index.sync(live, {})
     record = index.sync([], {})[approval_id]
     assert (record["state"], record["expired_reason"]) == ("expired", "timeout")

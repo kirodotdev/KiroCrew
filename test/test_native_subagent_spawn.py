@@ -558,7 +558,13 @@ class TestNativeCancelHandler:
         request.app = {"state": state}
         request.match_info = {"agent_id": agent_id}
         claims = {} if app is None else {"app": app}
+        if app == "":
+            # The owner passes the run controls' owner gate by its subject: the
+            # local owner, with no owner configured.
+            state.owner_id = ""
+            claims.update(user="local-app", is_dashboard_user=True)
         request.__contains__.side_effect = claims.__contains__
+        request.__getitem__.side_effect = claims.__getitem__
         request.get.side_effect = claims.get
         return request
 

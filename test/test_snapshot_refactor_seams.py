@@ -37,6 +37,7 @@ from test_snapshot import _make_snapshot, _setup_fake_kirocrew, unpinnable_argv
 from conftest import requires_o_nofollow
 from kiro_crew import snapshot as snap
 from kiro_crew import (
+    snapshot_agent_config,
     snapshot_archive,
     snapshot_build,
     snapshot_components,
@@ -53,6 +54,7 @@ _OWNERS = (
     snapshot_merge,
     snapshot_build,
     snapshot_merge_driver,
+    snapshot_agent_config,
 )
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _REPO_SRC = _REPO_ROOT / "src"

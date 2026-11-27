@@ -981,7 +981,11 @@ async def _dispatch_events(
                 # refused whether or not this consumer opted into the child
                 # contract, and naming that reason in the audit is more use
                 # than naming the fidelity one for the same rejected call.
-                # A zero-tool spec refuses every request first, a child's too.
+                # A reused toolCallId whose arguments contradict the cached call
+                # is refused before all of them: neither side is the call to judge.
+                # A zero-tool spec then refuses every request, a child's too.
+                if await self._refuse_reused_call_id(_perm_event):
+                    continue
                 if await self._deny_zero_tools(_perm_event):
                     continue
                 if await self._deny_spec_disabled_tool(_perm_event):
@@ -1216,6 +1220,7 @@ async def _dispatch_events(
                 # before surfacing it (parity with other text surfaces).
                 summary = redact_text(str(params.get("summary", "") or ""))
                 if status_type == "failed":
+                    summary = compaction_failure_detail(params)
                     if owns_frame:
                         # Arm the bounded post-failure wait (the budget check
                         # at the loop top) and carry the notification's own
@@ -1223,7 +1228,16 @@ async def _dispatch_events(
                         # "unknown error".
                         self._compaction_failed_at = time.monotonic()
                         self.last_compaction_transient = compaction_failure_is_transient(params)
-                    summary = compaction_failure_detail(params)
+                        # The record a notice the dashboard hides still leaves.
+                        logger.warning(
+                            "Compaction failed on session %s: %s",
+                            self._session_id,
+                            (
+                                summary
+                                if self._runtime.recording_allowed
+                                else "reason not logged outside persistent memory"
+                            ),
+                        )
                 yield AcpEvent(
                     kind=EVENT_COMPACTION_STATUS,
                     text=status_type,

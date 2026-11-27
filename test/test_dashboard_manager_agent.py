@@ -1,9 +1,10 @@
-"""The ``kirocrew-dashboard-manager`` subagent, and the base prompt that routes to it.
+"""The ``kirocrew-dashboard-manager`` subagent, and the Bot prompt that keeps page jobs.
 
-The prompt names the agent, and kiro-cli resolves it from ``<agents dir>/<name>.json``,
-so the name in the prompt, in the spec and the spec's filename must be one string or the
-turn fails. The agent's surface is small on purpose: it runs on requests from a chat it
-never read.
+kiro-cli resolves the agent from ``<agents dir>/<name>.json``, so the name in the spec
+and the spec's filename must be one string. The agent's surface is small on purpose: it
+runs on requests from a chat it never read. No Bot prompt routes a page job to it: the
+gateway refuses a subagent's dashboard calls (``no_dashboard_slot``), so a Bot changes
+its page in its own thread.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from typing import Any
 import pytest
 
 from kiro_crew import agent as agent_mod
+from kiro_crew import crewmate_prompts
 from kiro_crew.agent_files import (
     DASHBOARD_MANAGER_AGENT_FILENAME,
     DASHBOARD_MANAGER_AGENT_NAME,
@@ -22,7 +24,7 @@ from kiro_crew.agent_files import (
     REQUIRED_KIRO_AGENT_FILES,
 )
 from kiro_crew.agent_materialization import managed_mcp, service_agents
-from kiro_crew.context import _MEMBER_DASHBOARD_ITEM, _MEMBER_HOW_YOU_WORK
+from kiro_crew.context import _MEMBER_DASHBOARD_ITEM
 
 
 @pytest.fixture
@@ -38,18 +40,13 @@ def installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
 
 
 class TestTheNameIsOneString:
-    """The claim the conductor asked for: the prompt names the SHIPPED spec."""
+    """The spec's ``name``, its filename and the shared constant are one string."""
 
-    def test_the_base_prompt_names_the_agent_the_installer_writes(
+    def test_the_installer_writes_the_spec_under_the_shared_name(
         self, installed: dict[str, Any]
     ) -> None:
-        """Read from both sides, never restated here.
-
-        A test spelling the name itself would pass while the prompt and the spec
-        agreed with the test and not with each other.
-        """
+        """Read from the installed spec, never restated here."""
         assert installed["name"] == DASHBOARD_MANAGER_AGENT_NAME
-        assert f"`{DASHBOARD_MANAGER_AGENT_NAME}`" in _MEMBER_HOW_YOU_WORK
 
     def test_the_name_is_the_filename_stem(self) -> None:
         """kiro-cli resolves an agent by reading ``<agents dir>/<name>.json``.
@@ -70,14 +67,23 @@ class TestTheNameIsOneString:
             if verb.startswith("dashboard_"):
                 assert verb in _MEMBER_DASHBOARD_ITEM, verb
 
-    def test_the_prompt_makes_the_subagent_optional(self) -> None:
-        """It is extra capacity for a long job, never the only way to change a page.
+    def test_no_bot_prompt_sends_a_page_job_to_a_subagent(self) -> None:
+        """A Bot changes its page in its own thread, and no prompt says otherwise.
 
-        A crewmate told to hand the request over is a crewmate that cannot answer
-        "show me another one" when the hand-off fails -- which is exactly what a
-        spec declaring a server it does not configure produces.
+        The gateway resolves a dashboard call to the CALLING session and refuses one
+        with no dashboard slot (``no_dashboard_slot``, pinned in
+        ``test_agent_panel_routes_dashboard.py``), which is what a subagent is. A
+        prompt that hands a page job over spends the turn on calls that are all
+        refused and leaves the person with no page.
+
+        Every piece in ``crewmate_prompts.json`` is read, so the hand-off cannot
+        come back through another piece.
         """
-        assert "do not need it" in _MEMBER_DASHBOARD_ITEM
+        for key in sorted(crewmate_prompts.keys()):
+            assert DASHBOARD_MANAGER_AGENT_NAME not in crewmate_prompts.text(key), key
+        assert "subagent" not in _MEMBER_DASHBOARD_ITEM.lower()
+        assert "sub-agent" not in _MEMBER_DASHBOARD_ITEM.lower()
+        assert "it is yours to change" in _MEMBER_DASHBOARD_ITEM
 
     def test_the_prompt_names_the_save_that_puts_a_composed_page_live(self) -> None:
         """A composed page goes live through dashboard_save, with no preview gate."""
@@ -104,7 +110,7 @@ class TestTheNameIsOneString:
         unavailable = (
             _MEMBER_HOW_YOU_WORK_COMMON + _MEMBER_BRIEFING_ITEM_UNAVAILABLE + _MEMBER_DASHBOARD_ITEM
         )
-        assert DASHBOARD_MANAGER_AGENT_NAME in unavailable
+        assert "You have a Dashboard tab of your own" in unavailable
 
 
 class TestTheSpecsSurfaceIsSmallOnPurpose:

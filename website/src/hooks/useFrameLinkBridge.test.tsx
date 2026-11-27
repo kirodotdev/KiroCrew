@@ -7,18 +7,20 @@ import {
 } from './useFrameLinkBridge'
 import { FrameLinkChip } from '../components/FrameLinkChip'
 import { LocalOverlayRoot } from '../components/overlayRoot'
+import { setInternalNavHandler } from '../utils/internalNav'
 
 const URL_A = 'https://github.com/example-org/repo/pull/7'
 
 /** A host with one frame. The frame's window is a unique object: the hook compares identity only. */
-function Host({ frame, open, gesture, tied }: {
+function Host({ frame, open, gesture, tied, claim }: {
   frame: HTMLIFrameElement
   open: (url: string) => void
   gesture?: (frame: HTMLIFrameElement) => boolean
   tied?: (frame: HTMLIFrameElement) => boolean
+  claim?: (url: string) => boolean
 }) {
   const ref = useRef<HTMLIFrameElement | null>(frame)
-  return <>{useFrameLinkBridge([ref], open, gesture ?? (() => true), tied ?? (() => true))}</>
+  return <>{useFrameLinkBridge([ref], open, gesture ?? (() => true), tied ?? (() => true), undefined, undefined, claim)}</>
 }
 
 function fakeFrame(): HTMLIFrameElement {
@@ -58,6 +60,7 @@ beforeEach(() => {
   frameInputs.clear()
   focusEntry.frame = null
   focusEntry.pointer = null
+  focusEntry.pointerAt = -Infinity
   // Stops a watch an earlier test left running, so each test starts its own.
   checkEntry()
 })
@@ -266,6 +269,110 @@ describe('tying the click to the asking frame', () => {
     expect(chip()).not.toBeNull()
   })
 
+  describe('a dashboard page clicked just after a click in the dashboard', () => {
+    let uninstall: (() => void) | null = null
+    afterEach(() => { uninstall?.(); uninstall = null })
+
+    /** A click in the dashboard (its tab, say), then the pointer onto the frame and a
+     *  click there: the dashboard's click is still within an activation's lifespan. */
+    function clickTabThenFrame(frame: HTMLIFrameElement) {
+      hostInput.lastAt = performance.now()
+      frame.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+      // The entry came after the dashboard's click, by whatever the clock says.
+      hostInput.lastAt = focusEntry.pointerAt - 1
+      enter(frame)
+    }
+
+    it('opens in place on the first click', () => {
+      const navigate = vi.fn()
+      uninstall = setInternalNavHandler({ origins: [], open: navigate })
+      const { frame, win } = realFrame()
+      const open = vi.fn()
+      render(<Real frame={frame} open={open} />)
+      clickTabThenFrame(frame)
+      post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, win)
+      expect(navigate).toHaveBeenCalledWith('/schedule')
+      expect(open).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: /^Open / })).toBeNull()
+    })
+
+    it('still offers the button for a web URL, which opens a new tab', () => {
+      uninstall = setInternalNavHandler({ origins: [], open: vi.fn() })
+      const { frame, win } = realFrame()
+      const open = vi.fn()
+      render(<Real frame={frame} open={open} />)
+      clickTabThenFrame(frame)
+      post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, win)
+      expect(open).not.toHaveBeenCalled()
+      expect(chip()).not.toBeNull()
+    })
+
+    it('still offers the button for a new-tab request', () => {
+      const navigate = vi.fn()
+      uninstall = setInternalNavHandler({ origins: [], open: navigate })
+      const { frame, win } = realFrame()
+      const open = vi.fn()
+      render(<LocalOverlayRoot><Real frame={frame} open={open} /></LocalOverlayRoot>)
+      clickTabThenFrame(frame)
+      post({ type: OPEN_MESSAGE_TYPE, url: '/schedule', tab: true }, win)
+      expect(navigate).not.toHaveBeenCalled()
+      expect(open).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: /^Open / })).not.toBeNull()
+    })
+
+    it('does not tie when the dashboard\'s key came after the pointer rested on the frame', () => {
+      const navigate = vi.fn()
+      uninstall = setInternalNavHandler({ origins: [], open: navigate })
+      const { frame, win } = realFrame()
+      render(<LocalOverlayRoot><Real frame={frame} open={vi.fn()} /></LocalOverlayRoot>)
+      frame.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+      // A key in the dashboard, then the page focuses itself: no click in the frame.
+      hostInput.lastAt = focusEntry.pointerAt + 1
+      enter(frame)
+      post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, win)
+      expect(navigate).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: /^Open / })).not.toBeNull()
+    })
+
+    it('does not tie when the pointer is not over the frame', () => {
+      const navigate = vi.fn()
+      uninstall = setInternalNavHandler({ origins: [], open: navigate })
+      const { frame, win } = realFrame()
+      render(<LocalOverlayRoot><Real frame={frame} open={vi.fn()} /></LocalOverlayRoot>)
+      hostInput.lastAt = performance.now()
+      enter(frame)
+      post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, win)
+      expect(navigate).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: /^Open / })).not.toBeNull()
+    })
+
+    it('does not tie when a sibling frame reported a click', () => {
+      const navigate = vi.fn()
+      uninstall = setInternalNavHandler({ origins: [], open: navigate })
+      const { frame, win } = realFrame()
+      render(<LocalOverlayRoot><Real frame={frame} open={vi.fn()} /></LocalOverlayRoot>)
+      clickTabThenFrame(frame)
+      post({ type: INPUT_MESSAGE_TYPE }, {} as Window)
+      post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, win)
+      expect(navigate).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: /^Open / })).not.toBeNull()
+    })
+
+    it('opens nothing without a gesture in the frame', () => {
+      const navigate = vi.fn()
+      uninstall = setInternalNavHandler({ origins: [], open: navigate })
+      const { frame, win } = realFrame()
+      function NoGesture() {
+        const ref = useRef<HTMLIFrameElement | null>(frame)
+        return <>{useFrameLinkBridge([ref], vi.fn(), () => false)}</>
+      }
+      render(<NoGesture />)
+      clickTabThenFrame(frame)
+      post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, win)
+      expect(navigate).not.toHaveBeenCalled()
+    })
+  })
+
   it('does not count the frame\'s own reported input against it', () => {
     const { frame, win } = realFrame()
     const open = vi.fn()
@@ -361,5 +468,175 @@ describe('tying the click to the asking frame', () => {
     expect(chip()).toBeNull()
     expect(document.activeElement).toBe(holder)
     expect(open).not.toHaveBeenCalled()
+  })
+
+  it('keeps the button while something beside the frame scrolls, and takes it away when the frame moves', () => {
+    const other = realFrame().frame
+    const { frame, win } = realFrame()
+    let top = 100
+    frame.getBoundingClientRect = () => new DOMRect(0, top, 400, 300)
+    const transcript = document.createElement('div')
+    document.body.appendChild(transcript)
+    render(<Real frame={frame} open={vi.fn()} />)
+    enter(other)
+    frame.focus()
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, win)
+    expect(chip()).not.toBeNull()
+    // A streaming chat transcript scrolls on every line, and the frame stays put.
+    act(() => { transcript.dispatchEvent(new Event('scroll')) })
+    expect(chip()).not.toBeNull()
+    // A scroll that carries the frame strands the button, so it goes.
+    top = 40
+    act(() => { document.dispatchEvent(new Event('scroll')) })
+    expect(chip()).toBeNull()
+  })
+
+  it('measures from the frame now asking when a second frame asks while the button shows', () => {
+    const other = realFrame().frame
+    const a = realFrame()
+    const b = realFrame()
+    a.frame.getBoundingClientRect = () => new DOMRect(0, 100, 400, 300)
+    b.frame.getBoundingClientRect = () => new DOMRect(0, 500, 400, 300)
+    function Two() {
+      const refA = useRef<HTMLIFrameElement | null>(a.frame)
+      const refB = useRef<HTMLIFrameElement | null>(b.frame)
+      return <>{useFrameLinkBridge([refA, refB], vi.fn(), focused)}</>
+    }
+    const transcript = document.createElement('div')
+    document.body.appendChild(transcript)
+    render(<Two />)
+    enter(other)
+    a.frame.focus()
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, a.win)
+    expect(chip()).not.toBeNull()
+    // A click inside frame B never reaches the dashboard, so the button stays and moves to B.
+    b.frame.focus()
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, b.win)
+    expect(chip()).not.toBeNull()
+    act(() => { transcript.dispatchEvent(new Event('scroll')) })
+    expect(chip()).not.toBeNull()
+  })
+})
+
+describe('a page of this dashboard', () => {
+  let uninstall: (() => void) | null = null
+  afterEach(() => { uninstall?.(); uninstall = null })
+
+  it('opens in place through the in-app navigator, not in a new tab', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const frame = fakeFrame()
+    const open = vi.fn()
+    render(<Host frame={frame} open={open} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/settings/security/rules?highlight=security.denied-commands' }, frame.contentWindow)
+    expect(navigate).toHaveBeenCalledWith('/settings/security/rules?highlight=security.denied-commands')
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('opens a session link in place as a canonical chat path', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const frame = fakeFrame()
+    const open = vi.fn()
+    render(<Host frame={frame} open={open} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/chat?sid=chat-448-1793224442' }, frame.contentWindow)
+    expect(navigate).toHaveBeenCalledWith('/chat?sid=chat-448-1793224442')
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('still opens in a new tab when the click asked for one', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const frame = fakeFrame()
+    const open = vi.fn()
+    render(<Host frame={frame} open={open} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/schedule', tab: true }, frame.contentWindow)
+    expect(navigate).not.toHaveBeenCalled()
+    expect(open).toHaveBeenCalledWith(`${window.location.origin}/schedule`)
+  })
+
+  it('opens a refused dashboard path, and any other site, in a new tab', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const frame = fakeFrame()
+    const open = vi.fn()
+    render(<Host frame={frame} open={open} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/projects?run=1' }, frame.contentWindow)
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
+    expect(navigate).not.toHaveBeenCalled()
+    expect(open.mock.calls).toEqual([[`${window.location.origin}/projects?run=1`], [URL_A]])
+  })
+
+  it('opens in a new tab when no in-app navigator is installed (a popout window)', () => {
+    const frame = fakeFrame()
+    const open = vi.fn()
+    render(<Host frame={frame} open={open} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, frame.contentWindow)
+    expect(open).toHaveBeenCalledWith(`${window.location.origin}/schedule`)
+  })
+
+  it('opens in place from the "Open" button when the click was not tied to the frame', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const { frame, win } = realFrame()
+    const open = vi.fn()
+    render(<LocalOverlayRoot><Host frame={frame} open={open} tied={() => false} /></LocalOverlayRoot>)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, win)
+    expect(navigate).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /^Open / }))
+    expect(navigate).toHaveBeenCalledWith('/schedule')
+    expect(open).not.toHaveBeenCalled()
+  })
+})
+
+describe('a link the host claims', () => {
+  let uninstall: (() => void) | null = null
+  afterEach(() => { uninstall?.(); uninstall = null })
+
+  it('goes to the claim before the in-app navigator and the new tab', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const frame = fakeFrame()
+    const open = vi.fn()
+    const claim = vi.fn((url: string) => url.endsWith('/artifacts/receipt'))
+    render(<Host frame={frame} open={open} claim={claim} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/artifacts/receipt' }, frame.contentWindow)
+    expect(claim).toHaveBeenCalledWith(`${window.location.origin}/artifacts/receipt`)
+    expect(navigate).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('leaves an unclaimed link to the in-app navigator or the new tab', () => {
+    const navigate = vi.fn()
+    uninstall = setInternalNavHandler({ origins: [], open: navigate })
+    const frame = fakeFrame()
+    const open = vi.fn()
+    render(<Host frame={frame} open={open} claim={() => false} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/schedule' }, frame.contentWindow)
+    post({ type: OPEN_MESSAGE_TYPE, url: URL_A }, frame.contentWindow)
+    expect(navigate).toHaveBeenCalledWith('/schedule')
+    expect(open).toHaveBeenCalledWith(URL_A)
+  })
+
+  it('is not asked for a click that asked for a new tab', () => {
+    const frame = fakeFrame()
+    const open = vi.fn()
+    const claim = vi.fn(() => true)
+    render(<Host frame={frame} open={open} claim={claim} />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/artifacts/receipt', tab: true }, frame.contentWindow)
+    expect(claim).not.toHaveBeenCalled()
+    expect(open).toHaveBeenCalledWith(`${window.location.origin}/artifacts/receipt`)
+  })
+
+  it('is not asked without a click in the frame', () => {
+    const frame = fakeFrame()
+    const claim = vi.fn(() => true)
+    function NoGesture() {
+      const ref = useRef<HTMLIFrameElement | null>(frame)
+      return <>{useFrameLinkBridge([ref], vi.fn(), () => false, () => true, undefined, undefined, claim)}</>
+    }
+    render(<NoGesture />)
+    post({ type: OPEN_MESSAGE_TYPE, url: '/artifacts/receipt' }, frame.contentWindow)
+    expect(claim).not.toHaveBeenCalled()
   })
 })

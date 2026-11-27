@@ -51,7 +51,7 @@ the loader therefore reaches `config set`, an undo restores it, and a patch of
 | `config/fields.py` | `_meta` field metadata, the `_safe_*` value coercers every section shares, and `field_default`, the one reader of a DTO field's declared default (`SectionReader` reads through it). An integer coercer keeps a legacy numeric string or integral float already in a config file (`"5"` -> 5, `5.0` -> 5) and rejects booleans and non-integral, malformed or non-finite values in favour of the default. A leaf: it imports nothing from `kiro_crew`. |
 | `config/sections.py` | The facade other specs and tests name for the section DTOs below and for the three domain owners after them: it re-exports every name they define as the same object, and defines nothing of its own. |
 | `config/sections_defaults.py` | `SectionReader`, which resolves a builder's omitted key and coercer fallback to the DTO field's declared default, and the named defaults a DTO field and a load fallback share (`DEFAULT_MODEL`, `DEFAULT_POOL_SIZE`, ...). |
-| `config/sections_agent_env.py` | The environment an agent process receives: the `agent.env` name policy and its refusals, `agent.child_env_defaults` and `agent.deepseek_env`. |
+| `config/sections_agent_env.py` | The environment an agent process receives: the `agent.env` name policy and its refusals, `agent.child_env_defaults` and `agent.deepseek_env`, and the keyed dashboard writes of `agent.strands_env` and `agent.deepseek_env` (`DASHBOARD_KEYED_ENV_MAPS`: one validator per map over a shared body, one merge). |
 | `config/sections_agent_fields.py` | Field coercion for `agent` and the crew records: model pins, role maps, effort, the context-token map, approval modes, the avatar record and bot-name filter, the jail, ACP-backend, YOLO-duration and completion-keep readers, and the KAS bundle url. |
 | `config/sections_agent.py` | `AgentConfig`, and the readers that resolve against its declared defaults. |
 | `config/sections_session.py` | `session`, the crew record `KiroCrewAgentConfig`, `workspaces`, `session_environments` (its DTOs; validation lives in `config/session_environments.py`) and a session's `ResolvedBindings`. |
@@ -313,6 +313,24 @@ Dynamic capabilities is not a `dashboard.*` key: it is a per-crewmate field,
 Profile card and read per request. A config that still holds an old
 `dashboard.crewmate_dynamic_capabilities` key loads unchanged; the key is not
 read. Owned by [crew-mode](crew-mode.md#dynamic-capabilities).
+
+`agents.<name>.worker_conducts` (default false) is the same shape: a per-Bot
+bool the owner sets on the Bot's Profile card (**Workers can conduct**) or
+through `PUT /api/agents/{name}` (a non-bool is refused
+with `invalid_worker_conducts`; a non-bool in the file reads as false), shipped
+on `GET /api/members`, and read from the Bot's record at each worker's session
+start, never cached on the worker; a save that changes it reloads the Bot's
+workers so each reads it again soon (an idle one at once, a busy one at its turn
+end). On, each worker the Bot's own thread opens may conduct: it gets the
+thread's session-control mount, the conductor's ledger grants and rules, and its
+own `session_create` opens the Bot's worker. While it
+is on, the Bot's `agents.<name>.max_workers` always applies: 0 (no limit) reads
+as `BOT_MAX_WORKERS_CONDUCTING` (4, `config/sections_session.py`), read at each
+create, revive and fork; a limit the owner set is used as is, and with the
+switch off 0 still sets no limit. Owned by
+[crew-mode](crew-mode.md#conductor-and-worker) ("A Bot's worker conducts only
+when its owner says so") and
+[rfc-bot-workers-conduct](../../request-for-change/rfc-bot-workers-conduct.md).
 
 ## Orchestration prompt contract
 
@@ -613,11 +631,17 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
   gateway reads these files unsandboxed on the folder's behalf, and an app that
   could point its own folder at an arbitrary readable Markdown tree would have
   that read laundered into its own model session with no tool grant and no
-  signal. Clearing to `[]` stays allowed for every principal (it only removes
-  reads). The person may still declare steering on a folder an app or member
+  signal. Clearing to `[]` stays allowed for an app or member principal (it
+  only removes reads). The person may still declare steering on a folder an app or member
   owns; delivery then routes it to that principal's chats as described below.
   A call on the internal credential every MCP tool call carries
   (`request["internal_auth"]`) is refused the same way, at both write sites.
+- **Owner gate** (`require_owner_for_dashboard_caller`) runs next: "the
+  person" is the owner or an admitted teammate. A dashboard session that is
+  neither (a channel allowlist link) carries the person's empty principal, so
+  the principal gate admits it; the owner gate refuses it `403` `owner_only`
+  on a create with a non-empty list and on any update that sends
+  `steering_dirs`, clearing included, since the folder is the owner's.
 - **Agent surface** is a `folder.steering` change card
   (`change_card_catalog.py`): `propose_change(kind="folder.steering",
   params={folder, steering_dirs})` resolves each directory the way the route
@@ -1660,6 +1684,11 @@ Contract:
   and enable full auto-approval — and the reason is that this file sits in the
   agent-writable data home, so a restorable ack is an ack an agent can forge for
   the user's next fresh origin. Convenience does not outrank a human gate.
+  The machine owner's ack is also kept on the gateway in the owner-only
+  `yolo_ack.json` keystone (written only by `PUT /api/chat/yolo-ack`), which the
+  picker reads beside the browser copy; `PUT /api/chat/yolo-ack
+  {"acknowledged": false}` re-arms the confirmation in any browser that does not
+  hold its own `mc-yolo-ack` copy.
 
 ## Settings import (dashboard Merge)
 
@@ -1670,9 +1699,9 @@ and session merges it runs (`_vet_archive_settings`, `_merge_settings`,
 work goes to the one that owns it: `portability_archive.py` (what an archive holds,
 member names and limits both ways), `portability_templates.py` (agent templates, bundled
 on export and installed on import), `portability_export.py` (what an export reads: the
-walk, the SQLite backups, the session planner and writer, and the installed apps it
-names but leaves out) and `portability_vetting.py`
-(`validate_import_zip` and the staged cron and store checks). A patch of
+walk, the SQLite backups, the session planner and writer, the installed apps it
+names but leaves out, and, on import, the ones of those a machine has not set up) and
+`portability_vetting.py` (`validate_import_zip` and the staged cron and store checks). A patch of
 `portability.<name>` reaches every owner holding the name. The archive builders
 (`create_export_zip`, `stream_export_zip`, `plan_export`) live in `portability_stream.py`,
 which the facade re-exports and which reads these names as `portability.<name>`.
@@ -1730,7 +1759,9 @@ limits (`portability._in_rebuildable_dir`, read by both sides).
 The dashboard export (`portability.create_export_zip`) carries every document a
 Settings choice is persisted in: `config.json`, `config.local.json`,
 `ui-prefs.json` and `notification_settings.json`. The snapshot `config`
-component carries the same set.
+component carries the same set, and also `mcp.json`, the servers added on the
+MCP Servers page, which this export does not carry. A restore installs that file
+owner-only and names it when a merge keeps this install's copy.
 
 Every archive settings document is vetted before either mode applies one
 (`portability._vet_archive_settings`): a document that is not its reader's shape
@@ -1808,7 +1839,9 @@ The shared `preview_on` reader first refuses a running Shared Crew preview
 also keeps connected computers off, and `remote_refusal` names the shared-Crew
 restriction before the ordinary disabled reason. It then passes the stored switches through
 `edition_locks.feature_previews`: an LTS build reads this preview as off even
-when its saved value is `true`. This applies to the connector token-auth
+when its saved value is `true`. Shared Crews also read it as off, through the
+same `flag.preview_on` authority, until remote-person ownership is checked.
+This applies to the connector token-auth
 exemption and route, admission checks, picker, local helpers and the config
 watcher's old/new values. The stored configuration is unchanged. Each gateway
 reads its OWN copy, so the remote gateway's switch can never turn the local machine's on, or
@@ -1839,10 +1872,31 @@ the other way round:
 The live watcher applies a change with no restart (`dashboard/server_runtime/config_watch.py`
 calls `connected_computers.disable.apply` whenever `dashboard.feature_previews` is touched):
 turning it off closes every connector socket this gateway serves (the tool server
-stops; nothing is retried or fabricated). The gateway's shutdown closes sockets but keeps records. While the
-switch stays off neither does anything: the hook returns before scheduling work, and
-shutdown finds no broker.
+stops; nothing is retried or fabricated) and revokes every active grant this machine holds (one remote revoke
+queued per pair) and stops each connector with a bound. Turning it back on revokes any
+share still saved (one an Off made while no gateway ran here left behind), then starts the
+local controller; no revoked grant comes back. The gateway's shutdown stops connectors and
+closes sockets but keeps grants and records. While the switch stays off none of this runs:
+the hook returns before scheduling work, startup (`disable.start_if_enabled`) reads only the
+live snapshot and creates no controller, and shutdown finds nothing to stop.
 The frontend key is `mc-preview-connected-computers` (`website/src/utils/previewFlags.ts`).
+For revocation, `flag.local_switch` returns unknown (`None`) if the loaded
+configuration reports a degraded `dashboard` or `dashboard.feature_previews`
+section in `_read_degraded_sections` (this load only), this read's unreadable base
+or overlay flags, or the Shared Crew authority raises. The loader preserves the
+existing sticky `degraded_sections` contract separately; manually constructed
+snapshots without per-read metadata fall back to its relevant section names.
+The live watcher carries per-read metadata when keeping last-valid values during
+a torn read. Unrelated sticky section errors and historical whole-file markers do not
+turn the preview off. The desktop watcher keeps watching and the config
+hook schedules no revoke from an unknown new value. When the new value becomes
+authoritative Off, the hook revokes even if the previous value was unknown.
+An unchanged known-Off snapshot remains a no-op. Unknown-to-On recovery starts
+reconciliation of the saved grants without the revoking off-to-on sweep.
+`preview_on` and
+`local_enabled` still read unknown as off for new work. The full preview decision
+lives only in `local_switch`; `preview_on` is the exact `local_switch(cfg) is True`
+projection, shared by every admission reader.
 Feature Previews reuses the disabled Settings toggle with a short shared-Crew badge
 in `descriptionBadge`, preserving the literal description for settings search,
 reading the owner's running `active` state or the existing `shared_crew_preview`
@@ -1964,11 +2018,15 @@ prevent. `test_default_emitted_section_keys_are_all_recognized` guards
 Loads config from disk. Merges `config.local.json` overlay if present.
 Returns defaults if file is missing or invalid.
 
-The installed package declares `jsonschema` as a core runtime dependency so
-schema validation runs outside development environments too. The import guard
-still lets an incomplete or manually damaged install load, but that fallback
-must not be treated as the normal packaged behavior. Generated package metadata
-is tested to ensure the validator is required without the `dev` extra.
+Schema validation runs on `config.schema_check`, an in-house Draft-07 checker
+for the keywords `JSON_SCHEMA` uses (`type`, `properties`,
+`additionalProperties`, `items`, `enum`, `maxLength`, `pattern`), so no process
+imports `jsonschema` to load its config. It yields `jsonschema.Draft7Validator`'s
+errors (keyword, path, message and order), which matters because
+`validate_config_data` deletes a field per error while it walks them; it refuses
+any keyword it does not implement when the validator is built.
+`test_config_schema_check_parity.py` compares the two on random documents, so the
+package still declares `jsonschema` as a dependency, as that reference.
 
 **Hot-path cache.** `load()` is called per message / per request on several hot
 paths. The expensive work — reading `config.json` (+ `config.local.json`),
@@ -2128,7 +2186,9 @@ a present value the reader cannot use takes the reader's value:
   `dashboard.tailscale.bind_refresh_chains`, `false` for a non-boolean
   `slack.show_in_session_list` (a malformed value reads as the default, which
   keeps Slack conversations out of the list), `node` for an unrecognised
-  `dashboard.tailscale.pin_scope`, `auto` for an unknown `agent.jail`, `false` for
+  `dashboard.tailscale.pin_scope`, `443` for a `dashboard.tailscale.https_port`
+  that is not an integer from 1 to 65535 (with one logged warning, never clamped),
+  `auto` for an unknown `agent.jail`, `false` for
   a present non-boolean `agent.dangerously_skip_permissions` (never a grant),
   `per-channel-peer` for an unknown `messaging.dm_scope` (never one session for
   two people's DMs).
@@ -2196,7 +2256,7 @@ reader:
     rather than automatic, and `instances.connect_timeout_secs` /
     `mint_timeout_secs` as the transport constants. Validation removes a value of
     the wrong type at these keys and at `mcp.honour_auto_approve`, so through
-    `load()` they read their field default (when jsonschema is installed).
+    `load()` they read their field default.
   - The read stage reads a present non-boolean `auto_update` as off
     (`fields._coerce_bool`) and a present non-boolean `agent.session_control`,
     `agent.member_dispatch`, `agent.crew_panel`, `agent.kas_persist_mcp_sign_in`,
@@ -2977,7 +3037,7 @@ name:
 
 - Read/written via `kiro_crew/agent_state.py` (atomic, lock-guarded near-leaf
   module: stdlib + `config.paths` + `atomic_write` + `unchanged_file` only). A write whose bytes
-  already sit in the file (owner-only, one link) is skipped, and
+  already sit in the file (this user's, mode `0600`, one link) is skipped, and
   `begin_managed_write` records no pending digest for bytes that reproduce the
   finalized one, so a rebuild that changes nothing keeps the file's inode. The
   sandbox pins this file for every spawn and refuses one whose pinned file was
@@ -3259,8 +3319,11 @@ channels whose descriptor names that key in its `credentials` tuple OR its
 `restart_credentials` tuple (`registry.changed_credential_keys`, the credential
 twin of `changed_boot_keys`) and restarts each one through `restart_channel`,
 which re-reads `cfg.load_credentials()` on the way back up — so a rotated
-Telegram/Discord/WeCom/… token reconnects that channel with the new value,
-exactly as a changed `config.json` connection parameter does. The two tuples are
+Telegram/WeCom/… token reconnects that channel with the new value,
+exactly as a changed `config.json` connection parameter does. A channel whose
+descriptor declares `reconnect` (Discord) is offered a credential-only change in
+place first, and is restarted only when that reconnect declines or raises (see
+[messaging](messaging.md) § Connection fields restart ONE channel). The two tuples are
 disjoint by intent: `credentials` names what the channel needs ALL of to connect
 (so `channel_readiness` reports a missing one), while `restart_credentials` names
 a key that is restart-relevant but not required — Teams' `MICROSOFT_APP_TENANT_ID`
@@ -3475,7 +3538,10 @@ dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
 ones whose holder is `DashboardState`, that must rebuild agent artifacts, or that set
 process-wide registry state
-live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `agent.provider`,
+live in `dashboard/server_runtime/config_watch.py::_register_config_watch` —
+`agents` (→ `dashboard/bot_chat_follow.py::follow_config_change`: a Bot's changed `model` or
+`reasoning_effort` clears its own chat's pick, after the session manager's applier),
+`agent.provider`,
 `agent.model`, `agent.role_models.background`, `agent.log_level`
 (→ `handlers/updates_streams.py::apply_log_level_from_config`),
 `dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`),
@@ -3526,6 +3592,14 @@ dashboard notification (`_apply_background_model`).
 A failed heartbeat spec install is held like a conductor spec, so the hourly maintenance
 wake (`retry_held_conductor_specs`) re-runs the rebuild until the heartbeat spec carries
 the new model.
+The guard writes an `agent_home_write` denied row on every rebuild it refuses, and a
+refusal can last the whole process (a linked worktree, a data home beside another
+install's specs). So both appliers rebuild through `_rebuild_specs`: a retry of a value
+whose rebuild was refused first asks `_decline_shared_agent_home(audit=False)` and skips
+the rebuild while the guard still declines, which is one denied row per saved value
+rather than one per watcher tick. The retry itself still runs every tick, so a refusal
+that clears (an unreadable spec that reads again, foreign specs removed) is applied on
+the next one, and a newly saved value is rebuilt and audited at once.
 The `wrote=False` refusal is one case of a general ownership guard: every write through
 the shared-spec primitive (`agent_parts/spec_files.py` `_atomic_json_write`) is refused with
 `SharedAgentHomeRefused` when the data home does not own the shared agents directory. The
@@ -3536,8 +3610,8 @@ handlers answer HTTP 409 `agent_home_not_owned` (listed in learn-cron-dashboard.
 instead of recording a change the file never took. Every admitted or refused shared-home
 write is audited as the SEL `agent_home_write` operation, allowed or denied.
 The provider applier only schedules the switch: `reload_provider_factory` clears
-the session registry and then shuts the retired providers down one at a time,
-which can outlast the applier bound, and a timed-out applier is retried on the
+the session registry and then shuts the retired providers down concurrently,
+each shutdown waiting out its runtime's exit, which can outlast the applier bound, and a timed-out applier is retried on the
 next tick — a retried switch would clear the sessions created with the new
 provider in between. So the switch runs off the cycle as a task tracked in
 `state._background_tasks` (the same shape as a channel reconnect), the applier
@@ -3836,13 +3910,13 @@ class MemoryConfig:
     lesson_extraction_enabled: bool = True  # off = consolidation (default and member stores) and the task runner save no extracted lessons; other writes and learn_add continue
     kind_routing: str = "enforce"    # off | enforce (default enforce since 2026-11-20): whether consolidation tags each project.* write with a kind (fact/event/state) in one separate label call and what it does with it; the consolidation prompt is the same under every mode; off makes no label call and writes every item, enforce labels them before the writes and skips state items; unknown values, including the removed shadow, read as enforce (memory_kind_routing.py)
     extraction_instructions: str = ""  # free text the consolidation prompt carries as one fenced block after the fixed rules (what to keep, what never to store); empty keeps today's prompt byte for byte; non-text reads as empty, control characters are dropped, text past 2000 characters is cut (memory_sections.extraction_instructions_from, history_consolidation_span._extraction_guidance_block)
-    lesson_origin_gate: str = "off"  # off | shadow | enforce: whether a lesson from a consolidation span with no person-sent turn, or a learn_add an agent or automatic turn triggered, may be a standing rule; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log, enforce stores it on_topic; unknown values read as off (memory_origin_gate.py)
+    lesson_origin_gate: str = "off"  # off | shadow | enforce: whether a lesson from a consolidation span with no person-sent turn, or a learn_add an agent or automatic turn triggered, may be a standing rule; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log, enforce stores it on_topic; a span with a person-sent turn keeps its tiers (the per-lesson check is lesson_tier_policy); unknown values read as off (memory_origin_gate.py)
     fact_origin_gate: str = "off"  # off | shadow | enforce: whether a pref.* / user.* semantic item (write or delete) or a preferences_update from a consolidation span with no person-sent turn is applied; enforce drops them, project.* and episodic items are never gated; off keeps today's prompt and writes, shadow writes as before and keeps capped counts and keys (memory_fact_origin_log:); unknown values read as off
-    lesson_tier_policy: str = "off"  # off | shadow | enforce: which tier a new consolidation lesson gets; enforce stores an untagged lesson, and an always lesson whose user_quote is not found in a person's unrelayed turn, as on_topic, and only enforce asks the prompt for user_quote; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log plus a learn_add re-teach count; unknown values read as off (memory_tier_policy.py)
+    lesson_tier_policy: str = "off"  # off | shadow | enforce: which tier a new consolidation lesson gets; enforce stores an untagged lesson, and an always lesson whose user_quote is not found in a person's unrelayed turn or does not state the rule (embedding cosine below 0.6), as on_topic, and only its enforce asks the prompt for user_quote; off keeps today's prompt and writes, shadow writes as before, measures quotes with one bounded call after the writes and keeps a bounded log plus a learn_add re-teach count; unknown values read as off (memory_tier_policy.py)
     lesson_fold: str = "enforce"  # off | enforce (default enforce since 2026-11-20): whether the session-start rule block leaves out near-duplicate rules (memory_item_identity.same_item, visited user-taught first then newest first, each row compared only with kept leaders); off keeps every copy, enforce leaves folded rows out, prints a fold line and records the (leader, folded) id pairs in the injection receipt; a folded row is not a budget omission; user_explicit rows are never folded; a row with a NOT-clause its leader lacks stays; unknown values, including the removed shadow, read as enforce (memory_lesson_fold.py)
     rule_authority_order: str = "enforce"  # off | enforce (default enforce since 2026-11-20): how the session-start rule block orders its rules; off keeps the relevance order, enforce lists user_explicit rules first then the rest, the authored-before-untagged order and request relevance holding inside each group; an agent-triggered learn_add is user_explicit unless lesson_origin_gate is enforce; cap and omission line unchanged; unknown values, including the removed shadow, read as enforce (memory_rule_authority.py)
     member_lesson_dedup: str = "off"  # off | shadow | enforce: whether a private store folds a consolidation lesson into a live copy of the same rule (memory_item_identity.same_item); off keeps today's writes, shadow writes as before and keeps a bounded log, enforce skips a textual copy and retires a new near-copy with a revision before a dashboard turn receipt names it, and off restores those rows on the next backfill sweep; user_explicit rows are never folded; unknown values read as off (memory_lesson_dedup.py)
-    relevance_rule: str = "off"  # off | shadow | enforce: which word matches admit session-start findings, task facts and activity sections; off keeps today's blocks, shadow keeps them and records in the injection receipt the ids the shared rule would add or drop, enforce counts only 3+ character words and CJK pairs and gives task facts on both stores the private store's relevance_evidence gate; rule block unchanged; unknown values read as off (memory_relevance_rule.py)
+    relevance_rule: str = "enforce"  # off | enforce: which word matches admit session-start findings, task facts and activity sections; enforce counts only 3+ character words and CJK pairs and gives task facts on both stores the private store's relevance_evidence gate, off keeps the old per-block tests; rule block unchanged; unknown values, a stored shadow included, read as enforce (memory_relevance_rule.py)
     dream: str = "off"               # off | propose: Dreaming, an offline pass over stored lesson and project.* rows while no chat turn runs; off schedules and reads nothing, propose writes an approval list and run receipts to memory_meta and applies nothing; L1 (user_explicit) and L2 (user_quote) rows are never proposed for change; unknown values read as off (memory_dream.py)
     inject_memory: bool = True       # inject the stored memory block (preferences, activity index, recent-session snippets) into new-session context
     inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
@@ -3937,6 +4011,7 @@ class DashboardConfig:
     url: str = ""                  # public URL for the dashboard (used in Slack links); restart=True
     # ... restore_sessions / bot_name / avatar / widget_density / auto_open_browser / etc.
     default_memory_mode: str = "persistent"  # persistent | incognito | temporary; default for user-created dashboard chats only
+    default_approval_mode: str = "normal"  # normal | trust_reads (DEFAULT_APPROVAL_MODES); the approval mode the machine owner's plain New chat opens on. Any other value, a wrong type or an absent key builds "normal". Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum, `invalid_default_approval_mode`). `POST /api/chat/slots` seeds it once, before the new slot's first frame, through `slot_approval_seed.seed_slot_approval` under the SEL caller `chat_default_mode` (`dashboard/chat_default_mode.py`): clamped to the `approval_modes` policy (a refused Reads answers `default_mode_refused: "policy"` and the chat stays on Normal), never ending a YOLO grant. Only a create that asks for it (`start_mode_default: true`, which the browser sends from the person's own New chat entry points: those that pass `crewModeDefault`, plus New Incognito / Temporary, the first message on an empty chat page, a template's Chat button, a milestone's chat, and split view's and a scene's New session, through `createSlot`'s `startModeDefault` or `api.createChatSlot`'s last argument; `website/src/store/chat/newChatStartModeCallsites.test.ts` pins every create site to one kind or the other), unnamed, by the machine owner's own browser session and not a crewmate's chat (`crewmate_approval.crewmate_name_for`), an app's, a cron's, an ephemeral helper's, a work item's or an app page's gets it; a Shared Crew teammate, session_create / session_fork, channels and subagents keep how they start (rfc-default-approval-mode section 3.2). `trust` is not a value: rfc section 6
     verbosity: str = "answer_only" # "default" | "concise" | "answer_only" (retired "ultra" is read as "answer_only"); anything but "default" injects a [RESPONSE PREFERENCES] block into SESSION CONTEXT for every agent (see "Response verbosity reaches every agent" below). Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). A fresh install starts at "answer_only"; an existing config keeps the level it already stores, since every full save writes the key. An unrecognized value injects nothing.
     preferred_language: str = ""  # "" (auto: reply in the user's language) | one of PREFERRED_LANGUAGES' codes, the dashboard's UI languages ("en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"). A set code adds a "## Reply language" section to the same [RESPONSE PREFERENCES] block, at every verbosity level including "default". The language name in that section comes from the fixed PREFERRED_LANGUAGES table, never from the stored value, so an unrecognized value injects nothing. Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). Independent of `language`, which sets only the dashboard UI.
     theme_mode: str = ""           # "dark" | "light" | "system" | "schedule"; empty = unset (frontend falls back to localStorage or "system")
@@ -3947,10 +4022,11 @@ class DashboardConfig:
     translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     show_unread_dot: bool = True   # the per-row unread dot on sidebar session cards (Settings → Display → Sidebar); only a literal false hides it. Folder and aggregate unread counts are unaffected. PATCH-able via /api/config/kirocrew
+    expand_linked_items: bool = False  # session cards start with their linked pull requests and issues open (Settings → Display, Session Cards section); only a literal true opens it, and pressing a card's count still folds that card. PATCH-able via /api/config/kirocrew
     command_bar_enabled: bool = True  # what the quick-search shortcut opens (Settings → Display → View): the Command Bar launcher, or with a literal false the search palette. Replaced the former `command-bar` app's enabled state; the boot cleanup carries a record's opt-out here (apps/builtin_fold.py). PATCH-able via /api/config/kirocrew
     channels_enabled: bool = False  # whether Channels (/channels) has a sidebar row and a Search Everywhere result; only a literal true shows them. Replaced the former hidden `channels` app's enabled state; the boot cleanup carries a record's opt-in here (apps/builtin_fold.py), and `kirocrew app enable/disable channels` writes it. The page and /api/channels are served either way. PATCH-able via /api/config/kirocrew
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
-    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
+    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order), "active-then-date" (running sessions first, then the rest, each part by last activity). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
     unfiled_sessions_above_folders: bool = False  # draw the sessions filed in no folder above the folder list (true) or below it (false), in the list view's folder tree and in each board column. A view preference; the drop that removes a session from its folder works in both layouts. See "Unfiled sessions above folders" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
@@ -4753,7 +4829,8 @@ in either layout, and its `before`/`after` anchors name folders.
 
 `DashboardConfig.session_sort` is the chat sidebar's session sort key: `date-desc`
 (last settled activity, newest first; the default) or `date-asc`, `created-desc` /
-`created-asc` (the slot's creation time) and `name-asc` / `name-desc` (the title).
+`created-asc` (the slot's creation time), `name-asc` / `name-desc` (the title),
+`manual` (below) and `active-then-date`.
 It is stored here rather than in the browser so a pick follows the person to every
 browser and the desktop app. Written only through the `PATCH /api/config/kirocrew`
 allowlist (`dashboard.session_sort`, enum `SESSION_SORT_MODES`). A carry-over PATCH
@@ -4794,6 +4871,16 @@ writes it: the one writer refuses a caller whose origin is not `dashboard` (an
 agent or crew member, which reaches the gateway with `X-Internal-Secret`) and an
 app or member principal; no MCP tool writes it. A build without `manual` reads
 the key as `date-desc` and never touches the second file.
+
+`active-then-date` draws the unpinned sessions the In progress filter chip
+matches (the agent's own turn, a live workflow, a running automation, working
+sub-agents) above the rest, each part in `date-desc` order. Under `date-desc` a
+long turn ranks by when it began, so newer idle chats pass it; here it stays on
+top until the turn ends, then drops back to its date position. The running rows
+draw without date headers, as pinned rows do; the rest keep the date headers and
+the stale-session collapse. A drag in this sort seeds `manual` with the order on
+screen, running rows first. The History pane reads the key as `date-desc`. A
+build without `active-then-date` reads it as `date-desc`.
 
 ### Interactive model picker visibility
 
@@ -5230,6 +5317,31 @@ Returns the effective config for a channel:
 }
 ```
 
+`dashboard.entry_port` (default `0`, off; restart) is a second port for a reverse
+proxy on this machine, bound on both loopback addresses (127.0.0.1 and ::1); the
+bind address is not configurable. On Windows each entry listener has a listener
+guard. An integer that is neither `0` nor 1024 to 65535, or that
+equals the gateway's own port, or that equals `dashboard.shared_crew.ssm_port`
+while the SSM listener is configured to run, stops the start of the regular or
+the headless `kirocrew gateway` (`EntryPortError`). The API-only server (`--slack-only`) neither checks the value
+nor opens the port: it logs a warning and starts.
+The shared config validation replaces a wrong-typed value (for example `8443.5`,
+`"abc"`, `true`, or `null`) with the default `0`, so the entry port stays off. It
+logs `Config: type mismatch at 'dashboard.entry_port': ...; using default`.
+Legacy numeric handling coerces a numeric string such as `"8443"` or an integral
+float such as `8443.0` to the integer `8443`, so the port opens if it can be bound.
+A wrong value stops the start before any app backend is spawned. A port that
+cannot be bound also stops the gateway's start. The port opens in the regular and
+the headless `kirocrew gateway` only. The proxy must send a `Host` that names loopback
+(`127.0.0.1`, `[::1]` or `localhost`); the entry port answers a request to a Crew
+API route with any other `Host` with `400`, and many proxies pass the client's `Host` through unless told otherwise. The
+value is one per data home, so a second gateway started on the same data home
+(another `--port`) finds the entry port held and does not start (`EntryPortError`).
+`PATCH /api/config/kirocrew` does not change the key: `READONLY_REASONS` lists it
+read-only with reason `reach`, as it does `tunnel.enabled`, so it is set in the config
+file or with `kirocrew config set`.
+See [dashboard-token-auth.md](dashboard-token-auth.md) (*Entry port*).
+
 The `dashboard.url` field supplies the browser-facing/reverse-proxy origin and,
 when present, a candidate port; its origin is added to the CSRF/WebSocket allowlist.
 It does **not** widen the TCP bind in the public build, which remains
@@ -5315,8 +5427,9 @@ writer, and the `SkillsLoader` watcher applies it live (no restart): the loader'
 screening (expansion, resolution, sensitive-path exclusion, existence) stays the only judge of
 a path. Settings → Skills trims each line and drops blank ones before it sends the list; the
 same list is what `kirocrew config set skills.extra_paths --value-base64=…` stores.
-`dashboard.change_cards.check_setting_value` calls the same `_str_list_problem`, so a card is held
-to the same bounds and item pattern and fails up front rather than falling through (no card can carry the list; see crew-mode).
+`dashboard.change_cards.check_setting_value` calls the same `_str_list_problem`, for a card that
+could carry the list; none can today: `resolve_setting` refuses a `str_list` key `no_write_path`
+before any value is read (see crew-mode).
 
 ### Default context discovery
 

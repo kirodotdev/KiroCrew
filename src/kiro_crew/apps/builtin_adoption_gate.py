@@ -20,7 +20,8 @@ An ``<app>:<server>`` is named only when every input agrees:
 - the operator's execution grant for *app* is bound to that same repository and
   covers the installed code (``execution.trusted_app_repository`` and
   ``execution.repository_bound_grant_denied``);
-- the wheel built-in's shipped manifest declares the server, and the installed
+- the wheel built-in's shipped manifest declares the server (once a release deleted
+  that copy, the ``mcpServers`` its pin row froze from it), and the installed
   manifest declares it as a stdio server started from the adopted tree within that
   declaration (``builtin_adoption_mcp.carried_server``, the check adoption itself
   ran), so a renamed server, a ``-m`` module, a PATH binary or a widened entry is
@@ -29,7 +30,9 @@ An ``<app>:<server>`` is named only when every input agrees:
 The first three are :func:`adopted_under_pin_trust`, which ``app_agent_tools`` also
 asks before it lists an adopted record's declared agent tools under the
 auto-approved ``kirocrew-core`` server, with the wheel copy's ``agentTools`` as that
-listing's ceiling the way the wheel's ``mcpServers`` is this grant's.
+listing's ceiling the way the wheel's ``mcpServers`` is this grant's. A frozen
+ceiling is the last shipped copy's own declaration, so it keeps today's grant and
+never widens it.
 
 A built-in's grant rests on code the wheel ships. An adopted record's tree lives in
 the data home instead, so its grant rests on the repository trust above: the
@@ -56,26 +59,44 @@ logger = logging.getLogger(__name__)
 def adopted_app_own_mcp_servers() -> frozenset[str]:
     """``<app>:<server>`` for every server an adopted former built-in keeps the grant on."""
     try:
-        from kiro_crew.apps.builtin_adoption_pins import adoption_pin_names
+        from kiro_crew.apps.builtin_adoption_pins import load_adoption_pins
         from kiro_crew.apps.execution import _shipped_builtin_apps
 
-        pinned = adoption_pin_names()
-        if not pinned:
+        pins = load_adoption_pins()
+        if not pins:
             return frozenset()
         wheel_roots: dict[str, Path] = {}
         for root, name in _shipped_builtin_apps():
-            if name in pinned:
+            if name in pins:
                 wheel_roots.setdefault(name, root)
     except Exception:  # noqa: BLE001 - unknown provenance trusts no adopted app
         logger.warning("adopted app own-server trust unreadable", exc_info=True)
         return frozenset()
     servers: set[str] = set()
-    for name in sorted(wheel_roots):
+    for name in sorted(pins):
         try:
-            servers.update(_kept_servers(name, wheel_roots[name]))
+            ceiling = _server_ceiling(name, wheel_roots.get(name))
+            if ceiling:
+                servers.update(_kept_servers(name, ceiling))
         except Exception:  # noqa: BLE001 - one unreadable app only costs its own prompts
             logger.warning("app %s: adopted own-server trust unreadable", name, exc_info=True)
     return frozenset(servers)
+
+
+def _server_ceiling(name: str, wheel_root: Path | None) -> object:
+    """The ``mcpServers`` *name*'s adopted record is held to: its wheel copy's, else frozen.
+
+    The shipped manifest's while the wheel copy ships (None when it names another app),
+    and once a release deleted the copy, what the pin row froze from it
+    (``builtin_adoption_pins.frozen_limit_input``): None for a row that froze none.
+    """
+    from kiro_crew.apps.builtin_adoption_pins import adoption_pin, frozen_limit_input
+    from kiro_crew.apps.manifest import AppManifest
+
+    if wheel_root is None:
+        return frozen_limit_input(adoption_pin(name), "mcpServers")
+    shipped = AppManifest.from_json_file(wheel_root / "app.json")
+    return shipped.mcpServers if shipped.name == name else None
 
 
 def adopted_under_pin_trust(name: str) -> bool:
@@ -109,24 +130,22 @@ def adopted_under_pin_trust(name: str) -> bool:
         return False
 
 
-def _kept_servers(name: str, wheel_root: Path) -> list[str]:
+def _kept_servers(name: str, ceiling: object) -> list[str]:
+    """*name*'s installed servers that keep the grant under *ceiling* (:func:`_server_ceiling`)."""
     from kiro_crew.apps.builtin_adoption_mcp import carried_server
     from kiro_crew.apps.manager import app_dir
     from kiro_crew.apps.manifest import AppManifest
 
     if not adopted_under_pin_trust(name):
         return []
-    shipped = AppManifest.from_json_file(wheel_root / "app.json")
     tree_root = app_dir(name)
     installed = AppManifest.from_json_file(tree_root / "app.json")
-    if shipped.name != name or installed.name != name:
+    if installed.name != name:
         return []
     return [
         f"{name}:{server}"
         for server, cfg in installed.mcpServers.items()
-        if isinstance(server, str)
-        and server
-        and carried_server(server, cfg, tree_root, shipped.mcpServers)
+        if isinstance(server, str) and server and carried_server(server, cfg, tree_root, ceiling)
     ]
 
 

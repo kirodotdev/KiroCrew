@@ -141,10 +141,18 @@ async def _pause(request: web.Request) -> web.Response:
         if str(row.get("key")) not in asked and _is_running(row) and not _waits_on_person(row)
     ]
     late_tree = [str(row.get("key")) for row in late_members]
+    late_workers = [key for key in late if key != root]
+    saved = True
     if late or set(late_tree) - set(tree):
-        await asyncio.to_thread(crew_pause.pause, root, late_tree, late)
-        targets = [*targets, *(key for key in late if key != root)]
-        asked = [*asked, *late]
+        try:
+            await asyncio.to_thread(crew_pause.pause, root, late_tree, late)
+        except OSError:
+            # Stop only what the first record holds, so it stays true: a late turn
+            # stopped but never recorded would not be continued on resume.
+            logger.warning("crew pause: could not record the late turns of %s", root, exc_info=True)
+            saved = False
+        else:
+            asked = [*asked, *late]
     results = await asyncio.gather(*(_stop(state, key) for key in asked))
     really = [key for key, ok in zip(asked, results, strict=True) if ok]
     # Only a turn that stopped is continued on resume. One that kept running (a
@@ -166,8 +174,19 @@ async def _pause(request: web.Request) -> web.Response:
             meta={"kind": CREW_PAUSED_NOTICE_KIND, "stopped": len(workers_stopped)},
         )
     state.push_slots_update()
-    not_stopped = [key for key in targets if key not in really]
+    not_stopped = [key for key in [*targets, *late_workers] if key not in really]
     _audit(root, "pause", f"stopped={len(workers_stopped)} not_stopped={len(not_stopped)}")
+    if not saved:
+        return web.json_response(
+            {
+                "error": "the crew paused, but its pause file could not be saved again, "
+                "so what started or joined meanwhile was not paused",
+                "code": "pause_file_unsaved",
+                "stopped": workers_stopped,
+                "not_stopped": not_stopped,
+            },
+            status=500,
+        )
     return web.json_response(
         {"ok": True, "paused": True, "stopped": workers_stopped, "not_stopped": not_stopped}
     )
@@ -423,6 +442,7 @@ async def _resume(request: web.Request) -> web.Response:
                     root=root,
                     pending=pending,
                     root_pending=root_pending,
+                    memory_only=record.get("memory_only") or [],
                 )
             )
         )

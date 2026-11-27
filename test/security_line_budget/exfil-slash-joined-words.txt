@@ -1,0 +1,5 @@
++27
+The exfil base64-blob test in `exfil_git_object` also skips a run of words or PascalCase
+names joined by `/`, so a commit permalink's `<package>/<branch>` in a URL query is not
+read as a secret once it reaches 40 characters. It reuses the existing word shapes; a
+secret split at its own `/` still fires.

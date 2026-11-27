@@ -62,7 +62,10 @@ from kiro_crew.dashboard.folder_ownership import (
     _is_descendant,
     _subtree_holds_foreign_folder,
 )
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    read_bounded_json,
+    require_owner_for_dashboard_caller,
+)
 from kiro_crew.dashboard.mate_folders import (
     MateFolderError,
     home_create_target,
@@ -235,6 +238,13 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     )
     if refused is not None:
         return refused
+    # A dashboard session that is not the owner's (a channel allowlist link)
+    # carries the same empty principal as the person, so the check above admits
+    # it. Steering is a host-file read: only the owner or a teammate declares it.
+    if steering_dirs:
+        refused = await require_owner_for_dashboard_caller(request, "chat.folder_create")
+        if refused is not None:
+            return refused
     parent_id = str(body.get("parent_id") or "")
     project_dir = str(body.get("project_dir") or "")
     if refuses_write_into(state._folders, parent_id, request_app):
@@ -558,6 +568,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             folder_id=fid,
             agent=request.get("internal_auth") is True,
         )
+        if refused is not None:
+            return refused
+        # Clearing included: the folder is the owner's, so a non-owner
+        # dashboard session (see the create route) changes no part of the list.
+        refused = await require_owner_for_dashboard_caller(request, "chat.folder_steering_dirs")
         if refused is not None:
             return refused
         resolved_steering, steering_err = await asyncio.to_thread(

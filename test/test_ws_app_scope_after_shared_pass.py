@@ -119,6 +119,8 @@ async def test_a_slot_list_held_during_the_shared_pass_never_follows_the_snapsho
     async def _as_the_dashboard_user(request, handler):
         request["app"] = ""
         request["is_dashboard_user"] = True
+        # The owner's own session: /api/ws refuses any other dashboard session.
+        request["user"] = state.owner_id or "local-app"
         return await handler(request)
 
     app = web.Application(middlewares=[_as_the_dashboard_user])

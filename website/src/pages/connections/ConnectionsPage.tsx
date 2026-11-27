@@ -970,6 +970,10 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
       </div>
 
       <div id="connections-services-panel">
+          {/* A Connect adds an MCP server, and a Bot's worker gets a server only
+              from that Bot's own abilities: the MCP Servers page's note, so a
+              Connected card is not read as reaching Bots. */}
+          {servicesEnabled && <p className="mb-3 text-[11.5px] leading-snug text-muted">{t('pages.mcpPage.bot_workers_note')}</p>}
           {servicesEnabled && <div className="mb-4 flex items-center gap-3">
             <SearchInput
               value={search}
@@ -1160,7 +1164,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     >
                       <header className="flex items-center gap-2.5">
                         <ProviderLogo slug="gmail" />
-                        <h3 id="connection-google-heading" className="m-0 min-w-0 flex-1 truncate text-[14px] font-semibold text-text-strong">
+                        <h3 id="connection-google-heading" className="-m-1 min-w-0 flex-1 truncate p-1 text-[14px] font-semibold text-text-strong">
                           {/* A forced-open entry cannot close, so its name is
                               plain text rather than a toggle with a chevron. */}
                           {googleForcedOpen ? t('pages.connectionsPage.google_entry_name') : (

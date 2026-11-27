@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from kiro_crew import pinned_fs
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.pod import env_overrides, launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime, runtime_attestation, runtime_home, runtime_ports
@@ -328,7 +329,7 @@ def exec_in_pod(cfg: PodConfig, name: str, argv: list[str]) -> int:
     # edit land outside the pod even with KIROCREW_WORKSPACE set correctly.
     workspace = Path(env["KIROCREW_WORKSPACE"])
     try:
-        workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
+        mkdirs_owner_only(workspace)
         os.chdir(workspace)
     except OSError as exc:
         print(f"FATAL: could not enter the pod workspace {workspace}: {exc}")
@@ -666,6 +667,23 @@ def _boot_unguarded(cfg: PodConfig, name: str) -> int:
             "kiro-cli would write OAuth grants outside the pod. Inspect "
             f"{home_dir / 'os-home'} for a replaced component, then "
             f"`kirocrew pod down {name}` and bring it up again.",
+        )
+    # ``build_pod_env`` points the child's ``KIRO_HOME`` at ``<pod home>/kiro``, and
+    # kiro-cli 3.x takes its first lock at ``$KIRO_HOME/settings/cli.json.lock``
+    # without creating that folder from inside the pod's sandbox, so the folder must
+    # exist before the bootstrap probe below spawns the child. Build both levels
+    # here, with the same link refusal and owner-only mode as the pod home itself.
+    try:
+        runtime._ensure_pod_dir(home_dir / "kiro", what="pod kiro home")
+        runtime._ensure_pod_dir(home_dir / "kiro" / "settings", what="pod kiro settings")
+    except PodError as exc:
+        return _refuse(
+            cfg,
+            name,
+            EXIT_REFUSED_UNRECOVERABLE,
+            f"{exc}. Refusing to boot without a verified pod kiro home -- the pod's "
+            f"kiro-cli would write its settings outside the pod. Inspect {home_dir / 'kiro'} "
+            f"for a replaced component, then `kirocrew pod down {name}` and bring it up again.",
         )
     # Past every terminal refusal: clear any marker an earlier refused boot left,
     # so the record means "the LAST boot refused" rather than "a boot once did".

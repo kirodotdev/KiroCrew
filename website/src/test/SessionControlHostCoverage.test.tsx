@@ -32,6 +32,9 @@ const sdk = vi.hoisted(() => ({
   throwNext: false,
 }))
 
+// The registry the loader imports before an app bundle (appBundleImport.ts).
+// These tests are about the host's own UI; the real one costs seconds to load.
+vi.mock('../app-sdk/shared-modules', () => ({}))
 vi.mock('../app-sdk', () => ({
   AppApiProvider: (props: Record<string, unknown>) => {
     sdk.props = props

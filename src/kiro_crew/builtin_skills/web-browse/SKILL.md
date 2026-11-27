@@ -1,7 +1,7 @@
 ---
 name: web-browse
 description: Open a REAL external web page with the `browser` MCP tool; the user watches it live in the chat and can take over with one click. Use when the user wants to VIEW, read or verify a public URL (a local dev server = web-preview).
-triggers: open this page, show me this site, show me the page, view this url, render this page, look at this website, open in the browser, see what this page looks like, pull up this site, visit this url
+triggers: open this page, show this site, view this url, render this page, open in browser, visit this url
 ---
 
 # Web Browse: open a real page for the user to look at

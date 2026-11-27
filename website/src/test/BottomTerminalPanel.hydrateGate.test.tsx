@@ -12,8 +12,11 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, screen } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: ({ sessionId }: { sessionId: string }) => <div data-testid={`cli-${sessionId}`} />,
+}))
+vi.mock('../components/terminalSessions', () => ({
+  preloadTerminal: vi.fn(),
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
 }))

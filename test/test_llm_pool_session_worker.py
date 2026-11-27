@@ -462,6 +462,16 @@ class TestZeroTools:
         assert oneliner.calls == []
 
     @pytest.mark.asyncio
+    async def test_an_unconfirmed_spec_names_the_write_back(self, monkeypatch):
+        monkeypatch.setattr(session_mod, "_lite_spec_toolless", _answers(False))
+        worker = SessionWorker(FakeSessions(KAS), backend=KAS)
+        with pytest.raises(KnowledgeSpecUnconfirmed) as caught:
+            await worker.start()
+        message = str(caught.value)
+        assert "another tool" in message
+        assert "leave Kiro Crew's tool-less specs alone" in message
+
+    @pytest.mark.asyncio
     async def test_a_spec_that_turns_unconfirmed_mid_ingest_is_refused(self, monkeypatch, oneliner):
         monkeypatch.setattr(session_mod, "_lite_spec_toolless", _answers(True, False))
         worker = SessionWorker(FakeSessions(KAS), backend=KAS)

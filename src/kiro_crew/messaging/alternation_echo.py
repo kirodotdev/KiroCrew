@@ -11,8 +11,11 @@ never become a transcript row.
 A turn loop that reads the stream's text itself streams each prompt through
 :func:`drop_echo`: a team-channel agent's post (``channel._stream_task``),
 ``kirocrew chat`` (``cli_chat._send_and_print``), a task-runner step
-(``task_executor.execute_task``) and a sub-agent's prompts
-(``subagent_manager/run_turn.py``).
+(``task_executor.execute_task``), a sub-agent's prompts
+(``subagent_manager/run_turn.py``), an eval scenario turn (``eval/runner.py``) and
+a webhook hook turn (``dashboard/handlers/hooks.py``). The native Slack turn
+streams each prompt through it too, and the channel turn driver each timed-out
+call's continuation: their own hold, below, covers only a turn's first text.
 
 The live stream holds a segment while it could still be this text and drops it
 when it is: the dashboard runner (``stream_chunks._on_text_chunk``), the channel

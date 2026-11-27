@@ -33,6 +33,7 @@ export interface BotChannelConfigData {
   /** Progress-display config (optional; only Discord sends these). */
   reactions_enabled?: boolean
   show_thinking?: boolean
+  show_timing_footer?: boolean
   soft_threshold_pct: number
   /** Spoken answers (optional; only channels declaring `voiceReplies` send it). */
   voice_replies?: boolean
@@ -85,6 +86,7 @@ export interface BotChannelConfigSave {
   /** Progress-display config (optional; only Discord sends these). */
   reactions_enabled?: boolean
   show_thinking?: boolean
+  show_timing_footer?: boolean
   soft_threshold_pct: number
   voice_replies?: boolean
   allow_forum?: boolean
@@ -123,6 +125,8 @@ export interface BotChannelSpec {
   guideTitle?: string
   /** Primary guide-card button: label + href. */
   guideLink: { label: string; href: string }
+  /** Optional block under the guide-card buttons (Discord: the bot's invite links). */
+  guideExtra?: ReactNode
   /** Secret field labels. */
   tokenDescription: string
   tokenPlaceholder: string
@@ -255,9 +259,10 @@ export interface BotChannelSpec {
   }
   /**
    * Optional progress-display toggles rendered in the Behavior card: how much of
-   * a running turn the channel shows (the phase-reaction ladder, and whether the
-   * model's reasoning is surfaced). Channels that omit it are unaffected and
-   * never send ``reactions_enabled`` or ``show_thinking``.
+   * a running turn the channel shows (the phase-reaction ladder, whether the
+   * model's reasoning is surfaced, and the timing line under each reply). Channels
+   * that omit it are unaffected and never send ``reactions_enabled``,
+   * ``show_thinking`` or ``show_timing_footer``.
    */
   progressDisplay?: {
     reactionsLabel: string
@@ -268,6 +273,10 @@ export interface BotChannelSpec {
     thinkingDescription: string
     /** Config path the thinking toggle writes, for `<SettingRef>` deep-links. */
     thinkingConfigKey: string
+    footerLabel: string
+    footerDescription: string
+    /** Config path the timing-footer toggle writes, for `<SettingRef>` deep-links. */
+    footerConfigKey: string
   }
   /**
    * Optional SDK extra. Present only for a channel whose client library ships
@@ -299,6 +308,7 @@ type Draft = {
   auto_thread: boolean
   reactions_enabled: boolean
   show_thinking: boolean
+  show_timing_footer: boolean
   soft_threshold_pct: string
   voice_replies: boolean
   allow_forum: boolean
@@ -329,6 +339,8 @@ function draftFrom(c: BotChannelConfigData): Draft {
     // Default OFF, so `!!` is the faithful read here: reasoning stays private
     // until someone asks for it.
     show_thinking: !!c.show_thinking,
+    // Default ON like the backend, for the reason `auto_thread` gives.
+    show_timing_footer: c.show_timing_footer ?? true,
     soft_threshold_pct: String(c.soft_threshold_pct),
     voice_replies: !!c.voice_replies,
     allow_forum: !!c.allow_forum,
@@ -445,7 +457,9 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
   const [botClear, setBotClear] = useState(false)
   const [botId, setBotId] = useState('')
   const [botIdClear, setBotIdClear] = useState(false)
-  const [formKey, setFormKey] = useState(0)  // bump to remount secret field after save
+  // Bump to remount that secret field after a save.
+  const [botKey, setBotKey] = useState(0)
+  const [botIdKey, setBotIdKey] = useState(0)
   // The save's onSuccess reads the secret fields as they are when it lands,
   // not as they were when the request started.
   const secretsRef = useRef({ botToken, botClear, botId, botIdClear })
@@ -521,10 +535,10 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       setBotId(nextId)
       if (vars.bot_token_clear) setBotClear(false)
       if (vars.bot_id_clear) setBotIdClear(false)
-      const clearPending = (!vars.bot_token_clear && s.botClear) || (!vars.bot_id_clear && s.botIdClear)
-      // Collapse the secret fields back to their stored preview only when no
-      // newer credential edit is pending in them; a remount would hide it.
-      if (!nextToken && !nextId && !clearPending) setFormKey(k => k + 1)
+      // Collapse each secret field back to its stored preview unless a newer
+      // edit is pending in that field.
+      if (!nextToken && !(s.botClear && !vars.bot_token_clear)) setBotKey(k => k + 1)
+      if (!nextId && !(s.botIdClear && !vars.bot_id_clear)) setBotIdKey(k => k + 1)
       // A blank folder name was saved as the channel's own name: show that,
       // unless the field was cleared after a named folder was sent.
       setDraft(d => (d && d.session_folder_on && !d.session_folder.trim() && vars.session_folder === spec.name
@@ -570,6 +584,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
     if (spec.progressDisplay) {
       payload.reactions_enabled = draft.reactions_enabled
       payload.show_thinking = draft.show_thinking
+      payload.show_timing_footer = draft.show_timing_footer
     }
     payload.session_folder = savedSessionFolder(draft, spec.name)
     if (botClear) payload.bot_token_clear = true
@@ -659,6 +674,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               {i18nT('pages.settings.botChannelPanel.setup_guide')} <ExternalLink size={13} />
             </a>
           </div>
+          {spec.guideExtra}
         </SettingsCard>
       </SettingsSection>
 
@@ -686,7 +702,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
           />
           {spec.secondCredential && (
             <SecretField
-              key={`botid-${formKey}`}
+              key={`botid-${botIdKey}`}
               label={spec.secondCredential.label}
               description={spec.secondCredential.description}
               placeholder={spec.secondCredential.placeholder}
@@ -704,7 +720,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             />
           )}
           <SecretField
-            key={`bot-${formKey}`}
+            key={`bot-${botKey}`}
             label={spec.tokenLabel ?? i18nT('pages.settings.botChannelPanel.bot_token', { channel: spec.name })}
             description={spec.tokenDescription}
             placeholder={spec.tokenPlaceholder}
@@ -926,6 +942,14 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
                 configKey={spec.progressDisplay.thinkingConfigKey}
                 checked={draft.show_thinking}
                 onChange={v => upd({ show_thinking: v })}
+                disabled={ro}
+              />
+              <SettingsToggle
+                label={spec.progressDisplay.footerLabel}
+                hint={spec.progressDisplay.footerDescription}
+                configKey={spec.progressDisplay.footerConfigKey}
+                checked={draft.show_timing_footer}
+                onChange={v => upd({ show_timing_footer: v })}
                 disabled={ro}
               />
             </>

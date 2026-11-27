@@ -146,7 +146,8 @@ export function crewWaitingApprovals(slots: readonly ChatSlot[]): Record<string,
  *  (`crewModeView`), so the Bot's row carries the wait; read over the FULL slot set. */
 export function mateWaitingThreads(slots: readonly ChatSlot[]): Readonly<Record<string, boolean>> {
   const live = liveMateThreads(slots)
-  const out: Record<string, boolean> = {}
+  // No prototype: a slot key such as `constructor` must not read as waiting.
+  const out: Record<string, boolean> = Object.create(null)
   for (const s of slots) {
     const mate = mateRootOf(s)
     if (live.has(mate) && (s.pending_approval || s.needs_input)) out[mate] = true

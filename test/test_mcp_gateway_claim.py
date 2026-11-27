@@ -220,6 +220,13 @@ def _patch_env(monkeypatch: pytest.MonkeyPatch) -> tuple[_FakeBackend, list[dict
     return fake_backend, sel_calls
 
 
+def _attest_walk(monkeypatch: pytest.MonkeyPatch, session_key: str) -> None:
+    """The kernel reports the stub's parent as the peer and gatewayd's own walk
+    from it resolves *session_key*: the identity a Register cannot name itself."""
+    monkeypatch.setattr(socketsec, "get_peer_pid", lambda _w: _PID)
+    monkeypatch.setattr(gw, "_resolve_peer_identity", lambda _pid: (session_key, list(_ANCESTORS)))
+
+
 def _claim_events(sel_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in sel_calls if e.get("operation") == "mcp-gateway.caller-claim"]
 
@@ -649,6 +656,7 @@ async def test_claim_replaces_existing_identity(monkeypatch: pytest.MonkeyPatch)
     """Re-claim: unlike the stub recaller (deny-by-default), a gateway claim
     REPLACES an existing identity so a re-claimed pool runtime is never stale."""
     fb, sel = _patch_env(monkeypatch)
+    _attest_walk(monkeypatch, "dashboard:old-session")
     reader = _QueueReader()
     reader.feed(_register("dashboard:old-session"))
     reader.feed(_CALL)
@@ -675,6 +683,7 @@ async def test_claim_replaces_existing_identity(monkeypatch: pytest.MonkeyPatch)
 async def test_claim_idempotent_same_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Claiming the identity a connection already has is a no-op (no audit spam)."""
     fb, sel = _patch_env(monkeypatch)
+    _attest_walk(monkeypatch, "dashboard:same-1")
     reader = _QueueReader()
     reader.feed(_register("dashboard:same-1"))
     reader.feed(_CALL)

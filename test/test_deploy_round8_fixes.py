@@ -13,6 +13,7 @@ import pytest
 from redaction_structured_cases import github_classic
 
 from kiro_crew.deploy import engine, handlers, pending
+from kiro_crew.testing.module_table import patched_sys_modules
 
 _KEY = github_classic(seed=11)  # a token the credential plan redacts
 
@@ -234,8 +235,6 @@ class TestF3OACDeleteETag:
 
     @pytest.fixture(autouse=True)
     def _setup(self):
-        import sys
-
         mock_boto3 = MagicMock()
         mock_botocore = MagicMock()
         mock_botocore_exceptions = MagicMock()
@@ -250,7 +249,7 @@ class TestF3OACDeleteETag:
         mock_botocore.exceptions = mock_botocore_exceptions
 
         with patch.dict(os.environ, {"BUCKET": "test-bucket", "DIST_ID": "E123TEST"}), \
-             patch.dict(sys.modules, {
+             patched_sys_modules({
                  "boto3": mock_boto3,
                  "botocore": mock_botocore,
                  "botocore.exceptions": mock_botocore_exceptions,

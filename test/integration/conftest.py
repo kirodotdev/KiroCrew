@@ -184,6 +184,10 @@ cross-home flake three tests later.
      sample (``DEFAULT_SAMPLE_SECS``) and ``debug_threads mode=now`` takes one
      on request, so whether a boot leaves entries depends on how long it ran;
      a fresh process has none.
+   * ``notifications.resource_pressure``'s published posture, its decline step
+     and the per-session growth marks -- the boot's notifier writes them from
+     live host memory and disk samples, so what a boot leaves depends on the
+     host's load; a fresh process has none.
    * ``platform.governance._CONFIRM_PATTERNS_MEMO`` -- the ``hooks.confirm_tools``
      patterns read from the home's config files, keyed on their fingerprint.
      Grant writers and gate checks fill it whenever no live snapshot is up,
@@ -215,6 +219,13 @@ cross-home flake three tests later.
      refresh that lands after a boot's snapshot would otherwise publish the
      previous home's apps into the next boot; the handle would keep the next
      boot from subscribing again once ``config.live`` dropped the subscription.
+   * ``notifications.resource_pressure._current_posture`` and ``_worsened``
+     -- the host posture the notifier last sampled and its latest step of
+     decline. Every sample replaces them with that moment's reading, so two
+     boots on one runner can leave different values; a fresh process has
+     neither, and the next boot's work-ledger probe must not read the last
+     boot's posture before its own first sample. The rootdir conftest resets
+     them per test; this resets them per boot.
 
 2. **Snapshot and restore** around the boot by ``booted_gateway``, on every
    exit: the SIGINT/SIGTERM handlers ``run()`` installs; the event loop's
@@ -343,6 +354,7 @@ from kiro_crew.dashboard.handlers import updates as dashboard_updates
 from kiro_crew.diag import threads as diag_threads
 from kiro_crew.mcp_gateway import overlay_refresh
 from kiro_crew.metrics import inventory_gauges
+from kiro_crew.notifications import resource_pressure
 from kiro_crew.platform import bootstrap as platform_bootstrap
 from kiro_crew.platform import context as platform_context
 from kiro_crew.platform import governance
@@ -870,6 +882,8 @@ def _reset_home_bound_globals() -> None:
     config_loader._MATERIALIZED_AGENTS_READY = False
     governance._CONFIRM_PATTERNS_MEMO = None
     recall_pool._settings_cache = None
+    resource_pressure._current_posture = None
+    resource_pressure._worsened = None
     # The kept-grant boot state (verdict, recorders, the chats prompt writer): a
     # second boot reads its own home's records, as a fresh process would.
     from kiro_crew import kept_grants, kept_yolo
@@ -901,6 +915,12 @@ def _reset_home_bound_globals() -> None:
     inventory_gauges.reset_for_testing()
     with diag_threads._prev_lock:
         diag_threads._prev_reading.clear()
+    resource_pressure._current_posture = None
+    resource_pressure._worsened = None
+    # Cleared in place, never rebound: the second-boot witness compares each
+    # container's identity.
+    resource_pressure._worker_growth.clear()
+    resource_pressure._session_marks.clear()
     agent_mod._main_spec_unreadable = False
     agent_mod._main_spec_episode_revision = 0
     agent_mod._main_spec_skip_generation = None

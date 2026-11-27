@@ -42,7 +42,13 @@ from kiro_crew.dashboard.relay_archive import (
     is_cron_run_read_only,
     is_relay_archive,
 )
-from kiro_crew.dashboard.slot_buffers import flush_restored_hold
+from kiro_crew.dashboard.slot_buffers import (
+    drain_stale_pending,
+    flush_restored_hold,
+    stream_frames,
+    stream_reader,
+    stream_wait,
+)
 from kiro_crew.dashboard.slot_ownership import (
     app_names_bot,
     app_owns_slot,
@@ -74,9 +80,14 @@ def _make_id() -> str:
 # ``context._STRUCTURAL_MARKER_RES``: ``ContextBuilder.build_message`` neutralizes
 # the whole turn with that global set, so a global entry would strip the fences
 # added below and collapse the separation it is meant to create.
+#
+# A match starts only at the first dash of a run (``(?<!-)``). Any match that
+# starts inside a run is the tail of the one that starts at the run's first
+# dash, which the left-to-right scan takes first, so the scrubbed text is the same;
+# without the guard every start inside a long run rescans the rest of it.
 _CALLER_FENCE_RES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"[-]{3,}\s*CONTEXT\s*ENTRY\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
-    re.compile(r"[-]{3,}\s*USER\s*MESSAGE\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
+    re.compile(r"(?<!-)[-]{3,}\s*CONTEXT\s*ENTRY\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
+    re.compile(r"(?<!-)[-]{3,}\s*USER\s*MESSAGE\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
 )
 _FENCE_NEUTRALIZED = "[marker-removed]"
 
@@ -86,6 +97,14 @@ def _scrub_caller_fences(text: str) -> str:
     for pattern in _CALLER_FENCE_RES:
         text = pattern.sub(_FENCE_NEUTRALIZED, text)
     return text
+
+
+def _text_of_part(part: dict[str, Any]) -> str:
+    """The text of one ``text`` content part, coerced like a scalar ``content``."""
+    text = part.get("text", "")
+    if isinstance(text, str):
+        return text
+    return "" if text is None else str(text)
 
 
 def _flatten_messages(messages: list[dict[str, Any]]) -> str:
@@ -112,9 +131,7 @@ def _flatten_messages(messages: list[dict[str, Any]]) -> str:
         content = msg.get("content") or ""
         if isinstance(content, list):
             content = " ".join(
-                p.get("text", "")
-                for p in content
-                if isinstance(p, dict) and p.get("type") == "text"
+                _text_of_part(p) for p in content if isinstance(p, dict) and p.get("type") == "text"
             )
         elif not isinstance(content, str):
             # A scalar (or null) content is off-spec but must not 500: coerce
@@ -289,13 +306,15 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=400,
             )
-        # Reject unsupported roles loudly (tool/function)
+        # Reject unsupported roles loudly (tool/function). A list or object role
+        # is unsupported too; it cannot be looked up in the set below.
         role = msg.get("role", "user")
-        if role in _UNSUPPORTED_ROLES:
+        if isinstance(role, (list, dict)) or role in _UNSUPPORTED_ROLES:
+            shown = role if isinstance(role, str) else f"<{type(role).__name__}>"
             return web.json_response(
                 {
                     "error": {
-                        "message": f"role {role!r} not supported",
+                        "message": f"role {shown!r} not supported",
                         "type": "invalid_request_error",
                     }
                 },
@@ -674,7 +693,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     # the slot, so the answer says nothing about a slot it cannot reach.
     if await rerun_signs_in_via_kiro_cli(state.sessions, slot, reuses_live=True):
         # The session this turn runs on names its harness; the KAS engine bundle
-        # is served by Crew's own sign-in and needs no kiro-cli.
+        # and a Crew-owned relay are served by Crew's own sign-in, not kiro-cli's.
         harness_turn, turn_session = turn_gate_target(state, slot.key)
         blocked = await reject_if_kiro_unverified(
             request, harness_turn=harness_turn, session_key=turn_session
@@ -707,8 +726,8 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     if slot.running is True:
         return _slot_busy_response(request, slot_id or slot.key)
 
-    # Drain stale pending from prior turns whose reader disconnected
-    slot.drain()
+    # Drain what prior turns left pending; a still-attached reader keeps its end.
+    stream_epoch = drain_stale_pending(slot)
 
     if agent:
         if slot.mode == "member" and agent != slot.agent:
@@ -786,7 +805,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     # queue BEFORE the turn is dispatched: the first `await` inside the response
     # helpers lets the turn run, so a scope opened there would leave a window in
     # which a turn-end release could discard tokens this reader owes its client.
-    with slot.pending_consumer():
+    with stream_reader(slot, stream_epoch):
         # The caller is authorized and the turn is about to start: join its trace
         # when asked to (tracing/inbound.py). "" when off, invalid or tracing is off.
         traceparent = trace_inbound.begin(request.headers)
@@ -830,11 +849,19 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
 
         if stream:
             return await _stream_response(
-                request, state, slot, completion_id, model, created, ephemeral, traceparent
+                request,
+                state,
+                slot,
+                completion_id,
+                model,
+                created,
+                ephemeral,
+                traceparent,
+                epoch=stream_epoch,
             )
         else:
             blocking = await _blocking_response(
-                state, slot, completion_id, model, created, ephemeral
+                state, slot, completion_id, model, created, ephemeral, epoch=stream_epoch
             )
             if traceparent:
                 blocking.headers["traceparent"] = traceparent
@@ -908,8 +935,11 @@ async def _stream_response(
     created: int,
     ephemeral: bool,
     traceparent: str = "",
+    *,
+    epoch: int | None = None,
 ) -> web.StreamResponse:
-    """Stream SSE in OpenAI format."""
+    """Stream SSE in OpenAI format; *epoch* is the stream's (``drain_stale_pending``)."""
+    epoch = slot._stream_epoch if epoch is None else epoch
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
@@ -923,7 +953,7 @@ async def _stream_response(
         _last_emitted_len = 0
         outcome = _TurnOutcome()
         while True:
-            pending = slot.drain()
+            pending = stream_frames(slot, epoch)
             for msg in pending:
                 outcome.observe(msg)
                 if msg.get("cls") == "done":
@@ -1006,7 +1036,7 @@ async def _stream_response(
                     return await _stream_server_error(request, resp)
 
             try:
-                await asyncio.wait_for(slot.event.wait(), timeout=30)
+                await asyncio.wait_for(stream_wait(slot, epoch), timeout=30)
             except asyncio.TimeoutError:
                 await write_sse_or_abort(request, resp, b": keepalive\n\n")
     except (ConnectionResetError, asyncio.CancelledError):
@@ -1028,18 +1058,23 @@ async def _blocking_response(
     model: str,
     created: int,
     ephemeral: bool,
+    *,
+    epoch: int | None = None,
 ) -> web.Response:
     """Wait for full completion and return a single JSON response.
+
+    *epoch* is the reader's, as ``_stream_response`` takes it.
 
     Note: ``usage`` is hardcoded to zero — KiroCrew does not expose token
     counts at the slot layer.
     """
+    epoch = slot._stream_epoch if epoch is None else epoch
     collected: list[str] = []
     outcome = _TurnOutcome()
 
     try:
         while True:
-            pending = slot.drain()
+            pending = stream_frames(slot, epoch)
             for msg in pending:
                 outcome.observe(msg)
                 if msg.get("cls") == "done" and outcome.reason is not None:
@@ -1100,7 +1135,7 @@ async def _blocking_response(
                     )
 
             try:
-                await asyncio.wait_for(slot.event.wait(), timeout=30)
+                await asyncio.wait_for(stream_wait(slot, epoch), timeout=30)
             except asyncio.TimeoutError:
                 pass
     finally:

@@ -1265,6 +1265,7 @@ class SkillsLoader:
         *,
         discovery_only: bool = False,
         required_parts_out: list[str] | None = None,
+        index_counts_out: dict[str, int] | None = None,
     ) -> str:
         """Build a bounded directory over the agent's resolved available set.
 
@@ -1281,6 +1282,7 @@ class SkillsLoader:
             project_body_budget,
             discovery_only=discovery_only,
             required_parts_out=required_parts_out,
+            index_counts_out=index_counts_out,
         )
 
     def _legacy_context(

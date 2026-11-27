@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         read_bounded_json,
         redact_credentials,
         redact_exfiltration_urls,
+        require_owner_for_dashboard_caller,
         resolve_agent_bindings,
         resolve_session_agent_bindings,
         save_slot_off_loop,
@@ -90,6 +91,9 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
     immediately via the SessionManager override map and persists with the slot
     metadata, so it survives gateway restarts.
     """
+    denied = await require_owner_for_dashboard_caller(request, "slot_autocompact")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -344,9 +348,10 @@ def _slot_next_agent_autocompact_default(session_key: str, slot: Any) -> tuple[s
     """The crew a fresh session of *slot* would run, and the default it declares.
 
     Resolves the slot's selection the way a dashboard turn does before it
-    starts a session: the crew is the resolved alias, and a template
-    selection runs under no crew. Config and binding reads touch files, so
-    callers run this off the event loop.
+    starts a session (its execution record, else the namespace the slot was
+    stamped in): the crew is the resolved alias, and a template selection
+    runs under no crew. Config and binding reads touch files, so callers run
+    this off the event loop.
     """
     try:
         cfg = KiroCrewConfig.load()
@@ -356,6 +361,7 @@ def _slot_next_agent_autocompact_default(session_key: str, slot: Any) -> tuple[s
             session_key,
             slot.agent or None,
             slot.project or None,
+            agent_kind=slot.agent_kind,
         )
     except Exception:
         logger.debug("autocompact: could not resolve slot %s's agent", session_key, exc_info=True)
@@ -424,6 +430,9 @@ async def api_chat_slot_turn_timeout(request: web.Request) -> web.Response:
     transcript, and the live field changes only once the write has committed
     (see the comment at the save).
     """
+    denied = await require_owner_for_dashboard_caller(request, "slot_turn_timeout")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -538,6 +547,9 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
     ``in body``-gated so an old client sending only ``color_index`` cannot
     silently null an existing hex.
     """
+    denied = await require_owner_for_dashboard_caller(request, "slot_color")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)

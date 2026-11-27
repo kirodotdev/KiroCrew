@@ -360,6 +360,19 @@ Resources:
             Resource:
               - !Sub '${OriginBucket.Arn}/*/.kirocrew-deploy.json'
               - !Sub '${OriginBucket.Arn}/_quarantine/*'
+          # Lambda code archives (deploy-backend.sh -> _backends/, install-reaper.sh
+          # -> _reaper/) share this bucket with the published sites. They are read
+          # by CloudFormation/Lambda through the S3 API, never through the
+          # distribution, so CloudFront is denied them. deploy-backend.sh checks
+          # for this statement before it uploads.
+          - Sid: DenyCloudFrontCodeArchives
+            Effect: Deny
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource:
+              - !Sub '${OriginBucket.Arn}/_backends/*'
+              - !Sub '${OriginBucket.Arn}/_reaper/*'
 
   # CWE-778 (SAX-06): CloudTrail S3 data events for OriginBucket, so object-level
   # reads/writes of deploy artifacts are traceable beyond aggregate access logs.

@@ -11,8 +11,10 @@ owner.
 - **Delivery.** The ref is held in the thread's wake store and delivered by the
   flush that delivers a worker report (``mate_thread_wakes.app_wakes`` and
   ``schedule_flush``): at once on an idle thread, else from that thread's next turn
-  end, all of one thread's waiting refs in one turn. Kept in memory: a restart drops
-  a wake that has not started, and the app may send it again.
+  end (after a person's Stop, the end of the next turn that starts in the thread,
+  and the route answers ``queued``), all of one thread's waiting refs in one turn.
+  Kept in memory: a restart drops a wake that has not started, and the app may send
+  it again.
 - **Closed thread.** It is loaded from its transcript first, as a goal check-in
   does (``goal_reminder._load_thread``). A Bot whose thread was never opened
   cannot be woken (``NO_THREAD``).
@@ -136,7 +138,7 @@ async def request_wake(state: Any, app: str, slug: str, ref: str) -> str:
     refs = held.setdefault(key, {}).setdefault(app, [])
     if ref not in refs:
         refs.append(ref)
-    idle = mate_thread_wakes._idle(slot)
+    idle = mate_thread_wakes._idle(slot) and not mate_thread_wakes.stop_held(state, key)
     mate_thread_wakes.schedule_flush(state, key)
     return STARTED if idle else QUEUED
 

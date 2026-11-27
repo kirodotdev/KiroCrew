@@ -977,7 +977,7 @@ def install_pinned(
     """
     explicit_root = root is not None
     root = root or kas_engines_root()
-    # This host's pin (the AL2 one on a linux-x64 host below glibc 2.28), read
+    # This host's pin (the AL2 one on a Linux host below glibc 2.28), read
     # now: a host whose glibc moved since its last install gets the other pin.
     pin = host_pin_version()
     present = installed_bundle(root=root, version=pin)

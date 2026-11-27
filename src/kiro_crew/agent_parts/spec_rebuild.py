@@ -131,6 +131,14 @@ _rebuild_answer_generation: int | None = None
 _rebuild_incomplete: bool = False
 
 
+#: The spec path the last completed ``rebuild_agent_config`` wrote, with the MCP config
+#: files as that rebuild found them before merging (``mcp_sources.sources_fingerprint``).
+#: :func:`ensure_agent_materialized` rebuilds before a default-agent session when the
+#: files on disk differ from it. ``None`` until a rebuild completes in this process; with
+#: nothing to compare against, the spec on disk is kept.
+_mcp_sources_read: tuple[Path, tuple[tuple[str, bytes | None], ...]] | None = None
+
+
 #: Serializes the read-rebuild-record sequence of :func:`reproject_for_ceiling_change`
 #: and the profile watch's tick. They run on two threads (the distribution refresher and
 #: a worker), and without this a rebuild derived under an older answer can finish last,
@@ -638,7 +646,7 @@ def rebuild_agent_config(
     # grant is derived, so a profile edit that lands mid-rebuild still reads as a move.
     # Published only once the rebuild completes (below); a rebuild that raises is marked
     # by ``_tracks_rebuild_outcome`` instead, so a seed taken over it projects nothing.
-    global _rebuild_answer_generation, _rebuild_incomplete
+    global _rebuild_answer_generation, _rebuild_incomplete, _mcp_sources_read
     answer_generation = _answer_generation_after_profile_poll()
     path = kiro_agents_dir_path() / AGENT_FILENAME
 
@@ -728,6 +736,10 @@ def rebuild_agent_config(
     # See docs/architecture/mcp.md. CC global is kept only as a gap-filler so
     # the Claude Code provider can be re-enabled later without rework; it must
     # not shadow a Kiro-global entry.
+    #
+    # The files are fingerprinted BEFORE the merge reads them, so an edit landing
+    # while this rebuild runs still differs at the next session start.
+    sources_read = mcp_sources.sources_fingerprint()
     sources = mcp_sources.merge_mcp_sources(config)
 
     # Resolve MCP commands to absolute paths and validate.
@@ -819,6 +831,23 @@ def rebuild_agent_config(
             ", ".join(_mount_only_removed) or "none",
         )
 
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+    from kiro_crew.mcp_provenance import is_withheld_mute
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    # Every server muted in the spec being rebuilt, read BEFORE resolution drops
+    # the ones whose command is missing. Resolution skips a server switched off in
+    # a source scope; an agent-local entry is in no source scope, so this set is
+    # what keeps a muted one out of the drop record below. A name a source claims
+    # carries that source's ``disabled`` here (the merge projects it), so only a
+    # mute the source itself holds is read for it. The rebuild's own withheld mute
+    # is not the user's: resolution lifts it, so its missing command is a drop.
+    _spec_servers = config.get("mcpServers")
+    _muted_aliases = {
+        mcp_server_alias(srv)
+        for srv, spec in (_spec_servers if isinstance(_spec_servers, dict) else {}).items()
+        if mcp_entry_is_muted(spec) and not is_withheld_mute(spec)
+    }
     resolved = mcp_sources.resolve_mcp_servers(config, sources, _resolve_command)
     # After resolution, so both entries carry the resolved command they are compared on.
     mcp_sources.reconcile_raw_key_tool_overrides(config, sources)
@@ -880,15 +909,17 @@ def rebuild_agent_config(
                 app_owned_at_start=_app_owned_at_start,
             )
             from kiro_crew import mcp_dropped_servers
-            from kiro_crew.mcp_utils import mcp_server_alias
 
             # Keep the report ordered with spec writes; aliases can still be mounted.
+            # A muted server's missing command is not a drop (``_muted_aliases``).
             mcp_dropped_servers.record_rebuild_drops(
                 {
                     key: command
                     for key, command in resolved.unresolved_commands.items()
                     if mcp_server_alias(key) not in config["mcpServers"]
-                }
+                    and mcp_server_alias(key) not in _muted_aliases
+                },
+                unused_own=mcp_sources.unused_own_entries(config, sources, mounted),
             )
         except _AgentSpecUnreadable as exc:
             # The commit re-reads the spec inside its write lock
@@ -915,6 +946,7 @@ def rebuild_agent_config(
 
     _rebuild_answer_generation = answer_generation
     _rebuild_incomplete = False
+    _mcp_sources_read = (path, sources_read)
     _invalidate_projection_if_answer_moved(answer_generation)
 
     if _wrote_out is not None:
@@ -1232,9 +1264,12 @@ def ensure_agent_materialized(agent: str | None) -> bool:
     left to the caller's graceful set_mode fallback rather than being guessed at.
 
     A present file is rebuilt too when a server the last rebuild dropped because
-    its program was not found (``mcp_dropped_servers``) has that program back.
-    Nothing else re-runs the rebuild between gateway starts and config changes,
-    so the server would stay out of every session until a restart.
+    its program was not found (``mcp_dropped_servers``) has that program back,
+    and when an MCP config file the rebuild merges changed since the last rebuild
+    in this process wrote it (``_mcp_sources_read``) -- a server added to
+    ``~/.kiro/settings/mcp.json`` by hand or by ``kiro-cli mcp add``, say.
+    Nothing else re-runs the rebuild for either, so the server would stay out of
+    every session until a sync or a restart.
 
     Returns ``True`` when the managed default file is present (already, or after
     a regenerate); ``False`` when *agent* is non-managed or regeneration failed.
@@ -1257,14 +1292,26 @@ def ensure_agent_materialized(agent: str | None) -> bool:
                 for name, rec in mcp_dropped_servers.load_dropped().items()
                 if shutil.which(expand_spec_args([rec["command"]])[0], path=mcp_search_path(""))
             ]
-            if not found:
+            last_read = _mcp_sources_read
+            if found:
+                logger.info(
+                    "MCP server(s) %r dropped at the last rebuild now have their program; "
+                    "rebuilding %s before spawn",
+                    found,
+                    agent_file,
+                )
+            elif (
+                last_read is not None
+                and last_read[0] == agent_file
+                and last_read[1] != mcp_sources.sources_fingerprint()
+            ):
+                logger.info(
+                    "An MCP config file changed since the last rebuild; rebuilding %s "
+                    "before spawn",
+                    agent_file,
+                )
+            else:
                 return True
-            logger.info(
-                "MCP server(s) %r dropped at the last rebuild now have their program; "
-                "rebuilding %s before spawn",
-                found,
-                agent_file,
-            )
         else:
             logger.warning(
                 "Managed agent config %s missing — regenerating before spawn "

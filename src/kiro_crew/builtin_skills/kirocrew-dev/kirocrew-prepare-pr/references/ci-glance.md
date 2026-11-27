@@ -18,7 +18,7 @@ table (T1-T4; T3 and T4 wait for `triaged`) and the Captain's triage are in
 and one `readiness:` label. The real merge gate is a human approval plus
 `PR Readiness`. Fix a red `Fast Gate` first: the heavy matrix and the fork AI
 lanes wait on it. For any other lane (what it checks, if it blocks, how to
-clear it, fork PRs, the merge queue), read `references/ci.md`.
+clear it, fork PRs, stacked PRs, the merge queue), read `references/ci.md`.
 
 ## Review-ready when the diff touches a test
 

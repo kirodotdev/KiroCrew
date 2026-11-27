@@ -160,7 +160,12 @@ async def test_a_cancelled_apply_leaves_the_stable_link_on_the_old_tree(
     building = threading.Event()
 
     def _build(
-        wheel: Path, shadow: Path, stable_link: Path | None = None, *, ctx: object = None
+        wheel: Path,
+        shadow: Path,
+        stable_link: Path | None = None,
+        *,
+        ctx: object = None,
+        extras: tuple[str, ...] = (),
     ) -> None:
         """A build that runs until its apply is cancelled, as a real child would."""
         _claim(shadow)

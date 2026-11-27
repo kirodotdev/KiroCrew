@@ -135,10 +135,23 @@ def test_a_record_with_only_its_what_points_at_its_question_by_time(same_day):
         "last_report_at": "2026-11-14T18:30:00+00:00",
     }
     text = _render([item], awaits={item["item_id"]})
-    assert "- Pick a region (waiting on you, checked 06:01)\n  - See the question at 18:30." in text
+    assert "- Pick a region (waiting on you, checked 06:01)\n  - See the question at 18:35." in text
     assert "not written" not in text
-    untimed = _render([_item(1, status="question", ask=WHAT_ONLY)], awaits={"it_00000001"})
+    untimed = _render(
+        [_item(1, status="question", ask={"what": "Pick a region"})], awaits={"it_00000001"}
+    )
     assert "  - See the question in this chat." in untimed
+
+
+def test_the_question_pointer_uses_the_records_time_not_the_last_report(same_day):
+    """A progress report at 10:00 and a question recorded at 10:20 point at 10:20."""
+    item = _waiting_item(
+        1, last_report_at="2026-11-14T10:00:00+00:00",
+        ask={"what": "Pick a region", "written_at": "2026-11-14T10:20:00+00:00"},
+    )  # fmt: skip
+    text = _render([item], awaits={item["item_id"]})
+    assert "  - See the question at 10:20." in text
+    assert "10:00" not in text
 
 
 def test_an_item_the_main_chat_is_still_checking_never_needs_you():

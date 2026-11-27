@@ -151,6 +151,56 @@ jobs:
     # in a single sweep (see MAX_DISPATCH), so the job may fire many recomputes.
     timeout-minutes: 15
     steps:
+      # Measurement only: counts this job's GitHub API calls by kind so the
+      # shared GITHUB_TOKEN quota can be attributed per workflow. Every later
+      # `gh` resolves to a shim that appends one line to a counter file and
+      # then `exec`s the real gh with the same arguments, so arguments,
+      # stdin, stdout, stderr and exit code are the real gh's own. A counter
+      # that cannot be installed or written is skipped; it never fails the job.
+      # Pinned identical in every job by test_gh_call_counter.py. Installed
+      # first, so the scan's `gh api graphql` calls and this job's REST reads
+      # are both in the count.
+      - name: Count GitHub API calls (measurement only)
+        continue-on-error: true
+        run: |
+          real="$(command -v gh || true)"
+          dir="$RUNNER_TEMP/gh-call-count"
+          if [ -z "$real" ] || [ "$real" = "$dir/gh" ]; then exit 0; fi
+          mkdir -p "$dir" && : > "$dir/calls" || exit 0
+          {
+            echo '#!/usr/bin/env bash'
+            printf 'REAL_GH=%q\n' "$real"
+            printf 'COUNT_FILE=%q\n' "$dir/calls"
+            cat <<'SHIM'
+          # Kinds follow gh 2.103 at github.com/cli/cli: `api` is one REST
+          # request (`--paginate` one per page, so it is also tallied apart),
+          # `api graphql` one GraphQL request, `pr comment` a GraphQL lookup
+          # plus a GraphQL addComment, `pr view` and `label list` GraphQL,
+          # `label create` REST. `api rate_limit` costs no quota. Anything
+          # else is `other`, counted but unclassified.
+          {
+            kind=other n=1
+            case "${1-} ${2-}" in
+              "api rate_limit" | "api /rate_limit") kind=free ;;
+              api\ *)
+                kind=rest
+                for arg in "${@:2}"; do
+                  case "$arg" in
+                    graphql) kind=graphql ;;
+                    --paginate) printf 'paginate 1\n' >> "$COUNT_FILE" ;;
+                  esac
+                done
+                ;;
+              "pr comment") kind=graphql n=2 ;;
+              "pr view" | "label list") kind=graphql ;;
+              "label create") kind=rest ;;
+            esac
+            printf '%s %s\n' "$kind" "$n" >> "$COUNT_FILE"
+          } 2> /dev/null
+          exec "$REAL_GH" "$@"
+          SHIM
+          } > "$dir/gh" && chmod 755 "$dir/gh" && echo "$dir" >> "$GITHUB_PATH" || true
+
       # The scan script, the withheld-verdict republisher, and the
       # disposition gate the republisher shells out to -- plus the modules
       # pr_status.py loads (green_age.py, _tool_argv.py, and pr_status.py's
@@ -316,11 +366,12 @@ jobs:
           # every push are not evidence -- without that narrowing this would
           # re-fire most PRs on every sweep and prove nothing.
           #
-          # This is the ONE REST read the sweep still makes, and it is made only
-          # for a candidate PR whose own `updatedAt` is newer than the verdict --
-          # see the gate at each call site. Comment bodies are not in the GraphQL
-          # scan because the rule they feed is evaluated elsewhere; only the
-          # newest marked record's timestamp matters here.
+          # A REST read, made only for a candidate PR whose own `updatedAt` is
+          # newer than the verdict AND whose newest issue comment is -- see the
+          # gate at each call site and comment_evidence_possible below. Comment
+          # bodies are not in the GraphQL scan because the rule they feed is
+          # evaluated elsewhere; only the newest marked record's timestamp
+          # matters here.
           #
           # `--slurp` collapses `--paginate`'s one-document-per-page output into a
           # single array, so the filter sees one document and `max` emits one
@@ -337,6 +388,32 @@ jobs:
             date -u -d "$newest" +%s 2>/dev/null || echo 0
           }
 
+          # comment_evidence_possible <verdict epoch>: whether the comment read
+          # above could find a disposition record newer than the verdict.
+          #
+          # A disposition record is an issue comment, and creating or editing
+          # one sets that comment's `updatedAt`. The scan reports the newest
+          # `updatedAt` across the pull request's issue comments, so a record
+          # created or edited after the verdict makes that timestamp newer than
+          # the verdict. Read the other way: a newest comment no newer than the
+          # verdict PROVES no record changed after it, and the read has nothing
+          # to find. The comparison is the same strict one the read's own result
+          # gets below, so the two cannot disagree about one second.
+          #
+          # One-sided, like the `updatedAt` gate it follows: a bot rewriting its
+          # comment opens it for a PR with no new record, at one read, and it
+          # never closes on a PR that has one. Only an ANSWER closes it. A row
+          # whose comments the scan did not read (`comments_read` not true), or
+          # whose timestamp does not parse, makes the read.
+          comment_evidence_possible() {
+            local newest_epoch
+            [ "$comments_read" = "true" ] || return 0
+            [ -n "$newest_comment" ] || return 1
+            newest_epoch="$(date -u -d "$newest_comment" +%s 2>/dev/null || echo "")"
+            case "$newest_epoch" in '' | *[!0-9]*) return 0 ;; esac
+            [ "$newest_epoch" -gt "$1" ]
+          }
+
           # Whether a `pending` verdict is a READ-FAILURE pending.
           #
           # pr-readiness.yml publishes one whenever a read-only API call keeps
@@ -348,11 +425,13 @@ jobs:
           # evidence for. Age is their only signal, and a recompute genuinely
           # resolves them, because the next run's reads succeed.
           #
-          # The discriminator is the status DESCRIPTION, which the GraphQL scan
-          # does not carry. Read here rather than added to the scan so the cost
-          # falls only on a pending the evidence test is about to skip: a head
-          # whose pending carries later check evidence never reaches this call,
-          # and neither does any non-pending verdict.
+          # The discriminator is the status DESCRIPTION. The scan carries it on
+          # the row (`readiness.description`), and that is what is classified.
+          # A row without the key -- the scan answered without that field -- is
+          # read over REST instead, by readiness_description below, and only
+          # for a pending the evidence test is about to skip: a head whose
+          # pending carries later check evidence never reaches that call, and
+          # neither does any non-pending verdict.
           #
           # Matched on ONE TOKEN the publisher stamps on every such pending, and
           # at the FRONT, because the API caps a description at 140 characters
@@ -381,10 +460,9 @@ jobs:
           # is a substring, not a prefix. test_pr_readiness_sweep.py pins the
           # literal against pr-readiness.yml's.
           VERDICT_UNPUBLISHED_TOKEN="[verdict-unpublished]"
-          # The "PR Readiness" commit-status description for this head, or "" on
-          # an unreadable read. ONE read serves both token tests below, so a
-          # pending that is neither read-failure nor verdict-unpublished still
-          # costs a single status read, exactly as before.
+          # The "PR Readiness" commit-status description for this head over
+          # REST, or "" on an unreadable read: the path for a row the scan gave
+          # no description. ONE read serves every token test below.
           readiness_description() {
             with_read_token gh api "repos/$REPO/commits/$1/status" \
               --jq "[.statuses[]? | select(.context == \"$STATUS_CONTEXT\")][0].description // empty" \
@@ -500,6 +578,16 @@ jobs:
             newest_fail="$(jq -r '.newest_failed_check_at // empty' <<<"$row")"
             running="$(jq -r '.running_checks // 0' <<<"$row")"
             case "$running" in '' | *[!0-9]*) running=0 ;; esac
+
+            # What the scan read beyond the verdict, and whether it read it. A
+            # description is taken from the row only when the key is a string
+            # (an empty one is a status with no description); the newest issue
+            # comment only when `comments_read` is literally true. Anything
+            # else is "not read", and the REST read is made.
+            scan_has_description="$(jq -r '(.readiness.description? | type) == "string"' <<<"$row")"
+            scan_description="$(jq -r '.readiness.description? // empty' <<<"$row")"
+            comments_read="$(jq -r '.comments_read == true' <<<"$row")"
+            newest_comment="$(jq -r '.newest_comment_at // empty' <<<"$row")"
 
             # Newest human review submission or dismissal on the pull request.
             # Readiness blocks on a changes-requested review of the head. A
@@ -655,9 +743,14 @@ jobs:
                       "a recompute would re-derive the same verdict, so not re-firing."
                     continue
                   fi
-                  # ONE status-description read classifies this pending for
-                  # both recoveries that depend on it.
-                  rs_desc="$(readiness_description "$sha")"
+                  # ONE description classifies this pending for every recovery
+                  # that depends on it: the scan's, or a REST read when the
+                  # scan gave none.
+                  if [ "$scan_has_description" = "true" ]; then
+                    rs_desc="$scan_description"
+                  else
+                    rs_desc="$(readiness_description "$sha")"
+                  fi
                   # A pending that an whole-design lane owes this head a
                   # verdict it withheld. A recompute of THIS aggregator cannot
                   # fix it -- the lane's check-run is already `success`, so the
@@ -836,6 +929,10 @@ jobs:
                   # label writes readiness itself makes AFTER publishing, which
                   # bump `updatedAt` past the verdict and cost one read each.
                   [ "$pr_updated_epoch" -gt "$updated_epoch" ] || continue
+                  # A label, a review or a push opens the gate above with no
+                  # comment behind it. The scan's newest issue comment says
+                  # whether any comment changed after the verdict.
+                  comment_evidence_possible "$updated_epoch" || continue
                   disposition_epoch="$(newest_disposition_epoch "$number")"
                   [ "$disposition_epoch" -ne 0 ] || continue
                   # STRICT, with no margin. The check-evidence modes carry a
@@ -928,6 +1025,10 @@ jobs:
                   # label writes readiness itself makes AFTER publishing, which
                   # bump `updatedAt` past the verdict and cost one read each.
                   [ "$pr_updated_epoch" -gt "$updated_epoch" ] || continue
+                  # A label, a review or a push opens the gate above with no
+                  # comment behind it. The scan's newest issue comment says
+                  # whether any comment changed after the verdict.
+                  comment_evidence_possible "$updated_epoch" || continue
                   disposition_epoch="$(newest_disposition_epoch "$number")"
                   [ "$disposition_epoch" -ne 0 ] || continue
                   # STRICT, with no margin. The check-evidence modes carry a
@@ -1011,6 +1112,7 @@ jobs:
           while IFS=$'\t' read -r s_epoch number sha urgent reason; do
             [ -n "$number" ] || continue
             if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
+              echo "PR #$number: PR Readiness $reason at $sha -> deferred by MAX_DISPATCH=$MAX_DISPATCH."
               skipped_cap=$(( skipped_cap + 1 ))
               continue
             fi
@@ -1021,6 +1123,7 @@ jobs:
               continue
             fi
             if [ "$urgent" != 1 ] && [ "$dispatched" -ge "$dispatch_budget" ]; then
+              echo "PR #$number: PR Readiness $reason at $sha -> deferred by the rate-limit reserve."
               skipped_reserve=$(( skipped_reserve + 1 ))
               continue
             fi
@@ -1036,3 +1139,21 @@ jobs:
           rm -f "$stale_file" "$active_wd_pairs"
 
           echo "Re-fired $dispatched recompute(s); $skipped_active stale PR(s) skipped (dispatch already active); $skipped_cap stale PR(s) deferred to next sweep by MAX_DISPATCH=$MAX_DISPATCH; $skipped_reserve deferred by the rate-limit reserve."
+
+      # Counts only, never arguments or responses. `basis=gh-invocations`:
+      # a `--paginate` call is one `rest` however many pages it read, and
+      # calls made by actions (claude-code-action's octokit) are not seen.
+      - name: Report GitHub API call counts
+        if: always()
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/gh-call-count/calls"
+          wf="${GITHUB_WORKFLOW_REF%@*}"
+          wf="${wf##*/}"
+          if [ ! -f "$f" ]; then
+            echo "rest-calls: workflow=$wf job=$GITHUB_JOB counter=absent"
+            exit 0
+          fi
+          awk -v wf="$wf" -v job="$GITHUB_JOB" '{ c[$1] += $2 } END {
+            printf "rest-calls: workflow=%s job=%s rest=%d graphql=%d paginated=%d other=%d basis=gh-invocations\n",
+              wf, job, c["rest"], c["graphql"], c["paginate"], c["other"] }' "$f" || true

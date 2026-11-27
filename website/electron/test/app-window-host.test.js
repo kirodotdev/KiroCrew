@@ -201,6 +201,36 @@ test("an openOnEnable overlay opens hidden, sandboxed, on the host's own route",
   assert.deepStrictEqual(win.openHandler(), { action: "deny" });
 });
 
+const FULL_SCREEN_APP = {
+  windows: [
+    { id: "pet", entry: "desktop/pet.mjs", kind: "overlay", openOnEnable: true },
+    { id: "card", entry: "desktop/card.mjs", kind: "panel", openOnEnable: true },
+    { id: "poll", entry: "desktop/poll.mjs", kind: "background", openOnEnable: true },
+  ],
+};
+
+test("on macOS an overlay and a panel are non-activating panels, so they show over a full-screen app", async (t) => {
+  const { host, fake } = await started([appRow("pets", FULL_SCREEN_APP)]);
+  t.after(() => host.stop());
+  const [overlay, panel, background] = fake.created;
+  assert.strictEqual(overlay.opts.type, "panel");
+  assert.strictEqual(panel.opts.type, "panel");
+  assert.strictEqual(background.opts.type, undefined, "a background window is never shown");
+  assert.ok(
+    overlay.calls.some((call) => call[0] === "alwaysOnTop" && call[1] === true && call[2] === "screen-saver"),
+    "the overlay sits above a full-screen app",
+  );
+  assert.ok(panel.calls.some((call) => call[0] === "alwaysOnTop" && call[2] === "floating"));
+});
+
+test("off macOS no window gets the macOS-only panel type or level", async (t) => {
+  const { host, fake } = await started([appRow("pets", FULL_SCREEN_APP)], { platform: "linux" });
+  t.after(() => host.stop());
+  for (const win of fake.created) assert.strictEqual(win.opts.type, undefined);
+  const [overlay] = fake.created;
+  assert.ok(!overlay.calls.some((call) => call[0] === "alwaysOnTop" && call[2] === "screen-saver"));
+});
+
 test("ready reveals the window; the declared shortcut is registered", async (t) => {
   const { host, fake } = await started([appRow("pets", OVERLAY_APP)]);
   t.after(() => host.stop());
@@ -224,6 +254,31 @@ test("a shortcut opens its window and is delivered once the page is ready", asyn
   assert.ok(panel.calls.some((c) => c[0] === "show"));
   fake.registered.get("CommandOrControl+Alt+P")();
   assert.deepStrictEqual(panel.webContents.sent.length, 2);
+});
+
+test("each shortcut press is reported once as an app open on the shell's own gateway", async (t) => {
+  const { host, fake, state } = await started([appRow("pets", OVERLAY_APP)]);
+  t.after(() => host.stop());
+  const views = () => state.fetches.filter((f) => f.url.includes("/api/telemetry/app-view"));
+  assert.deepStrictEqual(views(), [], "starting the host reports nothing");
+  fake.registered.get("CommandOrControl+Alt+P")();
+  fake.registered.get("CommandOrControl+Alt+P")();
+  await settle();
+  const sent = views();
+  assert.strictEqual(sent.length, 2);
+  assert.strictEqual(sent[0].url, `${BACKEND}/api/telemetry/app-view?token=tok`);
+  assert.strictEqual(sent[0].init.method, "POST");
+  assert.strictEqual(sent[0].init.headers["Content-Type"], "application/json");
+  assert.deepStrictEqual(JSON.parse(sent[0].init.body), { app: "pets", surface: "shortcut", event: "opened" });
+});
+
+test("a failing report leaves the shortcut working", async (t) => {
+  const { host, fake, state } = await started([appRow("pets", OVERLAY_APP)]);
+  t.after(() => host.stop());
+  state.status = new Error("offline");
+  fake.registered.get("CommandOrControl+Alt+P")();
+  await settle();
+  assert.ok(fake.created.find((w) => w.loaded[0].includes("/panel")), "the shortcut's window still opened");
 });
 
 test("disabling the app closes its windows and releases its shortcuts", async (t) => {
@@ -842,6 +897,40 @@ test("gatewayChoice: a crew's window is served only what the app holds on BOTH g
   assert.strictEqual(widened.isDestroyed(), true);
   assert.match(fake.created[2].opts.webPreferences.additionalArguments[0], /\/3\/gatewayChoice$/);
   assert.deepStrictEqual(captured, []);
+});
+
+test("gatewayChoice: a window a crew serves names its sessions on that crew", async (t) => {
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true };
+  const store = new Map([["appWindowGatewayChoices", { pets: "crew" }]]);
+  const shown = [];
+  const ctx = makeHost([capRow("pets", ["gatewayChoice"], ["gatewayChoice"])]);
+  const host = createAppWindowHost({
+    electron: ctx.fake.electron,
+    backendUrl: BACKEND,
+    preloadPath: "/shell/app-window-preload.js",
+    fetchGatewayAuth: async () => ({ value: "tok", viaCookie: false }),
+    fetchImpl: crewNetwork(ctx.state, crew),
+    gatewayStore: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) },
+    showDashboardSession: (slotKey, crewId) => { shown.push([slotKey, crewId]); return true; },
+    log: () => {},
+    platform: "darwin",
+  });
+  await host.start();
+  t.after(() => host.stop());
+  const [remote] = ctx.fake.created;
+  assert.match(remote.loaded[0], /^http:\/\/localhost:7778\//);
+  remote.webContents.url = remote.loaded[0];
+  remote.webContents.events["input-event"]({}, { type: "mouseDown" });
+  assert.strictEqual(await ctx.fake.ipc[CHANNELS.showSession](fromWindow(remote), "cos-quick-chat"), true);
+  assert.deepStrictEqual(shown, [["cos-quick-chat", "crew"]], "the crew's key is never opened as a local session");
+
+  // Back on this computer, the same call names a local session.
+  assert.deepStrictEqual(await ctx.fake.ipc[CHANNELS.chooseGateway](fromWindow(remote), "self"), { ok: true, chosen: "self", showing: "self" });
+  const local = ctx.fake.created.at(-1);
+  local.webContents.url = local.loaded[0];
+  local.webContents.events["input-event"]({}, { type: "mouseDown" });
+  assert.strictEqual(await ctx.fake.ipc[CHANNELS.showSession](fromWindow(local), "chat-7"), true);
+  assert.deepStrictEqual(shown.at(-1), ["chat-7", ""]);
 });
 
 test("gatewayChoice: a crew that has not approved gatewayChoice never takes the windows, so they can always come back", async (t) => {

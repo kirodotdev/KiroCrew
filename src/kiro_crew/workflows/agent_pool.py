@@ -54,6 +54,7 @@ from kiro_crew.taskq.model import KIND_WORKFLOW_AGENT, SIDE_EFFECT_UNKNOWN
 
 # Per-step tool-call ceiling is imported from agent_exec so the pooled and cold
 # paths cannot diverge; ``test_workflows_agent_pool.py`` pins them equal.
+from kiro_crew.workflows import shared_nodes
 from kiro_crew.workflows.agent_exec import (
     _MAX_TURNS_PER_STEP,
     StepStopWatch,
@@ -63,10 +64,12 @@ from kiro_crew.workflows.agent_exec import (
     persist_step_usage_row,
     step_backend_kwargs,
     step_effort_kwargs,
+    step_on_event,
     step_session_name,
     step_text,
     vet_step_spawn,
 )
+from kiro_crew.workflows.shared_nodes import acquire_step_session
 
 logger = logging.getLogger(__name__)
 
@@ -113,31 +116,29 @@ async def _run_step(
     credential or exfiltration-URL leakage into workflow results stored in
     history / injected into parent chat). A person-only directive the step
     calls is refused and audited on *key*, the step's session, and the refusal
-    leads the text (``person_only_directive_refuser``) unless the step has a
-    ``schema=`` (``_STEP_OPTS``), whose text is validated as JSON.
+    leads the text unless the step has a ``schema=`` (``_STEP_OPTS``), whose text
+    is validated as JSON; each tool call it starts goes to the run's progress
+    (``agent_exec.step_on_event``).
 
     A caller that writes the turn's usage row passes its own ``stop`` and calls
     ``stop.raise_if_interrupted()`` after that write, so a turn cut off from outside
     is still billed; without one, a cut-off turn raises here.
     """
-    # Local import, as in agent_exec: the dashboard-side module is not loaded
-    # at this adapter's import time.
-    from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
-
     watch = stop if stop is not None else StepStopWatch()
     refusals: list[str] = []
+    opts = _STEP_OPTS.get() or {}
     coro = stream_and_collect(
         provider,
         prompt,
         approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
         max_turns=_MAX_TURNS_PER_STEP,
         on_complete=watch.on_complete,
-        on_event=person_only_directive_refuser(key, refusals),
+        on_event=step_on_event(key, refusals, opts, provider),
     )
     text = await (asyncio.wait_for(coro, timeout) if timeout is not None else coro)
     if stop is None:
         watch.raise_if_interrupted()
-    return redact(step_text(refusals, text, _STEP_OPTS.get() or {}))
+    return redact(step_text(refusals, text, opts))
 
 
 class _WorkflowSessionWorker:
@@ -159,8 +160,12 @@ class _WorkflowSessionWorker:
         memory_scope: Any = None,
         context_builder: Any = None,
         effort: Optional[str] = None,
+        parent_session_key: str = "",
     ) -> None:
         self._sessions = sessions
+        # The run's launching chat: its KAS process may host this worker's
+        # session (``shared_nodes``).
+        self._parent_session_key = parent_session_key
         self._key = key
         self._agent = agent
         self._model = model
@@ -183,13 +188,16 @@ class _WorkflowSessionWorker:
         # Read before the session is acquired: a start cancelled in an await after
         # the acquisition would leave the session held with no worker to release it.
         delete_delay = await self._configured_delete_delay()
-        provider, self._is_new, self._resumed = await self._sessions.get_or_create(
+        provider, self._is_new, self._resumed = await acquire_step_session(
+            self._sessions,
             self._key,
+            parent_session_key=self._parent_session_key,
             agent=self._agent,
             model=self._model,
             cwd=self._cwd,
             extra_env=self._extra_env,
-            **self._effort_kwargs,
+            effort_kwargs=self._effort_kwargs,
+            memory_scope=self._memory_scope,
         )
         self._provider = provider
         provider.set_delete_delay(delete_delay)
@@ -372,6 +380,7 @@ class _WorkflowSessionWorker:
             await self._sessions.destroy(self._key)
         except Exception:
             logger.debug("workflow pool: destroy failed for %s", self._key, exc_info=True)
+        shared_nodes.forget(self._key)
         self._provider = None
 
     def is_alive(self) -> bool:
@@ -444,6 +453,7 @@ def build_pooled_agent_fn(
                 memory_scope=memory_scope,
                 context_builder=context_builder,
                 effort=effort,
+                parent_session_key=session_key,
             )
 
         return WorkerPool(

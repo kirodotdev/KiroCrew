@@ -33,6 +33,16 @@ if TYPE_CHECKING:
 #: reap-echo arm in ``_run`` and ``_force_reap``'s own record synthesize an error.
 _NEUTRAL_REAP_REASONS = frozenset({"user_stop", "parent_end"})
 
+#: Crew's own MCP tools, as a sub-agent run's prompt and its parent's note name them
+#: when a settings file in the run's folder withheld them all
+#: (``SubagentInfo.crew_tools_withheld``).
+CREW_OWN_TOOLS = "Crew's own tools (its MCP servers, spawn_run and cron_add among them)"
+
+#: What a parent is told beside the result of such a run. Prefixed with the agent's
+#: label by each caller; ``{reason}`` is the session's ``settings_withheld_reason``, the
+#: fact without the remedy, since the parent is a model and the remedy is the person's.
+CREW_TOOLS_WITHHELD_NOTE = f"ran without {CREW_OWN_TOOLS} because {{reason}}."
+
 
 class _BareStateView(MutableMapping[str, Any]):
     """Live ``{toolCallId: ToolCallState}`` view over an :class:`InFlightToolTracker`.
@@ -428,6 +438,9 @@ class SubagentInfo:
     # first, which is the run's ``failed``, not ``reaped``.
     _deadline_ending: bool = False
     streaming_text: str = ""
+    # The run's reasoning so far, stream-redacted and bounded
+    # (``cap_streaming_text``); shown in its live status read, never the result.
+    streaming_thinking: str = ""
     elapsed: float = 0.0
     # Deadline captured when execution starts (``0`` until then). A config
     # reload changes the manager default for future runs only; it never
@@ -622,6 +635,16 @@ class SubagentInfo:
     # True while ``_start_price_gb`` is the SHARED price: the one row a
     # dedicated launch must top up first (``_ensure_dedicated_start_priced``).
     _start_priced_shared: bool = False
+    # True when admission predicted the run shares its parent's runtime
+    # (``_sharing_plan``), whatever the memory floor: the start neither waited on
+    # nor stamped the spawn stagger, and it counts toward its KAS parent's shared
+    # places until it reserves its own or falls back to a dedicated process.
+    _admitted_shared: bool = False
+    # True for a shared start that counts in the in-startup population before
+    # its run sets ``_exec_started``: one the gate hands straight to its run, or
+    # one an approval release hands on. A start parked at the approval prompt is
+    # not counted until the pump releases it.
+    _startup_before_exec: bool = False
     # True while this row waits its turn for the dedicated top-up's re-check;
     # the row holding the turn does not count waiters queued behind it.
     _topup_waiting: bool = False
@@ -658,6 +681,10 @@ class SubagentInfo:
     # on the _shared_provider directly.
     _session_sharing: bool = False
     _shared_provider: Any = None  # AcpSessionProvider when _session_sharing=True
+    # A place held on a KAS parent's process from the moment the run decides to
+    # share, before its session exists (``_kas_shared_slot_taken``); cleared when
+    # the run falls back to a dedicated process.
+    _shared_slot_reserved: bool = False
     # True when the run inherited a remote session environment: its cost samples
     # go to the ``@remote`` bucket.
     _remote_workspace: bool = False
@@ -678,6 +705,9 @@ class SubagentInfo:
     # session; a second loss is terminal.
     _session_not_found_retry_used: bool = False
     _force_dedicated: bool = False
+    # Why the last sharing check said no ("" when it said yes), for the run's
+    # placement log line (``run_start._should_use_session_sharing_impl``).
+    _placement_reason: str = ""
     # The run's completed-ending CLAIM, a one-shot token like ``_finalized``:
     # taken synchronously by a whole answer (a successful complete event,
     # post-processed into ``result``) when no stop got there first (``done``,
@@ -810,6 +840,11 @@ class SubagentInfo:
     # Notice-only: the outcome stays completed (earlier calls may have taken
     # effect); the parent is told to check the work (LEAKED_TOOL_CALL_NOTE).
     leaked_tool_call: bool = False
+    # Why this run's session started without Crew's MCP tools, as one clause: a
+    # ``.claude`` settings file in its folder that Crew could not govern withheld
+    # the whole array. Recorded when the session is established; "" when the
+    # tools were delivered.
+    crew_tools_withheld: str = ""
     # Continue-nudges already spent recovering a ``stalled`` / ``recovering``
     # completion in place (``STOP_RECOVERY_MAX_RETRIES`` budget, shared with
     # the main chat's ``slot._tool_stall_retries``).
@@ -827,6 +862,12 @@ class SubagentInfo:
         and made no commit, whatever its text reports.
         """
         return self.tool_count == 0 and self.turns == 0
+
+    @property
+    def crew_tools_withheld_note(self) -> str:
+        """The note on this run's result when its session had no Crew tools, else ``""``."""
+        reason = self.crew_tools_withheld
+        return CREW_TOOLS_WITHHELD_NOTE.format(reason=reason) if reason else ""
 
     @property
     def served_model_unverified(self) -> bool:

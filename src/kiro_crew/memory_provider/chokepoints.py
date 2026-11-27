@@ -80,7 +80,12 @@ def replace_session_parts(
     caps: Any,
     include_memory: bool,
     include_lessons: bool,
-) -> int | None:
+) -> render.SessionParts:
+    """The provider's memory and lessons blocks, then the Crew documents it leaves in Crew.
+
+    Returns where the lessons family went (:class:`render.SessionParts`); the Crew
+    documents come after it and are memory.
+    """
     scope = render.scope_for(
         memory_store,
         session_key=session_key,
@@ -88,8 +93,8 @@ def replace_session_parts(
         project=project,
     )
     if scope is None:
-        return None
-    index = render.session_parts(
+        return render.SessionParts(None, range(0))
+    placed = render.session_parts(
         blocks,
         route,
         scope=scope,
@@ -101,7 +106,7 @@ def replace_session_parts(
     )
     if include_memory:
         _crew_documents_parts(blocks, route, memory_store, caps)
-    return index
+    return placed
 
 
 def _crew_documents_parts(

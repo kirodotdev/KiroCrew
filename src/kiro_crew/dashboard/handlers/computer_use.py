@@ -376,6 +376,7 @@ def _snapshot() -> dict[str, Any]:
     from kiro_crew.config.loader import KiroCrewConfig
 
     state = enable_state.load_state()
+    locked = enable_state.locked_by_policy()
     # A malformed ``allowed_apps`` raises by DESIGN on the action path — refusing is
     # the safe direction for a value that was clearly meant to narrow something.
     # Here, on the READ path, it must not: letting it escape turned the Settings GET
@@ -414,7 +415,9 @@ def _snapshot() -> dict[str, Any]:
 
     return {
         "enabled": enable_state.is_enabled(state),
-        "locked_by_policy": enable_state.locked_by_policy(),
+        "locked_by_policy": locked,
+        # No policy term can lift the lock, so the page names the edition instead.
+        "locked_by_edition": locked and enable_state.locked_by_edition(),
         "supported": supported,
         "platform": platform_id,
         "reason": reason,

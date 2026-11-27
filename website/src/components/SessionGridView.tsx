@@ -60,6 +60,7 @@ export default function SessionGridView({
   onFolderOpen,
   onOpenCrewTab,
   paneDropRef,
+  noSignIn,
 }: {
   /** Leave split mode entirely (everything closed, or a lone empty placeholder). */
   onClose: () => void
@@ -93,6 +94,8 @@ export default function SessionGridView({
   /** Set while mounted to "show `slot` in pane `leafId` and focus it", for the
    *  sessions sidebar's drop on a pane. */
   paneDropRef?: MutableRefObject<((leafId: string, slot: string) => void) | null>
+  /** Every pane's `noSignIn` (the host's embedded or popout chat). */
+  noSignIn?: boolean
 }) {
   const grid = useSessionGrid(seedSlot)
   const { fillLeaf, setFocused } = grid
@@ -222,6 +225,7 @@ export default function SessionGridView({
           onFileOpen={openFileForPane}
           onFolderOpen={openFolderForPane}
           onOpenCrewTab={onOpenCrewTab}
+          noSignIn={noSignIn}
         />
       )
     }
@@ -293,15 +297,21 @@ function PlaceholderPane({
 }) {
   const [search, setSearch] = useState('')
   const [forkError, setForkError] = useState<ForkFailureNotice | null>(null)
+  const [createError, setCreateError] = useState('')
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
   // Same key and shape the transcript path reads, so the two share one cache entry
   const createSession = useMutation({
-    mutationFn: () => api.createChatSlot(),
+    // The person's own New session: it starts on their stored approval mode.
+    mutationFn: () => api.createChatSlot(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true),
+    onMutate: () => setCreateError(''),
     onSuccess: (r: { key?: string }) => {
       queryClient.invalidateQueries({ queryKey: ['session-grid-slots'] })
       if (r?.key) onPick(r.key)
     },
+    // A refused create (the memory store still starting, a rate limit) must say
+    // so: the spinner stopping alone reads as nothing having happened.
+    onError: (err) => setCreateError(errMessage(err) || i18nT('pages.chatPage.unknown_error')),
   })
   const forkSession = useMutation({
     mutationFn: () => api.forkChatSlot(forkSourceSlot as string),
@@ -410,6 +420,13 @@ function PlaceholderPane({
         askAgent
         className="mx-2 mt-2 mb-0"
         testId="grid-fork-error"
+      />
+      <ErrorNotice
+        message={createError || undefined}
+        onDismiss={() => setCreateError('')}
+        askAgent
+        className="mx-2 mt-2 mb-0"
+        testId="grid-create-error"
       />
 
       {/* Three creation entry points (Terminal arrives in Phase 2). */}

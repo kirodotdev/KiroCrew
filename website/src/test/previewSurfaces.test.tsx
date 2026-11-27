@@ -52,6 +52,7 @@ import {
   PREVIEW_INSTANCE_SESSIONS,
   PREVIEW_REMOTE_CREW_CHAT,
   PREVIEW_VISUAL_REFRESH,
+  PREVIEW_CREW_REPLY_STATUS,
   PREVIEW_WEBHOOKS,
   PREVIEW_DASHBOARD_STALE_FIELDS,
   PREVIEW_DASHBOARD_STALE_WAKE,
@@ -352,7 +353,8 @@ describe('Settings > Developer > Feature Previews', () => {
   // `decisionsCard.test.tsx` owns that card's own states.
   beforeEach(() => {
     vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
-    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
+    // Sign-in values set, so the Kiro Managed Environments row is in the census too.
+    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ managed_env_available: true } as never)
     // The Shared Crew card draws only for the owner; a 404 leaves it out of the census.
     vi.spyOn(api, 'sharedCrewPreview').mockResolvedValue(null)
     vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue({
@@ -410,8 +412,13 @@ describe('Settings > Developer > Feature Previews', () => {
    * Awaited: the Decisions card is not drawn until the governance read
    * (`decisions_enabled`) lands, so its row arrives a tick late.
    */
+  // Kiro Managed Environments draws once the stubbed config read lands, so it is
+  // waited for too: a census sampled before it would count one row short.
   const expectAllRows = () =>
-    waitFor(() => { expect(screen.getByRole('switch', { name: 'Decisions' })).toBeTruthy() })
+    waitFor(() => {
+      expect(screen.getByRole('switch', { name: 'Decisions' })).toBeTruthy()
+      expect(screen.getByRole('switch', { name: 'Kiro Managed Environments' })).toBeTruthy()
+    })
 
   /** Declared rows the stubbed state does not draw, because their gate is closed. */
   const ROWS_GATED_OFF_IN_STUB = new Set(['Remote dispatch', 'Shared Crew', 'Wake bots to update out-of-date fields'])
@@ -511,6 +518,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // not an ingress — it opens an explainer dialog, never the page — and it is
     // present on either side of the toggle by design.
     const { container } = renderTab()
+    await expectAllRows()
     /**
      * The Decisions card is INCLUDED, subtree and all.
      *
@@ -709,6 +717,18 @@ describe('Settings > Developer > Feature Previews', () => {
     const written = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i) ?? '')
       .filter(k => k.startsWith(PREVIEW_FLAG_PREFIX))
     expect(written).toEqual([PREVIEW_VISUAL_REFRESH])
+  })
+
+  it('has a Worker status under the reply switch that starts off and writes only its own key', async () => {
+    expect(readPreviewFlag(PREVIEW_CREW_REPLY_STATUS)).toBe(false)
+    renderTab()
+    const toggle = () => screen.getByRole('switch', { name: /^worker status under the reply$/i })
+    expect(toggle().getAttribute('aria-checked')).toBe('false')
+    await act(async () => { toggle().click() })
+    expect(toggle().getAttribute('aria-checked')).toBe('true')
+    const written = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i) ?? '')
+      .filter(k => k.startsWith(PREVIEW_FLAG_PREFIX))
+    expect(written).toEqual([PREVIEW_CREW_REPLY_STATUS])
   })
 
   it('reads the retired instance-sessions key as on, and clears it when turned off', async () => {

@@ -83,6 +83,7 @@ _DROP_KEY_PLACEHOLDER = "?"
 #: starts and buried real routing loss in ``method_class=other``.
 KAS_UNREAD_SESSION_START_NOTICES = frozenset(
     (
+        "_kiro/governance/state",
         "_kiro/memory/syncStatus",
         "_kiro/powers/items_changed",
         "_kiro/sessions/changed",

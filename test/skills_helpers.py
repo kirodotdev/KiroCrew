@@ -55,8 +55,9 @@ def _create_skill(skills_dir, name, content):
     (skill_dir / "SKILL.md").write_text(content)
 
 
-#: Lost-run bound on one discovery walk of these few-file trees, which takes
-#: milliseconds. It only ends a wedged walk, so it sits far above the loader's
+#: Lost-run bound on one discovery walk of these small trees (up to a few
+#: hundred skills), which takes at most seconds even on a loaded runner. It
+#: only ends a wedged walk, so it sits far above the loader's
 #: own two-second cold-start budget and under half the suite's 120 s timeout.
 _CATALOG_SETTLE_SECS = 30.0
 

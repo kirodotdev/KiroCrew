@@ -206,10 +206,11 @@ def test_the_switch_cannot_turn_on_before_the_thread_runtime_is_built(tmp_path, 
     assert cce.THREAD_SWITCH_OFF_REFUSAL in _refused(state, slot).message
 
 
-def test_shipped_default_keeps_the_switch_off():
-    """The value this build ships (read before any fixture patched it) keeps the
-    feature off until the thread runtime (part D) flips it."""
-    assert _SHIPPED_RUNTIME_BUILT is False
+def test_shipped_runtime_is_built_and_the_switch_still_defaults_off():
+    """Part D built the thread runtime (approval cards, Stop, resume), so the build
+    ships it as built; the feature still needs ``slack.thread_conductor`` turned on."""
+    assert _SHIPPED_RUNTIME_BUILT is True
+    assert cc_binding.thread_conductor_on(_cfg(on=False)) is False
 
 
 def test_a_turn_another_channel_member_drove_is_refused(tmp_path, monkeypatch):

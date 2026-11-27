@@ -45,7 +45,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -293,11 +293,39 @@ def parse_yolo_action(arg: str) -> str:
     return words[0] if words else ""
 
 
+#: The reply to someone other than the owner who tries to change the grant.
+YOLO_OWNER_ONLY = "⛔ Only the owner can change YOLO."
+
+
+def is_channel_owner(
+    identities: Iterable[object], *, owner: object, allowed: Iterable[object]
+) -> bool:
+    """Whether any of *identities* is this channel's owner. Case-insensitive.
+
+    The owner is the identity the channel's own owner setting names
+    (``telegram.owner_user_id``, ``teams.owner_id``, ``webex.owner_email``). With
+    that unset, it is the one identity on the allow-list, the rule the channels'
+    session resume already uses; with several and none named, nobody is.
+    """
+
+    def _norm(value: object) -> str:
+        return "" if value in (None, 0) else str(value).strip().lower()
+
+    named = _norm(owner)
+    if not named:
+        roster = {v for v in map(_norm, allowed) if v}
+        if len(roster) != 1:
+            return False
+        named = next(iter(roster))
+    return named in {v for v in map(_norm, identities) if v}
+
+
 async def run_yolo_command(
     arg: str,
     *,
     source: str,
     caller: str,
+    caller_is_owner: bool,
     phrasing: YoloPhrasing,
 ) -> str:
     """Report or change the process-wide auto-approve grant; return the reply.
@@ -317,6 +345,10 @@ async def run_yolo_command(
     latency on the gateway's single event loop and stall every other
     conversation and heartbeat task on a slow disk.
 
+    Only the owner changes the grant: *caller_is_owner* is the channel's answer
+    (see :func:`is_channel_owner`), and anyone else is refused and audited. Any
+    allow-listed caller may still read the status.
+
     The SEL row is written HERE so its shape cannot drift per channel. A caller
     that wants the outcome should read the reply rather than re-audit.
     """
@@ -326,6 +358,17 @@ async def run_yolo_command(
     if action not in YOLO_ACTIONS:
         status = f"ON 🟢 ({describe_grant_lifetime()})" if so.is_active() else "OFF 🔴"
         return f"YOLO is {status}.\nUsage: {phrasing.usage}"
+
+    if not caller_is_owner:
+        sel().log_api_access(
+            caller=caller,
+            operation=f"{source}.yolo_mode",
+            outcome="denied",
+            source=source,
+            resources=f"yolo_{action}",
+            error="not_owner",
+        )
+        return YOLO_OWNER_ONLY
 
     outcome = "allowed"
     if action == YOLO_ON:
@@ -340,12 +383,16 @@ async def run_yolo_command(
             reply = "❌ Couldn't turn YOLO on (audit system unavailable)."
             outcome = "denied"
     elif action == YOLO_OFF:
+        from kiro_crew import kept_grants
+
         # Unconditional: deactivate() also zeroes the deadline of a grant that
         # already lapsed, which closes the renew grace window so a later
         # "/yolo renew" cannot resurrect it, and records the operator's decision
         # either way.
         await asyncio.to_thread(so.deactivate, source)
         reply = "🔴 YOLO OFF — tools ask for approval again."
+        if not await kept_grants.settle():  # the answer waits for the disk
+            reply = f"{reply}\n⚠️ {kept_grants.NOT_SAVED}"
     else:
         renewed = (await asyncio.to_thread(so.renew, source)).renewed
         reply = (

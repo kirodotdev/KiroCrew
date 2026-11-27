@@ -105,7 +105,7 @@ async def api_slack_owner_claim_confirm(request: web.Request) -> web.Response:
     if not_object is not None:
         return not_object
     user_id = body.get("user_id")
-    if not isinstance(user_id, str) or not USER_ID_RE.match(user_id):
+    if not isinstance(user_id, str) or not USER_ID_RE.fullmatch(user_id):
         return web.json_response({"error": "user_id", "code": "invalid_user_id"}, status=400)
 
     async def _write_owner(value: str, check: Callable[[str], None]) -> None:

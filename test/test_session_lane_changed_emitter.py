@@ -27,6 +27,7 @@ from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 from kiro_crew.hooks import (
     HOOK_EVENT_SESSION_LANE_CHANGED,
+    ScriptHookResult,
     ScriptHookStore,
     set_global_hook_store,
 )
@@ -69,6 +70,7 @@ def _recording_store(tmp_path, monkeypatch, *, mock_spawn=True, matcher=""):
         seen.append(dict(hook_event or {}))
         hook.run_count += 1
         hook.last_status = "ok"
+        return ScriptHookResult(hook_id=hook.id, hook_name=hook.name, event=hook.event, exit_code=0)
 
     if mock_spawn:
         monkeypatch.setattr("kiro_crew.hooks.run_script_hook", _record)

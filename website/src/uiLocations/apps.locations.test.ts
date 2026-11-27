@@ -77,6 +77,18 @@ const EXPECTED: Record<string, Expect> = {
   'apps.detail.disable': {
     kind: 'button', labelKey: 'pages.appDetailPage.disable', source: DETAIL_SRC, placement: library(viaDetails('open_app_enabled')),
   },
+  'apps.detail.enable': {
+    kind: 'button', labelKey: 'pages.appDetailPage.enable', source: DETAIL_SRC,
+    aliasKeys: ['pages.appDetailPage.enable_and_allow_chat_control'], placement: library(viaDetails('open_app_disabled')),
+  },
+  'apps.detail.enable-builtin': {
+    kind: 'button', labelKey: 'pages.appDetailPage.enable', source: DETAIL_SRC,
+    aliasKeys: ['pages.appDetailPage.enable_and_allow_chat_control'], placement: library(viaDetails('open_app_builtin_disabled')),
+  },
+  'apps.detail.enable-self-managed': {
+    kind: 'button', labelKey: 'pages.appDetailPage.enable', source: DETAIL_SRC,
+    aliasKeys: ['pages.appDetailPage.enable_and_allow_chat_control'], placement: library(viaDetails('open_app_self_managed_disabled')),
+  },
   'apps.detail.sync': {
     kind: 'button', labelKey: 'pages.appDetailPage.sync', source: DETAIL_SRC,
     aliasKeys: ['pages.appDetailPage.sync_app_from_its_source_directory'], placement: library(viaDetails('open_app_syncable')),
@@ -121,6 +133,11 @@ describe('apps area locations', () => {
     const disable = DETAIL_SRC.split('\n').filter(l => l.includes("handleAction('disable')"))
     expect(disable.length).toBe(2)
     expect(disable.filter(l => l.includes("uiLocation('apps.detail.disable')")).length).toBe(1)
+    // Enable is the exception: all three branches draw it and each is marked,
+    // since a built-in app can start turned off.
+    const enable = DETAIL_SRC.split('\n').filter(l => l.includes("handleAction('enable')"))
+    expect(enable.length).toBeGreaterThan(0)
+    for (const line of enable) expect(line).toMatch(/uiLocation\('apps\.detail\.enable(-builtin|-self-managed)?'\)/)
     // Buttons only: a disabled self-managed app also offers Uninstall as an
     // overflow menu item, which carries no marker.
     const uninstall = DETAIL_SRC.split('\n').filter(l => l.includes("handleAction('uninstall')") && l.includes('<Btn'))
@@ -132,7 +149,10 @@ describe('apps area locations', () => {
     expect(update.length).toBe(2)
     expect(update.filter(l => l.includes("uiLocation('apps.detail.update')")).length).toBe(1)
     const builtinBranch = DETAIL_SRC.slice(DETAIL_SRC.indexOf('app.installed && isBuiltin && ('), DETAIL_SRC.indexOf('app.installed && !isSelfManaged && !isBuiltin && ('))
-    expect(builtinBranch).not.toContain('uiLocation(')
+    // The built-in and self-managed branches carry only their Enable markers.
+    for (const marker of builtinBranch.match(/uiLocation\('[^']+'\)/g) ?? []) {
+      expect(marker).toMatch(/^uiLocation\('apps\.detail\.enable-(builtin|self-managed)'\)$/)
+    }
   })
 
   it("leaves the Library tile's crash-fallback buttons unmarked", () => {

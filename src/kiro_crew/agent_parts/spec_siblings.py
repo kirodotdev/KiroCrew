@@ -190,10 +190,9 @@ def _install_sibling_specs(
                 exc_info=True,
             )
 
-        # Install kirocrew-dashboard-manager agent (the subagent a crewmate hands page
-        # work to). Degrades to a debug line like the two above: with the spec absent a
-        # crewmate still has `dashboard_fields` and `dashboard_write`, so the page it has
-        # keeps working and only CHANGING the page is unavailable.
+        # Install kirocrew-dashboard-manager agent (a page-work subagent; no Bot prompt
+        # routes to it). Degrades to a debug line like the two above: a crewmate drives
+        # its page with its own panel tools, so nothing it does needs this spec.
         try:
             service_agents._install_dashboard_manager_agent()
         except PlatformCompositionError as exc:

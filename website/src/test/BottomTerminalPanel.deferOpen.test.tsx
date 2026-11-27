@@ -10,8 +10,11 @@ import BottomTerminalPanel from '../components/BottomTerminalPanel'
 import { __resetBottomTerminal, openBottomTerminal, closeBottomTerminal } from '../hooks/useBottomTerminal'
 
 const seen = vi.hoisted(() => ({ deferOpen: [] as (boolean | undefined)[] }))
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: ({ deferOpen }: { deferOpen?: boolean }) => { seen.deferOpen.push(deferOpen); return <div data-testid="cli" /> },
+}))
+vi.mock('../components/terminalSessions', () => ({
+  preloadTerminal: vi.fn(),
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))

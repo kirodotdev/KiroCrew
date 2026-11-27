@@ -60,6 +60,15 @@ from kiro_crew.memory_stores import (  # noqa: F401 - facade re-exports
     memory_store_namespace_lock,
     named_store_product_file,
 )
+from kiro_crew.snapshot_agent_config import (  # noqa: F401 - facade re-exports
+    _AGENT_CONFIG_NAMES,
+    _NOTE_NAMES,
+    _agent_config_paths,
+    _hold_back_agent_config,
+    _hold_back_agent_config_in,
+    _owned_by_whole_tree_component,
+    _restored_workspace_trees,
+)
 from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _CONTROL_CHARS,
     _DB_SIDECAR_GLOBS,
@@ -113,9 +122,11 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
 from kiro_crew.snapshot_build import (  # noqa: F401 - facade re-exports
     _build_snapshot,
     _caller_name,
+    _configured_named_workspace_trees,
     _estimate_selected_bytes,
     _fsize,
     _report_named_workspaces_left_out,
+    _staged_trees,
 )
 from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _BOM_TOLERANT_JSON_OBJECTS,
@@ -128,6 +139,9 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
     _MERGE_NEVER_INSTALLS_FILES,
+    _NAMED_WORKSPACE_PREFIX,
+    _NAMED_WORKSPACE_TREES,
+    _OPT_IN_COMPONENTS,
     _REPLACE_ONLY_COMPONENTS,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
@@ -137,6 +151,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     COMPONENTS,
     CORE_FILES,
     CORE_FILES_FLAT,
+    NAMED_WORKSPACES,
     NEVER_SNAPSHOT_FILES,
     PRODUCT_TREE_DATABASES,
     SECURITY_SENSITIVE_FILES,
@@ -153,9 +168,13 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _never_ships,
     _tree_roots_replace_clears,
     _want,
+    component_trees,
+    is_named_workspace_tree,
     is_product_tree_database,
+    named_workspace_scope,
     resolve_components,
     safe_tree_root,
+    set_named_workspace_trees,
 )
 from kiro_crew.snapshot_merge import (  # noqa: F401 - facade re-exports
     _MERGE_ALLOWED_TABLES,
@@ -725,7 +744,8 @@ def snapshot_main(
     # The TARBALL keeps the familiar name so `--list`, pruning and `--keep` still glob it.
     # Filled by the staging pass below, and read by the retention guard after it.
     omissions: list[dict[str, str]] = []
-    complete = set(selected) == set(COMPONENTS)
+    # Complete means every default component; an opt-in one added on top keeps it complete.
+    complete = {c for c in COMPONENTS if c not in _OPT_IN_COMPONENTS} <= set(selected)
     name = f"kirocrew-snapshot-{ts}"
     root_name = name if complete else f"kirocrew-partial-{ts}"
 
@@ -966,126 +986,6 @@ def _hold_back_executables(
     return held
 
 
-#: Names, at any depth under ``workspace/``, that steer an agent session started in that
-#: folder (sessions start in ``workspace/<project>/`` folders): each harness's project
-#: settings, hooks, skills, agents and MCP servers. Derived from the project config the
-#: harness code itself reads or fences, so a harness added there is added here:
-#: ``.claude`` (``acp/claude_settings_sources.py:171``, ``native_allow_stores.py:126``),
-#: ``.mcp.json`` (Claude's project MCP file), ``.kiro`` (``acp/kas_settings_mcp.py:209``,
-#: ``acp/session_mcp.py:1501``, ``acp/kas_skill_scope.py:128``), ``opencode.json``,
-#: ``opencode.jsonc``, ``.opencode`` (``native_allow_stores.py:130-132``), ``.pi``
-#: (``native_allow_stores.py:135``), ``mimocode.json``, ``mimocode.jsonc``, ``.mimocode``
-#: (``native_allow_stores.py:141-143``). ``.codex``, ``.goose`` and ``.goosehints`` are those
-#: tools' own project names, named by the security review; nothing in this tree reads them.
-#: Plain notes are NOT here, see ``_NOTE_NAMES``.
-_AGENT_CONFIG_NAMES = (
-    ".claude",
-    ".mcp.json",
-    ".kiro",
-    ".codex",
-    ".goose",
-    ".goosehints",
-    ".opencode",
-    "opencode.json",
-    "opencode.jsonc",
-    ".pi",
-    ".mimocode",
-    "mimocode.json",
-    "mimocode.jsonc",
-)
-#: Notes an agent reads as instructions but that carry no permissions, hooks or servers.
-#: They restore as usual and the summary names each one a restore installed.
-_NOTE_NAMES = ("claude.md", "agents.md")
-
-
-def _agent_config_paths(
-    root: Path,
-    *,
-    names: tuple[str, ...] = _AGENT_CONFIG_NAMES,
-) -> list[Path]:
-    """Every entry under *root* named in *names*, at any depth, without following links.
-
-    A matching directory is returned whole and not entered; a link is returned as the
-    entry it is, so the caller refuses or unlinks it rather than walking through it.
-    """
-    found: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        here = Path(dirpath)
-        keep: list[str] = []
-        for d in sorted(dirnames):
-            if d.casefold() in names:
-                found.append(here / d)
-            else:
-                keep.append(d)
-        dirnames[:] = keep
-        found.extend(here / f for f in sorted(filenames) if f.casefold() in names)
-    return found
-
-
-def _hold_back_agent_config(
-    snap: Path, mc: Path, components: list[str] | None, mode: str, *, allow_unpinned: bool = False
-) -> tuple[list[str], list[str]]:
-    """Keep this install's agent-config files out of reach of the archive's copies.
-
-    Done on the staged bundle, like :func:`_hold_back_executables`. The archive's copy is
-    removed, so merge (which adds what is missing) installs nothing for these names. Replace
-    swaps the whole ``workspace/`` tree, so it also gets the LIVE copy staged in the
-    archive's place; a live name with no copy ends up absent, never the archive's. Returns
-    ``(held, notes)``: the workspace-relative paths the bundle carried and did not get to
-    install, and the notes (``CLAUDE.md``, ``AGENTS.md``) the restore WILL install, which
-    stay restorable but are named. Merge keeps a note the live tree already has.
-
-    A live link or hard link is not handled here: Replace's own backup of the live
-    ``workspace/`` (``_backup_tree_or_refuse``) refuses on one before this copy matters.
-
-    Both walks enter every directory, ``node_modules``, ``.git`` and ``venv`` included: a
-    skip on only the live side strips the archive's copy there while the live one is lost,
-    and a skip on both sides would let the archive install config there. Walking everything
-    is the one choice that can neither lose nor install a config.
-    shortcut: the live walk reads the whole workspace tree, so a huge ``node_modules`` costs
-    time on Replace; bound it only with a skip applied to BOTH walks.
-    """
-    staged = snap / "workspace"
-    if not _want(components, "workspace") or not staged.is_dir():
-        return [], []
-    held: list[str] = []
-    for entry in _agent_config_paths(staged):
-        if platform_compat.is_link_or_junction(entry):
-            platform_compat.unlink_link_or_junction(entry)
-        elif entry.is_dir():
-            _rmtree_or_raise(entry)
-        else:
-            entry.unlink()
-        held.append(entry.relative_to(staged).as_posix())
-    live_root = mc / "workspace"
-    notes = [
-        rel.as_posix()
-        for rel in (p.relative_to(staged) for p in _agent_config_paths(staged, names=_NOTE_NAMES))
-        if mode == "replace" or not os.path.lexists(live_root / rel)
-    ]
-    if mode == "replace":
-        for live in _agent_config_paths(live_root):
-            rel = live.relative_to(live_root)
-            dst = staged / rel
-            what = f"keeping the live workspace/{rel.as_posix()}"
-            # A parent the archive does not carry is made; one that is a link is refused,
-            # so the live copy is never written through it.
-            for parent in dst.parents:
-                if parent == staged:
-                    break
-                if platform_compat.is_link_or_junction(parent):
-                    raise pinned_fs.PinnedPathRefusal(f"{what}: staged parent is a link")
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            skip = pinned_fs.fatal_skip_reporter(what)
-            if live.is_dir() and not platform_compat.is_link_or_junction(live):
-                _copytree_safe(
-                    live, dst, allow_unpinned=allow_unpinned, must_create=True, on_skip=skip
-                )
-            else:
-                pinned_fs.copy_file_pinned(str(live), str(dst), on_skip=skip)
-    return held, notes
-
-
 def _cron_names(path: Path) -> set[str]:
     """The job names in a cron store, or none when it cannot be read as one.
 
@@ -1133,8 +1033,7 @@ def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
     if held.get("agent_config"):
         # The held list names what the ARCHIVE carried; a current copy exists only where
         # the live tree has one, so the two cases are not worded alike.
-        live_root = mc / "workspace"
-        kept = [n for n in held["agent_config"] if os.path.lexists(live_root / n)]
+        kept = [n for n in held["agent_config"] if os.path.lexists(mc / n)]
         absent = [n for n in held["agent_config"] if n not in kept]
         for heading, names in (
             ("Not restored, kept your current copy of these agent-config files:", kept),
@@ -1143,11 +1042,11 @@ def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
             if names:
                 print(heading)
                 for name in names:
-                    print(f"     {_safe_name(_terminal_safe('workspace/' + name))}")
+                    print(f"     {_safe_name(_terminal_safe(name))}")
         print("   They set permissions, hooks and MCP servers for the next agent session.")
         print("   Copy anything you want from the archive by hand after reading it.")
     for name in held.get("notes", []):
-        print(f"Restored notes: {_safe_name(_terminal_safe('workspace/' + name))}")
+        print(f"Restored notes: {_safe_name(_terminal_safe(name))}")
 
 
 def _is_interactive() -> bool:
@@ -1342,7 +1241,11 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             print(f"❌ This snapshot could not be extracted ({e}).\n   Nothing was restored.")
         return 1
 
-    with closing(tar), tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str:
+    with (
+        closing(tar),
+        tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str,
+        named_workspace_scope(),
+    ):
         work = Path(work_str)
         # Staged under the data home's ``staging`` leaf, not the system temp dir: the
         # bundle can be GBs and would sit in RAM on a tmpfs /tmp. It is no more exposed
@@ -1357,7 +1260,10 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         try:
             with tar:
                 rejected_entries: list[str] = []
-                _filter = _rejection_recording_filter(rejected_entries)
+                # Kept apart: a named workspace tree is only restored when the manifest
+                # declares it, so a drop there refuses only such a restore.
+                rejected_named: list[str] = []
+                _filter = _rejection_recording_filter(rejected_entries, rejected_named)
                 try:
                     tar.extractall(work, filter=_filter)
                 except TypeError:
@@ -1427,6 +1333,11 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             )
             _audit("state_restore_rejected", f"reason=manifest_unreadable from={snap_path.name}")
             return 1
+        if declared is not None and NAMED_WORKSPACES in declared:
+            # Its trees are the bundle's own top-level `workspace-<name>/` folders, and only
+            # in a bundle that declares the component: an older one restores none of them.
+            # Extraction already dropped every link, so a directory here is the bundle's own.
+            set_named_workspace_trees(tuple(d.name for d in snap.iterdir() if d.is_dir()))
         if partial_root and declared is None and components is None:
             # A partial root with no component map would fall through to all-components,
             # so replace would displace live components it never held. Only a COMPLETE
@@ -1535,6 +1446,15 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                         f"reason=partial_replace_absent_tree from={snap_path.name}",
                     )
                     return 1
+        if rejected_named and components is not None and NAMED_WORKSPACES in components:
+            print(
+                f"❌ This archive contains {len(rejected_named)} entr"
+                f"{'ies' if len(rejected_named) > 1 else 'y'} in its named workspace folders "
+                f"that cannot be extracted safely ({', '.join(sorted(rejected_named)[:3])}"
+                f"{', ...' if len(rejected_named) > 3 else ''}).\n   Nothing was restored."
+            )
+            _audit("state_restore_rejected", f"reason=unsafe_archive_entries from={snap_path.name}")
+            return 1
         if components:
             print(f"🔧 Components: {','.join(components)}")
         _warn_if_transcripts_left_behind(mc, components)

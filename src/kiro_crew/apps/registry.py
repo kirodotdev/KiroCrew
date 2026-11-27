@@ -758,7 +758,6 @@ if _typing.TYPE_CHECKING:
         _read_git_metadata_bounded,
     )
     from kiro_crew.apps.registry_pipeline.gh_credential import (  # noqa: F401
-        _FACADE,
         _GH_AUDIT_CALLER,
         _GH_HOST,
         _GH_OWNER_RE,
@@ -1037,19 +1036,24 @@ if _typing.TYPE_CHECKING:
     )
     from kiro_crew.apps.registry_pipeline.subprocess_env import (  # noqa: F401
         _DETECT_PROBE_ENV_KEYS,
+        _FACADE,
         _GIT_CLONE_LOCALE,
         _GIT_CREDENTIAL_ENV_KEYS,
         _GIT_NETWORK_ENV_KEYS,
         _GIT_PROXY_ENV_KEYS,
         _SAFE_ENV_KEYS,
         _detect_probe_env,
+        _found_agent_socket,
         _git_network_env,
+        _git_network_step_env,
         _is_probe_env_key,
         _is_safe_env_key,
         _proxy_env_has_credentials,
         _uses_http_proxy,
+        agent_socket_refusal,
         anonymous_git_env,
         os,
+        resolve_ssh_auth_sock,
         scrub_env,
         sys,
     )

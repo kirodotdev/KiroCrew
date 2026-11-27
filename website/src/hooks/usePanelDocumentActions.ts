@@ -26,7 +26,7 @@ export interface PanelDocumentActionsOptions {
    *  point, so the host's notice may hand off to the agent. */
   showActionError: (message: string, title?: string) => void
   /** Runs after a tab was opened and focused. ChatPage uses it to reveal the
-   *  right dock and dismiss the find pane, which shares that dock; a host whose
+   *  side panel and end the history search; a host whose
    *  panel is permanent passes nothing. Never called on a failed open. A file
    *  open that named its chat (`opts.slot`, a split pane) passes that chat, so
    *  ChatPage can show the pane's chat in the panel. It passes nothing when the

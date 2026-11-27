@@ -631,6 +631,7 @@ class ArtifactStore:
     artifact_index_key = staticmethod(_artifacts_scans.artifact_index_key)
     index_by_artifact_id = _artifacts_scans.index_by_artifact_id
     find_by_source_path = _artifacts_scans.find_by_source_path
+    kind_of = _artifacts_scans.kind_of
 
     def delete(
         self,

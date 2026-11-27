@@ -17,7 +17,7 @@ codex is served by ``AcpRuntime``; it is in ``ACP_BACKENDS_SESSION_EVICTION`` be
 its teardown is a ``session/close`` request that disposes the session (measured),
 which is what admits it to the high-churn background path and warm pooled reuse; and
 it is IN ``ACP_BACKENDS_SESSION_SHARING``, because the thread ``codex`` persists
-outlives that close and a ``session/load`` restores it. Two of those three read the
+outlives that close and a restore (``session/resume``) brings it back. Two of those three read the
 same teardown verb and reach different conclusions from it, which is exactly why each
 is its own table -- the eviction claim is about the live session leaving the process,
 the sharing claim is about the record staying behind.
@@ -72,6 +72,7 @@ from kiro_crew.acp.types import (
     METHOD_CANCEL,
     METHOD_SESSION_CLOSE,
     METHOD_SESSION_NEW,
+    METHOD_SESSION_RESUME,
     METHOD_SESSION_UPDATE,
     METHOD_SET_CONFIG_OPTION,
     METHOD_SET_MODE,
@@ -163,6 +164,7 @@ class FakeCodexPeer:
             "protocolVersion": 1,
             "agentCapabilities": {
                 "loadSession": True,
+                "sessionCapabilities": {"resume": {}},
                 "mcpCapabilities": dict(self.MCP_CAPABILITIES),
             },
         }
@@ -387,6 +389,72 @@ class TestMcpArrayNarrowing:
         )
         source.append({"name": "b", "url": "http://b"})
         assert [s["name"] for s in narrowed] == ["a"]
+
+
+class TestMcpStartupWait:
+    def test_a_session_new_with_servers_asks_the_adapter_to_wait_for_their_startup(self, adapter):
+        """codex gives MCP startup about one second at the first turn, so a server
+        still starting then (a gateway stub most often) is offered on none of that
+        turn's tools. The session/new meta makes the adapter wait for them first."""
+        from kiro_crew.acp.runtime_start import _SESSION_NEW_TIMEOUT
+
+        servers = [{"name": "kirocrew-core", "command": "py", "args": [], "env": []}]
+        params = {"cwd": "/w", "mcpServers": servers, "_meta": {"own": 1}}
+        new, agent = adapter.session_request("session/new", params, "a", agent_capabilities={})
+        assert agent == "a"
+        assert new["mcpServers"] == servers
+        assert set(new["_meta"]) == {"own", "mcpStartupAwaitTimeoutMs"}
+        assert 0 < new["_meta"]["mcpStartupAwaitTimeoutMs"] / 1000 < _SESSION_NEW_TIMEOUT
+        assert params["_meta"] == {"own": 1}
+        # No server to wait for, or not a new session: the request is unchanged.
+        empty = {"cwd": "/w", "mcpServers": []}
+        assert adapter.session_request("session/new", empty, "a", agent_capabilities={}) == (
+            empty,
+            "a",
+        )
+        load = {"sessionId": "s", "cwd": "/w", "mcpServers": servers}
+        assert adapter.session_request("session/load", load, "a", agent_capabilities={}) == (
+            load,
+            "a",
+        )
+        resumed, _ = adapter.session_request("session/resume", load, "a", agent_capabilities={})
+        assert resumed.get("_meta") == {"mcpStartupAwaitTimeoutMs": adapter.MCP_STARTUP_AWAIT_MS}
+
+    @pytest.mark.asyncio
+    async def test_a_reopened_chat_is_restored_with_the_verb_that_waits(self):
+        """Of the two restore requests, codex-acp reads the meta only on ``session/resume``:
+        a ``session/load`` answers before a slow server is up, so a re-opened chat's first
+        turn had none of its tools. Measured on codex-acp 2.3.0 and 2.12.0."""
+        servers = [{"name": "slow", "command": "py", "args": [], "env": []}]
+        rt = _codex_runtime()
+        rt._can_load_session = True
+        plane = _ControlPlane(_codex_session_new_response("sid-old"))
+        sent: list[tuple[str, dict[str, Any]]] = []
+
+        async def _send_and_await(method, params, timeout=None):
+            sent.append((method, params))
+            return _codex_session_new_response("sid-old")
+
+        async def _mirrored(agent, **_kw):
+            return _MirroredSessionMcp(
+                servers=list(servers),
+                denied_tools=frozenset(),
+                stub_token="tok",
+                derived_spec_snapshot=None,
+            )
+
+        with ExitStack() as stack:
+            plane.install(rt, stack)
+            stack.enter_context(patch.object(rt, "_send_and_await", _send_and_await))
+            stack.enter_context(patch.object(rt, "_mirrored_session_mcp", _mirrored))
+            handle = await rt.load_session("", "sid-old", cwd="/w", agent="kirocrew")
+
+        assert handle.session_id == "sid-old"
+        method, params = sent[0]
+        assert method == METHOD_SESSION_RESUME
+        assert params["sessionId"] == "sid-old"
+        assert [s["name"] for s in params["mcpServers"]][:1] == ["slow"]
+        assert params["_meta"]["mcpStartupAwaitTimeoutMs"] == CodexHarness.MCP_STARTUP_AWAIT_MS
 
 
 class TestSessionExtras:
@@ -970,7 +1038,7 @@ class TestOneFactReadThreeWays:
         """In, and pinned so the REASON cannot be misread as a resident session.
 
         A shared subagent session is still evicted; the persisted codex thread survives,
-        so ``spawn_continue`` uses ``session/load``. Hence the
+        so ``spawn_continue`` restores it with ``session/resume``. Hence the
         ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS`` check: sharing does not mean keeping.
         """
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_SHARING
@@ -988,19 +1056,11 @@ class TestOneFactReadThreeWays:
         # transcript -- the property that makes a closed session continuable.
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_HARNESS_OWNED_SESSIONS
 
-    def test_running_on_the_shared_runtime_does_not_by_itself_grant_sharing(self):
-        """The superset relation must not be read as an implication.
-
-        codex belongs to both sets, so KAS is the member that separates them, and it
-        is asserted here rather than left to the sharing set's comment: a harness runs
-        on the runtime and is still refused sharing when its teardown removes the
-        record a continuation would load.
-        """
+    def test_codex_is_on_the_shared_runtime_and_in_sharing(self):
+        """codex is in both sets; the sharing set stays within the runtime set."""
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_ACP_RUNTIME
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_SHARING
-        assert ACP_BACKEND_KAS in ACP_BACKENDS_ACP_RUNTIME
-        assert ACP_BACKEND_KAS not in ACP_BACKENDS_SESSION_SHARING
-        assert ACP_BACKENDS_SESSION_SHARING < ACP_BACKENDS_ACP_RUNTIME
+        assert ACP_BACKENDS_SESSION_SHARING <= ACP_BACKENDS_ACP_RUNTIME
 
     def test_it_is_in_the_eviction_set_because_its_teardown_evicts(self):
         """Eviction is the harness's own property, and it is unchanged by sharing.
@@ -1571,7 +1631,16 @@ class TestTheRuntimeCarriesTheProjectionOntoTheSession:
 
     @staticmethod
     def _projection(servers: list[dict], denied: set[tuple[str, str]]):
-        async def _mirrored(agent, *, work_dir, session_key, channel_id, permission_surface_owned):
+        async def _mirrored(
+            agent,
+            *,
+            work_dir,
+            session_key,
+            channel_id,
+            permission_surface_owned,
+            session_control_mounted=None,
+            harness_state=None,
+        ):
             assert permission_surface_owned is False
             return _MirroredSessionMcp(
                 servers=list(servers),

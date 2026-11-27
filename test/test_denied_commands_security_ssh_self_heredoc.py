@@ -362,6 +362,82 @@ def test_both_readings_walk_every_nested_payload(cmd, rule):
 @pytest.mark.parametrize(
     "cmd",
     [
+        # A shell-run here-document inside a ``bash -c`` / ``sh -c`` payload: the inner
+        # shell runs the body, so the ssh line in it is a command.
+        "bash -c 'bash <<EOF\nssh -p 22 localhost id\nEOF'",
+        'bash -c "bash <<EOF\nssh -p 22 localhost id\nEOF"',
+        "sh -c 'sh <<EOF\nssh -p 22 localhost id\nEOF'",
+        # The same in a command substitution and a process substitution.
+        "echo $(bash <<EOF\nssh -p 22 localhost id\nEOF\n)",
+        "cat <(bash <<EOF\nssh -p 22 localhost id\nEOF\n)",
+        # A payload whose later line, after a data body or a plain command, dials here.
+        "bash -c 'cat <<EOF\nx\nEOF\nssh -p 22 localhost id'",
+        "bash -c 'true\nssh -p 22 localhost id'",
+    ],
+    ids=[
+        "bash-c-sq-heredoc",
+        "bash-c-dq-heredoc",
+        "sh-c-heredoc",
+        "cmd-subst-heredoc",
+        "proc-subst-heredoc",
+        "later-line-after-data-body",
+        "later-line-after-command",
+    ],
+)
+def test_ssh_on_a_later_line_of_a_nested_payload_is_refused(cmd):
+    """A nested payload that spans lines is read as a command line of its own."""
+    assert _denied_by(cmd) == _RULE, cmd
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # The ssh line sits in a body ``cat`` only prints: data, not a command.
+        "bash -c 'cat <<EOF\nssh -p 22 localhost id\nEOF'",
+        # A payload that dials a remote host.
+        "bash -c 'bash <<EOF\nssh -p 22 far.example.com id\nEOF'",
+        "bash -c 'true\nssh -p 22 far.example.com id'",
+    ],
+    ids=[
+        "data-body-allowed",
+        "remote-host-heredoc",
+        "remote-host-later-line",
+    ],
+)
+def test_nested_payload_data_body_and_remote_host_stay_allowed(cmd):
+    assert security.is_denied(cmd) is None, cmd
+
+
+@pytest.mark.parametrize(
+    "cmd, refused",
+    [
+        # A payload written inside a body ``cat`` / ``tee`` only stores is data.
+        ("cat > notes.md <<'EOF'\nbash -c 'true\nssh -p 22 localhost id'\nEOF", False),
+        ("cat > notes.md <<EOF\nbash -c 'true\nssh -p 22 localhost id'\nEOF", False),
+        ("tee notes.md <<'EOF'\nbash -c 'true\nssh -p 22 localhost id'\nEOF", False),
+        # A body a shell runs, or one piped to a shell, is still read.
+        ("bash <<'EOF'\nbash -c 'true\nssh -p 22 localhost id'\nEOF", True),
+        ("cat <<'EOF' | bash\nbash -c 'true\nssh -p 22 localhost id'\nEOF", True),
+        ("bash -c 'bash <<EOF\nssh -p 22 localhost id\nEOF'", True),
+    ],
+    ids=[
+        "cat-quoted-tag",
+        "cat-plain-tag",
+        "tee-quoted-tag",
+        "bash-runs-body",
+        "body-piped-to-shell",
+        "nested-shell-runs-body",
+    ],
+)
+def test_nested_payload_inside_a_data_body_is_not_read(cmd, refused):
+    """Nested payloads are found only outside the bodies no program on the line runs."""
+    assert (_denied_by(cmd) == _RULE) is refused, cmd
+    assert (security.is_denied(cmd) is None) is not refused, cmd
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
         # ``: $((1 << 2`` NL ``))`` is a left SHIFT whose span closes on the next line,
         # not a here-document. The text after it is a single-quoted echo argument bash
         # merely prints, so the self command inside the quotes never runs: ALLOWED.

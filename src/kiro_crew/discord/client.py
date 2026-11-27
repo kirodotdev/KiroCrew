@@ -164,8 +164,21 @@ _INTENT_GUILD_MESSAGES = 1 << 9
 _INTENT_MESSAGE_CONTENT = 1 << 15
 _THREAD_INTENTS = _INTENT_GUILD_MESSAGES | _INTENT_MESSAGE_CONTENT
 
+
+def _intents_for(enable_guild_threads: bool) -> int:
+    """The IDENTIFY intents for a DM-only or a thread-capable connection."""
+    return _INTENT_DIRECT_MESSAGES | (_THREAD_INTENTS if enable_guild_threads else 0)
+
+
+#: Bound on the ``GET /users/@me`` that checks a new token before a reconnect.
+_VERIFY_TIMEOUT_SECS = 10.0
+
+
 # Discord channel types: announcement thread, public thread, private thread.
 _THREAD_CHANNEL_TYPES = frozenset({10, 11, 12})
+# Discord channel types that hold only threads (posts): forum, and media (a
+# forum variant whose posts are the same public threads).
+_FORUM_CHANNEL_TYPES = frozenset({15, 16})
 # Discord's error code for a thread create on a message that already has one.
 _THREAD_ALREADY_CREATED = 160004
 _CALLBACK_CHANNEL_MESSAGE_WITH_SOURCE = 4
@@ -434,6 +447,121 @@ class DiscordClient:
                 if self._session and not self._session.closed:
                     await self._session.close()
                     self._session = None
+
+    # ── In-place reconnect (a new token or new intents, no channel restart) ──
+
+    def uses_token(self, token: str) -> bool:
+        """True when this client already authenticates with *token*."""
+        return token == self._token
+
+    @property
+    def guild_intents(self) -> bool:
+        """True when the connection requests the server-thread intents."""
+        return self._intents == _intents_for(True)
+
+    async def verify_token(self, token: str) -> tuple[str, str]:
+        """Ask Discord who *token* is (``GET /users/@me``), without touching the connection.
+
+        Returns ``(bot user id, "")`` when Discord accepts it, or ``("", reason)``
+        with Discord's own short message when it refuses (401 or 403 only). A
+        network failure, a rate limit or a server error raises: an unverifiable
+        token is not a rejected one. Nothing returned or logged here carries the
+        token.
+        """
+        url = _client_rest._API_BASE + "/users/@me"
+        session = await self._ensure_session()
+        async with session.get(
+            url,
+            headers={"Authorization": f"Bot {token}"},
+            proxy=self._proxy_for(url),
+            timeout=aiohttp.ClientTimeout(total=_VERIFY_TIMEOUT_SECS),
+        ) as resp:
+            try:
+                data = await resp.json(content_type=None)
+            except Exception:
+                data = None
+            body = data if isinstance(data, dict) else {}
+            if 200 <= resp.status < 300:
+                user_id = str(body.get("id", "") or "")
+                return (user_id, "") if user_id else ("", "no user id in the answer")
+            if resp.status in (401, 403):
+                return "", (str(body.get("message", "") or "") or f"HTTP {resp.status}")[:60]
+            # A 429, a 5xx or anything else says nothing about the token:
+            # unverifiable, not rejected.
+            raise aiohttp.ClientResponseError(
+                resp.request_info, (), status=resp.status, message="token check unavailable"
+            )
+
+    async def reconnect(
+        self, *, token: str | None = None, enable_guild_threads: bool | None = None
+    ) -> None:
+        """Drop the Gateway connection and IDENTIFY afresh with *token* and/or new intents.
+
+        The caller has verified *token* (:meth:`verify_token`). Turn handlers
+        already running keep running on this client: their next REST call
+        sends the new token, so an in-flight reply is not cut off. The old
+        WebSocket, its heartbeat and the loop task are closed and awaited
+        before the new loop starts, so two Gateway connections never run at
+        once and no message is delivered twice. The HTTP session, which holds
+        no credential, stays open for the requests running turns have in
+        flight. The fresh IDENTIFY gives up the resume window, so
+        events sent while the connection was being swapped are not replayed.
+
+        Raises ``RuntimeError`` on a client that :meth:`close` shut down. A
+        client stopped by a fatal close (bad token, disallowed intents) is
+        revived, which is how a corrected token recovers it.
+        """
+        if self._closed and not self.fatal_error:
+            raise RuntimeError("Discord client is closed")
+        self._stop_heartbeat()
+        ws = self._ws
+        if ws is not None and not ws.closed:
+            try:
+                await ws.close()
+            except Exception:
+                logger.debug("Discord reconnect: closing the old WebSocket failed", exc_info=True)
+        task, self._task = self._task, None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug(
+                    "Discord reconnect: the old gateway loop ended with an error", exc_info=True
+                )
+        self._stop_heartbeat()
+        if token is not None:
+            # The HTTP session is kept: it carries no credential (every REST
+            # attempt reads the token afresh), and closing it would cancel the
+            # requests and downloads running turns have in flight. ``close()``
+            # closes it at shutdown, after draining those turns.
+            self._token = token
+        if enable_guild_threads is not None:
+            self._intents = _intents_for(enable_guild_threads)
+        # A fresh IDENTIFY: a RESUME cannot change the token or the intents.
+        self._session_id = ""
+        self._seq = None
+        self._resume_url = ""
+        self._failures_since_session = 0
+        self.fatal_error = ""
+        self.ready.clear()
+        await self.start()
+
+    async def wait_connected(self, timeout: float = 15.0) -> bool:
+        """Like :meth:`wait_ready`, but False as soon as the connection fails non-recoverably."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while not self.ready.is_set():
+            remaining = deadline - loop.time()
+            if self.fatal_error or remaining <= 0:
+                return False
+            try:
+                await asyncio.wait_for(self.ready.wait(), min(0.25, remaining))
+            except asyncio.TimeoutError:
+                pass
+        return True
 
     def set_message_handler(self, on_message: Callable[[DiscordInbound], Awaitable[None]]) -> None:
         """Set/replace the inbound-message handler after construction.
@@ -978,6 +1106,24 @@ class DiscordClient:
         self._channel_types[channel_id] = channel_type
         return channel_type in _THREAD_CHANNEL_TYPES
 
+    async def is_forum_channel(self, channel_id: str) -> bool:
+        """Confirm ``channel_id`` is a forum or media channel, failing closed.
+
+        The same reasoning as :meth:`is_thread_channel`: an id on
+        ``allowed_channel_ids`` does not prove its type, and only a forum's
+        posts may be admitted on their opener's authority. Discord cannot
+        convert a forum to another type, so the type is cached like a thread's.
+        """
+        cached = self._channel_types.get(channel_id)
+        if cached is not None:
+            return cached in _FORUM_CHANNEL_TYPES
+        result = await self._api("GET", f"/channels/{channel_id}", None)
+        if not isinstance(result, dict) or not isinstance(result.get("type"), int):
+            return False
+        channel_type = int(result["type"])
+        self._channel_types[channel_id] = channel_type
+        return channel_type in _FORUM_CHANNEL_TYPES
+
     async def thread_origin(self, channel_id: str) -> ThreadOrigin | None:
         """Who opened thread ``channel_id`` and under which channel, from Discord.
 
@@ -1217,6 +1363,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GATEWAY_URL,
         _HANDLED_INTERACTIONS,
         _INTERACTION_APPLICATION_COMMAND,
+        _INTERACTION_AUTOCOMPLETE,
         _INTERACTION_MESSAGE_COMPONENT,
         _MAX_HEARTBEAT_SECS,
         _MIN_HEALTHY_CONN_SECS,
@@ -1234,6 +1381,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _WS_HEARTBEAT_SECS,
         _command_options,
         _find_button_label,
+        _focused_option,
         _heartbeat_interval_secs,
         _reply_message_id,
     )

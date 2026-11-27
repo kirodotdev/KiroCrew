@@ -32,9 +32,11 @@ session (the markers ``cloud.aws._in_agent_session`` reads), it counts as a
 ``learn_add`` no person triggered, even when a person asked the agent to run it:
 the shell cannot tell. Run from a person's own terminal, it is never gated.
 A span that holds a human turn keeps its tiers, even when agent turns sit beside
-it: tracing one lesson to one turn is not deterministic, so a mixed span is a
-known gap. A ``learn_add`` from a session with no live chat (a sub-agent, a
-channel thread) has no turn to read and is left as it is.
+it: this gate does not trace one lesson to one turn. Judging each standing lesson
+by the person's own quote is ``memory.lesson_tier_policy``
+(:mod:`kiro_crew.memory_tier_policy`). A ``learn_add`` from a session with no
+live chat (a sub-agent, a channel thread) has no turn to read and is left as it
+is.
 
 The log follows the kind-routing log (:mod:`kiro_crew.memory_kind_routing`): it
 lives in the store's ``memory_meta`` table, holds lesson keys and counts only,
@@ -336,6 +338,33 @@ def gate_learn_add_turn(
 
 
 # ── The bounded log ─────────────────────────────────────────────────────────
+
+
+def stamp_rules_version(db: "sqlite3.Connection", prefix: str, version: int, now: datetime) -> None:
+    """On the first write under a new *version*, stamp ``<prefix>rules_version`` and
+    ``<prefix>rules_changed_at``, and clear ``<prefix>shadow_started_at``. Shared
+    with :mod:`kiro_crew.memory_tier_policy`; this gate does not stamp.
+
+    The shadow report opens a stage's window at ``rules_changed_at``, so counters
+    written under the old rules are not summed with the new ones. The id window is
+    cleared rather than restarted, so the first shadow id write starts it: a store
+    that crosses the version under ``enforce`` and turns on ``shadow`` later still
+    gets its full window.
+    """
+    if _kind_log._read(db, prefix + "rules_version") == str(version):
+        return
+    stamp = now.isoformat()
+    _kind_log._upsert(db, prefix + "rules_version", str(version), stamp)
+    _kind_log._upsert(db, prefix + "rules_changed_at", stamp, stamp)
+    db.execute("DELETE FROM memory_meta WHERE key = ?", (prefix + "shadow_started_at",))
+
+
+def id_entries(labels: tuple[tuple[str, str, str | None], ...]) -> tuple[tuple[str, dict], ...]:
+    """``(key, quote label, support bucket)`` triples as id-row ``(key, fields)``."""
+    return tuple(
+        (key, {"quote": quote, **({"support": bucket} if bucket else {})})
+        for key, quote, bucket in labels
+    )
 
 
 def _bump_counts(db: "sqlite3.Connection", gate: OriginGate, now: datetime) -> None:

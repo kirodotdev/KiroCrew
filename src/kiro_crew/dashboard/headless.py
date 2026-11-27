@@ -39,9 +39,18 @@ def bind_address(headless: bool, configured: str) -> str:
     return _LOOPBACK if headless else configured
 
 
-def print_client_access(port: int) -> None:
-    """Print the API address and credential command, never a sign-in link or credential."""
+def print_client_access(port: int, entry_port: int | None = None) -> None:
+    """Print API access and, at startup, entry status; never a sign-in link or credential."""
     print(f"👻 Headless: API on http://{_LOOPBACK}:{port}/v1")
+    # Restart callers do not know the live entry port; startup passes the bound one.
+    if entry_port is not None:
+        print(f"   Entry port: {_LOOPBACK}:{entry_port}" if entry_port else "   Entry port: off")
+    if entry_port:
+        # Imported here: a restart caller passes no entry port and prints without
+        # loading the gate and the auth modules it imports.
+        from kiro_crew.dashboard.entry_gate import HOST_HINT
+
+        print(f"   On the entry port {HOST_HINT}")
     # The port is named: without it the command resolves the configured port, which
     # is another one when this gateway was started with ``--port``.
     print(f"   Credential for a Crew API client: kirocrew token --bearer --port {port}")

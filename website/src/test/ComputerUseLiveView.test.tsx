@@ -59,11 +59,11 @@ describe('ComputerUseLiveView', () => {
     expect(panel.style.height).toBe('210px')
   })
 
-  it('marks its dialog data-escape-passthrough so it never blocks Escape-to-stop in the composer', async () => {
+  it('marks its dialog data-escape-passthrough so it never blocks the composer\'s Escape', async () => {
     // This panel coexists alongside a focused composer rather than in front
-    // of it and never claims Escape itself, so chat-input/stopKey.ts's
-    // generic role="dialog" probe must skip it specifically (issue #22315,
-    // HOLD item 4) rather than deferring to it like every other dialog.
+    // of it and never claims Escape itself, so chat-input/escapeOwners.ts's
+    // generic role="dialog" probe must skip it specifically rather than
+    // deferring to it like every other dialog.
     renderWithProviders(<ComputerUseLiveView />)
     await act(async () => { pushFrame('QUJD') })
     const panel = screen.getByRole('dialog') as HTMLElement

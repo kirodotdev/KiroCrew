@@ -129,6 +129,12 @@ describe('useFontOptions', () => {
     }
   })
 
+  it('probes the UI language\'s own CJK faces first in all mode', async () => {
+    const { result } = renderHook(() => useFontOptions('all', 'ja'))
+    await waitFor(() => expect(result.current.families.length).toBeGreaterThan(0))
+    expect(detect.detectInstalledFonts.mock.calls[0][0]?.[0]).toBe('Hiragino Sans')
+  })
+
   it('names every family font-faces.css downloads as bundled', () => {
     // A face with a url() source ships with the dashboard; the local()-only faces
     // are script and quote aliases, not page fonts.

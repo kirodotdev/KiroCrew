@@ -146,6 +146,7 @@ from kiro_crew.mcp_gateway.daemon.audit import (  # noqa: F401
     _audit_pool_rejected,
     _audit_prewarm_spawn,
     _audit_recaller_rejected,
+    _audit_recycle_server,
     _audit_replacement_validated,
     _audit_reserved_stub_prefix_denied,
     _audit_stand_down,
@@ -163,9 +164,11 @@ from kiro_crew.mcp_gateway.daemon.connection import (  # noqa: F401
     _teardown_connection,
 )
 from kiro_crew.mcp_gateway.daemon.control import (  # noqa: F401
+    _RECYCLE_SERVER_NAME_MAX,
     _apply_abort,
     _apply_claim,
     _apply_owner_port,
+    _apply_recycle_server,
     _apply_set_spawn_capacity,
     _apply_stand_down,
     _pong_payload,
@@ -207,6 +210,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (  # noqa: F401
     _SESSION_MOUNTS_OVERFLOWED,
     _TOKEN_BINDINGS,
     _apply_recaller,
+    _attested_session_key,
     _bind_token,
     _caller_from_register,
     _conn_index_add,
@@ -218,6 +222,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (  # noqa: F401
     _register_pids,
     _resolve_peer_identity,
     _resolve_register_identity,
+    _sent_by_owner,
     _session_mounts,
     _session_mounts_complete,
     _store_mount_entry,
@@ -251,6 +256,8 @@ from kiro_crew.mcp_gateway.daemon.launch import (  # noqa: F401
     _read_declared_env_sidecar,
     _resolve_once_home,
     _resolve_target_off_loop,
+    _target_spec,
+    _target_unknown_reason,
     _TargetUnknown,
     agent_socket_resolver,
     bind_control_plane_to_owner,
@@ -1197,8 +1204,9 @@ async def _acquire_backend(
     is handed out (:func:`bound_to_owner_port`): the pool refuses a pooled one,
     and a private one is discarded and spawned again.
 
-    Raises :class:`_TargetUnknown` when the resolver has no mapping for the
-    server (a clean rejection, not a crash); :class:`HostBudgetExhausted`,
+    Raises :class:`_TargetUnknown` when the resolver has no target for the
+    server (a clean rejection, not a crash), worded by
+    :func:`_target_unknown_reason`; :class:`HostBudgetExhausted`,
     :class:`SpawnGateTimeout`, :class:`SpawnGateClosed` and
     :class:`PoolAtCapacity` from the three admission steps;
     :class:`OwnerPortUnproven` when the owner's port is still unknown at the
@@ -1211,10 +1219,7 @@ async def _acquire_backend(
     approval_snapshot = await asyncio.to_thread(launch_approval.load_approvals)
     target = await _resolve_target_off_loop(resolver, pool_key, approval_snapshot)
     if target is None:
-        raise _TargetUnknown(
-            f"no target mapping for server {pool_key.server_name!r}; "
-            "set KIROCREW_MCP_TARGET_<SERVER> env var or pass a target_resolver"
-        )
+        raise _TargetUnknown(_target_unknown_reason(pool_key))
     command, args, env, work_dir = target
 
     was_spawned = False

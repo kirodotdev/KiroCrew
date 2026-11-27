@@ -9,9 +9,20 @@ import pytest
 from redaction_structured_cases import github_classic
 
 from kiro_crew import security
+from kiro_crew.workflows import library as workflow_library
 from kiro_crew.workflows import store as workflow_store
 from kiro_crew.workflows.library import WorkflowDefinitionLibrary
 from kiro_crew.workflows.store import WORKFLOW_LIBRARY_DIR_NAME
+
+
+@pytest.fixture(autouse=True)
+def _no_builtin_workflows(tmp_path, _floor_monkeypatch):
+    """These tests assert what the library folder holds, so the shipped
+    built-in tier is left out; ``test_workflows_builtin.py`` covers it."""
+    _floor_monkeypatch.setattr(
+        workflow_library, "BUILTIN_WORKFLOWS_DIR", tmp_path / "no-builtin-workflows"
+    )
+
 
 SOURCE_V1 = (
     'META = {"name": "debug-project", "description": "Investigate a project failure"}\n'

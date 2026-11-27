@@ -362,3 +362,50 @@ async def test_reapplying_an_unchanged_served_set_does_not_cycle_the_broker(monk
     assert orch._mcp_gateway_manager is manager
     assert out["applied"] is True
     orch.sessions.refresh_defaults.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_sharing_toggle_says_a_server_marked_since_the_start_waits_for_a_restart(
+    monkeypatch,
+) -> None:
+    """Sharing turned on for a server marked since the last start is not live for
+    it, and only a restart makes it live. The answer says so, so the page shows
+    the restart notice instead of reporting a fault."""
+    orch = _orch(["alpha-mcp"])
+    orch._mcp_stub_servers_started = frozenset()
+    monkeypatch.setattr(orch, "_init_mcp_gateway", AsyncMock())
+    monkeypatch.setattr(orch, "_stop_mcp_broker", AsyncMock())
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: orch._cfg)
+    )
+
+    out = await orch._apply_mcp_gateway_enabled(True)
+
+    assert out == {"enabled": True, "running": False, "ping_ok": False, "restart_required": True}
+
+
+@pytest.mark.asyncio
+async def test_a_sharing_toggle_needs_no_restart_when_every_marked_server_is_served(
+    monkeypatch,
+) -> None:
+    """A server unmarked since the start is still served until the next one, but
+    that leaves no marked server waiting: sharing is live for every one of them."""
+    orch = _orch(["alpha-mcp"])
+    orch._mcp_stub_servers_started = frozenset({"alpha-mcp", "beta-mcp"})
+    manager = SimpleNamespace(is_running=True, ping=AsyncMock(return_value=True))
+
+    async def _init(stub_servers: frozenset[str] | None = None) -> None:
+        orch._mcp_gateway_manager = manager
+
+    async def _stop() -> None:
+        orch._mcp_gateway_manager = None
+
+    monkeypatch.setattr(orch, "_init_mcp_gateway", _init)
+    monkeypatch.setattr(orch, "_stop_mcp_broker", _stop)
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: orch._cfg)
+    )
+
+    out = await orch._apply_mcp_gateway_enabled(True)
+
+    assert out == {"enabled": True, "running": True, "ping_ok": True, "restart_required": False}

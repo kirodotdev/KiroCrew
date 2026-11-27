@@ -18,8 +18,9 @@ engines spell that notice differently:
 
 This module owns both wire shapes and nothing else reads them. It turns either
 into :class:`ModelFallbackNotice` values, keeps the session's resolved model in
-step with what the engine ran (:class:`EngineFallbackTracker`), and builds the
-one transcript line a turn's walk ends with (:class:`EngineFallbackWalk`).
+step with what the engine ran (:class:`EngineFallbackTracker`), builds the
+one transcript line a turn's walk ends with (:class:`EngineFallbackWalk`), and
+cuts a refused model's text from what a turn loop collects (:class:`RefusalHopText`).
 
 The rules and wording follow what kiro-cli's own terminal UI shows for the same
 notices, so a user sees the same account of a fallback whichever client drives
@@ -38,7 +39,9 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
     EVENT_MODEL_FALLBACK,
+    EVENT_TOOL_CALL,
     STOP_REASON_CANCELLED,
     STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
@@ -381,6 +384,43 @@ def _drop_superseded_refusal(owner: Any) -> None:
     if stats is not None and getattr(stats, "refusal", None) is not None:
         stats.refusal = None
         logger.debug("engine fallback: V2 refusal hop superseded this prompt's refusal")
+
+
+@dataclass
+class RefusalHopText:
+    """What a refusal hop does to the text a turn loop collects and delivers.
+
+    On a content-filter refusal kiro-cli streams the refused model's text, then a
+    ``model_fallback`` hop (``cause: refused``, not a promotion), then the
+    fallback's answer (``test/fixtures/acp_frames/kiro/refusal-fallback-live.jsonl``).
+    The text since the last tool call is the refused model's, so the hop cuts it;
+    text before that call is an earlier model call's and stays. When no model
+    writes text after the hop and the turn ends ``refusal``, the cut text is put
+    back, so the reply is not empty. A loop keeps one beside its text and passes
+    every event through :meth:`fold` before it reads the event.
+    """
+
+    #: Where the text after the last tool call starts.
+    start: int = 0
+    #: What the last refusal hop cut, until a model writes text after it.
+    kept: str = ""
+
+    def fold(self, event: Any, text: str) -> str:
+        """The collected *text* once *event* is applied to it."""
+        if self.kept and text[self.start :].strip():
+            self.kept = ""  # a model answered after the hop
+        if event.kind == EVENT_TOOL_CALL:
+            self.start = len(text)
+        elif event.kind == EVENT_MODEL_FALLBACK:
+            notice = event.model_fallback
+            if notice is not None and not notice.promoted and notice.cause == "refused":
+                if text[self.start :].strip():
+                    self.kept = text[self.start :]
+                text = text[: self.start]
+        elif event.kind == EVENT_COMPLETE and self.kept:
+            if event.stop_reason == STOP_REASON_REFUSAL:
+                text, self.kept = text + self.kept, ""
+        return text
 
 
 @dataclass

@@ -64,6 +64,11 @@ async def api_spawn_resume(request: web.Request) -> web.Response:
     for, and ``granted`` is True so a holder proceeds. ``wait_secs`` (0..8)
     holds the response until the grant or the bound, whichever is first.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "spawn.resume")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     manager = state.subagents
     if not manager:
@@ -301,6 +306,11 @@ def throttle_view(
 
 async def api_spawn_lanes(request: web.Request) -> web.Response:
     """GET /api/spawn/lanes -- per-lane depth, running/waiting counts and the cap view."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    denied = await require_owner_for_dashboard_caller(request, "spawn.lanes")
+    if denied is not None:
+        return denied
     state: DashboardState = request.app["state"]
     manager = state.subagents
     if not manager:

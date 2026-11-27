@@ -190,6 +190,13 @@ def _apply_through_gateway(
     except app_lifecycle_client.AppGatewayError as exc:
         if action == "enable" and exc.code == _SESSION_APPROVAL_CONSENT_REQUIRED:
             _refuse_session_approval_from_cli(subject)
+        if exc.code == "bot_chat_stop_incomplete":
+            # The action landed (or the app was already gone); only the Bot chats
+            # running its tools did not stop. Say which, and how to stop them.
+            lines = app_lifecycle_client.bot_chat_stop_lines(action, subject, exc.bots)
+            for line in lines or [f"⚠  {str(exc).rstrip('.')}."]:
+                print(line, file=sys.stderr)
+            sys.exit(1)
         # A refusal that already ends its sentence would otherwise print "..".
         print(f"❌ gateway refused: {str(exc).rstrip('.')}. {hint}", file=sys.stderr)
         for line in app_lifecycle_client.gateway_version_lines(exc.gateway_version, refused=True):
@@ -199,7 +206,8 @@ def _apply_through_gateway(
         return False
     name = result.get("name")
     app_name = name if action == "install" and isinstance(name, str) and name else subject
-    app_lifecycle_client.print_result(action, app_name, result)
+    if not app_lifecycle_client.print_result(action, app_name, result):
+        sys.exit(1)  # landed, but a Bot chat still runs the app's tools
     return True
 
 
@@ -1105,6 +1113,27 @@ def _handle_app(args: argparse.Namespace) -> None:
         else:
             print(f"✅ {args.name} dev mode off (normal caching restored)")
 
+    elif action == "startup":
+        from kiro_crew.apps.startup_modules import set_approval
+
+        approve = not getattr(args, "revoke", False)
+        startup_result = set_approval(args.name, approve)
+        if "error" in startup_result:
+            print(f"❌ {startup_result['error']}", file=sys.stderr)
+            sys.exit(1)
+        if not approve:
+            print(f"✅ {args.name}: startup approval withdrawn; it stops at each tab's next load")
+        elif startup_result["state"] == "admitted":
+            print(f"✅ {args.name}: {startup_result['entry']} runs in every dashboard tab")
+            print("   from each tab's next load. Withdraw with:")
+            print(f"   kirocrew app startup {args.name} --revoke")
+        else:
+            # Approved, but something else keeps it from running; say what.
+            print(
+                f"⚠️  {args.name}: approved, but {startup_result['state']}: "
+                f"{startup_result['reason']}"
+            )
+
     elif action == "info":
         info = get_app(args.name)
         if not info:
@@ -1155,7 +1184,7 @@ def _handle_app(args: argparse.Namespace) -> None:
         # 2, the argparse convention, so `kirocrew app && …` stops instead of
         # proceeding on a 0 after a typo.
         print(
-            "Usage: kirocrew app {install|list|enable|update|disable|uninstall|info|init}",
+            "Usage: kirocrew app {install|list|enable|update|disable|uninstall|info|startup|init}",
             file=sys.stderr,
         )
         sys.exit(2)

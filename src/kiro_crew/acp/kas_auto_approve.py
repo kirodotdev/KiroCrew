@@ -26,6 +26,7 @@ import logging
 import threading
 from typing import Any
 
+from kiro_crew.platform.auto_approve_literals import literal_auto_approve_refs
 from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
 from kiro_crew.sel import sel
 
@@ -34,7 +35,6 @@ logger = logging.getLogger(__name__)
 #: A verb carrying any of these is not one literal tool name. ``autoApprove`` names
 #: tools; a glob would become a ``<server>/*``-style grant, so such a verb is left to
 #: prompt rather than read as a wider grant.
-_NON_LITERAL = frozenset("*?[]{}!/")
 
 #: Skill-view decisions already recorded in this process, so a view rebuilt at every
 #: spawn is recorded once per distinct decision and not once per spawn. Entries are
@@ -71,23 +71,8 @@ def _asking(spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _literal_refs(servers: dict[str, Any]) -> list[str]:
-    """``@<server>/<tool>`` for each literal ``autoApprove`` verb in *servers*, in order."""
-    refs: list[str] = []
-    for name, entry in servers.items():
-        verbs = entry.get("autoApprove") if isinstance(entry, dict) else None
-        if not isinstance(verbs, list):
-            continue
-        for verb in verbs:
-            if not isinstance(verb, str):
-                continue
-            verb = verb.strip()
-            if not verb or _NON_LITERAL.intersection(verb):
-                continue
-            ref = f"@{name}/{verb}"
-            if ref not in refs:
-                refs.append(ref)
-    return refs
+#: The one literal-verb rule (``platform.auto_approve_literals``), under its old name.
+_literal_refs = literal_auto_approve_refs
 
 
 def grant_in_skill_view(agent: str, view: dict[str, Any]) -> list[str]:

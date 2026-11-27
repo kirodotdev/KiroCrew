@@ -11,7 +11,8 @@ all -- ``test`` is not an importable package there.
 from __future__ import annotations
 
 import json
-from contextlib import ExitStack
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -41,7 +42,8 @@ DEFAULT_MANAGED_MCPS = {
 }
 
 
-def run_install_mcp_merge(
+@contextmanager
+def mcp_merge_env(
     tmp_path: Path,
     cfg_dir: Path,
     *,
@@ -49,9 +51,11 @@ def run_install_mcp_merge(
     kiro_servers: dict,
     kirocrew_servers: dict | None = None,
     which_side_effect=lambda c, **kw: c,
-) -> dict:
-    """Run install_agent with CC-global and Kiro-global mcp.json seeded and a
-    customizable shutil.which. Returns the parsed kirocrew.json config."""
+) -> Iterator[Path]:
+    """Seed the CC-global and Kiro-global mcp.json and patch the rebuild's inputs.
+
+    Yields the Kiro-global ``mcp.json`` path, so a test can edit that source between
+    a rebuild and a later call made under the same patches."""
     kiro_dir = tmp_path / "kiro_agents"
     kiro_dir.mkdir(exist_ok=True)
     prompt = cfg_dir / "prompt.md"
@@ -94,5 +98,27 @@ def run_install_mcp_merge(
     with ExitStack() as stack:
         for p in patches:
             stack.enter_context(p)
+        yield kiro_mcp
+
+
+def run_install_mcp_merge(
+    tmp_path: Path,
+    cfg_dir: Path,
+    *,
+    cc_servers: dict,
+    kiro_servers: dict,
+    kirocrew_servers: dict | None = None,
+    which_side_effect=lambda c, **kw: c,
+) -> dict:
+    """Run install_agent with CC-global and Kiro-global mcp.json seeded and a
+    customizable shutil.which. Returns the parsed kirocrew.json config."""
+    with mcp_merge_env(
+        tmp_path,
+        cfg_dir,
+        cc_servers=cc_servers,
+        kiro_servers=kiro_servers,
+        kirocrew_servers=kirocrew_servers,
+        which_side_effect=which_side_effect,
+    ):
         path = install_agent()
     return json.loads(path.read_text(encoding="utf-8"))

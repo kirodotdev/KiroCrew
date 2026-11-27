@@ -113,10 +113,10 @@ class TestSynthesizeSystem:
     async def test_a_non_string_voice_degrades_to_the_engine_default(self) -> None:
         """A hand-edited `"system_voice": []` must not reach any engine.
 
-        The value arrives raw from config.json and each engine breaks on it
-        differently: SAPI's `_ps_quote` raises AttributeError, and the two argv
-        engines raise TypeError inside the spawn. Coerced at this one consumer,
-        so the Slack loader and the `_SYNTHESIS_KEYS` table are both covered.
+        The value arrives raw from config.json and every engine breaks on a truthy
+        one such as 7: SAPI's `_spill_text` raises TypeError, and so do the two argv
+        engines inside the spawn. Coerced at this one consumer, so the Slack loader and the
+        `_SYNTHESIS_KEYS` table are both covered.
         """
         for bad in ([], {}, 7, None):
             fake_exec, captured = _writing_exec("-o")

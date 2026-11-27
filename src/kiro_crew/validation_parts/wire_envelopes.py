@@ -96,7 +96,7 @@ def validate_jsonrpc_request(req: dict[str, Any]) -> tuple[str, Any, dict[str, A
 
 @dataclass
 class McpTextContent:
-    """Type-safe MCP TextContent response — the only content type our tools return."""
+    """Type-safe MCP TextContent response — the text block every tool result starts with."""
 
     type: str  # always "text"
     text: str
@@ -105,22 +105,44 @@ class McpTextContent:
         return {"type": self.type, "text": self.text}
 
 
+class TextWithImage(str):
+    """A tool's text answer that also carries one image for the model.
+
+    It is still the answer's ``str`` wherever text is read (the SEL ``Error:``
+    outcome, the directive-marker check, a parked call's settle), so only
+    :func:`build_tool_response` sees the image. Any string operation on it
+    returns a plain ``str`` without the image, so a handler attaches it last.
+    """
+
+    image: tuple[str, str]  # (base64 data, MIME type), already inside the inline budget
+
+    def __new__(cls, text: str, image: tuple[str, str]) -> "TextWithImage":
+        answer = super().__new__(cls, text)
+        answer.image = image
+        return answer
+
+
 def build_tool_response(
     text: str, max_len: int = MAX_RESPONSE_LEN, *, is_error: bool = False
 ) -> dict[str, Any]:
     """Build a validated, sanitized MCP tools/call response.
 
     Returns the ``result`` payload for a JSON-RPC response:
-    ``{"content": [{"type": "text", "text": "..."}]}``
+    ``{"content": [{"type": "text", "text": "..."}]}``, plus an
+    ``{"type": "image", "data": ..., "mimeType": ...}`` block after the text
+    when *text* is a :class:`TextWithImage`.
 
     This is the single exit point for all tool responses — ensures every
-    response conforms to the MCP TextContent schema and is sanitized.
+    response conforms to the MCP content schema and its text is sanitized.
     ``is_error`` adds the MCP ``isError`` flag so a client can tell a refusal
     from an answer without pattern-matching the prose.
     """
+    image = text.image if isinstance(text, TextWithImage) else None
     text = sanitize_response(text, max_len)
     content = McpTextContent(type="text", text=text)
     frame: dict[str, Any] = {"content": [content.to_dict()]}
+    if image is not None:
+        frame["content"].append({"type": "image", "data": image[0], "mimeType": image[1]})
     if is_error:
         frame["isError"] = True
     return frame

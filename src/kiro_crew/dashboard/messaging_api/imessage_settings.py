@@ -82,6 +82,12 @@ def _clean_imessage_path(raw: object, label: str) -> str:
 
 async def api_imessage_config_get(request: web.Request) -> web.Response:
     """GET /api/imessage/config — read the iMessage channel config."""
+    # A channel's settings are the owner's: only the owner or a teammate reads them.
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    owner_denied = await require_owner_for_dashboard_caller(request, "imessage.config.read")
+    if owner_denied is not None:
+        return owner_denied
     cfg = KiroCrewConfig.load()
     state: DashboardState = request.app["state"]
     return web.json_response(

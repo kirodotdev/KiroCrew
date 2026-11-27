@@ -270,12 +270,15 @@ from conftest_floor_configure import (  # noqa: E402,F401 -- bound for pytest an
     _AsyncFixtureScanGate,
     _gate_pytest_asyncio_fixture_scan,
     _hide_the_hosts_companion_plugins,
+    _mirror_path,
     _pin_crew_log_off_for_the_process,
     _pin_the_profile_standalone_for_the_process,
+    _prune_bytecode_mirror_of_gone_checkouts,
     _put_the_real_node_first_on_path,
     _put_the_tree_under_test_first_on_child_paths,
     _redirect_bytecode_cache,
     _redirect_hypothesis_database,
+    _refuse_unc_network_paths,
     pytest_warning_recorded,
 )
 
@@ -314,6 +317,7 @@ from conftest_floor_git import (  # noqa: E402,F401 -- bound for pytest and for 
     _git_maintenance_off_entries,
     _git_vars_to_strip,
     _load_git_maintenance_helpers,
+    _no_gateway_checkout_from_the_source_tree,
 )
 
 # The fixtures that run the per-test floors; ``seal_floor_guards`` at the end of
@@ -392,6 +396,7 @@ from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and
     _no_leaked_telemetry_exporter,
     _record_skill_search_indexes,
     _restore_boot_wired_globals,
+    _restore_cli_log_file_handlers,
     _restore_hooks_integration_globals,
     _restore_log_queue_listener,
     _restore_log_record_factory,
@@ -446,6 +451,7 @@ from conftest_floor_tmp import (  # noqa: E402,F401 -- bound for pytest and for 
     _prefer_short_tmp_base,
     _redirect_tempfile_base,
     _remove_tree,
+    _root_residue_leaves,
     _stop_git_discovery_above_the_temp_roots,
     _tmp_residue,
     _tmp_residue_report,
@@ -666,6 +672,7 @@ def pytest_configure(config: pytest.Config) -> None:
     _redirect_hypothesis_database()
     _redirect_bytecode_cache()
     _install_determinism_audit_hook()
+    _refuse_unc_network_paths(str(config.rootpath))
     _put_the_tree_under_test_first_on_child_paths()
     _put_the_real_node_first_on_path()
     _gate_pytest_asyncio_fixture_scan()
@@ -1748,16 +1755,20 @@ def _not_ignored(names: set[str]) -> list[str] | None:
     the question is unanswerable. A guard that cries wolf gets deleted, and then
     it protects nothing -- so the caller reports that it could not check and
     leaves the verdict alone.
+
+    NUL-delimited bytes (``-z``) rather than text lines: in line mode git quotes
+    a path with a byte outside printable ASCII (``core.quotePath``), so an ignored
+    ``測試.scratch`` never matched the name ``iterdir`` gave and was reported as
+    residue. ``os.fsencode``/``os.fsdecode`` round-trip the name byte for byte.
     """
     if not names:
         return []
     try:
         proc = subprocess.run(
-            ["git", "check-ignore", "--stdin"],
+            ["git", "check-ignore", "--stdin", "-z"],
             cwd=str(_REPO_ROOT),
-            input="\n".join(sorted(names)),
+            input=b"\0".join(os.fsencode(name) for name in sorted(names)),
             capture_output=True,
-            text=True,
             timeout=30,
             check=False,
         )
@@ -1765,7 +1776,7 @@ def _not_ignored(names: set[str]) -> list[str] | None:
         return None
     if proc.returncode not in (0, 1):
         return None
-    ignored = {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+    ignored = {os.fsdecode(entry) for entry in proc.stdout.split(b"\0") if entry}
     return [name for name in sorted(names) if name not in ignored]
 
 
@@ -1816,11 +1827,7 @@ def _prune_bytecode_mirror_of_this_runs_temp_roots(session: pytest.Session) -> N
             absolute = os.path.abspath(root)
         except OSError:  # pragma: no cover - unreadable cwd
             continue
-        # The mirror path is the prefix plus the source's absolute path with its leading
-        # separator dropped; on Windows the drive colon is replaced the same way CPython
-        # does, so the join is done from the parts rather than by string surgery.
-        drive, tail = os.path.splitdrive(absolute)
-        mirrored = os.path.join(prefix, drive.replace(":", "") + tail.lstrip(os.sep))
+        mirrored = _mirror_path(absolute)
         if os.path.isdir(mirrored):
             shutil.rmtree(mirrored, ignore_errors=True)
 
@@ -1852,6 +1859,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
     _remove_short_tmp_root()
     _prune_bytecode_mirror_of_this_runs_temp_roots(session)
+    rootpath = getattr(session.config, "rootpath", None)
+    if rootpath is not None and not hasattr(session.config, "workerinput"):
+        _prune_bytecode_mirror_of_gone_checkouts(str(rootpath))
 
     # ── Windows ProactorEventLoop teardown cleanup (#4764) ─────────────────
     # On Windows + Python 3.12, asyncio.run() creates and closes a
@@ -1894,8 +1904,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     # INTERNAL_ERROR (3) tell a caller the run did not complete, and overwriting
     # either with TESTS_FAILED would report a finished, failing suite instead.
     # The residue is reported either way, since it is real regardless of how the
-    # run ended.
-    if exitstatus == pytest.ExitCode.OK:
+    # run ended. Read from the session, not the argument: a plugin's earlier
+    # hook (scripts/ci_shard_retry.py, after a green retry) can clear a failure.
+    if session.exitstatus == pytest.ExitCode.OK:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
     if reporter is None:
         return
@@ -1906,6 +1917,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     )
     for name in residue:
         reporter.write_line(f"    {name}")
+        for leaf in _root_residue_leaves(_REPO_ROOT / name):
+            reporter.write_line(f"        {leaf}")
     reporter.write_line("")
     reporter.write_line(
         "A test must not write into the checkout. The usual cause is a "

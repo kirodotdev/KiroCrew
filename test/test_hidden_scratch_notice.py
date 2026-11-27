@@ -17,6 +17,8 @@ from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.session_allocation_parts.get_or_create import HIDDEN_SCRATCH_CWD_NOTICE
 
+_KEY = "dashboard_hidden_scratch"
+
 
 def _provider(token: str) -> SimpleNamespace:
     return SimpleNamespace(startup_notice=(token, "fallback text"))
@@ -55,28 +57,32 @@ async def test_the_turn_describes_the_folder_the_session_runs_in(tmp_path):
         patch("kiro_crew.platform_compat.IS_WINDOWS", False),
         patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
     ):
-        assert await chat_runner._fallback_turn_project(old, default) == default
+        assert await chat_runner._fallback_turn_project(old, default, _KEY, None) == default
         # A folder outside the scratch root, even one that is missing, is kept.
-        assert await chat_runner._fallback_turn_project(unmounted, default) == ""
-        assert await chat_runner._fallback_turn_project(default, default) == ""
-        assert await chat_runner._fallback_turn_project("", default) == ""
+        assert await chat_runner._fallback_turn_project(unmounted, default, _KEY, None) == ""
+        assert await chat_runner._fallback_turn_project(default, default, _KEY, None) == ""
+        assert await chat_runner._fallback_turn_project("", default, _KEY, None) == ""
 
 
 @pytest.mark.asyncio
 async def test_native_windows_keeps_a_chat_scratch_folder(tmp_path):
-    """Native Windows masks no scratch tree, so a chat's scratch folder is never dropped."""
+    """Native Windows masks no scratch tree, so a chat's scratch folder that exists is kept."""
     from kiro_crew.session_allocation_parts.get_or_create import _stored_cwd_is_hidden_scratch
 
     root = tmp_path / "scratch"
     old = str(root / "runtime-old" / "checkout")
+    (root / "runtime-old" / "checkout").mkdir(parents=True)
     with (
         patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
         patch("kiro_crew.sandbox_tiers.configured_sandbox_mode", return_value="auto"),
         patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
         patch("kiro_crew.platform_compat.IS_WINDOWS", True),
     ):
-        assert _stored_cwd_is_hidden_scratch(old, None) is False
-        assert await chat_runner._fallback_turn_project(old, str(tmp_path / "default")) == ""
+        assert _stored_cwd_is_hidden_scratch(old, None, _KEY, None) is False
+        assert (
+            await chat_runner._fallback_turn_project(old, str(tmp_path / "default"), _KEY, None)
+            == ""
+        )
 
 
 @pytest.mark.asyncio

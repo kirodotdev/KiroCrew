@@ -47,8 +47,9 @@ const SelectTrigger = React.forwardRef<
   // disabled look and refuses the pointer. The caller carries the `aria-disabled`
   // / `aria-busy` attrs and the change guard; this only owns the look, so the
   // dimming stays in the primitive instead of a restyle at the call site.
-  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger> & { busy?: boolean }
->(({ className, children, busy, ...props }, ref) => {
+  // `variant="title"`: a borderless trigger that reads as a page title (the memory store switcher).
+  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger> & { busy?: boolean; variant?: 'title' }
+>(({ className, children, busy, variant, ...props }, ref) => {
   const own = React.useContext(SelectTriggerRef)
   const setRef = React.useCallback((el: HTMLButtonElement | null) => {
     if (own) own.current = el
@@ -68,6 +69,7 @@ const SelectTrigger = React.forwardRef<
       'disabled:opacity-40 disabled:pointer-events-none',
       '[&>span]:truncate [&>span]:text-left [&>span]:min-w-0',
       busy && 'opacity-40 pointer-events-none',
+      variant === 'title' && 'gap-1 rounded-lg border-none bg-transparent py-0 pl-0 pr-1.5 text-[15px] font-semibold leading-5 shadow-none sm:pr-2',
       className
     )}
     {...props}

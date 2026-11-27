@@ -146,6 +146,15 @@ class AcpSessionProvider(LLMProvider):
     #: The chat's agent-turn callback (``watch_agent_turns``), re-registered on
     #: each handle that replaces this session's. None: nothing watches.
     _agent_turn_callback: Callable[[], None] | None = None
+    #: Set to True by ``shutdown_shared`` when the session runs on a shared KAS
+    #: engine and ``session/close`` was not confirmed by the host (timeout or
+    #: refusal).  Read by ``discard_conversation(confirm_teardown=True)`` callers
+    #: (bot app stop) to treat an unconfirmed KAS close as a failure.
+    _kas_shutdown_unconfirmed: bool = False
+    #: Saved on an unconfirmed KAS close: the runtime to retry the remote close on.
+    _kas_unconfirmed_runtime: Any = None
+    #: Saved on an unconfirmed KAS close: the session_id to retry the remote close for.
+    _kas_unconfirmed_session_id: str | None = None
 
     # Applying a dashboard MCP config change to this live session by re-sending
     # its projection: ``kiro_crew.acp.session_provider_mcp_reinject``.
@@ -644,6 +653,7 @@ class AcpSessionProvider(LLMProvider):
             # the release after the kill, that fallback would be refused and the
             # leak it exists to prevent would become permanent.
             await self.release_runtime_lease()
+            killed = False
             try:
                 if self.memory_mode != "persistent":
                     try:
@@ -654,8 +664,15 @@ class AcpSessionProvider(LLMProvider):
                         )
                 else:
                     await self._runtime.kill(expected=True, reason="provider shutdown")
+                killed = True
             except Exception:
                 logger.debug("AcpSessionProvider.shutdown: runtime kill failed", exc_info=True)
+            # The kill returning is not evidence the app servers under it are gone:
+            # a descendant that left the process group survives it. Only a whole
+            # tree confirmed dead settles the close (``_sp_shared.teardown_confirmed``).
+            sid = getattr(self._handle, "session_id", None)
+            if not (killed and _sp_shared.teardown_confirmed(self._runtime, sid, killed=True)):
+                _sp_shared.note_unconfirmed_teardown(self, self._runtime, sid)
         else:
             # Session-sharing subagent: the runtime is SHARED with co-tenant
             # sessions (parent + sibling subagents), so we must NOT kill it.
@@ -694,10 +711,31 @@ class AcpSessionProvider(LLMProvider):
                             "AcpSessionProvider.shutdown: session cancel failed", exc_info=True
                         )
             finally:
+                destroyed = False
                 try:
-                    await self._handle.destroy()
+                    if (
+                        getattr(self._handle, "keep_transcript", False) is True
+                        and self._runtime.can_release() is True
+                    ):
+                        # A host whose teardown verb deletes the record (KAS) but
+                        # that can free a session and keep it: the record is
+                        # ``spawn_continue``'s resume material, so the session is
+                        # closed instead, and the tombstone pruner deletes the
+                        # record with the run folder.
+                        with self._runtime.keep_record_on_teardown(self._handle.session_id):
+                            await self._handle.destroy()
+                    else:
+                        await self._handle.destroy()
+                    destroyed = True
                 except Exception:
                     logger.debug("AcpSessionProvider.shutdown: destroy failed", exc_info=True)
+                # Same judge as every other teardown branch (``teardown_confirmed``).
+                sub_sid = getattr(self._handle, "session_id", None)
+                if not (
+                    destroyed
+                    and _sp_shared.teardown_confirmed(self._runtime, sub_sid, killed=False)
+                ):
+                    _sp_shared.note_unconfirmed_teardown(self, self._runtime, sub_sid)
             # destroy() deletes the shared-subagent session transcript
             # (~/.kiro/sessions/cli/{sid}.json+.jsonl); no separate cleanup call
             # needed. cleanup_session() below remains for the LLMProvider API.
@@ -1372,12 +1410,18 @@ class AcpSessionProvider(LLMProvider):
         on its own harness state (``ClaudeSharedSession``); every other session
         has none and reads ``""``, as ``LLMProvider`` does.
         """
+        return self._harness_state_text("settings_withheld_cause")
+
+    def settings_withheld_reason(self, *, with_fix: bool = False) -> str:
+        """The clause for that withholding, off the same harness state, or ``""``."""
+        return self._harness_state_text("settings_withheld_reason", with_fix=with_fix)
+
+    def _harness_state_text(self, name: str, **kwargs: Any) -> str:
+        """The str this session's harness state answers to *name*, or ``""``."""
         handle = self._handle
         states = getattr(self._runtime, "_session_harness_states", None) or {}
-        read = getattr(
-            states.get(handle.session_id) if handle else None, "settings_withheld_cause", None
-        )
-        value = read() if callable(read) else ""
+        read = getattr(states.get(handle.session_id) if handle else None, name, None)
+        value = read(**kwargs) if callable(read) else ""
         return value if isinstance(value, str) else ""
 
     def advertised_commands(self) -> list[dict[str, str]]:
@@ -1768,9 +1812,11 @@ class AcpSessionProvider(LLMProvider):
         """This session's MCP registration report."""
         return self._handle.mcp_session_report()
 
-    async def wait_for_declared_mcp(self, timeout: float) -> tuple[str, ...]:
+    async def wait_for_declared_mcp(
+        self, timeout: float, skip: tuple[str, ...] = ()
+    ) -> tuple[str, ...]:
         """Hold the first prompt until the spec's servers report (see the handle)."""
-        return await self._handle.wait_for_declared_mcp(timeout)
+        return await self._handle.wait_for_declared_mcp(timeout, skip)
 
     def get_valid_effort_levels(self) -> list[str]:
         """Valid effort levels from config options."""

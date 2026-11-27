@@ -35,7 +35,16 @@ def request_server(name: str, args: dict[str, Any]) -> str:
     )
     if not session:
         return refusal
-    keys = ("action", "server", "source", "registry_id", "entry", "uses_chat_folder", "reason")
+    keys = (
+        "action",
+        "server",
+        "source",
+        "registry_id",
+        "entry",
+        "uses_chat_folder",
+        "target",
+        "reason",
+    )
     body = {k: args[k] for k in keys if k in args}
     result = mcp_core._post(REQUEST_SERVER_PATH, body, session_key=session)
     if not isinstance(result, dict):

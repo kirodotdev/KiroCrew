@@ -147,6 +147,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "sid_head_pending": ("function", False, "1eda252b53bd", "session_map"),
     "sid_unlanded_pending": ("function", False, "1eda252b53bd", "session_map"),
     "slack_link_nonce": ("function", False, "f1d40e624ae4", "session_map_links"),
+    "slack_thread_owners": ("function", False, "97707b44cd84", "session_map_links"),
     "stamp_privacy_headers": ("function", True, "fa6cfecd5574", "session_map"),
     "writes_refused": ("function", False, "a6632a57e602", "session_map_store"),
 }

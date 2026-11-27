@@ -123,6 +123,16 @@ describe('usePreviewFlagServerSync', () => {
     expect(result.current).toBe(true)
   })
 
+  it('re-reads the offered launch lanes once the gateway accepts a toggle', async () => {
+    const qc = newClient()
+    mountSync(qc)
+    await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    act(() => { setPreviewFlag(PREVIEW_EXPLORE, true) })
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['cloud', 'provisioners'] }))
+    expect(patchSpy).toHaveBeenCalled()
+  })
+
   it('does not flip a switch back while its write is still in flight', async () => {
     let release: () => void = () => {}
     patchSpy.mockImplementation(async (path: string, value: unknown) => {

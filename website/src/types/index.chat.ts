@@ -407,6 +407,10 @@ export interface ChatSlot extends TurnIdentityFields {
    *  chat shows its pending approvals and question cards, and the mate's
    *  Sessions tab lists such rows. Absent elsewhere. */
   mate_root?: string
+  /** On a crewmate thread's own row: `dashboard.show_bot_sessions_in_list`
+   *  (`crew_mode.MATE_LISTED_FIELD`). True keeps the sessions it dispatched in the
+   *  person's session lists (`mateThreadsHidingSessions`). Absent elsewhere. */
+  bot_sessions_listed?: boolean
   /** True on a conversation that started in Slack while
    *  `slack.show_in_session_list` is off (`dashboard/slack_session_list.py`).
    *  The person's session lists leave it out unless it is the open session
@@ -440,6 +444,11 @@ export interface ChatSlot extends TurnIdentityFields {
    * for the user, a terminal error and a tool-approval prompt still surface.
    * Durable, like `pinned`. */
   muted?: boolean
+  /** The user-owned per-session PR and Issue chip switch, set from the session
+   * menu. When true the gateway sends this row no `source_links` (and
+   * `source_links_total` 0) and refreshes none of its chips' status. Durable,
+   * like `muted`. */
+  source_links_off?: boolean
   /** The session tree's parent edge for this slot, attached to every row by
    * `_attach_slot_parents`: `{slot, key}`, or null when this slot has no parent.
    * `slot` is the parent's own citation and `key` names the parent's row IN THIS
@@ -717,6 +726,10 @@ export interface SubagentActivity {
   childSession?: string
   status: 'pending' | 'running' | 'tool' | 'done' | 'error' | 'stopped'
   streaming: string; lastTool: string
+  /** The agent's reasoning, from `subagent_thinking` frames, drawn above the
+   *  card's Output. Client-only and bounded, as the chat's own thinking is: no
+   *  snapshot or done frame carries it. */
+  thinking?: string
   startedAt: number; elapsed: number; credits?: number; error?: string
   /** The finished run's dollar cost, from a harness that bills in dollars. */
   costUsd?: number
@@ -766,6 +779,16 @@ export interface SubagentActivity {
    *  done-event result is stored here. Managed cards leave this unset and use
    *  the on-demand DiskLoader to keep Redux memory bounded. */
   result?: string
+  /** A sub-agent the KAS engine runs inside the chat's own turn (the gateway's
+   *  `engine: true` on its spawn/done/snapshot frames, set only for a chat with
+   *  the `kas_subagents` preview on). It has no run of its own: it cannot be
+   *  stopped or retried alone, and the engine reports no credits or model for
+   *  it. Every other `native:*` card leaves this unset. */
+  engine?: boolean
+  /** The turn an engine sub-agent belongs to: the gateway's random per-turn key
+   *  (`engine_turn` on its frames), so the chat draws one turn's sub-agents as one
+   *  batch card. */
+  engineTurn?: string
 }
 
 /** Where `clampToolOutput` (wire.ts in store/chat) removed the middle of a tool

@@ -52,7 +52,6 @@ const APPS = [
   ['mochi', 'mochi', 'mochi', '/mochi', 'shot-1-gallery.png'],
   ['ops-mission-control', 'ops_mission_control', 'ops-mission-control', '/ops-mission-control'],
   ['papyrus', 'papyrus', 'papyrus', '/papyrus'],
-  ['personal-shopper', 'personal_shopper', 'personal-shopper', '/personal-shopper'],
   ['pptx-maker', 'pptx_maker', 'pptx-maker', '/pptx-maker'],
   ['spec-builder', 'spec_builder', 'spec-builder', '/spec-builder'],
   ['workflows', 'workflows', 'workflows', '/workflows'],
@@ -118,9 +117,6 @@ const FIXTURES = {
     entries: [], stats: { total: 0, promoted: 0, demoted: 0 },
   },
   '/api/apps/papyrus/projects': { projects: [] },
-  '/api/apps/personal-shopper/history': { items: [] },
-  '/api/apps/personal-shopper/preferences': { preferences: [] },
-  '/api/apps/personal-shopper/groups': { groups: [] },
   '/api/apps/pptx-maker/engine': {
     ready: true, clone: true, venv: true, pinnedTag: 'v1',
     provision: { state: 'done', log: '', elapsed: 0 },

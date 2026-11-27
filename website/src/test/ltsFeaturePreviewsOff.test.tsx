@@ -206,6 +206,13 @@ describe('LTS: Feature Previews off', () => {
     for (const entry of entries) expect(settingEntryOffered(entry, GOVERNANCE)).toBe(false)
   })
 
+  it('Settings search offers no Worker status under the reply card', () => {
+    const entry = SETTINGS_REGISTRY.find(e => e.id === 'developer.worker-status-under-the-reply')
+    expect(entry).toBeDefined()
+    lockLts()
+    expect(entry && settingEntryOffered(entry, GOVERNANCE)).toBe(false)
+  })
+
   it('Settings search offers no Visual refresh card', () => {
     const entry = SETTINGS_REGISTRY.find(e => e.id === 'developer.visual-refresh')
     expect(entry).toBeDefined()
@@ -293,7 +300,7 @@ describe('LTS: Debug tools hidden', () => {
     lockLts()
     await renderPanel()
     const names = within(screen.getByRole('listbox', { name: 'Developer' })).getAllByRole('option').map(o => o.textContent?.trim())
-    expect(names).toEqual(['Feature Previews', 'Logs', 'System', 'Telemetry', 'Storage', 'Memory', 'Config', 'Archive'])
+    expect(names).toEqual(['Feature Previews', 'Logs', 'System', 'Telemetry', 'Storage', 'Config', 'Archive'])
   })
 
   it('its page path heals to the first page', async () => {

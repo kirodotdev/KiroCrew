@@ -51,7 +51,7 @@ from kiro_crew.apps.registry_pipeline.sources import (
 )
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
     _GIT_CLONE_LOCALE,
-    _git_network_env,
+    _git_network_step_env,
     _proxy_env_has_credentials,
     anonymous_git_env,
     minimal_env,
@@ -491,17 +491,23 @@ async def _git_fetch_ref(
             # Spelled as the sandbox spells its home (`str(Path.home())`), so the
             # lift names the exact path of the tier's mask.
             visible = (os.path.join(str(Path.home()), ".config", "gh"),)
+        # The wrap re-judges the forward on the tier it applies; the network step's
+        # environment takes the one it reports, not the request.
+        forward_applied: list[bool] = []
         sandboxed, _cleanup = await wrap_argv_async(
             argv,
             mode=sandbox_mode,
             forward_ssh_auth_sock=fwd,
+            forward_ssh_auth_sock_out=forward_applied if fwd else None,
             extra_visible_dirs=visible,
             _prepare=wrap_argv,
         )
         sandboxed = cgroup_scope_argv(sandboxed)
         if network:
-            process_env = _git_network_env(
-                _git_transport_env(credential_target, git_url, clone_env), git_url
+            process_env = await _git_network_step_env(
+                _git_transport_env(credential_target, git_url, clone_env),
+                git_url,
+                forward_applied=forward_applied,
             )
             if gh_path:
                 process_env = _gh_credential_env(process_env, gh_path)
@@ -898,7 +904,11 @@ async def _git_clone_or_pull(
     )
 
     clone_env = anonymous_git_env() if index_originated else minimal_env()
-    sandbox_mode = "strict" if index_originated else _context_clone_sandbox_mode(git_url)
+    sandbox_mode = (
+        "strict"
+        if index_originated
+        else await asyncio.to_thread(_context_clone_sandbox_mode, git_url)
+    )
     forward_sock = not index_originated  # an index entry never reaches the owner's ssh-agent
     # SSRF gate: refuse to clone/pull from a host the owner does not explicitly
     # trust (public forge or configured registry). The git_url may originate
@@ -1143,6 +1153,7 @@ async def _git_clone_or_pull(
             # layer but must not replace the wrap_argv sandbox on this
             # agent-influenced git spawn. The hooks/fsmonitor neutralizer is spliced
             # right after ``git`` so a repo-shipped hook cannot run during the pull.
+            pull_applied: list[bool] = []
             pull_cmd, _cleanup = await wrap_argv_async(
                 [
                     "git",
@@ -1155,11 +1166,14 @@ async def _git_clone_or_pull(
                 ],
                 mode=sandbox_mode,
                 forward_ssh_auth_sock=forward_sock,
+                forward_ssh_auth_sock_out=pull_applied if forward_sock else None,
                 _prepare=wrap_argv,
             )
             pull_cmd = cgroup_scope_argv(pull_cmd)
-            pull_env = _git_network_env(
-                _git_transport_env(credential_target, git_url, clone_env), git_url
+            pull_env = await _git_network_step_env(
+                _git_transport_env(credential_target, git_url, clone_env),
+                git_url,
+                forward_applied=pull_applied,
             )
             pull_env["LC_ALL"] = _GIT_CLONE_LOCALE
             proc = await create_subprocess_limited(
@@ -1264,12 +1278,19 @@ async def _git_clone_or_pull(
             git_url,
             str(dest),
         ]
+        clone_applied: list[bool] = []
         sandboxed_cmd, _cleanup = await wrap_argv_async(
-            clone_cmd, mode=sandbox_mode, forward_ssh_auth_sock=forward_sock, _prepare=wrap_argv
+            clone_cmd,
+            mode=sandbox_mode,
+            forward_ssh_auth_sock=forward_sock,
+            forward_ssh_auth_sock_out=clone_applied if forward_sock else None,
+            _prepare=wrap_argv,
         )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-        transport_env = _git_network_env(
-            _git_transport_env(credential_target, git_url, clone_env), git_url
+        transport_env = await _git_network_step_env(
+            _git_transport_env(credential_target, git_url, clone_env),
+            git_url,
+            forward_applied=clone_applied,
         )
         transport_env["LC_ALL"] = _GIT_CLONE_LOCALE
 

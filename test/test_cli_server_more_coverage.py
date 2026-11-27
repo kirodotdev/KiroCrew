@@ -1739,6 +1739,28 @@ def test_status_prints_the_session_map_remedy_only_while_writes_are_refused(
     assert "Session map:" not in capsys.readouterr().out
 
 
+def test_status_says_the_entry_port_is_closed_only_while_it_is(monkeypatch, capsys) -> None:
+    import io
+    import json
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    payloads = [{"entry_port_closed": "rebinding failed"}, {"entry_port_closed": ""}, {}]
+
+    @contextmanager
+    def _urlopen(url, timeout):
+        yield io.BytesIO(json.dumps(payloads.pop(0)).encode())
+
+    monkeypatch.setattr(cli_server, "loopback_urlopen", _urlopen)
+    monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 7777)
+    cli_server._status(SimpleNamespace(port=None))
+    out = capsys.readouterr().out
+    assert "  Entry port:  closed; restart the gateway to open it again\n" in out
+    for _ in range(2):
+        cli_server._status(SimpleNamespace(port=None))
+        assert "Entry port:" not in capsys.readouterr().out
+
+
 class TestApproveBusyVsDown:
     """The update-approve CLI path reports a slow gateway as busy, and a
     refused connection as not running. It carries a single-use nonce, so the
@@ -1777,6 +1799,41 @@ class TestApproveBusyVsDown:
         out = capsys.readouterr().out
         assert "is armed" in out and "next start" in out
         assert "is applying" not in out
+
+    def test_update_approve_names_the_restart_an_applying_answer_needs(
+        self, monkeypatch, capsys
+    ) -> None:
+        import contextlib
+        import io
+
+        from kiro_crew.platform import update_capability, update_stepup
+
+        monkeypatch.setattr(
+            update_capability,
+            "derive_capability",
+            lambda: types.SimpleNamespace(managed_by="source"),
+        )
+        pending = types.SimpleNamespace(
+            version="1.2.3", channel="stable", expires_in=60, nonce="n" * 64
+        )
+        monkeypatch.setattr(update_stepup, "read_pending", lambda: pending)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 7777)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _p, **_kw: "")
+        monkeypatch.setattr(
+            cli_server,
+            "_owner_verified_secret_urlopen",
+            lambda *a, **k: contextlib.closing(
+                io.BytesIO(b'{"ok": true, "status": "applying", "version": "1.2.3"}')
+            ),
+        )
+
+        cli_server._update_approve()
+
+        out = capsys.readouterr().out
+        # The gateway never restarts for an update: the line names the
+        # restart the person runs, and promises no restart of its own.
+        assert "kirocrew restart" in out
+        assert "restart itself" not in out
 
     def test_update_approve_timeout_reports_busy(self, monkeypatch, capsys) -> None:
         from kiro_crew.platform import update_capability, update_stepup

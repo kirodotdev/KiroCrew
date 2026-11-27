@@ -20,7 +20,9 @@ from kiro_crew import mate_capabilities, mate_spec_policy, mate_worker
 from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.config import paths
 
-UNJUDGED = "(touch|mkdir).*"
+# A group with a class inside: the projection cannot split it into deny globs, so
+# it stays one nobody can check.
+UNJUDGED = "(touch|mk[a-z]+).*"
 SETTINGS = {"shell": {"deniedCommands": [UNJUDGED]}, "read": {"deniedPaths": ["/secret"]}}
 FILE = {"name": "pixel", "tools": [], "mcpServers": {}, "toolsSettings": SETTINGS}
 
@@ -34,6 +36,12 @@ def mate(tmp_path, monkeypatch):
     monkeypatch.setattr(mate_capabilities, "mate_agents_dir", lambda: mates)
     monkeypatch.setattr(mate_capabilities, "worker_summary", lambda member, catalog: None)
     return mates / "pixel.json"
+
+
+def test_a_plain_group_alternation_is_a_deny_the_worker_can_check():
+    """A group of plain words splits into one deny glob per branch, so it is judged."""
+    split = {**FILE, "toolsSettings": {"shell": {"deniedCommands": ["(touch|mkdir).*"]}}}
+    assert mate_spec_policy.unjudged_denies(split) == []
 
 
 def _body(action: str = "remove") -> dict:

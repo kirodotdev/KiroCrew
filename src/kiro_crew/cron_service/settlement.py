@@ -81,6 +81,7 @@ def freeze_terminal_record(
     record.run_generation = run_generation
     record.last_status = last_status
     record.last_error = last_error
+    record.last_error_kind = ""
     record.last_run_ts = last_run_ts
     record.auto_paused_at_start = auto_paused_at_start
     if park_one_shot and record.schedule.kind == "at":

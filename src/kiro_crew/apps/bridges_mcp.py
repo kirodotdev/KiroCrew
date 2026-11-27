@@ -47,6 +47,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.env import emit_env
 from kiro_crew.executors import maintenance_executor
+from kiro_crew.mcp_provenance import SOURCE_KEY
 from kiro_crew.platform.governance import strip_ungoverned_auto_approve
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.user_json import loads_mcp_config
@@ -1096,6 +1097,10 @@ def _register_mcp_servers(
                     if isinstance(env, dict):
                         _warn_unresolved_secret_refs(app_name, server_name, env)
                         cfg = {**cfg, "env": emit_env(env)}
+            if isinstance(cfg, dict):
+                # The rebuild stamps the entries it mounts the same way; the stamp
+                # is how the app's ownership of the mounted alias is read back.
+                cfg = {**cfg, SOURCE_KEY: namespaced}
             servers[namespaced] = cfg
             registered.append(namespaced)
         # LAST governance pass before this map hits disk. A verb an entry here

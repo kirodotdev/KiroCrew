@@ -61,7 +61,7 @@ def _call(method: str, path: str, body: dict[str, Any] | None, port: int | None)
     except OSError as exc:
         print(
             f"The memory provider is reached through the gateway, which is not running ({exc}). "
-            "Start it with `kirocrew start`.",
+            "Start it with `kirocrew gateway`.",
             file=sys.stderr,
         )
         sys.exit(2)

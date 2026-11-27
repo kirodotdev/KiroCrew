@@ -270,6 +270,11 @@ def _restore_locked(batch_id: str, uids: list[str] | None = None) -> int:
             _return_crew_logs(batch_id, uid, crew_back)
             remaining.append(entry)
             continue
+        # The move to trash marked these stems so no search cache build read them
+        # while they moved out; the chat is back, so it may be cached again.
+        from kiro_crew import chat_search_cache
+
+        chat_search_cache.untrash(crew_sessions, transcript_keys)
         _release_restored_holds(crew_back)
         _release_crew_holds(batch_id, uid)
         restored += 1

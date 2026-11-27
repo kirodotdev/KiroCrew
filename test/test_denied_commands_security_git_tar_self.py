@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
 from denied_commands_security_helpers import _denied_by, _rule_pattern
+from named_cases_helpers import named_cases
 
 from kiro_crew import security
 from kiro_crew.security import BUILTIN_DENIED_RULES
@@ -928,18 +929,17 @@ class TestSandboxEscapeGitTarSelf:
     # exactly as the ssh floor reads ``ss''h``/``s*h``: the raw text carries no
     # literal ``git``/``tar`` (or not as the program word), so the quick gate
     # and the verb match must both see through the spelling.
-    _SPELLED_VERB_SELF = [
-        "gi''t fetch -q localhost:x",
-        '"git" clone localhost:x',
-        "g*t clone localhost:x",
-        "/usr/bin/g?t clone localhost:x",
-        "t''ar -cf localhost:x d",
-    ]
-
-    @pytest.mark.parametrize("cmd", _SPELLED_VERB_SELF)
-    def test_quoted_or_globbed_verb_to_self_is_denied(self, cmd):
-        assert security._is_git_tar_to_self(cmd), cmd
-        assert _denied_by(cmd) == self._RULE, cmd
+    _SPELLED_VERB_SELF = named_cases(
+        "test_quoted_or_globbed_verb_to_self_is_denied",
+        "cmd",
+        [
+            "gi''t fetch -q localhost:x",
+            '"git" clone localhost:x',
+            "g*t clone localhost:x",
+            "/usr/bin/g?t clone localhost:x",
+            "t''ar -cf localhost:x d",
+        ],
+    )
 
     # The same spellings against a remote that is not this host stay allowed.
     _SPELLED_VERB_REMOTE = [
@@ -1114,7 +1114,8 @@ class TestSandboxEscapeGitTarSelf:
 
     # git percent-decodes a URL authority before dialing, so the self check
     # reads the DECODED host.
-    @pytest.mark.parametrize(
+    _PERCENT_ENCODED_SELF = named_cases(
+        "test_percent_encoded_self_host_is_denied",
         "cmd",
         [
             "git ls-remote --upload-pack='sh -c id' ssh://local%68ost/x",
@@ -1123,9 +1124,6 @@ class TestSandboxEscapeGitTarSelf:
         ],
         ids=["encoded-host", "encoded-ip", "alias-encoded-host"],
     )
-    def test_percent_encoded_self_host_is_denied(self, cmd):
-        assert security._is_git_tar_to_self(cmd), cmd
-        assert _denied_by(cmd) == self._RULE, cmd
 
     def test_percent_encoded_remote_host_stays_allowed(self):
         # Decoding only ever reveals a literal self host; a decoded remote host
@@ -1138,7 +1136,8 @@ class TestSandboxEscapeGitTarSelf:
     # sub-commands, so the git/tar verb after ``cd``/``true`` is read; a
     # single-command payload and a quoted separator at the TOP level are
     # unchanged.
-    @pytest.mark.parametrize(
+    _NESTED_PAYLOAD_SELF = named_cases(
+        "test_nested_multi_command_payload_to_self_is_denied",
         "cmd",
         [
             "sh -c 'cd /; git clone ssh://127.0.0.1/r'",
@@ -1148,9 +1147,6 @@ class TestSandboxEscapeGitTarSelf:
         ],
         ids=["nested-semicolon-git", "nested-andand-tar", "nested-semicolon-scp", "single-command"],
     )
-    def test_nested_multi_command_payload_to_self_is_denied(self, cmd):
-        assert security._is_git_tar_to_self(cmd), cmd
-        assert _denied_by(cmd) == self._RULE, cmd
 
     def test_nested_payload_comment_is_data_at_its_own_level(self):
         # The ``#`` is a comment at the payload's OWN level, so ``localhost:y``
@@ -1241,7 +1237,8 @@ class TestSandboxEscapeGitTarSelf:
     # ``;``, ``&&`` or ``|`` there is data, so it never ends the read of the
     # argv that follows it.  A newline inside the value is plain whitespace to
     # tar's splitter, in a literal single-quoted value and in ``$'...'`` alike.
-    @pytest.mark.parametrize(
+    _TAR_OPTIONS_SEPARATOR_SELF = named_cases(
+        "test_tar_options_separator_words_are_data",
         "cmd",
         [
             "TAR_OPTIONS='; x' tar -cf localhost:x d",
@@ -1278,7 +1275,19 @@ class TestSandboxEscapeGitTarSelf:
             "exported-and-list",
         ],
     )
-    def test_tar_options_separator_words_are_data(self, cmd):
+
+    # Each self transport above is hidden from a plain reading: a quoted or globbed
+    # verb, a percent-encoded host, a nested payload or a ``TAR_OPTIONS`` separator.
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            *_SPELLED_VERB_SELF,
+            *_PERCENT_ENCODED_SELF,
+            *_NESTED_PAYLOAD_SELF,
+            *_TAR_OPTIONS_SEPARATOR_SELF,
+        ],
+    )
+    def test_a_hidden_transport_to_self_is_denied(self, cmd):
         assert security._is_git_tar_to_self(cmd), cmd
         assert _denied_by(cmd) == self._RULE, cmd
 
@@ -1534,7 +1543,8 @@ class TestSandboxEscapeGitTarSelf:
     # Git's sq-quote ``'\''`` is masked only inside an open single quote.  Outside
     # one, ``x'\''abc'`` is ``x``, a quoted ``\`` and ``'abc'``, so the ``;`` after it
     # is a real separator and the git command after it is read.
-    @pytest.mark.parametrize(
+    _SQ_ESCAPE_OUTSIDE_A_QUOTE = named_cases(
+        "test_sq_escape_outside_a_quote_keeps_the_separator",
         ("cmd", "denied"),
         [
             ("echo x'\\''abc' ; git clone ssh://localhost/x", True),
@@ -1551,10 +1561,6 @@ class TestSandboxEscapeGitTarSelf:
             "ssh-url-after-separator",
         ],
     )
-    def test_sq_escape_outside_a_quote_keeps_the_separator(self, cmd, denied):
-        assert (_denied_by(cmd) == self._RULE) is denied, cmd
-        if not denied:
-            assert _denied_by(cmd) is None, cmd
 
     @pytest.mark.parametrize(
         ("cmd", "commands"),
@@ -1581,7 +1587,8 @@ class TestSandboxEscapeGitTarSelf:
     # data.  The commands the shell reader finds are read too, and a quote the
     # shell reader cannot close either is refused (fail closed).  A quote in a
     # comment or a here-document body, or after an ANSI-C ``\'``, opens nothing.
-    @pytest.mark.parametrize(
+    _FRAME_LEFT_INSIDE_A_QUOTE = named_cases(
+        "test_frame_left_inside_a_quote_fails_closed",
         ("cmd", "denied"),
         [
             ("echo 'abc ; git clone ssh://localhost/x", True),
@@ -1602,7 +1609,13 @@ class TestSandboxEscapeGitTarSelf:
             "heredoc-apostrophe-control",
         ],
     )
-    def test_frame_left_inside_a_quote_fails_closed(self, cmd, denied):
+
+    # Both lists above: the quote state decides whether a separator is real, and so
+    # whether the git command after it is read; a quote no reader can close is refused.
+    @pytest.mark.parametrize(
+        ("cmd", "denied"), [*_SQ_ESCAPE_OUTSIDE_A_QUOTE, *_FRAME_LEFT_INSIDE_A_QUOTE]
+    )
+    def test_the_quote_state_decides_what_a_separator_ends(self, cmd, denied):
         assert (_denied_by(cmd) == self._RULE) is denied, cmd
         if not denied:
             assert _denied_by(cmd) is None, cmd
@@ -1681,6 +1694,34 @@ class TestSandboxEscapeGitTarSelf:
         ],
     )
     def test_heredoc_body_a_shell_runs_is_refused(self, cmd, rule):
+        assert _denied_by(cmd) == rule, cmd
+
+    # A quote inside a here-document body is data: bash reads the text after the
+    # closing line with no quote open. The floor's second reading removes each body
+    # and its closing line, so a transport written after a body, or between two
+    # bodies, is read as the command bash runs. A remote host stays allowed.
+    @pytest.mark.parametrize(
+        ("cmd", "rule"),
+        [
+            ("cat <<EOF\nit's\nEOF\ngit clone localhost:/srv/repo.git\n# '", _RULE),
+            ("cat <<A\nit's\nA\ngit clone localhost:/srv/repo.git\ncat <<B\nok'\nB", _RULE),
+            ("cat <<EOF\nit's\nEOF\ntar -cf localhost:/x .\n# '", _RULE),
+            ("cat <<EOF\nit's\nEOF\ntar -cf - x | ssh localhost tar -xf -\n# '", _SSH_RULE),
+            ("cat <<EOF\nit's\nEOF\ngit clone github.com:/srv/repo.git\n# '", None),
+            ("cat <<A\nit's\nA\ngit clone github.com:/srv/repo.git\ncat <<B\nok'\nB", None),
+            ("cat > notes.md <<'EOF'\nit's\ngit clone localhost:/srv/repo.git\nEOF", None),
+        ],
+        ids=[
+            "after-body",
+            "between-two-bodies",
+            "tar-after-body",
+            "tar-over-ssh-after-body",
+            "after-body-remote-host",
+            "between-two-bodies-remote-host",
+            "inside-data-body",
+        ],
+    )
+    def test_transport_after_a_heredoc_body_is_read_unquoted(self, cmd, rule):
         assert _denied_by(cmd) == rule, cmd
 
     # An unquoted tag runs each ``$( )`` and backtick in the body, so a transport

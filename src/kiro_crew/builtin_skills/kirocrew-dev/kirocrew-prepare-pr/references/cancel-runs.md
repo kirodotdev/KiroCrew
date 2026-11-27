@@ -15,4 +15,4 @@ gh api "repos/<owner>/<repo>/actions/runs?head_sha=$OLD_SHA&per_page=100" \
 ```
 
 Leave a reviewer lane running while its verdict still decides *whether* to fix; a
-flake gets a rerun after *Before you rerun a red test* below, not a cancel.
+flake gets a rerun after `references/rerun-red.md` (*Before you rerun a red test*), not a cancel.

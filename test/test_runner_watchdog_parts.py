@@ -104,6 +104,8 @@ BASE_NAMES = frozenset("""
     top_up_unread_evidence urllib workflow_has_ref_or_pr_concurrency
     workflow_is_heal_safe_at_revision workflow_text_has_publish_or_deploy_step
     workflow_text_is_heal_safe
+    _attempt_started _human_only_shape exempt_held_line saturation_holding_exempt_orphan
+    report_exempt_orphans unjudged_line unjudged_queued_runs
     """.split())
 
 

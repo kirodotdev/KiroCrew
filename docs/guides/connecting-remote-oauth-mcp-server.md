@@ -43,6 +43,11 @@ precedence (highest wins for a same-named server; different names are additive):
 | 2 | workspace `.kiro/settings/mcp.json` | you |
 | 3 (lowest) | global `~/.kiro/settings/mcp.json` | you |
 
+A server in the workspace `.kiro/settings/mcp.json` starts only after you allow
+it in that folder: the chat holds it back and shows an **Allow** card first
+(see [../architecture/mcp.md](../architecture/mcp.md), "A folder's own MCP
+servers wait for the person").
+
 At render time the gateway **merges the Kiro global into the agent file**, so
 the agent file is the superset kiro-cli actually loads — see
 [../architecture/mcp.md](../architecture/mcp.md) ("Config file hierarchy" and
@@ -138,17 +143,18 @@ Once the agent can see the entry, the next session start runs OAuth for it.
 ## Authenticate it
 
 With the server configured and granted, **start a session** — that is the whole
-trigger. kiro-cli connects to the server, is met with a `401`, and runs OAuth
-itself
+trigger. The harness (kiro-cli, or the KAS engine on the default KAS backend)
+connects to the server, is met with a `401`, and runs OAuth itself
 ([../architecture/design-notes/mcp-oauth-ownership.md](../architecture/design-notes/mcp-oauth-ownership.md),
-"Path A"). There is no command to type: kiro-cli owns the OAuth chain end to
+"Path A"). There is no command to type: the harness owns the OAuth chain end to
 end, and Kiro Crew's only view of it is the one-directional `_kiro.dev/*`
 notifications.
 
 **The authorization URL is never printed into the transcript as text**, so a
 session that comes up with no visible mention of the server is not a silent
 failure. kiro-cli hands the URL to Kiro Crew over the ACP notification
-`_kiro.dev/mcp/oauth_request`
+`_kiro.dev/mcp/oauth_request` (KAS sends `_kiro/openExternalUrl`, which Kiro
+Crew maps to the same request)
 ([../reference/kiro-cli/acp.md](../reference/kiro-cli/acp.md), "MCP server
 events"), and Kiro Crew renders it as an **inline banner** in chat — a lock
 icon, `miro requires authentication.`, and an **Authorize** link that opens the

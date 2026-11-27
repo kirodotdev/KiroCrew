@@ -157,6 +157,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "_trust": ("property", False, False, "(self) -> 'bool'"),
     "_trust_reads": ("property", False, False, "(self) -> 'bool'"),
     "_turn_timeout_hydrated": ("property", False, False, "(self) -> 'bool'"),
+    "_fold_head": ("function", False, False, "(self, excess: 'int') -> 'None'"),
     "_note_enqueue": ("function", False, False, "(self) -> 'None'"),
     "_pr_source_links": ("function", False, False, "(self) -> 'list[dict]'"),
     "_retry_deferred_release": ("function", False, False, "(self) -> 'int'"),
@@ -285,7 +286,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, content: 'str', kind: 'str' = '', meta: 'dict | None' = None, *, "
         "directive_user_origin: 'bool' = False, directive_channel_origin: 'bool' = "
-        "False, directive_owner_origin: 'bool' = False) -> 'str'",
+        "False, directive_owner_origin: 'bool' = False, source_channels: "
+        "'tuple[str, ...]' = ()) -> 'str'",
     ),
     "queue_depth": ("property", False, False, "(self) -> 'int'"),
     "queue_edit_by_id": (
@@ -305,7 +307,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "None, on_irreversibly_consumed: 'Callable[[], Awaitable[None] | None] | "
         "None' = None, directive_user_origin: 'bool' = False, "
         "directive_channel_origin: 'bool' = False, directive_owner_origin: 'bool' = "
-        "False) -> 'str'",
+        "False, source_channels: 'tuple[str, ...]' = ()) -> 'str'",
     ),
     "queue_persist_pending": ("property", False, False, "(self) -> 'bool'"),
     "queue_pop": ("function", False, False, "(self, index: 'int' = 0) -> 'dict[str, Any]'"),
@@ -490,6 +492,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_eager_spawn_reported_resume": ("value", "False"),
     "_eager_spawn_retry_at": ("value", "0.0"),
     "_eager_spawn_task": ("value", "None"),
+    "_effort_overlay_clear": ("value", "False"),
     "_effort_pick_gen": ("value", "0"),
     "_engine_promoted_model": ("value", "''"),
     "_embed_question_polled_at": ("value", "None"),
@@ -583,6 +586,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_pending_memory_mode": ("value", "None"),
     "_pending_model_pick": ("value", "None"),
     "_pending_release_deferred": ("value", "False"),
+    "_stream_epoch": ("value", "0"),
+    "_stream_handoffs": ("value", "{}"),
     "_pending_reset_clears_cwd": ("value", "False"),
     "_pending_reset_history_key": ("value", "None"),
     "_pending_rewrite": ("value", "False"),
@@ -776,6 +781,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "segment_removed": ("value", "{}"),
     "segment_shown_sha": ("type", "_hashlib.HASH"),
     "served_model": ("value", "''"),
+    "source_links_off": ("value", "False"),
+    "_source_links_off_hydrated": ("value", "True"),
     "tags": ("value", "[]"),
     "tags_revision": ("type", "builtins.str"),
     "theme_consent": ("value", "False"),
