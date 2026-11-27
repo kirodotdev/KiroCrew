@@ -54,6 +54,10 @@ def test_rewrite_agents_signature_is_pinned_to_fingerprint_inputs() -> None:
         "approvals",
         # Fingerprinted as the ``mate_sources`` input.
         "mate_source_dir",
+        # Fingerprinted through the ``roots_excluded`` input they decide.
+        "cwd_answers",
+        "cwd_bindings",
+        "folder_free",
     }
 
 

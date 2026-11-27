@@ -51,6 +51,8 @@ import {
   waitForMeasurePass,
   autoShareCandidates,
   needsCwdAnswer,
+  asksForLaunch,
+  offersRootsAnswer,
   reloadChats,
   settleSkipped,
   staleDisplayLaunch,
@@ -306,16 +308,17 @@ export function McpManagement({
   // be approved, writes the share straight away carrying its identity. An
   // unapprovable launch turns nothing on and says so; a read failure (a separate
   // table from the write's) likewise reports that nothing was turned on.
+  // `cwdUse` rides along when the folder answer itself waits for this approval.
   const previewLaunch = useMutation({
-    mutationFn: (name: string) => api.mcpGatewayLaunchPreview(name),
-    onSuccess: (preview, name) => {
+    mutationFn: ({ name }: { name: string; cwdUse?: McpCwdUse }) => api.mcpGatewayLaunchPreview(name),
+    onSuccess: (preview, { name, cwdUse }) => {
       if (launchIsApprovable(preview)) {
-        setStub.mutate({ name, stub: true, expectedLaunch: preview.expected_launch as string })
+        setStub.mutate({ name, stub: true, expectedLaunch: preview.expected_launch as string, cwdUse })
       } else {
         setError(i18nT('pages.mcpManagement.approval_not_approvable_here'))
       }
     },
-    onError: (err, name) => {
+    onError: (err, { name }) => {
       setError(i18nT(launchPreviewErrorKey(err), { name }))
     },
   })
@@ -331,8 +334,16 @@ export function McpManagement({
     routed: boolean
     approve?: { expectedLaunch: string; refused?: string; trustChanges?: boolean }
   } | null>(null)
+  // `recordOnly` (the roots row's answer) never goes on to share by itself. The
+  // gateway decides whether the answer routes the server: `routing_changed`
+  // says it did, and `expected_launch_required` says its launch must be shown
+  // and approved first, which the preview does with the answer in one request.
   const answerCwd = useMutation({
-    mutationFn: ({ name, answer, routed }: { name: string; answer: McpCwdUse; routed: boolean }) =>
+    mutationFn: ({ name, answer, routed }: { name: string; answer: McpCwdUse; routed: boolean; recordOnly?: boolean }): Promise<{
+      applied?: boolean
+      restart_required?: boolean
+      routing_changed?: boolean
+    }> =>
       answer === 'uses_cwd' && routed
         ? api.mcpGatewaySetStub(name, false, undefined, false, answer)
         : api.mcpGatewaySetCwdUse(name, answer),
@@ -340,7 +351,12 @@ export function McpManagement({
       setCwdAsk(null)
       invalidate()
       if (vars.answer === 'not_used') {
-        if (!vars.routed) previewLaunch.mutate(vars.name)
+        if (res?.routing_changed) {
+          if (res.restart_required) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
+          else if (res.applied === false) setError(i18nT('pages.mcpManagement.stub_not_live'))
+        } else if (!vars.routed && !vars.recordOnly) {
+          previewLaunch.mutate({ name: vars.name })
+        }
       } else {
         setNotice(i18nT('pages.mcpManagement.cwd_kept_per_chat', { name: vars.name }))
         if (vars.routed && res?.restart_required) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
@@ -349,7 +365,8 @@ export function McpManagement({
     onError: (err, vars) => {
       setCwdAsk(null)
       invalidate()
-      setError(i18nT(stubErrorKey(err), { name: vars.name }))
+      if (vars.answer === 'not_used' && asksForLaunch(err)) previewLaunch.mutate({ name: vars.name, cwdUse: 'not_used' })
+      else setError(i18nT(stubErrorKey(err), { name: vars.name }))
     },
   })
 
@@ -983,7 +1000,7 @@ export function McpManagement({
                         server={s}
                         refusal={refusal}
                         busy={busy}
-                        reading={previewLaunch.isPending && previewLaunch.variables === s.name}
+                        reading={previewLaunch.isPending && previewLaunch.variables?.name === s.name}
                         supported={supported}
                         describedBy={describedBy}
                         onShare={() => {
@@ -991,7 +1008,7 @@ export function McpManagement({
                           setRestartNotice(null)
                           setLaunchMovedFor(null)
                           if (needsCwdAnswer(s)) setCwdAsk({ name: s.name, routed: false })
-                          else previewLaunch.mutate(s.name)
+                          else previewLaunch.mutate({ name: s.name })
                         }}
                         onConfirm={expectedLaunch => {
                           setError(null)
@@ -1043,6 +1060,38 @@ export function McpManagement({
                         >
                           <span id={`mcp-cwd-answer-${s.name}`}>{i18nT('pages.mcpManagement.cwd_unanswered_answer')}</span>
                         </button>
+                      </td>
+                    </tr>
+                  )}
+                  {offersRootsAnswer(s) && (
+                    <tr className="block md:table-row">
+                      <td
+                        colSpan={4}
+                        className="block px-3 pb-3 pt-0 text-[12.5px] text-[var(--muted)] md:table-cell md:px-4"
+                      >
+                        <span>{i18nT('pages.mcpManagement.why_roots')}</span>{' '}
+                        <Btn
+                          type="button"
+                          busy={busy}
+                          aria-labelledby={`mcp-roots-answer-${s.name} ${serverNameId(s.name)}`}
+                          onClick={() => {
+                            setError(null)
+                            setRestartNotice(null)
+                            answerCwd.mutate({ name: s.name, routed: false, answer: 'not_used', recordOnly: true })
+                          }}
+                          className="rounded-lg px-3 py-1.5"
+                        >
+                          <span id={`mcp-roots-answer-${s.name}`}>{i18nT('pages.mcpManagement.cwd_roots_not_used')}</span>
+                        </Btn>
+                      </td>
+                    </tr>
+                  )}
+                  {answerCwd.isSuccess && answerCwd.variables.recordOnly && answerCwd.variables.name === s.name && !answerCwd.data?.routing_changed && (
+                    <tr className="block md:table-row" aria-labelledby={`mcp-roots-ready-${s.name}`}>
+                      <td colSpan={4} className="block px-3 pb-3 pt-0 md:table-cell md:px-4">
+                        <p id={`mcp-roots-ready-${s.name}`} role="status" className="text-[12.5px] text-[var(--text)]">
+                          {i18nT('pages.mcpManagement.cwd_roots_share_ready', { name: s.name })}
+                        </p>
                       </td>
                     </tr>
                   )}

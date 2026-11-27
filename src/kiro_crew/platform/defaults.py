@@ -372,6 +372,9 @@ class DefaultMcpToolingProvider:
     def launch_token_normalizer(self, token: str) -> str:
         return token
 
+    def folder_free_mcp_servers(self) -> FrozenSet[str]:
+        return frozenset()
+
 
 class DefaultAgentCatalogProvider:
     """No edition agent-catalog rows — discovery is the on-disk scan only."""

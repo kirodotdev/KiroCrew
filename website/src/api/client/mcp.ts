@@ -85,6 +85,9 @@ export type McpManagedServer = {
   // Optional: an older gateway does not send them.
   cwd_use?: McpCwdUse | null
   cwd_proven?: boolean
+  // The gateway saw this server ask a chat for its roots (`roots/list`): it reads
+  // the chat's project folder, so it cannot share and is never asked.
+  cwd_roots?: boolean
   // True when stubbing this server cannot produce a SHARED backend anyway: the
   // rewriter leaves an env-declaring entry unwrapped rather than spawn a pooled
   // backend without a declared key. Optional for the same reason as
@@ -206,7 +209,8 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
     // Turns it back on from the Sharing row, for a shared server whose launch is approved.
     mcpGatewayTrustChanges: (name: string) => post('/api/mcp-gateway/servers/stub', { name, trust_changes: true }).then(j) as Promise<{ ok: boolean; name: string; trust_changes: true }>,
     // Records the answer to "share this server across chats?" alone.
-    mcpGatewaySetCwdUse: (name: string, cwdUse: McpCwdUse) => post('/api/mcp-gateway/servers/stub', { name, cwd_use: cwdUse }).then(j) as Promise<{ ok: boolean; name: string; restart_required?: boolean }>,
+    // `routing_changed` is true when the answer routed or unrouted the server.
+    mcpGatewaySetCwdUse: (name: string, cwdUse: McpCwdUse) => post('/api/mcp-gateway/servers/stub', { name, cwd_use: cwdUse }).then(j) as Promise<{ ok: boolean; name: string; applied?: boolean; restart_required?: boolean; routing_changed?: boolean }>,
     mcpResolveRefresh: () => post('/api/mcp-gateway/resolve-refresh', {}).then(j) as Promise<{ ok: boolean; reason?: string; resolved: Record<string, 'ready' | 'unresolved' | 'error'>; ready?: string[] }>,
     // Starting a measurement pass returns immediately: it spawns two processes per
     // unmeasured server, so the answer arrives through the progress read, not here.

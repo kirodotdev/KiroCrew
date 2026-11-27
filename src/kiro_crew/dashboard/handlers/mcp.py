@@ -1264,6 +1264,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _env_blocks_every_share,
         _env_decl_branches,
         _env_pooling_outcome,
+        _folder_declarations,
         _freeze_stub_servers,
         _launch_specs_for,
         _load_shareability_state,
@@ -1282,6 +1283,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.mcp_gateway_stubs import (  # noqa: F401
         _MAX_STUB_BATCH,
         _grant_trust_from_row,
+        _launch_already_approved,
         _record_stub_decisions,
         _set_cwd_bindings,
         _stub_eligibility,
@@ -1329,6 +1331,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_mcp_quarantine_clear,
         api_mcp_servers,
     )
+    from kiro_crew.mcp_gateway import folder_use  # noqa: F401
     from kiro_crew.mcp_gateway.launch_approval_heal import forget_trust  # noqa: F401
 
 

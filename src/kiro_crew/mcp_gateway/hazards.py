@@ -60,9 +60,18 @@ HAZARDS_FILENAME = "observed-hazards.json"
 # the contract and must not be renamed without updating the catalogs.
 HAZARD_UNROUTABLE_SERVER_REQUEST = "unroutable_server_request"
 HAZARD_UNATTRIBUTABLE_NOTIFICATION = "unattributable_notification"
+#: The server asked its client for the chat's roots (``roots/list``): it works on
+#: the project folder, so one copy for every chat would mix projects. Unlike the
+#: two above it is recorded with a single client attached too, because the request
+#: itself, not a second tenant, is the evidence (``mcp_gateway.folder_use``).
+HAZARD_ROOTS_REQUESTED = "roots_requested"
 
 _KNOWN_HAZARDS = frozenset(
-    {HAZARD_UNROUTABLE_SERVER_REQUEST, HAZARD_UNATTRIBUTABLE_NOTIFICATION}
+    {
+        HAZARD_UNROUTABLE_SERVER_REQUEST,
+        HAZARD_UNATTRIBUTABLE_NOTIFICATION,
+        HAZARD_ROOTS_REQUESTED,
+    }
 )
 
 # Deliberately NOT bumped for the per-identity shape. A reader that does not know
@@ -442,6 +451,17 @@ def observed_codes(server_name: str, identity: str = "") -> tuple[str, ...]:
     if _sink is None:
         return ()
     return _sink.codes_for(server_name, identity)
+
+
+def retreat_codes(server_name: str, identity: str = "") -> tuple[str, ...]:
+    """Observed hazards that require a private backend for this launch.
+
+    Roots alone follow ``folder_use.roots_keeps_per_chat``, including its saved
+    answer and declaration exceptions. An unroutable request still retreats.
+    """
+    return tuple(
+        code for code in observed_codes(server_name, identity) if code != HAZARD_ROOTS_REQUESTED
+    )
 
 
 def clear_observed(server_name: str) -> bool:

@@ -1468,6 +1468,8 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("mcp_overlay_rewrite", "unknown"),
     ],
     "kiro_crew/mcp_gateway/rewriter.py": [("mcp_overlay_rewrite", "unknown")],
+    # The value-free folder-use scan reads the same agent and crewmate files.
+    "kiro_crew/mcp_gateway/folder_use.py": [("mcp_folder_facts", "unknown")],
     "kiro_crew/slack/handler_runtime/agent_names.py": [("slack_resolve_agent", "slack")],
     # A spawn refused because the parent's allowlist is unknown names each spec
     # the reader refused; this re-read keeps the error class for that text.
