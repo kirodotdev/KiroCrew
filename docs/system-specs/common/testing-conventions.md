@@ -227,7 +227,10 @@ import as a duration-named argument.
   over a real ``SkillsLoader`` on a fresh root passes it through
   ``skills_helpers._settled`` before the first read, so an enumeration, a budget
   screen or an index count never reads the empty answer of a walk still running
-  (``test_skill_budget.TestStartupIndexCounts``, 400 skills, ``assert 0 == 400``). K19 sees only
+  (``test_skill_budget.TestStartupIndexCounts``, 400 skills, ``assert 0 == 400``).
+  ``_settled`` covers the global scope only; a read with ``project_dir`` walks
+  its own scope, so wait on it too (``wait_until`` on ``loader._iter(project)``).
+  K19 sees only
   a wrong override, never a missing one, so trace the asserted value back through
   every budget on its path.
 

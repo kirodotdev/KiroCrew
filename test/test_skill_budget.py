@@ -1267,11 +1267,6 @@ class TestBudgetEndpointAgainstTheRealLoader:
     cold-start budget, which a loaded Windows runner does.
     """
 
-    @pytest.fixture(autouse=True)
-    def _close_loaders(self, close_skills_loaders):
-        # Settling starts each loader's catalog worker; close it and join it.
-        yield
-
     def test_the_budget_computes_over_a_real_loader(self, tmp_path):
         from kiro_crew.dashboard.handlers.skill_budget import _compute_budget
         from kiro_crew.skills import SkillsLoader
@@ -1477,11 +1472,6 @@ class TestStartupIndexCounts:
     exactly the walk that outlasts the two-second cold-start budget on a loaded
     Windows runner, and the render then counts an empty catalog (``0 == 400``).
     """
-
-    @pytest.fixture(autouse=True)
-    def _close_loaders(self, close_skills_loaders):
-        # Settling starts each loader's catalog worker; close it and join it.
-        yield
 
     @staticmethod
     def _seed(skills_root: Path, count: int) -> None:
