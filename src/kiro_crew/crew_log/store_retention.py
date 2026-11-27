@@ -1,9 +1,14 @@
 """Retention, and the session tree's reads of a unit's log: tree edges and spawned children.
 
 ``sweep_expired`` removes a session unit only when the newest of its lifecycle pair
-(``_LIFECYCLE_TYPES``, ``_last_lifecycle_entry``) is a close whose reason proves the id can
-never be resumed (``_TERMINAL_CLOSE_REASONS``) and that close is older than the window
+(``_LIFECYCLE_TYPES``, ``_last_lifecycle_entry``) is a close whose reason proves the unit is
+finished (``_TERMINAL_CLOSE_REASONS``) and that close is older than the window
 (``_expired_unit_id``), and it decides again under the unit's lease (``_still_expired``).
+A ``superseded`` unit another slot's work ledger read still folds is kept
+(``retention_joins.LedgerJoins``), and so is one that holds an entry the owner-served
+fold reads (``holds_owner_served_entry``), since that fold is never carried. ``closed_for_good`` asks the same question of a unit
+without the age, for the writer that decides whether a unit still needs its ``superseded``
+close.
 The session tree's reads of a unit's log sit beside it: ``read_last_tree_edge`` takes the
 newest adoption or release from the tail window the sweep reads, through the same walk
 (``_last_entry_of_types``); ``find_last_tree_edge`` reads every segment when that window
@@ -15,10 +20,11 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from collections.abc import Container
+from collections.abc import Callable, Container
 from functools import partial
 from pathlib import Path
 
+from kiro_crew.crew_log.entry_types import SUPERSEDED_CLOSE_REASON
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION, MAX_ENTRY_BYTES, Entry
 from kiro_crew.crew_log.store_paths import _checked_crew_log_root, _segment_first_seq, logger
@@ -44,23 +50,39 @@ _TYPE_SESSION_OPENED = "session/opened"
 #: about which state the unit is in.
 _LIFECYCLE_TYPES = frozenset({_TYPE_SESSION_OPENED, _TYPE_SESSION_CLOSED})
 
-#: The ONE close reason that is positive proof the session's ACP id can never be
-#: resumed: ``destroy`` deletes that id's mapping outright
-#: (``_session_map.delete``), unconditionally, inside the registry lock and before
-#: this entry is written. An id absent from the map cannot be resumed by anything.
+#: The close reasons that are positive proof a unit is finished, each written by the
+#: gateway only once it established that fact.
+#:
+#: ``destroyed`` proves the session's ACP id can never be resumed: ``destroy`` deletes
+#: that id's mapping outright (``_session_map.delete``), unconditionally, inside the
+#: registry lock and before this entry is written. An id absent from the map cannot be
+#: resumed by anything.
+#:
+#: ``superseded`` proves the unit's SLOT has moved past it with nothing lost. The
+#: emitter writes it on a unit only after a later unit of the same slot carries every
+#: slot fold's state over it (``session/carried``), so no fold needs this unit any
+#: more, and only when no live turn of this process writes it and no session-map key
+#: maps its id. That map read can only WITHHOLD the close, the same read ``destroy``
+#: makes before claiming ``destroyed``: a forged or emptied map makes the gateway
+#: assert less, never more, and this sweep still reads nothing but the crew log.
+#: It proves the unit's own slot is done with it, not every reader: the sweep still
+#: keeps a ``superseded`` unit another slot's work ledger read folds until that slot
+#: carries its own ledger (:mod:`kiro_crew.crew_log.retention_joins`).
 #:
 #: ``reset`` is deliberately NOT here, and the reason is worth stating because the
 #: opposite reading is intuitive: a reset does cold-start its successor on a new
 #: id, but its own ``clear_sid`` is guarded by ``if clear_conversation and session
 #: is not None``, so a reset that keeps the conversation emits
 #: ``session/closed {reset}`` while LEAVING the old id mapped -- still resumable,
-#: and its log still needed. ``discarded`` clears the sid unconditionally and would
-#: qualify on that test, but no path writes that reason into a crew log today, so
-#: admitting it would be a rule about a file nothing produces. Every other reason --
-#: a shutdown, a crash, an eviction, or a spelling this build does not know -- ends
-#: the gateway's SERVICE of the session without ending the id's life.
+#: and its log still needed. Once its successor carries its state and no key maps
+#: it, the same unit gets its ``superseded`` close, which is what retention reads.
+#: ``discarded`` clears the sid unconditionally and would qualify on that test, but
+#: no path writes that reason into a crew log today, so admitting it would be a rule
+#: about a file nothing produces. Every other reason -- a shutdown, a crash, an
+#: eviction, a tab close, or a spelling this build does not know -- ends the
+#: gateway's SERVICE of the session without ending the id's life.
 #:
-#: This reason is the whole authorization for deleting a unit, and it is read from
+#: These reasons are the whole authorization for deleting a unit, and they are read from
 #: the crew log rather than from anything outside it. The obvious alternative -- ask
 #: which sessions are still mapped in ``session_map.json`` and keep those -- was
 #: implemented and then removed, because that file is agent-WRITABLE while this tree
@@ -68,11 +90,11 @@ _LIFECYCLE_TYPES = frozenset({_TYPE_SESSION_OPENED, _TYPE_SESSION_CLOSED})
 #: is revivable" and hands a trusted sweep a positive answer that authorizes
 #: deleting a fenced unit the writer of that file cannot touch directly. Absence of
 #: protection must never be authorization.
-_TERMINAL_CLOSE_REASONS = frozenset({"destroyed"})
+_TERMINAL_CLOSE_REASONS = frozenset({"destroyed", SUPERSEDED_CLOSE_REASON})
 
 
 def _is_terminal_close(entry: "Entry") -> bool:
-    """Whether *entry*'s reason proves this session's id can never be resumed."""
+    """Whether *entry*'s reason proves this unit is finished (:data:`_TERMINAL_CLOSE_REASONS`)."""
     data = entry.data
     reason = data.get("reason") if isinstance(data, dict) else None
     return isinstance(reason, str) and reason in _TERMINAL_CLOSE_REASONS
@@ -107,10 +129,18 @@ def sweep_expired(retention_days: int, *, now: float | None = None) -> "tuple[in
 
     A unit is collectable only when its own log PROVES the session is finished:
     the newest lifecycle entry is a ``session/closed`` whose reason is one of
-    :data:`_TERMINAL_CLOSE_REASONS`, meaning the gateway cleared that ACP id's
-    mapping during the teardown so it can never be resumed. Nothing outside the
-    crew log tree takes part in that decision -- see that constant for why the
-    session map was tried for it and removed.
+    :data:`_TERMINAL_CLOSE_REASONS` -- the gateway cleared that ACP id's mapping
+    during the teardown so it can never be resumed, or a later unit of the same
+    slot carries everything the slot's folds read from it and no key maps it.
+    Nothing outside the crew log tree takes part in that decision -- see that
+    constant for why the session map was tried for it and removed.
+
+    A ``superseded`` unit is also KEPT while another slot's work ledger read still
+    folds a record of it: a slot whose turns run under a key spelled with this
+    unit's slot joins this unit's records into its own read, applying its own
+    carries and not this slot's, until it holds a ledger carry of its own
+    (:class:`~kiro_crew.crew_log.retention_joins.LedgerJoins`, read from this tree
+    too). That check can only keep a unit.
     """
     if retention_days < 0:
         return (0, 0)
@@ -134,6 +164,7 @@ def sweep_expired(retention_days: int, *, now: float | None = None) -> "tuple[in
     removed = 0
     failed = 0
     retired: list[str] = []
+    joins = None
     for child in children:
         try:
             if is_link(child) or not child.is_dir():
@@ -141,6 +172,19 @@ def sweep_expired(retention_days: int, *, now: float | None = None) -> "tuple[in
             unit_id = _expired_unit_id(child, cutoff_ms)
             if unit_id is None:
                 continue
+            closed = _newest_close(child)
+            data = closed.data if closed is not None else None
+            reason = data.get("reason") if isinstance(data, dict) else None
+            if reason is None or reason == SUPERSEDED_CLOSE_REASON:
+                # Its own slot moved past it; another slot's ledger read may not have.
+                # A close this second read cannot see is asked the same, and the guard
+                # below decides again either way. Listed once per pass, when first needed.
+                from kiro_crew.crew_log.retention_joins import LedgerJoins
+
+                if joins is None:
+                    joins = LedgerJoins()
+                if joins.keeps(unit_id, child):
+                    continue
             # Re-read the SAME decision inside the removal's own lease hold. The
             # scan above is a snapshot, and ownership ends between turns by
             # design, so a session can be revived, append its ``session/opened``,
@@ -183,12 +227,103 @@ def _still_expired(cutoff_ms: int, expected: str, directory: Path) -> bool:
     ``guard`` it calls under the lease. Re-deriving the ID as well as the age is
     deliberate: it refuses a directory that changed identity in the same window,
     so the removal can only proceed against the unit the scan actually chose.
+
+    A unit closed ``superseded`` that holds an entry of a type the owner-served fold
+    reads is kept (:func:`holds_owner_served_entry`): that fold is never carried, so
+    such an entry has no other record. The emitter never closes a unit that holds one;
+    this catches an entry its writer appended after the close, a write naming no slot,
+    so nothing hands it to the slot's newest unit. Asked here, under the removal's lease
+    hold, so an entry that lands between the sweep's listing and the removal is seen.
+    The tail window this guard already read answers first; the whole log after.
     """
-    return _expired_unit_id(directory, cutoff_ms) == expected
+    unit_id, tail, closed = _expired_unit(directory, cutoff_ms)
+    if unit_id != expected:
+        return False
+    if tail is None or closed is None or closed.data.get("reason") != SUPERSEDED_CLOSE_REASON:
+        return True
+    types = owner_served_entry_types()
+    if _last_entry_of_types(tail, types) is not None:
+        return False
+    return not holds_owner_served_entry(directory)
+
+
+def owner_served_entry_types() -> "frozenset[str]":
+    """The entry types the owner-served slot fold reads, off the fold registry.
+
+    Imported lazily: the registry imports the store, and this module is part of it.
+    """
+    from kiro_crew.crew_log.projection_catalogue import OWNER_SERVED_SLOT_PROJECTION
+    from kiro_crew.crew_log.projection_registry import _FOLDS
+
+    return frozenset(_FOLDS[OWNER_SERVED_SLOT_PROJECTION].affects or ())
+
+
+def holds_owner_served_entry(directory: Path) -> bool:
+    """Whether *directory*'s surviving log holds an entry the owner-served fold reads.
+
+    The whole log, every segment (:func:`first_entry_of_types`), stopping at the first
+    such entry. True too when a segment cannot be read: such a unit is kept.
+    """
+    try:
+        return first_entry_of_types(directory, owner_served_entry_types()) is not None
+    except (OSError, ValueError):
+        return True
+
+
+def first_entry_of_types(
+    directory: Path,
+    types: "frozenset[str]",
+    accept: "Callable[[Entry], bool] | None" = None,
+) -> "Entry | None":
+    """The first entry of *types* in the WHOLE of *directory*'s surviving log, or ``None``.
+
+    Every segment, oldest first, whatever its size, so unlike
+    :func:`_scan_whole_for_types` a segment no larger than the tail window is read too.
+    A raw record holding none of *types* as a JSON string is skipped unparsed, and the
+    read stops at the first parsed entry of *types* that *accept* (when given) takes.
+
+    Raises what the listing and the reads raise, as ``OSError`` or ``ValueError``, for
+    the reason :func:`find_last_tree_edge` does: ``None`` means the log holds no such
+    entry, never that it could not be looked at.
+    """
+    found = sorted(
+        (
+            (first, child)
+            for child in directory.iterdir()
+            if (first := _segment_first_seq(child)) is not None
+        ),
+        key=lambda pair: pair[0],
+    )
+    needles = tuple(_type_needle(entry_type) for entry_type in types)
+    for _first, segment in found:
+        with open(segment, "rb") as handle:
+            try:
+                for raw in strict_raw_records(handle, segment, cap=MAX_ENTRY_BYTES):
+                    if not any(needle in raw for needle in needles):
+                        continue
+                    parsed = _parses_to_object(raw.strip())
+                    entry = Entry.from_dict(parsed) if parsed is not None else None
+                    if entry is None or entry.type not in types:
+                        continue
+                    if accept is None or accept(entry):
+                        return entry
+            except UnreadableRecord as exc:
+                raise ValueError(
+                    f"crew log segment {segment.name} holds an unreadable record"
+                ) from exc
+    return None
 
 
 def _expired_unit_id(directory: Path, cutoff_ms: int) -> "str | None":
-    """The raw id of the unit in *directory* when it is closed and expired.
+    """The raw id of the unit in *directory* when it is closed and expired (:func:`_expired_unit`)."""
+    return _expired_unit(directory, cutoff_ms)[0]
+
+
+def _expired_unit(
+    directory: Path, cutoff_ms: int
+) -> "tuple[str | None, _Tail | None, Entry | None]":
+    """The raw id of the unit in *directory* when it is closed and expired, with the
+    newest segment's tail window and the close it read there (``None`` each when unread).
 
     ``None`` means leave it alone, and every path to ``None`` is deliberate:
 
@@ -241,22 +376,22 @@ def _expired_unit_id(directory: Path, cutoff_ms: int) -> "str | None":
             if (first := _segment_first_seq(child)) is not None
         ]
     except OSError:
-        return None
+        return None, None, None
     if not segments or _is_held(directory):
-        return None
+        return None, None, None
     segments.sort(key=lambda pair: pair[0])
     oldest = segments[0][1]
     newest = segments[-1][1]
     try:
         raw_header = _read_header_line(oldest)
         if raw_header is None:
-            return None
+            return None, None, None
         parsed = _parses_to_object(raw_header)
         unit_id = parsed.get("id") if parsed else None
         if not isinstance(unit_id, str) or not unit_id:
-            return None
+            return None, None, None
         if _store_name(unit_id) != directory.name:
-            return None
+            return None, None, None
         tail = _scan_tail(newest)
     except FileNotFoundError:
         # A segment listed a moment ago is gone: another remover -- the delete
@@ -265,23 +400,60 @@ def _expired_unit_id(directory: Path, cutoff_ms: int) -> "str | None":
         # counted as a failure; the caller's ``failed`` tally is what an operator
         # reads as "these units still hold history", and a race that already
         # collected one would make that number a lie.
-        return None
+        return None, None, None
     except (OSError, ValueError):
-        return None
+        return None, None, None
     if tail.empty or tail.torn_offset is not None:
-        return None
+        return None, None, None
     closed = _last_lifecycle_entry(tail)
     if closed is None or closed.type != _TYPE_SESSION_CLOSED:
-        return None
+        return None, None, None
     if not _is_terminal_close(closed):
-        return None
+        return None, None, None
     closed_ms = closed.time
     if not isinstance(closed_ms, int) or closed_ms <= 0:
         try:
             closed_ms = int(newest.stat().st_mtime * 1000)
         except OSError:
+            return None, None, None
+    return (unit_id if closed_ms < cutoff_ms else None), tail, closed
+
+
+def closed_for_good(directory: Path) -> bool:
+    """Whether the unit in *directory* already ends on a close retention collects.
+
+    The question :func:`_expired_unit_id` asks, without the age and without the checks
+    that only aim a removal: the newest lifecycle entry in the newest segment's tail
+    window is a ``session/closed`` with a reason in :data:`_TERMINAL_CLOSE_REASONS`.
+    The emitter asks it before it writes a ``superseded`` close, so a unit already
+    closed for good is not closed twice. ``False`` for anything it cannot read, which
+    is the answer that costs one more close.
+    """
+    closed = _newest_close(directory)
+    return closed is not None and _is_terminal_close(closed)
+
+
+def _newest_close(directory: Path) -> "Entry | None":
+    """The unit's newest lifecycle entry when it is a ``session/closed``, else ``None``.
+
+    Read from the newest segment's tail window, as :func:`_expired_unit_id` reads it.
+    ``None`` too for anything it cannot read.
+    """
+    try:
+        segments = [
+            (first, child)
+            for child in directory.iterdir()
+            if (first := _segment_first_seq(child)) is not None
+        ]
+        if not segments:
             return None
-    return unit_id if closed_ms < cutoff_ms else None
+        tail = _scan_tail(max(segments, key=lambda pair: pair[0])[1])
+    except (OSError, ValueError):
+        return None
+    if tail.empty:
+        return None
+    closed = _last_lifecycle_entry(tail)
+    return closed if closed is not None and closed.type == _TYPE_SESSION_CLOSED else None
 
 
 def _last_lifecycle_entry(tail: _Tail) -> "Entry | None":

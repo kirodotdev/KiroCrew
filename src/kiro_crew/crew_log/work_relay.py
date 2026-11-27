@@ -26,6 +26,7 @@ same identity (:data:`_RECENT`).
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
 import traceback
@@ -218,37 +219,50 @@ def hand_over(copies: "list[Copy]") -> None:
 
 
 def _queue_run(unit: str, run: "list[Copy]") -> None:
+    """Queue *run* for *unit*, the board unit the consumer resolved off the writer.
+
+    A reset can carry the board into a newer unit between that resolve and the job, so
+    the job lands the run the way the work board's own writer does
+    (:func:`~kiro_crew.crew_log.late_writes.hand_to_carrier`): on the board slot's lane,
+    in the slot's newest unit once that unit carried a fold the copies feed, and the work
+    order is published for the unit the run landed in, after the append.
+    """
     from kiro_crew import session_ledger
-    from kiro_crew.crew_log import writer_groups
+    from kiro_crew.crew_log import late_writes, writer_groups
     from kiro_crew.crew_log.emit_runtime import _hand_over
     from kiro_crew.crew_log.writer import WriteJob
 
     board = run[0].board
     # Read here, off the writer, so the job does not read the unit's header again.
     canonical = writer_groups.slot_of(unit) or session_ledger.canonical_slot(board, unit)
+    folds = tuple(
+        dict.fromkeys(fold for copy in run for fold in late_writes.folds_fed_by(copy.entry_type))
+    )
+    what = f"relaying {len(run)} board cop{'y' if len(run) == 1 else 'ies'}"
 
-    def _job() -> None:
+    def _job(target: str) -> None:
         from kiro_crew.crew_log.emit_runtime import _handle
         from kiro_crew.crew_log.emit_state import _note_eager
 
-        log = _handle(unit)
+        if late_writes.hand_to_carrier(canonical, target, folds, _job, what):
+            return
+        log = _handle(target)
         if log is None:
             return
         entries = _append_run(log, run)
         # The board's folds read its units in this order, so a copy landing in a unit the
         # board has not recorded into yet (a restarted conductor's new unit) must move
         # that unit last, or the predecessor's older entries fold over it.
-        session_ledger.note_work_unit_recorded(board, unit, canonical=canonical)
+        session_ledger.note_work_unit_recorded(board, target, canonical=canonical)
         for copy, entry in zip(run, entries):
             if entry is None:
                 continue
             # A relayed record keeps the sub-board's ``slot``, but it lands in THIS
             # board's log, so this board's folds are the ones to advance.
             board_of = copy.board if copy.entry_type == _WORK_TYPE else None
-            _note_eager(entry, copy.entry_type, unit, copy.payload, board=board_of)
+            _note_eager(entry, copy.entry_type, target, copy.payload, board=board_of)
 
-    what = f"relaying {len(run)} board cop{'y' if len(run) == 1 else 'ies'}"
-    _hand_over(unit, WriteJob.follow_on(_job, what))
+    _hand_over(unit, WriteJob.follow_on(functools.partial(_job, unit), what))
 
 
 def _append_run(log: "CrewLog", run: "list[Copy]") -> "list[Any]":

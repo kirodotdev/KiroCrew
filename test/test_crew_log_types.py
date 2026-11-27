@@ -66,6 +66,12 @@ CANONICAL: dict[str, dict] = {
     },
     "session/class": {"memory": "persistent", "app": "secretary", "channel": True},
     "session/closed": {"reason": "reset"},
+    "session/carried": {
+        "fold": "ledger",
+        "slot": "dashboard:3",
+        "version": 4,
+        "state": '{"goal":"land the projection change","phase":"implementation"}',
+    },
     "session/adopted": {
         "parent": {"slot": "chat-9", "sid": "acp-sess-adopter"},
         "previous_parent": {"slot": "chat-3", "sid": "acp-sess-former"},
@@ -522,6 +528,9 @@ _EMIT_PRIMITIVES: dict[str, int] = {
     "_append_dashboard": 1,
     # The pending-open append: replays entries held for the unit, then appends this one.
     "write_when_opened": 1,
+    # The work ledger's slot-lane append (``ledger/recorded``): one job decides the unit,
+    # appends and publishes the order. Its caller passes a LITERAL type.
+    "_record_on_slot_lane": 1,
 }
 
 

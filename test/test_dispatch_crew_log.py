@@ -200,6 +200,8 @@ class TestOpenTurnCrewLog:
         assert session_id == "sid-1"
         assert fields["memory"] == "persistent"
         assert fields["slot"] == transcript_stem("weixin:agent:direct:u1")
+        # The conversation's own key, which the slot carry joins for the ledger.
+        assert fields["session_key"] == "weixin:agent:direct:u1"
         assert fields["previous_sid"] == "sid-0"
         assert fields["previous_undecided"] is False
         assert fields["model"] == "model-a"

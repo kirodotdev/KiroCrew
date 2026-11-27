@@ -213,10 +213,10 @@ class _JobPolicy:
 #: A FOLLOW_ON is queued from INSIDE a job on the writer thread, so the inline ordering
 #: wait would wait on its own pass; it never takes the inline path.
 #:
-#: A FOLLOW_ON is lost when its bucket's batch is dropped after the attempt budget, so it
-#: is submitted once more on that drop, behind the loss marker. The REQUEUED copy has the
-#: same policy minus the requeue, which bounds it at one extra attempt against a wedged
-#: disk.
+#: A FOLLOW_ON whose batch is dropped after the attempt budget is submitted once more,
+#: behind the loss marker, as a REQUEUED copy: the same policy minus the requeue, which
+#: bounds it at one extra attempt against a wedged disk. The copy carries the job's
+#: ``on_drop``, so that hook runs once, on the final drop, never on the one that requeues.
 _POLICY: Final[Mapping[JobKind, _JobPolicy]] = {
     JobKind.APPEND: _JobPolicy(exempt_ceiling=False, queue_only=False, requeue_on_drop=False),
     JobKind.OPENING: _JobPolicy(exempt_ceiling=True, queue_only=False, requeue_on_drop=False),
@@ -289,9 +289,11 @@ class WriteJob:
         return cls(run, what, JobKind.OPENING, 0, None, on_drop)
 
     @classmethod
-    def follow_on(cls, run: Callable[[], None], what: str) -> "WriteJob":
+    def follow_on(
+        cls, run: Callable[[], None], what: str, on_drop: Callable[[], None] | None = None
+    ) -> "WriteJob":
         """Work a job queues for a unit from the writer thread. See :data:`_POLICY`."""
-        return cls(run, what, JobKind.FOLLOW_ON, 0, None, None)
+        return cls(run, what, JobKind.FOLLOW_ON, 0, None, on_drop)
 
 
 @dataclass
@@ -1038,20 +1040,17 @@ class CrewLogWriter:
         :meth:`_note_progress` when a write for that unit lands again. Between the two,
         the dropped count is exact.
 
-        A ``FOLLOW_ON`` job in the dropped batch is submitted once more instead of being
-        lost (see :data:`_POLICY`), so it is NEVER ADDED to ``_dropped_count`` at all --
-        rather than added here and taken back out by
-        :meth:`_uncount_one_requeued_drop` a moment later. Adding it and correcting it
-        would rest on no reader seeing the count in between, which holds only while
-        every reader is a caller on this thread: :meth:`stats` is sampled from the
-        metrics reader's own thread, a reader landing in that window sees a count about
-        to be corrected, and an exported counter must not go backwards -- so it cannot
-        un-count, and one requeued job becomes a permanent inflated loss. The per-unit
-        marker debt is still adjusted over there, because that debt is consumed by a
-        later pass of this one thread and no reader samples it.
-
-        Only the count is affected: a follow-on carries no body, so the marker's byte
-        total is exact either way.
+        A ``FOLLOW_ON`` job in the dropped batch is submitted once more instead of being lost
+        (see :data:`_POLICY`), so it is NEVER ADDED to ``_dropped_count`` at all -- rather than
+        added here and taken back out by :meth:`_uncount_one_requeued_drop` a moment later.
+        Adding it and correcting it would rest on no reader seeing the count in between, which
+        holds only while every reader is a caller on this thread: :meth:`stats` is sampled from
+        the metrics reader's own thread, a reader landing in that window sees a count about to
+        be corrected, and an exported counter must not go backwards -- so it cannot un-count,
+        and one requeued job becomes a permanent inflated loss. The per-unit marker debt is
+        still adjusted over there, because that debt is consumed by a later pass of this one
+        thread and no reader samples it. Only the count is affected: a follow-on carries no
+        body, so the marker's byte total is exact.
         """
         with self._lock:
             self._pending_total_bytes -= sum(job.nbytes for job in jobs if job.counted)
@@ -1082,7 +1081,8 @@ class CrewLogWriter:
         for job in jobs:
             if job.policy.requeue_on_drop:
                 self._uncount_one_requeued_drop(unit)
-                self.submit(unit, WriteJob(job.run, job.what, JobKind.REQUEUED))
+                copy = WriteJob(job.run, job.what, JobKind.REQUEUED, on_drop=job.on_drop)
+                self.submit(unit, copy)  # the copy's own drop is the final one: it fires the hook
             elif job.on_drop is not None:
                 hook = job.on_drop
                 job.on_drop = None

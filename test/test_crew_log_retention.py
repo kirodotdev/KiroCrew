@@ -1173,7 +1173,7 @@ def test_the_header_slot_reader_answers_none_for_a_unit_that_is_not_there():
 # --- only a close the gateway can PROVE is terminal authorizes collection ---
 
 
-def test_only_a_destroy_close_authorizes_collection():
+def test_a_destroy_close_authorizes_collection():
     """``destroy`` DELETES the id's mapping, unconditionally, before writing this.
 
     An id absent from the map cannot be resumed by anything, and the gateway
@@ -1186,6 +1186,139 @@ def test_only_a_destroy_close_authorizes_collection():
 
     assert store.sweep_expired(30) == (1, 0)
     assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
+
+
+def test_a_superseded_close_authorizes_collection():
+    """The emitter writes ``superseded`` only once a later unit of the slot carries
+    every slot fold's state over this one and no key maps its id
+    (``test_crew_log_slot_carry.py``), so the unit is finished and the sweep reads the
+    proof from the log alone."""
+    log = _closed_session(closed_days_ago=90, reason="superseded")
+    del log
+
+    assert store.sweep_expired(30) == (1, 0)
+    assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
+
+
+def test_a_superseded_close_inside_the_window_is_kept():
+    log = _closed_session(closed_days_ago=5, reason="superseded")
+    del log
+
+    assert store.sweep_expired(30) == (0, 0)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
+
+
+#: One ``radar/recorded`` entry, the type the owner-served fold reads, shaped as the
+#: Issue Radar crew store writes it.
+_RADAR = {
+    "crew_id": "c_0a1b2c3d",
+    "owner": "kirodotdev",
+    "repo": "KiroCrew",  # brand-ok: the repo half of the slug, an identifier
+    "number": 2251,
+    "event": "investigating",
+    "event_kind": "investigate",
+}
+
+
+def _split_before_last_entry(unit_id: str = SESSION) -> None:
+    """Move *unit_id*'s newest entry into a segment of its own, the header with it.
+
+    The older segment keeps the rest and stays far smaller than the tail window, which
+    is the segment a whole-file scan that trusts the window to cover small files skips.
+    """
+    directory = _unit_dir(lg.KIND_SESSION, unit_id)
+    lines = (directory / "log.jsonl").read_text(encoding="utf-8").splitlines()
+    last = json.loads(lines[-1])
+    (directory / "log.jsonl").write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+    (directory / f"log.{last['seq']}.jsonl").write_text(
+        lines[0] + "\n" + lines[-1] + "\n", encoding="utf-8"
+    )
+
+
+def test_a_superseded_unit_whose_radar_entry_sits_in_a_small_older_segment_is_kept():
+    """The owner-served fold is never carried, so its entries have no other record.
+
+    The radar entry sits in the older segment, no larger than the tail window, and the
+    close alone in the newest one, so neither the window nor a scan that skips a small
+    segment sees it: the sweep's guard reads every segment.
+    """
+    log = CrewLog.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
+    log.append("session/opened", _opened(resumed=False), src="gateway")
+    log.append("radar/recorded", _RADAR, src="gateway")
+    _append_at(log, "session/closed", {"reason": "superseded"}, store.now_ms() - int(90 * DAY_MS))
+    del log
+    _split_before_last_entry()
+    directory = _unit_dir(lg.KIND_SESSION, SESSION)
+    assert sorted(child.name for child in directory.iterdir() if child.suffix == ".jsonl") == [
+        "log.3.jsonl",
+        "log.jsonl",
+    ], "the control: two segments"
+    assert (directory / "log.jsonl").stat().st_size < store._TAIL_WINDOW
+
+    assert store.sweep_expired(30) == (0, 0)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
+
+
+def test_a_superseded_unit_that_gains_a_radar_entry_after_its_close_is_kept():
+    """A radar write names no slot, so nothing hands one aimed at a closed unit on."""
+    log = _closed_session(closed_days_ago=90, reason="superseded")
+    log.append("radar/recorded", _RADAR, src="gateway")
+    del log
+
+    assert store.sweep_expired(30) == (0, 0)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
+
+
+def test_a_radar_entry_landing_between_the_listing_and_the_removal_keeps_the_unit(monkeypatch):
+    """The guard asks under the removal's own lease hold, after the listing chose it."""
+    log = _closed_session(closed_days_ago=90, reason="superseded")
+    del log
+    real_remove = store.remove_unit
+    landed: list[str] = []
+
+    def _radar_then_remove(kind: str, unit_id: str, **kwargs):
+        late = CrewLog.open(lg.KIND_SESSION, unit_id)
+        late.append("radar/recorded", _RADAR, src="gateway")
+        del late
+        landed.append(unit_id)
+        return real_remove(kind, unit_id, **kwargs)
+
+    monkeypatch.setattr(store, "remove_unit", _radar_then_remove)
+
+    assert store.sweep_expired(30)[0] == 0
+    assert landed == [SESSION], "the hook never fired"
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
+
+
+def test_a_superseded_unit_with_no_radar_entry_is_still_collected():
+    """The control for the three above: the keep reads the entry, not the close.
+
+    The same two segments as the first of them, with a ``session/class`` where the radar
+    entry was.
+    """
+    log = CrewLog.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
+    log.append("session/opened", _opened(resumed=False), src="gateway")
+    log.append("session/class", {"memory": "persistent"}, src="gateway")
+    _append_at(log, "session/closed", {"reason": "superseded"}, store.now_ms() - int(90 * DAY_MS))
+    del log
+    _split_before_last_entry()
+
+    assert store.sweep_expired(30) == (1, 0)
+    assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
+
+
+def test_closed_for_good_reads_the_same_proof_as_the_sweep():
+    """The writer asks it before a ``superseded`` close, so a unit is not closed twice."""
+    log = _closed_session(closed_days_ago=1, reason="superseded")
+    del log
+    log = _closed_session("s-reset", closed_days_ago=1, reason="reset")
+    del log
+    log = _open_session("s-open")
+    del log
+
+    assert store.closed_for_good(_unit_dir(lg.KIND_SESSION, SESSION))
+    assert not store.closed_for_good(_unit_dir(lg.KIND_SESSION, "s-reset"))
+    assert not store.closed_for_good(_unit_dir(lg.KIND_SESSION, "s-open"))
 
 
 @pytest.mark.parametrize(

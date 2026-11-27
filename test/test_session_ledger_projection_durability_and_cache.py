@@ -1,7 +1,7 @@
 """Tests for the session ledger's durability answer and the caches a read goes through.
 
-``durable`` comes from this unit's own growth, so a refused or unlanded append is never
-called durable; the fold cache answers what a cold fold would. Shared helpers are in
+``durable`` comes from this append's own receipt, so a refused or unlanded append is
+never called durable; the fold cache answers what a cold fold would. Shared helpers are in
 ``session_ledger_projection_helpers.py``.
 """
 
@@ -32,44 +32,57 @@ from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.crew_log import store
 
 
-def test_a_refusal_during_the_append_is_not_reported_durable():
-    """The refusal count brackets the append, so an INLINE refusal is visible.
+def test_a_refusal_during_the_append_is_not_reported_durable(monkeypatch):
+    """The writer job's receipt is this append's own outcome, so a refusal is visible.
 
-    A second gateway owning the unit appends inline rather than queueing, so the
-    counter moves during the append; a sample taken afterwards folds that move into
-    the baseline and calls a refused write durable.
+    A second gateway owning the unit refuses the append as it is made. Its writer job
+    settles the receipt unlanded, which no process-wide counter can say about THIS
+    write.
     """
+    from kiro_crew.crew_log.errors import CODE_NO_LEDGER, CrewLogError
+
     _unit(SESSION)
-    refused = [0]
-    real_emit = crew_log_emit.on_ledger_recorded
 
-    def _refusing(session_id, data):
-        refused[0] += 1  # the append is refused as it is made, not queued
+    class _Refusing:
+        """SESSION's log, refusing the ledger append and nothing else."""
 
-    crew_log_emit.on_ledger_recorded = _refusing  # type: ignore[assignment]
-    real_dropped = crew_log_emit.dropped_writes
-    crew_log_emit.dropped_writes = lambda: refused[0]  # type: ignore[assignment]
-    try:
-        _state, durable = sl.record_update(SLOT, session_id=SESSION, goal="g")
-    finally:
-        crew_log_emit.on_ledger_recorded = real_emit  # type: ignore[assignment]
-        crew_log_emit.dropped_writes = real_dropped  # type: ignore[assignment]
+        def __init__(self, inner):
+            self._inner = inner
+
+        def append(self, entry_type, data, **kwargs):
+            if entry_type == sl.LEDGER_ENTRY_TYPE:
+                raise CrewLogError("another gateway owns this unit", code=CODE_NO_LEDGER)
+            return self._inner.append(entry_type, data, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    real_handle = crew_log_emit._handle
+    monkeypatch.setattr(
+        crew_log_emit,
+        "_handle",
+        lambda unit: _Refusing(real_handle(unit)) if unit == SESSION else real_handle(unit),
+    )
+    _state, durable = sl.record_update(SLOT, session_id=SESSION, goal="g")
     assert durable is False
 
 
-def test_durability_is_answered_from_this_units_own_growth():
+def test_durability_is_answered_from_this_units_own_append(monkeypatch):
     """A process-wide counter cannot say whether THIS append landed.
 
-    An append that never reaches the file leaves the unit's newest seq where it was,
-    which is evidence about this write rather than about every session in the process.
+    An append that never reaches the file leaves its receipt unlanded, which is evidence
+    about this write rather than about every session in the process.
     """
+    from kiro_crew.crew_log import late_writes
+
     _unit(SESSION)
-    real = crew_log_emit.on_ledger_recorded
-    crew_log_emit.on_ledger_recorded = lambda session_id, data: None  # never written
-    try:
+    with monkeypatch.context() as never_written:
+        never_written.setattr(
+            crew_log_emit,
+            "on_ledger_recorded",
+            lambda session_id, data, **kwargs: late_writes.Receipt(session_id),
+        )
         _state, durable = sl.record_update(SLOT, session_id=SESSION, goal="g")
-    finally:
-        crew_log_emit.on_ledger_recorded = real  # type: ignore[assignment]
     assert durable is False
 
     crew_log.forget_slot_folds()

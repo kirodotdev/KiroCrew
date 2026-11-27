@@ -408,9 +408,15 @@ def test_a_carry_the_queue_drained_without_releases_its_claim():
     _legacy_document(SLOT, goal="owed")
     _unit()
     from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.crew_log import late_writes
+
+    def _dropped(session_id, *_a, **_kw):
+        receipt = late_writes.Receipt(session_id)
+        receipt.settle(session_id, 0, landed=False)  # what the job settles on a drop
+        return receipt
 
     real = crew_log_emit.on_ledger_recorded
-    crew_log_emit.on_ledger_recorded = lambda *a, **kw: None  # type: ignore[assignment]
+    crew_log_emit.on_ledger_recorded = _dropped  # type: ignore[assignment]
     try:
         with pytest.raises(sl.LedgerUnavailable):
             sl.record(SLOT, session_id=SESSION, next_step="n")
@@ -1328,29 +1334,47 @@ def test_a_late_first_record_from_a_retired_unit_does_not_freeze_the_order():
     assert sl.read_state(SLOT)["goal"] == "the live conversation"
 
 
-def test_an_append_that_did_not_land_does_not_publish_the_units_precedence():
+def test_an_append_that_did_not_land_does_not_publish_the_units_precedence(monkeypatch):
     """A refused or still-queued append must not pin its unit ahead of the successor.
 
     A unit whose append did not land has not recorded, and the order rewrite is fsynced
     at once. A successor with no ledger content would then fold the retired unit's
-    stale goal and phase as current.
-
-    The fault is injected on the observation, not the append: the retired entry really
-    is in its log, so the fold has it and still must not let it win.
+    stale goal and phase as current. The note is the writer job's step after the
+    append, so the store refusing the append publishes nothing.
     """
+    from kiro_crew.crew_log.errors import CODE_NO_LEDGER, CrewLogError
+
     _unit(SESSION)  # the unit the slot has since replaced
     _unit(LATER_SESSION)
     sl.record(SLOT, session_id=LATER_SESSION, goal="the live conversation")
     assert sl._recorded_unit_order(SLOT) == (LATER_SESSION,)
 
-    # The delayed request from the retired session records, but its append is not
-    # observed to land: this unit's own newest seq does not move.
-    real = sl._unit_last_seq
-    sl._unit_last_seq = lambda unit_id: 0  # type: ignore[assignment]
-    try:
-        sl.record(SLOT, session_id=SESSION, goal="from the retired session")
-    finally:
-        sl._unit_last_seq = real  # type: ignore[assignment]
+    class _Refusing:
+        """The retired unit's log, refusing the ledger append and nothing else."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def append(self, entry_type, data, **kwargs):
+            if entry_type == sl.LEDGER_ENTRY_TYPE:
+                raise CrewLogError("the log refused this append", code=CODE_NO_LEDGER)
+            return self._inner.append(entry_type, data, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    # The delayed request from the retired session records, and its append is refused.
+    real_handle = crew_log_emit._handle
+    with monkeypatch.context() as refused:
+        refused.setattr(
+            crew_log_emit,
+            "_handle",
+            lambda unit: _Refusing(real_handle(unit)) if unit == SESSION else real_handle(unit),
+        )
+        _state, durable = sl.record_update(
+            SLOT, session_id=SESSION, goal="from the retired session"
+        )
+    assert durable is False
 
     # Precedence was NOT published, so the successor keeps it.
     assert sl._recorded_unit_order(SLOT) == (LATER_SESSION,)
@@ -1570,3 +1594,85 @@ def test_a_unit_id_over_the_bound_is_refused_at_every_site_that_retains_it(caplo
     assert sl.exclude_units(SLOT, (SESSION,)).added == (SESSION,)
     sl._note_unit_order(SLOT, SESSION)
     assert SESSION in sl._recorded_unit_order(SLOT)
+
+
+def test_a_carry_that_lands_mid_migration_takes_the_carried_document_to_its_unit(monkeypatch):
+    """A reset carries and closes the slot's unit after the migration claimed the
+    document, before its entry is queued: the entry follows the slot to the newest
+    unit, the claim commits only once that entry landed there, and the record keeps it
+    once the superseded unit is collected.
+
+    Appended into the unit the migration named, the entry would sit in a unit already
+    closed ``superseded`` and the document would be marked consumed because that unit
+    grew: the sweep then deletes the only copy of the carried state.
+    """
+    from crew_log_drain import assert_drained
+
+    from kiro_crew.crew_log import eager
+    from kiro_crew.crew_log import session_tree_projection as stp
+    from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
+
+    monkeypatch.setattr(crew_log_emit, "_submit_carry_fold", lambda job: job())
+    crew_log_emit.set_session_key_probe(lambda session_id: None)
+    stp.reset_for_tests()
+    try:
+        crew_log_emit.on_session_opened(SESSION, agent="kirocrew", slot=SLOT)
+        assert_drained()
+        _legacy_document(SLOT, goal="finish the migration", phase="implementing")
+
+        real_payload = sl._legacy_carry_payload
+        reset = []
+
+        def _payload_then_reset(slot_key, legacy):
+            data = real_payload(slot_key, legacy)
+            if not reset:
+                reset.append(True)
+                crew_log_emit.on_session_opened(
+                    LATER_SESSION,
+                    agent="kirocrew",
+                    slot=SLOT,
+                    previous_sid=SESSION,
+                    session_key=f"dashboard:{SLOT}",
+                )
+                assert_drained()
+            return data
+
+        monkeypatch.setattr(sl, "_legacy_carry_payload", _payload_then_reset)
+        sl.record(SLOT, session_id=SESSION, next_step="then record normally")
+        assert reset, "the reset never landed inside the migration"
+        assert_drained()
+
+        closes = [e.data for e in _entries(SESSION) if e.type == "session/closed"]
+        assert closes and closes[-1]["reason"] == "superseded", "the control: it was carried"
+
+        def _carried(unit_id: str) -> list:
+            return [
+                e
+                for e in _entries(unit_id)
+                if e.type == sl.LEDGER_ENTRY_TYPE and "carried forward" in e.data.get("event", "")
+            ]
+
+        assert not _carried(SESSION), "the carried document landed in the closed unit"
+        assert len(_carried(LATER_SESSION)) == 1
+        marker = sl.control_dir(SLOT) / sl._CARRIED_FILE
+        assert marker.read_text(encoding="utf-8").strip() == sl._CARRY_COMMITTED
+
+        assert eager.drain(timeout=FALLBACK_TIMEOUT_SECS), "the eager folder never settled"
+        store.sweep_expired(0, now=4_000_000_000.0)
+        crew_log.forget_slot_folds()
+        assert sl.crew_log_units(SLOT) == (LATER_SESSION,)
+        state = sl.read_state(SLOT)
+        assert (state["goal"], state["phase"], state["next"]) == (
+            "finish the migration",
+            "implementing",
+            "then record normally",
+        ), "the carried document was lost"
+    finally:
+        crew_log_emit.set_session_key_probe(None)
+        assert_drained()
+        tree = stp.projection()
+        stp.reset_for_tests()
+        wait_until(
+            lambda: not tree._write_scheduled,
+            describe=lambda: "the session tree's debounced checkpoint is still sleeping",
+        )

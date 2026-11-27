@@ -148,16 +148,22 @@ from kiro_crew.crew_log.store_retention import (  # noqa: F401
     _TREE_EDGE_TYPES,
     _TYPE_SESSION_CLOSED,
     _TYPE_SESSION_OPENED,
+    _expired_unit,
     _expired_unit_id,
     _is_terminal_close,
     _last_entry_of_types,
     _last_lifecycle_entry,
+    _newest_close,
     _scan_whole_for_types,
     _spawned_child_slot,
     _still_expired,
     _type_needle,
+    closed_for_good,
     find_last_tree_edge,
     find_spawned_entries,
+    first_entry_of_types,
+    holds_owner_served_entry,
+    owner_served_entry_types,
     read_last_tree_edge,
     sweep_expired,
 )
@@ -215,6 +221,7 @@ from kiro_crew.crew_log.store_units import (  # noqa: F401
     _any_now_provable,
     _monotonic_ns,
     _next_trust,
+    _opening_data,
     _proved_header,
     _refuse_unprovable_unit,
     _root_stat_key,
@@ -228,7 +235,9 @@ from kiro_crew.crew_log.store_units import (  # noqa: F401
     unit_header_created_at,
     unit_header_slot,
     unit_ids,
+    unit_opened_parent,
     unit_opened_previous,
+    unit_opened_session_key,
     unit_opening,
     unprovable_session_units,
 )
@@ -287,6 +296,7 @@ if TYPE_CHECKING:  # names it serves from outside the store family, from their h
         data_home,
     )
     from kiro_crew.crew_log.entry_types import (  # noqa: F401
+        SUPERSEDED_CLOSE_REASON,
         validate_data,
     )
     from kiro_crew.crew_log.errors import (  # noqa: F401

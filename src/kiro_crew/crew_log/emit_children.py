@@ -12,7 +12,7 @@ import math
 from collections.abc import Callable
 from typing import Any
 
-from kiro_crew.crew_log.emit_runtime import _write, child_origin
+from kiro_crew.crew_log.emit_runtime import _write, child_origin, owe_child_closer
 from kiro_crew.crew_log.emit_state import _SRC_GATEWAY, enabled
 from kiro_crew.crew_log.emit_text import _MAX_SHORT_TEXT, _clip, _safe_text
 from kiro_crew.validation import bounded_session_id
@@ -202,6 +202,11 @@ def on_subagent_completed(
     ``child_sid`` is the session the child last ran in, so a reader can
     find the child's own transcript once its ``result.txt`` has been pruned. See
     :func:`_child_sid_field`.
+
+    The closer is counted as owed to *session_id* until it lands or is dropped
+    (:func:`~kiro_crew.crew_log.emit_runtime.owe_child_closer`): the closer path
+    releases the child's pin as soon as this returns, and the count is what keeps a slot
+    carry from replacing that unit's state before the closer is in it.
     """
     data: dict[str, Any] = {"agent_id": agent_id}
     if duration_ms > 0:
@@ -209,7 +214,8 @@ def on_subagent_completed(
     if credits > 0 and math.isfinite(credits):
         data["credits"] = float(credits)
     data.update(_child_sid_field(child_sid))
-    _write(session_id, "subagent/completed", data, src=_SRC_GATEWAY)
+    settled = owe_child_closer(session_id)
+    _write(session_id, "subagent/completed", data, src=_SRC_GATEWAY, after=settled)
 
 
 def on_subagent_failed(
@@ -237,7 +243,8 @@ def on_subagent_failed(
     correct -- it knows only that the writer is gone.
 
     ``child_sid`` follows :func:`on_subagent_completed`; it is absent for a run
-    that failed before it got a session, and on the crash-repair closer.
+    that failed before it got a session, and on the crash-repair closer. The closer is
+    counted as owed until it resolves, as there.
     """
     data: dict[str, Any] = {"agent_id": agent_id}
     shown = _clip(_safe_text(reason), _MAX_SHORT_TEXT)
@@ -250,7 +257,8 @@ def on_subagent_failed(
     if credits > 0 and math.isfinite(credits):
         data["credits"] = float(credits)
     data.update(_child_sid_field(child_sid))
-    _write(session_id, "subagent/failed", data, src=_SRC_GATEWAY)
+    settled = owe_child_closer(session_id)
+    _write(session_id, "subagent/failed", data, src=_SRC_GATEWAY, after=settled)
 
 
 def _child_sid_field(child_sid: object) -> dict[str, str]:
