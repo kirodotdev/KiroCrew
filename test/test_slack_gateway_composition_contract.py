@@ -629,7 +629,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "_deliver_script_result",
             "async method",
             "(self, job: 'CronJob', message: 'str', *, remove: 'bool' = False,"
-            " pin: 'tuple[str, str] | None' = None) -> 'None'",
+            " pin: 'tuple[str, str] | None' = None, to_session: 'bool' = True) -> 'None'",
         ),
         ("_cron_run_script", "async method", "(self, job: 'CronJob') -> 'str | None'"),
         ("_live_internal_secret", "method", "(self) -> 'str'"),
