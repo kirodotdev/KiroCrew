@@ -1516,6 +1516,7 @@ class VectorMemoryStore:
         max_rows: int,
         max_chars: int,
         render_lesson: Callable[[str], str] | None = None,
+        facts: dict[str, dict[str, str]] | None = None,
     ) -> list[tuple[str, str]]:
         """``(key, text)`` of the lessons a follow-up message should add, best first."""
         return _lessons.turn_lessons(
@@ -1526,6 +1527,7 @@ class VectorMemoryStore:
             max_rows=max_rows,
             max_chars=max_chars,
             render_lesson=render_lesson,
+            facts=facts,
         )
 
     def startup_lesson_query(self, query_text: str) -> _RecallQuery:

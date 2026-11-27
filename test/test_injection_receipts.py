@@ -324,3 +324,49 @@ class TestTheTurnWritesTheReceipt:
     async def test_a_session_that_keeps_nothing_writes_no_line(self, tmp_path, monkeypatch, mode):
         written, _ = await self._turn(tmp_path, monkeypatch, memory_mode=mode)
         assert written == []
+
+
+def _per_turn_receipts(would_add: list[str]) -> dict:
+    with injection_receipts.collect() as sink:
+        injection_receipts.record_stage(
+            injection_receipts.INJECT_LESSONS_PER_TURN,
+            mode="shadow",
+            policy=injection_receipts.INJECT_LESSONS_PER_TURN_POLICY,
+            would_add=would_add,
+            chars=120 if would_add else 0,
+            lessons=[
+                {"key": key, "tier": "legacy", "source": "user_explicit", "text": "secret"}
+                for key in would_add
+            ],
+        )
+    return sink
+
+
+class TestThePerMessageLessonsStage:
+    def test_the_field_carries_ids_size_and_provenance_but_no_text_or_control(self):
+        line = _line(_per_turn_receipts(["lesson.a"]), phase="turn")
+
+        assert line["inject_lessons_per_turn"] == {
+            "mode": "shadow",
+            "policy": injection_receipts.INJECT_LESSONS_PER_TURN_POLICY,
+            "would_add": ["lesson.a"],
+            "would_drop": [],
+            "chars": 120,
+            "lessons": [{"key": "lesson.a", "tier": "legacy", "source": "user_explicit"}],
+        }
+        assert line["turn_lessons"] == []
+
+    def test_a_line_kept_only_by_a_capped_field_is_not_written(self, tmp_path, monkeypatch):
+        from kiro_crew import memory_kind_routing
+
+        monkeypatch.setattr(injection_receipts, "_receipt_dir", lambda: tmp_path / "injections")
+        monkeypatch.setattr(memory_kind_routing, "SAMPLES_PER_DAY", 1)
+        for _ in range(3):
+            injection_receipts.write_line(_line(_per_turn_receipts([]), phase="turn"))
+
+        shards = list((tmp_path / "injections").glob("*.jsonl"))
+        rows = shards[0].read_text(encoding="utf-8").splitlines()
+        log = json.loads((tmp_path / "injections" / "stage-log.json").read_text(encoding="utf-8"))
+        tally = log["counts"]["2026-10-13"]["inject_lessons_per_turn"]["shadow"]
+        assert len(rows) == 1
+        assert tally["lines"] == 3

@@ -269,9 +269,12 @@ def lessons_parts(
         session_key=session_key,
     )
     if _lessons_ctx:
-        if session_key and ctx.KiroCrewConfig.load().memory.inject_lessons_per_turn:
+        per_turn = ctx.KiroCrewConfig.load().memory.inject_lessons_per_turn
+        if session_key and per_turn != "off":
             # The block as sent: per-message lessons skip what it holds.
-            builder._remember_startup_lessons(session_key, _lessons_ctx)
+            builder._remember_startup_lessons(
+                session_key, _lessons_ctx, shadow=per_turn == "shadow"
+            )
         # Lesson text is user- and agent-written: scrub the payload, keep the
         # trusted wrapper outside it.
         parts.append(

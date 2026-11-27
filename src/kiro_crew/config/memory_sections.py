@@ -52,6 +52,10 @@ RELEVANCE_RULE_MODES = ("off", "enforce")
 #: ``memory.member_lesson_dedup`` values; :mod:`kiro_crew.memory_lesson_dedup` says what each does.
 MEMBER_LESSON_DEDUP_MODES = ("off", "shadow", "enforce")
 
+#: ``memory.inject_lessons_per_turn`` values. ``shadow`` sends nothing and records
+#: what ``enforce`` would send (``context_assembly.store_admission.turn_lessons_block``).
+INJECT_LESSONS_PER_TURN_MODES = ("off", "shadow", "enforce")
+
 #: ``memory.dream`` values; :mod:`kiro_crew.memory_dream` says what each does.
 DREAM_MODES = ("off", "propose")
 
@@ -677,14 +681,18 @@ class MemoryConfig:
             "Inject the learned-corrections and user-profile blocks into " "new-session context.",
         ),
     )
-    inject_lessons_per_turn: bool = field(
-        default=False,
+    inject_lessons_per_turn: str = field(
+        default="off",
         metadata=_meta(
             "Lessons Per Message",
             "On each follow-up message, add up to three stored lessons that match it "
             "and have not been shown in the session yet. The session-start block "
             "holds only what fits its budget; this adds the rest as the topic "
-            "reaches them. Requires inject_lessons.",
+            "reaches them. 'off' (default) adds nothing. 'shadow' adds nothing "
+            "either and records, in the local injection receipts, which lessons "
+            "'enforce' would add. 'enforce' adds them. A stored true reads as "
+            "'enforce' and false as 'off'. Requires inject_lessons.",
+            enum=list(INJECT_LESSONS_PER_TURN_MODES),
         ),
     )
     inject_activity: bool = field(
@@ -832,6 +840,21 @@ def relevance_rule_mode_from(raw: object) -> str:
     if isinstance(raw, str) and raw in RELEVANCE_RULE_MODES:
         return raw
     return str(field_default(MemoryConfig, "relevance_rule"))
+
+
+def inject_lessons_per_turn_mode_from(raw: object) -> str:
+    """A stored ``memory.inject_lessons_per_turn``, or the field default for anything unknown.
+
+    The setting was a boolean before it had a shadow mode, so a stored ``true``
+    reads as ``enforce`` and ``false`` as ``off``.
+    """
+    if raw is True:
+        return "enforce"
+    if raw is False:
+        return "off"
+    if isinstance(raw, str) and raw in INJECT_LESSONS_PER_TURN_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "inject_lessons_per_turn"))
 
 
 def dream_mode_from(raw: object) -> str:

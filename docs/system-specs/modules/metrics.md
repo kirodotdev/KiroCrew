@@ -1468,7 +1468,13 @@ the rows it KEPT and the omitted count; `_turn_build_prompt` opens
 empty on a synthetic turn), `model`, `agent`, `surface`, `phase`,
 `memory_store`, `lessons`, `lessons_omitted`, `findings`, `findings_omitted`, and
 `turn_lessons`: the keys `turn_lessons_block` adds to a follow-up under
-`memory.inject_lessons_per_turn`. Only an admitted turn whose composition rendered a
+`memory.inject_lessons_per_turn` `enforce`. Under `shadow` that list stays empty
+and the line carries an `inject_lessons_per_turn` stage field instead (`mode`,
+`policy`, `would_add`, `would_drop`, `chars`, and `lessons`: each would-add key with
+its `tier`, `source` and `created_at`), on every follow-up turn while the stage
+caps allow; a line whose stage fields the caps all removed and that carries nothing
+else is not written. Its `stage-log.json` day counter also counts lines and
+would-add keys by memory store (`stores`), past the caps. Only an admitted turn whose composition rendered a
 lesson block writes a line, so a per-turn build that added none writes nothing: the
 model still holds what the session's earlier lines recorded. Incognito and temporary sessions write nothing. The write runs on a worker
 thread (no suspension point in the gate) and never fails the turn. Legacy JSONL lesson

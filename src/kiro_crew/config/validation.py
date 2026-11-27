@@ -832,6 +832,17 @@ def validate_config_data(data: dict) -> dict:
                     else backend_to_stored(governance_floor_backend())
                 )
 
+    # 3e. ``memory.inject_lessons_per_turn`` was a boolean before it had a shadow
+    # mode. Map a stored bool to its mode here, or the type check below would
+    # replace a stored ``true`` with the default, ``off``.
+    memory = data.get("memory")
+    if isinstance(memory, dict) and isinstance(memory.get("inject_lessons_per_turn"), bool):
+        from kiro_crew.config.memory_sections import inject_lessons_per_turn_mode_from
+
+        memory["inject_lessons_per_turn"] = inject_lessons_per_turn_mode_from(
+            memory["inject_lessons_per_turn"]
+        )
+
     # 4. Preserve numeric values written by older config writers.
     _coerce_legacy_numeric_values(data, JSON_SCHEMA)
 
