@@ -30,10 +30,21 @@ from kiro_crew.dashboard.handlers.workflows import (
     api_workflow_definitions,
 )
 from kiro_crew.testing.wait import LoopHop
+from kiro_crew.workflows import library as workflow_library
 from kiro_crew.workflows.library import WorkflowDefinitionLibrary, command_ref, declared_lineage
 from kiro_crew.workflows.service import WorkflowService
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def _no_builtin_workflows(tmp_path, _floor_monkeypatch):
+    """These tests assert what the library folder holds, so the shipped
+    built-in tier is left out; ``test_workflows_builtin.py`` covers it."""
+    _floor_monkeypatch.setattr(
+        workflow_library, "BUILTIN_WORKFLOWS_DIR", tmp_path / "no-builtin-workflows"
+    )
+
 
 SOURCE_V1 = (
     'META = {"name": "debug-project", "description": "Investigate a project failure"}\n'

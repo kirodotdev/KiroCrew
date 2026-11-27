@@ -18,8 +18,14 @@ from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls, refuses
 from kiro_crew.slugs import slug_hash_fallback
 from kiro_crew.workflows.store import default_workflow_library_dir
+from kiro_crew.workflows.validate import validate
 
 logger = logging.getLogger(__name__)
+
+#: The read-only tier shipped in the package: one ``<slug>.py`` per workflow.
+BUILTIN_WORKFLOWS_DIR = Path(__file__).resolve().parent.parent / "builtin_workflows"
+BUILTIN_ID_PREFIX = "builtin:"
+_BUILTIN_SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 _LIBRARY_SUBDIR = "library"
 _SCHEMA_VERSION = 2
@@ -54,6 +60,16 @@ class SensitiveWorkflowSourceError(ValueError):
 
 class WorkflowSlugTakenError(ValueError):
     """Raised when a create that must keep its exact slug finds it already used."""
+
+
+class BuiltinWorkflowError(ValueError):
+    """Raised when a write names a built-in workflow, which only a copy can change."""
+
+    def __init__(self, workflow_ref: str) -> None:
+        super().__init__(
+            f"'{workflow_ref}' is a built-in workflow and cannot be changed or removed; "
+            "save a copy under a new name to change it"
+        )
 
 
 class WorkflowRefMovedError(LookupError):
@@ -135,6 +151,77 @@ def _is_removed(definition: dict[str, Any]) -> bool:
     return bool(definition.get("removed_at"))
 
 
+def _is_builtin(definition: dict[str, Any]) -> bool:
+    """A record read from the package's built-in tier, never from the library folder."""
+    return definition.get("builtin") is True
+
+
+def _builtin_revision(content_hash: str) -> int:
+    """A built-in's revision: the first 7 hex digits of its source hash, as a number.
+
+    It changes whenever the shipped source does, so a run or a copy that records
+    ``builtin:<slug>@<revision>`` names the exact source it came from, and it stays
+    within the nine digits ``declared_lineage`` reads.
+    """
+    return int(content_hash[:7], 16) or 1
+
+
+def load_builtins(directory: Optional[Path] = None) -> list[dict[str, Any]]:
+    """The built-in workflows shipped in *directory* (the package's by default).
+
+    Each ``<slug>.py`` whose name is a slug and whose source passes ``validate``
+    becomes a read-only record with id ``builtin:<slug>``. A missing directory
+    answers ``[]``; an unreadable or invalid file is skipped with a warning, so one
+    bad file never hides the others or the user's library.
+    """
+    directory = BUILTIN_WORKFLOWS_DIR if directory is None else directory
+    try:
+        paths = sorted(directory.glob("*.py")) if directory.is_dir() else []
+    except OSError:
+        logger.warning("workflow library: cannot list built-in workflows in %s", directory)
+        return []
+    builtins: list[dict[str, Any]] = []
+    for path in paths:
+        slug = path.stem
+        if not _BUILTIN_SLUG_RE.fullmatch(slug):
+            continue  # __init__.py and any helper module
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            logger.warning("workflow library: cannot read built-in workflow %s", path)
+            continue
+        result = validate(source)
+        if result.errors:
+            logger.warning(
+                "workflow library: built-in workflow %s is invalid and is skipped: %s",
+                path,
+                "; ".join(result.errors),
+            )
+            continue
+        meta = result.meta or {}
+        content_hash = _source_hash(source)
+        revision = _builtin_revision(content_hash)
+        builtins.append(
+            {
+                "schema_version": _SCHEMA_VERSION,
+                "id": f"{BUILTIN_ID_PREFIX}{slug}",
+                "slug": slug,
+                "name": str(meta.get("name") or slug),
+                "description": str(meta.get("description") or ""),
+                "format": SOURCE_FORMAT_PYTHON,
+                "created_at": "",
+                "updated_at": "",
+                "revision": revision,
+                "source": source,
+                "content_hash": content_hash,
+                "derived_from": None,
+                "revisions": [{"revision": revision, "source": source, "created_at": ""}],
+                "builtin": True,
+            }
+        )
+    return builtins
+
+
 def _refs(definition: dict[str, Any]) -> set[str]:
     """The refs a record answers to when nothing refuses them: its id and slug."""
     return {str(ref) for ref in (definition.get("id"), definition.get("slug")) if ref}
@@ -190,8 +277,19 @@ def _ref_index(definitions: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any
     """
     definitions = list(definitions)
     reserved = _reserved_refs(definitions)
-    live = [definition for definition in definitions if not _is_removed(definition)]
     index: dict[str, dict[str, Any]] = {}
+    # A built-in's id and slug reach the built-in, before any tombstone or user
+    # record: no saved or hand-placed record can shadow one.
+    for definition in definitions:
+        if _is_builtin(definition):
+            for ref in (_ref_text(definition.get("id")), _ref_text(definition.get("slug"))):
+                if ref:
+                    index.setdefault(ref, definition)
+    live = [
+        definition
+        for definition in definitions
+        if not _is_removed(definition) and not _is_builtin(definition)
+    ]
     for key in ("id", "slug"):
         for definition in live:
             ref = _ref_text(definition.get(key))
@@ -269,12 +367,16 @@ def command_ref(definition: dict[str, Any]) -> str:
 class WorkflowDefinitionLibrary:
     """JSON-per-definition library in the agent-protected Crew data home."""
 
-    def __init__(self, base_dir: Optional[Path] = None) -> None:
+    def __init__(
+        self, base_dir: Optional[Path] = None, *, builtin_dir: Optional[Path] = None
+    ) -> None:
         self._library_dir = (
             Path(base_dir) / _LIBRARY_SUBDIR
             if base_dir is not None
             else default_workflow_library_dir()
         )
+        #: The read-only built-in tier, read afresh on every read like the folder.
+        self._builtin_dir = BUILTIN_WORKFLOWS_DIR if builtin_dir is None else Path(builtin_dir)
         #: Each unreadable file already warned about, with the version warned.
         self._unreadable: dict[str, tuple[Any, ...]] = {}
 
@@ -302,10 +404,19 @@ class WorkflowDefinitionLibrary:
         for path in self._library_dir.glob("*.json"):
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(value, dict) and value.get("id"):
+                # A ``builtin:`` id belongs to the package tier alone: a folder
+                # record carrying one would run under a built-in's identity.
+                if (
+                    isinstance(value, dict)
+                    and value.get("id")
+                    and not str(value["id"]).startswith(BUILTIN_ID_PREFIX)
+                ):
                     # Version 1 predates multi-format definitions and every
                     # record it could contain was validated Python source.
                     value.setdefault("format", SOURCE_FORMAT_PYTHON)
+                    # Only the package's own tier is built in: a file in the
+                    # folder that claims to be one is an ordinary record.
+                    value.pop("builtin", None)
                     entries.append((path, value))
                     # Read again, it is warned about afresh if it breaks again.
                     self._unreadable.pop(str(path), None)
@@ -340,9 +451,16 @@ class WorkflowDefinitionLibrary:
     def _load_all(self) -> list[dict[str, Any]]:
         return [definition for _, definition in self._load_entries()]
 
+    def _builtins(self) -> list[dict[str, Any]]:
+        return load_builtins(self._builtin_dir)
+
+    def _all(self) -> list[dict[str, Any]]:
+        """The built-in tier, then every record in the library folder."""
+        return self._builtins() + self._load_all()
+
     def _live(self) -> list[dict[str, Any]]:
         """Definitions a user can list, search or run, as reads return them."""
-        definitions = self._load_all()
+        definitions = self._all()
         index = _ref_index(definitions)
         return [_presented(item, index) for item in definitions if not _is_removed(item)]
 
@@ -414,13 +532,13 @@ class WorkflowDefinitionLibrary:
         Reads the same refs the allocator does, so a slug a removed record
         holds is taken here too, though ``get`` reaches nothing for it.
         """
-        return _slugify(slug) in _taken_refs(self._load_all())
+        return _slugify(slug) in _taken_refs(self._all())
 
     def _unique_slug(self, requested: str, *, excluding_id: str = "") -> str:
         base = _slugify(requested)
         # Every id and slug on disk, live or removed, is taken; only the
         # renamed record's own refs stay free for it.
-        used = _taken_refs(self._load_all(), excluding_id=excluding_id)
+        used = _taken_refs(self._all(), excluding_id=excluding_id)
         if base not in used:
             return base
         suffix = 2
@@ -573,11 +691,13 @@ class WorkflowDefinitionLibrary:
         with self._revisions_lock():
             entries = self._load_entries()
             definitions = [definition for _, definition in entries]
-            current = _resolve(workflow_ref, _ref_index(definitions))
+            current = _resolve(workflow_ref, _ref_index(self._builtins() + definitions))
             if current is None:
                 return None
             if expected_id is not None and current.get("id") != expected_id:
                 raise WorkflowRefMovedError(workflow_ref)
+            if _is_builtin(current):
+                raise BuiltinWorkflowError(workflow_ref)
             removed_at = _now()
             for path, definition in entries:
                 if not _is_removed(definition) and definition.get("id") == current["id"]:
@@ -599,6 +719,9 @@ class WorkflowDefinitionLibrary:
         # ``get``; this finds that record again by its id under the lock, and
         # the revision goes back to the file it was read from, as a tombstone
         # does: ``_path_for`` may hold this id's tombstone, which must stay.
+        builtins = self._builtins()
+        if any(builtin.get("id") == workflow_id for builtin in builtins):
+            raise BuiltinWorkflowError(workflow_id)
         entries = self._load_entries()
         definitions = [definition for _, definition in entries]
         current = _live_with_id(workflow_id, definitions)
@@ -634,11 +757,11 @@ class WorkflowDefinitionLibrary:
         # Offered refs come from the library as this write leaves it: a new
         # slug reaches the record, and an unchanged one reaches it as before.
         after = [updated if definition is current else definition for definition in definitions]
-        return _presented(updated, _ref_index(after))
+        return _presented(updated, _ref_index(builtins + after))
 
     def get(self, workflow_ref: str) -> Optional[dict[str, Any]]:
         """Resolve a live definition by id or slug; a ref a removed record holds answers ``None``."""
-        index = _ref_index(self._load_all())
+        index = _ref_index(self._all())
         definition = _resolve(workflow_ref, index)
         return None if definition is None else _presented(definition, index)
 
@@ -652,16 +775,17 @@ class WorkflowDefinitionLibrary:
         An identity check on a record's own id, not a user's ref, so no ref
         refusal applies.
         """
-        return _live_with_id(workflow_id, self._load_all()) is not None
+        return _live_with_id(workflow_id, self._all()) is not None
 
     def lineage_candidates(self) -> List[dict[str, Any]]:
         """Every definition a ``derived_from`` reference may name, removed ones included.
 
         This is the only read that returns tombstoned definitions. Lineage
         names a parent by id and revision, never by slug, so a removed
-        parent still proves where a draft or run came from.
+        parent still proves where a draft or run came from. Built-ins are
+        included, so a copy saved from one records it as its parent.
         """
-        return self._load_all()
+        return self._all()
 
     def search(
         self,
