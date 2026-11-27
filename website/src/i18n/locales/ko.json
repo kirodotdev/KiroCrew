@@ -24539,6 +24539,7 @@
     "approvals_hint": "새 능력은 처음 실행할 때 확인을 요청합니다. 자동 실행은 승인에서 허용하세요.",
     "approvals_hint_granted": "자동 승인에 있는 도구는 확인 없이 실행됩니다. 나머지는 처음 실행할 때 확인을 요청합니다.",
     "change_skipped": "이미 있음",
+    "change_merged_from": "{{spellings}} 양쪽으로 설정됨. 더 엄격한 설정을 남기고 합쳤습니다.",
     "preview_adds": "{{template}}에서 {{count}}개 추가",
     "preview_nothing_new": "{{template}}에서 새로 추가할 항목이 없습니다 — 이미 모두 있습니다.",
     "retry": "다시 시도",

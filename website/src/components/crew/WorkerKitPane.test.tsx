@@ -444,6 +444,18 @@ describe('WorkerKitPane', () => {
     expect(changes).not.toHaveTextContent('skill://')
   })
 
+  it('shows a tool set under two spellings as its one row, with the fold under its name', async () => {
+    mockKit.preview.mockResolvedValue({
+      ...PREVIEW,
+      changes: [{ section: 'toolsSettings', id: 'shell', change: 'added', merged_from: ['shell', 'execute_bash'] }],
+    })
+    renderPane()
+    const changes = await previewAdd()
+    expect(within(changes).getAllByTestId('worker-kit-change-name')).toHaveLength(1)
+    expect(within(changes).getAllByTestId('worker-kit-merged-from')).toHaveLength(1)
+    expect(within(changes).getByTestId('worker-kit-merged-from')).toHaveTextContent('execute_bash')
+  })
+
   it('cancelling the preview writes nothing', async () => {
     renderPane()
     await previewAdd()

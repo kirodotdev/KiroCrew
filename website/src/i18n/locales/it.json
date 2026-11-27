@@ -25743,6 +25743,7 @@
     "approvals_hint": "Le nuove abilità chiedono conferma alla prima esecuzione. Concedi l’esecuzione automatica in Approvazioni.",
     "approvals_hint_granted": "Gli strumenti in Approvazioni automatiche verranno eseguiti senza chiedere. Tutto il resto chiede conferma la prima volta.",
     "change_skipped": "Già presente",
+    "change_merged_from": "Impostato sia come {{spellings}}; unito, mantenendo le impostazioni più restrittive.",
     "preview_adds": "Aggiunge {{count}} da {{template}}",
     "preview_nothing_new": "{{template}} non aggiunge nulla di nuovo — ha già tutto questo.",
     "retry": "Riprova",

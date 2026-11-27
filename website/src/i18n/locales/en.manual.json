@@ -13027,6 +13027,7 @@
     "approval_every_tool": "Every {{server}} tool",
     "change_added": "New",
     "change_skipped": "Already has",
+    "change_merged_from": "Set as both {{spellings}}; merged, keeping the stricter settings.",
     "cancel": "Cancel",
     "dont_add": "Don't add",
     "apply": "Add",

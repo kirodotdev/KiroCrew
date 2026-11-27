@@ -25743,6 +25743,7 @@
     "approvals_hint": "Las nuevas habilidades preguntan antes de ejecutarse por primera vez. Concede la ejecución automática en Aprobaciones.",
     "approvals_hint_granted": "Las herramientas de Aprobaciones automáticas se ejecutarán sin preguntar. Todo lo demás pregunta la primera vez.",
     "change_skipped": "Ya lo tiene",
+    "change_merged_from": "Configurado como {{spellings}} a la vez; combinado, conservando los ajustes más estrictos.",
     "preview_adds": "Agrega {{count}} de {{template}}",
     "preview_nothing_new": "{{template}} no agrega nada nuevo — ya tiene todo esto.",
     "retry": "Reintentar",

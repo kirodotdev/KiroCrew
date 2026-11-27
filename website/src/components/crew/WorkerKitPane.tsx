@@ -430,15 +430,23 @@ export default function WorkerKitPane({
                             </span>
                           )}
                           {changeLabel(c) !== null && (
-                            <span
-                              className={`min-w-0 truncate ${c.change === 'skipped' ? 'text-muted' : 'text-text'}`}
-                              title={c.id}
-                              data-testid="worker-kit-change-name"
-                            >
-                              {/* A tool whose write fallbackAction the add leaves out says so, not just its name. */}
-                              {c.section === 'toolsSettings' && preview.left_out?.includes(`toolsSettings.${c.id}.fallbackAction`)
-                                ? i18nT('crewWorkerKit.change_without_auto_run', { name: changeLabel(c) })
-                                : changeLabel(c)}
+                            <span className="flex min-w-0 flex-col gap-0.5">
+                              <span
+                                className={`min-w-0 truncate ${c.change === 'skipped' ? 'text-muted' : 'text-text'}`}
+                                title={c.id}
+                                data-testid="worker-kit-change-name"
+                              >
+                                {/* A tool whose write fallbackAction the add leaves out says so, not just its name. */}
+                                {c.section === 'toolsSettings' && preview.left_out?.includes(`toolsSettings.${c.id}.fallbackAction`)
+                                  ? i18nT('crewWorkerKit.change_without_auto_run', { name: changeLabel(c) })
+                                  : changeLabel(c)}
+                              </span>
+                              {/* A tool the agent set under two spellings is written once, under this row's key. */}
+                              {c.section === 'toolsSettings' && c.merged_from && c.merged_from.length > 0 && (
+                                <span className="min-w-0 truncate text-[11px] text-muted" data-testid="worker-kit-merged-from">
+                                  {i18nT('crewWorkerKit.change_merged_from', { spellings: c.merged_from.join(' + ') })}
+                                </span>
+                              )}
                             </span>
                           )}
                         </li>
