@@ -384,6 +384,14 @@ def _update(force: bool = False, release: str | None = None) -> None:
     capability = derive_capability(install_root=proj)
 
     if capability.managed_by != MANAGED_BY_GIT:
+        from kiro_crew.platform.update_capability import MANAGED_BY_ELECTRON
+
+        if capability.managed_by == MANAGED_BY_ELECTRON and not capability.defers:
+            # A Windows desktop install with no desktop app hosting it.
+            from kiro_crew.cli_desktop_update import update_desktop_install
+
+            update_desktop_install()
+            return
         if capability.defers:
             reason = capability.unavailable_reason or ""
             print(f"  ℹ️  This install ({distribution()}) is managed externally.")

@@ -59,9 +59,31 @@ def _install_shape(monkeypatch, managed_by: str, provider: object | None = None)
 
     monkeypatch.setattr(
         "kiro_crew.platform.update_capability.derive_capability",
-        lambda **_kw: SimpleNamespace(managed_by=managed_by),
+        # The fields the route reads; an "electron" shape is the app-hosted one,
+        # which defers to the desktop app (as derive_capability reports it).
+        lambda **_kw: SimpleNamespace(
+            managed_by=managed_by, defers=managed_by == "electron", can_apply=False
+        ),
     )
     monkeypatch.setattr(update_provider, "resolve_provider", lambda: provider)
+
+
+@pytest.mark.asyncio
+async def test_a_headless_desktop_install_with_an_overridden_source_needs_the_host(
+    tmp_path, monkeypatch, spies
+) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "kiro_crew.platform.update_capability.derive_capability",
+        lambda **_kw: SimpleNamespace(managed_by="electron", defers=False, can_apply=False),
+    )
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "next-start"})
+
+    assert resp.status == 409
+    assert json.loads(resp.body)["code"] == "host_approval_required"
+    assert not update_next_start.read().armed
 
 
 @pytest.fixture(autouse=True)

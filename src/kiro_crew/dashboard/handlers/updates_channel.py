@@ -373,8 +373,17 @@ async def api_update_channel(request: web.Request) -> web.Response:
             status=409,
         )
     if layout.is_externally_managed:
+        from kiro_crew.platform import desktop_installer_update as desktop
+
+        # A Windows desktop install follows the channel chosen in the app's
+        # Settings, headless or not, so this endpoint is no second writer of it.
+        error = (
+            desktop.CHANNEL_CHOSEN_IN_APP
+            if layout.kind == desktop.NSIS_DISTRIBUTION
+            else layout.guidance
+        )
         return web.json_response(
-            {"error": layout.guidance, "code": "channel_not_applicable_managed"},
+            {"error": error, "code": "channel_not_applicable_managed"},
             status=409,
         )
 
