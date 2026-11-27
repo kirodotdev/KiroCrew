@@ -22,6 +22,7 @@ from kiro_prerequisite_helpers import _make_executable, _no_audit
 
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService, ProcessResult
+from kiro_crew.testing.wait import await_until
 
 
 def _service(
@@ -158,7 +159,7 @@ async def test_a_status_probe_in_flight_does_not_make_a_skipped_latch_reusable(
     async def hold_version(args: list[str]) -> None:
         if blocking and args == ["--version"]:
             in_version.set()
-            await release.wait()
+            await await_until(release, what="the test releasing --version")
 
     service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE, hold_version)
     await service.snapshot(force=True)
@@ -166,12 +167,21 @@ async def test_a_status_probe_in_flight_does_not_make_a_skipped_latch_reusable(
 
     blocking = True
     status_refresh = asyncio.create_task(service.snapshot(force=True))
-    await in_version.wait()
-    check = asyncio.create_task(service.verified_ready(max_age_secs=3600.0))
-    await asyncio.sleep(0)
-    blocking = False
-    release.set()
-    await status_refresh
+    check: asyncio.Task[bool] | None = None
+    try:
+        await await_until(in_version, what="the status refresh reaching --version")
+        check = asyncio.create_task(service.verified_ready(max_age_secs=3600.0))
+        # One loop turn, not a timed wait: the new task runs its first step now,
+        # while the refresh still holds the probe lock inside --version.
+        await asyncio.sleep(0)
+        blocking = False
+        release.set()
+        await await_until(status_refresh, what="the status refresh")
 
-    assert await check is True
-    assert ["whoami"] in calls
+        assert await await_until(check, what="the Kiro-routed check") is True
+        assert ["whoami"] in calls
+    finally:
+        release.set()
+        for task in (status_refresh, check):
+            if task is not None and not task.done():
+                task.cancel()
