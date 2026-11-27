@@ -309,8 +309,8 @@ def _names_refused_server(ref: Any) -> bool:
 
 
 def without_subagent_refused_servers(
-    custom_agents: list[dict[str, Any]] | None, session_key: str
-) -> list[dict[str, Any]] | None:
+    custom_agents: list[dict[str, Any]], session_key: str
+) -> list[dict[str, Any]]:
     """*custom_agents* without the servers a sub-agent run is always refused by.
 
     Only for a ``subagent:`` session; every other session is returned as is. The
