@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, sdk_extras
 from kiro_crew.browser_harness import HARNESS_VERSION, build_deps, chromium
 from kiro_crew.platform_compat import IS_WINDOWS
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
@@ -113,9 +113,17 @@ _ISOLATED: tuple[str, ...] = ("-I",)
 #: Environment prefixes the children never inherit. ``-I`` already ignores the
 #: ``PYTHON*`` family inside the interpreter; pip reads ``PIP_*`` itself
 #: (``PIP_INDEX_URL``, ``PIP_FIND_LINKS``, a config file) and is given only the
-#: two values in :func:`_child_env`. The proxy variables ARE inherited: pip needs
-#: them to reach the index on a proxied network.
+#: two values in :func:`_child_env`, plus, on the first attempt against the user's
+#: own index, the index keys they set (:func:`_pip_install`). The proxy variables
+#: ARE inherited: pip needs them to reach the index on a proxied network.
 _SCRUBBED_ENV_PREFIXES: tuple[str, ...] = ("PYTHON", "PIP_")
+
+#: Added to the first attempt against the user's own index: pip builds nothing, so
+#: every file it installs is a locked wheel and no build requirement is fetched.
+_WHEELS_ONLY: tuple[str, ...] = ("--only-binary", ":all:")
+
+#: The most of a failed first attempt's (redacted) pip output the gateway log keeps.
+_LOGGED_OUTPUT_CAP = 20_000
 
 #: pip flags: hashes are mandatory, nothing is prompted, no version nag on stderr.
 _PIP_ARGS: tuple[str, ...] = (
@@ -443,14 +451,66 @@ def _install_harness(
         pip_argv = [sys.executable, *_ISOLATED, "-m", "pip", "--python", str(python)]
     else:
         pip_argv = [str(python), *_ISOLATED, "-m", "pip"]
-    _step(
-        run,
-        [*pip_argv, *_PIP_ARGS, str(LOCK_FILE)],
-        _PIP_TIMEOUT_SECS,
-        STAGE_INSTALLING_HARNESS,
-    )
+    _pip_install(run, [*pip_argv, *_PIP_ARGS, str(LOCK_FILE)])
     _check_stop(stop, STAGE_INSTALLING_HARNESS)
     _write_marker(prefix)
+
+
+def _pip_install(run: Callable[..., subprocess.CompletedProcess[str]], argv: list[str]) -> None:
+    """Install the lock with *argv*, first from the user's own pip index if they set one.
+
+    ``argv[0]`` is the interpreter whose pip runs *argv*; its ``pip config list``
+    (and the gateway's ``PIP_*`` index variables) give the index settings. With
+    none, *argv* runs once, as it always has. With some, a first attempt runs with
+    them and wheels only; a failed exit of it, a timeout, or a spawn that cannot
+    start (an index value the OS or ``Popen`` refuses in an environment) is logged and *argv*
+    runs once more against pypi.org. A stop is not retried: *run*'s own stop check
+    raises :class:`InstallError`, which the first attempt does not catch.
+    The first attempt's output stays in the gateway log: a failed retry's error
+    ends with one line naming the index tried first.
+    """
+    stage = STAGE_INSTALLING_HARNESS
+    index_env = sdk_extras._configured_index_env(argv[0])
+    if not index_env:
+        _step(run, argv, _PIP_TIMEOUT_SECS, stage)
+        return
+    configured = sdk_extras._describe_index(index_env)
+    logger.info("installing the browser harness, attempt 1, wheels only, from %s", configured)
+    first = [*argv, *_WHEELS_ONLY]
+    try:
+        result = run(first, _PIP_TIMEOUT_SECS, env={**_child_env(), **index_env})
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "pip from %s timed out after %.0fs, trying pypi.org", configured, _PIP_TIMEOUT_SECS
+        )
+    except (OSError, ValueError) as exc:
+        # The spawn never started, as when an index value passes the per-string
+        # exec limit (E2BIG) or carries a NUL Popen refuses; the fallback carries none.
+        logger.warning(
+            "pip from %s could not start, trying pypi.org: %s",
+            configured,
+            sdk_extras._redact_pip_output(str(exc), index_env),
+        )
+    else:
+        if result.returncode == 0:
+            return
+        output = ((result.stderr or "") + (result.stdout or "")).strip()
+        logger.warning(
+            "pip could not install the browser harness from %s, trying pypi.org:\n%s",
+            configured,
+            sdk_extras._redact_pip_output(output, index_env)[-_LOGGED_OUTPUT_CAP:],
+        )
+    logger.info(
+        "installing the browser harness, attempt 2, from %s", sdk_extras._describe_index({})
+    )
+    try:
+        _step(run, argv, _PIP_TIMEOUT_SECS, stage)
+    except InstallError as exc:
+        raise InstallError(
+            stage,
+            f"{exc.detail}\npip first tried {configured}, which failed too; "
+            "the gateway log has its reason",
+        ) from exc
 
 
 def _copy_runtime_harness(
@@ -736,7 +796,12 @@ def _check_stop(stop: threading.Event | None, stage: str) -> None:
 
 
 def _run(
-    argv: list[str], timeout: float, *, cwd: Path, stop: threading.Event | None = None
+    argv: list[str],
+    timeout: float,
+    *,
+    cwd: Path,
+    stop: threading.Event | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """The installer's one spawn: a fixed argv of our own interpreter and the venv's.
 
@@ -746,7 +811,8 @@ def _run(
     a caller chose. The working directory is the prefix (owner-only, never the
     gateway's own cwd), the interpreter runs isolated (``-I`` in the argv) and the
     environment is :func:`_child_env`: three fences against the same agent-writable
-    cwd.
+    cwd. Only :func:`_pip_install`'s first attempt passes *env*: that environment
+    with the user's pip index keys merged over it.
     """
     _check_stop(stop, STAGE_PREPARING)
     # Files rather than PIPEs let the shared synchronous tree-stop helper wait
@@ -760,7 +826,7 @@ def _run(
             stdout=stdout,
             stderr=stderr,
             cwd=str(cwd),
-            env=_child_env(),
+            env=dict(env) if env is not None else _child_env(),
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             **UTF8_TEXT,
@@ -791,12 +857,14 @@ def _child_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
 
     ``PIP_CONFIG_FILE`` is the null device because pip also reads config files it
     finds from ``HOME`` and the system (``~/.config/pip/pip.conf``,
-    ``~/.pip/pip.conf``, ``/etc/pip.conf``, the venv's own): an ``index-url`` there
-    replaces PyPI, and a CodeArtifact repository whose login expired answers 401 for
-    every locked wheel. Set to ``os.devnull``, pip loads none of them (``--isolated``
-    still loads the system and venv files), so the index is pip's default and the
-    lock's hashes pin every file it serves. The variable also reaches the pip that
-    builds an sdist's build environment, which a command-line flag would not.
+    ``~/.pip/pip.conf``, ``/etc/pip.conf``, the venv's own). Set to ``os.devnull``,
+    pip loads none of them (``--isolated`` still loads the system and venv files),
+    so no pip setting reaches either attempt of an install except the index keys
+    an installer passes to its first (:func:`_pip_install`,
+    ``sdk_extras._lay_down``), and the fallback is exactly the run with no
+    settings: pip's default index, the lock's hashes pinning every file it serves.
+    The variable also reaches the pip that builds an sdist's build environment,
+    which a command-line flag would not.
     """
     source = os.environ if base is None else base
     env = {k: v for k, v in source.items() if not k.upper().startswith(_SCRUBBED_ENV_PREFIXES)}

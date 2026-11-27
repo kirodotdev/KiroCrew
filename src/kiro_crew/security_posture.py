@@ -79,6 +79,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # and the install error, so a mirror credential in a URL is never logged.
         # It is not an agent-output egress path.
         "sdk_extras.py",
+        "browser_harness/install.py",  # pip's log text via _redact_pip_output; not agent egress
         # Pure helper: `_run_apply_child` redacts the tail of the boot-time
         # `kirocrew update` child's output before it is stored as the armed update's
         # `pending_apply_error`. It emits nothing itself; the dashboard status route

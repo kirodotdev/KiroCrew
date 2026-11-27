@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import requires_symlinks
-from kiro_crew import sandbox_leaves, sandbox_precreate
+from kiro_crew import sandbox_leaves, sandbox_precreate, sdk_extras
 from kiro_crew.browser_harness import HARNESS_VERSION, build_deps, chromium, install
 from kiro_crew.security import paths_lists
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
@@ -31,6 +31,13 @@ def _no_old_glibc(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """Every test here runs as on a host whose glibc the locked wheels cover, unless it says
     otherwise: without the pin an old-glibc test host would refuse every install below."""
     _floor_monkeypatch.setattr(build_deps, "refusal_for_this_host", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_pip_index_settings(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test here reads the host's own pip settings or spawns a real ``pip config list``;
+    a test that needs index settings sets them itself."""
+    _floor_monkeypatch.setattr(sdk_extras, "_configured_index_env", lambda *a, **k: {})
 
 
 #: The distributions the gateway's interpreter must carry for its own copy to be used.
@@ -802,9 +809,9 @@ def test_the_installers_pip_reads_no_index_from_the_owners_pip_config(
 ) -> None:
     """A real pip under the installer's own spawn never sees the owner's pip config.
 
-    An ``index-url`` there (a CodeArtifact repository whose login expired answers 401
-    for every locked wheel) would otherwise replace the index the lock was audited
-    against, and the Settings page would show pip's raw failure.
+    The installer's environment points pip's config at the null device, so pip
+    loads none of the owner's settings; a first attempt against the user's index is
+    given only the index keys themselves (``sdk_extras._PIP_INDEX_ENV``).
     """
     if not isolated_child_imports["pip"]:
         pytest.skip("this interpreter ships no pip an isolated child can run")

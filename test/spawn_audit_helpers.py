@@ -596,13 +596,28 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Browser Harness (``browser_harness/``), the agent's one browser
         # driver. Both spawns are fixed argv the AGENT never
         # contributes to, and neither can be sandboxed without defeating it:
-        #   * ``install.py::_run`` runs ``<sys.executable> -m venv --clear <prefix>``
-        #     and ``<prefix>/bin/python -m pip install --require-hashes -r <lock>``.
+        #   * ``install.py::_run`` runs ``<sys.executable> -I -m venv --clear
+        #     <prefix>/venv`` (``--without-pip`` when the gateway's pip installs or
+        #     the runtime's harness is copied; ``--upgrade --without-pip`` instead
+        #     re-points a venv whose base Python is gone),
+        #     then ``<sys.executable> -I -m pip --python <prefix>/venv/bin/python
+        #     install --require-hashes --no-input --disable-pip-version-check -r
+        #     <lock>`` when the gateway's interpreter has pip, else
+        #     ``<prefix>/venv/bin/python -I -m pip install ...`` with the same flags,
+        #     plus ``-I -c`` module checks of either interpreter.
         #     Every token is a module constant or a path under the data home; the
         #     lock file ships in the package and pins each wheel by sha256; the only
         #     trigger is the owner pressing Install in Settings (the route refuses
-        #     internal-secret callers). The install needs the real PyPI and writes
-        #     the read-only prefix, which the sandbox exists to deny.
+        #     internal-secret callers) or the gateway's startup auto-install. When
+        #     the user set a pip index, the pip step first runs once with the index
+        #     keys the user set (of the five in ``sdk_extras._PIP_INDEX_ENV``) in its
+        #     env and ``--only-binary :all:``, then, if that attempt fails, times out
+        #     or cannot start, once more exactly as without them. The argv is not
+        #     agent-influenced; the first attempt's index is: an agent can write a pip
+        #     config file the owner's pip reads (an accepted residual in browser.md's
+        #     threat table), and the hash lock still pins every file. The install
+        #     needs a package index and writes the read-only prefix, which the
+        #     sandbox exists to deny.
         #   * ``supervisor.py::_spawn`` starts three children of the gateway: Kiro's
         #     Chromium (the downloaded binary under the sealed prefix, flags from
         #     ``_CHROMIUM_ARGS``, the profile path under the data home), the Harness
@@ -623,13 +638,19 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # (``feishu/gateway.py::_schedule_sdk_install``). Scrubbed PYTHON*/PIP_* env, with
         # only the user's own index settings (``_configured_index_env``) passed back on
         # the first attempt; a download failure there retries once against pypi.org.
-        # Not agent-influenced.
+        # The argv is not agent-influenced; the first attempt's index is: an agent can
+        # write a pip config file the owner's pip reads (an accepted residual in
+        # browser.md's threat table), and the hash lock still pins every file.
         "sdk_extras.py::_lay_down",
-        # ``sdk_extras.py::_pip_config_list`` runs ``<sys.executable> -m pip config list``
-        # (fixed argv, read-only, 15 s timeout, PYTHON* scrubbed) so the installer can
-        # find the index the user configured for pip. Same two gateway-owned callers
-        # as ``_lay_down``; only its index-url/extra-index-url/trusted-host/cert lines
-        # are used. Not agent-influenced.
+        # ``sdk_extras.py::_pip_config_list`` runs ``<interpreter> -I -m pip config list``
+        # (fixed argv, read-only, 15 s timeout, PYTHON* scrubbed) so an installer can
+        # find the index the user configured for pip. The interpreter is the one whose
+        # pip installs: the gateway's own for ``_lay_down``; for the browser harness
+        # installer (``install.py::_pip_install``) the gateway's when it has pip, else
+        # the harness venv's under the sealed prefix. Callers are gateway-owned
+        # (``_lay_down``'s two, the harness Install press and its startup auto-install);
+        # only its index-url/extra-index-url/trusted-host/cert/client-cert lines are
+        # used. The argv is not agent-influenced; the config files it reads can be.
         "sdk_extras.py::_pip_config_list",
         "browser_harness/supervisor.py::_spawn",
         # The KAS engine installer (`kirocrew kas install`, operator terminal, outside

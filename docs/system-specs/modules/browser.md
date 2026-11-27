@@ -220,11 +220,36 @@ prefix as their working directory, because a pod gateway's cwd is the agent's
 workspace and a `pip/` package written there would otherwise run as the owner the
 moment they press Install. Their environment also sets `PIP_CONFIG_FILE` to the
 null device, so pip loads no config file (the user's `~/.config/pip/pip.conf` or
-`~/.pip/pip.conf`, `/etc/pip.conf`, the venv's own) and installs from its default
-index, PyPI: an `index-url` in the user's file, such as a CodeArtifact repository
-whose login has expired, would otherwise answer 401 for every locked wheel and
-fail the install with pip's raw output. A mirror set in pip's config or in
-`PIP_INDEX_URL` is therefore not used; the lock's hashes pin every file either
+`~/.pip/pip.conf`, `/etc/pip.conf`, the venv's own). The one exception to the
+`PIP_*` scrub is the first pip install attempt when the user has pip index
+settings: its `PIP_CONFIG_FILE` stays the null device, and it carries whichever
+of the five index keys (`PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`,
+`PIP_TRUSTED_HOST`, `PIP_CERT`, `PIP_CLIENT_CERT`) are set, as
+`sdk_extras._configured_index_env` reads them: the gateway's own variables of
+those names merged over pip's config, so a network that reaches only a mirror
+can install. That read is a third spawn: `pip config list` by the interpreter
+whose pip installs (the gateway's when it has pip, else the venv's after it has
+its own), with a fixed argv, `-I`, `PYTHON*` scrubbed, stdin from the null
+device, a 15 s timeout, read-only, in the gateway's cwd and with `PIP_*`
+inherited; it runs right before the pip step, after the stage's stop check. The
+first attempt adds `--only-binary :all:`, so pip builds nothing from that index:
+every file it installs is a locked wheel whose sha256 the lock pins (index pages
+and metadata also come from there but never run). Any failed exit of it (no
+route, a 401 or 403, a hash mismatch, no wheel for this host), a timeout of it
+and a spawn of it that cannot start (an index value past the OS's per-string
+exec limit, or one with a NUL, which Python's `Popen` refuses) are logged, and the
+step runs once more exactly as it does with no settings: pip's default index,
+PyPI, sdist builds allowed, a fresh timeout. A stop is not retried. The gateway
+log names each attempt's index by scheme and host only and keeps the first
+attempt's pip output, or why it could not start, redacted
+(`sdk_extras._redact_pip_output`), which is where a mirror's network, TLS or
+proxy reason is; when the second attempt fails too, the error Settings shows is
+its output plus one last line naming the index tried first. This differs from
+the Feishu SDK installer, which retries only on a download failure. A host that
+must build the locked pillow (glibc older than 2.27) and reaches only a mirror
+still cannot install: its first attempt is certain to fail, and the error shown
+is the second's. With no pip index settings the step is one run, as above; the
+lock's hashes pin every file either
 way. `NO_PROXY`/`no_proxy` always carry `127.0.0.1,localhost`: neither `urllib`
 nor `websockets` bypasses a proxy for loopback on its own, and a shell with
 `HTTPS_PROXY` set would send the relay URL (secret and all) to the proxy host. A
@@ -2042,7 +2067,8 @@ modifies it, and the row is silent when the directory is absent.
 | The daemon's socket leaves the hidden leaf | a data home too deep for the AF_UNIX path limit is refused, never relocated to system temp |
 | Another chat drives the tab a person has taken over | every op binds to the calling session's own tab under one gateway-wide lock; a takeover fences that session's tab, and a tab another session owns is never streamed to this session's card |
 | A takeover lands inside an agent op | the claim and the op route share a per-session fence: the claim cancels the op in flight and is confirmed only once the route has left it |
-| An agent-written `pip/` or `venv/` package in the gateway's cwd runs on Install or the startup auto-install | both installer spawns run `python -I` with `PYTHON*`/`PIP_*` scrubbed and the prefix as cwd |
+| An agent-written `pip/` or `venv/` package in the gateway's cwd runs on Install or the startup auto-install | the venv and pip spawns run `python -I` with `PYTHON*`/`PIP_*` scrubbed (`PIP_CONFIG_FILE` the null device; the first pip attempt adds only whichever of the five index keys the user's pip settings set) and the prefix as cwd; the `pip config list` read that finds those keys runs `-I` with `PYTHON*` scrubbed, so a package in the cwd cannot shadow pip there either |
+| An agent writes a pip config file the owner's pip reads | **Accepted residual, both in-app installers (the browser harness and the Feishu SDK).** A sandboxed agent can write a pip config file (pip's user files `~/.config/pip/pip.conf`, `~/.pip/pip.conf`, macOS `~/Library/Application Support/pip/pip.conf`, Windows `%APPDATA%\pip\pip.ini`, and an unsealed site file `<interpreter prefix>/pip.conf`; pip also reads global files such as `/etc/pip.conf`) and so choose, for the first attempt of an install that runs as the owner outside the sandbox (the startup auto-install too), the index host, extra indexes, `trusted-host`, the CA bundle and the client-certificate path. It cannot change what is installed or run: every file is checked against the shipped hash lock, that attempt installs wheels only, and the fallback is the run with no settings. For the harness installer it can make the first attempt fail (one wasted attempt) or stall it until the 15-minute timeout (then the fallback: a delay, never a failure the run with no settings would not also have; on a network that reaches only the user's mirror, a config pointed elsewhere leaves only that run, which cannot reach pypi.org); point `cert`/`client-cert` at owner files, which the owner's pip loads without printing; with a `client-cert`, make the owner's pip authenticate as the owner (mutual TLS) to a host and URL path the agent picks, for the GET requests pip makes for index pages and files, which the hash lock does not limit (this matters where the agent cannot read that certificate itself, such as a folder the sandbox hides); and with a `file://` index whose link is named like a locked wheel, make the owner's pip hash a file the agent cannot read and print that sha256 in pip's hash-mismatch line ("Got <sha256>"), which reaches the gateway log for both installers (never the harness's install error). The OS sandbox does not fence network egress, so the index host is not a new egress path. The Feishu SDK installer differs in one way: `sdk_extras._lay_down` falls back only on a download failure and not after its 10-minute timeout, so the same settings can make its install fail outright (a hash mismatch, a stall); the harness installer reading the same settings does not change that. [Agents ask before changing gateway-trusted files](../../decisions/2026-11-20-agents-ask-before-changing-gateway-trusted-files.md) covers other files the gateway launches from or trusts; this residual does not supersede it, for the reasons [the decision](../../decisions/2026-11-24-the-browser-harness-installer-tries-the-users-pip-index-first.md) gives |
 | The relay URL (and its secret) goes to a corporate proxy | `NO_PROXY` always carries the loopback names |
 | Agent spells a password one key at a time | `press_key` with a printable key runs the same focused-password-field refusal as `type`; named keys and Ctrl/Meta chords stay allowed so the agent can leave the field |
 | Agent reads Kiro's profile cookies or the daemon's IPC credential | `HIDDEN` leaves in every sandbox mode |
