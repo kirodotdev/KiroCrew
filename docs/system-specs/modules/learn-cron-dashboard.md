@@ -649,7 +649,12 @@ keeps that member. Ordinary jobs without a member retain their existing V1 behav
 A member schedule written by 0.7.0-insider.1 to .5 carries `{member_id: <alias>,
 memory_store}` and no `execution_context`. The gateway's memory worker captures it
 once, right after the start-of-process store upgrade gives that store its
-`owner_member_id` and before the scheduler arms:
+`owner_member_id` and before the scheduler arms. The worker thread is part of the
+contract, not a convenience: the session-record write below takes the transcript
+lock and renames the transcript, and both retry only off the event loop (one
+attempt on it, by the history offload discipline), while the migration reads any
+fault as "left uncaptured" for the next start. A caller on the loop, a test
+included, hands it to `asyncio.to_thread`:
 `cron_service.identity.migrate_legacy_member_schedules` rewrites, under the cron
 store lock and only while the record still has no `execution_context`, that field
 and `member_id` (to the member's permanent id). Every reader then sees an ordinary

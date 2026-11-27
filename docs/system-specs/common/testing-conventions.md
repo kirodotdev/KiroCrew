@@ -386,7 +386,13 @@ milliseconds (`[WinError 5]` on `sessions/<key>.jsonl`). `member_memory_helpers`
 flake-pattern ratchet counts an `update_metadata` or `update_metadata_if` call made in
 a coroutine's own frame (K20; a sync helper that calls it is not counted), so a new one
 fails a change; hand the method to
-`await asyncio.to_thread(log.update_metadata, ...)` instead.
+`await asyncio.to_thread(log.update_metadata, ...)` instead. The miss the ratchet
+names is real: a "never raises" helper that writes a session record and reports a
+failure as a skipped item (`cron_service.identity.migrate_legacy_member_schedules`
+logs the schedule "left uncaptured" and returns it absent) turns that one-attempt
+rename into a wrong return value, `[] == ['lj1']`, with the `PermissionError` only
+in the captured log. The gateway runs such helpers on its memory worker thread, so
+a coroutine that drives one does the same, `await asyncio.to_thread(helper, ...)`.
 
 A test that drives code to `RecursionError` on purpose must hold the cyclic
 collector off for the walk. Its innermost frames have no headroom, and a gen0

@@ -6,6 +6,7 @@ throttle fallback wiring, and the usage row a model-spending cron turn appends.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -162,11 +163,17 @@ class TestLlmCronAdmission:
         (store_dir / "crons.json").write_text(
             json.dumps({"version": 2, "jobs": [record]}), encoding="utf-8"
         )
-        ConversationLog().update_metadata(
-            "cron:lj1", {"memory_store": "member-alice", "agent": legacy_agent}
+        # Both session-record writes run on a worker thread, as the gateway's
+        # memory worker runs the migration: on the loop a transcript rename or
+        # flock gets a single attempt, and the migration swallows the fault as
+        # "left uncaptured" instead of retrying.
+        await asyncio.to_thread(
+            ConversationLog().update_metadata,
+            "cron:lj1",
+            {"memory_store": "member-alice", "agent": legacy_agent},
         )
 
-        assert migrate_legacy_member_schedules(store_dir) == ["lj1"]
+        assert await asyncio.to_thread(migrate_legacy_member_schedules, store_dir) == ["lj1"]
         saved = json.loads((store_dir / "crons.json").read_text(encoding="utf-8"))["jobs"][0]
         job = _job_from_record(saved)
         assert job.agent_id == "named-template"
