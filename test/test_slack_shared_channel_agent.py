@@ -82,6 +82,8 @@ def crew(monkeypatch, tmp_path):
         cfg = KiroCrewConfig.load()
         cfg.agents.update(bots)
         cfg.workspaces.update({n: WorkspaceConfig(dir=str(tmp_path / n)) for n in bots})
+        # The first crewmate, never renamed: the Bots page calls it "Bot".
+        cfg.agents["mate"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
         return cfg
 
     monkeypatch.setattr(live, "snapshot", _live)
@@ -167,6 +169,16 @@ class TestASharedUserSetsABot:
         assert _disk()["agent"] == "research"
         assert "*web-frontend*" in _say("!channel agent WEB-FRONTEND")
         assert _disk()["agent"] == "web-frontend"
+
+    @pytest.mark.parametrize(
+        ("typed", "shown"),
+        [("mate", "Bot"), ("research", "Research Bot"), ("web-frontend", "web-frontend")],
+    )
+    def test_the_reply_names_the_bot_as_the_dashboard_does(self, crew, typed, shown):
+        reply = _say(f"!channel agent {typed}")
+
+        assert reply.startswith(f"Agent for this channel: *{typed}*. Bot *{shown}* now answers")
+        assert _disk()["agent"] == typed
 
     def test_another_shared_user_may_replace_it(self, crew):
         _say("!channel agent research")
