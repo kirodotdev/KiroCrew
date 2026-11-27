@@ -89,6 +89,17 @@ _FORWARD_LOOKING_DOC_PREFIXES: tuple[str, ...] = (
 _PLANNED_STATUS_RE = re.compile(r"^Status:\s*planned\b", re.IGNORECASE)
 # How far down a doc its Status line may sit: under the title and a short lede.
 _STATUS_HEAD_LINES = 12
+# The opposite genre: docs that RECORD what was true when they were written, so a
+# name the code later renamed is correct writing there and no edit can clear it. A
+# decision entry is immutable (``scripts/check_decisions_history.py``), a release
+# note describes its own release, and the sweep findings keep each pass's names as
+# it recorded them. Only the dead-identifier check skips them; the paths they cite
+# are still checked.
+_HISTORICAL_DOC_PREFIXES: tuple[str, ...] = (
+    "docs/decisions/",
+    "CHANGELOG.md",
+    "docs/system-specs/common/testing-sweep-findings.md",
+)
 
 # Identifiers defined OUTSIDE this repository (a vendor API, another harness, an
 # OS facility), one per line in this file with a ``#`` comment naming the source.
@@ -638,7 +649,9 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
     worth more here than a gate they learn to skip.
 
     Forward-looking genres are skipped for the same reason as the path check, and
-    so is a doc whose head says ``Status: planned``. Documentation placeholders
+    so is a doc whose head says ``Status: planned``. So are the historical records
+    (:data:`_HISTORICAL_DOC_PREFIXES`), whose names are as of when they were
+    written. Documentation placeholders
     (``MyPage``) are meant to be absent, and a name in the curated external list
     is defined somewhere this repo cannot see. A page rendered from a spec
     (:data:`_IDENT_SPEC_RENDERED_DOCS`) also counts the names its spec defines as
@@ -667,7 +680,7 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
     }
     for doc in docs:
         rel_doc = _rel(doc, root)
-        if _is_forward_looking(rel_doc):
+        if _is_forward_looking(rel_doc) or rel_doc.startswith(_HISTORICAL_DOC_PREFIXES):
             continue
         doc_live = next(
             (names for prefix, names in spec_live.items() if rel_doc.startswith(prefix)), live

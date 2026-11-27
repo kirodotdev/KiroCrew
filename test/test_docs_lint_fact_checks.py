@@ -485,6 +485,29 @@ class TestDeadIdentifier:
         _write(tree, "docs/ok.md", body)
         assert "vanished_handler" in _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
 
+    @pytest.mark.parametrize("record", sorted(gate._HISTORICAL_DOC_PREFIXES))
+    def test_a_historical_record_keeps_its_old_names_but_not_its_dead_paths(
+        self, tree: Path, record: str
+    ) -> None:
+        rel = f"{record}2026-01-01-an-entry.md" if record.endswith("/") else record
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        _write(
+            tree, rel, "# Record\n\nDecided as `vanished_handler` in `src/kiro_crew/ghost.py`.\n"
+        )
+        _write(tree, "docs/ok.md", "# Ok\n\nRouted through `vanished_handler`.\n")
+        findings = gate.run(tree)
+        assert {(f.path, f.token) for f in findings.advisories} == {
+            ("docs/ok.md", "vanished_handler")
+        }
+        assert "src/kiro_crew/ghost.py" in _tokens(tree, gate.CHECK_PATH_EXISTS)
+
+    def test_every_historical_record_is_where_the_repo_keeps_it(self) -> None:
+        # An entry naming a path that moved would exempt nothing, and the moved
+        # record's old names would come back as findings nobody can clear.
+        for record in gate._HISTORICAL_DOC_PREFIXES:
+            target = _REPO_ROOT / record
+            assert target.is_dir() if record.endswith("/") else target.is_file(), record
+
     def test_a_spec_defined_name_is_live_on_the_pages_rendered_from_that_spec_only(
         self, tree: Path
     ) -> None:

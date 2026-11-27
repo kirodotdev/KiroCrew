@@ -1010,10 +1010,13 @@ names a file or a symbol precisely BECAUSE it is not there yet. `fenced-path` al
 skips the packaged user docs under `src/kiro_crew/docs/`, where a task-spec path is
 a template for the reader's own project rather than a file in this checkout.
 
-`dead-identifier` has two more exemptions. A doc anywhere else that specifies
+`dead-identifier` has three more exemptions. A doc anywhere else that specifies
 something not built yet puts a `Status: planned` line in its first twelve lines;
 only this check honours it, so the paths such a doc cites into today's code are
-still checked. A name defined outside this repository (a vendor API, another
+still checked. The historical records skip it too, because their names are as of
+when they were written and no edit can bring them up to date: the immutable
+`docs/decisions/` entries, `CHANGELOG.md`, and
+`docs/system-specs/common/testing-sweep-findings.md`. A name defined outside this repository (a vendor API, another
 harness, an OS facility) goes in `.github/docs-lint-external-identifiers.txt`,
 under a comment naming its source. Never list a name this repo defines: the list
 would hide its rename. docs-lint holds the list to that rule: a listed name the code
