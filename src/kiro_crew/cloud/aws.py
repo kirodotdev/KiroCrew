@@ -321,7 +321,7 @@ def run_aws(
     on Ctrl+C — otherwise a long ``cloudformation deploy`` (up to 1800s) would be
     orphaned when the interrupt hits the main thread rather than this one.
 
-    NB: the sandbox scrubs ``AWS_SECRET*``/``AWS_SESSION*`` from the child env
+    NB: the sandbox scrubs the AWS key variables from the child env
     (deliberate credential-isolation floor, applied in all modes), so
     **env-var-only credentials are not supported** — auth must come from a
     profile / ``~/.aws`` (``aws configure`` or ``aws configure sso``).
@@ -357,7 +357,7 @@ def run_aws(
                 **UTF8_TEXT,
                 # The CLI runs ``credential_process`` by name on its OWN PATH,
                 # which a GUI-launched gateway leaves minimal. The sandbox's
-                # AWS_SECRET*/AWS_SESSION* scrub still applies: the wrapped argv
+                # scrub of the AWS key variables still applies: the wrapped argv
                 # runs it inside the child, on whatever env it is handed.
                 # aws-cli v1 is Python: the gateway's PYTHONPATH/PYTHONHOME
                 # would make it import the gateway's packages instead.
@@ -410,7 +410,7 @@ def run_aws(
 def env_credentials_hint() -> str:
     """A hint when the user relies on env-var creds the sandbox scrubs.
 
-    The sandbox strips ``AWS_SECRET*``/``AWS_SESSION*`` from every child env
+    The sandbox strips the AWS key variables from every child env
     (its credential-isolation floor — never weakened per-callsite), so
     env-var-only auth cannot work through the launcher. Detect that setup and
     say so explicitly instead of a generic "could not resolve credentials".

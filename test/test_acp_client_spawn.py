@@ -822,7 +822,7 @@ class TestSpawnEnvScrub:
         monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/fake-agent.sock")
         monkeypatch.setenv("PYTHONPATH", "/gateway/pythonpath")
         monkeypatch.setenv("PYTHONHOME", "/gateway/pythonhome")
-        # AWS account identity and a benign key are not denied.
+        # The key id goes with its secret: alone it makes every ``aws`` call fail.
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "FAKE-akid")
         monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
 
@@ -865,6 +865,7 @@ class TestSpawnEnvScrub:
             "SLACK_BOT_TOKEN",
             "KIROCREW_OWNER_ID",
             "AWS_SECRET_ACCESS_KEY",
+            "AWS_ACCESS_KEY_ID",
             "PYTHONPATH",
             "PYTHONHOME",
         ):
@@ -877,7 +878,6 @@ class TestSpawnEnvScrub:
         else:
             assert env.get("SSH_AUTH_SOCK") == "/tmp/fake-agent.sock"
         assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
-        assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
         assert env.get("KIROCREW_RUNTIME_PYTHON") == sys.executable
 
 

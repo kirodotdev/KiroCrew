@@ -202,7 +202,8 @@ carelessly:
   as the operator set them" on purpose, and this design keeps that: an
   operator-set value wins, and the helper is the default beneath it.
   `AWS_PROFILE` is neither scrubbed (the only `AWS_` prefixes in
-  `_SPAWN_SCRUB_ENV_PREFIXES` are `AWS_SECRET` and `AWS_SESSION`) nor a pointer
+  `_SPAWN_SCRUB_ENV_PREFIXES` are the key variables: `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET`, `AWS_SESSION` and `AWS_SECURITY_TOKEN`) nor a pointer
   variable, so an operator-exported
   `AWS_PROFILE=work` reaches the child and selects a section the generated
   config would not have. The wiring therefore writes the `credential_process`

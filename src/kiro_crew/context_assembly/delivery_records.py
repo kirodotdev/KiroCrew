@@ -15,6 +15,8 @@ The sub-agent notices a channel turn's build reads from its conversation's dashb
 tab ride the same per-turn settle, but their settle call goes to the turn that built,
 never into a record here: another turn on the session cannot take it.
 
+The ``[AWS ACCESS]`` note's record (``aws_access``) is settled by the same two calls.
+
 Builder state read and written: ``_lessons_shown``, ``_lessons_shadow_shown`` (the
 ``shadow`` mode's own shown-lesson record) and ``_lessons_shown_lock``;
 ``_sent_skill_bodies``, ``_sent_skill_agents``, ``_sent_skill_bodies_undo`` and
@@ -29,6 +31,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.context_assembly import aws_access as _aws_access
 from kiro_crew.context_assembly import store_admission as _store_admission
 
 if TYPE_CHECKING:
@@ -268,9 +271,12 @@ def rollback_skill_bodies(self, session_key: str | None) -> None:
     best-effort: a missing key or record is a no-op, and it never raises so
     the turn's own outcome stands. A caller that skips it keeps the fail-safe
     (the next turn demotes to a pointer, not silence).
+
+    The ``[AWS ACCESS]`` note this turn's build recorded is taken back with it.
     """
     if not session_key:
         return
+    _aws_access.settle(self, session_key, landed=False)
     key = self._cap_memo_key(session_key)
     with self._sent_skill_bodies_lock:
         undo = self._sent_skill_bodies_undo.pop(key, None)
@@ -299,9 +305,12 @@ def commit_skill_bodies(self, session_key: str | None) -> None:
     non-landing turn's ``finally`` would roll back the earlier LANDED build,
     wrongly re-injecting bodies the window already holds. Idempotent and
     best-effort: a missing key or no armed entry is a no-op; never raises.
+
+    The ``[AWS ACCESS]`` note this turn's build recorded is kept with it.
     """
     if not session_key:
         return
+    _aws_access.settle(self, session_key, landed=True)
     key = self._cap_memo_key(session_key)
     with self._sent_skill_bodies_lock:
         self._sent_skill_bodies_undo.pop(key, None)

@@ -71,6 +71,7 @@ from kiro_crew.config import live  # noqa: F401
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir  # noqa: F401
 from kiro_crew.context_assembly import agent_spec as _agent_spec
+from kiro_crew.context_assembly import aws_access as _aws_access  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import budget as _budgets  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import delivery_records as _delivery_records
 from kiro_crew.context_assembly import inclusion as _inclusion  # noqa: F401 - loaded eagerly
@@ -1626,6 +1627,11 @@ class ContextBuilder:
         ) = None
         self._mcp_states_told: OrderedDict[str, dict[str, tuple[str, ...]]] = OrderedDict()
         self._mcp_states_told_lock = threading.Lock()
+        # Sessions sent the `[AWS ACCESS]` note in their current context window
+        # (`context_assembly.aws_access`): False until the turn that built it
+        # settles as landed. In memory and bounded.
+        self._aws_access_told: OrderedDict[str, bool] = OrderedDict()
+        self._aws_access_lock = threading.Lock()
         # Lessons each session has already been shown, keyed by the fixed-size
         # digest of its session key: its session-start block plus every per-message
         # block since, so `memory.inject_lessons_per_turn` skips them. In memory

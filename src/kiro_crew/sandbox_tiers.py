@@ -1235,6 +1235,12 @@ _CC_FILES: list[str] = [
 # Scrubbed in ALL modes (standard + strict) — credential_process reads
 # from ~/.aws/config, not env vars, so scrubbing is always safe.
 #
+# The AWS key set goes as a whole: the key id, the secret key, the session token
+# and the older security-token alias. A child left with the id alone fails every
+# ``aws`` call with "Partial credentials found in env", which also breaks the
+# file routes that would have worked. ``AWS_PROFILE``, ``AWS_CONFIG_FILE`` and
+# ``AWS_SHARED_CREDENTIALS_FILE`` are not keys and stay.
+#
 # NOTE (applies to this list AND ``_AGENT_DENIED_ENV_KEYS`` below): inherited
 # ``ANTHROPIC_*`` / ``CLAUDE_CODE_*`` variables must keep flowing to
 # claude-harness children — the gateway's env-passthrough contract in
@@ -1242,8 +1248,10 @@ _CC_FILES: list[str] = [
 # section). Adding either namespace here silently breaks the custom-endpoint
 # auth documented in docs/guides/custom-llm-backend.md.
 _SENSITIVE_ENV_PREFIXES: list[str] = [
+    "AWS_ACCESS_KEY_ID",
     "AWS_SECRET",
     "AWS_SESSION",
+    "AWS_SECURITY_TOKEN",
     "SSH_AUTH_SOCK",
     "GNUPGHOME",
     "GIT_ASKPASS",

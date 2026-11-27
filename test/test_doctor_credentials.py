@@ -84,7 +84,7 @@ class TestCredentialsSection:
         issues: list[str] = []
         cli_doctor._doctor_credentials(issues)
         out = capsys.readouterr().out
-        assert "credential_process configured" in out
+        assert "refresh:     ℹ  credential_process configured for the profile in use" in out
         assert issues == []
 
     def test_absent_credential_process_is_reported(self, fake_home, monkeypatch, capsys):
@@ -95,7 +95,11 @@ class TestCredentialsSection:
         monkeypatch.setattr(cli_doctor, "_aws_auto_refreshes", lambda: False)
         issues: list[str] = []
         cli_doctor._doctor_credentials(issues)
-        assert "no credential_process" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "refresh:     ℹ  no credential_process" in out
+        # Neither answer is marked good or bad: a credential_process is one way to
+        # refresh credentials, not the setup to have.
+        assert "may expire" not in out
         assert issues == []
 
     def test_credential_process_is_unknown_without_the_cli(self, fake_home, monkeypatch, capsys):

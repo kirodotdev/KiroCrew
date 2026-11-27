@@ -511,6 +511,12 @@ async def _run_inner_impl(
     # run never spends a turn discovering the absence for itself. Empty for a
     # healthy session, which leaves this prompt exactly as it was.
     message = self._spawn_mcp_notice(mcp_problems, info.crew_tools_withheld) + message
+    # One line on what works for AWS, on the child's first message only: its
+    # session gets no ``[AWS ACCESS]`` note from the turn's context.
+    if is_new and not _resumed:
+        from kiro_crew.context_assembly import aws_access
+
+        message = aws_access.subagent_line() + message
     # A spec field the claude session does not apply is named the same way.
     notice = await _session.spec_builtin_tools_notice(
         client, info, session_key, fresh=is_new and not _resumed

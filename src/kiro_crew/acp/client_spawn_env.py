@@ -411,7 +411,7 @@ IDENTITY_STORE_ROOT_ENV_VARS: frozenset[str] = frozenset(
 #: its value is a LOCATION that yields credentials when followed.
 #:
 #: Why not ``sandbox._SENSITIVE_ENV_PREFIXES``, which is the repo's one global scrub.
-#: That set covers ``AWS_SECRET`` / ``AWS_SESSION`` -- variables that CARRY a secret --
+#: That set covers the AWS key variables -- the ones that CARRY a key or a token --
 #: and deliberately stops there, because the standard sandbox tier leaves the real
 #: ``~/.aws`` visible so the AWS CLI and ``credential_process`` keep working for
 #: non-pod agent turns. Adding pointers there would break that supported path
@@ -532,11 +532,10 @@ def _apply_pod_home_remap(env: dict[str, str], *, pod_home_remap: bool) -> dict[
         resolves under the remapped (empty) pod home, so a profile that lives only
         in a file -- including a ``credential_process`` profile -- does not resolve.
       * ENVIRONMENT credentials: ``sandbox.scrub_agent_subprocess_env`` scrubs
-        ``_SENSITIVE_ENV_PREFIXES``, which includes ``AWS_SECRET`` and
-        ``AWS_SESSION``, from every Kiro/ACP child. So ``AWS_SECRET_ACCESS_KEY``
-        and ``AWS_SESSION_TOKEN`` never reach the agent turn even when the
-        operator has them. ``AWS_ACCESS_KEY_ID`` survives (no ``AWS_ACCESS``
-        prefix), but a key id without its secret is not a credential.
+        ``_SENSITIVE_ENV_PREFIXES``, which holds the whole AWS key set, from
+        every Kiro/ACP child. So the key id, the secret key, the session token
+        and the older security-token alias never reach the agent turn even when
+        the operator has them.
 
       ``build_pod_env`` keeps ``AWS_*``, which does NOT mean env-credentialed
       turns are unaffected: ``build_pod_env`` shapes the pod GATEWAY's

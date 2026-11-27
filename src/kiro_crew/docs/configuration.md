@@ -775,9 +775,16 @@ which is why it is the TTS default.
 `aws.project_profiles` binds an AWS named profile to a project directory. A
 session working in that directory starts its agent with `AWS_PROFILE` (and
 `AWS_DEFAULT_PROFILE`, which some tools read first) set to the profile, so `aws`,
-the SDKs and tools built on them reach that account without a `--profile` on every
-command. It works with any profile in your own AWS config:
-IAM keys, SSO or `credential_process`.
+the SDKs and tools built on them use that profile by default. It works with any
+profile in your own AWS config: IAM keys, SSO or `credential_process`.
+
+The setting gives the session a profile name, not a credential. The name
+resolves only where the session can read the AWS files that define the profile.
+Where they are hidden from it (the `strict` sandbox tier, a masked agent
+harness, or a sandbox outside Kiro Crew that the host runs agents in), `aws`
+answers that the profile could not be found, and the agent is told to say so
+once and not to retry it. See
+[Blocked commands and credential access](blocked-commands.md).
 
 Set it from the chat composer: click the project folder in the project pill, and
 the project picker carries an **AWS profile for this project** row once you have

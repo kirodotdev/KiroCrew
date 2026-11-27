@@ -661,10 +661,14 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         scope_unit_name,
     )
     from kiro_crew.sandbox_spawn import (  # noqa: F401
+        _AWS_KEY_ENV_NAMES,
         _CGROUP_SCOPE_BUS_ENV_KEYS,
         _NAMESPACE_LAUNCHERS,
         _NAMESPACE_LAUNCHERS_LOCK,
         _SPAWN_SCRUB_ENV_PREFIXES,
+        _aws_key_drop_lock,
+        _aws_key_drop_logged,
+        _log_dropped_aws_keys,
         _namespace_launcher_child_is_confined,
         agent_env_scrub_prefixes,
         cgroup_scope_bus_env,

@@ -470,7 +470,7 @@ def scrub_env(
     keys removed.
 
     Drops every key whose name starts with one of ``_SPAWN_SCRUB_ENV_PREFIXES``
-    (AWS secret/session vars, SSH_AUTH_SOCK, GNUPGHOME, GIT_ASKPASS, and the
+    (the AWS key variables, SSH_AUTH_SOCK, GNUPGHOME, GIT_ASKPASS, and the
     Slack/owner tokens seeded into ``os.environ`` for trusted children). Callers use it to
     build the environment for agent-influenced spawns so a spawned process
     cannot read secrets straight out of the inherited environment.
@@ -564,6 +564,46 @@ def scrub_agent_denied_env(env: dict[str, str]) -> dict[str, str]:
     }
 
 
+#: The AWS key variables, by their full names: the fixed set the log line below
+#: may name. Each is dropped through ``_SENSITIVE_ENV_PREFIXES``.
+_AWS_KEY_ENV_NAMES: frozenset[str] = frozenset(
+    {
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_SECURITY_TOKEN",
+    }
+)
+#: Set once the line below was logged. An event, not a rebound flag, so the
+#: ``kiro_crew.sandbox`` facade and this module keep holding the one object.
+_aws_key_drop_logged = threading.Event()
+_aws_key_drop_lock = threading.Lock()
+
+
+def _log_dropped_aws_keys(src: Mapping[str, str]) -> None:
+    """Log once per process which AWS key variables agent children do not get.
+
+    Names only, and only names from :data:`_AWS_KEY_ENV_NAMES`: no value and no
+    other variable name is read into the line.
+    """
+    if _aws_key_drop_logged.is_set():
+        return
+    fold = os.name == "nt"  # Windows env names are case-insensitive (see scrub_env)
+    present = sorted(_AWS_KEY_ENV_NAMES.intersection(k.upper() if fold else k for k in src))
+    if not present:
+        return
+    with _aws_key_drop_lock:
+        if _aws_key_drop_logged.is_set():
+            return
+        _aws_key_drop_logged.set()
+    logger.warning(
+        "AWS key variables in the environment an agent was started from are not "
+        "passed to it: %s. Agents use the AWS files the owner set up, where their "
+        "sandbox tier shows them.",
+        ", ".join(present),
+    )
+
+
 def scrub_agent_subprocess_env(
     env: dict[str, str] | None = None, *, forward_ssh_auth_sock: bool = False
 ) -> dict[str, str]:
@@ -588,6 +628,7 @@ def scrub_agent_subprocess_env(
     """
     scrubbed = scrub_env(env, extra_prefixes=_PYTHON_ENV_PREFIXES)
     src = os.environ if env is None else env
+    _log_dropped_aws_keys(src)
     if forward_ssh_auth_sock:
         # scrub_env removed it unconditionally; re-add the socket for the agent
         # child only. Restricted to the exact key, matched in the spelling the
