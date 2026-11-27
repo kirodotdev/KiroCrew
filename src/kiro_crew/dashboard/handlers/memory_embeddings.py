@@ -926,12 +926,20 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
     ollama_refusal = await _ollama_provider_refusal()
     if ollama_refusal is not None:
         return ollama_refusal
-    # Setup downloads the bundled model, which an LTS policy may refuse.
+    # Setup downloads the bundled model when no model file is present, whatever a
+    # custom path says, and an LTS policy may refuse that source.
+    from kiro_crew import edition_locks
     from kiro_crew import embedding_source_governance as _source_gov
 
-    if not _source_gov.source_permitted(_source_gov.BUNDLED, audit=True) and (
-        await asyncio.to_thread(resolve_custom_model) is None
+    if not _source_gov.source_permitted(_source_gov.BUNDLED) and not (
+        await asyncio.to_thread(model_file_present)
     ):
+        edition_locks.audit_refusal(
+            "embedding_source:bundled",
+            _source_gov.SCOPE,
+            _source_gov.BUNDLED,
+            _source_gov.refused_reason(_source_gov.BUNDLED),
+        )
         return web.json_response(
             {
                 "ok": False,

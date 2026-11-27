@@ -479,8 +479,21 @@ def test_a_refused_bundled_model_is_not_downloaded(policy, memory, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_enable_route_refuses_a_refused_bundled_model(policy, memory):
-    policy(_rule("allow", "[ollama]"))
+@pytest.mark.parametrize("custom", [False, True])
+async def test_the_enable_route_refuses_a_refused_bundled_model(
+    policy, memory, tmp_path, monkeypatch, custom
+):
+    from kiro_crew.dashboard.handlers import memory_embeddings
+
+    monkeypatch.setattr(
+        memory_embeddings,
+        "model_download_manager",
+        lambda: pytest.fail("the refused bundled model was downloaded"),
+    )
+    policy(_rule("allow", "[custom, ollama]"))
+    if custom:
+        # A configured custom file that is missing still leads to the bundled download.
+        memory["embed_model_path"] = str(tmp_path / "missing.gguf")
     req = _make_request(_make_state(), method="POST", json_body={})
     resp = await mem_mod.api_memory_enable_embeddings(req)
     assert resp.status == 409
