@@ -26,7 +26,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | Command | Description |
 |---------|-------------|
 | `!yolo` / `!yolo on/off/renew` | Show, toggle, or renew auto-approve for all tool calls |
-| `!trust` / `!trust off` / `!trust status` | Put this thread's session on Trust (its tools run without asking), take it off, or show it. See "Trust one thread" below |
+| `!trust` / `!trust off` / `!trust status` | Put this thread's session on Trust (it stops asking), take it off, or show it. A shared user's covers their own messages only. See "Trust one thread" below |
 | `!agent <name>` | Switch to a different agent globally |
 | `!agent off` | Switch back to default kirocrew agent |
 | `!ta <name>` | Set agent for this thread only |
@@ -123,14 +123,25 @@ When Kiro Crew needs to run a tool (file write, bash command, etc.):
 
 `!trust` puts the thread you type it in on Trust before any tool asks. Its tools
 then run without a prompt; the deny list, sensitive paths and your organization's
-policy still refuse what they refuse. It is owner-only and works in DMs and channel threads.
-`!trust off` turns it off. `!trust status` shows it.
+policy still refuse what they refuse. The owner and shared users may use it, in DMs
+and channel threads. `!trust off` turns it off, and `status` in place of `off` shows it.
 
 The grant covers that one thread's session and lasts until `!trust off` or a gateway
 restart. In a channel thread it covers the turns of everyone on the allowlist, not
 only yours. A shared user's turn in a trusted thread still asks. Sent while the thread
 is working, `!trust` and `!trust off` wait for that turn to end; `!stop` ends it now.
 Helper agents the thread starts still ask.
+
+A shared user may type it too, with a narrower result. It covers only the messages
+that person sends there: the owner's messages and other shared users' messages still
+ask, and helper agents still ask. `off` and `status` act on their own grant only. It
+needs something running, so send a message first. It lasts as long as that running
+session does: it ends when the thread moves to another agent or Bot, when the session
+is reset, restarted or closed after a long idle, when the owner turns it off in the
+thread, when the person leaves shared access, and on a gateway restart. A compaction
+or a cleared conversation that keeps the session leaves it on, as it leaves the
+owner's on. It never outlasts the owner's own grant in the same thread. In a DM
+that runs as one conversation it covers the whole DM.
 
 If the thread's dashboard tab is on Trust (from the card's "Trust session" button),
 `!trust off` leaves that tab's Trust alone and says so. Its tools and helper agents
@@ -377,7 +388,8 @@ confirmed by Slack: remove them, or fix what their row says, first.
   `kirocrew config` gets the same check from the gateway before its first message
   counts.
 - **What they can do.** Talk to the bot in DMs, mentions and threads, `!stop`,
-  `!title`, `!compact`, `!bot`, `!conductor` and `/kirocrew conductor` (a Conductor
+  `!title`, `!compact`, `!bot`, `!trust` (their own messages only),
+  `!conductor` and `/kirocrew conductor` (a Conductor
   thread they start admits them and the owner only; its goal cannot be a `/`
   command; `!stop`, Trust and worker cards there stay the owner's), answer
   question cards, answer the tool-approval

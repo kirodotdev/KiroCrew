@@ -166,7 +166,7 @@ async def _bang_trust(
     user_id: str,
     conversation_log: ConversationLog | None,
 ) -> str:
-    """Put this thread's session on Trust, or take it off (owner-only)."""
+    """Put this thread's session on Trust, or take it off (a shared user: own turns)."""
     from kiro_crew.slack import thread_trust
 
     # The session the thread's turns run on: a thread a dashboard chat was sent
@@ -183,6 +183,8 @@ async def _bang_trust(
         channel=channel,
         reply_ts=reply_ts,
         user=user_id,
+        shared=not is_owner(user_id),
+        sessions=sessions,
     )
     await slack.post_message(channel, reply, reply_ts)
     return ""
@@ -1888,9 +1890,9 @@ async def _route_bang_command(
         # !stop, !title, !bot and !conductor are available to any allowed user; a
         # shared user who starts a Conductor thread is its opener, the one person
         # besides the owner it admits. !dashboard mints a full-dashboard link, so it
-        # stays the owner's.
+        # stays the owner's. !trust's handler gives a shared user their own turns only.
         _cmd_word = cmd_text.split()[0].lower()
-        if _cmd_word in ("!dashboard", "!stop", "!title", "!bot", "!conductor"):
+        if _cmd_word in ("!dashboard", "!stop", "!title", "!bot", "!conductor", "!trust"):
             if (is_owner(user_id) or is_allowed_user(user_id) or is_shared_user(user_id)) and not (
                 _cmd_word == "!dashboard" and is_shared_listed(user_id)
             ):

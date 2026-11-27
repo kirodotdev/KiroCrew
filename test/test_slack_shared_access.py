@@ -1372,6 +1372,8 @@ _ADMISSION_SITES = {
     "slack/interactions_approvals.py",
     "slack/interactions_options.py",
     "slack/interactions_sessions.py",
+    # `!trust` from a shared user covers their own turns only (thread_trust.handle).
+    "slack/thread_trust.py",
 }
 
 
