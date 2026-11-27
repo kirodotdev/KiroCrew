@@ -948,6 +948,17 @@ def register_memory_parser(sub: _Commands) -> None:
         action="store_true",
         help="Cancel a staged memory restore without changing active memory",
     )
+    mem_restore_choice.add_argument(
+        "--merge-from",
+        default=None,
+        help=(
+            "Add back only the rows a member store is missing, from a memory.db of the same "
+            "store (such as the one in a superseded-* copy); dry run unless --apply"
+        ),
+    )
+    mem_restore.add_argument(
+        "--apply", action="store_true", help="With --merge-from: write the merge"
+    )
     mem_create = mem_sub.add_parser(
         "create-store",
         help="Create a declared memory store's directory (use never creates it)",

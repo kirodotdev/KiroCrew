@@ -173,6 +173,8 @@ class TestMemoryTuningPlumbing:
         # The consolidation write child opens the gateway's store file with the
         # loaded config, at the gateway store's own embedding width.
         "consolidation_write_child.py",
+        # `kirocrew memory restore --merge-from` opens the live member store.
+        "member_memory_merge.py",
     )
     # Every other file that constructs a store, with the reason the AST guard does
     # not check it. The inventory test fails on a new construction site that is in
