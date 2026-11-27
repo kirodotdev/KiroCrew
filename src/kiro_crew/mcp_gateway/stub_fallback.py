@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Mapping, NoReturn
 
 from kiro_crew import platform_compat
-from kiro_crew.kas_env_shim import windows_child_command
+from kiro_crew.kas_env_shim import windows_bind_children_to_self, windows_child_command
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.stub_bridge import logger
@@ -306,6 +306,7 @@ def _fallback_spawn_child(argv: list[str], exec_env: dict[str, str]) -> NoReturn
     for stream in (sys.stdout, sys.stderr):
         with contextlib.suppress(AttributeError, OSError, ValueError):
             stream.flush()
+    windows_bind_children_to_self()
     proc = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         [resolved, *argv[1:]],
         env=exec_env,
@@ -317,10 +318,8 @@ def _fallback_spawn_child(argv: list[str], exec_env: dict[str, str]) -> NoReturn
         rc = proc.wait()
     except BaseException:
         # Do not leave the backend holding kiro-cli's pipe with nobody waiting on
-        # it. A hard ``TerminateProcess`` on us cannot be intercepted at all, and
-        # the child survives that; what saves the session there is the pipe
-        # itself -- kiro-cli's exit closes fd 0 and an MCP server exits on stdin
-        # EOF, exactly as a directly-launched one would.
+        # it. A hard ``TerminateProcess`` on us cannot be intercepted at all;
+        # the job this process joined above ends the child's tree then.
         with contextlib.suppress(OSError):
             proc.terminate()
         raise

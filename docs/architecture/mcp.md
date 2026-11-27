@@ -2421,7 +2421,17 @@ looked up by full path only in the absolute entries of the server env's `PATH`
 `CreateProcess` both try the current directory first. A name found nowhere
 starts nothing: the launcher exits unstartable and the fallback raises
 `FileNotFoundError`. A command with a directory part is used as given, and
-POSIX keeps `os.execvpe`.
+POSIX keeps `os.execvpe`. Before starting the child, both put their own process
+in an anonymous Windows job with kill-on-close
+(`kas_env_shim.windows_bind_children_to_self`), so a launcher that is
+terminated without cleanup takes its server's whole tree with it instead of
+leaving it running with no parent. Windows does not end a child when its parent
+exits, so the launcher also waits on the process that started it (the engine,
+one hop above a venv's `python.exe` redirector) from a daemon thread and ends itself, and so its job, once that process is
+gone; a parent already gone when the launcher looks ends the launcher before
+any server starts. A server may still detach a process by
+asking for `CREATE_BREAKAWAY_FROM_JOB`, and a host that cannot make the job
+starts the server without it. Pinned by `test/test_kas_env_shim.py`.
 
 ### Stub argument transport
 
