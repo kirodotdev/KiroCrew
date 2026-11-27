@@ -253,6 +253,18 @@ def _apply_security_headers(
             frame_ancestors=frame_ancestors,
         ),
     )
+    # A handler that sets its own policy (a sandboxed PDF, a theme overlay) keeps
+    # it, but a policy without ``frame-ancestors`` would leave X-Frame-Options as
+    # the response's only framing rule, and DENY would then refuse the dashboard's
+    # own frames of it. A second policy carrying only the directive fixes that for
+    # every such handler at once: policies are enforced together, so the handler's
+    # own directives still apply, and a browser that sees an enforced
+    # ``frame-ancestors`` ignores X-Frame-Options.
+    if not any(
+        "frame-ancestors" in policy.lower()
+        for policy in resp.headers.getall("Content-Security-Policy", ())
+    ):
+        resp.headers.add("Content-Security-Policy", f"frame-ancestors {frame_ancestors}")
     resp.headers.setdefault("Permissions-Policy", _PERMISSIONS_POLICY)
     # CORS approval for the vendored runtime files fetched by null-origin
     # sandboxed iframes; pairs with the /vendor OPTIONS preflight handler.
@@ -261,20 +273,23 @@ def _apply_security_headers(
         resp.headers.setdefault("Access-Control-Allow-Origin", _VENDOR_CORS_HEADER_VALUE)
     # Defense-in-depth browser headers (CWE-1021/693/200/319). All via setdefault
     # so a handler can override. The clickjacking control is CSP ``frame-ancestors``
-    # above. X-Frame-Options is origin-exact (SAMEORIGIN) and cannot express the
-    # allowlist, so we keep it as the legacy backstop ONLY in the default posture
-    # (no extra ancestor trusted); when an operator has configured a cross-port
-    # embed origin we omit it, otherwise SAMEORIGIN would contradict the CSP and
-    # refuse the embed. Browsers honor frame-ancestors over X-Frame-Options when
-    # both are present. nosniff blocks MIME-confusion; Referrer-Policy avoids
-    # leaking the (token-bearing) dashboard URL cross-origin. HSTS is inert over
-    # the default loopback HTTP bind but protects HTTPS tunnel/desktop access, so
-    # it is set unconditionally (browsers ignore it on plain HTTP).
+    # above, which every response leaving here carries. X-Frame-Options is the
+    # legacy backstop for a browser without ``frame-ancestors``: DENY, because a
+    # browser that does support the directive ignores X-Frame-Options whenever an
+    # enforced ``frame-ancestors`` is present (CSP3, "Relation to X-Frame-Options"),
+    # so the dashboard's own same-origin frames are governed by ``'self'`` and DENY
+    # refuses only where nothing better is understood. It is set ONLY in the default
+    # posture (no extra ancestor trusted); when a cross-port embed origin is trusted
+    # it is omitted, as a header that cannot express the allowlist. nosniff blocks
+    # MIME-confusion; Referrer-Policy avoids leaking the (token-bearing) dashboard
+    # URL cross-origin. HSTS (18 months) is inert over the default loopback HTTP
+    # bind but protects HTTPS tunnel/desktop access, so it is set unconditionally
+    # (browsers ignore it on plain HTTP).
     if not extra_ancestors:
-        resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    resp.headers.setdefault("Strict-Transport-Security", "max-age=47304000; includeSubDomains")
 
 
 async def _finalize_asset_cache_control(request: web.Request, response: web.StreamResponse) -> None:
