@@ -1476,15 +1476,11 @@ rows have no key: a kept one is not named, and a cut one still counts in `*_omit
 text is never written. Purpose: scoring which lessons change behaviour.
 
 A memory stage running under `shadow` or `enforce` adds one more field, named by
-its kind in `injection_receipts.STAGE_KINDS` (today `rule_authority_order`,
-`lesson_fold` and `relevance_rule`): `{mode, policy, would_add, would_drop}`, ids
-only; `lesson_fold` adds `pairs`, a list of `[leader, folded]` ids. A stage that
-gates several blocks (`relevance_rule`: findings, task facts, activity) records each
-block as a part, a block rendered again replaces only its own part, and the line
-carries the union; activity ids are `projects:<hash>` and `history:<hash>` of a
-section, never its text. A composition that rendered no lesson tier but recorded a
-stage (activity gated with lessons switched off) still writes a line, its lesson
-lists empty. A line with no stage record keeps
+its kind in `injection_receipts.STAGE_KINDS` (today `rule_authority_order` and
+`lesson_fold`): `{mode, policy, would_add, would_drop}`, ids
+only; `lesson_fold` adds `pairs`, a list of `[leader, folded]` ids. A composition
+that rendered no lesson tier but recorded a stage still writes a line, its lesson
+lists empty. `relevance_rule` writes no field. A line with no stage record keeps
 the bytes above exactly. Stage fields are capped with the kind-routing constants in
 `<data home>/usage/injections/stage-log.json`: a per-UTC-day counter by kind and mode
 (`lines`, `would_add`, `would_drop`), pruned past `COUNTER_DAYS_KEPT` days, counts
@@ -1497,13 +1493,11 @@ warning naming the fields dropped. A shard append that fails logs one warning na
 the line's `phase` (`receipt` when it has none).
 
 A stage field may also carry `control`: up to 20 ids of the block the stage keeps
-(`lessons` for `rule_authority_order` and `lesson_fold`; `findings` plus the
-task facts both policies keep, passed as `record_stage(kept=...)`, for
-`relevance_rule`; `kept` itself is never written), picked when the first 4 bytes of SHA-256 over the session tag and
+(`lessons` for `rule_authority_order` and `lesson_fold`), picked when the first 4 bytes of SHA-256 over the session tag and
 key, read as an integer and taken modulo 100, are below `CONTROL_PERCENT` (10) (`memory_shadow_trace.control_keys`), so every render
 of one session picks the same rows. While any stage flag the shadow report lists
-(`memory_shadow_report.STAGES`; not `kind_routing`, `lesson_fold` or
-`rule_authority_order`, which have no shadow mode) is on, two outcome
+(`memory_shadow_report.STAGES`; not `kind_routing`, `lesson_fold`,
+`rule_authority_order` or `relevance_rule`, which have no shadow mode) is on, two outcome
 lines join the shards (`injection_receipts.OUTCOME_KINDS`): `phase: "recall"` with
 the memory keys a tool `memory_recall` delivered (the lessons its lesson block
 rendered, named through a private collection, then its facts), and `phase:

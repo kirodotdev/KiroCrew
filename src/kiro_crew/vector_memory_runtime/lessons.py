@@ -952,10 +952,8 @@ def get_lessons_context(
             many.
         relevance_rule: ``memory.relevance_rule`` for a background read
             (:mod:`kiro_crew.memory_relevance_rule`). ``off`` admits the
-            findings tier on any shared stemmed word; ``shadow`` keeps that and
-            records in the injection receipt the finding ids the shared token
-            rule would drop; ``enforce`` admits the tier only on a shared token
-            of that rule. The rule block is the same under every mode.
+            findings tier on any shared stemmed word; ``enforce`` admits the
+            tier only on a shared token of that rule. The rule block is the same under every mode.
     """
     # Scope is applied BEFORE the counts are taken, so a lesson withheld as
     # out-of-scope is not reported as "omitted" -- omitted means "did not fit
@@ -1113,7 +1111,7 @@ def get_lessons_context(
             and relevance_mode != _relevance_rule.MODE_OFF
             and not store._any_lesson_overlap(experiences, query_text, significant=True)
         )
-        if withheld or (withheld_by_rule and relevance_mode == _relevance_rule.MODE_ENFORCE):
+        if withheld or withheld_by_rule:
             # Nothing here is about this request, so spend none of the allowance
             # on it. A finding is DEFINED as material worth having when the task
             # touches it; newest-first filler is not a weaker version of that, it
@@ -1153,24 +1151,6 @@ def get_lessons_context(
                     "judgement that they stopped applying: call memory_recall or "
                     "learn_list for the rest.]"
                 ),
-            )
-        if relevance_mode == _relevance_rule.MODE_SHADOW:
-            # The rows this block carries only because the old test admitted it,
-            # read from this render's own receipt before anything replaces it.
-            shown = injection_receipts.current_ids(injection_receipts.FINDINGS)
-            injection_receipts.record_stage(
-                injection_receipts.RELEVANCE_RULE,
-                mode=relevance_mode,
-                policy=_relevance_rule.POLICY_VERSION,
-                would_drop=sorted(shown) if withheld_by_rule else (),
-                part=_relevance_rule.PART_FINDINGS,
-            )
-        elif relevance_mode == _relevance_rule.MODE_ENFORCE:
-            injection_receipts.record_stage(
-                injection_receipts.RELEVANCE_RULE,
-                mode=relevance_mode,
-                policy=_relevance_rule.POLICY_VERSION,
-                part=_relevance_rule.PART_FINDINGS,
             )
         # Observability without new state: the two blocks are separately
         # labelled in the prompt and each omission notice names its own

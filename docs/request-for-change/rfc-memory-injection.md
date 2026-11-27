@@ -24,7 +24,10 @@ superseded-by: []
   rollback. Once that landed, the owner removed `shadow` from those three flags
   ahead of the 30-day retirement in P6: each takes `off` or `enforce`, a stored
   `shadow` reads as `enforce`, and `kirocrew memory shadow report` no longer
-  lists them. The other stages stay default off and are not decided. Checked at `0c5d8bd5f3`.
+  lists them. On 2026-11-26 the owner did the same for R2
+  (`memory.relevance_rule`) in one step, also before the bar: default
+  `enforce`, `shadow` removed, a stored `shadow` reads as `enforce`, `off` stays
+  the rollback. The other stages stay default off and are not decided. Checked at `0c5d8bd5f3`.
 - Author: iamwhatever
 - Created: 2026-11-09
 - Code is cited by symbol and file at `79bff1f741`; the docs lint keeps line
@@ -344,7 +347,7 @@ standing rule applies whatever the topic.
   existing row, so no rollback needs a data migration.
 - A flag is retired when its `enforce` has been the default for 30 days with no
   rollback: one follow-up pull request deletes the flag, its `off` and `shadow`
-  code and its receipt fields. R1, R4 and kind routing are the exception the
+  code and its receipt fields. R1, R2, R4 and kind routing are the exception the
   Status line records: their `shadow` code went early, by the owner's decision,
   and their `off` stays as the rollback.
 
@@ -490,16 +493,17 @@ Each stage is one pull request, independently shippable and abandonable.
 
 **Signed scope.** A maintainer has signed R1 only (authority order, flag
 `memory.rule_authority_order`, shadow first). On 2026-11-20 the owner made R1
-and R4 default `enforce` on early shadow data, before the bar in section 5.2. R3's quote check and
+and R4 default `enforce` on early shadow data, before the bar in section 5.2, and
+R2 on 2026-11-26. R3's quote check and
 tier policy wait for shadow counts of how many would-be demotions the user
-repeats. R0a, R2 and R4 to R6 are proposals; each needs its own sign-off.
+repeats. R0a and R4 to R6 are proposals; each needs its own sign-off.
 
 | # | Stage | Flag (default `off`) | Shadow signal | Pass metric | Rollback |
 |---|---|---|---|---|---|
 | R0 | Receipt fields and caps | none (fields written only under a stage's `shadow`) | n/a | receipts stay under every cap in a test that writes past them; off-mode lines unchanged byte for byte | revert the PR |
 | R0a | Admit: provenance and origin gate | provenance: none (additive metadata, always on); gate: `memory.lesson_origin_gate` | per day: passes, passes with no person-sent turn, lessons read, rule-tier lessons, would-be demotions, for consolidation and `learn_add` apart; shadow also keeps the would-be demoted lesson keys | re-teach rate of demoted rows <= control; zero demotions in a span with a person-sent turn; zero L1 rows from a person's own turn demoted | provenance: revert the PR (old rows stay valid); gate: flag off, rows already written `on_topic` stay findings and stay retrievable |
 | R1 | Select: authority order | `memory.rule_authority_order` (default `enforce` since 2026-11-20) | ids that enter and leave the rule block | L1 coverage up; miss rate of dropped L3 rows <= control | flag off |
-| R2 | Select: shared matcher | `memory.relevance_rule` | rows admitted only under the old gate | miss rate <= control | flag off |
+| R2 | Select: shared matcher | `memory.relevance_rule` (default `enforce` since 2026-11-26) | rows admitted only under the old gate | miss rate <= control | flag off |
 | R3 | Admit: tier policy | `memory.lesson_tier_policy` | new keys that would be stored `on_topic`; quote check pass and fail counts | re-teach rate of would-be `on_topic` rows <= control | flag off; rows already written keep their tier and stay retrievable through findings and recall |
 | R4 | Identify: render fold | `memory.lesson_fold` (default `enforce` since 2026-11-20) | (leader, folded) id pairs | no L1 folded; miss rate <= control | flag off |
 | R5 | Identify: private write and backfill | `memory.member_lesson_dedup` | would-be merges; default store 0.85-0.95 merge count | miss rate <= control; zero L1 merges | flag off; revert retired rows from revisions |

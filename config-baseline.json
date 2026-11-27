@@ -3186,7 +3186,7 @@
         "lesson_fold": "enforce",
         "rule_authority_order": "enforce",
         "member_lesson_dedup": "off",
-        "relevance_rule": "off",
+        "relevance_rule": "enforce",
         "dream": "off",
         "inject_memory": true,
         "inject_lessons": true,
@@ -3919,14 +3919,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Relevance Rule",
-      "help": "Which word matches let past findings, task facts and the activity block (projects, history) into a new session. 'off' (default) keeps today's blocks. 'shadow' keeps today's blocks and only records, in the injection receipt and within fixed size caps, which rows the new rule would add or drop. 'enforce' counts only words of 3 or more letters or digits and two-character pairs of Chinese or Japanese text, and admits a task fact only with the evidence the private store already asks for. The rule block is unchanged and no stored row is changed.",
+      "help": "Which word matches let past findings, task facts and the activity block (projects, history) into a new session. 'enforce' (default) counts only words of 3 or more letters or digits and two-character pairs of Chinese, Japanese or Korean text, and admits a task fact only with the evidence the private store already asks for. 'off' restores the old blocks, where any shared word counts, even one of 1 or 2 letters. A stored 'shadow' reads as 'enforce'. The rule block is unchanged and no stored row is changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
-        "shadow",
         "enforce"
       ],
-      "defaultValue": "off"
+      "defaultValue": "enforce"
     },
     {
       "path": "memory.dream",

@@ -197,9 +197,15 @@ def _seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, opened) -> Seeded:
 
     # ``resource_pressure_gb: 0`` is the documented off switch for the [RESOURCES]
     # advisory. Without it the payload depends on how much free memory the host
-    # happens to have, which is not a property of the memory path.
+    # happens to have, which is not a property of the memory path. The goldens were
+    # recorded under the old relevance tests, so ``memory.relevance_rule`` is ``off``.
     (home / "config.json").write_text(
-        json.dumps({"agent": {"resource_pressure_gb": 0, "resource_critical_gb": 0}}),
+        json.dumps(
+            {
+                "agent": {"resource_pressure_gb": 0, "resource_critical_gb": 0},
+                "memory": {"relevance_rule": "off"},
+            }
+        ),
         encoding="utf-8",
     )
     assert KiroCrewConfig.load().agent.resource_pressure_gb == 0
