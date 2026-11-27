@@ -369,6 +369,7 @@ def _jose_plan(
 def detect_jose(text: str, rows: tuple[JoseRow, ...], final: bool) -> tuple[list[Hit], list[int]]:
     """JWT/JWE by full-token split; the two-segment link token by a bounded read."""
     hits: list[Hit] = []
+    fallbacks: list[tuple[Hit, int]] = []
     opens: list[int] = []
     i = text.find("eyJ")
     if i == -1:
@@ -424,10 +425,12 @@ def detect_jose(text: str, rows: tuple[JoseRow, ...], final: bool) -> tuple[list
             if first != -1 and text.find(".eyJ", first + 4, r) != -1:
                 end = i + len(text[i:r].rstrip("."))
                 tail = TAIL_JOSE if not final and r == n and r - i > hold else ""
-                hits.append(Hit(i, r if tail else end, "jwt", SECRET, "jose", "jose", tail=tail))
-                i = text.find("eyJ", r)
-                continue
+                fallbacks.append(
+                    (Hit(i, r if tail else end, "jwt", SECRET, "jose", "jose", tail=tail), before)
+                )
         i = text.find("eyJ", i + 1)
+    # Hits are in start order. Defer whole-run masking until every start was tried.
+    hits += [h for h, before in fallbacks if before == len(hits) or hits[before].start >= h.end]
     return hits, opens
 
 
