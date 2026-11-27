@@ -1755,16 +1755,20 @@ def _not_ignored(names: set[str]) -> list[str] | None:
     the question is unanswerable. A guard that cries wolf gets deleted, and then
     it protects nothing -- so the caller reports that it could not check and
     leaves the verdict alone.
+
+    Names travel NUL-delimited (``-z``): in line mode git C-quotes a non-ASCII
+    path it prints (``core.quotePath``), and that spelling matches no input name.
     """
     if not names:
         return []
     try:
         proc = subprocess.run(
-            ["git", "check-ignore", "--stdin"],
+            ["git", "check-ignore", "-z", "--stdin"],
             cwd=str(_REPO_ROOT),
-            input="\n".join(sorted(names)),
+            input="\0".join(sorted(names)),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
             check=False,
         )
@@ -1772,7 +1776,7 @@ def _not_ignored(names: set[str]) -> list[str] | None:
         return None
     if proc.returncode not in (0, 1):
         return None
-    ignored = {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+    ignored = {name for name in proc.stdout.split("\0") if name}
     return [name for name in sorted(names) if name not in ignored]
 
 

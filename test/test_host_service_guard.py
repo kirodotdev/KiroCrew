@@ -572,6 +572,22 @@ class TestRepositoryRootResidueGuard:
 
         assert root._not_ignored({".pytest_cache"}) == []
 
+    def test_an_ignored_non_ascii_name_is_not_residue(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Git C-quotes a non-ASCII path in line mode, so the name it prints back
+        must not be compared in that spelling. A real repository, because the
+        quoting is git's own behaviour and a mocked stdout would only restate it."""
+        root = _load_root_conftest()
+        subprocess.run(
+            ["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True, timeout=30
+        )
+        (tmp_path / ".gitignore").write_text("*.scratch\n", encoding="utf-8")
+        monkeypatch.setattr(root, "_REPO_ROOT", tmp_path)
+
+        assert root._not_ignored({"測試.scratch"}) == []
+        assert root._not_ignored({"測試.scratch", "測試.kept"}) == ["測試.kept"]
+
     def test_an_empty_set_needs_no_subprocess(self) -> None:
         root = _load_root_conftest()
 
