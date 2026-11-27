@@ -336,8 +336,14 @@ always has. Every token this gateway mints carries the signed marker
 sessions carry no family, and revoking it answers `400 legacy_link` pointing at
 plain `kirocrew logout` instead of reporting them revoked. A session token with
 no `family` claim answers the same: after an upgrade, one rotated from a chain
-minted before families carries the marker, but its chain would mint the next
-session. The route's
+minted before families carries the marker but no family. Such a chain does not
+rotate: every chain the exchange mints carries its link's nonce as `family`, so
+a chain without one predates families. It may be one an app token opened when
+app exchanges were given a chain, whose rotations drop the `app` claim, leaving
+nothing that tells it from an owner's chain. `validate_refresh_token` refuses
+it (`PRE_FAMILY_CHAIN_REASON`), so a browser that signed in before the upgrade
+signs in again once its current session ends
+(`test_a_chain_minted_before_families_does_not_rotate`). The route's
 `revoke_token_family` records `family:<id>` in `RevokedNonceStore` until
 `MAX_REFRESH_TTL_SECS` plus an hour from now. `validate_token` refuses a link or session of
 that family or descended from it on both paths, and `validate_refresh_token`

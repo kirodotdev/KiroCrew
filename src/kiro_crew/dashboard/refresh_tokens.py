@@ -104,6 +104,10 @@ REFRESH_GRACE_SECS = 60
 # that has not settled.
 REFRESH_PENDING_WAIT_SECS = 15.0
 
+#: Why :func:`validate_refresh_token` refuses a chain with no ``family`` claim: one
+#: minted before credential families, which cannot be told from an app's chain.
+PRE_FAMILY_CHAIN_REASON = "chain predates credential families"
+
 # Grace acceptance is CHAIN-HEAD-ONLY. We retain exactly ONE recently-consumed
 # jti per chain — the single most-recently-rotated one (the chain head) — as
 # the authenticator for a same-IP, in-window replay. A bounded history of the
@@ -1066,7 +1070,9 @@ def validate_refresh_token(token: str) -> tuple[bool, str, str, str, str, float]
     Validates HMAC, ``kind=refresh``, ``session_exp``, that the chain has not
     been revoked, and that the token's revocation generation is current (a
     ``revoke_all_sessions()`` bump rejects it with reason ``"session
-    revoked"``). Does NOT consult the consumed-jti map — callers decide whether
+    revoked"``), and that the chain carries a ``family`` that is not revoked (a chain
+    without one predates families and is refused, :data:`PRE_FAMILY_CHAIN_REASON`).
+    Does NOT consult the consumed-jti map — callers decide whether
     to apply consumption semantics (the refresh endpoint does, the ``/auth/me``
     peek does not).
     """
@@ -1136,14 +1142,22 @@ def validate_refresh_token(token: str) -> tuple[bool, str, str, str, str, float]
     ancestors = payload.get("ancestors", "")
     family = family if isinstance(family, str) else ""
     ancestors = ancestors if isinstance(ancestors, str) else ""
-    if family or ancestors:
-        # Deferred: the access-token module owns the family denylist and is the heavier
-        # import, and this module must stay importable without it.
-        from kiro_crew.dashboard.token_auth_tokens import credential_family_refusal
+    if not family:
+        # Every chain the exchange mints carries ``family`` (the link's nonce, which
+        # every signed token has) and every rotation carries it on, so a chain without
+        # one predates families. It may be one an app token opened when app exchanges
+        # were given a chain: its rotations drop the ``app`` claim and nothing on it
+        # names the app, so a disable or uninstall cannot end it, and it cannot be
+        # told from an owner's chain. Every one is refused: a browser that signed in
+        # before the upgrade signs in again once.
+        return False, user_id, PRE_FAMILY_CHAIN_REASON, chain_id, jti, session_exp
+    # Deferred: the access-token module owns the family denylist and is the heavier
+    # import, and this module must stay importable without it.
+    from kiro_crew.dashboard.token_auth_tokens import credential_family_refusal
 
-        family_refusal = credential_family_refusal(family, ancestors)
-        if family_refusal:
-            return False, user_id, family_refusal, chain_id, jti, session_exp
+    family_refusal = credential_family_refusal(family, ancestors)
+    if family_refusal:
+        return False, user_id, family_refusal, chain_id, jti, session_exp
     return True, user_id, "", chain_id, jti, session_exp
 
 
