@@ -10,10 +10,12 @@
  * takes that Crew's dark or light mode, unsaved (hooks/themeModeOverride.ts).
  * From the click until the Crew's page has loaded (the shell keeps the pane
  * hidden until then), <main> shows the Crew's name and "Connecting…" instead of
- * a blank or black area.
+ * a blank or black area. While the pane hides under a local menu or dialog,
+ * <main> shows the Crew's name the same way, so the window never reads as empty.
  */
 import { useEffect, useState } from 'react'
 import RelayConnectingCover from './RelayConnectingCover'
+import RelayPaneUnderOverlayCover from './RelayPaneUnderOverlayCover'
 import { useAppDispatch, useAppSelector } from '../store'
 import { relayPaneClosed } from '../store/instancesSlice'
 import { RELAY_PANE_OVERLAY_SELECTOR, RELAY_PANE_WARM_CAP, relayPaneBridge, relayPaneRect } from '../lib/relayCrewPanes'
@@ -36,6 +38,8 @@ export default function RelayCrewPaneHost() {
   const activeName = useAppSelector(s => s.instances.relayTabs?.find(t => t.id === s.instances.relayActive)?.name ?? null)
   // Panes whose page has loaded; the shell shows a pane only after that.
   const [loaded, setLoaded] = useState<Record<string, true>>({})
+  // Whether the active pane is hidden under a local menu or dialog right now.
+  const [underOverlay, setUnderOverlay] = useState(false)
 
   // endpointId -> whether its page is dark, from the pane's own theme colour.
   const [dark, setDark] = useState<Record<string, boolean>>({})
@@ -81,6 +85,7 @@ export default function RelayCrewPaneHost() {
       const up = overlayUp()
       if (up === last) return
       last = up
+      setUnderOverlay(up)
       void bridge.setPaneOverlay(active, up)
     }
     check()
@@ -94,9 +99,11 @@ export default function RelayCrewPaneHost() {
       ro.disconnect()
       window.removeEventListener('resize', report)
       mo.disconnect()
+      setUnderOverlay(false)
     }
   }, [active, live])
 
   const connecting = opening ?? (active && waitsForLoad && !loaded[active] ? activeName : null)
-  return connecting === null ? null : <RelayConnectingCover name={connecting} />
+  if (connecting !== null) return <RelayConnectingCover name={connecting} />
+  return active && underOverlay && activeName !== null ? <RelayPaneUnderOverlayCover name={activeName} /> : null
 }

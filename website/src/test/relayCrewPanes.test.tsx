@@ -105,6 +105,36 @@ describe('relay Crew panes in the main window', () => {
     await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r2', false))
   })
 
+  it('while the pane hides under a local menu, <main> shows the Crew name instead of nothing, and the name goes when the menu does', async () => {
+    mountMain()
+    const { api, emit } = installBridge()
+    renderWithProviders(<RelayCrewPaneHost />, { store: storeWith(['r1'], 'r1') })
+    emit({ type: 'loaded', endpointId: 'r1', index: 0 })
+    await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r1', false))
+    expect(screen.queryByTestId('relay-crew-under-overlay')).toBeNull()
+    const menu = document.createElement('div')
+    menu.setAttribute('data-test-overlay', '')
+    menu.setAttribute('role', 'menu')
+    await act(async () => { document.body.appendChild(menu); await new Promise(r => setTimeout(r, 0)) })
+    expect((await screen.findByTestId('relay-crew-under-overlay')).textContent).toBe('R1')
+    await act(async () => { menu.remove(); await new Promise(r => setTimeout(r, 0)) })
+    await waitFor(() => expect(screen.queryByTestId('relay-crew-under-overlay')).toBeNull())
+  })
+
+  it('a pane still connecting keeps its connecting cover under a menu', async () => {
+    mountMain()
+    const { api } = installBridge()
+    renderWithProviders(<RelayCrewPaneHost />, { store: storeWith(['r1'], 'r1') })
+    await waitFor(() => expect(api.setPaneOverlay).toHaveBeenLastCalledWith('r1', false))
+    const menu = document.createElement('div')
+    menu.setAttribute('data-test-overlay', '')
+    menu.setAttribute('role', 'menu')
+    await act(async () => { document.body.appendChild(menu); await new Promise(r => setTimeout(r, 0)) })
+    await screen.findByTestId('relay-crew-connecting')
+    expect(screen.queryByTestId('relay-crew-under-overlay')).toBeNull()
+    await act(async () => { menu.remove(); await new Promise(r => setTimeout(r, 0)) })
+  })
+
   it('a relay-only overlay outside <main> (the open notification sheet) hides the pane; an empty banner region does not', async () => {
     mountMain()
     const { api } = installBridge()
