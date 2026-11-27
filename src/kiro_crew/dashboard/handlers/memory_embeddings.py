@@ -21,7 +21,6 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
-from kiro_crew import embedding_source_governance as _source_gov
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import (
@@ -470,6 +469,8 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     Owner-gated first: an apply rewrites the owner's config and re-embeds the
     owner's whole vector store.
     """
+    from kiro_crew import embedding_source_governance as _source_gov
+
     owner_denied = await require_owner_dashboard_request(request, "memory.embedding_model")
     if owner_denied is not None:
         return owner_denied
@@ -663,6 +664,8 @@ def _embedding_repair_status(state: object, generation: str) -> dict[str, object
 
 async def api_memory_embedding_status(request: web.Request) -> web.Response:
     """GET /api/memory/embedding-status — embedding system status + setup progress."""
+    from kiro_crew import embedding_source_governance as _source_gov
+
     embedder = get_shared_embedder()
     mgr = model_download_manager()
     step = str(mgr.status["step"])

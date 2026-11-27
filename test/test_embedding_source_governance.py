@@ -430,9 +430,9 @@ def test_warming_a_denied_model_retires_it_instead(policy, memory, monkeypatch):
 
 
 def test_the_history_tokenizer_skips_a_refused_bundled_model(policy, memory, monkeypatch):
-    from kiro_crew import embeddings_model, history_vectors_index
+    from kiro_crew import history_vectors_index
 
-    monkeypatch.setattr(embeddings_model, "model_file_present", lambda path=None: True)
+    monkeypatch.setattr(emb, "model_file_present", lambda path=None: True)
     assert history_vectors_index._usable_model_path() is not None
     policy(_rule("allow", "[ollama]"))
     assert history_vectors_index._usable_model_path() is None
