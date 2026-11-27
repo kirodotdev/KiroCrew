@@ -25243,6 +25243,7 @@
     "scroll_more": "Fais défiler pour voir la suite",
     "graph_changed": "Le graphe a changé depuis que tu as tracé ce rectangle. Trace-le à nouveau.",
     "graph_selected": "{{formatted}} sélectionnés",
+    "graph_found": "{{formatted}} trouvés",
     "show_in_memories": "Voir dans Mémoires",
     "filters_width": "Largeur des filtres",
     "select": "Sélectionner",

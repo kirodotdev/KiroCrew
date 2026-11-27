@@ -12564,6 +12564,7 @@
     "scroll_more": "Scroll to see more",
     "graph_changed": "The graph changed since this box was drawn. Draw it again.",
     "graph_selected": "{{formatted}} selected",
+    "graph_found": "{{formatted}} found",
     "show_in_memories": "Show in Memories",
     "filters_width": "Filter width",
     "select": "Select",

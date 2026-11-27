@@ -639,44 +639,23 @@ def _cached_summaries(store: Any, base: dict) -> list[dict]:
     return everything
 
 
-def matching_ids(store: Any, query: dict, *, meaning: bool = False) -> list[str]:
-    """The id of every record the list shows for *query*, across all its pages.
+def matching_scores(store: Any, query: dict) -> tuple[dict[str, float], bool]:
+    """The list's word-search matches, each fully lit on the memory graph.
 
-    The memory graph's search: the same words, meaning cut-off and filters as
-    :func:`list_records`, so the graph highlights exactly what the list would
-    list. An id here is the graph's id for a record (an experience's id, a
-    fact's or lesson's key).
+    Use the same query, row matcher and filters as :func:`list_records` across
+    all pages. The graph has no meaning-mode control, so it must not add the
+    matches from the list's separate meaning search. Scores describe brightness
+    only; every word match scores 1 and the bool reports that meaning did not run.
     """
     query = _query(query)
     if not query["q"]:
         raise MemoryEditError("Search needs search words.")
-    vector = None
-    if meaning:
-        try:
-            vector = memory_record_meaning.embed_query(store, query["q"])
-        except memory_record_meaning.MeaningUnavailable:
-            raise MemoryEditError(
-                "Search by meaning needs the embedding model, which is not ready. Search by words instead.",
-                code="meaning_unavailable",
-                status=409,
-            ) from None
-    filters = _with_box(store, query.get("filters", {}))
     with store._db_lock, _read_snapshot(store):
-        everything = _cached_summaries(store, {"q": "" if meaning else query["q"], "kind": "all"})
-        scores = memory_record_meaning.score_rows(store, vector) if vector is not None else None
-        out = []
-        for summary in everything:
-            if scores is not None and (
-                memory_record_meaning.summary_score(scores, summary)
-                < memory_record_meaning.MEANING_CUTOFF
-            ):
-                continue
-            if (query["kind"] == "all" or summary["kind"] == query["kind"]) and (
-                memory_record_facets.matches(summary, filters)
-            ):
-                if isinstance(summary["id"], str) and summary["id"]:
-                    out.append(summary["id"])
-    return out
+        return {
+            row["id"]: 1.0
+            for row in _rows(store, query)
+            if isinstance(row["id"], str) and row["id"]
+        }, False
 
 
 def list_records(

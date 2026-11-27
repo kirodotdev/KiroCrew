@@ -25843,6 +25843,7 @@
     "scroll_more": "Прокрути, чтобы увидеть больше",
     "graph_changed": "Граф изменился после выделения этой области. Выдели её заново.",
     "graph_selected": "Выбрано: {{formatted}}",
+    "graph_found": "Найдено: {{formatted}}",
     "show_in_memories": "Показать в памяти",
     "filters_width": "Ширина панели фильтров",
     "select": "Выбрать",

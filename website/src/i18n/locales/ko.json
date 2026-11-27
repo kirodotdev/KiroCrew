@@ -24043,6 +24043,7 @@
     "scroll_more": "스크롤해서 더 보기",
     "graph_changed": "이 영역을 그린 후 그래프가 변경되었어요. 영역을 다시 그려 주세요.",
     "graph_selected": "{{formatted}}개 선택됨",
+    "graph_found": "{{formatted}}개 찾음",
     "show_in_memories": "메모리에서 보기",
     "filters_width": "필터 영역 너비",
     "select": "선택",

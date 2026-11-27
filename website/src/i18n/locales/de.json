@@ -24643,6 +24643,7 @@
     "scroll_more": "Scrollen für mehr",
     "graph_changed": "Der Graph hat sich seit dem Zeichnen dieses Rahmens geändert. Zeichne ihn erneut.",
     "graph_selected": "{{formatted}} ausgewählt",
+    "graph_found": "{{formatted}} gefunden",
     "show_in_memories": "In Erinnerungen anzeigen",
     "filters_width": "Breite der Filter",
     "select": "Auswählen",

@@ -197,16 +197,22 @@ class LayoutSidecar:
     def positions(
         self, ids: Sequence[str], kinds: Iterable[str] | None = None
     ) -> dict[str, tuple[float, float]]:
-        """``id -> (x, y)`` for each of *ids* the file holds (search hits),
-        only of *kinds* when given."""
+        """``id -> (x, y)`` for each of *ids* the file holds, only of *kinds* when given."""
+        return {i: (x, y) for i, (x, y, _cluster) in self.placed(ids, kinds).items()}
+
+    def placed(
+        self, ids: Sequence[str], kinds: Iterable[str] | None = None
+    ) -> dict[str, tuple[float, float, int]]:
+        """``id -> (x, y, cluster)`` for each of *ids* the file holds (search
+        hits), only of *kinds* when given."""
         kinds = list(kinds or [])
         kind_sql = f" AND kind IN ({','.join('?' * len(kinds))})" if kinds else ""
-        out: dict[str, tuple[float, float]] = {}
+        out: dict[str, tuple[float, float, int]] = {}
         for s in range(0, len(ids), _IN_CHUNK):
             part = list(ids[s : s + _IN_CHUNK])
-            q = f"SELECT id, x, y FROM nodes WHERE id IN ({','.join('?' * len(part))}){kind_sql}"
-            for i, x, y in self._read(q, [*part, *kinds]):
-                out[i] = (x, y)
+            q = f"SELECT id, x, y, cluster FROM nodes WHERE id IN ({','.join('?' * len(part))}){kind_sql}"
+            for i, x, y, cluster in self._read(q, [*part, *kinds]):
+                out[i] = (x, y, cluster)
         return out
 
     def links(self, ids: Sequence[str]) -> dict[str, list[tuple[str, float]]]:

@@ -65,9 +65,10 @@ const cosmos = vi.hoisted(() => {
     drawnCounts: number[] = []
     setPointPositions(p: Float32Array) { this.positions = p; this.drawnCounts.push(p.length / 2) }
     colorUploads = 0
+    colorHistory: Float32Array[] = []
     sizes = new Float32Array()
     sizeUploads = 0
-    setPointColors(c: Float32Array) { this.colors = c; this.colorUploads++ }
+    setPointColors(c: Float32Array) { this.colors = c; this.colorUploads++; this.colorHistory.push(c) }
     setPointSizes(s: Float32Array) { this.sizes = s; this.sizeUploads++ }
     shapes = new Float32Array()
     setPointShapes(s: Float32Array) { this.shapes = s }
@@ -76,6 +77,12 @@ const cosmos = vi.hoisted(() => {
     setLinks(l: Float32Array) { this.links = l }
     setLinkColors(c: Float32Array) { this.linkColors = c }
     setLinkWidths() {}
+    imageIndices = new Float32Array()
+    imageSizes = new Float32Array()
+    setPointImageIndices(a: Float32Array) { this.imageIndices = a }
+    setPointImageSizes(a: Float32Array) { this.imageSizes = a }
+    oneFrames = 0
+    renderOneFrame() { this.oneFrames++ }
     setConfigPartial(c: Config) { Object.assign(this.config, c) }
     render(_alpha?: number, duration?: number) { this.renders.push(duration) }
     transforms = 0
@@ -101,9 +108,11 @@ const motion = vi.hoisted(() => ({ reduced: false }))
 vi.mock('../hooks/useReducedMotion', () => ({ useReducedMotion: () => motion.reduced }))
 
 import { api } from '../api/client'
-import MemoryGraphTab from '../pages/overview/MemoryGraphTab'
+import MemoryGraphTab, { MOTION_MS, SEARCH_DEBOUNCE_MS } from '../pages/overview/MemoryGraphTab'
+import { BREATH_FPS } from '../pages/overview/memoryGraph/graphActivityRunner'
 import { MemoryJumpContext } from '../pages/overview/memoryPage/memoryJump'
 import { NODE_BUDGET } from '../pages/overview/memoryGraph/graphView'
+import { DIM_ALPHA } from '../pages/overview/memoryGraph/graphLight'
 import { NodeCache, PAGE_ROWS } from '../pages/overview/memoryGraph/nodeCache'
 
 const node = (id: string, kind: 'episode' | 'fact' | 'lesson', x: number, y: number, weight = 1) => ({
@@ -377,15 +386,159 @@ describe('the memory graph over every memory', () => {
     expect(g.renders.every(d => d === 0)).toBe(true)
   })
 
-  it('highlights what the server found, across every node, and dims the rest', async () => {
-    vi.mocked(api.memoryGraphSearch).mockResolvedValue({ status: 'ready', layout: 'L1', matches: [{ id: 'bb', x: 50, y: 0 }], total: 1 } as never)
+  it('lights what the server found by similarity, dims and greys the rest, and names only lit topics', async () => {
+    vi.mocked(api.memoryGraphSearch).mockResolvedValue({ status: 'ready', layout: 'L1', matches: [{ id: 'bb', x: 50, y: 0, cluster: 0, score: 1 }, { id: 'cc', x: 0, y: 40, cluster: 0, score: 0.5 }], total: 2 } as never)
     renderTab()
     const g = await drawn()
     const solid = alphaOf(g, 'bb')
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'needle' } })
+    const [r, gr, b] = g.colors.slice(indexOf('aa') * 4, indexOf('aa') * 4 + 3)
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'needle' } })
     await waitFor(() => expect(api.memoryGraphSearch).toHaveBeenCalledWith('member-a', 'needle', { kinds: undefined }), { timeout: 3000 })
-    await waitFor(() => expect(alphaOf(g, 'aa')).toBeLessThan(0.2))
+    await waitFor(() => expect(alphaOf(g, 'aa')).toBeCloseTo(DIM_ALPHA))
+    // The best hit is brightest; the weaker one still stands out from the dimmed.
     expect(alphaOf(g, 'bb')).toBeGreaterThanOrEqual(solid)
+    expect(alphaOf(g, 'cc')).toBeLessThan(alphaOf(g, 'bb'))
+    expect(alphaOf(g, 'cc')).toBeGreaterThan(DIM_ALPHA)
+    // A dimmed mark loses its colour: its channels move toward one grey.
+    const dim = g.colors.slice(indexOf('aa') * 4, indexOf('aa') * 4 + 3)
+    expect(Math.max(...dim) - Math.min(...dim)).toBeLessThan(Math.max(r, gr, b) - Math.min(r, gr, b))
+    expect((await screen.findByTestId('memory-graph-lit')).textContent).toBe('2 found')
+  })
+
+  it('names only the topics holding hits while a set is lit, each with its hit count', async () => {
+    const two = { ...overview(), clusters: [{ id: 0, x: 50, y: 0, r: 20, count: 50, label: 'alpha' }, { id: 1, x: 50, y: 25, r: 20, count: 350, label: 'beta' }] }
+    vi.mocked(api.memoryGraphOverview).mockResolvedValue(two as never)
+    const left = (i: number) => i < 50
+    const many = Array.from({ length: 400 }, (_, i) => ({ ...node(`n${i}`, 'fact', (left(i) ? -55 : 45) + (i % 20) * 0.5, -5 + Math.floor(i / 20) * 0.5), cluster: left(i) ? 0 : 1 }))
+    vi.mocked(api.memoryGraphNodes).mockResolvedValue({ status: 'ready', layout: 'L1', nodes: many, cursor: null } as never)
+    const hits = (ids: typeof many, cluster?: number) => ({ status: 'ready', layout: 'L1', matches: ids.map(n => ({ id: n.id, x: n.x, y: n.y, cluster: cluster ?? n.cluster, score: 1 })), total: ids.length })
+    vi.mocked(api.memoryGraphSearch).mockResolvedValue(hits(many) as never)
+    renderTab()
+    await drawn(400)
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'needle' } })
+    expect(await screen.findByText('alpha · 50', {}, { timeout: 3000 })).toBeTruthy()
+    expect(screen.getByText('beta · 350')).toBeTruthy()
+    // beta's memories are lit but counted to alpha: beta holds no hit and loses its name.
+    vi.mocked(api.memoryGraphSearch).mockResolvedValue(hits(many.filter((_, i) => !left(i)), 0) as never)
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'other' } })
+    expect(await screen.findByText('alpha · 350', {}, { timeout: 3000 })).toBeTruthy()
+    expect(screen.queryByText(/^beta/)).toBeNull()
+  })
+
+  it('fades into the lit set and back out when the search is cleared, in steps', async () => {
+    vi.mocked(api.memoryGraphSearch).mockResolvedValue({ status: 'ready', layout: 'L1', matches: [{ id: 'bb', x: 50, y: 0, cluster: 0, score: 1 }], total: 1 } as never)
+    renderTab()
+    const g = await drawn()
+    const solid = alphaOf(g, 'aa')
+    const clock = cameraClock()
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'needle' } })
+    await clock.frame(SEARCH_DEBOUNCE_MS)
+    expect(api.memoryGraphSearch).toHaveBeenCalledWith('member-a', 'needle', { kinds: undefined })
+    expect(alphaOf(g, 'aa')).toBeCloseTo(solid)
+    await clock.frame(MOTION_MS / 2)
+    expect(alphaOf(g, 'aa')).toBeCloseTo(solid + (DIM_ALPHA - solid) * 0.875)
+    await clock.frame(MOTION_MS / 2)
+    expect(alphaOf(g, 'aa')).toBeCloseTo(DIM_ALPHA)
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: '' } })
+    await clock.frame(SEARCH_DEBOUNCE_MS)
+    expect(alphaOf(g, 'aa')).toBeCloseTo(DIM_ALPHA)
+    await clock.frame(MOTION_MS / 2)
+    expect(alphaOf(g, 'aa')).toBeCloseTo(DIM_ALPHA + (solid - DIM_ALPHA) * 0.875)
+    await clock.frame(MOTION_MS / 2)
+    expect(alphaOf(g, 'aa')).toBeCloseTo(solid)
+    expect(screen.queryByTestId('memory-graph-lit')).toBeNull()
+  })
+
+  const read = (detail: Record<string, unknown>) => act(() => { window.dispatchEvent(new CustomEvent('mc:memory-activity', { detail })) })
+
+  it('lights a memory this store recalled, as it happens, and breathes on its own clock', async () => {
+    renderTab()
+    const g = await drawn()
+    const uniforms = (g.config.kcActivity as { clock: number[]; light: number[] })
+    // Breathing is on: a non-zero amplitude, and frames drawn without any read.
+    expect(uniforms.clock[2]).toBeGreaterThan(0)
+    await waitFor(() => expect(g.oneFrames).toBeGreaterThan(0))
+    read({ store: 'other-store', kind: 'recall', ids: ['bb'], ts: 1 })
+    read({ store: 'member-a', kind: 'recall', ids: ['bb', 'not-drawn'], ts: 1 })
+    await waitFor(() => expect(g.imageIndices[indexOf('bb')]).toBeGreaterThanOrEqual(0))
+    // The hit at full strength; the frame for another store lit nothing of its own.
+    expect(Math.abs(g.imageSizes[indexOf('bb')]) % 1).toBeGreaterThan(0.9)
+  })
+
+  it('neither breathes nor lights a read under reduced motion or with the tab hidden', async () => {
+    motion.reduced = true
+    renderTab()
+    const g = await drawn()
+    const clock = cameraClock()
+    const uniforms = (g.config.kcActivity as { clock: number[]; light: number[] })
+    expect(uniforms.clock[2]).toBe(0)
+    expect(uniforms.light[2]).toBe(0)
+    read({ store: 'member-a', kind: 'recall', ids: ['bb'], ts: 1 })
+    await clock.frame(1000 / BREATH_FPS)
+    expect(g.imageIndices.length).toBe(0)
+  })
+
+  it('stops while the tab is hidden and drops what was read then', async () => {
+    renderTab()
+    const g = await drawn()
+    const clock = cameraClock()
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    onTestFinished(() => visibility.mockRestore())
+    act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+    const uniforms = (g.config.kcActivity as { clock: number[] })
+    expect(uniforms.clock[2]).toBe(0)
+    read({ store: 'member-a', kind: 'recall', ids: ['bb'], ts: 1 })
+    await clock.frame(1000 / BREATH_FPS)
+    expect(g.imageIndices.length).toBe(0)
+    visibility.mockReturnValue('visible')
+    act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+    expect(uniforms.clock[2]).toBeGreaterThan(0)
+    await clock.frame(1000 / BREATH_FPS)
+    expect(g.imageIndices.length).toBe(0)
+    visibility.mockRestore()
+  })
+
+  it.each(['recall', 'session_start'])('lights an uncached memory at cluster zoom for %s', async kind => {
+    vi.mocked(api.memoryGraphOverview).mockResolvedValue({
+      ...overview(250000),
+      clusters: [
+        { id: 7, x: -30, y: 0, r: 20, count: 125000, label: 'left' },
+        { id: 9, x: 30, y: 0, r: 20, count: 125000, label: 'right' },
+      ],
+    } as never)
+    renderTab()
+    const g = await drawn(2)
+    const clock = cameraClock()
+    expect(api.memoryGraphNodes).not.toHaveBeenCalled()
+    read({ store: 'other-store', kind, ids: ['aa'], ts: 1, layout: 'L1', clusters: { aa: 7 } })
+    read({ store: 'member-a', kind, ids: ['bb'], ts: 1, layout: 'L1', clusters: { bb: 9 } })
+    await clock.frame(1000 / BREATH_FPS)
+    expect([...g.imageIndices].map(at => at >= 0)).toEqual([false, true])
+    expect(g.imageSizes[1]).toBeGreaterThan(0)
+    expect(api.memoryGraphNodes).not.toHaveBeenCalled()
+  })
+
+  it('does not apply cluster identities from a different layout', async () => {
+    vi.mocked(api.memoryGraphOverview).mockResolvedValue(overview(250000) as never)
+    renderTab()
+    const g = await drawn(1)
+    const clock = cameraClock()
+    read({ store: 'member-a', kind: 'recall', ids: ['bb'], ts: 1, layout: 'old-layout', clusters: { bb: 0 } })
+    await clock.frame(1000 / BREATH_FPS)
+    expect([...g.imageIndices]).toEqual([-1])
+    expect(api.memoryGraphNodes).not.toHaveBeenCalled()
+  })
+
+  it('jumps straight to the lit set under reduced motion', async () => {
+    motion.reduced = true
+    vi.mocked(api.memoryGraphSearch).mockResolvedValue({ status: 'ready', layout: 'L1', matches: [{ id: 'bb', x: 50, y: 0, cluster: 0, score: 1 }], total: 1 } as never)
+    renderTab()
+    const g = await drawn()
+    const solid = alphaOf(g, 'aa')
+    g.colorHistory.length = 0
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'needle' } })
+    await waitFor(() => expect(alphaOf(g, 'aa')).toBeCloseTo(DIM_ALPHA), { timeout: 3000 })
+    expect(g.colorHistory.map(c => c[indexOf('aa') * 4 + 3]).every(a => Math.abs(a - solid) < 1e-6 || Math.abs(a - DIM_ALPHA) < 1e-6)).toBe(true)
   })
 
   it('counts a box selection on the server and hands the box itself to the Memories tab', async () => {
@@ -510,7 +663,7 @@ describe('the memory graph over every memory', () => {
     cosmos.failNext = true
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     renderTab()
-    expect(await screen.findByRole('textbox')).toBeTruthy()
+    expect(await screen.findByRole('searchbox')).toBeTruthy()
     expect(screen.getAllByRole('radio').length).toBeGreaterThan(0)
     await waitFor(() => expect(warn).toHaveBeenCalled(), LAZY_INIT)
     expect(await screen.findByTestId('memory-graph-canvas-error', {}, LAZY_INIT)).toBeTruthy()
@@ -591,7 +744,7 @@ describe('the memory graph over every memory', () => {
     renderTab()
     const g = await drawn()
     const solid = alphaOf(g, 'aa')
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'needle' } })
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'needle' } })
     const notice = await screen.findByTestId('memory-graph-read-error', {}, { timeout: 3000 })
     expect(alphaOf(g, 'aa')).toBe(solid)
     fireEvent.click(within(notice).getByRole('button', { name: /Retry/ }))
@@ -625,11 +778,11 @@ describe('the memory graph over every memory', () => {
     vi.mocked(api.memoryGraphOverview).mockResolvedValue({ ...overview(), layout: 'L2' } as never)
     vi.mocked(api.memoryGraphNodes).mockResolvedValue({ status: 'ready', layout: 'L2', nodes: moved, cursor: null } as never)
     vi.mocked(api.memoryGraphSearch).mockResolvedValue({ status: 'ready', layout: 'L2', matches: [], total: 0 } as never)
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'needle' } })
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'needle' } })
     await waitFor(() => expect([...graph().positions]).toEqual(moved.flatMap(n => [n.x, n.y])), LAZY_INIT)
     await act(async () => { fireEvent.click(within(notice).getByRole('button', { name: /Retry/ })) })
     expect(api.memoryGraphSelect).toHaveBeenCalledTimes(1)
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.queryByText(/selected/)).toBeNull()
     expect(screen.queryByTestId('memory-graph-box')).toBeNull()
   })
 
@@ -701,7 +854,7 @@ describe('the memory graph over every memory', () => {
     cosmos.deviceFails = true
     renderTab()
     expect(await screen.findByTestId('memory-graph-canvas-error', {}, LAZY_INIT)).toBeTruthy()
-    expect(screen.getByRole('textbox')).toBeTruthy()
+    expect(screen.getByRole('searchbox')).toBeTruthy()
   })
 
   it('pans and zooms over the clusters a Refresh brought, not the first ones', async () => {

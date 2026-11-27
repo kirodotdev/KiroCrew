@@ -76,3 +76,47 @@ def test_embeds_the_search_words_as_a_recall_query(store, monkeypatch):  # noqa:
     monkeypatch.setattr(store, "_try_embed", embed)
     memory_record_meaning.embed_query(store, "worktree habits")
     assert seen == [True]
+
+
+def test_graph_search_matches_the_list_without_adding_meaning_only_hits(store):  # noqa: F811
+    _seed(store)
+    # The lesson holds the word; the episode matches by meaning only. A second
+    # word match has no related vector, so semantic admission cannot replace words.
+    assert store.set_semantic("user.word", "worktree", 0.8, "user_explicit") is None
+    table = "memory_items" if store.algorithm_version == "v2" else "semantic_memory"
+    with store._db_lock:
+        store.db.execute(f"UPDATE {table} SET embedding = NULL WHERE key = ?", ("user.word",))
+        store.db.commit()
+    query = {"q": "worktree"}
+    words = memory_edit.list_records(store, query, facets=True)
+    semantic = memory_edit.list_records(store, query, meaning=True)
+    lit, meaning = memory_edit.matching_scores(store, query)
+    assert {row["id"] for row in words["entries"]} == {"lesson.a", "user.word"}
+    assert any(row["kind"] == "episode" for row in semantic["entries"])
+    assert "user.word" not in {row["id"] for row in semantic["entries"]}
+    assert set(lit) == {row["id"] for row in words["entries"]}
+    assert len(lit) == words["total"]
+    assert set(lit.values()) == {1.0}
+    assert meaning is False
+
+
+def test_graph_search_uses_list_kind_filter_without_embedding(store, monkeypatch):  # noqa: F811
+    _seed(store)
+    query = {"q": "worktree", "kind": "directive"}
+    monkeypatch.setattr(
+        memory_record_meaning, "embed_query", lambda *_: pytest.fail("word search must not embed")
+    )
+    words = memory_edit.list_records(store, query, limit=1)
+    lit, meaning = memory_edit.matching_scores(store, query)
+    assert set(lit) == {row["id"] for row in words["entries"]} == {"lesson.a"}
+    assert len(lit) == words["total"]
+    assert meaning is False
+
+
+def test_graph_search_finds_by_words_alone_without_an_embedding_model(store):  # noqa: F811
+    _seed(store)
+    store.embed_fn = None
+    store.embed_fn_factory = None
+    lit, meaning = memory_edit.matching_scores(store, {"q": "shard"})
+    assert meaning is False
+    assert lit == {"project.flaky": 1.0}

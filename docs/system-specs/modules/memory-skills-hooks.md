@@ -2257,8 +2257,52 @@ an empty result, and Refresh reads the overview, the nodes in view and the searc
 again. The detail panel's shared refresh after an edit, forget, restore or proposal
 resolution uses that same reload: it clears cached nodes and pending selections,
 drops old replies and refetches the visible tiles even when the layout revision
-has not changed. Search runs on the server (up to 50,000 matches), the canvas dims what does not
-match and the camera fits the matches. The canvas is
+has not changed. Search runs on the server (up to 50,000 matches): it uses the
+Memories list's default word search (`memory_edit.matching_scores`), with every
+match scored 1. The graph does not add matches from the list's separate meaning
+mode or apply a recall cutoff. The reply says `meaning: false`; an embedding
+model is not needed. The canvas lights the
+set (`memoryGraph/graphLight.ts`): each hit glows by its score relative to the
+set's own range (opacity 0.7 to 1, drawn 1.5 to 2.2 times its size), every other mark dims to
+0.1 opacity and turns 80% grey, links between two hits grow 3× stronger and the
+rest dim, only the topics holding hits keep their names, each with its hit count
+(`topic · 12`), a chip says how many are lit (`12 found`), and the
+camera fits the lit set. Lighting, changing and clearing (the search box is a
+search field: its clear button and Escape empty it) fade over the same 250 ms
+ease-out as a camera move, and jump straight to the end under reduced motion.
+The graph also shows memory reads as they happen. `GET /api/memory/recall` (the
+agent's `memory_recall`, the page's Test recall) and a session's first prompt send
+a `memory_activity` frame (`memory_graph_activity.announce`) to owner sockets only
+(`broadcast_ws_owners`, and only while one is open): the store, the kind
+(`recall` or `session_start`), at most 64 memory ids through the graph's own id
+redaction, and the time, never memory text. A bounded lookup of those ids in the
+existing layout runs off the event loop and adds their cluster ids and the layout
+revision. It never builds a layout. The tab uses cluster identities only for its
+current revision, so reads light the cluster overview even before any node tiles
+are cached. If the lookup fails, node-level activity still works. The tab of that store
+(`memoryGraph/graphActivityRunner.ts`) lights at most 20 hits a second, coalesced.
+A session start lights its own marks without spreading. A recall lights its origin
+and up to four nearest marks within 14% of the cluster's radius immediately,
+then spreads radially through that cluster in 200 ms. Arrival is linear with
+distance; each arriving mark rises with an 80 ms smoothstep. Neighbouring clusters
+stay unchanged. Full coverage triggers a 60 ms ease-out-back strike
+(`1 + 2.70158*(t-1)^3 + 1.70158*(t-1)^2`), with a roughly 10% overshoot of strike
+strength. Point size reaches about 151.6% of its original size, then settles to
+148%. Brightness dips and re-strikes at 340 and 440 ms from recall, at 72% and
+50% strength; those piecewise-linear brightness flickers never start another
+spread or size pulse. At 520 ms the shared 3,000 ms afterglow begins:
+`(exp(-2.5*t)-exp(-2.5))/(1-exp(-2.5))`, clamped to the fade interval, a 1,200 ms
+time constant. Every mark shrinks and fades together, ending at 3,520 ms.
+Light themes preserve HSL hue and lightness while raising saturation to 98%; the
+strike boosts opacity toward 1 by at most `0.45*flash`. Dark themes retain hue
+with strike lightness 0.73. There are no rings, edge glows, link pulses, fills or
+activation overlay canvas. A repeated hit restarts its cluster's animation.
+The point shader (`scripts/cosmos-graph-activity.mjs`) receives arrival and packed
+hold/strength once per batch; a negative packed hold identifies the instant seed.
+Per-frame JavaScript changes only uniforms and requests one draw, never iterates
+points. Idle brightness breathes ±3.5% over 6 s at 20 fps; activation requests
+every animation frame. Both stop under reduced motion and while the tab is hidden,
+and reads received while stopped are dropped. The canvas is
 cosmos.gl (WebGL, loaded on first visit in its own bundle chunk); when the chunk
 fails to load or WebGL cannot start, an error inside the canvas says so and search
 and filters stay usable. Each kind pill carries a dot in the colour its nodes are
@@ -4260,7 +4304,7 @@ before reading transcript bodies, opening learned memory or billing a model.
 | GET | `/api/memory/graph` | Memory as nodes and edges for the legacy graph API: preferences, projects, recent history, at most 200 semantic rows (first by key, lessons excluded, read on the key index) and the 200 newest lessons; `partial` (`{"semantic": bool, "lessons": bool}`) says which capped population left rows out. No longer read by the dashboard |
 | GET | `/api/memory/graph/overview` | The store's laid-out clusters (centre, radius, count, topic label) and the layout's bounds and counts, or `{"status": "building"}` |
 | GET | `/api/memory/graph/nodes` | The nodes whose layout point lies in `bbox` (`x0,y0,x1,y1`), optional repeated `kind`, paged by `cursor` with `limit` up to 2,000; each carries `ref`, `record` and `weight` (recall's weight, `episodic_search.recall_weight`) |
-| GET | `/api/memory/graph/search` | Laid-out points matching `q` by words, or by meaning with `mode=meaning`; optional `kind`; at most 50,000 matches plus the `total` |
+| GET | `/api/memory/graph/search` | Laid-out points matching the Memories list's default word search for `q` (`meaning: false`); optional `kind`; each match carries `x`, `y`, `cluster` and `score: 1`; at most 50,000 matches plus the `total` |
 | GET | `/api/memory/graph/select` | How many nodes lie in `bbox` for the optional `kind`s, the count behind "N selected" |
 | GET/PUT | `/api/memory/settings` | Consolidation settings; see the memory settings card above |
 | GET | `/api/memory/carve` | Filter or count one crew store by carve facet. Query: the five facet names, `kind`, `count_by`, `limit`, `offset`, plus the shared `?store=`. Absent, it reads the global store; present, it is owner-gated like every other store-scoped route. 409 `facets_unsupported` on the v1 lineage, 400 `unknown_facet`, 400 `invalid_pagination`, 503 `store_unavailable`. Every answer echoes the `store` it read. See [Who reads a facet](#who-reads-a-facet) |

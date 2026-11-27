@@ -25243,6 +25243,7 @@
     "scroll_more": "Desplázate para ver más",
     "graph_changed": "El gráfico cambió después de dibujar este recuadro. Vuelve a dibujarlo.",
     "graph_selected": "{{formatted}} seleccionados",
+    "graph_found": "{{formatted}} encontrados",
     "show_in_memories": "Ver en Memorias",
     "filters_width": "Ancho de los filtros",
     "select": "Seleccionar",

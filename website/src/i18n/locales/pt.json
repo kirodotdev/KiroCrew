@@ -25243,6 +25243,7 @@
     "scroll_more": "Role para ver mais",
     "graph_changed": "O grafo mudou depois que você desenhou este retângulo. Desenhe-o novamente.",
     "graph_selected": "{{formatted}} selecionados",
+    "graph_found": "{{formatted}} encontrados",
     "show_in_memories": "Ver em Memórias",
     "filters_width": "Largura dos filtros",
     "select": "Selecionar",

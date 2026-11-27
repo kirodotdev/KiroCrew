@@ -63,6 +63,8 @@ export type GraphBbox = [number, number, number, number]
 export type GraphKind = 'episode' | 'fact' | 'lesson'
 export type GraphCluster = { id: number; x: number; y: number; r: number; count: number; label: string | null }
 /** `layout` names the full build a reply was read from; a rebuild changes it and moves positions. */
+/** A memory a graph search or recall lit: its place, its cluster and how well it matched. */
+export type GraphMatch = { id: string; x: number; y: number; cluster: number; score: number }
 export type GraphOverview = { status: 'ready' | 'building'; clusters?: GraphCluster[]; totals?: Partial<Record<GraphKind, number>>; bounds?: GraphBbox; layout?: string }
 /** One node of a box page: `ref` and `record` open it in the Memories list. */
 export type GraphNodeRow = { id: string; kind: GraphKind; x: number; y: number; cluster: number; weight: number; label: string; ref: string; record: { kind: 'episode' | 'fact' | 'directive'; id: string }
@@ -306,8 +308,9 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
       fetch('/api/memory/graph/overview?' + graphParams(store, {})).then(j) as Promise<GraphOverview>,
     memoryGraphNodes: (store: string, bbox: GraphBbox, opts: { kinds?: string[]; cursor?: string | null; limit?: number } = {}) =>
       fetch('/api/memory/graph/nodes?' + graphParams(store, { bbox: String(bbox), kind: opts.kinds, cursor: opts.cursor || undefined, limit: opts.limit ? String(opts.limit) : undefined })).then(j) as Promise<{ status: string; nodes: GraphNodeRow[]; cursor: string | null; layout?: string }>,
-    memoryGraphSearch: (store: string, q: string, opts: { meaning?: boolean; kinds?: string[] } = {}) =>
-      fetch('/api/memory/graph/search?' + graphParams(store, { q, mode: opts.meaning ? 'meaning' : undefined, kind: opts.kinds })).then(j) as Promise<{ status: string; matches: { id: string; x: number; y: number }[]; total: number; layout?: string }>,
+    /** The list's word-search matches for `q`, each fully lit with `score: 1`. */
+    memoryGraphSearch: (store: string, q: string, opts: { kinds?: string[] } = {}) =>
+      fetch('/api/memory/graph/search?' + graphParams(store, { q, kind: opts.kinds })).then(j) as Promise<{ status: string; matches: GraphMatch[]; total: number; meaning?: boolean; layout?: string }>,
     memoryGraphSelect: (store: string, bbox: GraphBbox, kinds?: string[]) =>
       fetch('/api/memory/graph/select?' + graphParams(store, { bbox: String(bbox), kind: kinds })).then(j) as Promise<{ status: string; count: number; layout?: string }>,
     consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),

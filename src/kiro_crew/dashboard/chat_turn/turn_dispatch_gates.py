@@ -966,6 +966,21 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                 store=str(turn.memory_store or ""),
             )
         )
+        if slot_ctx_phase == PHASE_SESSION_START:
+            # The owner's memory graph flashes what the session started with; sync
+            # and non-raising, so no suspension point either.
+            from kiro_crew import memory_graph_activity
+
+            memory_graph_activity.announce(
+                turn.state,
+                str(turn.memory_store or ""),
+                memory_graph_activity.SESSION_START,
+                [
+                    key
+                    for kind in (injection_receipts.LESSONS, injection_receipts.FINDINGS)
+                    for key in (slot_ctx_receipts.get(kind) or {}).get("ids") or ()
+                ],
+            )
     # Refusal retries, synthetic recovery and replay turns re-run a turn already
     # started.
     _rerun = _is_refusal_retry_turn or turn._synthetic_recovery_turn or bool(turn._replay)
