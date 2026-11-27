@@ -691,6 +691,22 @@ class TestChannelBotCommand:
         channel_bot["bot"] = ""
         posts = self._cmd("!channel agent web-frontend")
         assert persisted == [(CHAN, {"agent": "web-frontend"})]
+        assert posts[-1] == "Agent for this channel: *web-frontend*" + (
+            ch.AGENT_BOT_HINT_TEXT.format(bot="web-frontend")
+        )
+
+    @pytest.mark.parametrize("where", ["dm", "no_dashboard", "bot_elsewhere"])
+    def test_channel_agent_gives_no_bot_hint_where_channel_bot_would_refuse(
+        self, ds, persisted, channel_bot, monkeypatch, where
+    ):
+        channel_bot["bot"] = ""
+        channel = "D0OWNERDM01" if where == "dm" else CHAN
+        if where == "no_dashboard":
+            monkeypatch.setattr(_handler, "_dashboard_state", None)
+        if where == "bot_elsewhere":
+            monkeypatch.setattr(ch, "_channel_with_bot", lambda bot, chan: "C0OTHER0001")
+        posts = self._cmd("!channel agent web-frontend", channel=channel)
+        assert persisted == [(channel, {"agent": "web-frontend"})]
         assert posts[-1] == "Agent for this channel: *web-frontend*"
 
     def test_bang_bot_in_a_bot_channel_is_refused(self, ds, persisted, channel_bot):
