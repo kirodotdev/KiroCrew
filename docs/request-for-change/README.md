@@ -397,7 +397,9 @@ accepted, and the scope test for when a change needs one at all.
   unused" are the ones that most often turn out wrong. Grep for callers, not just
   definitions — a defined-but-uncalled symbol means the behavior does not happen,
   which is a different (and usually more interesting) finding than absence.
-  Quote `file:line`. Name the commit you measured at, as
+  Cite the file and a symbol in it, not a line number: docs-lint reports every
+  `file.py:NNN` citation, because the number rots on the next refactor while a
+  function or class name survives it. Name the commit you measured at, as
   `rfc-i18n-measurement.md` does.
 - A probe phase that exists to answer a question must write its verdict down
   somewhere durable and the RFC must be updated to point at it. PR #1023 recorded

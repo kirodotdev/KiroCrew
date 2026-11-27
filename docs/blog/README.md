@@ -23,8 +23,8 @@ is a position. You can argue with it, and it can age.
   argument. No `Last Updated:` line, because git already records that.
 - Add a row above, and keep the "what it argues" column a claim rather than a
   topic. A reader should be able to disagree with it from the index alone.
-- Cite `file:line` and name the commit for any claim about the code, the same as
-  an RFC does. A post is allowed to be opinionated about the future. It is not
+- Cite the file and a symbol in it, not a line number, and name the commit for
+  any claim about the code, the same as an RFC does. A post is allowed to be opinionated about the future. It is not
   allowed to be wrong about the present.
 - Say which parts are unbuilt. If a post reads as a roadmap commitment, it
   belongs in `request-for-change/` instead.
