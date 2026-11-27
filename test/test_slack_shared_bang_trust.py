@@ -594,7 +594,12 @@ async def test_status_after_the_trust_button_agrees_with_their_next_tool_call(mo
 
     _pending_approvals["D1:card1"] = _PendingApproval(_Provider(), "req-1", KEY, requester=FRIEND)
     try:
-        assert await handle_interaction("D1", "card1", "trust_tool", user_id=FRIEND) == "trust_tool"
+        assert (
+            await handle_interaction(
+                "D1", "card1", "trust_tool", user_id=FRIEND, thread_ts=TS, sessions=live
+            )
+            == "trust_own_turns"
+        )
     finally:
         _pending_approvals.pop("D1:card1", None)
     # Whatever the button grants, the status never says "on" while their calls ask.

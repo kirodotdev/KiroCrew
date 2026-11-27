@@ -398,6 +398,32 @@ def revoke(state: Any, session_key: str, user: str) -> str:
     return TAB_STILL_TRUSTED_TEXT if tab_trust else OFF_TEXT
 
 
+#: Why :func:`_grant_own` made no grant, as the audit row names it.
+_POLICY_REFUSAL = "mode_disabled_by_policy"
+
+
+def _grant_own(sessions: Any, session_key: str, user: str, binding: SessionBinding | None) -> str:
+    """Make *user*'s own-turns grant on *session_key* under *binding*; ``""`` when made.
+
+    Otherwise why not, as the audit names it. Nothing is awaited, and everything is
+    asked here: a person taken off the list meanwhile has no grant for a later
+    config to drop, and a session replaced since *binding* was read is not the one
+    the grant was asked for.
+    """
+    from kiro_crew.messaging import session_trust
+    from kiro_crew.slack import handler
+
+    if binding is None:
+        return "no running session"
+    if not handler.is_shared_user(user) or session_binding(sessions, session_key) != binding:
+        return "changed during the request"
+    try:
+        session_trust.add_trusted_sender(session_key, user, binding)
+    except PermissionError:
+        return _POLICY_REFUSAL
+    return ""
+
+
 async def _own_turns(word: str, sessions: Any, session_key: str, user: str) -> str:
     """A shared user's ``!trust``: their own turns on *session_key*, nothing else.
 
@@ -441,21 +467,46 @@ async def _own_turns(word: str, sessions: Any, session_key: str, user: str) -> s
     if held:
         _audit(user, "allowed", f"{resources} result=unchanged")
         return OWN_ALREADY_ON_TEXT
-    from kiro_crew.slack import handler
-
-    # Asked again, with no await before the grant: the checks above waited. A person
-    # taken off the list meanwhile has no grant for a later config to drop, and a
-    # session replaced meanwhile is not the one this grant was asked for.
-    if not handler.is_shared_user(user) or session_binding(sessions, session_key) != binding:
-        _audit(user, "denied", resources, "changed during the request")
-        return NOT_ALLOWED_TEXT
-    try:
-        session_trust.add_trusted_sender(session_key, user, binding)
-    except PermissionError:
-        _audit(user, "denied", resources, "mode_disabled_by_policy")
-        return POLICY_TEXT
+    # Asked again, with no await before the grant: the checks above waited.
+    refused = _grant_own(sessions, session_key, user, binding)
+    if refused:
+        _audit(user, "denied", resources, refused)
+        return POLICY_TEXT if refused == _POLICY_REFUSAL else NOT_ALLOWED_TEXT
     _audit(user, "allowed", f"{resources} agent={binding.agent} result=set")
     return OWN_ON_TEXT
+
+
+def grant_from_card(
+    state: Any,
+    sessions: Any,
+    session_key: str,
+    channel: str,
+    reply_ts: str,
+    user: str,
+    pressed_on: SessionBinding | None = None,
+) -> bool:
+    """A shared user's own-turns grant, made by a card's Trust button; whether it was made.
+
+    The grant their ``!trust`` makes (:func:`_grant_own`), where :func:`handle` lets a
+    shared user make one: not in a thread that owns its approval mode, not in a
+    channel a Channel Bot or Channel Conductor answers, not in a thread that runs a
+    dashboard chat's or a cron's session. Never awaits, so the caller grants with
+    nothing between its own checks and its answer; it reads the code-channel store,
+    which the caller loads off the event loop first. *pressed_on* is the
+    :func:`session_binding` a caller read at the press, when it awaited since: a
+    session replaced meanwhile gets no grant. ``None`` reads the session now.
+    """
+    from kiro_crew.slack import channel_handler
+
+    if (
+        _has_own_approval_setting(channel, reply_ts)
+        or channel_handler.handler_refusal(channel)
+        or _is_linked(state, session_key, reply_ts)
+    ):
+        return False
+    binding = session_binding(sessions, session_key) if pressed_on is None else pressed_on
+    # Read back: a policy deny from another thread can clear the grant just made.
+    return not _grant_own(sessions, session_key, user, binding) and holds_grant(session_key, user)
 
 
 async def handle(

@@ -333,6 +333,7 @@ from kiro_crew.slack.handler_runtime.approvals import (  # noqa: F401
     _LinkedApprovalEvent,
     _PendingApproval,
     _resolve_linked_click,
+    grant_own_trust,
     mcp_identity_text,
     post_linked_approval,
     resolve_linked_approval,
@@ -959,6 +960,9 @@ _OUTCOME_REJECTED = "rejected"
 _ACTION_APPROVE = "approve_tool"
 _ACTION_TRUST = "trust_tool"
 _ACTION_REJECT = "reject_tool"
+#: What ``handle_interaction`` answers when a shared user's Trust press granted
+#: Trust for that person's own turns only. Never a button's action id.
+_ACTION_TRUST_OWN = "trust_own_turns"
 
 
 #: The Slack-owned attributes of :class:`KiroCrewConfig` that a reload copies
