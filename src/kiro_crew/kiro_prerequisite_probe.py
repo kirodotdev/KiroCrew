@@ -353,44 +353,30 @@ def _relay_route_configured() -> bool:
 def _whoami_skip_allowed() -> bool:
     """Whether a status or boot read may skip ``whoami``: nothing here signs in via kiro-cli.
 
-    True only when ``agent.acp_backend`` is claude AND no other route sends a slot
-    to a harness a host logout retires (``backends_retired_by_host_logout``, the
-    harnesses that run on kiro-cli's sign-in): the bot route
-    (``agent.member_acp_backend``, when any crewmate exists), a crewmate's own
-    ``agents.<name>.acp_backend`` pin, a Bot that runs on KAS though no field
-    names it (``crewmate_harness.bots_may_run_on_kas``), or a session created on
-    such a harness.
-    Blocking (reads config); unreadable reads as not, which keeps the probe.
+    True only when ``agent.acp_backend`` is claude, no configured harness choice
+    spawns kiro-cli (``crewmate_harness.kiro_cli_runs_anywhere``: the Bot harness,
+    crewmate pins, a Bot that lands on KAS through a fallback, the failover chain),
+    and no session was created on a harness a host logout retires
+    (``backends_retired_by_host_logout``). Blocking (reads config); unreadable reads
+    as not, which keeps the probe.
 
     shortcut: a sub-agent spawned with an explicit ``backend=`` writes no session
-    pick, so it does not stop the skip, and the KAS bundle route is not told apart
-    from the relay, so a bot route on KAS keeps the probe even when it needs no
-    kiro-cli sign-in; read the live slot table if either matters.
+    pick, so it does not stop the skip; read the live slot table if that matters.
     """
-    from kiro_crew.acp_backends import resolve_selected_backend
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, backend_from_stored
     from kiro_crew.agent_sdk.host_auth import backends_retired_by_host_logout
     from kiro_crew.config import KiroCrewConfig
-    from kiro_crew.crewmate_harness import bots_may_run_on_kas
+    from kiro_crew.crewmate_harness import kiro_cli_runs_anywhere
     from kiro_crew.members_parts.member_sessions import _SESSION_BACKEND_PICKS
 
     try:
         config = KiroCrewConfig.load()
         if config.agent.acp_backend == ACP_BACKEND_CLAUDE:
+            if kiro_cli_runs_anywhere(config):
+                return False
             retired = backends_retired_by_host_logout()
-            agents = dict(getattr(config, "agents", None) or {})
-            routes = [backend_from_stored(getattr(a, "acp_backend", "")) for a in agents.values()]
-            routes.extend(backend_from_stored(v) for v in list(_SESSION_BACKEND_PICKS.values()))
-            if any(r in retired for r in routes if isinstance(r, str)):
-                return False
-            # A pin to a harness Bots cannot run on, or an inherited bot route,
-            # runs the Bot on KAS though no field names it.
-            if bots_may_run_on_kas(config):
-                return False
-            return (
-                not agents
-                or resolve_selected_backend(config.agent.member_acp_backend) not in retired
-            )
+            picks = [backend_from_stored(v) for v in list(_SESSION_BACKEND_PICKS.values())]
+            return not any(p in retired for p in picks if isinstance(p, str))
         return False
     except Exception:  # noqa: BLE001 - keep the probe when config cannot be read
         return False

@@ -282,3 +282,21 @@ async def test_a_crewmate_pinned_to_a_harness_bots_cannot_run_on_keeps_whoami(
     await _status_poll(service)
 
     assert ["whoami"] in calls
+
+
+@pytest.mark.asyncio
+async def test_an_inherited_bot_harness_on_an_all_claude_gateway_keeps_the_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An omitted agent.member_acp_backend loads as inherited; with every crewmate on
+    # claude nothing runs on kiro-cli, so the status poll still skips whoami.
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.config.loader_builders import MEMBER_BACKEND_INHERITED_ATTR
+
+    pin = SimpleNamespace(acp_backend="claude")
+    service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE, agents={"helper": pin})
+    setattr(KiroCrewConfig.load().agent, MEMBER_BACKEND_INHERITED_ATTR, True)
+
+    await _status_poll(service)
+
+    assert ["whoami"] not in calls
