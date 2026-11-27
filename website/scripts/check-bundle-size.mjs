@@ -58,8 +58,12 @@ export const DEFAULT_BUDGET_BYTES = 500 * KB
  * set out of the first load (host code imports each icon's own module, and the
  * app-sdk registry loads with the first app bundle): 11 chunks, 9,011,554 B
  * (main alone 9,514,980 B). Ceiling = 9,011,554 B * 1.05, rounded up to whole KB.
+ *
+ * Lowered on main @ b3decb4fbc plus the change that loads KaTeX on demand (the
+ * first message that holds math fetches it): 11 chunks, 8,758,427 B (main alone
+ * 9,017,692 B). Ceiling = 8,758,427 B * 1.05, rounded up to whole KB.
  */
-export const FIRST_LOAD_BUDGET_BYTES = 9241 * KB
+export const FIRST_LOAD_BUDGET_BYTES = 8981 * KB
 
 /**
  * Explicit ceilings for the chunks that are already known-large, keyed by
@@ -109,10 +113,6 @@ export const CHUNK_BUDGETS = {
   // The oniguruma regex engine WASM payload backing those grammars
   // (PR #4072); a single prebuilt binary, loaded on demand.
   wasm: 640 * KB, // measured 608 KB
-
-  // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
-  // -- one deliberate `codeSplitting` group, see vite.config.ts.
-  'vendor-markdown': 712 * KB, // measured 678 KB
 
   // Mermaid's own prebuilt internal chunk; the name comes from mermaid's build,
   // so it is stable for the pinned mermaid version but changes on upgrade. When
