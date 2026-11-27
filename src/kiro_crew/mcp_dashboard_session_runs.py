@@ -30,6 +30,7 @@ from kiro_crew.mcp_dashboard_references import (
     _resolve_chat_folder_id,
     _resolve_chat_folder_ref,
 )
+from kiro_crew.mcp_session_once import _post_once, lost_reply_error, possible_double
 from kiro_crew.mcp_tools.dashboard_client import DashboardClient, DashboardError
 from kiro_crew.mcp_tools.table import ToolContext
 from kiro_crew.platform import redact_via_context as redact
@@ -343,14 +344,23 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
     if fld_id:
         payload["folder_id"] = fld_id
     try:
-        resp = ctx.client.post(
-            "/api/session-control/create",
-            payload,
-            session_key=ctx.caller_key,
-        )
+        created = _post_once(ctx, "/api/session-control/create", payload)
     except DashboardError as refused:
+        if refused.body.get("transport_error"):
+            lost = redact(
+                lost_reply_error(
+                    "create",
+                    "session may still have been opened",
+                    "look for it with session_status",
+                    refused,
+                )
+                + made_note
+            )
+            return _Created(None, "", made_note, lost, refused)
         return _Created(None, "", made_note, f"Error: {_refused(refused, made_note)}", refused)
-    return _Created(resp, folder_label, made_note, "", None)
+    if created.resent_unprotected:
+        made_note += f" Warning: {possible_double('a second session may have been opened')}; check session_status."
+    return _Created(created.resp, folder_label, made_note, "", None)
 
 
 def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -869,17 +879,27 @@ def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
         return run_crew_send(args, ctx)
     steer = bool(args.get("steer"))
     try:
-        resp = ctx.client.post(
+        sent = _post_once(
+            ctx,
             "/api/session-control/send",
             # ``receipt``: this call's row draws the outgoing card from what the
             # gateway delivered (``dashboard.session_send_receipts``).
             {"target": args["target"], "message": args["message"], "steer": steer, "receipt": True},
-            session_key=ctx.caller_key,
         )
     except DashboardError as refused:
+        if refused.body.get("transport_error"):
+            return lost_reply_error(
+                "send",
+                "message may still have been delivered",
+                "read the target with session_read_message",
+                refused,
+            )
         return f"Error: could not send to that session: {refused.error}"
+    resp = sent.resp
     target = resp.get("target", args["target"])
     caps = redact(_worker_capabilities_line(resp))
+    if sent.resent_unprotected:
+        caps += f"\nWarning: {possible_double('the message may have been delivered twice')}. Check the target with session_read_message."
     if resp.get("steered"):
         return (
             f"\U0001f4e8 Steered `{target}` — your message went into the turn it "
@@ -1469,6 +1489,12 @@ def _run_work_dispatch(args: dict[str, Any], ctx: ToolContext) -> str:
         keep_walk=True,
     )
     target = str((opened.resp or {}).get("target") or "")
+    # A created session's notes (a folder walk, a resend that may have opened a
+    # second session) reach the caller on every reply from here on; a refused
+    # create already carries them in ``opened.error``.
+    created_notes = (
+        [opened.made_note.strip()] if opened.resp is not None and opened.made_note else []
+    )
     if not target:
         outcome, code = ("outcome_unknown", "") if opened.resp is not None else ("refused", "")
         stopped = opened.refused or opened.walk_refused
@@ -1476,7 +1502,7 @@ def _run_work_dispatch(args: dict[str, Any], ctx: ToolContext) -> str:
             outcome, code = _dispatch_outcome(stopped)
         error = opened.error.removeprefix("Error: ") or "the reply named no session key"
         cleanup = _dispatch_cleanup(ctx, "session_create", item_id, "")
-        tail = [look if outcome == "outcome_unknown" else not_sent, *cleanup]
+        tail = [look if outcome == "outcome_unknown" else not_sent, *created_notes, *cleanup]
         return _dispatch_failed("session_create", outcome, code, error, (item_id, ""), tail)
 
     # Step 3: bind the item to the key step 2 returned.
@@ -1486,16 +1512,16 @@ def _run_work_dispatch(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         outcome, code = _dispatch_outcome(refused)
         cleanup = _dispatch_cleanup(ctx, "bind", item_id, target)
-        tail = [not_sent, *cleanup]
+        tail = [not_sent, *created_notes, *cleanup]
         return _dispatch_failed("bind", outcome, code, refused.error, (item_id, target), tail)
 
     # Step 4: seed. Only reached once the bind succeeded.
     seed = {"target": target, "message": args["seed"], "steer": False}
     try:
-        sent = ctx.client.post("/api/session-control/send", seed, session_key=ctx.caller_key)
+        seeded = _post_once(ctx, "/api/session-control/send", seed)
     except DashboardError as refused:
         outcome, code = _dispatch_outcome(refused)
-        tail = ["The item is bound and the session exists; nothing was cleaned up."]
+        tail = ["The item is bound and the session exists; nothing was cleaned up.", *created_notes]
         if outcome == "outcome_unknown":
             tail.append(
                 "Check the session with session_read_message before resending: a blind "
@@ -1504,7 +1530,10 @@ def _run_work_dispatch(args: dict[str, Any], ctx: ToolContext) -> str:
         else:
             tail.append("Seed it with session_send once the refusal is resolved.")
         return _dispatch_failed("seed", outcome, code, refused.error, (item_id, target), tail)
+    sent = seeded.resp
     delivery = "started a turn" if sent.get("started") else "queued"
+    if seeded.resent_unprotected:
+        delivery += f"; {possible_double('the seed may have been delivered twice')}"
     created = opened.resp or {}
     crew_mode = bool(created.get("crew_mode") or created.get("folder_ignored"))
     filed = f" filed in `{opened.folder_label}`" if opened.folder_label and not crew_mode else ""

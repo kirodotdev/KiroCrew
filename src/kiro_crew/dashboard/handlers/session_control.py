@@ -22,6 +22,7 @@ from aiohttp import web
 from kiro_crew import conductor_patrol, session_ledger
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import session_control_queue as scq
+from kiro_crew.dashboard import session_control_replay
 from kiro_crew.dashboard import session_control_run_queued as scrq
 from kiro_crew.dashboard import session_send_receipts
 from kiro_crew.dashboard.handlers import remote_dispatch_routes as crew_routes
@@ -442,10 +443,18 @@ def _counted(op: str) -> Callable[[_Route], _Route]:
 
 @_counted("create")
 async def api_session_control_create(request: web.Request) -> web.Response:
-    """POST /api/session-control/create — open a session this caller will own."""
+    """POST /api/session-control/create — open a session this caller will own.
+
+    A resend of the same ``request_id`` gets the first create's reply rather than a
+    second session (``session_control_replay``).
+    """
     refused = await _require_internal(request)
     if refused is not None:
         return refused
+    return await session_control_replay.once(request, "create", lambda: _create(request))
+
+
+async def _create(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
@@ -1020,10 +1029,18 @@ async def api_session_control_history(request: web.Request) -> web.Response:
 
 @_counted("send")
 async def api_session_control_send(request: web.Request) -> web.Response:
-    """POST /api/session-control/send — deliver a message to another session."""
+    """POST /api/session-control/send — deliver a message to another session.
+
+    A resend of the same ``request_id`` gets the first send's reply rather than a
+    second delivery (``session_control_replay``).
+    """
     refused = await _require_internal(request)
     if refused is not None:
         return refused
+    return await session_control_replay.once(request, "send", lambda: _send(request))
+
+
+async def _send(request: web.Request) -> web.Response:
     # No prewarm here: `send_to_target` warms the config after its own SEL
     # prewarm, the same ordering `stop_target` uses and for the same reason.
     state: DashboardState = request.app["state"]

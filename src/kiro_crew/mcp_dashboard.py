@@ -986,6 +986,11 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         _subtree_holds_foreign_folder,
     )
     from kiro_crew.mcp_crew_list import crew_list_tool  # noqa: F401
+    from kiro_crew.mcp_session_once import (  # noqa: F401
+        _post_once,
+        lost_reply_error,
+        possible_double,
+    )
     from kiro_crew.mcp_tools.dashboard_client import DashboardClient, DashboardError  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.sel import sel  # noqa: F401
