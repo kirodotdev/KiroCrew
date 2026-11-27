@@ -661,7 +661,7 @@ class KiroPrerequisiteService:
             # cannot loop -- the probe stamps the new identity, so the next poll
             # compares equal. It runs whoami even on a claude default: the latch's
             # sign-in answer describes the old account, so a skipped probe could
-            # only carry a verdict the store no longer backs.
+            # only carry a verdict the current store does not back.
             await self._probe(force=True)
         result = await self._dashboard_snapshot()
 

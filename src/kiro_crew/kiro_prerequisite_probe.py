@@ -372,17 +372,18 @@ def _whoami_skip_allowed() -> bool:
 
     try:
         config = KiroCrewConfig.load()
-        if config.agent.acp_backend != ACP_BACKEND_CLAUDE:
-            return False
-        retired = backends_retired_by_host_logout()
-        agents = dict(getattr(config, "agents", None) or {})
-        routes = [backend_from_stored(getattr(a, "acp_backend", "")) for a in agents.values()]
-        routes.extend(backend_from_stored(v) for v in list(_SESSION_BACKEND_PICKS.values()))
-        if any(r in retired for r in routes if isinstance(r, str)):
-            return False
-        return (
-            not agents or resolve_selected_backend(config.agent.member_acp_backend) not in retired
-        )
+        if config.agent.acp_backend == ACP_BACKEND_CLAUDE:
+            retired = backends_retired_by_host_logout()
+            agents = dict(getattr(config, "agents", None) or {})
+            routes = [backend_from_stored(getattr(a, "acp_backend", "")) for a in agents.values()]
+            routes.extend(backend_from_stored(v) for v in list(_SESSION_BACKEND_PICKS.values()))
+            if any(r in retired for r in routes if isinstance(r, str)):
+                return False
+            return (
+                not agents
+                or resolve_selected_backend(config.agent.member_acp_backend) not in retired
+            )
+        return False
     except Exception:  # noqa: BLE001 - keep the probe when config cannot be read
         return False
 
