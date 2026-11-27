@@ -351,6 +351,7 @@ BASE_MEMBERS = {
         "*, store_route_preference: 'bool | None' = None) -> 'str'",
     ),
     "_authorized": ("function", "(self, user_id: 'int') -> 'bool'"),
+    "_is_owner": ("function", "(self, user_id: 'int') -> 'bool'"),
     "_bind_origin_mirror": (
         "function",
         "(self, session_key: 'str', route: 'tuple[str, str]', chat_id: 'int') -> 'None'",

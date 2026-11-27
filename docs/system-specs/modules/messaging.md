@@ -91,7 +91,7 @@ legacy metadata do not override a canonical execution.
 | `messaging/raster.py` | `sniff_raster_mime`: what counts as a raster, decided by leading bytes. Dependency-free (no `kiro_crew` imports) so both the inbound sniff and the outbound extractor can share it, and so app backends can too: `apps.backend_sdk.media` delegates to it ([app-kit-platform §40](app-kit-platform.md#40-the-backend-sdk-public-host-controls-for-an-apps-own-python-seam-level-7)), and a spawned backend reaches that name without loading the gateway's security stack only while this module imports nothing from `kiro_crew` |
 | `messaging/tables.py` | `render_tables` + the `off`/`cards`/`grid`/`native`/`auto` policy contract and `display_width` — outbound Markdown-table rendering for a target that shows a pipe table as literal pipes (stdlib-only, pure) |
 | `messaging/status_reactions.py` | `PhaseReactionLadder` plus the turn-status line (`format_turn_status`): debounced phase-to-emoji swapping over an injected `ReactionSink`, a stall watchdog, tool-to-phase classification, and `merge_phase_emojis` for a user's overrides. Owns no channel API and no emoji vocabulary |
-| `messaging/commands.py` | The channel-neutral half of the shared chat commands — `/stop`'s cancel + lock ordering (`stop_running_turn`), `/yolo`'s grant ladder (`run_yolo_command`), and the dashboard-link TTL vocabulary (`parse_dashboard_ttl` / `format_ttl`). Returns reply TEXT and takes no address of any kind; `stop_running_turn` is the one exception and sends through an injected `deliver`, because its compaction decline may only arm an escalation once the warning has landed. Also the path-independent keyword commands as one copy of their reply text — `spawn`/`bg`, `cron list|remove|pause|resume` (`cron list` marks a job whose run is executing, past any jitter wait, from its `cron-running/` marker, read off the loop), `task run|status|cancel`, each `(text, service) -> reply | None` where `None` means "not this command, keep routing" (the `spawn` and `cron`/`task` families are `async`, because their service touch is a task-store or cron-store write and every caller is a channel handler on the gateway loop — `_spawn_off_loop` prefers `SubagentManager.spawn_async`). NOT the runtime stats line: both channels call `Stats().summary()` directly, because a one-liner with no parsing and no service to duck-type gains nothing from a shared copy. `spawn_task_reply` / `cron_remove_all_reply` are the already-parsed forms a channel whose own grammar carries the prefix calls. The services are duck-typed under `TYPE_CHECKING` because `subagent` and `taskrunner` both reach `slack` transitively |
+| `messaging/commands.py` | The channel-neutral half of the shared chat commands — `/stop`'s cancel + lock ordering (`stop_running_turn`), `/yolo`'s grant ladder (`run_yolo_command`, which changes the grant only for the channel's owner: the caller passes `caller_is_owner` from `is_channel_owner`, the identity the channel's owner setting names, else its one allow-listed identity, else nobody; anyone may read the status), and the dashboard-link TTL vocabulary (`parse_dashboard_ttl` / `format_ttl`). Returns reply TEXT and takes no address of any kind; `stop_running_turn` is the one exception and sends through an injected `deliver`, because its compaction decline may only arm an escalation once the warning has landed. Also the path-independent keyword commands as one copy of their reply text — `spawn`/`bg`, `cron list|remove|pause|resume` (`cron list` marks a job whose run is executing, past any jitter wait, from its `cron-running/` marker, read off the loop), `task run|status|cancel`, each `(text, service) -> reply | None` where `None` means "not this command, keep routing" (the `spawn` and `cron`/`task` families are `async`, because their service touch is a task-store or cron-store write and every caller is a channel handler on the gateway loop — `_spawn_off_loop` prefers `SubagentManager.spawn_async`). NOT the runtime stats line: both channels call `Stats().summary()` directly, because a one-liner with no parsing and no service to duck-type gains nothing from a shared copy. `spawn_task_reply` / `cron_remove_all_reply` are the already-parsed forms a channel whose own grammar carries the prefix calls. The services are duck-typed under `TYPE_CHECKING` because `subagent` and `taskrunner` both reach `slack` transitively |
 | `messaging/command_table.py` | A slash-command channel's vocabulary as data: `CommandSpec` (name, help text, extra aliases), `match_command` (exact whole-message match, `/name` case-insensitive) and `build_help_text`, so a channel's matcher and its `/help` card read one table and cannot drift. Weixin and Feishu use it; each keeps its own rows, header, footer and reply wording in its own `commands.py` |
 | `messaging/sessions_view.py` | The channel-neutral recent-sessions collector (`_collect_recent_sessions` + its off-loop form). Takes an explicit `sessions_dir` so a surface owning its own data-home override threads it in rather than shadowing this module's; `slack/sessions_view.py` does exactly that and keeps the Block Kit rendering |
 | `messaging/privacy_mode.py` | The `!temporary` / `!incognito` session privacy modes, keyed by **session key** — two bounded LRUs, the durable `SessionMap` flag, one `is_restricted` predicate, the token strippers, and the SEL audit with the channel as a parameter. See [Session privacy modes](#session-privacy-modes-privacy_modepy) |
@@ -490,6 +490,12 @@ the grant expires, and a control has to say what it does. The label alone is not
 enough, so the card body also carries `messaging.commands.YOLO_SCOPE_NOTE` — the one
 sentence naming what the grant covers, shared with the reply `/yolo on` returns so a
 pre-press affordance and the confirmation cannot describe different scopes.
+
+**Only the owner answers an approval.** On Telegram, Teams and Webex an Approve,
+Trust or typed approve from an allow-listed sender who is not the channel's owner
+(`messaging.commands.is_channel_owner`) is read as a Deny, so a sender never
+approves their own tool call. Telegram also posts no approval prompt into a turn
+that sender started; with no decider the request is denied.
 "Auto-approve" on a button inside one chat otherwise reads as scoped to that chat.
 Expiry, renewal, the duration and the SEL row all belong to the shared helper, which
 is the point — a channel-local store would have had to reimplement every one of them.
@@ -3035,7 +3041,7 @@ user-facing string has exactly one owner.
 | Command | Shared half | Per-channel half |
 |---|---|---|
 | `/stop` | `commands.stop_running_turn(sessions, session_key, *, queue, surface, owner, deliver) -> str` | the `deliver` that performs the send and reports what landed; which session key a resumed conversation stops; the caller's `owner_token` |
-| `/yolo` | `commands.run_yolo_command(arg, *, source, caller, phrasing) -> str` | the send; `source` (also the grant's audit source), the trusted `caller`, and a `YoloPhrasing` |
+| `/yolo` | `commands.run_yolo_command(arg, *, source, caller, caller_is_owner, phrasing) -> str` | the send; `source` (also the grant's audit source), the trusted `caller`, whether that caller is the channel's owner (`commands.is_channel_owner`; a change from anyone else is refused), and a `YoloPhrasing` |
 | `/link` | `link.rebind_conversation_location(sessions, *, key, location, unlink_command) -> str` | the send; `location` (the channel's one spelling of "this conversation"); any refusal only a resume-capable channel can hit |
 | `/unlink` | `link.release_conversation_location(sessions, *, key, location, channel) -> (str, swept)` | the send; the opt-out write ordered before it; any dashboard nudge for a swept binding |
 | dashboard link | `commands.parse_dashboard_ttl(arg, *, parse_duration) -> int`, `commands.format_ttl` | the command GRAMMAR — which word the TTL is (Telegram's `parse_dashboard_argument` reads the third; Teams' `/dashboard <ttl>` the second) |
@@ -5147,18 +5153,29 @@ reason).
 Self-messages are dropped twice (WS actor email + hydrated `personId` against
 the bot identity). `WEBEX_BOT_TOKEN` is on the sandbox agent env denylist.
 
-**The allow-list IS the operator tier, and that is the cross-channel design.** No
-shipped channel carries a second, narrower "owner" check: Telegram's `/yolo` and
-`/kirocrew dashboard`, Teams' `/yolo` and Slack's `!yolo` are all reachable by any
-authorized sender, and Webex matches them rather than inventing a tier one channel
-has. So an operator adding a second address grants that address the process-global
-`safety_override` grant (`/yolo` — the same one the dashboard toggle and the CLI
-drive) and dashboard-link minting. What bounds it is attribution plus audience:
-both commands SEL-audit the sender's email, and `/kirocrew dashboard` refuses
+**The allow-list admits senders to their own turns; the process-wide switches
+belong to the channel owner.** An allow-listed sender is trusted to run their own
+turns, under the channel's approval mode (the `auto` default included). Two
+things reach past that sender's own conversation and so are the owner's only, the
+same split Slack's owner-only `!yolo` already draws
+([slack-gateway](slack-gateway.md), control messages): the process-global
+`safety_override` grant (`/yolo`, the same one the dashboard toggle and the CLI
+drive; Teams' Approve + auto-approve button arms it too), and the answer to an
+approval prompt. On Telegram, Teams and Webex the owner is the identity the
+channel's owner field names (`telegram.owner_user_id`, `teams.owner_id`,
+`webex.owner_email`), else the single allow-listed identity, else nobody
+(`messaging.commands.is_channel_owner`). Anyone else's `/yolo on|off|renew` is
+refused and audited, the status stays readable, and their Approve, Trust or typed
+approve is read as a Deny. One person with two addresses sets the owner field to
+the address they use, to keep `/yolo` and approvals from chat; with two addresses
+and no owner field, the dashboard toggle still drives the grant. Webex still runs
+its own `/yolo` ladder with this owner check rather than the shared
+`run_yolo_command`. `/kirocrew dashboard` stays open to every authorized sender: the
+link carries the owner's own session only for the owner, and the command refuses
 outside a direct room so a presigned link is never posted where a space can read
-it. A narrower tier here would also silently break the ordinary case of one person
-with two addresses; if per-sender capability limits are wanted, they belong in the
-governance profiles that already gate every channel, not in one dispatcher.
+it. Both commands SEL-audit the sender's email. Finer per-sender capability limits
+belong in the governance profiles that already gate every channel, not in one
+dispatcher.
 
 The ROOM gate is separate from the sender gate, and a group message must clear
 BOTH. A direct room is always permitted. A group space is permitted only when

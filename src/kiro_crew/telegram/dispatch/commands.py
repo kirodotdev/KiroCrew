@@ -158,13 +158,14 @@ async def _handle_yolo(
     The ladder, its replies, the off-loop mutators and the SEL row live in
     :func:`~kiro_crew.messaging.commands.run_yolo_command`. Reachable only by
     an allow-listed Telegram user, because ``transport.receive`` is
-    deny-by-default and owner-only before dispatch ever runs, which is why
-    the user id is trustworthy as the audited caller.
+    deny-by-default before dispatch ever runs, which is why the user id is
+    trustworthy as the audited caller; only the owner (``_is_owner``) changes it.
     """
     reply = await run_yolo_command(
         arg,
         source="telegram",
         caller=str(user_id),
+        caller_is_owner=self._is_owner(user_id),
         phrasing=YOLO_PHRASING_PLAIN,
     )
     await self._reply(chat_id, reply, thread=thread)

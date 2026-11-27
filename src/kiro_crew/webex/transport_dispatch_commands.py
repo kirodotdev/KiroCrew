@@ -26,6 +26,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.history import transcript_stem
+from kiro_crew.messaging.commands import YOLO_OWNER_ONLY
 from kiro_crew.messaging.link import build_dm_session_key
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.sel import sel
@@ -297,6 +298,18 @@ async def _handle_yolo(self: WebexDispatcher, inbound: "WebexInbound") -> None:
     so = safety_override()
     arg = parse_command_argument(inbound.text)
     action = arg.lower().split()[0] if arg else ""
+
+    if action in ("on", "off", "renew") and not self._is_owner(inbound.person_email):
+        sel().log_api_access(
+            caller=f"webex:{inbound.person_email}",
+            operation="webex.yolo_mode",
+            outcome="denied",
+            source="webex",
+            resources=f"yolo_{action}",
+            error="not_owner",
+        )
+        await self._reply(inbound, YOLO_OWNER_ONLY)
+        return
 
     if action in ("on", "off", "renew"):
         outcome = "allowed"
