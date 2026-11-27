@@ -40,21 +40,13 @@ import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { isMac } from '../utils/platform'
 import { TERMINAL_TAB_COMMAND_EVENT, type TerminalTabCommand } from '../lib/panelToggleShortcuts'
+import { whenIdle as whenIdleWithin } from '../lib/whenIdle'
 
 /** Longest a phone waits for an idle moment to build a restored terminal. */
 const PREWARM_IDLE_TIMEOUT_MS = 4000
 
 /** Run `fn` at an idle moment (at most PREWARM_IDLE_TIMEOUT_MS away); returns the cancel. */
-function whenIdle(fn: () => void): () => void {
-  const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (h: number) => void }
-  if (w.requestIdleCallback && w.cancelIdleCallback) {
-    const h = w.requestIdleCallback(fn, { timeout: PREWARM_IDLE_TIMEOUT_MS })
-    const cancel = w.cancelIdleCallback
-    return () => cancel(h)
-  }
-  const t = window.setTimeout(fn, PREWARM_IDLE_TIMEOUT_MS)
-  return () => window.clearTimeout(t)
-}
+const whenIdle = (fn: () => void) => whenIdleWithin(fn, PREWARM_IDLE_TIMEOUT_MS)
 /** Latest: open the terminal even if the slide never reports completion. */
 const SETTLE_CEILING_MS = 700
 

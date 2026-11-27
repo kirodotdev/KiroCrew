@@ -818,7 +818,7 @@ export default function MembersPage() {
                 style={{ opacity: rosterDrawerScrim, marginTop: vv.offsetTop, marginBottom: keyboardInset }}
                 // A drag's release lands here as a click: it must not run a
                 // second close over the settle.
-                onClick={() => { if (!rosterDrawerDragging) closeRosterDrawer() }}
+                onClick={() => { if (!rosterDrawerDragging.current) closeRosterDrawer() }}
               />
             )}
           </AnimatePresence>

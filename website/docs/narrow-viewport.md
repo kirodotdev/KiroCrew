@@ -804,6 +804,14 @@ and 1.5M CSS px per frame in Chromium), and a phone rasterizes that on the main 
 The settle needs no help: a WAAPI transform animation gets its layer from the browser.
 The layer is dropped at rest because the shell's nav drawer stays mounted.
 
+Nothing the drag does may re-render the page under it. `useDrawerSwipe` reports the
+drag through a ref (`dragging.current`), read where it matters (the scrim's click
+guard), not through state: as state, the lock and the release each re-rendered the
+whole chat page. The opening lock still renders once, because it mounts the panel. On
+the phone the chat page also builds the drawer's kept session list at the first idle
+moment after it mounts (`SessionsSidebarChrome`), so the first pull adopts a list that
+already exists rather than building it inside the gesture.
+
 ## Horizontal insets below the breakpoint
 
 Padding stacks, and the eye reads the SUM. On a wide viewport a page gutter plus a card
