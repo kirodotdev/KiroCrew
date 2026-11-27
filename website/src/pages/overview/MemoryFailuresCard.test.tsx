@@ -73,7 +73,7 @@ describe('MemoryFailuresCard', () => {
     await userEvent.click(await screen.findByRole('button', { name: /Draft lesson/ }))
     await userEvent.click(screen.getByRole('button', { name: 'Save lesson' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('injection_detected')
+    expect((await screen.findByText(/injection_detected/)).closest('[role="alert"]')).not.toBeNull()
     expect(screen.getByRole('textbox', { name: 'Lesson text' })).toBeInTheDocument()
   })
 

@@ -28,9 +28,11 @@ export function MemoryEmbeddedLine({ store }: { store: string }) {
   if (failed) return <ErrorNotice impact="minor" title={t('memoryPage.embedded_read_failed')} message={errorText(failed)} />
   if (!provider || provider === 'none' || !data || typeof data.embedded_count !== 'number') return null
   const total = (data.semantic_active ?? 0) + (data.episodic_active ?? 0)
-  const values = { embedded: fmtNumber(data.embedded_count + (data.semantic_embedded ?? 0)), total: fmtNumber(total) }
+  const embedded = data.embedded_count + (data.semantic_embedded ?? 0)
+  const values = { embedded: fmtNumber(embedded), total: fmtNumber(total) }
+  // Green only when every row is embedded; any gap reads as a warning.
   return <p className="flex items-center gap-1.5 text-[12px] text-muted" data-testid="memory-embedded-line">
-    <span className="h-2 w-2 rounded-full bg-ok" aria-hidden="true" />
+    <span className={`h-2 w-2 rounded-full ${embedded >= total ? 'bg-ok' : 'bg-warn'}`} aria-hidden="true" />
     <span className="tabular-nums">{t('memoryPage.embedded_count', values)}</span>
     <InfoTip text={t('memoryPage.embedded_tip', values)} />
   </p>

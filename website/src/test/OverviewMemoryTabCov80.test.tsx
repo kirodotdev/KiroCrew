@@ -1378,6 +1378,8 @@ describe('MemoryTab — a lesson saved from Repeated failures', () => {
     fireEvent.click(screen.getByTestId('failures-card'))
 
     await waitFor(() => expect(api.lessons).toHaveBeenCalledTimes(2))
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['member-memory', 'default'] })
+    // The shared memory refresh: the semantic browser and the Audit tab are both re-read.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['member-memory'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['memory-audit'] })
   })
 })

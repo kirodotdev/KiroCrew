@@ -342,9 +342,10 @@ test('private backup staging can be cancelled and a replaced experience can be r
   const peerBeforeRestore = { facts: await rows(request, peer.store), episodes: await episodes(peer.store) }
   await page.reload()
   await page.getByRole('tab', { name: 'Recovery', exact: true }).click()
-  const replacedRow = page.getByRole('row').filter({ hasText: episodeText })
+  // The Recovery card is narrower than 900px here, so it reads as a list, not a table.
+  const replacedRow = page.getByRole('listitem').filter({ hasText: episodeText })
   await expect(replacedRow).toBeVisible()
-  await expect(replacedRow.getByText(episodeKey, { exact: true })).toBeVisible()
+  await expect(replacedRow).toContainText(`Replaced by: ${episodeKey}`)
   const restoreExperience = replacedRow.getByRole('button', { name: 'Restore experience', exact: true })
   // Centred, not edge-aligned: the settings scroll area can leave an edge-aligned
   // button a fraction of a pixel past the viewport.

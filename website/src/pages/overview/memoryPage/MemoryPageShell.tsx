@@ -2,9 +2,9 @@
  * The memory page's frame for one store: one header row (the store switcher at
  * left; Copy memories, New memory and ⋯ at right), the embedded count under it,
  * the underline tabs and their panels. The global page and a bot's page each fill
- * the panels with their own cards.
+ * the panels with their own cards; the Audit tab is the same on both.
  */
-import { useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { MemoryJumpContext, type MemoryJump } from './memoryJump'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
@@ -13,26 +13,30 @@ import { Btn, IconButton } from '../../../components/ui'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../../components/ui/tabs'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
 import { useIsMobile } from '../../../hooks/useIsMobile'
+import { useScrollEdges } from '../../../hooks/useScrollEdges'
 import { MEMORY_QUERY_PREFIXES } from '../MemoryStoreCard'
 import { NewMemoryDialog } from './MemoryNewDialogs'
 import { MemoryActionSheet, type SheetAction } from './MemoryActionSheet'
+import MemoryAudit from './MemoryAudit'
 import { MemoryRecallDialog } from './MemoryRecallDialog'
 import { uiLocation } from '../../../uiLocations/uiLocation'
 
-export type MemoryPageTab = 'memories' | 'graph' | 'profile' | 'recovery' | 'failures' | 'settings'
+export type MemoryPageTab = 'memories' | 'graph' | 'profile' | 'recovery' | 'failures' | 'audit' | 'settings'
 export type MemoryListControls = { selecting: boolean; setSelecting: (on: boolean) => void; openTab: (tab: MemoryPageTab) => void
   /** The Graph tab's last hand-off to the list. */
   jump: MemoryJump | null }
 const TABS: [MemoryPageTab, string][] = [
   ['memories', 'memoryV2.tab_memories'], ['graph', 'memoryPage.tab_graph'], ['profile', 'memoryV2.tab_profile'], ['recovery', 'memoryV2.tab_recovery'],
-  ['failures', 'memoryPage.tab_failures'], ['settings', 'memoryPage.tab_settings'],
+  ['failures', 'memoryPage.tab_failures'], ['audit', 'memoryPage.tab_audit'], ['settings', 'memoryPage.tab_settings'],
 ]
 
-export default function MemoryPageShell({ id, label, switcher, notices, embedded, initialTab = 'memories', mountAll = false, canCreate, canRecall, onCopy, copyDisabled, onCreated, onDraftChange, memories, panels }: {
+export default function MemoryPageShell({ id, label, botName, switcher, notices, embedded, initialTab = 'memories', mountAll = false, canCreate, canRecall, onCopy, copyDisabled, onCreated, onDraftChange, memories, panels }: {
   /** The store's id: Test recall reads it, and it keeps this store's tab underline apart from another store's as it slides. */
   id: string
   /** The store's name: the tab list's accessible name and the phone sheet's title. */
   label: string
+  /** The bot this store belongs to, named in the (?) tips; none on the global page. */
+  botName?: string
   /** The store switcher, at the left of the header row. */
   switcher: ReactNode
   /** Store notices (a refused store list, a missing database), under the header row. */
@@ -54,8 +58,9 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
   /** A New memory or New lesson draft is open and unsaved: feeds the page's leave guard. Pass a stable callback. */
   onDraftChange?: (dirty: boolean) => void
   memories: (controls: MemoryListControls) => ReactNode
-  /** Every tab's panel but Memories. */
-  panels: Record<Exclude<MemoryPageTab, 'memories'>, ReactNode>
+  /** Every tab's panel but Memories and Audit, which this frame fills for the store itself.
+   *  A `null` panel hides its tab: the store has nothing to show there. */
+  panels: Record<Exclude<MemoryPageTab, 'memories' | 'audit'>, ReactNode>
 }) {
   const { t } = useTranslation()
   const client = useQueryClient()
@@ -91,7 +96,15 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
   ]
   const more = listActions.length + createActions.length > 0
   const moreButtonClass = 'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border sm:h-9 sm:w-9'
-  const panel = (key: MemoryPageTab, content: ReactNode) => <TabsContent key={key} value={key} forceMount hidden={tab !== key}><div className="space-y-4">{((mountAll && key !== 'graph') || visited.has(key)) && content}</div></TabsContent>
+  const hidden = (key: MemoryPageTab) => key === 'profile' && panels.profile === null
+  // A hidden tab (a store switch can hide the open one) falls back to Memories.
+  const shown = hidden(tab) ? 'memories' : tab
+  // A phone scrolls the tab row sideways: a fade marks each cut edge, and the open tab scrolls into view.
+  const [attachTabs, tabEdges] = useScrollEdges<HTMLDivElement>()
+  const tabRow = useRef<HTMLDivElement | null>(null)
+  const tabRowRef = useCallback((node: HTMLDivElement | null) => { tabRow.current = node; attachTabs(node) }, [attachTabs])
+  useEffect(() => { if (phone) tabRow.current?.querySelector('[role="tab"][data-state="active"]')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }) }, [shown, phone])
+  const panel = (key: MemoryPageTab, content: ReactNode) => <TabsContent key={key} value={key} forceMount hidden={shown !== key}><div className="space-y-4">{((mountAll && key !== 'graph' && key !== 'audit') || visited.has(key)) && content}</div></TabsContent>
   return <div className="min-w-0 space-y-4">
     <header className="space-y-3">
       <div className="flex min-w-0 items-center justify-between gap-1.5 sm:gap-2">
@@ -114,22 +127,28 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
     </header>
     {saved && <div role="status" className="flex items-center gap-2 rounded-lg bg-ok-subtle px-3 py-2 text-[13px] text-ok-text"><span className="min-w-0 flex-1 break-words">{saved}</span><IconButton aria-label={t('components.errorNotice.dismiss')} className="flex h-8 w-8 items-center justify-center" onClick={() => setSaved('')}><X className="lucide-inline" aria-hidden="true" /></IconButton></div>}
     <MemoryJumpContext.Provider value={jumpTo}>
-    <Tabs variant="underline" layoutId={`memory-page-tabs-${id}`} value={tab} onValueChange={value => open(value as MemoryPageTab)}>
+    <Tabs variant="underline" layoutId={`memory-page-tabs-${id}`} value={shown} onValueChange={value => open(value as MemoryPageTab)}>
       {/* A phone scrolls the tab row sideways when the tabs do not fit. */}
-      <TabsList aria-label={t('memoryV2.title', { member: label })} className={`mb-4 ${phone ? 'overflow-x-auto overflow-y-hidden scrollbar-none' : ''}`}>
-        {TABS.map(([key, text]) => {
+      <div className="relative mb-4">
+      <TabsList ref={tabRowRef} aria-label={t('memoryV2.title', { member: label })} className={phone ? 'overflow-x-auto overflow-y-hidden scrollbar-none' : undefined}>
+        {TABS.filter(([key]) => !hidden(key)).map(([key, text]) => {
           // A phone shows the text tabs and a gear for Settings at the end of the rule.
           const gear = phone && key === 'settings'
+          if (key === 'audit') return <TabsTrigger key={key} value={key} className={phone ? 'shrink-0' : undefined}><span {...uiLocation('memory.audit-tab')}>{t('memoryPage.tab_audit')}</span></TabsTrigger>
           return <TabsTrigger key={key} value={key} aria-label={gear ? t(text) : undefined} className={gear ? 'ml-auto w-11 shrink-0' : phone ? 'shrink-0' : undefined}>
             {gear ? <Settings className="lucide-inline" aria-hidden="true" /> : t(text)}
           </TabsTrigger>
         })}
       </TabsList>
+      {phone && tabEdges.left && <div aria-hidden="true" className="pointer-events-none absolute bottom-px left-0 top-0 w-8 bg-gradient-to-r from-bg to-transparent" />}
+      {phone && tabEdges.right && <div aria-hidden="true" className="pointer-events-none absolute bottom-px right-0 top-0 w-8 bg-gradient-to-l from-bg to-transparent" />}
+      </div>
       {panel('memories', memories({ selecting, setSelecting, openTab: open, jump }))}
       {panel('graph', panels.graph)}
-      {panel('profile', panels.profile)}
+      {!hidden('profile') && panel('profile', panels.profile)}
       {panel('recovery', panels.recovery)}
       {panel('failures', panels.failures)}
+      {panel('audit', <MemoryAudit store={id} botName={botName} />)}
       {panel('settings', panels.settings)}
     </Tabs>
     </MemoryJumpContext.Provider>

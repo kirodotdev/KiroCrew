@@ -961,6 +961,8 @@ async def api_memory_carve(request: web.Request) -> web.Response:
 async def api_memory_events(request: web.Request) -> web.Response:
     """GET /api/memory/events — paginated audit trail for the store named by
     ``?store=``, else the GLOBAL store."""
+    from kiro_crew import memory_audit
+
     state: DashboardState = request.app["state"]
     store, _store_name, denial = await _vector_tier_for_request(request, state, "events.read")
     if denial is not None:
@@ -970,9 +972,29 @@ async def api_memory_events(request: web.Request) -> web.Response:
         offset = clamp_query_offset(int(request.query.get("offset", "0")))
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
-    # Offload: serializes on _db_lock — see api_memory_semantic.
-    events = await asyncio.to_thread(store.get_events, limit=limit, offset=offset)
-    return web.json_response({"events": _redact_memory_field(events)})
+    # Repeated parameters are lists (event=create&event=update); the rest are single values.
+    raw: dict = {
+        group: request.query.getall(group)
+        for group in memory_audit.GROUPS
+        if group in request.query
+    }
+    for key in ("q", "since", "until", "order"):
+        if key in request.query:
+            raw[key] = request.query[key]
+    try:
+        # Offload: serializes on _db_lock — see api_memory_semantic.
+        body = await asyncio.to_thread(
+            memory_audit.list_events, store, raw, limit=limit, offset=offset
+        )
+    except memory_audit.AuditError as exc:
+        return web.json_response({"error": str(exc), "code": "memory_audit_bad_query"}, status=400)
+    # A redacted source label would not select its rows, so its bucket goes.
+    body["facets"] = {
+        group: {value: n for value, n in counts.items() if _redact_memory_field(value) == value}
+        for group, counts in body["facets"].items()
+    }
+    body["events"] = _redact_memory_field(body["events"])
+    return web.json_response(body)
 
 
 _migrate_lock = LoopBoundLock()

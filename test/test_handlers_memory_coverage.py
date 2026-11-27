@@ -972,20 +972,33 @@ class TestSemanticEndpoints:
         store.delete_semantic.assert_called_once_with("k", source="user_explicit")
 
     @pytest.mark.asyncio
-    async def test_events_caps_limit_at_200(self) -> None:
+    async def test_events_caps_limit_at_200(self, monkeypatch) -> None:
+        from kiro_crew import memory_audit
+
         store = _store()
         state = _make_state(vector_store=store)
+        calls = []
+        monkeypatch.setattr(
+            memory_audit,
+            "list_events",
+            lambda tier, raw, *, limit, offset: calls.append((tier, limit, offset))
+            or {"events": [], "total": 0, "has_more": False, "facets": {}},
+        )
         req = _make_request(state, query={"limit": "10000", "offset": "3"})
         assert (await mem_mod.api_memory_events(req)).status == 200
-        store.get_events.assert_called_once_with(limit=200, offset=3)
+        assert calls == [(store, 200, 3)]
 
     @pytest.mark.asyncio
-    async def test_events_rejects_non_integer_paging(self) -> None:
+    async def test_events_rejects_non_integer_paging(self, monkeypatch) -> None:
+        from kiro_crew import memory_audit
+
         store = _store()
         state = _make_state(vector_store=store)
+        calls = []
+        monkeypatch.setattr(memory_audit, "list_events", lambda *a, **k: calls.append(a))
         req = _make_request(state, query={"offset": "x"})
         assert (await mem_mod.api_memory_events(req)).status == 400
-        store.get_events.assert_not_called()
+        assert calls == []
 
 
 # episodic endpoints

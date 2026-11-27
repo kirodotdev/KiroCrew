@@ -192,7 +192,7 @@ export default function MemberMemoryPanel({ store, summary, onDirtyChange, focus
     </Card></div>
   }
   return <div className="min-w-0 space-y-4">
-    <MemoryPageShell id={store} label={summary.owner_member || summary.name} switcher={switcher} embedded={<MemoryEmbeddedLine store={store} />}
+    <MemoryPageShell id={store} label={summary.owner_member || summary.name} botName={summary.owner_member || undefined} switcher={switcher} embedded={<MemoryEmbeddedLine store={store} />}
       notices={<>{notices}{!privateMemory && !summary.is_default && <p className="text-[13px] text-muted">{t('pages.kiroCrewAgentsPage.private_memory_legacy')}</p>}</>}
       initialTab={focusFailures ? 'failures' : focusGraph ? 'graph' : 'memories'} canCreate={false} canRecall={privateMemory}
       onCopy={privateMemory ? () => setCopying(true) : undefined} copyDisabled={!summary.exists}
