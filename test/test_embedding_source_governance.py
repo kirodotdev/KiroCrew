@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import dataclasses
 import threading
-import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -322,6 +321,35 @@ class TestTheCachedEmbedder:
         assert first.is_ready() is False
         assert emb.get_shared_embedder() is first
 
+    def test_an_egress_refusal_is_audited_under_network_egress(self, policy, memory, monkeypatch):
+        rows: list = []
+        monkeypatch.setattr(edition_locks, "audit_decision", lambda *args: rows.append(args[1:4]))
+        policy(_rule("allow", "[ollama]"))
+        _ollama(memory, _REMOTE)
+        emb.get_shared_embedder()
+        assert rows == [
+            (gov.SCOPE, gov.OLLAMA, True),
+            ("network.egress", "ollama.corp.example", False),
+        ]
+
+    def test_a_config_save_racing_the_build_cannot_load_a_refused_file(
+        self, policy, memory, tmp_path, monkeypatch
+    ):
+        from kiro_crew import embeddings_model
+
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"\0" * 64)
+        real = emb.resolve_custom_model
+
+        def resolve_then_save():
+            spec = real()
+            memory["embed_model_path"] = str(model)
+            return spec
+
+        monkeypatch.setattr(emb, "resolve_custom_model", resolve_then_save)
+        backend = emb.default_embedding_backend()
+        assert backend.model_path == embeddings_model.default_model_path()
+
     def test_each_build_audits_its_decision_once(self, policy, memory, monkeypatch):
         rows: list = []
         monkeypatch.setattr(edition_locks, "audit_decision", lambda *args: rows.append(args[1:4]))
@@ -337,13 +365,22 @@ class TestTheCachedEmbedder:
         _ollama(memory)
         first = emb.get_shared_embedder()
         release = threading.Event()
-        monkeypatch.setattr(first, "close", lambda: release.wait(10))
+        closed_on: list = []
+
+        def close() -> None:
+            closed_on.append(threading.current_thread().name)
+            release.wait(10)
+
+        monkeypatch.setattr(first, "close", close)
         policy(_rule("allow", "[bundled]"))
-        started = time.monotonic()
-        assert emb.get_shared_embedder() is not first
-        assert time.monotonic() - started < 2
-        release.set()
-        _join_retire()
+        try:
+            # Returns while the old backend's close is still blocked.
+            assert emb.get_shared_embedder() is not first
+            assert threading.current_thread().name not in closed_on
+        finally:
+            release.set()
+            _join_retire()
+        assert closed_on == ["kc-embed-retire"]
 
     def test_a_running_alignment_defers_the_swap(self, policy, memory):
         from kiro_crew import embeddings_shared

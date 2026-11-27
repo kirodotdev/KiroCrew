@@ -490,6 +490,7 @@ def default_embedding_backend() -> EmbeddingBackend:
     model path is a setting of the in-process one.
     """
     from kiro_crew import embedding_source_governance as _source_gov
+    from kiro_crew.edition import is_lts
 
     memory = _read_memory_config()
     if ollama_backend_selected(memory):
@@ -501,16 +502,24 @@ def default_embedding_backend() -> EmbeddingBackend:
             server._settings.url, memory.get("ollama_allow_remote") is True
         )
         error = str(getattr(getattr(server, "_settings", None), "error", "") or "")
-        refused = error in (
-            _source_gov.refused_reason(_source_gov.OLLAMA),
-            _source_gov.EGRESS_REASON,
+        return _with_policy_tag(
+            server,
+            _source_gov.OLLAMA,
+            error != _source_gov.refused_reason(_source_gov.OLLAMA),
+            egress_allowed=error != _source_gov.EGRESS_REASON,
         )
-        return _with_policy_tag(server, _source_gov.OLLAMA, not refused)
     spec = resolve_custom_model()
     if spec is None:
         permitted = _source_gov.source_permitted(_source_gov.BUNDLED)
         if permitted:
-            backend = LlamaCppEmbedder()
+            # In LTS the bundled file is named explicitly: the default constructor
+            # re-reads the configured path, which a config save may have just set
+            # to a custom model this build refused.
+            backend = (
+                LlamaCppEmbedder(model_path=default_model_path())
+                if is_lts()
+                else LlamaCppEmbedder()
+            )
         else:
             # Refused like a broken path: no vectors, keyword search, and the
             # bundled identity kept so the stored space is not mistaken for another.
@@ -571,25 +580,40 @@ def _policy_allows(backend: EmbeddingBackend, source: str) -> bool:
     return not host or _source_gov.egress_permitted(host)
 
 
-def _with_policy_tag(backend: _B, source: str, allowed: bool) -> _B:
+def _with_policy_tag(backend: _B, source: str, allowed: bool, *, egress_allowed: bool = True) -> _B:
     """Record, in an LTS build, which source *backend* is and whether the policy
-    *allowed* it when it was built, so :func:`get_shared_embedder` notices when that
-    answer changes. That decision is written to SEL once, either way."""
+    allowed it when it was built (*allowed* for the source, *egress_allowed* for an
+    Ollama host), so :func:`get_shared_embedder` notices when that answer changes.
+
+    Each decision the build took is written to SEL once, under its own scope: the
+    source under ``memory.embedding_sources``, and an Ollama host that was asked
+    about under ``network.egress``.
+    """
     from kiro_crew.edition import is_lts
 
     if is_lts():
         backend._embedding_source = source  # type: ignore[attr-defined]
-        backend._policy_allowed = allowed  # type: ignore[attr-defined]
+        backend._policy_allowed = allowed and egress_allowed  # type: ignore[attr-defined]
         from kiro_crew import edition_locks
         from kiro_crew import embedding_source_governance as _source_gov
 
+        tool = f"embedding_source:{source}"
         edition_locks.audit_decision(
-            f"embedding_source:{source}",
+            tool,
             _source_gov.SCOPE,
             source,
             allowed,
             "the backend was built" if allowed else _source_gov.refused_reason(source),
         )
+        host = getattr(backend, "_egress_host", "")
+        if allowed and host:
+            edition_locks.audit_decision(
+                tool,
+                "network.egress",
+                host,
+                egress_allowed,
+                "the Ollama host is allowed" if egress_allowed else _source_gov.EGRESS_REASON,
+            )
     return backend
 
 
