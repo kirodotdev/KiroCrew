@@ -44,6 +44,7 @@ from kiro_crew.dashboard.crew_api_conversation_lists import (
     api_conversation_items,
     api_conversation_list,
 )
+from kiro_crew.dashboard.crew_api_events import api_events, close_event_waits
 from kiro_crew.dashboard.crew_api_grant_self import api_grant_self
 from kiro_crew.dashboard.crew_api_instance import api_capabilities, api_info
 from kiro_crew.dashboard.crew_api_models import api_models
@@ -115,6 +116,9 @@ def register(app: web.Application) -> None:
     )
     app.router.add_get("/v1/conversations", api_conversation_list)
     app.router.add_get("/v1/conversations/{conversation_id}/items", api_conversation_items)
+    # The conversation store holds the streams; a request waiting on one ends at shutdown.
+    app.router.add_get("/v1/crew/events", api_events)
+    app.on_shutdown.append(close_event_waits)
     app.router.add_get("/v1/crew/capabilities", api_capabilities)
     app.router.add_get("/v1/crew/info", api_info)
     app.router.add_get("/v1/crew/grant", api_grant_self)

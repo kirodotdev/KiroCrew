@@ -398,6 +398,9 @@ class Gateway:
         for name in _placeholders(path):
             value = urllib.parse.quote(str(params.get(name, "unknown")), safe="")
             path = path.replace("{" + name + "}", value)
+        query = case.query(self) if callable(case.query) else case.query
+        if query:
+            path += "?" + urllib.parse.urlencode(query)
         request_id = "req_" + uuid.uuid4().hex
         headers = {REQUEST_ID: request_id}
         credential = self._credential(case.caller)

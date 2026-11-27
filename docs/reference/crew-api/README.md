@@ -30,7 +30,7 @@ Endpoints an app calls with a credential the user granted it.
 | [`GET /v1/models`](public-models.md#get-v1models) | List the agents and Bots the caller can use | Available now: owner and apps | stable |
 | [`GET /v1/crew/capabilities`](public-crew.md#get-v1crewcapabilities) | Capability negotiation | Available now: owner and apps | preview |
 | [`GET /v1/crew/info`](public-crew.md#get-v1crewinfo) | Instance information | Available now: owner and apps | preview |
-| [`GET /v1/crew/events`](public-events.md#get-v1crewevents) | In-instance event stream (conversation stream or instance stream) | Planned | stable |
+| [`GET /v1/crew/events`](public-events.md#get-v1crewevents) | In-instance event stream (conversation stream or instance stream) | Available now: owner only | preview |
 | [`GET /v1/crew/approvals`](public-approvals.md#get-v1crewapprovals) | List approvals (read only) | Planned | stable |
 | [`GET /v1/crew/approvals/{approval_id}`](public-approvals.md#get-v1crewapprovalsapproval_id) | Read one approval | Planned | stable |
 | [`POST /v1/crew/approvals/{approval_id}/decision`](public-approvals.md#post-v1crewapprovalsapproval_iddecision) | Answer an approval (embed credential only) | Planned | stable |

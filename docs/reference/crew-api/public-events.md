@@ -10,12 +10,17 @@ In-instance event stream (conversation stream or instance stream).
 
 | About | This endpoint |
 |---|---|
-| Status | Planned |
+| Status | Available now: owner only |
 | Tier | Public |
-| Stability | stable |
+| Stability | preview |
 | Callers the API defines | The owner, with the owner's own sign-in. An app, with a credential that holds the scope `conversations:read` or `instance:read` or `bots:wake`. |
 
-Filtered by the scopes held: conversations:read receives events of this grant's conversations; instance:read receives instance-level notices sent to this grant that belong to no conversation; bots:wake receives the Bot events of the turns this grant woke. A credential receives each class it holds a scope for; with none of them, 403 insufficient_scope. With Accept: text/event-stream the answer is SSE: each message's id: is the seq and event: is the type, and a comment line every 15 seconds keeps an idle connection alive. Otherwise the answer is paged JSON. An event is stored before it is sent; a slow client is disconnected instead of losing events. One user, one crew and one grant may hold at most 10 concurrent streams in total, and refreshing the access token does not reset the count; the whole crew also has a ceiling, crew_api.max_event_streams (configurable, default 100). Past either, 429 concurrency_limit. Retention: stored responses (with the stream events used to resume), the event index, resolved approvals and uploaded files are all kept 30 days by default; the owner can set `crew_api.retention_days` in the crew settings to 1 to 365 days. Deleting a conversation deletes its responses and events. When since is older than the oldest retained event, 410 resync_required with oldest_seq and latest_seq in the body. The instance stream is numbered separately for each grant.
+Not served yet:
+
+- Request headers: `Last-Event-ID`.
+- Response headers: `X-Crew-Quota-Limit`, `X-Crew-Quota-Remaining`, `X-Crew-Quota-Reset`.
+
+Filtered by the scopes held: conversations:read receives events of this grant's conversations; instance:read receives instance-level notices sent to this grant that belong to no conversation; bots:wake receives the Bot events of the turns this grant woke. A credential receives each class it holds a scope for; with none of them, 403 insufficient_scope. With Accept: text/event-stream the answer is SSE: each message's id: is the seq and event: is the type, and a comment line every 15 seconds keeps an idle connection alive. Otherwise the answer is paged JSON. An event is stored before it is sent; a slow client is disconnected instead of losing events. One user, one crew and one grant may hold at most 10 concurrent streams in total, and refreshing the access token does not reset the count; the whole crew also has a ceiling, crew_api.max_event_streams (configurable, default 100). Past either, 429 concurrency_limit. Retention: stored responses (with the stream events used to resume), the event index, resolved approvals and uploaded files are all kept 30 days by default; the owner can set `crew_api.retention_days` in the crew settings to 1 to 365 days. Deleting a conversation deletes its responses and events. When since is older than the oldest retained event, 410 resync_required with oldest_seq and latest_seq in the body. The instance stream is numbered separately for each grant. Served so far, to the machine owner: the conversation stream as paged JSON, with `since`, `limit` and `wait`, and the events turn.started, message.created and turn.completed. Not served yet: the instance stream (a request with no `conversation`) and the SSE form (`Accept: text/event-stream`) are 422 capability_unavailable; the `bot` parameter is not read; the other event types are not sent; the event retention setting and the ceilings on concurrent streams are not built. Proposed amendments, 2026-11-27, waiting for a maintainer's sign-off: (1) A conversation's `seq` counts the events the gateway wrote for that conversation, from 1, whichever engine session each turn ran on. (2) A conversation's events are kept as long as the conversation and deleted with it; a conversation made before the gateway served this operation has no earlier events. (3) message.created is sent when its turn ends, for each item of the turn that the history then lists, because a running turn is not in the history. (4) approval.requested carries `approval_id` and no `tool` or `reason`: the gateway keeps neither on disk, and an event is stored before it is sent. That event is not sent yet. (5) An event that cannot be stored never changes its turn. The stream is then broken: every request that names `since` is 410 resync_required, with the newest `seq` that is stored as `latest_seq`, until the stream can be read and written whole again. The gateway then stores a gap in the stream, numbered one above its newest `seq`, and a `since` below a gap is 410 resync_required; no number is given to a gap from memory. A stream that cannot be read is 503 instance_unavailable. A stream file that cannot be believed is replaced by one gap above the highest `seq` it names, wherever in the file. A gateway that stops while a turn of a conversation is running leaves that stream broken for the gateway that starts next, because the end of the turn was not stored. When no note that a stream is broken can be stored, it is held in memory and a gateway restart forgets it. A stream that has reached its size limit takes no more events and stays broken. (6) A `since` past the newest `seq` is 410 resync_required. (7) A `since`, `limit` or `wait` outside what the parameters allow is 400 invalid_request; the 400 and 422 responses are part of this amendment. (8) At most 10 requests wait (`wait`) at once, the number this operation proposes for one user's streams; one more is 429 concurrency_limit with `limit: event_streams`.
 
 Query parameters:
 
@@ -33,7 +38,7 @@ Request headers:
 |---|---|---|---|
 | `Crew-API-Version` | string | no | The minor version the client was written for. Without it, the server answers with 1.0 behaviour. The server never refuses a request because this version is old. |
 | `X-Request-Id` | string | no | A caller may supply its own; an id assigned by an intermediary in front of the gateway wins. |
-| `Last-Event-ID` | string | no | Sent by the browser on SSE reconnect; same as since. |
+| `Last-Event-ID` | string | no | **Not served yet.** Sent by the browser on SSE reconnect; same as since. |
 
 Response `200`: Success.
 
@@ -43,9 +48,9 @@ Response headers:
 |---|---|---|
 | `X-Request-Id` | string | One id per request, supplied by the caller or an intermediary, or generated by the gateway. Also written to the audit log and the error body. |
 | `Crew-API-Version` | string | The server's minor version, for example 1.3. |
-| `X-Crew-Quota-Limit` | number | This grant's daily credit ceiling. Sent on every response to a delegated-credential request, success or failure; not sent for the embed credential. |
-| `X-Crew-Quota-Remaining` | number | Credits left today (reservations already subtracted). |
-| `X-Crew-Quota-Reset` | integer | When the quota resets, Unix seconds. |
+| `X-Crew-Quota-Limit` | number | **Not served yet.** This grant's daily credit ceiling. Sent on every response to a delegated-credential request, success or failure; not sent for the embed credential. |
+| `X-Crew-Quota-Remaining` | number | **Not served yet.** Credits left today (reservations already subtracted). |
+| `X-Crew-Quota-Reset` | integer | **Not served yet.** When the quota resets, Unix seconds. |
 
 Response body fields (`application/json`), [EventPage](schemas.md#eventpage):
 
@@ -64,10 +69,12 @@ Errors. The response body is [Error](schemas.md#error); its `error.code` field h
 
 | Status | Codes | Notes |
 |---|---|---|
-| 401 | `invalid_token`, `token_revoked`, `third_party_disabled` | 401: invalid_token, token_revoked, third_party_disabled. Carries X-Crew-Quota-* on delegated-credential requests. |
-| 403 | `entitlement_required`, `insufficient_scope`, `approval_requires_first_party`, `tool_not_registered`, `connector_definition_changed`, `use_responses_api`, `grant_paused` | 403: grant_paused, entitlement_required, insufficient_scope, approval_requires_first_party, tool_not_registered, connector_definition_changed, use_responses_api. Carries X-Crew-Quota-* on delegated-credential requests. |
-| 404 | `not_found`, `model_not_found` | 404: not_found, model_not_found. Carries X-Crew-Quota-* on delegated-credential requests. |
-| 410 | `resync_required` | 410: resync_required. Carries X-Crew-Quota-* on delegated-credential requests. |
-| 429 | `rate_limited`, `concurrency_limit`, `quota_exhausted`, `notification_limited` | 429: rate_limited, concurrency_limit, quota_exhausted, notification_limited. Carries X-Crew-Quota-* on delegated-credential requests. |
-| 500 | `internal_error` | 500: internal_error. Carries X-Crew-Quota-* on delegated-credential requests. |
-| 503 | `instance_unavailable` | 503: instance_unavailable. Carries X-Crew-Quota-* on delegated-credential requests. |
+| 400 | `invalid_request`, `unsupported_parameter`, `unsupported_tool_type` | **Not served yet:** `X-Crew-Quota-Limit`, `X-Crew-Quota-Remaining`, `X-Crew-Quota-Reset`. Where this note says the response carries them, that is the planned behaviour. 400: invalid_request, unsupported_parameter, unsupported_tool_type. Carries X-Crew-Quota-* on delegated-credential requests. |
+| 401 | `invalid_token`, `token_revoked`, `third_party_disabled` | **Not served yet:** `X-Crew-Quota-Limit`, `X-Crew-Quota-Remaining`, `X-Crew-Quota-Reset`. Where this note says the response carries them, that is the planned behaviour. 401: invalid_token, token_revoked, third_party_disabled. Carries X-Crew-Quota-* on delegated-credential requests. |
+| 403 | `entitlement_required`, `insufficient_scope`, `approval_requires_first_party`, `tool_not_registered`, `connector_definition_changed`, `use_responses_api`, `grant_paused` | **Not served yet:** `X-Crew-Quota-Limit`, `X-Crew-Quota-Remaining`, `X-Crew-Quota-Reset`. Where this note says the response carries them, that is the planned behaviour. 403: grant_paused, entitlement_required, insufficient_scope, approval_requires_first_party, tool_not_registered, connector_definition_changed, use_responses_api. Carries X-Crew-Quota-* on delegated-credential requests. |
+| 404 | `not_found`, `model_not_found` | **Not served yet:** `X-Crew-Quota-Limit`, `X-Crew-Quota-Remaining`, `X-Crew-Quota-Reset`. Where this note says the response carries them, that is the planned behaviour. 404: not_found, model_not_found. Carries X-Crew-Quota-* on delegated-credential requests. |
+| 410 | `resync_required` | **Not served yet:** `X-Crew-Quota-Limit`, `X-Crew-Quota-Remaining`, `X-Crew-Quota-Reset`. Where this note says the response carries them, that is the planned behaviour. 410: resync_required. Carries X-Crew-Quota-* on delegated-credential requests. |
+| 422 | `capability_unavailable`, `idempotency_key_reused` | **Not served yet:** `X-Crew-Quota-Limit`, `X-Crew-Quota-Remaining`, `X-Crew-Quota-Reset`. Where this note says the response carries them, that is the planned behaviour. 422: capability_unavailable, idempotency_key_reused. Carries X-Crew-Quota-* on delegated-credential requests. |
+| 429 | `rate_limited`, `concurrency_limit`, `quota_exhausted`, `notification_limited` | **Not served yet:** `X-Crew-Quota-Limit`, `X-Crew-Quota-Remaining`, `X-Crew-Quota-Reset`. Where this note says the response carries them, that is the planned behaviour. 429: rate_limited, concurrency_limit, quota_exhausted, notification_limited. Carries X-Crew-Quota-* on delegated-credential requests. |
+| 500 | `internal_error` | **Not served yet:** `X-Crew-Quota-Limit`, `X-Crew-Quota-Remaining`, `X-Crew-Quota-Reset`. Where this note says the response carries them, that is the planned behaviour. 500: internal_error. Carries X-Crew-Quota-* on delegated-credential requests. |
+| 503 | `instance_unavailable` | **Not served yet:** `X-Crew-Quota-Limit`, `X-Crew-Quota-Remaining`, `X-Crew-Quota-Reset`. Where this note says the response carries them, that is the planned behaviour. 503: instance_unavailable. Carries X-Crew-Quota-* on delegated-credential requests. |

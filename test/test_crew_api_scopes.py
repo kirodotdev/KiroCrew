@@ -218,6 +218,7 @@ def test_the_routes_that_serve_an_app_credential() -> None:
         "/v1/conversations",
         "/v1/conversations/{conversation_id}",
         "/v1/conversations/{conversation_id}/items",
+        "/v1/crew/events",
     }
 
 

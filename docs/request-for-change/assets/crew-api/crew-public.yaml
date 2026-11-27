@@ -1373,15 +1373,29 @@ paths:
           $ref: ./components.yaml#/components/responses/InternalError
         '503':
           $ref: ./components.yaml#/components/responses/InstanceUnavailable
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
+        '422':
+          $ref: ./components.yaml#/components/responses/Unprocessable
       x-crew-tier: public
       x-crew-scope:
       - conversations:read
       - instance:read
       - bots:wake
       x-crew-phase: 1a
+      x-crew-status: available
+      x-crew-available-to: owner
+      x-crew-not-served-yet:
+        request-headers:
+        - Last-Event-ID
+        response-headers:
+        - X-Crew-Quota-Limit
+        - X-Crew-Quota-Remaining
+        - X-Crew-Quota-Reset
       x-crew-reuses:
       - src/kiro_crew/crew_log/read.py:559 (read_page)
       x-crew-coverage: done
+      x-crew-stability: preview
       description: 'Filtered by the scopes held: conversations:read receives events of this grant''s conversations;
         instance:read receives instance-level notices sent to this grant that belong to no conversation; bots:wake
         receives the Bot events of the turns this grant woke. A credential receives each class it holds a scope
@@ -1394,7 +1408,32 @@ paths:
         events used to resume), the event index, resolved approvals and uploaded files are all kept 30 days by default;
         the owner can set `crew_api.retention_days` in the crew settings to 1 to 365 days. Deleting a conversation
         deletes its responses and events. When since is older than the oldest retained event, 410 resync_required
-        with oldest_seq and latest_seq in the body. The instance stream is numbered separately for each grant.'
+        with oldest_seq and latest_seq in the body. The instance stream is numbered separately for each grant.
+        Served so far, to the machine owner: the conversation stream as paged JSON, with `since`, `limit` and
+        `wait`, and the events turn.started, message.created and turn.completed. Not served yet: the instance
+        stream (a request with no `conversation`) and the SSE form (`Accept: text/event-stream`) are 422
+        capability_unavailable; the `bot` parameter is not read; the other event types are not sent; the event
+        retention setting and the ceilings on concurrent streams are not built. Proposed amendments, 2026-11-27,
+        waiting for a maintainer''s sign-off: (1) A conversation''s `seq` counts the events the gateway wrote for
+        that conversation, from 1, whichever engine session each turn ran on. (2) A conversation''s events are
+        kept as long as the conversation and deleted with it; a conversation made before the gateway served this
+        operation has no earlier events. (3) message.created is sent when its turn ends, for each item of the turn
+        that the history then lists, because a running turn is not in the history. (4) approval.requested carries
+        `approval_id` and no `tool` or `reason`: the gateway keeps neither on disk, and an event is stored before
+        it is sent. That event is not sent yet. (5) An event that cannot be stored never changes its turn. The
+        stream is then broken: every request that names `since` is 410 resync_required, with the newest `seq`
+        that is stored as `latest_seq`, until the stream can be read and written whole again. The gateway then
+        stores a gap in the stream, numbered one above its newest `seq`, and a `since` below a gap is 410
+        resync_required; no number is given to a gap from memory. A stream that cannot be read is 503
+        instance_unavailable. A stream file that cannot be believed is replaced by one gap above the highest
+        `seq` it names, wherever in the file. A gateway that stops while a turn of a conversation is running
+        leaves that stream broken for the gateway that starts next, because the end of the turn was not stored. When no
+        note that a stream is broken can be stored, it is held in memory and a gateway restart forgets it.
+        A stream that has reached its size limit takes no more events and stays broken. (6) A `since` past
+        the newest `seq` is 410 resync_required. (7) A `since`, `limit` or `wait` outside what the parameters
+        allow is 400 invalid_request; the 400 and 422 responses are part of this amendment. (8) At most 10
+        requests wait (`wait`) at once, the number this operation proposes for one user''s streams; one more is
+        429 concurrency_limit with `limit: event_streams`.'
   /v1/crew/approvals:
     get:
       operationId: get_v1_crew_approvals

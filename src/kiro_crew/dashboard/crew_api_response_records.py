@@ -395,7 +395,8 @@ class ResponseStore:
             platform_compat.restrict_dir_to_owner(path.parent)
         except OSError:
             pass
-        atomic_write(path, serialized, fsync=True, restrict_to_owner=True)
+        # No newline translation: the file holds the bytes the size above counted.
+        atomic_write(path, serialized, fsync=True, restrict_to_owner=True, newline="\n")
         # From here the record reads back, so a failure is not "nothing was written".
         try:
             # The sweep reads a record's age from its file, without opening it.
