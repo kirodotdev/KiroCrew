@@ -621,7 +621,7 @@ def _audit_card_turn_decline(
         )
         reason = "bot_limit_held"
     elif web_term:
-        error = "the organization's policy asks before this web tool, so a person must approve it"
+        error = "the organization's policy asks before this tool, so a person must approve it"
         reason = "web_ask_rule"
     else:
         error = "the turn was started by a Dashboard card, which never inherits an auto-approval"

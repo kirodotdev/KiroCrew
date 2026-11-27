@@ -183,9 +183,37 @@ class TestNeedsPerson:
         policy()
         assert web_ask_rule.needs_person(_kas_event("web_fetch", managed=True)) == "web_fetch"
 
-    def test_kas_consent_on_another_tool_is_not_this_rule(self, lts, policy):
+    @pytest.mark.parametrize("tool_id", ["disclose_context", "run_command", "some_new_tool", ""])
+    def test_kas_consent_on_any_other_tool_reaches_a_person(self, lts, policy, tool_id):
+        """KAS's org-ask marker names no capability: a skill load (``disclose_context``),
+        a tool Crew has no table for, or a request with no tool id all need a person."""
         policy()
-        assert web_ask_rule.needs_person(_kas_event("run_command", managed=True)) == ""
+        event = _kas_event(tool_id, managed=True)
+        assert web_ask_rule.needs_person(event) == web_ask_rule.ORGANIZATION
+        assert web_ask_rule.held_phrases(event) == [
+            "the organization's policy asks before this tool runs"
+        ]
+        assert "has no approver" in web_ask_rule.unattended_refusal(event)
+
+    def test_a_web_id_under_consent_still_names_its_web_term(self, lts, policy):
+        policy()
+        event = _kas_event("remote_web_search", managed=True)
+        assert web_ask_rule.needs_person(event) == "web_search"
+
+    @pytest.mark.parametrize("tool_id", ["disclose_context", "some_new_tool"])
+    def test_a_non_web_tool_without_consent_needs_nobody(self, lts, policy, tool_id):
+        """The policy record covers the web terms only: with no marker a non-web KAS
+        call keeps today's behaviour, even while a web ``ask`` rule is in force."""
+        policy("{capability: web_fetch, effect: ask}", "{capability: web_search, effect: ask}")
+        event = _kas_event(tool_id)
+        assert web_ask_rule.needs_person(event) == ""
+        assert web_ask_rule.held_phrases(event) == []
+        assert web_ask_rule.unattended_refusal(event) == ""
+
+    @pytest.mark.parametrize("tool_id", ["disclose_context", "some_new_tool", ""])
+    def test_an_oss_build_ignores_consent_on_any_tool(self, policy, tool_id):
+        policy()
+        assert web_ask_rule.needs_person(_kas_event(tool_id, managed=True)) == ""
 
     def test_a_kas_request_with_no_tool_id_fails_closed_under_an_ask(self, lts, policy):
         policy("{capability: web_search, effect: ask}")
@@ -273,6 +301,13 @@ async def _settle_with_grants(event) -> list:
 async def test_settle_asks_the_person_and_no_grant_under_an_ask(lts, policy):
     policy("{capability: web_fetch, effect: ask}")
     assert await _settle_with_grants(_kas_event("web_fetch")) == ["person", "reject"]
+
+
+@pytest.mark.asyncio
+async def test_settle_asks_the_person_for_kas_consent_on_a_skill_load(lts, policy):
+    policy()
+    event = _kas_event("disclose_context", managed=True)
+    assert await _settle_with_grants(event) == ["person", "reject"]
 
 
 @pytest.mark.asyncio
@@ -377,6 +412,51 @@ async def test_trust_approves_as_before_without_an_ask(
     client.approve_tool.assert_awaited_once()
 
 
+def _skill_load(**kw):
+    """A KAS skill load: ``disclose_context`` (``kas_permissions``), no web term."""
+    fields = {
+        "title": "Loading skill demo",
+        "tool_kind": "other",
+        "tool_name": "disclose_context",
+        "harness_tool_id": "disclose_context",
+    }
+    fields.update(kw)
+    return _web_permission(**fields)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", _MODES)
+async def test_kas_consent_on_a_skill_load_reaches_the_card(tmp_path, lts_rule, policy, mode):
+    policy()
+    client, slot = await _turn(tmp_path, mode, _skill_load(kas_managed_ask=True))
+    client.approve_tool.assert_not_awaited()
+    cards = [m for m in slot.messages if m.get("role") == "permission"]
+    assert len(cards) == 1
+    assert json.loads(cards[0]["cls"]).get(web_ask_rule.CARD_META_KEY) == "1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", _MODES)
+@pytest.mark.parametrize("edition", ["oss", "lts"])
+async def test_trust_approves_a_skill_load_as_before_without_consent(
+    tmp_path, monkeypatch, policy, edition, mode
+):
+    """The control: with no org-ask marker each tier approves a skill load, in either
+    edition, even while a web ``ask`` rule is in force."""
+    if edition == "lts":
+        monkeypatch.setattr(web_ask_rule, "edition", MagicMock(is_lts=lambda: True))
+    policy("{capability: web_fetch, effect: ask}")
+    client, _slot_ = await _turn(tmp_path, mode, _skill_load())
+    client.approve_tool.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_oss_build_lets_trust_answer_consent_on_a_skill_load(tmp_path, policy):
+    policy()
+    client, _slot_ = await _turn(tmp_path, "trust", _skill_load(kas_managed_ask=True))
+    client.approve_tool.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_an_oss_build_lets_trust_answer_even_an_ask(tmp_path, policy):
     policy("{capability: web_fetch, effect: ask}")
@@ -412,6 +492,9 @@ def test_the_card_names_the_rule():
     assert "asks before web fetch." in web_ask_rule.card_notice("web_fetch")
     assert "asks before web search." in web_ask_rule.card_notice("web_search")
     assert "could not be identified" in web_ask_rule.card_notice("unidentified")
+    assert web_ask_rule.card_notice(web_ask_rule.ORGANIZATION) == (
+        "Auto-approve not applied: your organization's policy asks before this tool runs."
+    )
 
 
 @pytest.mark.asyncio

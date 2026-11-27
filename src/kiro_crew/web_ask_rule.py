@@ -11,6 +11,11 @@ organisation set), and the policy fetch's record of which of the two terms an
 (``enterprise_policy_translate.web_ask_ruleset``). :func:`needs_person` reads
 both, and every auto-approve that can answer such a request asks it first.
 
+KAS's consent block names no capability, so it holds any KAS tool, not only the
+web ones: an organisation's ``ask`` on a skill load, a power or a context read
+reaches a person the same way (:data:`ORGANIZATION`). The policy record covers
+the two web terms only.
+
 Only KAS requests are judged: the web terms are KAS-only (RFC D8), so another
 harness keeps today's behaviour. A KAS request is identified by the tool id the
 engine stamps on it (``_meta.kiro.toolId``), never by its title. A KAS request
@@ -33,6 +38,10 @@ SCOPE = "unattended_web_tools"
 #: a trust grant's sweep of pending cards leaves it open.
 CARD_META_KEY = "web_ask_rule"
 
+#: :func:`needs_person`'s answer for a KAS request that is not a web call but
+#: whose consent block names an organisation's ``ask``.
+ORGANIZATION = "organization"
+
 #: The policy-language web terms, in the order a record lists them.
 TERMS: tuple[str, ...] = ("web_fetch", "web_search")
 
@@ -54,13 +63,15 @@ def asked_terms() -> frozenset[str]:
 
 
 def needs_person(event: Any) -> str:
-    """The web term a person must approve *event* under, or ``""``.
+    """The term a person must approve *event* under, or ``""``.
 
     A KAS web call reaches a person when either source says ``ask``: KAS's own
     consent block (``event.kas_managed_ask``) or the installed policy's record
-    (:func:`asked_terms`). ``"unidentified"`` when *event* is a KAS request with no
-    tool id while the policy asks about a web term: it may be a web call, so it is
-    not auto-approved.
+    (:func:`asked_terms`). Any other KAS request reaches a person when KAS's
+    consent block says ``ask``, answered :data:`ORGANIZATION`; the policy record
+    covers the web terms only. ``"unidentified"`` when *event* is a KAS request with
+    no tool id while the policy asks about a web term: it may be a web call, so it
+    is not auto-approved.
     """
     if not edition.is_lts() or not getattr(event, "kas_builtin_ids", False):
         return ""
@@ -68,8 +79,10 @@ def needs_person(event: Any) -> str:
     if not isinstance(tool_id, str):
         tool_id = ""
     term = _TERM_BY_KAS_TOOL_ID.get(tool_id, "")
-    if term and getattr(event, "kas_managed_ask", False) is True:
-        return term
+    if getattr(event, "kas_managed_ask", False) is True:
+        # KAS's marker is capability-agnostic: an organisation ``ask`` on any tool
+        # (a skill load, a power, a context read) reaches a person, not only web.
+        return term or ORGANIZATION
     if not term and tool_id:
         return ""
     asked = asked_terms()
@@ -96,14 +109,18 @@ def held_phrases(event: Any) -> list[str]:
 
 def unattended_refusal(event: Any) -> str:
     """The host's reason for refusing *event* on a surface with nobody to ask, or ``""``
-    when :func:`needs_person` names no web term for it."""
+    when :func:`needs_person` names no term for it."""
     phrases = held_phrases(event)
     if not phrases:
         return ""
     return "; ".join(phrases) + ", so a person must approve it, and this surface has no approver"
 
 
-_LABELS: Mapping[str, str] = {"web_fetch": "web fetch", "web_search": "web search"}
+_LABELS: Mapping[str, str] = {
+    "web_fetch": "web fetch",
+    "web_search": "web search",
+    ORGANIZATION: "this tool runs",
+}
 _UNIDENTIFIED_PHRASE = (
     "the organization's policy asks before web fetch or web search, and this tool "
     "could not be identified"
@@ -117,5 +134,5 @@ def card_notice(term: str) -> str:
             "Auto-approve not applied: your organization's policy asks before web "
             "fetch or web search, and this tool could not be identified."
         )
-    label = "web fetch" if term == "web_fetch" else "web search"
+    label = _LABELS.get(term, _LABELS[ORGANIZATION])
     return f"Auto-approve not applied: your organization's policy asks before {label}."

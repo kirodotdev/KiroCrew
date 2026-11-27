@@ -1013,8 +1013,11 @@ class TestRecordedWire:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("edition", ["lts", "oss"])
+@pytest.mark.parametrize(
+    "tool_name, tool_id", [("web_fetch", "web_fetch"), ("fs_read", "read_file")]
+)
 async def test_an_org_ask_on_a_kas_web_call_is_refused_by_the_heartbeat(
-    orchestrator, monkeypatch, edition
+    orchestrator, monkeypatch, edition, tool_name, tool_id
 ) -> None:
     """``web_ask_rule``: the heartbeat has nobody to ask, so in LTS it refuses KAS's
     ask on an organisation's web rule; an ``oss`` build approves it as before."""
@@ -1026,8 +1029,8 @@ async def test_an_org_ask_on_a_kas_web_call_is_refused_by_the_heartbeat(
     sel_mock = MagicMock()
     monkeypatch.setattr("kiro_crew.slack.gateway.sel", lambda: sel_mock)
     event = dataclasses.replace(
-        _builtin("web_fetch", title="Fetching https://example.com"),
-        harness_tool_id="web_fetch",
+        _builtin(tool_name, title="Fetching https://example.com"),
+        harness_tool_id=tool_id,
         kas_builtin_ids=True,
         kas_managed_ask=True,
     )

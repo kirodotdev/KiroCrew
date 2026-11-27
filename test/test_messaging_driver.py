@@ -683,8 +683,9 @@ class TestApprovalLadder:
     )
     @pytest.mark.parametrize("decided", [True, False], ids=["decider", "no-decider"])
     @pytest.mark.parametrize("edition", ["lts", "oss"])
+    @pytest.mark.parametrize("tool_id", ["web_fetch", "disclose_context"])
     def test_an_org_ask_on_a_kas_web_call_is_never_auto_approved(
-        self, monkeypatch, rung, decided, edition
+        self, monkeypatch, rung, decided, edition, tool_id
     ):
         """``web_ask_rule``: in LTS no auto rung answers KAS's ask on an organisation's
         web rule. A decider is asked as a person's; with none the call is refused. An
@@ -710,7 +711,7 @@ class TestApprovalLadder:
                 kind=EVENT_PERMISSION_REQUEST,
                 request_id="rq1",
                 options=[{"id": "approve"}],
-                harness_tool_id="web_fetch",
+                harness_tool_id=tool_id,
                 kas_builtin_ids=True,
                 kas_managed_ask=True,
             ),

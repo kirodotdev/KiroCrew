@@ -322,7 +322,10 @@ async def test_a_held_bot_limit_is_not_approved_by_channel_trust(monkeypatch, he
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("edition", ["lts", "oss"])
-async def test_an_org_ask_on_a_kas_web_call_is_not_approved_by_channel_trust(monkeypatch, edition):
+@pytest.mark.parametrize("tool_id", ["web_fetch", "disclose_context"])
+async def test_an_org_ask_on_a_kas_web_call_is_not_approved_by_channel_trust(
+    monkeypatch, edition, tool_id
+):
     """``web_ask_rule``: in LTS channel trust never answers KAS's ask on an
     organisation's web rule; an ``oss`` build approves it as before."""
     from kiro_crew import mate_held_rules, web_ask_rule
@@ -341,7 +344,7 @@ async def test_an_org_ask_on_a_kas_web_call_is_not_approved_by_channel_trust(mon
             title="Fetching https://example.com",
             request_id=8,
             tool_input="{}",
-            harness_tool_id="web_fetch",
+            harness_tool_id=tool_id,
             kas_builtin_ids=True,
             kas_managed_ask=True,
         ),

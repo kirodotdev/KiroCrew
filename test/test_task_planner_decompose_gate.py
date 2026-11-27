@@ -137,8 +137,9 @@ def test_no_ctx_denies_by_default(audit_rows):
 
 
 @pytest.mark.parametrize("edition", ["lts", "oss"])
+@pytest.mark.parametrize("tool_id", ["web_fetch", "disclose_context"])
 def test_an_org_ask_on_a_kas_web_call_is_refused_during_decomposition(
-    audit_rows, monkeypatch, edition
+    audit_rows, monkeypatch, edition, tool_id
 ):
     """``web_ask_rule``: decomposition has nobody to ask, so in LTS KAS's ask on an
     organisation's web rule is refused; an ``oss`` build approves it as before."""
@@ -154,7 +155,7 @@ def test_an_org_ask_on_a_kas_web_call_is_refused_during_decomposition(
             kind="permission_request",
             title="web_fetch",
             request_id="r1",
-            harness_tool_id="web_fetch",
+            harness_tool_id=tool_id,
             kas_builtin_ids=True,
             kas_managed_ask=True,
         )

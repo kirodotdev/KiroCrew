@@ -998,24 +998,28 @@ def test_the_kiro_cli_helper_check_reads_disk_off_the_event_loop(monkeypatch):
     assert seen == [False]
 
 
-def _web_event() -> LLMEvent:
+def _web_event(tool_id: str = "web_fetch") -> LLMEvent:
     return LLMEvent(
         kind=EVENT_PERMISSION_REQUEST,
         title="Fetching https://example.com",
         request_id="r1",
         tool_kind="fetch",
-        harness_tool_id="web_fetch",
+        harness_tool_id=tool_id,
         kas_builtin_ids=True,
         kas_managed_ask=True,
     )
 
 
-async def _resolve_web(approver=None) -> list[str]:
+#: A web id and a non-web one: KAS's org-ask marker holds both (``web_ask_rule``).
+_ASKED_TOOL_IDS = ["web_fetch", "disclose_context"]
+
+
+async def _resolve_web(approver=None, tool_id: str = "web_fetch") -> list[str]:
     provider = _Provider()
     with patch("kiro_crew.permission_floor.refusal_for", return_value=None):
         await _resolve_permission(
             provider,
-            _web_event(),
+            _web_event(tool_id),
             ToolApprovalPolicy.AUTO_APPROVE,
             None,
             on_tool_approval=approver,
@@ -1041,21 +1045,28 @@ def web_ask_edition(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("edition", ["lts", "oss"])
-async def test_a_surface_with_no_approver_refuses_an_org_web_ask(ledger, web_ask_edition, edition):
+@pytest.mark.parametrize("tool_id", _ASKED_TOOL_IDS)
+async def test_a_surface_with_no_approver_refuses_an_org_web_ask(
+    ledger, web_ask_edition, edition, tool_id
+):
     """``web_ask_rule``: an ``AUTO_APPROVE`` turn with nobody to ask refuses KAS's ask
-    on an organisation's web rule in LTS, and approves it in ``oss`` as before."""
+    on an organisation's rule in LTS, and approves it in ``oss`` as before."""
     web_ask_edition(edition)
-    assert await _resolve_web() == (["reject"] if edition == "lts" else ["approve"])
+    calls = await _resolve_web(tool_id=tool_id)
+    assert calls == (["reject"] if edition == "lts" else ["approve"])
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("edition", ["lts", "oss"])
-async def test_an_auto_cron_asks_a_person_for_an_org_web_ask(ledger, web_ask_edition, edition):
+@pytest.mark.parametrize("tool_id", _ASKED_TOOL_IDS)
+async def test_an_auto_cron_asks_a_person_for_an_org_web_ask(
+    ledger, web_ask_edition, edition, tool_id
+):
     """``web_ask_rule``: an ``auto`` cron job's approver does not answer KAS's ask on an
-    organisation's web rule in LTS; its interactive fallback is asked instead."""
+    organisation's rule in LTS; its interactive fallback is asked instead."""
     web_ask_edition(edition)
     card = AsyncMock(return_value=False)
-    calls = await _resolve_web(auto_job_approver(card))
+    calls = await _resolve_web(auto_job_approver(card), tool_id=tool_id)
     if edition == "lts":
         assert calls == ["reject"]
         card.assert_awaited_once()
