@@ -1117,7 +1117,10 @@ refresh. The registry part
 leads with one remedy per cause and host, then names the registries whose apps
 are missing and the ones shown as last synced, one line each: connect to the VPN or check the
 network for `dns`, `network` and `timeout`; run `ssh <host>` once to add or fix its
-entry in `~/.ssh/known_hosts` for `host_key`; renew the git credentials for `auth`;
+entry in `~/.ssh/known_hosts` for `host_key`; for `auth`, restart the gateway when
+the machine's SSH sign-in works outside it (a long-running gateway keeps the
+`SSH_AUTH_SOCK` it started with, and that agent socket closes when its login
+session ends), else renew the git credentials;
 install `gh` and sign in with an account that can read the named `owner/repo` for a `gh_*` cause;
 then try again, which the marker never holds back because the store's refresh calls
 the fetch directly. The refresh banner uses the same remedies and the same split of
