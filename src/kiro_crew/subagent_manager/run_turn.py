@@ -1070,11 +1070,11 @@ async def _run_inner_impl(
                 # is not retried here: the run reports it to the per-scope
                 # coordinator -- ONE schedule for every session on that
                 # scope -- and yields its lane slot until the scope wakes
-                # it by capacity. The in-turn ladder below stays for
+                # it by capacity; on a provider throttle a run with no task
+                # row waits there too, held in memory. The in-turn ladder below stays for
                 # transients no adapter classifies, for a manager without a
-                # durable queue, and for a run that has no task row at all
-                # (``None``: nothing records its wait and nothing else owns
-                # its work). A row another owner holds, a row that ended,
+                # durable queue, and for a coordinator that cannot hold the
+                # run (``None``). A row another owner holds, a row that ended,
                 # or a store that cannot say stops the run (``False``).
                 _signal = classify_exception(exc) if _dep_coordinator and not _swapped else None
                 if _signal is not None and not _signal.terminal:

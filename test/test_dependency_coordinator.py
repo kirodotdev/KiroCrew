@@ -1098,7 +1098,8 @@ def test_a_wait_that_did_not_persist_is_not_reported_as_a_wait(
 
 def test_a_report_with_no_row_at_all_says_so(store: TaskStore, clock: Clock) -> None:
     """A task the store holds no row for (a run whose memory mode keeps none) is
-    answered ``no_row``: nothing records the wait, and nothing else owns the work."""
+    answered ``no_row`` unless the caller asks to be held (``TestRowlessWaiter``):
+    nothing records the wait, and nothing else owns the work."""
     coord = _coord(store, clock)
     verdict = coord.report("sa-none", _signal(), generation=None, from_state=model.RUNNING)
     assert verdict.outcome == "no_row"
@@ -1229,3 +1230,310 @@ async def test_a_report_driven_give_up_releases_a_parked_run_on_the_loop(
     )
     assert store.state_of("victim") == model.FAILED
     assert coord.scopes() == []
+
+
+# ── a live run with no task row (incognito / temporary) ───────────────────────
+
+
+class TestRowlessWaiter:
+    """``hold_rowless``: a live run the store keeps no row for waits on the scope.
+
+    Its wake goes through ``wake_through`` only and its give-up through ``on_fail``
+    only; nothing about it reaches the store.
+    """
+
+    def _held(self, store: TaskStore, clock: Clock, **kw) -> tuple[DependencyCoordinator, list]:
+        """A coordinator whose ``wake_through`` owns every run and records each ask."""
+        asked: list[tuple[str, int | None]] = []
+
+        def _wake_through(task_id: str, generation: int | None) -> bool:
+            asked.append((task_id, generation))
+            return True
+
+        return _coord(store, clock, wake_through=_wake_through, **kw), asked
+
+    def test_a_live_run_with_no_row_waits_on_the_schedule(
+        self, store: TaskStore, clock: Clock
+    ) -> None:
+        coord, asked = self._held(store, clock)
+        verdict = coord.report(
+            "sa-temp", _signal(), generation=None, from_state=model.RUNNING, hold_rowless=True
+        )
+        assert verdict.outcome == "wait"
+        assert verdict.state == model.RUNNING, "no row moved; the state is where it reported from"
+        assert verdict.retry_at == T0 + 2.0
+        assert coord.waiters(GH) == ["sa-temp"]
+        clock.advance(2.0)
+        assert coord.tick() == ["sa-temp"]
+        assert asked == [("sa-temp", None)]
+        assert store.state_of("sa-temp") is None
+        assert list(store.events("sa-temp")) == [], "a run with no row left a durable trace"
+
+    def test_rowless_runs_share_one_retry_instant_and_one_probe(
+        self, store: TaskStore, clock: Clock
+    ) -> None:
+        coord, asked = self._held(store, clock, capacity=lambda: 8)
+        verdicts = [
+            coord.report(tid, _signal(), from_state=model.RUNNING, hold_rowless=True)
+            for tid in ("sa-a", "sa-b", "sa-c")
+        ]
+        assert {v.outcome for v in verdicts} == {"wait"}
+        assert {v.retry_at for v in verdicts} == {T0 + 2.0}
+        sched = coord.schedule(GH)
+        assert sched is not None and sched.attempts == 1 and len(sched.waiters) == 3
+        clock.advance(2.0)
+        assert coord.tick() == ["sa-a"], "the probe is one waiter"
+        assert coord.schedule(GH).phase == PHASE_PROBE
+        clock.advance(5.0)
+        assert coord.tick() == ["sa-b", "sa-c"], "the ramp wakes the rest"
+        assert [tid for tid, _ in asked] == ["sa-a", "sa-b", "sa-c"]
+
+    def test_a_rowless_waiter_whose_run_is_gone_is_dropped_without_a_store_write(
+        self, store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        coord = _coord(store, clock, wake_through=lambda task_id, generation: False)
+        coord.report("sa-gone", _signal(), from_state=model.RUNNING, hold_rowless=True)
+
+        def _no_store(*a, **k):
+            raise AssertionError("a waiter with no row was woken through the store")
+
+        monkeypatch.setattr(store, "wake_wait", _no_store)
+        monkeypatch.setattr(store, "transition", _no_store)
+        clock.advance(2.0)
+        assert coord.tick() == []
+        assert coord.schedule(GH) is None
+        assert list(store.events("sa-gone")) == []
+
+    def test_on_the_worker_path_only_a_live_run_takes_the_wake(
+        self, store: TaskStore, clock: Clock
+    ) -> None:
+        coord, asked = self._held(store, clock, capacity=lambda: 8)
+        coord.report("sa-live", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        coord.report("sa-ended", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        clock.advance(2.0)
+        callbacks: list = []
+        live = frozenset({("sa-live", None)})
+        assert coord.tick(callbacks=callbacks, live_waiters=live) == ["sa-live"]
+        clock.advance(5.0)
+        assert coord.tick(callbacks=callbacks, live_waiters=live) == []
+        for callback in callbacks:
+            callback()
+        assert asked == [("sa-live", None)], "the ended run was asked to wake"
+        assert coord.waiters(GH) == [], "the ended run's waiter stayed on the scope"
+        assert list(store.events("sa-live")) == [] and list(store.events("sa-ended")) == []
+
+    def test_a_give_up_reaches_a_rowless_waiter_through_on_fail_only(
+        self, store: TaskStore, clock: Clock
+    ) -> None:
+        failed: list[tuple[str, str]] = []
+        coord, _asked = self._held(
+            store, clock, max_attempts=1, on_fail=lambda tid, why: failed.append((tid, why))
+        )
+        coord.report("sa-temp", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        clock.advance(2.0)
+        assert coord.tick() == ["sa-temp"]
+        verdict = coord.report("sa-temp", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        assert verdict.outcome == "deadline"
+        assert [tid for tid, _ in failed] == ["sa-temp"]
+        assert coord.schedule(GH) is None
+        assert store.state_of("sa-temp") is None
+        assert list(store.events("sa-temp")) == []
+
+    def test_a_scope_deadline_fails_rowless_and_row_backed_waiters_alike(
+        self, store: TaskStore, clock: Clock
+    ) -> None:
+        failed: list[str] = []
+        coord, _asked = self._held(
+            store,
+            clock,
+            backoff=backoff(100.0, 100.0),
+            wait_deadline_secs=50.0,  # flake-ok: injected Clock, never a real wait
+            on_fail=lambda tid, why: failed.append(tid),
+        )
+        gen = _running(store, "sa-row")
+        coord.report("sa-row", _signal(), generation=gen, from_state=model.RUNNING)
+        coord.report("sa-temp", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        clock.advance(100.0)
+        assert coord.tick() == []
+        assert sorted(failed) == ["sa-row", "sa-temp"]
+        assert store.state_of("sa-row") == model.FAILED
+        assert _events(store, "sa-row", EVENT_FAILED), "the row-backed waiter lost its record"
+        assert list(store.events("sa-temp")) == []
+
+    def test_without_a_wake_seam_a_rowless_report_is_still_no_row(
+        self, store: TaskStore, clock: Clock
+    ) -> None:
+        coord = _coord(store, clock)
+        verdict = coord.report("sa-temp", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        assert verdict.outcome == "no_row"
+        assert coord.schedule(GH) is None
+
+    def test_forget_releases_a_rowless_waiter(self, store: TaskStore, clock: Clock) -> None:
+        coord, asked = self._held(store, clock)
+        coord.report("sa-temp", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        coord.forget("sa-temp")
+        assert coord.schedule(GH) is None
+        clock.advance(2.0)
+        assert coord.tick() == [] and asked == []
+
+    def test_a_terminal_signal_on_a_rowless_run_writes_nothing(
+        self, store: TaskStore, clock: Clock
+    ) -> None:
+        coord, _asked = self._held(store, clock)
+        coord.report("sa-temp", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        verdict = coord.report(
+            "sa-temp", _signal(KIND_AUTH_FAILED), from_state=model.RUNNING, hold_rowless=True
+        )
+        assert verdict.outcome == "terminal"
+        assert list(store.events("sa-temp")) == []
+        assert coord.waiters(GH) == []
+
+    def test_a_first_report_that_ends_the_scope_writes_nothing_for_a_rowless_run(
+        self, store: TaskStore, clock: Clock
+    ) -> None:
+        failed: list[str] = []
+        coord, _asked = self._held(
+            store,
+            clock,
+            backoff=backoff(100.0, 100.0),
+            wait_deadline_secs=50.0,  # flake-ok: injected Clock, never a real wait
+            on_fail=lambda tid, why: failed.append(tid),
+        )
+        gen = _running(store, "sa-row")
+        coord.report("sa-row", _signal(), generation=gen, from_state=model.RUNNING)
+        clock.advance(60.0)  # past the deadline, before the scope is due
+        verdict = coord.report("sa-late", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        assert verdict.outcome == "deadline"
+        assert sorted(failed) == ["sa-late", "sa-row"]
+        assert _events(store, "sa-row", EVENT_FAILED)
+        assert list(store.events("sa-late")) == []
+
+    def test_a_held_waiter_reporting_again_during_a_store_outage_keeps_waiting(
+        self, store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        coord, _asked = self._held(store, clock)
+        coord.report("sa-temp", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        clock.advance(2.0)
+        assert coord.tick() == ["sa-temp"]
+
+        def _down(*a, **k):
+            raise TaskStoreUnavailable("locked")
+
+        monkeypatch.setattr(store, "enter_wait", _down)
+        monkeypatch.setattr(store, "transition", _down)
+        monkeypatch.setattr(store, "state_of", _down)
+        verdict = coord.report("sa-temp", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        assert verdict.outcome == "wait"
+        assert coord.waiters(GH) == ["sa-temp"]
+
+    def test_a_forget_between_the_wake_plan_and_the_wake_writes_nothing(
+        self, store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        coord, _asked = self._held(store, clock)
+        coord.report("sa-temp", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        real_wake_one = coord._wake_one
+
+        def _forget_first(task_id, *a, **k):
+            coord.forget(task_id)
+            return real_wake_one(task_id, *a, **k)
+
+        monkeypatch.setattr(coord, "_wake_one", _forget_first)
+        clock.advance(2.0)
+        callbacks: list = []
+        coord.tick(callbacks=callbacks, live_waiters=frozenset({("sa-temp", None)}))
+        assert list(store.events("sa-temp")) == []
+
+    def test_a_forget_between_the_give_up_and_its_writes_writes_nothing(
+        self, store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        coord, _asked = self._held(
+            store,
+            clock,
+            backoff=backoff(100.0, 100.0),
+            wait_deadline_secs=50.0,  # flake-ok: injected Clock, never a real wait
+        )
+        coord.report("sa-temp", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        real_write = coord._write_scope_failure
+
+        def _forget_first(failed, *a, **k):
+            for task_id, *_rest in failed:
+                coord.forget(task_id)
+            return real_write(failed, *a, **k)
+
+        monkeypatch.setattr(coord, "_write_scope_failure", _forget_first)
+        clock.advance(100.0)
+        assert coord.tick() == []
+        assert list(store.events("sa-temp")) == []
+
+    @pytest.mark.parametrize("release", ["forget", "dropped", "terminal"])
+    def test_a_released_id_that_comes_back_with_a_row_is_recorded_again(
+        self, store: TaskStore, clock: Clock, release: str
+    ) -> None:
+        """Every way a rowless waiter leaves the schedule forgets that it had no row:
+        the same id reported later with a row gets its row's wake record."""
+        live = {"answer": True}
+        coord = _coord(store, clock, wake_through=lambda task_id, generation: live["answer"])
+        coord.report("sa-x", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        if release == "forget":
+            coord.forget("sa-x")
+        elif release == "dropped":
+            live["answer"] = False
+            clock.advance(2.0)
+            assert coord.tick() == []
+            live["answer"] = True
+        else:
+            coord.report("sa-x", _signal(KIND_PERMANENT_PARAM_ERROR), from_state=model.RUNNING)
+        assert coord.waiters(GH) == []
+        gen = _running(store, "sa-x")
+        coord.report("sa-x", _signal(), generation=gen, from_state=model.RUNNING)
+        clock.advance(2.0)
+        assert coord.tick() == ["sa-x"]
+        wakes = _events(store, "sa-x", EVENT_WAKE)
+        assert [w.get("via") for w in wakes] == ["admission"], wakes
+
+    def test_a_refused_delegated_wake_keeps_the_waiter_rowless(
+        self, store: TaskStore, clock: Clock
+    ) -> None:
+        """The worker path's refusal (the run is still parking) puts the waiter back
+        as a rowless one, so its next wake is again a delegated, unrecorded one."""
+        answers = iter([False, True])
+        coord = _coord(store, clock, wake_through=lambda task_id, generation: next(answers))
+        coord.report("sa-temp", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        live = frozenset({("sa-temp", None)})
+        clock.advance(2.0)
+        callbacks: list = []
+        assert coord.tick(callbacks=callbacks, live_waiters=live) == ["sa-temp"]
+        for callback in callbacks:
+            callback()
+        assert coord.waiters(GH) == ["sa-temp"], "the refused wake lost its waiter"
+        clock.advance(5.0)
+        callbacks = []
+        assert coord.tick(callbacks=callbacks, live_waiters=live) == ["sa-temp"]
+        for callback in callbacks:
+            callback()
+        assert list(store.events("sa-temp")) == []
+
+    def test_many_refused_delegated_wakes_in_a_row_stay_rowless(
+        self, store: TaskStore, clock: Clock
+    ) -> None:
+        """Every refused delegated wake puts the waiter back with no row, so a run
+        that keeps parking is never woken through the row path, which would
+        write a ``dependency_wake`` event for it."""
+        answers = iter([False, False, False, True])
+        coord = _coord(store, clock, wake_through=lambda task_id, generation: next(answers))
+        coord.report("sa-temp", _signal(), from_state=model.RUNNING, hold_rowless=True)
+        live = frozenset({("sa-temp", None)})
+        clock.advance(2.0)
+        for _ in range(3):
+            callbacks: list = []
+            assert coord.tick(callbacks=callbacks, live_waiters=live) == ["sa-temp"]
+            for callback in callbacks:
+                callback()
+            assert coord.waiters(GH) == ["sa-temp"]
+            assert list(store.events("sa-temp")) == [], "a requeue lost the no-row mark"
+            clock.advance(5.0)
+        callbacks = []
+        assert coord.tick(callbacks=callbacks, live_waiters=live) == ["sa-temp"]
+        for callback in callbacks:
+            callback()
+        assert list(store.events("sa-temp")) == []

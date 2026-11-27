@@ -324,7 +324,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     ),
     "_dependency_report_db": (
         "staticmethod",
-        "(coordinator: 'Any', store: 'Any', task_id: 'str', signal: 'Any', generation: 'int | None') -> 'Any'",
+        "(coordinator: 'Any', store: 'Any', task_id: 'str', signal: 'Any', generation: 'int | None', hold_rowless: 'bool' = False) -> 'Any'",
         "run_yields",
     ),
     "_dependency_verdict": (
