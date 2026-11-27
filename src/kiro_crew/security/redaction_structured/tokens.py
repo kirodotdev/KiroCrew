@@ -249,6 +249,11 @@ def detect_glued(
                 tries += 1
                 if tries <= _GLUED_JOSE_TRIES:
                     found, _ = detect_jose(text[i : r + 1], jose_rows, True)
+                    if not any(h.start == 0 and h.tier == SECRET for h in found):
+                        # shortcut: mask an invalid glued run whole; split it only if
+                        # individual JOSE spans become necessary.
+                        end = len(text[i:r].rstrip("."))  # keep sentence punctuation
+                        found.append(Hit(0, end, "jwt", SECRET, "jose", "jose"))
                     for h in found:
                         if h.start == 0 and h.tier == SECRET:
                             cands.append((i, i + h.end, h.rule_id, h.certainty, "jose", -1))

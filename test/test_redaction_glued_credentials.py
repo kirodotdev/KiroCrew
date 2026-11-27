@@ -149,6 +149,32 @@ def _streamed(stream: object, text: str, size: int) -> str:
     return "".join(stream.feed(c) for c in chunks) + stream.flush()  # type: ignore[attr-defined]
 
 
+@pytest.mark.parametrize(
+    "parts",
+    [
+        pytest.param([_SK, jwt(), jwt(seed=9)], id="sk-two-jwts"),
+        pytest.param([_HF, jwt(), jwt(seed=9)], id="hf-two-jwts"),
+        pytest.param([_SK, jwt(), jwt(seed=9), jwt(seed=10)], id="sk-three-jwts"),
+    ],
+)
+@pytest.mark.parametrize(
+    "path,size",
+    [("whole", 0)] + [(path, size) for path in ("chat", "structured") for size in (1, 7, 64)],
+)
+def test_a_key_before_multiple_jwts_redacts(parts: list[str], path: str, size: int) -> None:
+    from kiro_crew import security
+
+    text = "tokens: " + "".join(parts) + " end"
+    if path == "whole":
+        assert _kept(parts, redact_credentials(text)[0]) == []
+        assert _kept(parts, redact(text)[0]) == []
+    else:
+        stream = security.StreamRedactor() if path == "chat" else StreamRedactor()
+        out = _streamed(stream, text, size)
+        assert _kept(parts, out) == []
+        assert out == redact(text)[0]
+
+
 @pytest.mark.parametrize("key", [_SK, _HF], ids=["sk", "hf"])
 @pytest.mark.parametrize("pem", [_PEM, PEM_BEGIN + PEM_BODY], ids=["complete", "unterminated"])
 @pytest.mark.parametrize(
