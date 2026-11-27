@@ -438,15 +438,12 @@ async def claim(user_id: str, channel: str, slack: Any, reply_ts: str) -> bool:
 
     owner = state.sessions.get_session_for_thread(reply_ts)
     if isinstance(owner, str) and owner.startswith("dashboard:"):
-        key = (
-            effective_session_key(slot)
-            if slot is not None
-            else (
-                f"dashboard:{conductor.session_key}"
-                if conductor is not None
-                else await asyncio.to_thread(_closed_bot_session_key, bot)
-            )
-        )
+        if slot is not None:
+            key = effective_session_key(slot)
+        elif conductor is not None:
+            key = f"dashboard:{conductor.session_key}"
+        else:
+            key = await asyncio.to_thread(_closed_bot_session_key, bot)
         if owner != key:
             return False  # a closed dashboard chat still owns its thread
     if _activation(channel) == REVIEW:
