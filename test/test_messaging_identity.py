@@ -42,9 +42,12 @@ def _spy_publish():
 
 
 class _Sessions:
-    def __init__(self, pid: object, rows: list[dict] | None = None) -> None:
+    def __init__(
+        self, pid: object, rows: list[dict] | None = None, shared: tuple[str, ...] = ()
+    ) -> None:
         self._pid = pid
         self._rows = rows
+        self._shared = shared
 
     def get_pid(self, key: str) -> object:
         return self._pid
@@ -53,6 +56,9 @@ class _Sessions:
         if self._rows is None:
             raise RuntimeError("no process-identity snapshot")
         return self._rows
+
+    def shared_session_keys_on_pid(self, pid: int) -> tuple[str, ...]:
+        return self._shared if pid == self._pid else ()
 
 
 def test_publishes_with_host_pid_and_key(pid_home: Path) -> None:
@@ -78,27 +84,88 @@ def test_publishes_every_session_sharing_the_pid(pid_home: Path) -> None:
     The publisher records the whole set so a reader on that pid declines to
     resolve a session rather than answering with whoever published last.
 
-    Rows carry ``sid`` because the manager's per-session rows do. The fixture
-    matches the producer deliberately: a shape production never emits would let
-    this pass while the real snapshot was filtered away.
+    Each source is shaped as its producer emits it, because a shape production
+    never emits would let this pass while the real tenants were dropped. The
+    snapshot rows carry ``sid`` as the manager's per-session rows do, and here
+    two task-run steps share one run runtime, both registered with the manager.
+    A shared ``spawn_run`` child is never in that snapshot: it comes from
+    ``shared_session_keys_on_pid``, exercised against the real managers in
+    ``test_shared_child_pid_tenants.py``.
     """
     rows = [
-        {"key": "dashboard:chat-1", "sid": "s1", "pid": 4242},
-        {"key": "subagent:chat-1-child", "sid": "s2", "pid": 4242},
+        {"key": "taskrunner:run-1:task1", "sid": "s1", "pid": 4242},
+        {"key": "taskrunner:run-1:task2", "sid": "s2", "pid": 4242},
         {"key": "dashboard:chat-2", "sid": "s3", "pid": 9999},
     ]
     sessions = _Sessions(4242, rows)
     with _spy_publish() as pub:
-        asyncio.run(identity.publish_turn_identity(sessions, "dashboard:chat-1"))
+        asyncio.run(identity.publish_turn_identity(sessions, "taskrunner:run-1:task1"))
         pub.assert_called_once_with(
             4242,
-            "dashboard:chat-1",
-            co_tenants=["dashboard:chat-1", "subagent:chat-1-child"],
+            "taskrunner:run-1:task1",
+            co_tenants=["taskrunner:run-1:task1", "taskrunner:run-1:task2"],
         )
     mapping = read_session_pid_mapping(4242, pid_home)
     assert mapping.session_key == ""
-    assert mapping.tenants == ("dashboard:chat-1", "subagent:chat-1-child")
+    assert mapping.tenants == ("taskrunner:run-1:task1", "taskrunner:run-1:task2")
     assert mapping.tenant_count == 2
+
+
+def test_a_shared_child_alone_makes_its_parents_pid_shared(pid_home: Path) -> None:
+    """The snapshot lists only the parent; the shared child still counts."""
+    rows = [{"key": "dashboard:chat-1", "sid": "s1", "pid": 4242}]
+    sessions = _Sessions(4242, rows, shared=("subagent:child",))
+    with _spy_publish() as pub:
+        asyncio.run(identity.publish_turn_identity(sessions, "dashboard:chat-1"))
+        pub.assert_called_once_with(
+            4242, "dashboard:chat-1", co_tenants=["dashboard:chat-1", "subagent:child"]
+        )
+    assert read_session_pid_mapping(4242, pid_home).shared
+
+
+def test_a_stalled_older_publication_cannot_overwrite_a_newer_tenant_set(pid_home: Path) -> None:
+    """A write older than one already written is dropped, across event loops.
+
+    The first publication stalls in its write while a child joins and a second
+    publication, on another thread's event loop, runs. Without ordering the
+    stalled parent-only write lands last and the live child's pid reads as the
+    parent's alone.
+    """
+    import threading
+
+    rows = [{"key": "dashboard:chat-1", "sid": "s1", "pid": 4242}]
+    sessions = _Sessions(4242, rows)
+    release = threading.Event()
+    first_started = threading.Event()
+    real = identity._write_if_newest
+
+    def _stalled(*args, **kwargs):
+        # The worker thread is late to start the write: the window where an
+        # older snapshot could replace a newer one.
+        if not first_started.is_set():
+            first_started.set()
+            assert release.wait(10)
+        return real(*args, **kwargs)
+
+    def _publish() -> None:
+        asyncio.run(identity.publish_turn_identity(sessions, "dashboard:chat-1"))
+
+    with _spy_publish() as pub, patch.object(identity, "_write_if_newest", _stalled):
+        first = threading.Thread(target=_publish)
+        first.start()
+        assert first_started.wait(10)
+        sessions._shared = ("subagent:child",)
+        second = threading.Thread(target=_publish)
+        second.start()
+        second.join(10)
+        assert not second.is_alive()
+        release.set()
+        first.join(10)
+        # The stalled older snapshot was dropped, not written over the newer one.
+        assert pub.call_count == 1
+    mapping = read_session_pid_mapping(4242, pid_home)
+    assert mapping.shared
+    assert mapping.tenants == ("dashboard:chat-1", "subagent:child")
 
 
 def test_a_companion_runtime_row_does_not_make_a_sole_tenant_shared(pid_home: Path) -> None:
@@ -135,9 +202,8 @@ def test_a_genuine_co_tenant_still_counts_beside_a_companion_row(pid_home: Path)
     rows = [
         {"key": "dashboard:chat-1", "sid": "s1", "pid": 4242},
         {"key": "Subagent runtime (dashboard:chat-1)", "pid": 4242},
-        {"key": "subagent:chat-1-child", "sid": "s2", "pid": 4242},
     ]
-    sessions = _Sessions(4242, rows)
+    sessions = _Sessions(4242, rows, shared=("subagent:chat-1-child",))
     with _spy_publish() as pub:
         asyncio.run(identity.publish_turn_identity(sessions, "dashboard:chat-1"))
         pub.assert_called_once_with(

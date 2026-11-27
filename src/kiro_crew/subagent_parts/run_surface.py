@@ -7,7 +7,8 @@ writers, and the delegations into
 Each function takes the manager as ``self`` and is bound as the ``SubagentManager``
 attribute of the same name in :mod:`kiro_crew.subagent_parts.manager`.
 
-Manager fields read: ``_agents``, ``_published_depths``, ``_run_events``.
+Manager fields read: ``_agents``, ``_published_depths``, ``_run_events``,
+``_shared_tenants``.
 
 Manager fields written: none.
 """
@@ -55,6 +56,32 @@ def has_live_shared_session(self: SubagentManager, session_key: str) -> bool:
         if runtime.is_alive() and runtime._session_queues.get(handle.session_id) is handle._queue:
             return True
     return False
+
+
+def shared_session_keys_on_pid(self: SubagentManager, pid: int) -> tuple[str, ...]:
+    """The keys of the shared sessions that may still be resident on process *pid*.
+
+    These sessions are never in the session manager's registry, so its
+    process snapshot cannot list them; the pid mapping's tenant set reads
+    them here instead. Read from ``_shared_tenants``, which binding fills, and
+    not from run records: a run is marked done, dismissed or evicted while its
+    session can still be on the process. A session stays until the runtime no
+    longer holds it (its handle unregistered and its close confirmed) or the
+    process has exited.
+    """
+    keys: list[str] = []
+    for sid, (runtime, key) in list(self._shared_tenants.items()):
+        process = getattr(runtime, "_process", None)
+        exited = process is None or getattr(process, "returncode", None) is not None
+        resident = sid in getattr(runtime, "_session_queues", {}) or sid in getattr(
+            runtime, "_unconfirmed_teardowns", ()
+        )
+        if exited or not resident:
+            self._shared_tenants.pop(sid, None)
+            continue
+        if getattr(runtime, "pid", None) == pid and key not in keys:
+            keys.append(key)
+    return tuple(keys)
 
 
 def get(self: SubagentManager, agent_id: str) -> SubagentInfo | None:

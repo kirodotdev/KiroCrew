@@ -524,8 +524,11 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
 
         from kiro_crew.messaging import identity
 
-        writer_src = inspect.getsource(identity.publish_turn_identity)
         assert "session_key" in inspect.signature(identity.publish_turn_identity).parameters
+        assert "publish_pid_tenants(sessions, session_key)" in inspect.getsource(
+            identity.publish_turn_identity
+        )
+        writer_src = inspect.getsource(identity.publish_pid_tenants)
         assert "get_pid" in writer_src, (
             "the shared writer no longer maps the passed session key to its pid "
             "sidecar; the identity channel the strict gate reads would be gone"

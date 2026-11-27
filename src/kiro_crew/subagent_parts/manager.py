@@ -288,6 +288,11 @@ class SubagentManager:
         self._last_spawn_ts: float = 0.0  # monotonic time of the last actual start (stagger gate)
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
+        # Shared sessions bound to another session's runtime: ACP session id ->
+        # (runtime, session key). Kept apart from the run records, which a run
+        # leaves while its session may still be resident on the process;
+        # ``shared_session_keys_on_pid`` drops an entry once it is not.
+        self._shared_tenants: dict[str, tuple[Any, str]] = {}
         # Host memory sizing reads what our settled runtimes hold (macOS) from
         # every live manager (``_host_mem_term``).
         _MEMORY_PRICE_HOLDERS.add(self)
@@ -981,6 +986,7 @@ class SubagentManager:
 
     # subagent_parts/run_surface.py
     has_live_shared_session = _run_surface.has_live_shared_session
+    shared_session_keys_on_pid = _run_surface.shared_session_keys_on_pid
     get = _run_surface.get
     is_queued = _run_surface.is_queued
     _teardown_run_session = _run_surface._teardown_run_session

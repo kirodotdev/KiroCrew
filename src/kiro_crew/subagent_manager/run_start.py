@@ -16,12 +16,12 @@ rebound onto ``kiro_crew.subagent``'s globals by ``bind_component_globals``, so 
 they read unqualified are that module's, imported here for typing only; the others run on
 this module's own globals.
 
-The manager fields this module uses. Writes: none. Reads: ``_admission``, ``_agents``,
+The manager fields this module uses. Writes: ``_shared_tenants``. Reads: ``_admission``, ``_agents``,
 ``_bind_shared_handle``, ``_claim_prices``, ``_dedicated_topup_lock``, ``_fire_event``,
 ``_gate_exit_reset``, ``_gate_wait_mark``, ``_get_parent_runtime``, ``_learned_settled_gb``,
 ``_memory_pressure_hold``, ``_note_startup_progress``, ``_provider_label_of``,
-``_running_count``, ``_sessions``, ``_shared_claims``, ``_should_use_session_sharing``,
-``_shutting_down``, ``_write_state_off_loop``.
+``_running_count``, ``_sessions``, ``_shared_claims``, ``_shared_tenants``,
+``_should_use_session_sharing``, ``_shutting_down``, ``_write_state_off_loop``.
 """
 
 from __future__ import annotations
@@ -775,6 +775,10 @@ async def _bind_shared_handle_impl(
     # Capture cleanup identity before persistence or later setup can fail,
     # otherwise the live handle becomes an untracked ghost.
     cleanup_session_id = str(handle.session_id or "")
+    # A tenant of the runtime's pid mapping from here, before any cancellable
+    # await: a run cancelled during setup may still leave this session resident.
+    if cleanup_session_id:
+        self._manager._shared_tenants[cleanup_session_id] = (runtime, session_key)
     # The backend that actually served this session (the parent's, whichever it
     # is), never a fixed kiro label. ``_run_inner_impl`` re-captures it right
     # after session acquisition; this write covers a run cancelled before that.
@@ -834,6 +838,24 @@ async def _bind_shared_handle_impl(
                 info.id,
                 exc_info=True,
             )
+    # The parent's pid mapping must name this session as a co-tenant before
+    # its first prompt: its process tree inherits the parent's host pid, so a
+    # caller with no token of its own would otherwise resolve as the parent.
+    from kiro_crew.messaging.identity import publish_pid_tenants
+
+    if not await publish_pid_tenants(self._manager._sessions, info.parent_session_key):
+        # The old mapping still names the parent alone. Running anyway would
+        # let this session's tokenless callers act as the parent. The session is
+        # closed here, because the caller may answer the error by clearing the
+        # run's shared ownership and starting a dedicated process instead.
+        try:
+            await provider.shutdown()
+        except Exception:
+            logger.debug("Shared session close after a failed publish: %s", info.id, exc_info=True)
+        raise RuntimeError(
+            f"shared session for {info.id}: the parent's pid mapping could not be "
+            "updated to name it as a co-tenant"
+        )
     # After ownership is published, so a run cancelled inside the model write
     # is still found and its handle destroyed.
     await _apply_shared_start_model(info, handle, runtime)
