@@ -18362,6 +18362,9 @@
       "skillsTab": {
         "add_skill": "Skill hinzufügen",
         "adds_new_requirements_to": "Fügt {{target}} neue Anforderungen hinzu — {{description}}",
+        "budget_startup_index_hidden": "Die übrigen bleiben über skill_search erreichbar; ein angehefteter Skill (always: true) wird in jeder Sitzung vollständig eingefügt.",
+        "budget_startup_index_one": "{{listed}} von {{count}} Skill beim Sitzungsstart namentlich aufgeführt, für den Standard-Agenten ohne geöffnetes Projekt.",
+        "budget_startup_index_other": "{{listed}} von {{count}} Skills beim Sitzungsstart namentlich aufgeführt, für den Standard-Agenten ohne geöffnetes Projekt.",
         "loaded_by_agents_one": "Geladen von {{count}} Agent",
         "loaded_by_agents_other": "Geladen von {{count}} Agenten",
         "approval_required_hint": "Kandidaten warten hier auf deine Genehmigung. Neue reine Prosa-Skills können automatisch live gehen, wenn <settingRef/> deaktiviert ist — Skills mit Skripten sowie jede Aktualisierung eines bestehenden Skills erfordern immer eine Überprüfung, außer wenn skills.auto_refine_on_deviation aktiviert ist.",

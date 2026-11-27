@@ -18852,6 +18852,10 @@
       "skillsTab": {
         "add_skill": "Adicionar habilidade",
         "adds_new_requirements_to": "Adiciona novos requisitos a {{target}} — {{description}}",
+        "budget_startup_index_hidden": "Os demais continuam acessíveis via skill_search; um skill fixado (always: true) é injetado por inteiro em cada sessão.",
+        "budget_startup_index_many": "{{listed}} de {{count}} skills listados pelo nome no início da sessão, para o agente padrão sem projeto aberto.",
+        "budget_startup_index_one": "{{listed}} de {{count}} skill listado pelo nome no início da sessão, para o agente padrão sem projeto aberto.",
+        "budget_startup_index_other": "{{listed}} de {{count}} skills listados pelo nome no início da sessão, para o agente padrão sem projeto aberto.",
         "loaded_by_agents_many": "Carregada por {{count}} agentes",
         "loaded_by_agents_one": "Carregada por {{count}} agente",
         "loaded_by_agents_other": "Carregada por {{count}} agentes",

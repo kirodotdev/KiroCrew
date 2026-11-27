@@ -18362,6 +18362,9 @@
       "skillsTab": {
         "add_skill": "স্কিল যোগ করুন",
         "adds_new_requirements_to": "{{target}}-এ নতুন রিকোয়ারমেন্ট যোগ করে — {{description}}",
+        "budget_startup_index_hidden": "বাকিগুলো skill_search দিয়ে পাওয়া যায়; পিন করা স্কিল (always: true) প্রতি সেশনে পুরোটা ইনজেক্ট হয়।",
+        "budget_startup_index_one": "সেশন শুরুতে {{count}}টির মধ্যে {{listed}}টি স্কিল নাম ধরে তালিকাভুক্ত, কোনও প্রোজেক্ট খোলা না থাকা ডিফল্ট এজেন্টের জন্য।",
+        "budget_startup_index_other": "সেশন শুরুতে {{count}}টির মধ্যে {{listed}}টি স্কিল নাম ধরে তালিকাভুক্ত, কোনও প্রোজেক্ট খোলা না থাকা ডিফল্ট এজেন্টের জন্য।",
         "loaded_by_agents_one": "{{count}}টি এজেন্ট লোড করেছে",
         "loaded_by_agents_other": "{{count}}টি এজেন্ট লোড করেছে",
         "approval_required_hint": "প্রার্থীরা এখানে তোমার অনুমোদনের অপেক্ষায় থাকে। <settingRef/> বন্ধ থাকলে নতুন শুধু-গদ্য স্কিলগুলি স্বয়ংক্রিয়ভাবে লাইভ হতে পারে — স্ক্রিপ্টযুক্ত স্কিল এবং বিদ্যমান স্কিলের আপডেটের সবসময় পর্যালোচনা প্রয়োজন, যদি না skills.auto_refine_on_deviation চালু থাকে।",

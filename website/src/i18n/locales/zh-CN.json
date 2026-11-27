@@ -17872,6 +17872,8 @@
       "skillsTab": {
         "add_skill": "添加技能",
         "adds_new_requirements_to": "为 {{target}} 新增要求 — {{description}}",
+        "budget_startup_index_hidden": "其余技能仍可通过 skill_search 找到；固定（always: true）的技能会在每次会话中完整注入。",
+        "budget_startup_index_other": "会话开始时按名称列出 {{count}} 个技能中的 {{listed}} 个（未打开项目的默认代理）。",
         "loaded_by_agents_other": "由 {{count}} 个代理加载",
         "approval_required_hint": "候选技能在此等待你的批准。当 <settingRef/> 关闭时，新纯文本技能可以自动发布 — 包含脚本的技能以及对现有技能的更新始终需要审查，除非开启了 skills.auto_refine_on_deviation。",
         "approve": "批准",

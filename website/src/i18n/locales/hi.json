@@ -18362,6 +18362,9 @@
       "skillsTab": {
         "add_skill": "स्किल जोड़ें",
         "adds_new_requirements_to": "{{target}} में नई ज़रूरतें जोड़ता है — {{description}}",
+        "budget_startup_index_hidden": "बाकी skill_search से पहुँच में रहते हैं; पिन किया गया स्किल (always: true) हर सत्र में पूरा इंजेक्ट होता है।",
+        "budget_startup_index_one": "सत्र शुरू होने पर {{count}} में से {{listed}} स्किल नाम से सूचीबद्ध है, बिना खुले प्रोजेक्ट वाले डिफ़ॉल्ट एजेंट के लिए।",
+        "budget_startup_index_other": "सत्र शुरू होने पर {{count}} में से {{listed}} स्किल नाम से सूचीबद्ध हैं, बिना खुले प्रोजेक्ट वाले डिफ़ॉल्ट एजेंट के लिए।",
         "loaded_by_agents_one": "{{count}} एजेंट द्वारा लोड किया गया",
         "loaded_by_agents_other": "{{count}} एजेंट द्वारा लोड किया गया",
         "approval_required_hint": "उम्मीदवार यहाँ तुम्हारी स्वीकृति की प्रतीक्षा करते हैं। जब <settingRef/> बंद हो, तो नई केवल-गद्य स्किल्स अपने आप लाइव हो सकती हैं — स्क्रिप्ट वाली स्किल्स और किसी मौजूदा स्किल के अपडेट की हमेशा समीक्षा आवश्यक है, जब तक skills.auto_refine_on_deviation चालू न हो।",
