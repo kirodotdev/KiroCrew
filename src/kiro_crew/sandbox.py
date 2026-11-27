@@ -469,6 +469,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _fd_sweep_ranges,
         _inside_kirocrew_sandbox,
         _inside_macos_sandbox,
+        _last_sandbox_exec_failure,
         _linux_remedy_guidance,
         _macos_sandbox_state,
         _probe_bind_libc,
@@ -492,8 +493,10 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _probe_write_identity_maps,
         _read_max_user_namespaces,
         _remedy_for_step,
+        _sandbox_exec_failed,
         is_docker_container,
         is_wsl,
+        sandbox_exec_failure_reason,
     )
     from kiro_crew.sandbox_rlimit import (  # noqa: F401
         _BUILD_NOFILE_CEILING,

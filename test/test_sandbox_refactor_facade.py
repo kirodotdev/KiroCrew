@@ -283,7 +283,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _probe_unshare_via_spawn _probe_unshare_via_fork is_wsl is_docker_container
         _probe_sandbox_exec _inside_kirocrew_sandbox _macos_sandbox_state
         _inside_macos_sandbox _MAX_USER_NAMESPACES_PATH _read_max_user_namespaces
-        REMEDY_USERNS_CAP_ZERO
+        REMEDY_USERNS_CAP_ZERO _last_sandbox_exec_failure _sandbox_exec_failed
+        sandbox_exec_failure_reason
         """.split()),
     "kiro_crew.sandbox_unavailable": tuple("""
         _allow_no_isolation UNSANDBOXED_BY_OPERATOR UNSANDBOXED_BY_PLATFORM
