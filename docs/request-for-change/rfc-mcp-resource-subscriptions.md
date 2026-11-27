@@ -593,10 +593,11 @@ holder shares the session's grant by presenting the same caller.
 
 ## 7. Security considerations
 
-- **No new trust path.** The daemon already accepts a Register from a same-uid
-  peer that names a session key (`_caller_from_register`, and `needs_identity` in
-  `_resolve_register_identity`, both in `daemon/identity.py`). The holder
-  uses that path: its Register carries the session's session key and
+- **No new trust path.** The daemon already accepts a Register that names a
+  session key when the kernel reports the daemon's owning gateway as its sender
+  (`_caller_from_register` and `_sent_by_owner` in `_resolve_register_identity`,
+  both in `daemon/identity.py`); from any other same-uid peer the frame's key is
+  ignored. The holder registers from the gateway and uses that path: its Register carries the session's session key and
   `channel_id` as an inline caller, which `_caller_from_register` reads the way
   it reads a claim (§4.10). The holder carries no session token, so none reaches
   a third-party backend's grant caller (§4.4).
