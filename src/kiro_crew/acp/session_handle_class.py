@@ -937,6 +937,9 @@ class AcpSessionHandle:
         # The notice when the kiro-cli a relay KAS runs under is outside its tested
         # range (``KasHarness.untested_version_notice``); "" otherwise.
         self.kas_untested_version_notice: str = ""
+        # The notice when the kiro-cli a relay KAS runs under ships a KAS that does
+        # not name Kiro Crew as its client (``KasHarness.client_origin_notice``).
+        self.kas_client_origin_notice: str = ""
         # The notice that this chat runs on kiro-cli because the build default's
         # first move to Crew's engine failed (``KasHarness.engine_fallback_notice``).
         self.kas_engine_fallback_notice: str = ""

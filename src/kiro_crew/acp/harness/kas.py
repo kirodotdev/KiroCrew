@@ -58,6 +58,11 @@ from kiro_crew.acp.harness.base import (
     TeardownPolicy,
 )
 from kiro_crew.acp.harness.kas_missing_agent import _kiro_cli_builtin_reason, _missing_agent_reason
+from kiro_crew.acp.harness.kas_version_floors import (
+    KAS_AGENT_PROMPT_MIN_KIRO_CLI,
+    kas_agent_prompt_issue,
+    kas_client_origin_issue,
+)
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_agents_session_hoist import without_subagent_refused_servers
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
@@ -150,27 +155,6 @@ __all__ = [
 #: kiro-cli is upgraded under it, so the slot is what "once per release" needs
 #: and is bounded by its own shape.
 _DRIFT_WARNED_VERSION: tuple[int, int, int] | None = None
-
-#: Oldest kiro-cli whose KAS applies a ``customAgents`` prompt: 2.33.1 ships KAS
-#: 0.66.58 (``kas/worker-kit-live.jsonl``, ``kas/markdown-agent-live.jsonl``).
-#: KAS 0.66.43 (kiro-cli 2.32.0) dropped the prompt of every custom agent.
-KAS_AGENT_PROMPT_MIN_KIRO_CLI: tuple[int, int, int] = (2, 33, 1)
-
-
-def kas_agent_prompt_issue(version: tuple[int, int, int] | None) -> str:
-    """The upgrade notice for a relay-route KAS on kiro-cli *version*, or ``""``.
-
-    Warn, never refuse: the chat still runs, without the agent's own prompt. An
-    unknown version says nothing, as for the steer floor (``steer_version_issue``).
-    """
-    if version is None or version >= KAS_AGENT_PROMPT_MIN_KIRO_CLI:
-        return ""
-    installed, minimum = (".".join(map(str, v)) for v in (version, KAS_AGENT_PROMPT_MIN_KIRO_CLI))
-    return (
-        f"kiro-cli {installed} is older than {minimum}, so KAS drops this agent's own "
-        "prompt and the chat runs without it. Update it: run 'kiro-cli update', "
-        "then restart Kiro Crew."
-    )
 
 
 def warn_kas_vocabulary_drift(version: tuple[int, int, int] | None) -> None:
@@ -780,6 +764,9 @@ class KasHarness(MembershipHarness):
     #: kiro-cli a relay spawn ran under, set at each spawn; "" on Crew's own bundle,
     #: whose engine is the pinned one (``acp/kas_pin.py``).
     untested_version_notice = ""
+    #: :func:`kas_client_origin_issue` for the kiro-cli a relay spawn ran under, set
+    #: at each spawn; "" on Crew's own bundle, whose pinned engine names its client.
+    client_origin_notice = ""
     #: The route the process this harness last spawned took, set at each spawn.
     #: The sign-in messages for THIS runtime read it, never the process-wide
     #: ``kas_route.last_spawn_route``, which another chat's spawn may have moved.
@@ -849,6 +836,7 @@ class KasHarness(MembershipHarness):
         self.bundle_engine_version = ""
         self.relay_engine_version = ""
         self.untested_version_notice = ""
+        self.client_origin_notice = ""
         self.engine_fallback_notice = ""
         # The route reason of this spawn's bundle plan ("" on the relay): the
         # runtime reads it when the start fails (``runtime_spawn_entry``).
@@ -969,6 +957,7 @@ class KasHarness(MembershipHarness):
             if spawned_version is not None
             else ""
         )
+        self.client_origin_notice = kas_client_origin_issue(spawned_version)
         self.agent_prompt_applied = (
             kiro_cli_version is not None and kiro_cli_version >= KAS_AGENT_PROMPT_MIN_KIRO_CLI
         )
@@ -1300,6 +1289,7 @@ class KasHarness(MembershipHarness):
         handle.kas_bundle_engine_version = self.bundle_engine_version
         handle.kas_relay_engine_version = self.relay_engine_version
         handle.kas_untested_version_notice = self.untested_version_notice
+        handle.kas_client_origin_notice = self.client_origin_notice
         handle.kas_engine_fallback_notice = self.engine_fallback_notice
         # A Bot's own chat: its app snapshot follows the native session id.
         from kiro_crew.acp.harness.kas_bot_chat import bind_bot_chat_snapshot

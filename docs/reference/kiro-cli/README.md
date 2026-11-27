@@ -8,13 +8,15 @@ inherited `PATH`. Unattended spawns use `kiro_cli.pin_kiro_cli`, which drops the
 inherited `PATH` and accepts only an absolute path. `kiro_prerequisite_status.py`'s
 `KIRO_CLI_UPDATE_COMMAND` is an unversioned `kiro-cli update`. The version
 numbers in the code are feature floors, each a lowest probed release rather than
-a supported range, and a 3.x CLI satisfies all of them: `mcp_hot_reload.py`'s
+a supported range, and a 3.4.0 or later CLI satisfies all of them: `mcp_hot_reload.py`'s
 `MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION` (2.21.0, MCP hot reload) and
 `kiro_cli.py`'s `SPEC_PERMISSIONS_MIN_VERSION` (2.23.0, the agent-spec
 `permissions` block), `MANDATORY_MCPS_DROP_MIN_VERSION` (2.27.0, deferring
 Crew's MCP servers under Tool Search) and `KAS_AUTH_CLIENT_MIN_KIRO_CLI` (2.35.2,
-`--auth-method client` on a KAS relay spawn), and `acp/harness/kas.py`'s
-`KAS_AGENT_PROMPT_MIN_KIRO_CLI` (2.33.1, KAS applying a `customAgents` prompt).
+`--auth-method client` on a KAS relay spawn), and `acp/harness/kas_version_floors.py`'s
+`KAS_AGENT_PROMPT_MIN_KIRO_CLI` (2.33.1, KAS applying a `customAgents` prompt)
+and `KAS_CLIENT_ORIGIN_MIN_KIRO_CLI` (3.4.0, a relay KAS that names Kiro Crew as
+its client; below it a new chat shows an upgrade notice and still runs).
 So these pages describe what upstream published on the fetch date recorded per
 row, not a supported-version contract.
 
