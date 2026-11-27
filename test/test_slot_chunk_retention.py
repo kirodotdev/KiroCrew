@@ -132,21 +132,52 @@ def test_deferred_cut_leaves_no_stranded_pre_tool_chunk_rows(tmp_path, group_rol
     assert _slot_still_refers(slot, rows) is False
 
 
-def test_release_is_idempotent_and_leaves_other_rows_alone(tmp_path):
-    """Only ``chunk`` rows go; a queued wire frame or assistant row stays."""
+def test_release_with_no_reader_empties_the_whole_queue(tmp_path):
+    """No reader can read the queue, so its wire frames and durable rows go too.
+
+    The window still holds the durable rows; only the delivery queue lets go.
+    """
     _make_state(tmp_path)
     slot = _ChatSlot(key="dashboard:chat-1")
-    slot.append("assistant", "kept", "msg msg-a", broadcast=False)
+    kept = slot.append("assistant", "kept", "msg msg-a", broadcast=False)
     _stream(slot, ["a", "b"])
     slot.push_wire_frame("context_usage", json.dumps({"pct": 1.0}))
 
-    assert slot.purge_chunks() == 2
+    assert slot.purge_chunks() == 4
     assert slot.purge_chunks() == 0
 
-    roles = [m.get("role") for m in slot._pending]
-    assert "chunk" not in roles
-    assert "assistant" in roles
-    assert "context_usage" in roles
+    assert slot._pending == []
+    assert slot.messages == [kept]
+
+
+def test_turns_nobody_streams_leave_nothing_queued(tmp_path):
+    """A worker's turns (no reader) must not pile their rows up in the queue."""
+    state = _make_state(tmp_path)
+    slot = _ChatSlot(key="dashboard:chat-1")
+    state._slots[slot.key] = slot
+    for turn in range(3):
+        slot.append("user", f"q{turn}", "msg msg-u", broadcast=False)
+        slot.append("tool", "🔧 ran", "msg msg-tool", broadcast=False)
+        slot.push_wire_frame("context_usage", json.dumps({"pct": 1.0}))
+        _stream(slot, ["an", "swer"])
+        _flush_segment(state, slot, "answer", broadcast=False)
+
+    # Only the reply the last flush finalized after its release is still queued;
+    # the next release takes it.
+    assert [m["role"] for m in slot._pending] == ["assistant"]
+    assert [m["role"] for m in slot.messages].count("assistant") == 3
+
+
+def test_a_reader_still_gets_the_rows_a_release_was_refused_for(tmp_path):
+    """With a reader attached, the queue keeps its durable rows and frames too."""
+    _make_state(tmp_path)
+    slot = _ChatSlot(key="dashboard:chat-1")
+
+    with slot.pending_consumer():
+        slot.append("tool", "🔧 ran", "msg msg-tool", broadcast=False)
+        _stream(slot, ["a"])
+        assert slot.purge_chunks() == 0
+        assert [m.get("role") for m in slot.drain()] == ["tool", "chunk"]
 
 
 # ── SSE / OpenAI transports: undelivered rows must survive ──
