@@ -68,7 +68,6 @@ import {
   SHARE_BUTTON_CLASS,
   ServerName,
   ShareAction,
-  TrustChangesChoice,
 } from './McpManagementLaunchReview'
 import { AssessmentView } from './McpManagementAssessment'
 import { CwdQuestionDialog } from './McpManagementCwdQuestion'
@@ -268,16 +267,6 @@ export function McpManagement({
     const fresh = qc.getQueryData<GatewayStatus>(['mcpGatewayStatus'])
     if (reads.every(r => r.status === 'fulfilled') && fresh && !fresh.enabled) setConfirmSharing(true)
   }
-
-  // The Sharing row's "Always trust changes to this server". Unchecked, the
-  // share stays and the next changed launch asks again; ticked again, the
-  // server trusts changes while its current launch stays approved.
-  const setTrust = useMutation({
-    mutationFn: ({ name, trusted }: { name: string; trusted: boolean }): Promise<unknown> =>
-      trusted ? api.mcpGatewayTrustChanges(name) : api.mcpGatewayStopTrustingChanges(name),
-    onSettled: () => invalidate(),
-    onError: (err, { name }) => setError(i18nT(stubErrorKey(err), { name })),
-  })
 
   const setStub = useMutation({
     // `refused` is the stored refusal's own `expected_launch` behind the press.
@@ -939,15 +928,6 @@ export function McpManagement({
                   <tr className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 border-t border-[var(--border)] px-3 py-3 md:table-row md:px-0 md:py-0">
                     <td className="col-start-1 row-start-1 min-w-0 p-0 align-top md:table-cell md:px-4 md:py-3">
                       <ServerName id={serverNameId(s.name)} name={s.name} />
-                      <TrustChangesChoice
-                        server={s}
-                        approved={!waiting}
-                        busy={busy || setTrust.isPending}
-                        onTrustChange={trusted => {
-                          setError(null)
-                          setTrust.mutate({ name: s.name, trusted })
-                        }}
-                      />
                       <DetailsToggle
                         server={s}
                         open={detailsOpen}

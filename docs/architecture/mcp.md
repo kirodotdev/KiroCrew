@@ -1692,6 +1692,17 @@ MCP Management; that choice is stored as an override and survives later
 
 ### Stub launch approval
 
+Sharing has no approval step: the gateway start's rewrite pass admits and
+records every stub's launch the first time it sees it and whenever it changes
+(`LaunchApprovals.auto`, set by `_init_mcp_gateway`, audited as
+`AUTO_AUDIT_REASON`), so a shared backend runs a launch no person looked at. On
+Linux and macOS gatewayd spawns it inside the one global `standard` sandbox each
+chat's agent runs in, and refuses the share (the server then runs per chat)
+where none can be built; on Windows it runs unsandboxed
+(`backend._sandboxed_backend_argv`, `docs/system-specs/modules/security.md`). The
+rules below are what the store records, and what a pass without `auto` (the
+dashboard's resolution, the app-refresh probe) still applies.
+
 A stub roster entry selects routing, while
 `~/.kiro/crew/mcp-launch-approvals/approvals.json` authorizes the exact resolved
 command and arguments together with the derived effective-environment hash that

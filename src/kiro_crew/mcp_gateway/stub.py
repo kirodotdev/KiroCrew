@@ -482,6 +482,15 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         # refusing stub opens no connection and names no target (``--refuse``).
         logger.info("refusing: no tools for server %r agent %r", args.server, args.agent)
         return await _serve_refusal(StubSession(), server=args.server)
+    from kiro_crew.mcp_gateway.session_confinement import PER_CHAT_ENV
+
+    if os.environ.get(PER_CHAT_ENV) == "1":
+        # A session fenced tighter than a shared backend: run the server here, per
+        # chat, inside its sandbox (``session_confinement``). The fallback refuses an
+        # unresolved ``secret://`` value rather than launching with it.
+        logger.info("per-chat session: running %r here, not on the gateway", args.server)
+        fallback_exec(args)
+        return 1  # unreachable
     _adopt_read_ceiling(args)
     # build_register_payload -> _build_caller_block -> CallerContext.from_env
     # does a synchronous /proc ancestry walk + file reads (and _binary_version

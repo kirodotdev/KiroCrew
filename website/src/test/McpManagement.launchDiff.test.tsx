@@ -9,13 +9,12 @@
 // - a hidden or redacted value is named by its key only, never by its value
 //
 // Every label is read from the catalog, so a wording change never breaks a test.
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, render } from '@testing-library/react'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { i18nT } from '../i18n/t'
 import { fmtList } from '../i18n/format'
-import { RefusalLaunch, ServerName, TrustChangesChoice } from '../pages/settings/McpManagementLaunchReview'
-import type { McpManagedServer } from '../api/client'
+import { RefusalLaunch, ServerName } from '../pages/settings/McpManagementLaunchReview'
 import { distinctCommands, envValueChanges, launchChanges, mergedEnvRule } from '../pages/settings/mcpLaunchDiff'
 import { withCurrentLaunch, type LaunchRefusal } from '../pages/settings/mcpManagementModel'
 
@@ -706,42 +705,6 @@ describe('launches that differ only in a value', () => {
     const { container } = render(<RefusalLaunch refusal={perAgent} />)
     expect(columnLaunches(container, M('details_approved'))).toEqual([['/opt/bin/docs-mcp', 'PATH']])
     expect(columnLaunches(container, M('details_new'))).toEqual([['/opt/bin/docs-mcp', 'PATH']])
-  })
-})
-
-describe('the Sharing row\'s "Always trust changes" choice', () => {
-  const row = (trust: boolean) =>
-    ({ name: 'docs-mcp', stub: true, can_stub: true, in_allowlist: true, entry_poolable: false, agents: ['a'], transport: 'stdio', denylisted: false, trust_changes: trust }) as McpManagedServer
-  const mountRow = (trust: boolean, onTrustChange = vi.fn(), approved = true) => {
-    render(<TrustChangesChoice server={row(trust)} approved={approved} busy={false} onTrustChange={onTrustChange} />)
-    return onTrustChange
-  }
-
-  it('shows the choice checked, and unchecking it takes it off', () => {
-    const change = mountRow(true)
-    const box = screen.getByRole('checkbox', { name: M('trust_changes_label') }) as HTMLInputElement
-    expect(box.checked).toBe(true)
-    fireEvent.click(box)
-    expect(change).toHaveBeenCalledExactlyOnceWith(false)
-  })
-
-  it('draws the choice unchecked for an untrusted server, and ticking it grants trust', () => {
-    const change = mountRow(false)
-    const box = screen.getByRole('checkbox', { name: M('trust_changes_label') }) as HTMLInputElement
-    expect(box.checked).toBe(false)
-    fireEvent.click(box)
-    expect(change).toHaveBeenCalledExactlyOnceWith(true)
-  })
-
-  it('explains the choice in an info tip a keyboard can reach', () => {
-    mountRow(true)
-    const tip = screen.getByTitle(M('trust_changes_tip'))
-    expect(tip.tagName).toBe('BUTTON')
-  })
-
-  it('draws no choice while the launch waits for approval', () => {
-    mountRow(true, vi.fn(), false)
-    expect(screen.queryByRole('checkbox')).toBeNull()
   })
 })
 

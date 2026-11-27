@@ -153,11 +153,10 @@ def _stub_eligibility(
       being asked for, INCLUDING when the stored measurement describes a program
       other than the one this name launches
 
-    With sharing ON the question is ``recommend_share``, because a stub joins a
-    pooled backend and co-tenancy is what needs supporting. With sharing OFF a
-    stub pools nothing, so ``recommend_stub`` is the honest bar; asking for the
-    stricter one there would make the gesture stub nothing at all in the
-    configuration most operators are in.
+    The bar is ``recommend_stub`` with sharing on or off: every server is
+    shared by default, and a share recommendation needs a pre-flight that
+    nothing may have run yet, so asking for it made the gesture share nothing.
+    A recorded hazard still lowers ``recommend_stub`` and skips the server.
 
     The two kinds of evidence are read differently, because they push opposite
     ways. A PREFLIGHT can promote a server and enable co-tenancy, so it is read
@@ -201,7 +200,7 @@ def _stub_eligibility(
         if not is_stdio or name in UNPOOLABLE_SERVERS:
             skipped.append({"name": name, "reason": "cannot_stub"})
             continue
-        blocked_by_env, private = (
+        blocked_by_env, _private = (
             _env_pooling_outcome(row, forward_declared_env, pool_identity_env_keys())
             if sharing_on
             else (False, False)
@@ -232,10 +231,12 @@ def _stub_eligibility(
             identity_keys=pool_identity_env_keys(),
             probe_current=(probe_current or {}).get(name, True),
         )
-        # A server every declaration of which gets a connection-private backend
-        # has no co-tenants even with sharing on, so the stub bar applies to it.
-        allowed = verdict.recommend_share if sharing_on and not private else verdict.recommend_stub
-        if not allowed:
+        # Every server is shared by default (``mcp_gateway.auto_share``), so the
+        # stub bar applies with sharing on too: a share recommendation needs a
+        # pre-flight nothing may have run yet, and asking for it made "Turn on
+        # sharing" list servers and then share none. A recorded hazard still
+        # withholds the stub (``recommend_stub``).
+        if not verdict.recommend_stub:
             skipped.append({"name": name, "reason": "evidence_insufficient"})
             continue
         eligible.append(name)
@@ -997,6 +998,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                         asked_roots=(
                             not resolve_eligibility and folder_use.roots_observed(n, asked_roots)
                         ),
+                        launch_free=declarations.launch_free(n),
                     )
                     is None
                     and folder_use.effective_answer(n, answers, bindings, current_launch.get(n))
@@ -1016,7 +1018,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 # the lock's job is the config.json read-modify-write this handler
                 # races with (the sharing toggle, the CLI's `config set`).
                 sharing_on = bool(
-                    overlay["enabled"] if "enabled" in overlay else section.get("enabled", False)
+                    overlay["enabled"] if "enabled" in overlay else section.get("enabled", True)
                 )
                 written, skipped = _stub_eligibility(
                     written,

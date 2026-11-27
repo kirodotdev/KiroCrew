@@ -5890,7 +5890,7 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "enabled": false,
+        "enabled": true,
         "apps_enabled": true,
         "forward_declared_env": true,
         "socket_path": "",
@@ -5931,10 +5931,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Share MCP Backends",
-      "help": "Let sessions with an identical server configuration share one MCP server process instead of each getting its own. Off, every session gets its own backend — the same process topology as running without the broker. This switch does not start the broker: the broker starts iff some server is stubbed, and this chooses whether stubbed servers share one backend or get one per session; see docs/architecture/design-notes/mcp-stub-decoupling.md. Default False — opt-in.",
+      "help": "Let sessions with an identical server configuration share one MCP server process instead of each getting its own. Off, every session gets its own backend — the same process topology as running without the broker. This switch does not start the broker: the broker starts iff some server is stubbed, and this chooses whether stubbed servers share one backend or get one per session; see docs/architecture/design-notes/mcp-stub-decoupling.md. Default True: on, every stdio server is stubbed and shared at gateway start unless you turned that server off.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": true
     },
     {
       "path": "mcp_gateway.apps_enabled",

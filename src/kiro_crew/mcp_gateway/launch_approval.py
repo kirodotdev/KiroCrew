@@ -26,6 +26,18 @@ checked against it:
 * gatewayd re-checks the command at resolve time and the declared env before
   forwarding it, and fails closed on both.
 
+Sharing has no approval step: the gateway start makes that decision itself.
+Its rewrite pass (``LaunchApprovals.auto``, always set by ``_init_mcp_gateway``)
+admits every non-managed launch the first time it sees it and again whenever
+it changes, the way a server whose changes the operator trusts is admitted,
+and records it here with its own audit reason. So a shared backend's launch is
+one no person looked at; on Linux and macOS gatewayd runs it inside the global
+sandbox (``backend._sandboxed_backend_argv``), and outside it on Windows. The store
+stays the record of what ran. Never-pooled servers are still never admitted,
+and a launch set past the per-server cap is still refused. A pass without
+``auto`` (the dashboard's resolution, the app-refresh probe) applies every rule
+below.
+
 An approval gets its fingerprints at the moment of the operator's decision.
 Turning a stub on resolves the launch behind the name right then, through the
 rewriter's own resolution (:mod:`kiro_crew.mcp_gateway.launch_resolve`), and
@@ -272,6 +284,10 @@ class LaunchApprovals:
     prefold_healed: dict[str, dict[str, tuple[str, str]]] = field(default_factory=dict)
     #: Stems the operator chose "Always trust changes to this server" for, in the dashboard.
     trusted: set[str] = field(default_factory=set)
+    #: Set for the gateway start's pass (sharing has no approval step): every non-managed launch
+    #: is admitted and recorded the first time it is seen and whenever it changes,
+    #: as a trusted server's changes are. Never persisted.
+    auto: bool = False
     #: Trusted stems: fingerprints admitted only by trust, and every fingerprint seen live.
     trust_admitted: dict[str, dict[str, str]] = field(default_factory=dict)
     trust_live: dict[str, set[str]] = field(default_factory=dict)
@@ -339,6 +355,10 @@ class LaunchApprovals:
             self.trust_live,
             self.declared,
         )
+
+    def trusts(self, stem: str) -> bool:
+        """Whether this pass admits a changed (or first) launch of *stem* by trust."""
+        return stem in self.trusted or (self.auto and stem not in _unpoolable_stems())
 
     def note_declared(self, name: str) -> None:
         """Record a declared server within the snapshot's name and record bounds.
@@ -699,10 +719,13 @@ class LaunchApprovals:
         it reloads from the stored fingerprint, and a tuple never equals the
         list that copy decodes to.
         """
-        return [
+        rows: list[Any] = [
             [stem, sorted(fps), sorted(self.approved_pairs.get(stem, ()))]
             for stem, fps in sorted(self.approved.items())
         ]
+        # A pass that approves automatically must not be served a cached
+        # overlay whose refusals were decided without it.
+        return [*rows, ["auto"]] if self.auto else rows
 
 
 def _bounded_name(value: Any) -> str:
@@ -1415,7 +1438,7 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
                 if source not in before or source_pair not in before_pairs:
                     withdrawn.add(fp)
                     dropped.add(launch_pair(_split(fp)[0], _split(source_pair)[1]))
-            if stem not in current.trusted:
+            if not (approvals.auto or stem in current.trusted):
                 withdrawn |= set(approvals.trust_admitted.get(stem, {}))
                 dropped |= set(approvals.trust_admitted.get(stem, {}).values())
             withheld[stem] = withdrawn

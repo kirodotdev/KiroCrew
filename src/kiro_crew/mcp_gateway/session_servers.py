@@ -73,8 +73,15 @@ from kiro_crew.start_priority import START_PRIORITY_ENV, StartPriority
 logger = logging.getLogger(__name__)
 
 
-def attach_stub_session_token(entries: list[dict[str, Any]], token: str) -> list[dict[str, Any]]:
+def attach_stub_session_token(
+    entries: list[dict[str, Any]], token: str, *, per_chat: bool = False
+) -> list[dict[str, Any]]:
     """Return *entries* with *token* added to each element's ACP ``env`` array.
+
+    *per_chat* also adds ``session_confinement.PER_CHAT_ENV=1`` to each element, for
+    a session confined beyond the shared backends' tier: the element's own env
+    reaches the stub even on a harness that clears its MCP children's environment,
+    and the stub then runs the server itself instead of contacting the gateway.
 
     Applied to the stub entries of ONE ACP session, after
     :func:`pooled_session_servers` has shaped them. Kept separate from that
@@ -87,15 +94,20 @@ def attach_stub_session_token(entries: list[dict[str, Any]], token: str) -> list
     stays byte-identical to the pre-token wire shape. Copies each element: the
     caller's list may be a cached array shared with another session.
     """
-    if not token:
+    from kiro_crew.mcp_gateway.session_confinement import PER_CHAT_ENV
+
+    if not token and not per_chat:
         return entries
     out: list[dict[str, Any]] = []
     for entry in entries:
         shaped = dict(entry)
         raw_env = shaped.get("env")
         env = [e for e in raw_env if isinstance(e, dict)] if isinstance(raw_env, list) else []
-        env = [e for e in env if e.get("name") != STUB_SESSION_TOKEN_ENV]
-        env.append({"name": STUB_SESSION_TOKEN_ENV, "value": token})
+        env = [e for e in env if e.get("name") not in (STUB_SESSION_TOKEN_ENV, PER_CHAT_ENV)]
+        if token:
+            env.append({"name": STUB_SESSION_TOKEN_ENV, "value": token})
+        if per_chat:
+            env.append({"name": PER_CHAT_ENV, "value": "1"})
         shaped["env"] = env
         out.append(shaped)
     return out

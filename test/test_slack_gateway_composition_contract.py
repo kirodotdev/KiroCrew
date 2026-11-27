@@ -266,6 +266,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_publish_paused_share_note", "async method", "(self) -> 'None'"),
         ("_schedule_paused_share_note", "method", "(self) -> 'None'"),
+        ("_auto_share_mcp_servers", "async method", "(self) -> 'None'"),
+        (
+            "_watch_mcp_declarations",
+            "async method",
+            "(self, poll_secs: 'float' = 15.0, wait: 'Callable[[float], Awaitable[None]] | None' = None, *, pending: 'bool' = False) -> 'None'",
+        ),
         (
             "_init_mcp_gateway",
             "async method",

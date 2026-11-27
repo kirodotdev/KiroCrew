@@ -184,10 +184,16 @@ def _is_stub_for(stub: Mapping[str, Any], server: str, session_token: str) -> bo
         return False
     if _stub_registered_servers(stub.get("args")) != [server]:
         return False
+    from kiro_crew.mcp_gateway.session_confinement import PER_CHAT_ENV
+
     env = stub.get("env")
-    if not isinstance(env, list) or len(env) != 1:
+    if not isinstance(env, list) or not env:
         return False
-    pair = env[0]
+    # The token first; a confined session's element also carries exactly the
+    # per-chat mark (``session_servers.attach_stub_session_token``).
+    pair, rest = env[0], env[1:]
+    if rest != [] and rest != [{"name": PER_CHAT_ENV, "value": "1"}]:
+        return False
     return (
         isinstance(pair, Mapping)
         and set(pair) == {"name", "value"}

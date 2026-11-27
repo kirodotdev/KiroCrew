@@ -568,7 +568,7 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
     _spawn_min = section.read("spawn_concurrency_min", _safe_int, 1)
     _spawn_max = section.read("spawn_concurrency_max", _safe_int, _spawn_min)
     return McpGatewayConfig(
-        enabled=bool(section.get("enabled")),
+        enabled=section.read("enabled", _safe_bool),
         # Absent -> True so installs that never configured this keep
         # rendering. A malformed value cannot be distinguished here: the
         # schema validator REMOVES an invalid value before the loader

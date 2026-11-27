@@ -1124,6 +1124,12 @@ async def run(self: GatewayOrchestrator) -> None:
             _release_task.add_done_callback(self._background_tasks.discard)
         elif self.subagent_mgr is not None:
             self.subagent_mgr.release_orphan_notices()
+    # Share every stdio server nobody decided about (``mcp_gateway.auto_share``)
+    # once the socket is bound, off the readiness path; the new stubs reach new
+    # chats through the live apply. A person's off and the global off are kept.
+    _share_task = asyncio.create_task(self._auto_share_mcp_servers())
+    self._background_tasks.add(_share_task)
+    _share_task.add_done_callback(self._background_tasks.discard)
     # The socket is bound. Move the boot heap into the permanent generation so
     # later full collections stop re-scanning it (~150k objects, a 50 ms
     # stop-the-world pass on the event loop), then turn cyclic GC back on:

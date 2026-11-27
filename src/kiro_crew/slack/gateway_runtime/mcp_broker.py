@@ -122,6 +122,132 @@ def _schedule_paused_share_note(self: GatewayOrchestrator) -> None:
     task.add_done_callback(self._background_tasks.discard)
 
 
+async def _auto_share_mcp_servers(self: GatewayOrchestrator) -> None:
+    """Record the auto-share stubs and apply them to this running gateway.
+
+    A tracked task the boot starts once the dashboard socket is bound, so the
+    declaration scan is off the readiness path. New stubs are applied through
+    :func:`_apply_mcp_stub`, the same live path a Share press takes (a broker
+    start or restart, then the provider factory refresh), so new chats get them
+    with no gateway restart; chats that start before it lands run the servers
+    per chat. Best effort, like the pass itself (``mcp_gateway.auto_share``): a
+    failure keeps the configured stub set.
+    """
+    pending = False
+    if self._cfg.mcp_gateway.enabled:
+        from kiro_crew.mcp_gateway.auto_share import share_declared_servers
+
+        try:
+            if await asyncio.to_thread(share_declared_servers):
+                result = await self._apply_mcp_stub()
+                # As in the watch: a start the broker is retrying has landed.
+                pending = not result.get("applied", True) and not self._mcp_gateway_pending
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- the watch's first poll runs it again
+            logger.warning("mcp auto-share: could not apply the new stubs", exc_info=True)
+            pending = True
+    await self._watch_mcp_declarations(pending=pending)
+
+
+async def _watch_mcp_declarations(
+    self: GatewayOrchestrator,
+    poll_secs: float = 15.0,
+    wait: Callable[[float], Awaitable[None]] | None = None,
+    *,
+    pending: bool = False,
+) -> None:
+    """Share an added server, drop a removed one and reload a changed launch, live.
+
+    Every *poll_secs* it first rebuilds the agent specs when an MCP file they are
+    built from changed (``~/.kiro/crew/mcp.json``, ``~/.kiro/settings/mcp.json``),
+    so a hand edit reaches them on every platform, then checks the files the
+    rewriter wraps (agent specs, crewmate files, the global settings file) by their stat, and only when one moved re-reads the declared
+    stdio launches. A changed launch set re-runs the auto-share pass and
+    restarts the broker through :func:`_apply_mcp_stub` (``launch_approved``,
+    so an edited command or args takes effect, as the next start would), which
+    also resets the open chats so they pick the new stubs up. An unrelated spec
+    edit leaves the broker alone. It runs for the gateway's lifetime: while
+    sharing is off a poll does nothing, and the first poll after sharing is
+    turned back on runs the pass once, so a server added while it was off is
+    shared. A pass that fails (the config write raises, or the apply left no
+    broker at all) keeps the old state, so the next poll runs it again; a broker
+    start the broker itself is retrying counts as landed;
+    *pending* carries a failed boot pass in the same way. *wait* is the pause
+    between polls (``asyncio.sleep`` when omitted), injectable for a test.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.mcp_gateway.auto_share import (
+        declaration_files_stat,
+        declared_launches,
+        mcp_sources_fingerprint,
+        prune_removed_sources,
+        refresh_agent_specs,
+        share_declared_servers,
+        source_server_names,
+    )
+
+    def _sharing_enabled() -> bool:
+        # The config on disk, as the Settings switch writes it: this task holds no reload.
+        return bool(KiroCrewConfig.load().mcp_gateway.enabled)
+
+    stat = await asyncio.to_thread(declaration_files_stat)
+    if stat is None:
+        return
+    launches = await asyncio.to_thread(declared_launches)
+    sources = await asyncio.to_thread(mcp_sources_fingerprint)
+    # The names the MCP files declare, kept here in memory, so a hand delete can be
+    # told from a server that was never theirs; deletions a look could not finish.
+    declared_names = await asyncio.to_thread(source_server_names) or frozenset()
+    unpruned: frozenset[str] = frozenset()
+    # A pending pass reads as sharing just turned on: the first poll runs it.
+    was_on = bool(self._cfg.mcp_gateway.enabled) and not pending
+    while True:
+        await (wait or asyncio.sleep)(poll_secs)
+        try:
+            on = await asyncio.to_thread(_sharing_enabled)
+            if not on:
+                was_on = False
+                continue
+            fresh = await asyncio.to_thread(mcp_sources_fingerprint)
+            if fresh != sources or unpruned:
+                # A hand edit to an MCP file the agent spec is built from reaches
+                # that spec only through a rebuild; nothing else runs one here. A
+                # server the edit deleted leaves the spec first (the rebuild keeps
+                # what the spec already has).
+                declared_names, unpruned = await asyncio.to_thread(
+                    prune_removed_sources, declared_names, unpruned
+                )
+                await asyncio.to_thread(refresh_agent_specs)
+                sources = fresh
+            now = await asyncio.to_thread(declaration_files_stat)
+            turned_on = not was_on
+            if now == stat and not turned_on:
+                continue
+            current = await asyncio.to_thread(declared_launches)
+            if current is None:
+                continue  # A partial read: the next poll reads again.
+            if current == launches and not turned_on:
+                stat = now
+                continue
+            await asyncio.to_thread(share_declared_servers)
+            # Reloads config itself; with nothing routed before or after it is a no-op.
+            result = await self._apply_mcp_stub(launch_approved=True)
+            # A broker start that failed and is being retried (``_mcp_gateway_pending``)
+            # has landed: running the pass again would stop it, cancel its retry and
+            # reset every chat on each poll. Only an apply that left no broker at all
+            # (a rewriter failure) runs again.
+            if not result.get("applied", True) and not self._mcp_gateway_pending:
+                logger.warning("mcp auto-share: the broker did not take the new stubs; retrying")
+                continue
+            # Kept only once the pass landed, so a failed one is retried next poll.
+            stat, launches, was_on = now, current, True
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- the next poll, or the next start, retries
+            logger.warning("mcp auto-share: declaration watch pass failed", exc_info=True)
+
+
 async def _init_mcp_gateway(
     self: GatewayOrchestrator, stub_servers: frozenset[str] | None = None
 ) -> None:
@@ -165,6 +291,10 @@ async def _init_mcp_gateway(
         # comes from agent-writable files, and gatewayd execs it outside
         # the sandbox. See ``mcp_gateway.launch_approval``.
         approvals = await asyncio.to_thread(load_approvals)
+        # Sharing has no approval step: this pass records every launch it
+        # admits, the first time it sees it and whenever it changes, so the
+        # store is the record of what ran (``LaunchApprovals.auto``).
+        approvals.auto = True
         # One gateway PATH part for this pass, later rebuilds and gatewayd, so
         # a live PATH change cannot make them fold a declared PATH differently.
         await asyncio.to_thread(pin_gateway_part)

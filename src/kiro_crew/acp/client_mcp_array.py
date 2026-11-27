@@ -19,7 +19,7 @@ Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_
 ``_spec_write_cwd``, ``_spec_zero_tools``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``, ``_child_env_names``,
-``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_mcp_json_names``,
+``_extra_env``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_mcp_json_names``,
 ``_mcp_notifications``, ``_mcp_ref_spec``, ``_mcp_report``, ``_mcp_spec_dropped``,
 ``_native_skill_projection``,
 ``_pi_gate_nonce``, ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``,
@@ -922,6 +922,8 @@ def _pooled_broker_stubs(self: AcpClient) -> list[dict[str, Any]]:
     drives one kiro-cli process serving one session at a time, so the token
     is per client and is re-bound — not re-minted — by every ``rekey()``.
     """
+    from kiro_crew.mcp_gateway.session_confinement import is_per_chat_env
+
     return attach_stub_session_token(
         pooled_session_servers(
             self._mcp_gateway_overlay,
@@ -933,6 +935,8 @@ def _pooled_broker_stubs(self: AcpClient) -> list[dict[str, Any]]:
             ),
         ),
         self._stub_session_token,
+        # Absent on a client built without one (no extra env, so no mark).
+        per_chat=is_per_chat_env(getattr(self, "_extra_env", None)),
     )
 
 

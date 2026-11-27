@@ -374,7 +374,8 @@ async def test_the_answer_is_bound_and_a_changed_launch_asks_again(tmp_path, row
 
     assert await _listed_answer() == "not_used"
 
-    _declare(toggle_home, "agent spec", _APPROVED_CMD, ["-m", "srv_in_this_folder"])
+    # The new launch names the chat's folder, so no launch fact clears the question.
+    _declare(toggle_home, "agent spec", _APPROVED_CMD, ["./srv_in_this_folder.py"])
     # The page reads the answer as unanswered, so it asks before routing.
     assert await _listed_answer() is None
     changed = await _expected_launch()

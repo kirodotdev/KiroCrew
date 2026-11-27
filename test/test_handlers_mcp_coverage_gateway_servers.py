@@ -86,9 +86,9 @@ class TestGatewayServers:
         A client filtering its own rows can only answer for the moment it read
         them, and sharing is a separate switch another dashboard or the CLI can
         flip. So the client sends candidates and the decision happens here, inside
-        the lock hold that performs the write: a server whose evidence supports a
-        stub but not co-tenancy is written while sharing is off and skipped once it
-        is on, with no guard, expectation or retry in between.
+        the lock hold that performs the write. Every server is shared by default,
+        so a server whose evidence supports a stub is written with sharing off and
+        on alike: a share recommendation needs a pre-flight nothing may have run.
         """
         import kiro_crew.config.loader as loader
 
@@ -136,18 +136,15 @@ class TestGatewayServers:
         assert saved["stub_servers"] == []
         assert saved["stub_overrides"] == {"a-mcp": True}
 
-        # Same request, same verdict, sharing now ON: the write must decline it and
-        # say which name it declined, rather than co-tenanting on the weaker flag.
+        # Same request, same verdict, sharing now ON: the same stub bar applies.
         cfg_path.write_text(json.dumps({"mcp_gateway": {"enabled": True, "stub_servers": []}}))
         resp = await mcp_mod.api_mcp_gateway_set_stub(
             _request({"name": "a-mcp", "stub": True, "resolve_eligibility": True})
         )
         assert resp.status == 200
         body = _payload(resp)
-        assert body["stubbed"] == []
-        assert body["skipped"] == [{"name": "a-mcp", "reason": "evidence_insufficient"}]
-        # Nothing qualified means the file is not rewritten at all.
-        assert json.loads(cfg_path.read_text())["mcp_gateway"]["stub_servers"] == []
+        assert body["stubbed"] == ["a-mcp"]
+        assert body["skipped"] == []
 
     @pytest.mark.asyncio
     async def test_the_overlay_decides_forward_declared_env_for_the_batch(
@@ -1313,29 +1310,29 @@ class TestStubEligibility:
             ),
         )
 
-    def test_the_sharing_state_picks_which_flag_the_rule_reads(
+    def test_the_stub_bar_applies_with_sharing_on_or_off(
         self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Same server, same verdict, two answers.
+        """Every server is shared by default, so no share recommendation is needed.
 
-        With sharing OFF a stub keeps the backend 1:1 with the session, so the
-        weakest useful verdict is enough. With sharing ON the identical write hands
-        that server co-tenants, which is what ``recommend_share`` means.
+        A server the evidence keeps from even a stub (a recorded hazard) is still
+        skipped, on either setting.
         """
         self._spec(agents_dir, {"a-mcp": {"command": "run"}})
         self._verdict(monkeypatch, stub=True, share=False)
+        for sharing_on in (False, True):
+            eligible, skipped = mcp_mod._stub_eligibility(
+                ["a-mcp"], sharing_on=sharing_on, forward_declared_env=False
+            )
+            assert (eligible, skipped) == (["a-mcp"], [])
 
-        eligible, skipped = mcp_mod._stub_eligibility(
-            ["a-mcp"], sharing_on=False, forward_declared_env=False
-        )
-        assert eligible == ["a-mcp"]
-        assert skipped == []
-
-        eligible, skipped = mcp_mod._stub_eligibility(
-            ["a-mcp"], sharing_on=True, forward_declared_env=False
-        )
-        assert eligible == []
-        assert skipped == [{"name": "a-mcp", "reason": "evidence_insufficient"}]
+        self._verdict(monkeypatch, stub=False, share=False)
+        for sharing_on in (False, True):
+            eligible, skipped = mcp_mod._stub_eligibility(
+                ["a-mcp"], sharing_on=sharing_on, forward_declared_env=False
+            )
+            assert eligible == []
+            assert skipped == [{"name": "a-mcp", "reason": "evidence_insufficient"}]
 
     def test_a_server_claiming_isolation_is_allowed_to_co_tenant(
         self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
@@ -1389,10 +1386,10 @@ class TestStubEligibility:
         assert eligible == ["a-mcp"]
         assert skipped == []
 
-    def test_a_shared_declaration_keeps_the_share_bar(
+    def test_a_shared_declaration_needs_only_the_stub_bar(
         self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """One declaration that pools makes the server co-tenanted, so it still needs share."""
+        """One declaration that pools makes the server co-tenanted; sharing is the default."""
         (agents_dir / "a.json").write_text(
             json.dumps(
                 {
@@ -1413,8 +1410,7 @@ class TestStubEligibility:
         eligible, skipped = mcp_mod._stub_eligibility(
             ["a-mcp"], sharing_on=True, forward_declared_env=False
         )
-        assert eligible == []
-        assert skipped == [{"name": "a-mcp", "reason": "evidence_insufficient"}]
+        assert (eligible, skipped) == (["a-mcp"], [])
 
     def test_a_server_with_no_stdio_pipe_is_never_eligible(
         self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch

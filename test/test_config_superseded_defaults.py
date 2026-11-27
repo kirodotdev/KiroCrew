@@ -1041,6 +1041,9 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         # Windows only: a pre-0.6.0 save wrote false on every host, and under KAS
         # it refuses every Windows spawn; no build asked a Windows owner for it.
         "agent.sandbox_allow_unsandboxed_exec",
+        # Only a file a pre-0.15 build last wrote, where a stored false is the old
+        # default a full rewrite wrote out; sharing is on by default since.
+        "mcp_gateway.enabled",
     }
     # The other side as an exact set too, so an appended row has to be placed on
     # one side by name. Each of these keeps its old value because that value is a

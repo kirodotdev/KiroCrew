@@ -114,6 +114,26 @@ class SupersededDefault:
 _ABSENT = object()
 
 
+def stamp_gated_keys() -> frozenset[str]:
+    """Rows whose ``applies`` reads the ``meta`` stamp, which a re-stamp must not end early."""
+    return frozenset({"mcp_gateway.enabled"})
+
+
+def _written_before_default_sharing(base: dict) -> bool:
+    """Whether a build older than 0.15 last wrote *base* (its ``meta`` stamp says so).
+
+    Only such a file can hold ``mcp_gateway.enabled: false`` as the old default a
+    full rewrite materialized. A file a 0.15+ build wrote, or one with no stamp,
+    holds a choice, so it is never adopted.
+    """
+    meta = base.get("meta")
+    stamp = meta.get("lastTouchedVersion") if isinstance(meta, dict) else None
+    parts = stamp.split(".") if isinstance(stamp, str) else []
+    if len(parts) < 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return False
+    return (int(parts[0]), int(parts[1])) < (0, 15)
+
+
 def _overlay_stt_provider() -> object:
     """``stt.provider`` as ``config.local.json`` states it, or ``_ABSENT``.
 
@@ -324,6 +344,19 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         old_default=False,
         new_default=True,
         changed_in="#8375",
+    ),
+    # MCP sharing is on by default so every stdio server shares one backend. A
+    # stored False on an install that never touched the switch is the old default
+    # written out by a full rewrite. auto_adopt: one-shot, so an install that
+    # turns sharing off again afterwards keeps it off.
+    SupersededDefault(
+        dotted_key="mcp_gateway.enabled",
+        old_default=False,
+        new_default=True,
+        changed_in="0.15.0",
+        auto_adopt=True,
+        note="A shared server's backend runs in the global sandbox (outside it on Windows).",
+        applies=_written_before_default_sharing,
     ),
     # A stored 7200 cuts a turn at two hours, below the longest turn the shipped
     # budgets produce, so the agent stops mid-work. auto_adopt: a runaway backstop

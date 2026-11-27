@@ -1105,7 +1105,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # the lane from its closed list (managed_env/install.py, machine.py). No agent
         # input reaches it, and it must reach the operator's ssh config and plugin.
         "managed_env/remote.py::_default_runner",
-        "mcp_gateway/backend.py::spawn_backend",
+        # A shared MCP backend: inside the global sandbox through
+        # ``_sandboxed_backend_argv`` (the limited spawn below). The unlimited
+        # branch is only Kiro Crew's own managed servers, and a host with no
+        # confinement (Windows), as before this spawn moved here.
+        "mcp_gateway/backend.py::_spawn_backend_process",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``), used here only to drive the one-shot
         # ``_ping_async`` coroutine from a synchronous CLI path -- ``kirocrew

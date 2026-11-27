@@ -1280,6 +1280,20 @@ def refresh_config_meta_stamp() -> bool:
             # load that could not write (a degraded section) has not used it yet.
             # It is still the build that wrote these bytes, so keeping it is true.
             return None
+        from kiro_crew.config.superseded_defaults import (
+            adopted_superseded_if_readable,
+            stamp_gated_keys,
+            superseded_default_drift,
+        )
+
+        adopted = adopted_superseded_if_readable()
+        if any(
+            e.dotted_key in stamp_gated_keys() and (adopted is None or e.dotted_key not in adopted)
+            for e in superseded_default_drift(data)
+        ):
+            # Same for an adoption the stamp gates (``mcp_gateway.enabled``) that
+            # a load has not landed yet: re-stamping would end it for good.
+            return None
         wrote = True
         return data  # update_config_locked stamps the meta block itself
 

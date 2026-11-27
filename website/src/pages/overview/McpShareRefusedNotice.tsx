@@ -65,10 +65,11 @@ export default function McpShareRefusedNotice({
   const names = refusedShares(status).filter(name => !waiting.has(name))
   if (names.length === 0) return null
   const review = i18nT('pages.overview.mcpTab.share_refused_review')
-  // Nothing failed: the gateway is keeping these servers inside each chat, so
-  // this is a warning, not an error.
+  // Nothing failed: the gateway is keeping these servers inside each chat, and
+  // their tools work there, so this is quiet info, not a warning or an error.
   return (
     <StatusNotice
+      tone="info"
       className={className}
       message={i18nT('pages.overview.mcpTab.share_refused', { count: names.length, names: fmtList(names, { style: 'narrow' }) })}
       testId="mcp-share-refused"

@@ -1137,6 +1137,8 @@ class GatewayOrchestrator:
     _schedule_mcp_launch_approval_persist = _mcp_broker._schedule_mcp_launch_approval_persist
     _publish_paused_share_note = _mcp_broker._publish_paused_share_note
     _schedule_paused_share_note = _mcp_broker._schedule_paused_share_note
+    _auto_share_mcp_servers = _mcp_broker._auto_share_mcp_servers
+    _watch_mcp_declarations = _mcp_broker._watch_mcp_declarations
     _init_mcp_gateway = _mcp_broker._init_mcp_gateway
     _mark_mcp_broker_ready = _mcp_broker._mark_mcp_broker_ready
     _mcp_gateway_start_retry_delay = _mcp_broker._mcp_gateway_start_retry_delay

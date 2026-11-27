@@ -110,6 +110,63 @@ record in the approval store, which agent tools cannot write. With it set, a
 changed launch of that server is admitted at the next rewrite pass
 (`launch_approval_heal.trusts_change`, audited as `TRUST_AUDIT_REASON`) instead
 of being refused as `changed_needs_reapproval`; a never-pooled server never is.
+Sharing has no approval step: the gateway start's pass trusts every stub this
+way, its FIRST launch included (`LaunchApprovals.auto`, always set by
+`_init_mcp_gateway` and folded into the rewrite cache key; no setting turns it
+off): each new or changed launch is admitted and recorded in the store,
+audited as `AUTO_AUDIT_REASON`, and a complete pass retires the launches it did
+not see (`retire_trusted`). **This removes the person from the boundary**, so
+the backend gets the agent's own fence instead: on Linux and macOS every shared
+backend but Kiro Crew's own managed servers (by the daemon's positive
+attestation, `_spawns_own_control_plane`, never by the reserved name) is
+spawned inside the one global `standard` sandbox each chat's agent runs in
+(`backend._sandboxed_backend_argv`: `wrap_argv(mode="standard")`, its private
+temp dir as the one writable carve-out, the operator-named `SSH_AUTH_SOCK`
+forwarded, the inherited Python environment kept as it is unwrapped), in its cgroup scope and with the
+session-host resource limits (`create_subprocess_limited`). No project folder,
+mask, seal or scope change is added: the profile is the one an unshared server
+already runs in, so `~/.aws`, `~/.ssh`, `~/.midway` and every project folder
+stay readable, and the credential homes, the crew `.env` and the sealed launch
+inputs stay as they are for the agent. A host that needs a sandbox and cannot
+build one, a dynamic-loader variable the daemon does not already run with
+(`LD_*`, `DYLD_*`, which the loader would act on in the launcher before any
+namespace exists), or a declared key the launcher would scrub (`AWS_SECRET*`,
+`GNUPGHOME`, ...), refuses the share (`BackendSandboxRefused`, answered as a
+fallback-eligible missing target), so the server runs per chat in that chat's
+sandbox. That includes a key the gateway resolved from `secret://`, which no
+per-chat copy can resolve, so such a server does not start, shared or private
+to one chat (a warning names the keys, never a value): a third-party backend is never started unwrapped where a
+sandbox applies. That includes a server whose launch starts Chromium (Playwright,
+Puppeteer, a DevTools driver): it is wrapped like any other. Chrome cannot start its
+own sandbox inside ours (Linux: "No usable sandbox!", macOS:
+`forbidden-sandbox-reinit`), so a wrapped Playwright MCP server (`@playwright/mcp`,
+`playwright-mcp`) that declares neither `--sandbox` nor `--no-sandbox` gets
+`--no-sandbox` appended (`backend._with_chrome_sandbox_off`): only Chrome's own
+sandbox is off, ours still holds the whole process tree, and an unwrapped launch
+keeps its declared argv. A puppeteer server is left as declared: it needs its
+dangerous-options gate as well, which is not turned on.
+A session confined beyond the `standard` tier (a strict or `cc` tier, from
+`agent.sandbox`, an `agent.harness_sandbox` floor or the governed
+`sandbox.min_level`) or running an enforced harness under the credential mask
+never attaches to these backends: the provider factory sets
+`KIROCREW_MCP_PER_CHAT=1` in its environment
+(`mcp_gateway/session_confinement.uses_shared_backends`), each of its stub
+elements carries the same mark in its own env
+(`session_servers.attach_stub_session_token`, so a harness such as codex that
+clears its MCP children's environment still passes it), and each stub then runs
+the server itself inside the session's sandbox
+(`stub_fallback.fallback_exec`) without contacting the gateway. That fallback
+refuses a `secret://` value, which only the gateway resolves, so no launch ever
+starts with the literal reference. On Windows, which has no sandbox,
+a shared backend still runs as the user with the daemon's environment and a
+launch nobody looked at: an agent that can reach a launch input chooses a
+program gatewayd runs unsandboxed at the next start. The store stays the audit
+record of what ran, never-pooled servers (`UNPOOLABLE_SERVERS`) are still never
+admitted, the per-server launch cap still refuses, and a person's per-server
+off or the global sharing off keeps a launch inside each chat. The owner chose
+this default to remove every sharing step
+(`docs/system-specs/modules/mcp-shareability.md`, "Auto-share at gateway
+start").
 Each approve press without it clears it; so do stopping sharing, the Sharing
 row's unchecked box (`trust_changes: false` alone) and a complete full pass
 in which no agent spec declares the server any more (`forget_unseen_trust`
