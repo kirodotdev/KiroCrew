@@ -42,7 +42,10 @@ the start of any unit still undecided at the buffer's end, of any hit that would
 be cut, and the last :data:`~.stream.TAIL` characters, so a partial anchor is
 never committed. A unit decided while still running (a private-key block with no
 END past its bound) is replaced and the stream drops input to that unit's end
-(:func:`discard_run`). Each committed window is read after the raw text that
+(:func:`discard_run`). A header, cookie or command-line value still running past its
+hold bound is replaced too, and the stream drops the rest of its line, or the rest
+of the text once that line names a private-key block (:func:`line_drop_tail`). Each
+committed window is read after the raw text that
 preceded it (:func:`look_behind`), as the whole text reads it. A read that fails
 while the detectors can still load holds the whole buffer, never a cut chosen
 without them.
@@ -393,6 +396,12 @@ class StreamRead:
     armour_blocks: tuple[tuple[int, int], ...] = ()
     #: ``(start, end)`` of each Secret hit the read decided, in buffer offsets.
     secrets: tuple[tuple[int, int], ...] = ()
+    #: The drop is the line drop of a header, cookie or command-line value replaced
+    #: at its hold bound (``headers._held``), and nothing that runs further: never
+    #: set with a drop to the end of the text. ``seen`` is what that line drop has
+    #: read so far for :func:`line_drop_tail`.
+    held: bool = False
+    seen: str = ""
 
 
 #: How every credential placeholder starts (``[REDACTED: credential]`` and the rest).
@@ -512,8 +521,8 @@ def stream_read(
             return _joined_stream_read(context, buf, boundary, armour_from)
     try:
         _load()
-        from kiro_crew.security.redaction_structured.model import IDENTIFIER, SECRET
-        from kiro_crew.security.redaction_structured.stream import TAIL
+        from kiro_crew.security.redaction_structured.model import IDENTIFIER, SECRET, TAIL_LINE
+        from kiro_crew.security.redaction_structured.stream import TAIL, span_tail
 
         with look_behind(context, buf, armour_from):
             read = _read(buf, final=False)
@@ -533,12 +542,15 @@ def stream_read(
     n = base + len(buf)
     tail_hit = next((h for h in resolved if h.tier == SECRET and h.tail and h.end == n), None)
     if tail_hit is not None and (open_from is None or open_from >= tail_hit.start):
+        tail, seen = span_tail(read.hits, tail_hit, read.window)
         return StreamRead(
             tail_hit.start - base,
-            tail_hit.tail,
+            tail,
             tag=_tag(tail_hit.rule_id),
             armour_blocks=blocks,
             secrets=secrets,
+            held=tail == TAIL_LINE,
+            seen=seen,
         )
     cut = n if boundary else _tail_cut(buf, base, n - TAIL)
     undecided = open_from is not None
@@ -602,7 +614,14 @@ def _joined_stream_read(
     view_cut = on_buf(view.cut)
     for cut, read, other in ((view_cut, view, raw.cut), (raw.cut, raw, view_cut)):
         if read.tail and cut <= other:
-            return StreamRead(cut, read.tail, tag=read.tag, armour_blocks=blocks)
+            return StreamRead(
+                cut,
+                read.tail,
+                tag=read.tag,
+                armour_blocks=blocks,
+                held=read.held,
+                seen=read.seen,
+            )
     cut = min(raw.cut, view_cut)
     undecided = raw.undecided or view.undecided or bool(raw.tail or view.tail)
     if raw.cut != view_cut:
@@ -668,6 +687,18 @@ def discard_run(tail: str, pad: int, buf: str) -> tuple[int, int, bool]:
             return dropped, pad, done
         dropped = skip + more
     return dropped, pad, done
+
+
+def line_drop_tail(tail: str, seen: str, buf: str) -> tuple[str, str]:
+    """``(tail, seen)`` for the next :func:`discard_run` over ``buf``: a line drop
+    takes the rest of the text once the line it drops names a private-key block
+    (:func:`.stream.line_tail`, which *seen* belongs to); any other tail stays."""
+    from kiro_crew.security.redaction_structured.model import TAIL_LINE
+    from kiro_crew.security.redaction_structured.stream import discard, line_tail
+
+    if tail != TAIL_LINE:
+        return tail, seen
+    return line_tail(seen, buf[: discard(tail, 0, buf)[0]])
 
 
 def stream_context_max() -> int:
