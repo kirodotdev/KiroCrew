@@ -1267,15 +1267,18 @@ class TestRunScriptSandboxed:
 
         result = run_script_sandboxed("spec:run", "job-9")
 
-        assert result == {"status": "error", "error": "Traceback: boom"}
+        assert result["status"] == "error"
+        assert result["exit_code"] == 1
+        assert "The end of its error output:\nTraceback: boom\n" in result["error"]
 
     def test_nonzero_exit_with_no_output_at_all_reports_the_code(self, script_run):
         script_run.proc = _FakeProc(comm_results=[("", "")], returncode=3)
 
-        assert run_script_sandboxed("spec:run", "job-9") == {
-            "status": "error",
-            "error": "exit 3",
-        }
+        result = run_script_sandboxed("spec:run", "job-9")
+
+        assert result["status"] == "error"
+        assert result["exit_code"] == 3
+        assert result["error"].startswith("Script exited with code 3. It wrote no error output.")
 
     def test_unparseable_output_is_reported_as_bad_output(self, script_run):
         script_run.proc = _FakeProc(comm_results=[("not json at all", "")])

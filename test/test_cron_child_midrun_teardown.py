@@ -134,7 +134,9 @@ class TestNonZeroExitWithStdout:
             "    sys.exit(5)\n",
         )
         result = run_script_sandboxed(script, "job-id", timeout=120)
-        assert result == {"status": "error", "error": "exit 5"}
+        assert result["status"] == "error"
+        assert result["exit_code"] == 5
+        assert result["error"].startswith("Script exited with code 5. It wrote no error output.")
 
 
 class _FailingSel:
