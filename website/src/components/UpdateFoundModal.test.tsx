@@ -725,11 +725,47 @@ describe('UpdateFoundModal — gateway source', () => {
     ).toBeInTheDocument())
   })
 
-  it('a staged update on a gateway that cannot apply still offers the restart, not the copy-command path', async () => {
+  it('a staged older version leaves a newer offer installable', async () => {
+    mockedApi.applyUpdate.mockResolvedValue({ armed: true, version: '8.8.9' } as never)
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '8.8.9', update_can_apply: true,
+      update_restart_ready: true, update_restart_ready_version: '8.8.8', update_restart_ready_reason: 'staged',
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+
+    expect(byName('components.updateFoundModal.update_when_i_restart')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.restart_to_update') })).toBeNull()
+    expect(screen.queryByTestId('update-restart-ready-note')).toBeNull()
+
+    fireEvent.click(byName('components.updateFoundModal.update_when_i_restart'))
+
+    await waitFor(() => expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1))
+    expect(mockedApi.restartGateway).not.toHaveBeenCalled()
+  })
+
+  it('a staged version newer than the offer leaves the offer installable', async () => {
+    // Every writer of the note records the version that was on offer, so a staged
+    // version newer than the offer was staged from another lane: insider 0.14.1rc2
+    // staged, then Stable picked with its feed at 0.14.0rc5. A restart would start
+    // the insider build instead of installing Stable.
+    mockedApi.applyUpdate.mockResolvedValue({ armed: true, version: '0.14.0rc5' } as never)
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '0.14.0rc5', update_can_apply: true,
+      update_channel: 'stable', update_channel_move_pending: false,
+      update_restart_ready: true, update_restart_ready_version: '0.14.1rc2', update_restart_ready_reason: 'staged',
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+
+    expect(byName('components.updateFoundModal.update_when_i_restart')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.restart_to_update') })).toBeNull()
+    expect(screen.queryByTestId('update-restart-ready-note')).toBeNull()
+  })
+
+  it('a restart-ready note without a version still offers the restart', async () => {
     mockedApi.restartGateway.mockResolvedValue({} as never)
     await mount(undefined, gatewayStore({
       update_available: true, update_latest_version: '8.8.8', update_can_apply: false,
-      update_can_arm: true, update_restart_ready: true,
+      update_can_arm: true, update_restart_ready: true, update_restart_ready_reason: 'assets_gone',
     }))
     await waitFor(() => expect(dialog()).toBeInTheDocument())
 
