@@ -214,13 +214,15 @@ def utc_time(raw: Any) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
+        # An offset can move a date at the edge of the calendar past it in UTC
+        # ("9999-12-31T23:59:59-05:00"): an unreadable time, not a crash.
+        return (
+            parsed.replace(tzinfo=timezone.utc)
+            if parsed.tzinfo is None
+            else parsed.astimezone(timezone.utc)
+        )
+    except (ValueError, OverflowError):
         return None
-    return (
-        parsed.replace(tzinfo=timezone.utc)
-        if parsed.tzinfo is None
-        else parsed.astimezone(timezone.utc)
-    )
 
 
 def _in_range(summary: dict[str, Any], filters: dict[str, Any]) -> bool:

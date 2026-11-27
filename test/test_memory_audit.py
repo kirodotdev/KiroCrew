@@ -120,3 +120,17 @@ def test_pages_cover_every_event_once_in_either_order(events):
 def test_bad_filters_are_a_client_error(events, raw):
     with pytest.raises(memory_audit.AuditError):
         memory_audit.list_events(events, raw)
+
+
+# Valid ISO times whose UTC instant falls in year 0 or year 10000, past datetime's range.
+@pytest.mark.parametrize(
+    "name,value", [("since", "0001-01-01T00:00:00+05:00"), ("until", "9999-12-31T23:59:59-05:00")]
+)
+def test_an_offset_bound_past_the_calendar_is_a_client_error(events, name, value):
+    try:
+        outcome = memory_audit.list_events(events, {name: value})
+    except (memory_audit.AuditError, OverflowError) as exc:
+        outcome = f"{type(exc).__name__}: {exc}"
+    assert outcome == f"AuditError: {name} must be an ISO date or time."
+    # The same edge day written in UTC is an ordinary bound.
+    assert memory_audit.list_events(events, {name: value[:19] + "Z"})["total"] == 5

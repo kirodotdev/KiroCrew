@@ -159,6 +159,39 @@ def test_bad_filters_are_a_client_error(store, filters):  # noqa: F811
         memory_edit.list_records(store, {"filters": filters})
 
 
+def _outcome(call):
+    """What *call* returns, or the client error or OverflowError it raises, as text."""
+    try:
+        return call()
+    except (memory_edit.MemoryEditError, OverflowError) as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
+# Valid ISO times whose UTC instant falls in year 0 or year 10000, past datetime's range.
+@pytest.mark.parametrize(
+    "name,value", [("since", "0001-01-01T00:00:00+05:00"), ("until", "9999-12-31T23:59:59-05:00")]
+)
+def test_an_offset_bound_past_the_calendar_is_a_client_error(store, name, value):  # noqa: F811
+    assert store.set_semantic("user.editor", "vim", 1.0, "user_explicit") is None
+    assert _outcome(lambda: memory_record_facets.utc_time(value)) is None
+    assert _outcome(lambda: memory_edit.list_records(store, {"filters": {name: value}})) == (
+        f"MemoryEditError: {name} must be an ISO date or time."
+    )
+    # The same edge day written in UTC is an ordinary bound.
+    utc_edge = {name: value[:19] + "Z"}
+    assert memory_edit.list_records(store, {"filters": utc_edge})["total"] == 1
+
+
+def test_a_stored_time_past_the_calendar_is_outside_every_range(store):  # noqa: F811
+    for key in ("user.timezone", "project.flaky"):
+        assert store.set_semantic(key, "x", 1.0, "user_explicit") is None
+    _stamp(store, "user.timezone", "2026-03-05T00:00:00+00:00", "9999-12-31T23:59:59-05:00")
+    _stamp(store, "project.flaky", "2026-03-05T00:00:00+00:00", "2026-03-05T00:00:00+00:00")
+    march = {"since": "2026-03-01T00:00:00Z", "until": "2026-04-01T00:00:00Z"}
+    listed = _outcome(lambda: _ids(memory_edit.list_records(store, {"filters": march})))
+    assert listed == ["project.flaky"]
+
+
 def test_unusable_scope_has_its_own_facet_value():
     assert (
         memory_record_facets.lesson_facets('{"rule": "x", "repo_scope": ["a"]}')["scope"]
