@@ -337,7 +337,11 @@ from kiro_crew.dashboard.kiro_readiness import (
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.kiro_prerequisite import identity_stamp_mismatch, spawn_supervised_oneshot
+from kiro_crew.kiro_prerequisite import (
+    _whoami_skip_allowed,
+    identity_stamp_mismatch,
+    spawn_supervised_oneshot,
+)
 from kiro_crew.platform_compat import _SUBPROCESS_NO_WINDOW, kill_and_reap
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
@@ -1788,6 +1792,13 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
     # apply; the verdict travels into the refresh so it cannot fall back.
     vault_owned = await _vault_owns_usage()
     if not vault_owned:
+        # A claude default with no slot routed to kiro or kas runs nothing on
+        # kiro-cli's sign-in, so there is no kiro-cli reading to show. Answer "no
+        # reading" here: the gate's re-probe would run ``whoami`` and the refresh
+        # would run the ``/usage`` scrape, both on a sign-in no session uses. The
+        # pill hides ``available: false`` on a harness that is not Kiro.
+        if await asyncio.to_thread(_whoami_skip_allowed):
+            return web.json_response({"usage": {"available": False}})
         blocked = await reject_if_kiro_unverified(request, max_age_secs=_POLL_GATE_MAX_AGE_SECS)
         if blocked is not None:
             return blocked
