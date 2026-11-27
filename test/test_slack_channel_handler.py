@@ -571,6 +571,7 @@ class TestChannelBotCommand:
         posts = self._cmd("!channel bot nobody")
         assert persisted == []
         assert posts[-1].startswith("❌ Unknown Bot `nobody`. Crew Bots: ")
+        assert "`default`" not in posts[-1]
         assert "`web-frontend`" in posts[-1]
 
     def test_a_non_owner_is_refused(self, ds, persisted):

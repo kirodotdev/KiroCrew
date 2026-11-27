@@ -645,6 +645,7 @@ class TestChannelCommand:
         await _slash("!channel agent research-bot", slack, sessions)
         assert "Unknown agent" in _texts(slack)
         assert "`research` (Research Bot)" in _texts(slack)
+        assert "`default`" not in _texts(slack).split("Crew Bots:")[1]
 
         slack.actions.clear()
         await _slash("!channel agent Research", slack, sessions)

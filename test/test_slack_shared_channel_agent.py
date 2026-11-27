@@ -421,6 +421,7 @@ class TestOnlyACrewBot:
         reply = _say(f"!channel agent {typed}")
 
         assert reply.startswith(f"❌ Unknown Bot `{typed}`. Crew Bots: ")
+        assert "`research` (Research Bot)" in reply and "`default`" not in reply
         assert reply.endswith("Only the bot owner can pick another kind of agent.")
         assert _disk() == {}
         assert _audits(crew) == [(_SHARED, "denied", "C1", "not a Crew Bot")]
