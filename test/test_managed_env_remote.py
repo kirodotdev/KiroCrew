@@ -142,8 +142,20 @@ def test_the_install_script_follows_this_crews_channel(monkeypatch, tmp_path):
 def test_a_source_checkout_with_no_channel_file_sends_the_box_to_nightly(monkeypatch, tmp_path):
     monkeypatch.setattr(install, "data_home", lambda: tmp_path)
     monkeypatch.setattr(install, "policy_release_channel", lambda: "")
+    monkeypatch.setattr(install, "_runs_from_source_checkout", lambda _dir: True)
     assert install.box_channel() == "nightly"
     assert '"$cli" $sp --channel nightly\n' in install.install_script()
+
+
+def test_a_wheel_install_with_no_channel_file_sends_the_box_to_its_own_channel(
+    monkeypatch, tmp_path
+):
+    # A direct-wheel or ``uv tool install`` Crew writes no channel file; it follows stable.
+    monkeypatch.setattr(install, "data_home", lambda: tmp_path)
+    monkeypatch.setattr(install, "policy_release_channel", lambda: "")
+    monkeypatch.setattr(install, "_runs_from_source_checkout", lambda _dir: False)
+    monkeypatch.setattr(install, "release_channel", lambda: "stable")
+    assert install.box_channel() == "stable"
 
 
 def _run_install_head(tmp_path, curl_body: str, good: bool = True) -> subprocess.CompletedProcess:
@@ -527,28 +539,42 @@ def test_the_installer_may_take_either_of_its_branches():
     assert order[1] == f"{install.CREW_VENV}/bin/kirocrew"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="runs the launcher under sh")
-def test_the_launcher_exports_the_installers_pipx_paths(tmp_path):
-    binary = tmp_path / ".crew" / "pipx" / "venvs" / "kirocrew" / "bin" / "kirocrew"
+def _run_launcher(tmp_path, venv: str, body: str) -> subprocess.CompletedProcess:
+    """Run the launcher with one fake pipx install in *venv*."""
+    binary = tmp_path / ".crew" / "pipx" / "venvs" / venv / "bin" / "kirocrew"
     binary.parent.mkdir(parents=True)
-    binary.write_text('#!/bin/sh\nprintf "%s\\n" "$PIPX_HOME" "$PIPX_BIN_DIR"\n', encoding="utf-8")
+    binary.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
     binary.chmod(0o755)
     launcher = install.launcher_text().replace(remote.ROOT, ".")
-    res = subprocess.run(
+    return subprocess.run(
         ["/bin/sh", "-c", launcher],
         cwd=tmp_path,
-        env={"PIPX_HOME": "wrong-home", "PIPX_BIN_DIR": "wrong-bin"},
+        env={"PIPX_HOME": "wrong-home", "PIPX_BIN_DIR": "wrong-bin", "PATH": "/usr/bin:/bin"},
         capture_output=True,
         text=True,
         encoding="utf-8",
         timeout=FALLBACK_TIMEOUT_SECS,
         check=False,
     )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the launcher under sh")
+@pytest.mark.parametrize("venv", ["kirocrew", "kirocrew-lts"])  # an LTS Crew's pipx venv
+def test_the_launcher_exports_the_installers_pipx_paths(tmp_path, venv):
+    res = _run_launcher(tmp_path, venv, 'printf "%s\\n" "$PIPX_HOME" "$PIPX_BIN_DIR"')
     assert res.returncode == 0, res.stderr
     assert res.stdout.splitlines() == [
         install.PIPX_HOME.replace(remote.ROOT, "."),
         install.PIPX_BIN.replace(remote.ROOT, "."),
     ]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the launcher under sh")
+def test_a_later_update_finds_the_python_the_install_step_chose(tmp_path):
+    # ``kirocrew update`` reruns the installer, which looks Python up by name only.
+    res = _run_launcher(tmp_path, "kirocrew", 'printf "%s\\n" "${PATH%%:*}"')
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.splitlines() == [install.PYTHON_BIN.replace(remote.ROOT, ".")]
 
 
 def test_global_lines_that_began_the_file_keep_applying_to_every_host(tmp_path):

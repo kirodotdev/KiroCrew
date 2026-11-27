@@ -19,9 +19,11 @@ Crew answers on machine mode (:mod:`.machine`). No kiro-cli is used.
 from __future__ import annotations
 
 import base64
+import os
 import shlex
 from typing import Iterable
 
+from kiro_crew import _runs_from_source_checkout
 from kiro_crew.config.paths import data_home
 from kiro_crew.managed_env import machine
 from kiro_crew.managed_env.remote import CREW_BIN, GATEWAY_PORT, ROOT, WRAPPER, XDG_DATA_HOME
@@ -97,13 +99,16 @@ def launcher_text() -> str:
     home. Both are pointed at /projects (:data:`PIPX_HOME`, :data:`CREW_VENV`), so either
     survives a restart; the launcher runs the one that is there. A managed venv is tried
     first through its ``-current`` link, which an in-app update repoints, so a resumed
-    environment starts the updated release.
+    environment starts the updated release. An LTS Crew's pipx venv is ``kirocrew-lts``.
+    :data:`PYTHON_BIN` goes first on PATH, so an update that reruns the installer finds
+    the same Python the install step chose.
     """
     return f"""#!/bin/sh
 export KIROCREW_HOME={CREW_HOME}
 export PIPX_HOME={shlex.quote(PIPX_HOME)}
 export PIPX_BIN_DIR={shlex.quote(PIPX_BIN)}
-for bin in {CREW_VENV}-current/bin/kirocrew {CREW_VENV}/bin/kirocrew {PIPX_HOME}/venvs/kirocrew/bin/kirocrew; do
+export PATH={shlex.quote(PYTHON_BIN)}:$PATH
+for bin in {CREW_VENV}-current/bin/kirocrew {CREW_VENV}/bin/kirocrew {PIPX_HOME}/venvs/kirocrew/bin/kirocrew {PIPX_HOME}/venvs/kirocrew-lts/bin/kirocrew; do
   if [ -x "$bin" ]; then exec "$bin" "$@"; fi
 done
 echo "kirocrew: no install under {ROOT}/.crew" >&2
@@ -112,12 +117,18 @@ exit 127
 
 
 def box_channel() -> str:
-    """The channel the box installs from: this Crew's, or nightly with no channel file.
+    """The channel the box installs from: this Crew's, or nightly for a source checkout.
 
-    No channel file and no policy pin means a source checkout, which runs main's code;
-    stable may predate the machine mode the lane needs.
+    A source checkout with no channel file and no policy pin runs main's code, and stable
+    may predate the machine mode the lane needs. A wheel install with no channel file
+    follows :func:`release_channel` (stable).
     """
-    if not policy_release_channel() and not (data_home() / "channel").is_file():
+    package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if (
+        not policy_release_channel()
+        and not (data_home() / "channel").is_file()
+        and _runs_from_source_checkout(package_dir)
+    ):
         return "nightly"
     return release_channel()
 
