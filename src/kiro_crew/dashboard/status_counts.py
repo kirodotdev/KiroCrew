@@ -230,8 +230,10 @@ async def cached_status_snapshot(state: DashboardState) -> dict[str, Any]:
     # Lazy import: handlers/updates_streams.py imports this module at module level, so
     # a module-level import here would form a cycle.
     from kiro_crew.dashboard.handlers.updates import (
+        note_installed_beside,
         prime_status_auto_update_effect,
         status_update_fields,
+        unnoted_offer,
     )
 
     crons, lessons = await _refresh_status_counts(state)
@@ -245,6 +247,12 @@ async def cached_status_snapshot(state: DashboardState) -> dict[str, Any]:
     background_turns = await asyncio.to_thread(state.background_turn_stats)
     # The armed-update record is a data-home file read: a worker hop too.
     next_start = await asyncio.to_thread(update_next_start.status_fields)
+    # An offered update another process (`kirocrew update`, the install script)
+    # already installed: a link read, so a worker hop, and only while one is
+    # offered and not yet noted.
+    offered = unnoted_offer()
+    if offered:
+        await asyncio.to_thread(note_installed_beside, offered)
     # ``status_update_fields()`` is typed ``dict[str, object]``; spreading it
     # into the keyword-only ``status_snapshot`` signature is sound at runtime
     # (every key is a real parameter —
