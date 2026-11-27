@@ -248,6 +248,9 @@ list badges "SSH tunnel" as not supported on Windows and its hint points to AWS
 SSM instead (`InstanceFormFields.tsx`, keyed on `useGatewayPlatform()`). The
 option stays selectable: a host whose OpenSSH client is on `PATH` can still
 connect, and a spawn that fails names the platform constraint.
+On a Windows gateway a new add form starts on AWS SSM Session Manager. A form
+filled in from an add link stays on SSH tunnel, because the link names an SSH
+host.
 
 **Frameless-window drag.** Under the desktop app's frameless macOS shell the
 window is dragged solely by `-webkit-app-region: drag` `.host-drag-strip`
