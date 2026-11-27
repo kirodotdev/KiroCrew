@@ -293,6 +293,49 @@ def hoist_servers_for_session(
     )
 
 
+#: Crew's own servers whose every tool refuses a ``subagent:`` caller at the
+#: gateway (``dashboard.handlers.guide._resolve_agent_caller``), so a sub-agent
+#: run that mounts one starts a Python process it cannot use (measured 75 MB
+#: RSS / 61 MB PSS per run on the KAS 0.66.117 engine).
+SUBAGENT_REFUSED_SERVERS = frozenset({"kirocrew-mate"})
+
+
+def _names_refused_server(ref: Any) -> bool:
+    return (
+        isinstance(ref, str)
+        and ref.startswith("@")
+        and ref[1:].split("/", 1)[0] in SUBAGENT_REFUSED_SERVERS
+    )
+
+
+def without_subagent_refused_servers(
+    custom_agents: list[dict[str, Any]], session_key: str
+) -> list[dict[str, Any]]:
+    """*custom_agents* without the servers a sub-agent run is always refused by.
+
+    Only for a ``subagent:`` session; every other session is returned as is. The
+    server's ``@`` refs leave ``tools`` and ``allowedTools`` with it, so the entry
+    names nothing it does not declare. Pure: the caller's list is not changed.
+    """
+    if not custom_agents or not session_key.startswith("subagent:"):
+        return custom_agents
+    out: list[dict[str, Any]] = []
+    for descriptor in custom_agents:
+        servers = descriptor.get("mcpServers") if isinstance(descriptor, dict) else None
+        if not isinstance(servers, dict) or not SUBAGENT_REFUSED_SERVERS & servers.keys():
+            out.append(descriptor)
+            continue
+        copied = dict(descriptor)
+        copied["mcpServers"] = {
+            k: v for k, v in servers.items() if k not in SUBAGENT_REFUSED_SERVERS
+        }
+        for key in ("tools", "allowedTools"):
+            if isinstance(copied.get(key), list):
+                copied[key] = [t for t in copied[key] if not _names_refused_server(t)]
+        out.append(copied)
+    return out
+
+
 def _is_managed_local_launch(name: str, entry: Mapping[str, Any]) -> bool:
     """Whether *entry* is Crew's own server started as a local command, not a remote one."""
     command = entry.get("command")
