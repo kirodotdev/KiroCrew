@@ -175,7 +175,13 @@ def detect_glued(
     cost follows the credentials in the text, not its length.
     """
     n = len(text)
-    spans = [(h.start, h.end) for h in hits if h.tier == SECRET] + list(blocks)
+    # An armour hit's BEGIN anchor borders the preceding credential even when
+    # its END is missing (or cut off by a stream window); the hit covers only its body.
+    spans = [
+        (h.anchor if h.detector == "armour" and h.anchor >= 0 else h.start, h.end)
+        for h in hits
+        if h.tier == SECRET
+    ] + list(blocks)
     # (start, end, rule, certainty, detector, right neighbour that must be a credential's).
     # A start found below sits inside a credential, so its left side always is.
     cands = [(i, e, row.id, row.certainty, "token_format", e) for i, e, row in right_blocked]

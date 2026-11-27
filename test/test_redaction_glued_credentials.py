@@ -149,6 +149,25 @@ def _streamed(stream: object, text: str, size: int) -> str:
     return "".join(stream.feed(c) for c in chunks) + stream.flush()  # type: ignore[attr-defined]
 
 
+@pytest.mark.parametrize("key", [_SK, _HF], ids=["sk", "hf"])
+@pytest.mark.parametrize("pem", [_PEM, PEM_BEGIN + PEM_BODY], ids=["complete", "unterminated"])
+@pytest.mark.parametrize(
+    "path,size",
+    [("whole", 0)] + [(path, size) for path in ("chat", "structured") for size in (1, 7, 64)],
+)
+def test_a_key_before_a_private_key_begin_redacts(key: str, pem: str, path: str, size: int) -> None:
+    """The BEGIN anchor counts even when the END is absent from a stream window."""
+    from kiro_crew import security
+
+    text = "tokens: " + key + pem + " end"
+    if path == "whole":
+        assert _kept([key], redact_credentials(text)[0]) == []
+        assert _kept([key], redact(text)[0]) == []
+    else:
+        stream = security.StreamRedactor() if path == "chat" else StreamRedactor()
+        assert _kept([key], _streamed(stream, text, size)) == []
+
+
 @pytest.mark.parametrize("size", [1, 7, 64, 500])
 def test_a_glued_chain_longer_than_the_look_behind_streams_redacted(size: int) -> None:
     """The chain's first token leaves the look-behind; every later one still redacts."""
