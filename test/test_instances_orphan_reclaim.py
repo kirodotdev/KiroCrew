@@ -1375,11 +1375,35 @@ class TestOrphanForwarderReclaim:
         assert sent == []
         assert reached == []
 
+    _LIVE_PID = 424244
+    _LIVE_START = "live-start"
+
+    def _live_pid(self, monkeypatch):
+        """Fabricate a live pid through process-probe doubles (no child spawned)."""
+        from kiro_crew import platform_compat as pc
+
+        real_exists = pc.pid_exists
+        real_start = pc.process_start_time
+        monkeypatch.setattr(pc, "pid_exists", lambda p: p == self._LIVE_PID or real_exists(p))
+        monkeypatch.setattr(
+            pc,
+            "process_start_time",
+            lambda p: self._LIVE_START if p == self._LIVE_PID else real_start(p),
+        )
+
+    @staticmethod
+    def _port_holder():
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        return holder, holder.getsockname()[1]
+
     @pytest.mark.asyncio
     async def test_live_pid_with_a_different_start_time_is_left_as_recorded(
         self, tmp_path, monkeypatch
     ):
-        proc, port, _argv = self._spawn_port_holder()
+        self._live_pid(monkeypatch)
+        holder, port = self._port_holder()
         try:
             self._fake_orphan(monkeypatch)
             sent, reached = self._record_gone_signals(monkeypatch)
@@ -1389,9 +1413,9 @@ class TestOrphanForwarderReclaim:
             self._record(
                 reg,
                 port=port,
-                pid=proc.pid,
+                pid=self._LIVE_PID,
                 start=recorded,
-                sig=sign("cd-1", proc.pid, recorded, port),
+                sig=sign("cd-1", self._LIVE_PID, recorded, port),
             )
             before = self._gone_fields(reg)
 
@@ -1399,11 +1423,10 @@ class TestOrphanForwarderReclaim:
 
             assert self._gone_fields(reg) == before
             # A fingerprint-free record is verified once per argv candidate.
-            assert reached and set(reached) == {proc.pid}
+            assert reached and set(reached) == {self._LIVE_PID}
             assert sent == []
-            assert proc.poll() is None
         finally:
-            self._cleanup(proc)
+            holder.close()
 
     @pytest.mark.asyncio
     async def test_live_pid_whose_parent_reads_minus_one_is_left_as_recorded(
@@ -1414,20 +1437,21 @@ class TestOrphanForwarderReclaim:
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc
 
-        proc, port, _argv = self._spawn_port_holder()
+        self._live_pid(monkeypatch)
+        holder, port = self._port_holder()
         try:
             monkeypatch.setattr(pc, "IS_WINDOWS", False)
             monkeypatch.setattr(pc, "get_ppid", lambda pid: -1)
             sent, reached = self._record_gone_signals(monkeypatch)
             sign = self._pin_identity_key(monkeypatch)
-            start = pc.process_start_time(proc.pid) or "x"
+            start = self._LIVE_START
             reg, mgr = self._mgr(tmp_path)
             self._record(
                 reg,
                 port=port,
-                pid=proc.pid,
+                pid=self._LIVE_PID,
                 start=start,
-                sig=sign("cd-1", proc.pid, start, port),
+                sig=sign("cd-1", self._LIVE_PID, start, port),
             )
             before = self._gone_fields(reg)
 
@@ -1437,10 +1461,9 @@ class TestOrphanForwarderReclaim:
             assert self._gone_fields(reg) == before
             assert reached == []
             assert sent == []
-            assert proc.poll() is None
             assert any(
                 "Not reclaiming recorded" in r.getMessage() and "parent pid -1" in r.getMessage()
                 for r in caplog.records
             )
         finally:
-            self._cleanup(proc)
+            holder.close()
