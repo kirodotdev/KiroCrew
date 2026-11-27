@@ -668,6 +668,23 @@ def _boot_unguarded(cfg: PodConfig, name: str) -> int:
             f"{home_dir / 'os-home'} for a replaced component, then "
             f"`kirocrew pod down {name}` and bring it up again.",
         )
+    # ``build_pod_env`` points the child's ``KIRO_HOME`` at ``<pod home>/kiro``, and
+    # kiro-cli 3.x takes its first lock at ``$KIRO_HOME/settings/cli.json.lock``
+    # without creating that folder from inside the pod's sandbox, so the folder must
+    # exist before the bootstrap probe below spawns the child. Build both levels
+    # here, with the same link refusal and owner-only mode as the pod home itself.
+    try:
+        runtime._ensure_pod_dir(home_dir / "kiro", what="pod kiro home")
+        runtime._ensure_pod_dir(home_dir / "kiro" / "settings", what="pod kiro settings")
+    except PodError as exc:
+        return _refuse(
+            cfg,
+            name,
+            EXIT_REFUSED_UNRECOVERABLE,
+            f"{exc}. Refusing to boot without a verified pod kiro home -- the pod's "
+            f"kiro-cli would write its settings outside the pod. Inspect {home_dir / 'kiro'} "
+            f"for a replaced component, then `kirocrew pod down {name}` and bring it up again.",
+        )
     # Past every terminal refusal: clear any marker an earlier refused boot left,
     # so the record means "the LAST boot refused" rather than "a boot once did".
     _clear_refusal(cfg, name)

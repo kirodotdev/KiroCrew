@@ -331,7 +331,9 @@ async def create_bound(
 
         raise DuplicateItemError()
     if not 200 <= status < 300:
-        raise routes._peer_error(status, payload, "could not create the crew session")
+        raise routes._peer_error(
+            status, payload, "could not create the crew session", crew=instance_id
+        )
     slot = payload.get("key") if isinstance(payload, dict) else None
     if not routes._slot_ok(slot):
         raise err(
@@ -342,10 +344,11 @@ async def create_bound(
         # A peer that ignored ``work_item`` made a plain session: closed at once, so
         # a worker never runs unbound (RFC §5, version skew).
         await _close_peer_slot(mgr, instance_id, slot)
+        skew = routes.incompatible_error(instance_id, "that crew did not bind the work item")
         raise err(
             409,
             CODE_PEER_LACKS_WORK_ITEMS,
-            "that crew created a session without binding the work item; it was closed",
+            f"{skew.message}; the session it created was closed",
         )
     from kiro_crew.dashboard.handlers.work_ledger import _record_conductor_write
 
@@ -792,7 +795,10 @@ async def _apply_pull(
         # known answer, not a fresh one, so the probe's person-wait hold must not
         # rest on it (``remote_pull_fresh``).
         record.roster_read = listed is not None
-        if status == 404:
+        if _routes().skewed_reply(status, payload):
+            # The crew does not serve the report route: another release than ours.
+            record.error = _routes().CREW_PEER_INCOMPATIBLE
+        elif status == 404:
             # No such slot, or no item on it: nothing to ingest. The slot list
             # above answers whether the session is gone.
             record.error = "crew_work_item_not_found"
@@ -1485,6 +1491,8 @@ async def _forward_one(state: "DashboardState", item: work_ledger.WorkItem) -> d
         )
     except routes.CrewCallError as exc:
         return {"ok": False, "code": exc.code}
+    if routes.skewed_reply(status, payload):
+        return {"ok": False, "code": routes.CREW_PEER_INCOMPATIBLE}
     if not 200 <= status < 300:
         code = payload.get("code") if isinstance(payload, dict) else ""
         return {

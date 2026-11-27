@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, unquote_plus, urlsplit
 from aiohttp import web
 
 from kiro_crew.connections import get_provider
+from kiro_crew.connections.callback_timing import _CALLBACK_STATUS_TIMEOUT_SECS
 from kiro_crew.connections.ownership import remove_provider_entry
 from kiro_crew.connections.registry import Provider, is_visible
 from kiro_crew.dashboard.handlers._shared import COMPOSITION_REFUSED_LOG
@@ -218,7 +219,9 @@ async def _relay_loopback_callback(callback: _LoopbackCallback) -> int:
         ).encode("ascii")
         writer.write(request)
         await asyncio.wait_for(writer.drain(), timeout=3)
-        status_line = await asyncio.wait_for(reader.readline(), timeout=5)
+        status_line = await asyncio.wait_for(
+            reader.readline(), timeout=_CALLBACK_STATUS_TIMEOUT_SECS
+        )
     finally:
         writer.close()
         try:

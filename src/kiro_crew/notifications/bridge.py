@@ -318,5 +318,9 @@ class BridgeDispatcher:
 
     async def drain(self) -> None:
         """Wait for every delivery started so far (shutdown and tests)."""
-        while self._tasks:
-            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+        # Only the tasks still running: a finished task leaves the set in a done
+        # callback that runs on a later loop pass, and gathering only finished tasks
+        # completes without yielding (Python 3.12+), so waiting for the set to empty
+        # would spin and never give the loop that pass.
+        while pending := [task for task in self._tasks if not task.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)

@@ -26,6 +26,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_CLASS_RECOVERING,
     STOP_CLASS_STALLED,
     STOP_RECOVERY_MAX_RETRIES,
+    RefusalHopText,
     classify_stop_reason,
     continue_timed_out_calls,
 )
@@ -949,6 +950,7 @@ async def execute_task(
             _policy = _policy_for(spec=_spec)
 
             result_text = ""
+            refusal = RefusalHopText()
             _chunk_count = 0
             _complete_event: LLMEvent | None = None
             # Wall clock for THIS turn only. The acp provider never assigns
@@ -965,6 +967,7 @@ async def execute_task(
                 lambda prompt: drop_echo(client.stream(prompt)), full_prompt
             ):
                 await _refuse_person_only(event)
+                result_text = refusal.fold(event, result_text)
                 if event.kind == EVENT_TEXT_CHUNK:
                     _attempt_emitted = True
                     result_text += event.text

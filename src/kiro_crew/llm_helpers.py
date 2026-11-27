@@ -109,6 +109,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _background_crew_log_owner,
         _background_spawn_backend,
         _cleanup_memory_consolidation_session,
+        _delete_retired_conversation_record,
         _lite_resets_failed,
         _lite_rewrite_tasks,
         _lite_rewrites,
@@ -158,6 +159,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         provider_model_pin_partial,
         provider_model_pin_refused,
         provider_raw_model,
+        reactive_model_candidate,
         resolve_substitute_set_model,
         route_baseline_latch,
         slot_switch_session_lock,
@@ -249,6 +251,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         STOP_REASON_TIMEOUT,
         STOP_RECOVERY_MAX_RETRIES,
         AcpTimeoutError,
+        RefusalHopText,
         engine_served_model,
         same_model,
         timed_out_continuation,
@@ -281,6 +284,8 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         fire_tool_hooks,
         get_global_hook_store,
         hook_gate_kwargs,
+        is_fetch_url_text,
+        proven_fetch_url,
         title_is_trusted_mcp_identity,
         unattended_turn,
         untruncated_shell_title,
@@ -303,6 +308,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         OUTCOME_REJECTED_TRANSPORT_FLOOR,
     )
     from kiro_crew.platform.context import redact_via_context  # noqa: F401
+    from kiro_crew.platform.tool_paths import (  # noqa: F401
+        FETCH_PATH_FREE_FIELDS,
+    )
     from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS as _WRITE_PLANE_KINDS  # noqa: F401
     from kiro_crew.platform.tool_paths import (  # noqa: F401
         command_shaped_strings,

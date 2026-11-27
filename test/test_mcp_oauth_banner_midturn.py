@@ -1,6 +1,6 @@
 """The mid-turn ``mcp_oauth`` arm tags carded providers like the init drain does.
 
-The turn-start sign-in offer re-requests every unauthorized server, so a
+kiro-cli retries a signed-out server's sign-in on every turn, so a
 provider with a Connections card (Linear, Notion, ...) reaches
 ``_on_mcp_oauth_request`` on every turn of every session. Without the
 ``card_owned`` tag the chat renders its banner each time, beside the card that

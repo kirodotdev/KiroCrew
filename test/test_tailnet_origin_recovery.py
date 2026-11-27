@@ -215,3 +215,29 @@ def test_install_with_initial_host_needs_no_background_hooks(monkeypatch) -> Non
     assert recovery.running_tailnet_origin(app) == (_HOST, 1_786_100_000)
     assert len(app.on_startup) == startup_hooks
     assert len(app.on_cleanup) == cleanup_hooks
+
+
+@pytest.mark.asyncio
+async def test_recovery_adds_the_origin_on_the_startup_https_port(monkeypatch) -> None:
+    """A gateway started with ``dashboard.tailscale.https_port`` 5479 recovers
+    ``https://<name>:5479`` in place of the bare name."""
+    app = web.Application()
+    allowed = {"http://127.0.0.1:5476"}
+    app["allowed_origins"] = allowed
+    state = recovery.TailnetOriginState(load_enabled=lambda: True)
+    state.https_port = 5479
+    monkeypatch.setattr(recovery, "_ORIGIN_RECOVERY_INITIAL_SECS", 0)
+    monkeypatch.setattr(recovery, "self_dns_name", lambda: _HOST)
+    monkeypatch.setattr(recovery, "is_governance_pinned_off", lambda **_k: False)
+
+    await recovery._recover_tailnet_origin(app, state)
+
+    assert allowed == {"http://127.0.0.1:5476", f"https://{_HOST}:5479"}
+
+
+def test_install_records_the_startup_https_port() -> None:
+    app = web.Application()
+    recovery.install_tailnet_origin_recovery(
+        app, enabled=True, initial_host=_HOST, load_enabled=lambda: True, https_port=5479
+    )
+    assert recovery.running_tailnet_https_port(app) == 5479

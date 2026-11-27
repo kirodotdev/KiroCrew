@@ -1,7 +1,7 @@
 # CI lanes, issue tiers and GitHub fallbacks
 
-Read from SKILL.md's *Lanes* when a lane other than `Fast Gate` is red, from
-*Issue first* for the tier table, and from Phase 3 step 2 when `gh` cannot update
+Read from `references/ci-glance.md`'s *Lanes* when a lane other than `Fast Gate` is
+red, from its *Issue first* for the tier table, and from Phase 3 step 2 when `gh` cannot update
 a PR body. Full detail: `docs/ci/ci-and-reviews.md` and `CONTRIBUTING.md`. CI wins
 over prose.
 
@@ -16,7 +16,7 @@ over prose.
 | `CI`, `Build` | yes | tests, lint, coverage, e2e, artifacts — Phase 3 (a) |
 | `Code Review` | yes | grep rules, Semgrep, woke |
 | `PR Hygiene` | yes | a Conventional-Commits title, the template's headings with a filled `**Goal:**`, `## Pattern harvest` on a `fix`/`revert` PR (plus a `## Sibling sweep` and, on a `fix:` PR, a `Proof:` line inside `## Tests`, both warnings for now), and a `Reader:` line when the diff takes something away; a description edit re-runs it, no push needed |
-| `Issue Gate` | once enabled | the issue line or its tier (SKILL.md's *Issue first*) |
+| `Issue Gate` | once enabled | the issue line or its tier (`references/ci-glance.md`'s *Issue first*) |
 | `Opus 5.5 Review`, `GPT 6.1 Review` | Critical/High | line-level findings — Phase 3 (b) |
 | `Security Scope Review` | yes | each row is a legitimate operation your tightening newly refuses; narrow the rule, or override `scope` |
 | `Design Review`, `First Principles Review`, `UX Review` | BLOCK only | PASS needs no reply; every BLOCK item is fixed or answered |
@@ -29,6 +29,27 @@ run in the Stage-2 `fork-*-review.yml` lanes under the same check names.
 Once it is on, auto-merge enqueues the PR; the queue re-runs the tests (not the AI
 reviews) on the tree that lands, and a failing group ejects the PR — fix it, or rerun
 it once after the skill's *Before you rerun a red test*, then re-arm.
+
+## Stacked PRs
+
+Read from `references/ci-glance.md`'s *Lanes* before stacking a PR on another.
+GitHub's [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs)
+are enabled on this repository.
+
+Stack only when your next change depends on one of your own PRs that has not
+merged, and both branches are in this repository (cross-fork stacks are not
+supported). Open anything else against `main`: an independent change, or a PR
+that is only waiting on review. A stack makes each layer wait on the review of
+the one below it.
+
+Link it as a native stack, in the web UI or through
+`repos/<owner>/<repo>/stacks`. A PR whose base is only set to another branch
+never starts the `branches:`-filtered workflows (CI, Fast Gate, Build,
+Internal Content Scan); a PR in a native stack runs them.
+
+On a stacked PR, `<base>` is the branch below it. Once the bottom PR merges,
+GitHub rebases the layers above it onto `main` itself; do not rebase them by
+hand.
 
 ## Rerun, don't re-push
 
@@ -81,7 +102,7 @@ python3 -c 'import json; print(json.dumps({"body": open("<file>").read()}))' |
 
 ## Issue tiers
 
-Read from SKILL.md's *Issue first*. The Captain — the maintainers' triage crew — scans
+Read from `references/ci-glance.md`'s *Issue first*. The Captain — the maintainers' triage crew — scans
 issues with no tier, writes one tier label and marks the issue `pending-triage`.
 The tier says how big the work is:
 

@@ -574,14 +574,119 @@ describe('AboutPanel in-app update (arm + approve)', () => {
       // The gateway's staged success: the new version is installed beside the
       // running one and starts at the next restart.
       store.dispatch(setUpdateProgress({ step: 'done', detail: 'v9.9.9 installed. Restart to use it.' } as never))
-      await waitFor(() => expect(screen.getByTestId('in-app-update-staged')).toBeTruthy())
+      // Until the next status push, the flow offers nothing to click.
+      await waitFor(() => expect(screen.getByTestId('in-app-update-done')).toBeTruthy())
+      expect(screen.queryByTestId('in-app-update-action')).toBeNull()
+      // The gateway's next status push carries the staged install.
+      act(() => {
+        store.dispatch(sseStatus({
+          ...ARMABLE_STATUS, update_restart_ready: true,
+          update_restart_ready_version: '9.9.9', update_restart_ready_reason: 'staged',
+        } as never))
+      })
+      // The status-driven card takes over: Restart, and no Update to offer again.
+      await waitFor(() => expect(screen.getByTestId('in-app-update-installed')).toBeTruthy())
+      expect(screen.queryByTestId('in-app-update-action')).toBeNull()
       // Past the grace window that used to turn a silent apply into "ended".
       await vi.advanceTimersByTimeAsync(60_000)
       expect(screen.queryByTestId('arm-ended-note')).toBeNull()
-      expect(screen.getByTestId('in-app-update-staged')).toBeTruthy()
+      expect(screen.getByTestId('gateway-restart-installed')).toBeTruthy()
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  describe('done follows the status frame', () => {
+    const approveAndApply = async () => {
+      const spy = stubFetch()
+      spy.mockImplementation(async (input: unknown, init?: { method?: string }) => {
+        const url = String(input)
+        const reply = (body: unknown) => ({
+          ok: true, status: 200,
+          json: async () => body, text: async () => '',
+          headers: new Headers({ 'content-type': 'application/json' }),
+        })
+        if (url.includes('/api/update/arm') && init?.method === 'POST') {
+          return reply({ ok: true, armed: true, request_id: 'r1', version: '9.9.9', expires_in: 600, approve_command: 'kirocrew update approve' })
+        }
+        if (url.includes('/api/update/arm')) return reply({ armed: false })
+        return reply({})
+      })
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+      fireEvent.click(await screen.findByTestId('in-app-update-action'))
+      await screen.findByTestId('in-app-update-armed')
+      await vi.advanceTimersByTimeAsync(5100)
+      await waitFor(() => expect(screen.getByTestId('in-app-update-applying')).toBeTruthy())
+    }
+
+    it('offers Restart, not Update, for an approval armed for the next start, until the arm is cancelled', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        await approveAndApply()
+        // A gateway that relaunches before applying arms the update for the next
+        // start and pushes `done`; the next frame names the arm, never an install.
+        store.dispatch(setUpdateProgress({ step: 'done', detail: 'armed' } as never))
+        await waitFor(() => expect(screen.getByTestId('in-app-update-done')).toBeTruthy())
+        act(() => { store.dispatch(sseStatus({ ...ARMABLE_STATUS, update_armed_version: '9.9.9' } as never)) })
+        await waitFor(() => expect(screen.getByTestId('gateway-restart-armed')).toBeTruthy())
+        expect(screen.queryByTestId('in-app-update-action')).toBeNull()
+        expect(screen.getByTestId('about-update-armed-restart')).toBeTruthy()
+        // The person cancels the arm: the next frame carries no arm and no install.
+        act(() => { store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never)) })
+        await waitFor(() => expect(screen.getByTestId('in-app-update')).toBeTruthy())
+        expect(screen.getByTestId('in-app-update-action')).not.toBeDisabled()
+        expect(screen.queryByTestId('gateway-restart-armed')).toBeNull()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it.each(['armed', 'installed'] as const)('keeps done for a folded label when the raw version is %s', async waiting => {
+      stubFetch({ armStatus: () => ({ armed: false }) })
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      const qc = newQueryClient()
+      render(withProviders(qc, <InAppUpdateFlow version="0.4.0" rawVersion="0.4.0rc14" manualCommand="" />))
+      fireEvent.click(await screen.findByTestId('in-app-update-action'))
+      await screen.findByTestId('in-app-update-armed')
+      act(() => { store.dispatch(setUpdateProgress({ step: 'done', detail: 'complete' } as never)) })
+      await screen.findByTestId('in-app-update-done')
+      act(() => {
+        store.dispatch(sseStatus({
+          ...ARMABLE_STATUS,
+          update_latest_version: '0.4.0rc14',
+          ...(waiting === 'armed'
+            ? { update_armed_version: '0.4.0rc14' }
+            : { update_restart_ready: true, update_restart_ready_version: '0.4.0rc14' }),
+        } as never))
+      })
+      expect(screen.getByTestId('in-app-update-done')).toBeTruthy()
+      expect(screen.queryByTestId('in-app-update')).toBeNull()
+      expect(screen.queryByTestId('in-app-update-action')).toBeNull()
+    })
+
+    it('shows the new offer\'s Update when the old install finishes after the offer moved', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        await approveAndApply()
+        // A channel switch moves the offer while 9.9.9 is still installing.
+        act(() => { store.dispatch(sseStatus({ ...ARMABLE_STATUS, update_latest_version: '9.10.0' } as never)) })
+        store.dispatch(setUpdateProgress({ step: 'done', detail: 'v9.9.9 installed' } as never))
+        await waitFor(() => expect(screen.getByTestId('in-app-update-done')).toBeTruthy())
+        // The next frame marks 9.9.9 installed, which is not the version offered now.
+        act(() => {
+          store.dispatch(sseStatus({
+            ...ARMABLE_STATUS, update_latest_version: '9.10.0', update_restart_ready: true,
+            update_restart_ready_version: '9.9.9', update_restart_ready_reason: 'staged',
+          } as never))
+        })
+        await waitFor(() => expect(screen.getByTestId('in-app-update')).toBeTruthy())
+        expect(screen.getByTestId('in-app-update-action')).not.toBeDisabled()
+        expect(screen.queryByTestId('in-app-update-installed')).toBeNull()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
   it('leaves applying when the arm went away early and no update started', async () => {

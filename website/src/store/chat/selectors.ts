@@ -64,6 +64,13 @@ export const selectSlotRunEpoch = (state: RootState, slot: string): number =>
  *  screen (`pendingTurnSlot`) or not (its run entry's `pendingTurn`). */
 export const selectPendingTurn = (state: RootState, slot: string): boolean =>
   state.chat.pendingTurnSlot === slot || !!state.chat.slotRun?.[safeKey(slot)]?.pendingTurn
+/** Whether the chat page's transcript for `slot`, the active chat, is its
+ *  loaded page: no switch to it is in flight and its last open did not fail.
+ *  A failed open leaves an empty pane that a retry's page fills later, and
+ *  reads loaded once a live row reaches that pane first. */
+export const selectPageLoaded = (state: RootState, slot: string): boolean =>
+  !state.chat.slotLoading && state.chat.slotSwitchTarget !== slot &&
+  (state.chat.slotOpenFailed !== slot || state.chat.messages.length > 0)
 
 const EMPTY_TOOLLOG: ToolActivity[] = []
 /** Per-slot tool log, falling back to the global active mirror. */

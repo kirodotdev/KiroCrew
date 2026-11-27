@@ -25,7 +25,6 @@ import contextlib
 import contextvars
 import enum
 import logging
-import os
 import re
 import time
 from collections import OrderedDict
@@ -37,7 +36,7 @@ from typing import Any
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.sel import sel
 from kiro_crew.slack.channel_policy import channel_refusal, new_channel_refusal
-from kiro_crew.slack.code_channels import hooks, recognition
+from kiro_crew.slack.code_channels import hooks, recognition, thread_stop_gate
 from kiro_crew.slack.code_channels.binding import (
     BindingUnavailable,
     bound_slot,
@@ -60,6 +59,11 @@ from kiro_crew.slack.code_channels.creation import (
 from kiro_crew.slack.code_channels.models import ChannelInfo, CodeChannelApiError, CreateRequest
 from kiro_crew.slack.code_channels.recognition import ChannelKind
 from kiro_crew.slack.code_channels.route_gate import Admit, _route_to_slot, admitted
+from kiro_crew.slack.code_channels.routing_temps import (
+    _INBOUND_TEMPS,
+    _PENDING_TEMPS,
+    _unlink_all,
+)
 from kiro_crew.slack.code_channels.store import (
     ROUTE_CODE_CHANNEL,
     Binding,
@@ -353,6 +357,11 @@ async def _inbound_gate(
     channel = str(event.get("channel") or "")
     if not from_trusted_bot and await shared_sender_dropped(sender_id, channel):
         return DROP
+    in_thread = thread_stop_gate.binding_of(channel, event)
+    if in_thread is not None:
+        return await thread_stop_gate.decide(
+            orch, cfg, in_thread, text=text, sender_id=sender_id, from_trusted_bot=from_trusted_bot
+        )
     if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
         return PASS
     binding = store().get_binding(channel)
@@ -648,28 +657,7 @@ async def _open_from_follow_up(
         return await maybe_open_code_channel(orch, event, clean_text, sender_id)
 
 
-# ── Attachment temp files ─────────────────────────────────────────────────
-#
-# A message routed to a bound session carries its attachments as temp-file
-# paths in the prompt. The files must outlive the routing call (the session's
-# turn reads them, perhaps after earlier queued turns) and must not outlive the
-# turns that read them. A path is adopted under the session when the message is
-# routed, and the session's files are deleted at the end of a turn that leaves
-# nothing queued behind it -- so a queued message's upload is never deleted by
-# the turn before it.
-
-_INBOUND_TEMPS: contextvars.ContextVar[list[str]] = contextvars.ContextVar(
-    "code_channel_inbound_temps", default=[]
-)
-_PENDING_TEMPS: dict[str, list[str]] = {}
-
-
-def _unlink_all(paths: Sequence[str]) -> None:
-    for path in paths:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+# ── Attachment temp files (held in :mod:`.routing_temps`) ─────────────────
 
 
 def _adopt_temps(session_key: str) -> None:
@@ -1379,6 +1367,11 @@ def _seed_framing(origin_channel: str, context: str) -> str:
         "document (inline <style>, no external files or data: URLs). It opens as a tab in "
         "this channel, with no upload or screenshot. Slack shows it as a sandboxed static "
         "preview where scripts may not run, so put the visible result in the markup and CSS.",
+        # Without this an asked-for (or offered) diff is pasted as a code block.
+        "To show a diff here (asked for, or a 'Show me the diff' option picked), call "
+        "code_channel_set_view with type diff and no other argument: it opens this "
+        "channel's Code tab. Never paste the diff into a message: reply with a one-line "
+        "summary and the PR link. If it finds nothing to show, send the diff as an html view.",
     ]
     # Only while hand-off is on: with the switch off (its default) the guidance
     # would steer the conductor into a call that is refused.

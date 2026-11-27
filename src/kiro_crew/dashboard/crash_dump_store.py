@@ -49,7 +49,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from kiro_crew import platform_compat
+from kiro_crew import install_liveness, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.owner_only_files import mkdirs_owner_only
@@ -682,8 +682,12 @@ def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
     # plain PID liveness).
     start_id = _pid_start_id(os.getpid())
     start_tok = f" start={start_id}" if start_id is not None else ""
+    # The build on the FIRST line, never a line of its own: _is_header_only
+    # counts header lines, so a fifth would read as a dump with stacks.
+    version, install = install_liveness.BUILD_IDENTITY
     head = (
-        f"# KiroCrew loop-stall crash dump — opened {ts} {_CLEAN_EXIT_AWARE_TOKEN}\n"  # brand-ok
+        f"# KiroCrew loop-stall crash dump — opened {ts} {_CLEAN_EXIT_AWARE_TOKEN}"  # brand-ok
+        f" version={version} install={install}\n"
         f"# PID: {os.getpid()} @ {_pid_domain()}{start_tok}\n"
         "# If thread stacks appear below, the event loop wedged and faulthandler fired. "
         f"{_ALARM_DUE_TOKEN}"
@@ -1290,13 +1294,15 @@ def _read_healthy_marker(dumps_dir: Path | None = None) -> str:
     cautious boot would wait forever on a file whose whole purpose is to make
     boots faster, on the boot path, with no recovery.
 
-    ``O_NOFOLLOW`` refuses the link and ``O_NONBLOCK`` refuses the FIFO. Both
-    are POSIX-only, so the ``S_ISREG`` check is what carries the guarantee
-    everywhere: anything that is not a regular file reads as absent, which is
-    the same conservative answer a missing marker gives.
+    The open refuses a symbolic link at the name with ``ELOOP`` on every OS (a
+    Windows junction included; a link in a parent directory is still
+    followed) and is non-blocking on POSIX, so a FIFO's open returns instead
+    of waiting for a writer. Anything else that is not a regular file reads
+    as absent, the same conservative answer a missing marker gives.
     """
-    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(_healthy_marker_path(dumps_dir), flags)
+    fd = platform_compat.open_file_no_reparse(
+        _healthy_marker_path(dumps_dir), nonblocking=True, links_only=True
+    )
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return ""
@@ -1325,8 +1331,8 @@ def record_healthy_boot(dumps_dir: Path | None = None) -> None:
         # the rename. A temp name derived from the PID is fully predictable and
         # this directory is agent-writable, so a symlink planted at that name
         # would be FOLLOWED by a plain write and would truncate whatever it
-        # points at, with no recovery -- the same reasoning as the O_NOFOLLOW
-        # on the read side. newline= keeps the byte on disk the one the reader
+        # points at, with no recovery -- the same reasoning as the read side's
+        # refusal of a link. newline= keeps the byte on disk the one the reader
         # splits on.
         atomic_write(_healthy_marker_path(dumps_dir), line, newline="")
     except Exception:  # noqa: BLE001 - never fail a healthy boot over a hint

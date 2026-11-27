@@ -174,7 +174,6 @@ class TestConductorCarriesTheWidgetBlock:
                 project=None,
                 mode="",
                 session_key=session_key,
-                is_cc=False,
                 private_owner=private_owner,
                 session_start=True,
             )

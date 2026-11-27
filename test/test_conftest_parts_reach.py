@@ -46,6 +46,13 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_conftest_parts_reach")
 _CONFTESTS = ("conftest.py", "test/conftest.py")
 
 _LOOP_JOIN = "test/conftest_floor_restores.py::_join_test_loop_executor"
+_MIRROR_PRUNE = "test/conftest_floor_configure.py::_prune_bytecode_mirror_of_gone_checkouts"
+_MIRROR_PRUNE_PATH = "test/conftest_floor_configure.py::_mirror_path"
+#: Why a patch of the protocol's clock never reaches the session-end mirror prune.
+_PROTOCOL_ONLY = (
+    "the patch drives pytest_runtest_protocol alone and never ends a session, so the "
+    "session-end bytecode mirror prune does not run under it"
+)
 
 #: Patches whose test exercises only the conftest's own reader of the patched name, as
 #: (patching file, patching function, conftest, name) -> {moved reader: why it is not run}.
@@ -81,6 +88,12 @@ _MOVED_READERS_THE_PATCH_SKIPS: dict[tuple[str, str, str, str], dict[str, str]] 
             "seams.py::_pin_agent_state_sidecar",
             "seams.py::_pin_kill_and_reap_group_probe",
         )
+    }
+    | {
+        _MIRROR_PRUNE_PATH: (
+            "the test swaps importlib only while its body runs; this reader runs from "
+            "pytest_sessionfinish, after every test body has restored the binding"
+        ),
     },
     (
         "test/test_xdist_escaped_failure_guard.py",
@@ -93,6 +106,7 @@ _MOVED_READERS_THE_PATCH_SKIPS: dict[tuple[str, str, str, str], dict[str, str]] 
             "pytest_runtest_protocol, which stays in conftest.py; it never runs the "
             "per-test event-loop join"
         ),
+        _MIRROR_PRUNE: _PROTOCOL_ONLY,
     },
     (
         "test/test_xdist_escaped_failure_guard.py",
@@ -105,6 +119,7 @@ _MOVED_READERS_THE_PATCH_SKIPS: dict[tuple[str, str, str, str], dict[str, str]] 
             "pytest_runtest_protocol, which stays in conftest.py; it never runs the "
             "per-test event-loop join"
         ),
+        _MIRROR_PRUNE: _PROTOCOL_ONLY,
     },
 }
 
@@ -117,6 +132,10 @@ _STRING_PLUGIN_PATCHES: dict[tuple[str, str, str, str], dict[str, str]] = {
             "the inner session (-p conftest, the rootdir file) runs tests that request no "
             "event_loop fixture, so the per-test event-loop join returns before it reads "
             "the clock"
+        ),
+        _MIRROR_PRUNE: (
+            "the inner session's mirror prune reads the clock only to age bytecode "
+            "mirrors; nothing the inner session asserts depends on that age"
         ),
     },
 }

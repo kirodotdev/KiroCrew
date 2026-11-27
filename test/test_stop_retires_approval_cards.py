@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from engine_turn_helpers import client, live_reading_says_kas, registered
-from handlers_messaging_coverage_helpers import _payload, _Req, _run
+from handlers_messaging_coverage_helpers import _OWNER_SUBJECT, _payload, _Req, _run
 
 import kiro_crew.dashboard.handlers.messaging as messaging
 from kiro_crew.acp.kas_engine_subagents import KAS_SUBAGENTS_PREVIEW
@@ -228,6 +228,8 @@ def test_stop_all_on_an_engine_turn_retires_the_childs_waiting_card(
     from chat_test_helpers import _make_state
 
     state = _make_state(tmp_path)
+    # The owner presses Stop all: ``_Req`` carries the owner's subject.
+    state.owner_id = _OWNER_SUBJECT
     state.sessions.is_compacting = MagicMock(return_value=False)
     state.sessions.stop_turn = AsyncMock(return_value="stopped")
     state.subagents = MagicMock()

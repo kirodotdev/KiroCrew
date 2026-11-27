@@ -9,6 +9,7 @@ import {
 import en from '../i18n/locales/en.json'
 import zh from '../i18n/locales/zh-CN.json'
 import '../i18n'
+import { wheelCopyDrift } from './shippedWheelCopies'
 
 /**
  * `APP_MANIFEST_KEY` localises built-in app metadata that the PYTHON side owns, without
@@ -44,7 +45,8 @@ describe('APP_MANIFEST_KEY', () => {
       .map(e => join(dir, e.name, 'app.json'))
       .filter(f => existsSync(f))
       .map(f => JSON.parse(readFileSync(f, 'utf8')))
-    expect(shipped.length).toBeGreaterThan(10)
+    expect(wheelCopyDrift(shipped.map(m => m.name)), 'the walk reads every shipped app.json')
+      .toEqual({ added: [], dropped: [] })
     for (const m of shipped) {
       expect(APP_MANIFEST_KEY, `no APP_MANIFEST_KEY entry for '${m.name}'`)
         .toHaveProperty(m.name)

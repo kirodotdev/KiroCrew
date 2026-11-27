@@ -70,7 +70,7 @@ def _resolve(builder: ContextBuilder, *, is_cc: bool = False) -> str:
         project=None,
         mode="",
         session_key="sess-15491",
-        is_cc=is_cc,
+        provider_type="claude_code" if is_cc else None,
         private_owner=False,
         session_start=True,
     )

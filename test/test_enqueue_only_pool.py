@@ -1,10 +1,10 @@
 """``EnqueueOnlyThreadPoolExecutor``: a pool whose ``submit`` only enqueues.
 
-The loop's default executor and the off-loop spawn pool use it, so the loop's
-calls into them never wait while some thread starts a pool worker. These tests
-hold the pool's own worker start, or the test's own work, on an event the test
-releases, so no sleep stands in for a slow start; a hold still in place at the
-bound fails by name.
+The loop's default executor, the off-loop spawn pool and every pool
+``kiro_crew.executors`` builds use it, so the loop's calls into them never wait while
+some thread starts a pool worker. These tests hold a worker start, or the test's own
+work, on an event the test releases, so no sleep stands in for a slow start; a hold
+still in place at the bound fails by name.
 """
 
 from __future__ import annotations
@@ -14,18 +14,24 @@ import gc
 import subprocess
 import sys
 import threading
-from typing import Any
 
 import pytest
 
 from kiro_crew import enqueue_only_pool
 from kiro_crew import platform_compat_offloop_spawn as offloop
 from kiro_crew.enqueue_only_pool import EnqueueOnlyThreadPoolExecutor
-from kiro_crew.testing.wait import async_wait_until, default_timeout, finished, wait_until
+from kiro_crew.testing.wait import default_timeout, finished, wait_until
 
 #: A lost-run bound only: the tests release what they hold themselves, and a hold
 #: still in place at this bound means the code under test waited for it.
 _HOLD_BOUND_SECS = 10.0
+
+
+def _idle_worker_pool(max_workers: int) -> EnqueueOnlyThreadPoolExecutor:
+    """A pool whose first worker, started where the pool is built, waits for work."""
+    pool = EnqueueOnlyThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="t-enqueue")
+    wait_until(lambda: pool._idle_semaphore._value == 1, describe=lambda: "no idle worker")
+    return pool
 
 
 def test_submit_returns_while_the_pool_is_still_starting_its_worker(
@@ -33,30 +39,35 @@ def test_submit_returns_while_the_pool_is_still_starting_its_worker(
 ) -> None:
     starting = threading.Event()
     release = threading.Event()
+    gate = threading.Event()
     real_start = threading.Thread.start
 
     def held_start(thread: threading.Thread) -> None:
-        if thread.name.startswith("t-enqueue_") and thread.name != "t-enqueue_grow":
+        if thread.name == "t-enqueue_1":
             starting.set()
             assert release.wait(_HOLD_BOUND_SECS), "submit waited for the worker start"
         real_start(thread)
 
     monkeypatch.setattr(enqueue_only_pool.threading.Thread, "start", held_start)
-    pool = EnqueueOnlyThreadPoolExecutor(max_workers=1, thread_name_prefix="t-enqueue")
+    pool = _idle_worker_pool(max_workers=2)
     try:
+        busy = pool.submit(gate.wait, _HOLD_BOUND_SECS)  # takes the one idle worker
         future = pool.submit(lambda: "ran")
         assert starting.wait(default_timeout())
-        # submit returned while the grower is still inside the worker's start.
+        # submit returned while the grower is still inside the second worker's start.
         assert not future.done()
         release.set()
         assert future.result(default_timeout()) == "ran"
+        gate.set()
+        assert busy.result(default_timeout())
     finally:
         release.set()
+        gate.set()
         pool.shutdown(wait=True)
 
 
 @pytest.mark.parametrize("error", [RuntimeError, MemoryError])
-def test_a_worker_that_cannot_start_fails_the_queued_call_and_the_next_submit_retries(
+def test_a_pool_whose_first_worker_cannot_start_raises_where_it_is_built(
     monkeypatch: pytest.MonkeyPatch, error: type[Exception]
 ) -> None:
     real_start = threading.Thread.start
@@ -69,54 +80,82 @@ def test_a_worker_that_cannot_start_fails_the_queued_call_and_the_next_submit_re
         real_start(thread)
 
     monkeypatch.setattr(enqueue_only_pool.threading.Thread, "start", refusing_start)
+    with pytest.raises(error, match="can't start new thread"):
+        EnqueueOnlyThreadPoolExecutor(max_workers=1, thread_name_prefix="t-enqueue")
+    # Nothing was left running: the grower starts only after the first worker.
+    assert not [t for t in threading.enumerate() if t.name in ("t-enqueue_0", "t-enqueue_grow")]
     pool = EnqueueOnlyThreadPoolExecutor(max_workers=1, thread_name_prefix="t-enqueue")
     try:
-        with pytest.raises(RuntimeError, match="can't start new thread"):
-            pool.submit(int, "1").result(default_timeout())
         assert pool.submit(int, "2").result(default_timeout()) == 2
     finally:
         pool.shutdown(wait=True)
 
 
-# Each run starts the gateway loop's spawn path; the spawn tests keep them serial.
-@pytest.mark.xdist_group(name="spawn_off_loop")
-def test_a_spawn_cancelled_while_its_pool_cannot_start_a_worker_raises_the_cancel(
+def test_a_worker_start_refused_while_growing_leaves_the_call_to_the_running_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    entered = threading.Event()
-    release = threading.Event()
+    refused = threading.Event()
+    gate = threading.Event()
     real_start = threading.Thread.start
 
-    def failing_start(thread: threading.Thread) -> None:
-        if thread.name == "t-enqueue-spawn_0":
-            entered.set()
-            assert release.wait(_HOLD_BOUND_SECS), "the test never released the start"
+    def refusing_start(thread: threading.Thread) -> None:
+        if thread.name == "t-enqueue_1":
+            refused.set()
             raise RuntimeError("can't start new thread")
         real_start(thread)
 
-    monkeypatch.setattr(enqueue_only_pool.threading.Thread, "start", failing_start)
-    pool = EnqueueOnlyThreadPoolExecutor(max_workers=1, thread_name_prefix="t-enqueue-spawn")
-    monkeypatch.setattr(offloop, "spawn_executor", lambda: pool)
+    monkeypatch.setattr(enqueue_only_pool.threading.Thread, "start", refusing_start)
+    pool = _idle_worker_pool(max_workers=2)
+    try:
+        busy = pool.submit(gate.wait, _HOLD_BOUND_SECS)
+        queued = pool.submit(int, "3")
+        assert refused.wait(default_timeout())
+        assert not queued.done()
+        gate.set()
+        assert busy.result(default_timeout())
+        assert queued.result(default_timeout()) == 3
+    finally:
+        gate.set()
+        pool.shutdown(wait=True)
+    assert [t.name for t in pool._threads] == ["t-enqueue_0"]
 
-    async def body() -> BaseException:
-        spawn = asyncio.ensure_future(asyncio.create_subprocess_exec(sys.executable, "-c", "pass"))
-        await async_wait_until(entered.is_set, describe=lambda: "no worker start was tried")
-        spawn.cancel()
-        for _ in range(5):  # the spawn absorbs the cancel and keeps waiting for its build
-            await asyncio.sleep(0)
-        assert not spawn.done()
-        release.set()
-        with pytest.raises(asyncio.CancelledError) as raised:
-            await finished(spawn, "the cancelled spawn")
-        return raised.value
+
+# Each run starts the gateway loop's spawn path; the spawn tests keep them serial.
+@pytest.mark.xdist_group(name="spawn_off_loop")
+def test_a_spawn_whose_pool_cannot_be_built_raises_the_start_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_start = threading.Thread.start
+
+    def refusing_start(thread: threading.Thread) -> None:
+        if thread.name == "t-enqueue-spawn_0":
+            raise RuntimeError("can't start new thread")
+        real_start(thread)
+
+    built: list[EnqueueOnlyThreadPoolExecutor] = []
+
+    def spawn_executor() -> EnqueueOnlyThreadPoolExecutor:
+        # Held here, so a pool that did build is not dropped before its grower runs.
+        built.append(
+            EnqueueOnlyThreadPoolExecutor(max_workers=1, thread_name_prefix="t-enqueue-spawn")
+        )
+        return built[-1]
+
+    monkeypatch.setattr(enqueue_only_pool.threading.Thread, "start", refusing_start)
+    monkeypatch.setattr(offloop, "spawn_executor", spawn_executor)
+
+    async def body() -> None:
+        await finished(asyncio.create_subprocess_exec(sys.executable, "-c", "pass"), "the spawn")
 
     try:
         with asyncio.Runner(loop_factory=offloop.gateway_loop_factory()) as runner:
-            cancel = runner.run(body())
+            # The start error itself, raised where the pool is built.
+            with pytest.raises(RuntimeError, match="^can't start new thread$"):
+                runner.run(body())
     finally:
-        release.set()
-        pool.shutdown(wait=True)
-    assert isinstance(cancel.__cause__, RuntimeError)
+        for pool in built:
+            pool.shutdown(wait=True)
+    assert built == []
 
 
 def test_the_pool_runs_at_most_its_cap_and_delivers_every_outcome() -> None:
@@ -143,26 +182,6 @@ def test_the_pool_runs_at_most_its_cap_and_delivers_every_outcome() -> None:
         pool.shutdown(wait=True)
     # The waited shutdown joined the grower, so every worker it started is recorded.
     assert sorted(t.name for t in pool._threads) == ["t-enqueue_0", "t-enqueue_1"]
-
-
-def test_a_call_queued_before_any_worker_started_runs_before_a_waited_shutdown_returns(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    go = threading.Event()
-    real_grow = enqueue_only_pool._grow
-
-    def late_grow(*args: Any) -> None:
-        assert go.wait(_HOLD_BOUND_SECS), "the test never let the grower run"
-        real_grow(*args)
-
-    monkeypatch.setattr(enqueue_only_pool, "_grow", late_grow)
-    pool = EnqueueOnlyThreadPoolExecutor(max_workers=2, thread_name_prefix="t-enqueue")
-    future = pool.submit(int, "3")
-    pool.shutdown(wait=False)  # before the grower has started a worker for the call
-    go.set()
-    pool.shutdown(wait=True)
-    assert future.done(), "the waited shutdown returned before the queued call ran"
-    assert future.result() == 3
 
 
 def test_a_worker_counts_as_idle_once_however_many_queued_calls_it_ran() -> None:
@@ -222,18 +241,81 @@ def test_a_pool_dropped_without_shutdown_stops_its_threads() -> None:
     )
 
 
-def test_an_interpreter_with_a_live_pool_exits() -> None:
-    script = (
-        "from kiro_crew.enqueue_only_pool import EnqueueOnlyThreadPoolExecutor\n"
-        "pool = EnqueueOnlyThreadPoolExecutor(max_workers=2)\n"
-        "assert pool.submit(int, '5').result(10) == 5\n"
-        "pool.submit(__import__('threading').Event().wait)\n"
-    )
+#: A child that leaves two pools with work at a normal exit: a running call and a call
+#: queued behind it, and a running call on a pool already shut down without ``wait``
+#: and dropped. Each call waits until the exit hook shuts the pools down, so a pool
+#: whose work is not joined at exit prints nothing, whatever the timing. A non-daemon
+#: thread then builds a new pool while the hook runs: its submit is refused, as the
+#: stdlib refuses one after interpreter shutdown, rather than left to a worker no one joins.
+_EXIT_CHILD = f"""
+import os
+import threading
+from kiro_crew.enqueue_only_pool import EnqueueOnlyThreadPoolExecutor as Pool
+
+BOUND = {_HOLD_BOUND_SECS!r}
+exiting = threading.Event()
+body_done = False
+real_shutdown = Pool.shutdown
+
+
+def shutdown(self, wait=True, *, cancel_futures=False):
+    if body_done:
+        exiting.set()
+    real_shutdown(self, wait, cancel_futures=cancel_futures)
+
+
+Pool.shutdown = shutdown
+
+
+def emit(line):
+    # One write(2) per line: print() writes the text and its newline separately, so
+    # two workers released by the same exit hook can interleave into "runningdropped".
+    os.write(1, (str(line) + "\\n").encode())
+
+
+def run_at_exit(entered, line):
+    entered.set()
+    if exiting.wait(BOUND):
+        emit(line)
+
+
+running = Pool(max_workers=1, thread_name_prefix="t-running")
+entered = threading.Event()
+running.submit(run_at_exit, entered, "running")
+assert entered.wait(BOUND)
+running.submit(emit, "queued")
+
+dropped = Pool(max_workers=1, thread_name_prefix="t-dropped")
+entered = threading.Event()
+dropped.submit(run_at_exit, entered, "dropped")
+assert entered.wait(BOUND)
+dropped.shutdown(wait=False)
+del dropped
+
+
+def late_submit():
+    if exiting.wait(BOUND):
+        try:
+            Pool(max_workers=1, thread_name_prefix="t-late").submit(emit, "late")
+        except RuntimeError as exc:
+            emit("refused" if "cannot schedule new futures" in str(exc) else exc)
+
+
+threading.Thread(target=late_submit).start()  # joined after the exit hooks
+body_done = True
+"""
+
+
+def test_a_normal_exit_finishes_running_and_queued_work_and_refuses_new_work() -> None:
     done = subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, "-c", _EXIT_CHILD],
         capture_output=True,
         text=True,
         encoding="utf-8",
         timeout=default_timeout(),
     )
     assert done.returncode == 0, done.stderr
+    assert sorted(done.stdout.split()) == ["dropped", "queued", "refused", "running"], (
+        done.stdout,
+        done.stderr,
+    )

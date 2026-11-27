@@ -100,6 +100,8 @@ interface ComposerSendOptions {
   scrollBottom: (instant?: boolean) => void
   setRefusedPress: Dispatch<SetStateAction<{ action: RefusedPressAction; message: string; } | null>>
   createFailReason: (e: unknown) => string
+  /** Speaks the sent message through the transcript's live region (`useTranscriptAnnouncement`). */
+  announceSent?: (markdown: string) => void
 }
 
 /** What a send consumed from the composer, in the shape `restoreSentTurn` puts back. */
@@ -146,7 +148,7 @@ export function useComposerSend({
   mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef, forkUnavailable,
   setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
   messageQuote, setPrefillHint, autoSendRef, setAutoSendTick, newSessionRef, widgetPrefillRef, mergeSlotTokens, pasteBlocksRef, pendingFilesRef, pendingSessionsRef, pickedFileTokens, setPasteBlocks, readPasteBlocks, installPasteBlocks,
-  setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason,
+  setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason, announceSent,
 }: ComposerSendOptions) {
   // Scroll to show Footer when agent starts running (loading indicator appears)
   const prevRunningRef = useRef(false)
@@ -612,7 +614,7 @@ export function useComposerSend({
         // via ?autoSend=1&newSession=1). Neither is the person's own first
         // message, so neither asks for their default sidebar folder.
         const launched = isolated || (forceNew && optionText !== undefined)
-        created = await dispatch(createSlot({ agent: pendingAgentRef.current || undefined, agent_kind: pendingAgentRef.current ? pendingAgentKindRef.current : undefined, model: pendingModelRef.current || undefined, mode: modeRef.current, ...(pendingProjectRef.current ? { sessionFolder: false } : launched ? {} : { defaultFolder: true }) })).unwrap()
+        created = await dispatch(createSlot({ agent: pendingAgentRef.current || undefined, agent_kind: pendingAgentRef.current ? pendingAgentKindRef.current : undefined, model: pendingModelRef.current || undefined, mode: modeRef.current, ...(pendingProjectRef.current ? { sessionFolder: false } : launched ? {} : { defaultFolder: true }), ...(launched ? {} : { startModeDefault: true }) })).unwrap()
       } catch (e: unknown) {
         sendingRef.current = false
         if (isolated) {
@@ -824,6 +826,10 @@ export function useComposerSend({
       // their payload out of the person's ↑ history.
       if (slot && (!isolated || ownsFailureReport)) dispatch(recordSendAttempt({ slot, text: turn.bubble, sendId, pastes: turn.pastes }))
     }
+    // Spoken at the send, not when the row reaches the transcript: a user row at
+    // the tail is also what a still-running session looks like on first load.
+    // Only a send to the session on screen; one to another session is not heard here.
+    if (!isolated && (!slot || slot === store.getState().chat.activeSlot)) announceSent?.(turn.bubble)
     if (!isolated) window.dispatchEvent(new Event('voice-stop'))
     sendingRef.current = false
     // Settings -> Chat can turn the send-time jump off (#25754).

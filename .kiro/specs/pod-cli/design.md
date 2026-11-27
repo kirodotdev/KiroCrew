@@ -3,7 +3,11 @@
 Status: implemented in `src/kiro_crew/pod/` and exposed by `kirocrew pod`. This design is
 historical: the shipped systemd unit has no `ExecStopPost` hook (teardown runs from
 `stop_pod` in `runtime_lifecycle.py`), and macOS launchd and Windows backends exist
-beside systemd. The current contract is [`src/kiro_crew/pod/README.md`](../../../src/kiro_crew/pod/README.md).
+beside systemd. Also no longer true below: the port checksum is computed in-process
+(`_posix_cksum` in `runtime_ports.py`), not by shelling the `cksum` binary;
+`ensure_venv` tries several interpreters and then uv (`_find_python` in `provision.py`),
+not only `python3.12`; and the data home and the `KIROCREW_POD_ENV_DIR` default are
+`~/.kiro/crew` and `~/.kiro/crew/pods`, not `~/.kirocrew` and `~/.kirocrew/pods`. The current contract is [`src/kiro_crew/pod/README.md`](../../../src/kiro_crew/pod/README.md).
 
 ## Module layout
 

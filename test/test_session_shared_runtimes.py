@@ -358,6 +358,40 @@ class TestReloadProviderFactory:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_reload_shuts_stale_sessions_down_together(self, cfg):
+        """The second shutdown starts while the first is still running."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        started: list[str] = []
+        running: list[str] = []
+        overlapped: list[bool] = []
+
+        def _shutdown_waiting_for(key: str):
+            async def _shutdown() -> None:
+                started.append(key)
+                running.append(key)
+                overlapped.append(len(running) > 1)
+                # Hand the loop to the other shutdown, if it has been started.
+                await asyncio.sleep(0)
+                running.remove(key)
+
+            return _shutdown
+
+        for key in ("k1", "k2"):
+            provider, _, _ = await mgr.get_or_create(key)
+            mgr.release(key)
+            provider.shutdown = AsyncMock(side_effect=_shutdown_waiting_for(key))
+
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch.object(cfg, "create_provider_factory", return_value=_mock_provider_factory()),
+        ):
+            await asyncio.wait_for(mgr.reload_provider_factory(), timeout=FALLBACK_TIMEOUT_SECS)
+
+        assert sorted(started) == ["k1", "k2"]
+        assert any(overlapped), "each shutdown waited for the previous one to finish"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_reload_shutdown_exception_swallowed(self, cfg):
         """Stale session shutdown failure doesn't crash reload."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())

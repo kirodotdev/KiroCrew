@@ -92,6 +92,8 @@ export interface WorkerKitView {
   unenforced_denies?: string[]
   /** The file's blocked commands only the gate checks, in a simple command or plain chain; the worker refuses any other non-read-only command while one is left. */
   conditional_denies?: string[]
+  /** Set on an add whose new gateway-routed MCP server the gateway serves only after a restart. */
+  gateway_restart_required?: boolean
 }
 export interface WorkerKitChange {
   /** `disabledTools` / `disabledServers`: a limit on a server the worker base declares. */
@@ -111,6 +113,8 @@ export interface WorkerKitPreview {
   unenforced_denies?: string[]
   /** The blocked commands only the gate checks, in a simple command or plain chain, once the add lands. */
   conditional_denies?: string[]
+  /** The agent's settings the add leaves out because the request asked (`without_write_fallback`). */
+  left_out?: string[]
   /** The behaviour directions the add writes; `""` when the agent has none. */
   directions?: string
   /** The directions the slot holds now, which a `replaced` row overwrites; `""` when empty. */
@@ -120,6 +124,8 @@ export interface WorkerKitPreview {
 export interface WorkerKitRequest {
   template: string
   revision?: string
+  /** Add without a write `fallbackAction` the bot can't keep; writes outside `allowedPaths` then ask. */
+  without_write_fallback?: boolean
 }
 const workerKitEndpoint = (member: string) => agentPath(member, '/worker-kit')
 export const crewWorkerKitApi = {

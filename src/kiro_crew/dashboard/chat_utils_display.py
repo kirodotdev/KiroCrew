@@ -1403,14 +1403,18 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
             ]
         meta = parse_cls_meta(m.get("cls", ""))
         if meta is not None:
-            # cls replaces meta, but a permission row's delivery id (`meta.mid`,
-            # stamped by _ChatSlot.append) is not in cls, and its approval is
-            # bound to that id (register_approval). Keep it for permission and
-            # elicitation rows only (the two the approval registry binds, and
-            # the two whose resolution frame names a `mid`), so every other
-            # row's wire meta is unchanged.
+            # cls replaces meta, with two exceptions. A permission or
+            # elicitation row keeps its delivery id (`meta.mid`, stamped by
+            # _ChatSlot.append), because its approval is bound to that id
+            # (register_approval). An `inject` row keeps its whole stored meta,
+            # merged over the cls meta, as the live frame does
+            # (`chat_message_note`): a cron row's JSON cls holds only its label,
+            # and its `injectKind` and `mid` are in the stored meta. Every other
+            # row's wire meta is the cls meta alone.
             if role in ("permission", "elicitation"):
                 meta = _carry_row_mid(meta, m)
+            elif role == "inject" and isinstance(m.get("meta"), dict):
+                meta = {**meta, **m["meta"]}
             msg_out["meta"] = _expire_dead_child_oauth_meta(
                 role, _redact_meta_for_role(role, meta), live_child
             )

@@ -296,6 +296,8 @@ def test_a_teammate_reads_the_remote_access_state(who: str) -> None:
     "key",
     [
         "dashboard.shared_crew.ssm",
+        "dashboard.shared_crew.ssm_port",
+        "dashboard.entry_port",
         "dashboard.shared_crew.tailnet_direct",
         "dashboard.tailscale.trust_identity",
         "dashboard.tailscale.allowed_logins",
@@ -337,15 +339,25 @@ def test_every_allow_list_in_the_config_schema_is_an_admission_key() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("key", "message"),
+    ("key", "value", "message"),
     [
-        ("dashboard.shared_crew.ssm", "only the Crew owner can change who may reach this Crew"),
-        ("instances.enabled", "only the Crew owner can manage remote crews"),
+        (
+            "dashboard.shared_crew.ssm",
+            True,
+            "only the Crew owner can change who may reach this Crew",
+        ),
+        (
+            "dashboard.shared_crew.ssm_port",
+            5476,
+            "only the Crew owner can change who may reach this Crew",
+        ),
+        ("dashboard.entry_port", 5476, "only the Crew owner can change who may reach this Crew"),
+        ("instances.enabled", True, "only the Crew owner can manage remote crews"),
     ],
 )
 @pytest.mark.parametrize("who", TEAMMATES)
 async def test_a_teammate_cannot_patch_an_admission_key(
-    state, who: str, key: str, message: str
+    state, who: str, key: str, value, message: str
 ) -> None:
     from kiro_crew.dashboard.handlers import core
 
@@ -358,11 +370,41 @@ async def test_a_teammate_cannot_patch_an_admission_key(
     app["state"] = state
     app.router.add_patch("/api/config/kirocrew", core.api_kirocrew_config_patch)
     async with TestClient(TestServer(app)) as client:
-        resp = await client.patch("/api/config/kirocrew", json={"path": key, "value": True})
+        resp = await client.patch("/api/config/kirocrew", json={"path": key, "value": value})
         body = await resp.json()
     assert resp.status == 403, body
     assert body["code"] == "owner_only"
     assert body["error"] == message
+
+
+@pytest.mark.asyncio
+async def test_the_machine_owner_cannot_patch_the_entry_listener(
+    state, monkeypatch, tmp_path
+) -> None:
+    """The config route has no rule for it: the config file or `kirocrew config set` sets it."""
+    from kiro_crew.dashboard.handlers import core
+
+    saved = tmp_path / "config.json"
+    monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: saved)
+
+    @web.middleware
+    async def as_owner(request, handler):
+        _publish(request, "owner")
+        return await handler(request)
+
+    app = web.Application(middlewares=[as_owner])
+    app["state"] = state
+    app.router.add_patch("/api/config/kirocrew", core.api_kirocrew_config_patch)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.patch(
+            "/api/config/kirocrew", json={"path": "dashboard.entry_port", "value": 8443}
+        )
+        body = await resp.json()
+    assert resp.status == 400, body
+    assert body == {"error": "field not editable: dashboard.entry_port"}
+    assert not saved.exists() or "entry_port" not in json.loads(saved.read_text()).get(
+        "dashboard", {}
+    )
 
 
 @pytest.mark.parametrize("who", ["tailscale", "tailscale_serve"])

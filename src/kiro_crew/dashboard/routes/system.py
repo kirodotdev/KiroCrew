@@ -148,6 +148,9 @@ def register(app: web.Application) -> None:
     # system routes' owner.
     app.router.add_get("/api/tailnet/mobile", handlers.api_tailnet_mobile_status)
     app.router.add_post("/api/tailnet/mobile/configure", handlers.api_tailnet_mobile_configure)
+    app.router.add_post(
+        "/api/tailnet/mobile/clear-overrides", handlers.api_tailnet_mobile_clear_overrides
+    )
     app.router.add_post("/api/tailnet/mobile/publish", handlers.api_tailnet_mobile_publish)
     app.router.add_post("/api/tailnet/mobile/unpublish", handlers.api_tailnet_mobile_unpublish)
     app.router.add_post("/api/tailnet/mobile/qr", handlers.api_tailnet_mobile_qr)
@@ -292,6 +295,9 @@ def register(app: web.Application) -> None:
 
     # Session revocation (called by `kirocrew logout` CLI)
     app.router.add_post("/api/logout", handlers.api_logout)
+    # One link's revocation (`kirocrew logout --link`): its own route, so a gateway
+    # that predates it answers 404 instead of revoking every session.
+    app.router.add_post("/api/logout/link", handlers.api_logout_link)
     app.router.add_post("/api/shutdown", handlers.api_shutdown)
 
     # Webhook hooks (external triggers)

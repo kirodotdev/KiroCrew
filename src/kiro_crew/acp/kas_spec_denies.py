@@ -107,10 +107,12 @@ def _authored_web_fetch_restricted(authored_permissions: Any) -> bool:
     merge drops still counts; or a block the merge refuses whole, or one this
     cannot read. Crew's gate then grants no ``web_fetch``, so the author's rule
     keeps the prompt it had on main."""
-    raw = authored_permissions
-    if raw is None:
+    if authored_permissions is None:
         return False
     from kiro_crew.acp.kas_permissions import projection_accepts
+    from kiro_crew.acp.kas_policy_bundle import without_policy_bundle
+
+    raw = without_policy_bundle(authored_permissions)
 
     if not isinstance(raw, dict) or set(raw) - {"rules", "policies"}:
         return True

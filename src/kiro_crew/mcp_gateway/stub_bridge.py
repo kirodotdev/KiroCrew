@@ -545,7 +545,9 @@ async def run_bridge(
             while True:
                 try:
                     line = await reader.readuntil(b"\n")
-                except (asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+                except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, OSError):
+                    # OSError: a reset or closing pipe (Windows raises
+                    # BrokenPipeError here) is the same transport loss as EOF.
                     session.reason = session.reason or "socket_eof"
                     return
                 if not line:
@@ -644,7 +646,9 @@ async def run_bridge(
             try:
                 await _write_frame(writer, {"type": _BRIDGE_PING_TYPE})
             except (OSError, ConnectionError, BrokenPipeError):
-                # Socket already broken — bridge will tear down on its own.
+                # Socket already broken. This task can end the bridge before a
+                # pump sees the loss, so name it here or it ends as "unknown".
+                session.reason = session.reason or "socket_write_failed"
                 return
             # Stamped AFTER the write, not before: _write_frame awaits the
             # shared writer lock and drain, so a stamp taken first would count

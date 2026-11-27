@@ -49,8 +49,8 @@ is defined in an owner module beside it. Import and patch every one as
     whether the host can open one right now: its launcher, and on Linux a desktop
     session);
   - `platform_compat_liveness`: whether a pid is alive, a zombie or a thread-group
-    leader, its process group and its thread count, answered without a signal that
-    acts on it;
+    leader, its process group, whether this process has a supervisor's child's
+    shape, and its thread count, answered without a signal that acts on it;
   - `platform_compat_identity`: who a process is: its parent, image, command line and
     argv match, start identity and start time, owning user, Linux namespaces and
     cgroups, and macOS sandbox;
@@ -104,8 +104,9 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Open a lock file the sweep will lock AND unlink while held | `open_lock_file_for_sweep(path)`: `O_RDWR \| O_NOFOLLOW` on POSIX; on Windows it opens with `FILE_SHARE_DELETE`, so the held lock's file can still be unlinked | `os.open` (the Windows CRT omits `FILE_SHARE_DELETE`, so unlinking a held lock fails) |
 | Create-or-open a lock sidecar race-safely | `open_create_or_existing(path, flags, mode, dir_fd=)` creates the name EXCLUSIVELY first and, when a sibling already made it, reopens WITHOUT `O_CREAT` so both hold the sibling's inode; never truncates; returns the raw fd the caller owns. `open_lock_file(path)` is the context-managed form for a plain lock file; `open_lock_file(path, create=False)` opens an existing one only and raises `FileNotFoundError` when it is absent, for a deleter that must not recreate what it locks. A leaf that vanishes between the two opens is a genuine `ENOENT` left to the caller. Every by-name lock-sidecar open under `src/kiro_crew` routes through it; the one standalone skill script that cannot import the package (`five-whys`) spells out the same two opens. `test/test_dir_fd_create_race_ratchet.py` refuses a new `dir_fd=` open whose flags carry `O_CREAT` without `O_EXCL`, and a by-name `os.open` of a lock-named path (the path expression or the enclosing function says `lock`) with the same flags; its `LOCK_ALLOWED` list carries a reason for each site left as it is | nonexclusive `O_CREAT`, which can return `ENOENT` on Darwin when two callers race to create the same absent name |
 | Open a file you write AND lock, never through a link at the name | `open_create_no_reparse(path, mode)`: POSIX is `open_create_or_existing` with `O_RDWR \| O_NOFOLLOW` and no `O_NONBLOCK` (a lease break is waited out, as a plain open would); Windows is `win_open_no_reparse(path, directory=False, links_only=True)`, a `CreateFileW` read/write open-or-create with `FILE_FLAG_OPEN_REPARSE_POINT` and no `FILE_SHARE_DELETE`, refusing a link or junction with `ELOOP` (`win_fd_is_link` reads the name-surrogate bit of the opened handle's own reparse tag and fails closed), while a regular file carrying a non-link tag such as a cloud-files placeholder opens (the decision-log append shares the open without `links_only`, refusing every reparse point). `open_file_no_reparse(path, links_only=True)` is the read-only counterpart. Never truncates; the caller still `fstat`s the descriptor for `S_ISREG`, since a directory, FIFO or socket at the name can open. To name who holds a lock on that file, pass the descriptor's `fstat` to `flock_owner_pid` / `pids_holding_file`, which accept an `os.stat_result` | `os.open(path, O_RDWR \| O_CREAT)` (follows a link at the name, and creates a dangling link's target); an `lstat` check before the open (a check-to-open window); `flock_owner_pid(path)` after a no-follow open (re-resolves the name, so it can name the holder of something else) |
-| Liveness probe | `pid_exists(pid)` / `pid_liveness(pid)` | `os.kill(pid, 0)` (kills on Windows!) |
+| Liveness probe | `pid_exists(pid)` / `pid_liveness(pid)`; a PID outside the native range (an `OverflowError` on POSIX, wider than the Win32 DWORD on Windows) is unknown: `pid_exists` answers True and `pid_liveness` `PID_UNSIGNALABLE` | `os.kill(pid, 0)` (kills on Windows!); letting `OpenProcess` truncate an oversized stamp into another pid |
 | Process-group liveness | `pgroup_exists(pgid)`; an out-of-native-range positive identity is unknown and therefore conservatively reads as alive, so persisted-state cleanup refuses it without aborting the rest of the sweep | `os.killpg(pgid, 0)` directly, or treating an oversized integer as a dead group |
+| Whether this process runs as a supervisor's child (no terminal on stdin, inside its parent's process group, not its leader) | `supervision_shape_failure()`: `None` when it does, else `SUPERVISION_TERMINAL` (`os.tcgetpgrp(0)` answers), `SUPERVISION_OWN_GROUP` (it leads its group, or its parent's group differs or cannot be read) or, off POSIX, `SUPERVISION_NOT_POSIX` | `os.getpgrp()` / `os.tcgetpgrp()` / `os.getpgid()` outside the compatibility layer (absent on Windows) |
 | Kill a process | `kill_pid(pid, sig)` | `os.kill(pid, sig)` |
 | Terminate a captured PID set without crossing PID reuse | `terminate_pids_pinned([(pid, start_id), ...], protected_pids=..., grace_secs=...)`; the caller supplies leaf-first identities, Linux opens a pidfd before each identity check and signals through it (the raw syscalls via `_process_group_supervisor` when the interpreter lacks the wrappers), every other host signals nothing, the filter drops protected and current PIDs, a call that delivered no SIGTERM returns 0 without the grace wait or SIGKILL, and the return value counts only confirmed exits or accepted SIGKILLs | a bare PID list; checking an identity before opening its process handle; a numeric-PID fallback when pinning is unavailable; a raw Linux syscall number on any other kernel; waiting out the grace when no SIGTERM was delivered; counting SIGTERM delivery as confirmed termination; signalling a protected runtime |
 | Kill a tree | `kill_process_tree(pid, sig)` | `os.killpg(os.getpgid(pid), sig)` |
@@ -533,7 +534,7 @@ loop-stall watchdog exits the gateway.
 `platform_compat_offloop_spawn` splits the transport build in two:
 
 1. A worker on `spawn_executor()` (a bounded `mc-spawn` pool whose `submit` only
-   enqueues, see [below](#the-default-executor-and-the-spawn-pool-never-wait-on-a-worker-start)) builds the `Popen`:
+   enqueues, see [below](#the-loops-thread-pools-never-wait-on-a-worker-start)) builds the `Popen`:
    `CreateProcess` plus the overlapped pipe handles. No loop state is touched.
 2. On the calling loop, a subclass of the stock transport whose `_start` is the
    interpreter's own `_start` with its `windows_utils.Popen` lookup answered by
@@ -598,52 +599,81 @@ loop turning; cancellation reaps; the fallback logs once) and
 inherited-descriptor closing match `Popen`'s; the scope is per task; the manifest
 fan-out opens it).
 
-## The default executor and the spawn pool never wait on a worker start
+## The loop's thread pools never wait on a worker start
 
 CPython's `ThreadPoolExecutor.submit` holds `concurrent.futures.thread._global_shutdown_lock`,
 one lock for every pool in the process, while it starts a worker, and `Thread.start()`
 waits for the new thread to run. On a Windows host near its commit limit a start takes
 seconds, so every other thread's `submit` waits on that lock, an idle worker
-notwithstanding. Two of the pools the loop thread submits to carry its own I/O and
-every child it starts: the default executor (`asyncio.to_thread`,
-`run_in_executor(None, ...)`, the loop's `getaddrinfo`) and `spawn_executor()` for
-every child built off the loop as above.
+notwithstanding, and a pool with no idle worker starts the new one on the caller's
+thread. The loop thread submits to the default executor (`asyncio.to_thread`,
+`run_in_executor(None, ...)`, the loop's `getaddrinfo`), to `spawn_executor()` for
+every child built off the loop as above, and to the thread pools `kiro_crew.executors`
+builds (`subprocess_executor()`, `discovery_executor()`, `maintenance_executor()`,
+`crew_log_executor()` and the rest).
 
-Both pools are `enqueue_only_pool.EnqueueOnlyThreadPoolExecutor`
-(`configure_default_executor` installs it as the default executor). Its `submit`
-takes only the pool's own lock, never one held across a `Thread.start()`, and puts
-the call on `_work_queue`; one grower thread per pool, started when the pool is
-built, starts the workers up to the cap. A slow start therefore delays only work
-waiting for a new worker, and idle workers keep taking work. A worker that cannot
-start (thread exhaustion) leaves the grower running: the next `submit` asks again,
-and a pool with no worker fails its queued calls with a `RuntimeError` whose cause
-is the start error, as the stdlib's `submit` raised it. It subclasses
-`ThreadPoolExecutor` because `loop.set_default_executor` accepts nothing else, and
-keeps `_work_queue` because `turn_timing` reads its depth. Its threads are daemons:
+All of them are `enqueue_only_pool.EnqueueOnlyThreadPoolExecutor`
+(`configure_default_executor` installs it as the default executor). Its `submit` takes
+only the pool's own lock, never one held across a `Thread.start()`, and puts the call
+on `_work_queue`. Building a pool starts its first worker and then one grower thread,
+both on the building thread (a shared pool's getter in `kiro_crew.executors` holds
+`executors._lock` across them, once per pool; `memory_preparation_executor()` builds a
+fresh pool per call), so a pool always has a worker and only growth waits on the
+grower, which starts the rest up to the cap. A slow start therefore delays only work
+waiting for a new worker, and the running workers keep taking work. A first worker the
+host refuses to start (thread or commit exhaustion) raises its error to the builder,
+so from the getter where the caller submits, as the stdlib's first `submit` raised it
+to the same caller, and nothing of the pool is kept; the next getter call builds it
+again. A refused growth start leaves the queue to the running workers, and the next
+`submit` asks again. It subclasses `ThreadPoolExecutor` because
+`loop.set_default_executor` accepts nothing else, and keeps `_work_queue` because
+`turn_timing` and `cron_queue_depth()` read its depth. Its threads are daemons:
 `shutdown()` stops them with one sentinel (and `cancel_futures` cancels queued work),
-a pool dropped without a shutdown stops them through a weak reference, and work still
-running at interpreter exit is not joined, where the stdlib's exit hook joined it.
-Neither pool has such work on the `asyncio.run` path: `asyncio.run` joins the
-default pool through `shutdown_default_executor`, and before that it cancels and
-awaits every task, and a cancelled spawn waits out its in-flight build (above).
-A call queued before `shutdown()` still runs: a pool with no worker yet starts one
-for it, unless the pool is also dropped before its grower wakes. Neither pool loses a
-call that way: `asyncio.run` joins the default pool before `loop.close()` drops it,
-and the spawn pool's exit hook cancels its queue (`cancel_futures=True`) before it
-drops the pool. `shutdown(wait=True)` joins the grower before the workers, so it
-returns only once every worker it started has finished.
-Every other pool keeps the stdlib executor, so a loop-thread `run_in_executor` on
-one of them (`subprocess_executor()` among them) still takes the process-wide
-lock, and on a pool with no idle worker starts that worker on the loop thread.
+and a pool dropped without a shutdown stops them through a weak reference. A call
+queued before `shutdown()` still runs. `shutdown(wait=True)` joins the grower before
+the workers, so it returns only once every worker it started has finished.
+
+At interpreter exit every such pool's work is joined as the stdlib joins its own
+pools', so queued and running work (an update apply, a crew-log or memory store write)
+still finishes. One hook does it, registered at import through
+`threading._register_atexit`, the private function the stdlib registers its own exit
+hook (`_python_exit`) with. It makes every pool refuse new work from then on, as the
+stdlib's pools refuse it after interpreter shutdown, shuts every pool registered by
+then down behind its queued work, joins each grower, then puts a stop behind each
+recorded worker's queue and joins every worker recorded by then: workers are recorded
+with their queue, apart from their pool, as the stdlib records its own, so a pool
+already shut down without `wait` and dropped (the default executor after
+`loop.close()`, the per-pass memory-preparation pool) still has its running work
+joined. A pool first built while the hook runs takes no work, so its idle daemon
+threads end with the interpreter. Those hooks run in reverse order of registration and
+this module registers after `concurrent.futures.thread`, so this hook runs just before
+the stdlib's, while stdlib pools still accept work, and both run before the non-daemon
+threads are joined and before `atexit`. `shutdown_maintenance_executor()`, the
+`atexit` handler of the `kiro_crew.executors` pools, therefore still finds nothing
+queued to cancel, as it did after the stdlib's hook. The gateway itself leaves through
+`os._exit` (`slack/gateway_runtime/exit_path.py`; `platform_compat.hard_exit` on a
+forced exit), which runs neither hook, so this governs the processes that exit
+normally: CLI commands, child processes and tests.
+
+Every other pool keeps the stdlib executor: those built outside `kiro_crew.executors`
+(the spawn pool aside) and the two inside `subprocess_pool.SubprocessPoolExecutor`. A
+loop-thread `run_in_executor` on one of them still takes the process-wide lock.
 
 The guards are `test/test_loop_thread_pool_lock.py` (with that lock held by another
-thread, `asyncio.to_thread` and a gateway-loop `create_subprocess_exec` complete and
-the child's exit status arrives, on the Windows CI shards through a real Proactor
-loop) and `test/test_enqueue_only_pool.py` (`submit` returns while the worker start
-is held; a failed worker start; cap, results and errors; cancel and shutdown; a call
-queued before any worker started runs before a waited shutdown returns; a worker
-counts as idle once; a dropped pool's threads stop; an interpreter with a live pool
-exits).
+thread, `asyncio.to_thread`, a gateway-loop `create_subprocess_exec` (the child's exit
+status arrives, on the Windows CI shards through a real Proactor loop) and a
+loop-thread `run_in_executor` on every `kiro_crew.executors` pool complete; a built
+pool's getter returns while another thread holds `executors._lock`, as a first build
+does across its starts), `test/test_executors.py` (a getter whose first worker cannot
+start raises, and the next call builds the pool), `test/test_push_branch_gate.py`
+(the push-allow audit is written inline when the maintenance pool cannot start a
+worker) and `test/test_enqueue_only_pool.py` (`submit` returns while a growth start is
+held; a refused first start raises where the pool is built; a refused growth start
+leaves the call to the running worker; a spawn whose pool cannot be built raises the
+start error; cap, results and errors; cancel and shutdown; a worker counts as idle
+once; a dropped pool's threads stop; at a normal interpreter exit a running call and a
+queued call on a live pool, and a running call on a pool shut down without `wait` and
+dropped, all finish, and a pool built while the hook runs refuses its submit).
 
 ## Windows session-tree teardown
 
@@ -781,10 +811,13 @@ not lost: its pins stay in the pending state, and the maintenance sweep resumes 
 drain from the members already confirmed. A slow host meets this routinely,
 because each member's pass costs two identity reads and two Toolhelp snapshots.
 `AcpRuntime` therefore logs it as one WARNING line, not a traceback, and still
-raises. A failed kiro session setup logs its original failure at WARNING before the
-cleanup kill, redacted and folded to one bounded printable line, because that text
-can come from the backend. Without that line, the cleanup's own output would be
-the only trace of a repeating setup failure.
+raises. The supervisors' reaper kill (`process_identity.kill_verified_process`)
+logs it as one WARNING line too, not an ERROR, and still records the run's kill as
+failed; every other drain failure there stays an ERROR. A failed kiro session
+setup logs its original failure at WARNING before the cleanup kill, redacted and
+folded to one bounded printable line, because that text can come from the
+backend. Without that line, the cleanup's own output would be the only trace of a
+repeating setup failure.
 
 This does not reconstruct an intermediary that exited before any available
 handle observed it, and the completeness a successful drain asserts is therefore

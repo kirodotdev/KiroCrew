@@ -1642,6 +1642,30 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.optimize-prompt-effort",
+    "label": "Optimize Prompt Effort",
+    "labelKey": "pages.settings.chatPanel.optimize_prompt_effort",
+    "hint": "The reasoning effort “Optimize prompt” runs at. 'Same as Background' uses your Background Effort under Model. Applies only on reasoning-capable models.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
+    "id": "chat.optimize-prompt-model",
+    "label": "Optimize Prompt Model",
+    "labelKey": "pages.settings.chatPanel.optimize_prompt_model",
+    "hint": "The model “Optimize prompt” runs on. 'Same as Background' runs it on the model your background work uses; pick a model to run only Optimize prompt on it.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
     "id": "chat.pin-forks-of-pinned-sessions",
     "label": "Pin forks of pinned sessions",
     "labelKey": "pages.settings.chatPanel.pin_forks_of_pinned_sessions",
@@ -1800,18 +1824,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "chat.require-a-second-escape-to-stop-the-turn",
-    "label": "Require a second Escape to stop the turn",
-    "labelKey": "pages.settings.chatPanel.double_escape_to_stop",
-    "hint": "When on, the first Escape in the message input only shows a hint. A second Escape while the hint shows stops the running turn.",
-    "tab": "chat",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "composer"
-    }
-  },
-  {
     "id": "chat.response-verbosity",
     "label": "Response Verbosity",
     "labelKey": "pages.settings.chatPanel.response_verbosity",
@@ -1865,7 +1877,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.send-follow-ups-with-one-click",
     "label": "Send follow-ups with one click",
     "labelKey": "pages.settings.chatPanel.followup_start_sends",
-    "hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box, and nothing is sent until you press send.",
+    "hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box.",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1,
@@ -2467,6 +2479,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.app-tools-in-bot-chats",
+    "label": "App tools in bot chats",
+    "labelKey": "pages.developer.featurePreviewsTab.bot_chat_app_tools",
+    "description": "Lets apps you allow add their tools to a bot's chat. Each call follows the bot's own approval setting.",
+    "hint": "To stop one bot, untick it on the app's page.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.artifact-deploy",
     "label": "Artifact Deploy",
     "labelKey": "pages.developer.featurePreviewsTab.artifact_deploy",
@@ -2509,7 +2534,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.connected-computers",
     "label": "Connected computers",
     "labelKey": "connectedComputers.preview.label",
-    "description": "Chats on this server can work in a folder on your own computer. Nothing is shared until you approve it on that computer.",
+    "description": "Chats on this server can work in a folder on your own computer.",
     "hint": "Your computer connects to this server and shares only the folder you approve. Turning this off stops sharing and never deletes files. Remote Crew is the reverse: it lets you use this server from another device.",
     "tab": "developer",
     "type": "toggle",
@@ -2678,7 +2703,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Remote dispatch",
     "labelKey": "pages.developer.featurePreviewsTab.remote_dispatch",
     "description": "Runs conductor mode tasks on connected machines.",
-    "hint": "Lets conductor mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
+    "hint": "Lets conductor mode chats run tasks on machines you've connected under Remote Crew.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2754,7 +2779,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.use-your-company-s-sign-in",
     "label": "Use your company's sign-in",
     "labelKey": "pages.developer.featurePreviewsTab.crew_client",
-    "description": "Uses your company's own sign-in for its portal. Nothing changes until you sign in with that portal.",
+    "description": "Uses your company's own sign-in for its portal.",
     "hint": "Some companies install Kiro Crew with their own company sign-in. Turn this on to use it. While you're signed in with it, you can't chat with the agent on this computer, and the sign-in form says so first. Otherwise nothing changes.",
     "tab": "developer",
     "type": "toggle",
@@ -3193,6 +3218,31 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "view"
     },
     "configKey": "dashboard.channels_enabled"
+  },
+  {
+    "id": "display.show-discover-in-the-sidebar",
+    "label": "Show Discover in the sidebar",
+    "labelKey": "pages.settings.displayPanel.show_discover",
+    "hint": "Off takes Discover off the left rail in this browser. Open it with Discover apps on the Library page or from Search Everywhere. While it’s off, the count of app updates shows on Library.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
+  },
+  {
+    "id": "display.show-linked-items-expanded-on-session-cards",
+    "label": "Show linked items expanded on session cards",
+    "labelKey": "pages.settings.displayPanel.expand_linked_items",
+    "hint": "Each session card starts with its linked pull requests and issues shown under it. Pressing the count on a card still folds or opens that card.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidebar"
+    },
+    "configKey": "dashboard.expand_linked_items"
   },
   {
     "id": "display.show-search-in-the-top-bar",
@@ -3992,7 +4042,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.dictation-panel",
     "label": "Dictation panel",
     "labelKey": "pages.settings.sttSettings.dictation_panel",
-    "hint": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion.",
+    "hint": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when your system requests reduced motion.",
     "tab": "voice",
     "type": "toggle",
     "occurrence": 1

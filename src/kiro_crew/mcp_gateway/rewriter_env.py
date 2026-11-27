@@ -393,6 +393,9 @@ def _collect_target_env(
     apart from two different names sharing a key, which is warned about.
     Without it only the names inside this call are known.
     """
+    # Malformed maps carry no targets; the raw declaration census records the gap.
+    if not isinstance(mcp_servers, dict):
+        return
     owners: dict[str, str] = {} if key_owners is None else key_owners
     for server_name, entry in mcp_servers.items():
         if not isinstance(entry, dict) or not (

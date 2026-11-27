@@ -608,8 +608,8 @@ class TestCleanupPartial:
             str(tmp_path / "proj"), str(dest), "feat/x", claimed=False, created=False
         )
         assert (dest / "marker.txt").is_file()
-        assert git.ran("worktree", "prune")
-        assert not git.ran("worktree", "remove")
+        # A folder still in place is not proven ours, so no git touches it.
+        assert not git.ran("worktree")
 
     def test_foreign_registration_is_spared(self, git, tmp_path, monkeypatch):
         dest = self._dest(tmp_path)
@@ -646,7 +646,7 @@ class TestCleanupPartial:
         dest = self._dest(tmp_path)
 
         def remove_it(args, cwd):
-            if args[:2] == ["worktree", "remove"]:
+            if args[:2] == ["worktree", "remove"] and dest.is_dir():
                 for child in dest.iterdir():
                     child.unlink()
                 dest.rmdir()
@@ -659,17 +659,19 @@ class TestCleanupPartial:
         )
         assert not dest.exists()
 
-    def test_claimed_branch_is_deleted_after_a_prune(self, git, tmp_path, monkeypatch):
+    def test_claimed_branch_is_deleted_after_its_own_registration_is_dropped(
+        self, git, tmp_path, monkeypatch
+    ):
+        """Only the destination's own registration goes, by path. A repository-wide
+        prune would also drop every worktree the sandboxed git cannot see, which is
+        other sessions' live scratch worktrees of the same repository."""
         monkeypatch.setattr(wt, "_worktree_branches", lambda root: {})
+        dest = str(tmp_path / "proj-wt-x")
         wt._cleanup_partial(
-            str(tmp_path / "proj"),
-            str(tmp_path / "proj-wt-x"),
-            "feat/x",
-            claimed=True,
-            created=False,
-            base_sha="abc",
+            str(tmp_path / "proj"), dest, "feat/x", claimed=True, created=False, base_sha="abc"
         )
-        assert git.ran("worktree", "prune")
+        assert git.ran("worktree", "remove", dest)
+        assert not git.ran("worktree", "prune")
         assert git.ran("update-ref", "-d", "refs/heads/feat/x", "abc")
 
     def test_claimed_branch_survives_when_another_worktree_holds_it(
@@ -719,7 +721,7 @@ class TestCleanupPartial:
         )
         assert git.ran("update-ref", "-d", "refs/heads/feat/x", "abc")
 
-    def test_delete_is_retried_once_after_a_second_prune(self, tmp_path, monkeypatch):
+    def test_delete_is_retried_once_after_a_second_deregistration(self, tmp_path, monkeypatch):
         attempts: list[int] = []
 
         def flaky(root, branch, base_sha):
@@ -739,8 +741,10 @@ class TestCleanupPartial:
             base_sha="abc",
         )
         assert len(attempts) == 2
-        prunes = [c for c, _ in fake.calls if c[:2] == ("worktree", "prune")]
-        assert len(prunes) == 2
+        dest = str(tmp_path / "proj-wt-x")
+        removes = [c for c, _ in fake.calls if c[:2] == ("worktree", "remove")]
+        assert removes == [("worktree", "remove", dest)] * 2
+        assert not fake.ran("worktree", "prune")
 
     def test_a_branch_surviving_both_attempts_is_logged(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setattr(wt, "_worktree_branches", lambda root: {})

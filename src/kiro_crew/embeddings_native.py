@@ -59,6 +59,10 @@ _LINUX_X86_64_REQUIRED_CPU_FLAGS = frozenset(
     {"avx", "avx2", "bmi2", "f16c", "fma", "sse3", "ssse3"}
 )
 _LINUX_CPUINFO_PATH = Path("/proc/cpuinfo")
+# ``IsProcessorFeaturePresent`` ids for the Windows x64 DLLs' share of that baseline.
+# The API has no FMA or F16C id (BMI2 only from Windows 11 24H2), so AVX2 stands in
+# for them; Windows 10 before 2004 reads the last three ids as absent and is refused.
+_WINDOWS_X86_64_CPU_FEATURE_IDS = {"sse3": 13, "ssse3": 36, "avx": 39, "avx2": 40}
 # Linux arm64 ships two builds of the same llama.cpp: `linux_aarch64` (upstream's
 # armv8-a wheel) and this one, rebuilt with the int8 dot-product instructions
 # (`sdot`), about 5x faster per core on the shipped Q8_0 model. Loaded only
@@ -246,6 +250,23 @@ def _macos_x86_64_missing_cpu_flags() -> list[str] | None:
         if macos_name not in present and linux_name in _LINUX_X86_64_REQUIRED_CPU_FLAGS
     )
     return missing if missing else []
+
+
+def _windows_x86_64_missing_cpu_flags() -> list[str] | None:
+    """Return the CPU features the bundled Windows x64 llama.cpp runtime needs that
+    this host lacks, or None if ``kernel32`` cannot be asked (fail-closed).
+
+    Reads :data:`_WINDOWS_X86_64_CPU_FEATURE_IDS` through ``IsProcessorFeaturePresent``.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        is_present = ctypes.WinDLL("kernel32").IsProcessorFeaturePresent
+    except (AttributeError, OSError):
+        return None
+    return sorted(
+        name for name, feature in _WINDOWS_X86_64_CPU_FEATURE_IDS.items() if not is_present(feature)
+    )
 
 
 def verify_vendored_libs(root: Path | None = None) -> dict[str, list[str]]:
@@ -548,6 +569,29 @@ def _load_llama_class():
                     "and restart Kiro Crew. Memory falls back to keyword search until "
                     "then. Set %s to use an operator-provided runtime instead.",
                     ", ".join(missing_runtime),
+                    _LIB_PATH_ENV,
+                )
+                return None
+            missing_cpu_flags = _windows_x86_64_missing_cpu_flags()
+            if missing_cpu_flags is None:
+                logger.warning(
+                    "Cannot verify CPU compatibility for the bundled Windows x64 "
+                    "llama.cpp runtime. Refusing the native runtime because an "
+                    "unsupported instruction would terminate the gateway; memory "
+                    "falls back to keyword search. Set %s to use an operator-provided "
+                    "runtime.",
+                    _LIB_PATH_ENV,
+                )
+                return None
+            if missing_cpu_flags:
+                logger.warning(
+                    "Bundled Windows x64 llama.cpp runtime requires CPU features "
+                    "%s; this host is missing %s. Refusing the native runtime because "
+                    "it would terminate the gateway with an illegal instruction; memory "
+                    "falls back to keyword search. Set %s to use a compatible "
+                    "operator-provided runtime.",
+                    ", ".join(sorted(_LINUX_X86_64_REQUIRED_CPU_FLAGS)),
+                    ", ".join(missing_cpu_flags),
                     _LIB_PATH_ENV,
                 )
                 return None

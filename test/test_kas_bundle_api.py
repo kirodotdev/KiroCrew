@@ -294,6 +294,54 @@ async def test_install_is_owner_only(cfg, monkeypatch):
     assert _body(resp)["code"] == "owner_only"
 
 
+def _request_as(user, *, app=""):
+    """A request from *user* while ``U_OWNER`` is the configured owner."""
+    req = _FakeRequest()
+    req.app["state"].owner_id = "U_OWNER"
+    req._items = {"app": app, "user": user} if app is not None else {}
+    return req
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subject", ["local-app", "local-startup"])
+async def test_a_session_from_before_the_owner_is_told_to_sign_in_again(cfg, monkeypatch, subject):
+    # Signed in before an owner was configured: still refused, and the refusal is the
+    # 401 the other owner gates give it, so the dashboard asks for a new sign-in.
+    monkeypatch.setattr(
+        kas_bundle, "install_pinned", lambda *a, **k: pytest.fail("a stale session installed")
+    )
+    req = _request_as(subject)
+    resp = await handler.api_kas_bundle_install(req)
+    assert resp.status == 401
+    assert _body(resp)["code"] == "stale_session_reauth"
+    assert handler._STATE_KEY not in req.app
+
+
+@pytest.mark.asyncio
+async def test_with_an_owner_configured_only_the_owner_installs(cfg, monkeypatch):
+    # Another user, an app token and a caller with no credential keep 403
+    # ``owner_only``; the owner's own new session starts the install.
+    calls = []
+    monkeypatch.setattr(
+        kas_bundle,
+        "install_pinned",
+        lambda base_url, **k: calls.append(base_url)
+        or SimpleNamespace(version=KAS_PIN_VERSION, root="/engines/kas"),
+    )
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    for user, app in (("U_SOMEONE_ELSE", ""), ("U_OWNER", "some-app"), ("", None)):
+        resp = await handler.api_kas_bundle_install(_request_as(user, app=app))
+        assert resp.status == 403
+        assert _body(resp)["code"] == "owner_only"
+    assert calls == []
+
+    req = _request_as("U_OWNER")
+    resp = await handler.api_kas_bundle_install(req)
+    assert resp.status == 202
+    await req.app[handler._STATE_KEY]["task"]
+    assert calls == ["https://h.test"]
+
+
 @pytest.mark.asyncio
 async def test_install_runs_once_reports_progress_and_finishes(cfg, monkeypatch):
     release = threading.Event()

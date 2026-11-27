@@ -122,6 +122,53 @@ class TestIdleSweepBusyGuard:
         await mgr.close_all()
 
 
+class TestIdleExpiredSeam:
+    @pytest.mark.asyncio
+    async def test_an_idle_reset_tells_on_idle_expired_and_an_orphan_reap_does_not(
+        self, cfg
+    ) -> None:
+        """Only a reset on the idle clock is reported."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        told: list[str] = []
+        mgr.on_idle_expired = told.append
+        for key in ("dashboard:idle", "dashboard:closed"):
+            await mgr.get_or_create(key)
+            mgr.release(key)
+        mgr.set_active_dashboard_slots({"dashboard:idle", "dashboard:closed"})
+        mgr.set_active_dashboard_slots({"dashboard:idle"})  # its tab closed
+        async with mgr._lock:
+            mgr._sessions["dashboard:idle"].last_used = time.monotonic() - 10_000
+
+        await mgr._expire_idle(3600)
+
+        assert mgr.count == 0
+        assert told == ["dashboard:idle"]
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_raising_on_idle_expired_does_not_stop_the_sweep(self, cfg) -> None:
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+
+        told: list[str] = []
+
+        def _boom(key: str) -> None:
+            told.append(key)
+            raise RuntimeError("the chat could not be told")
+
+        mgr.on_idle_expired = _boom
+        for key in ("thread1", "thread2"):
+            await mgr.get_or_create(key)
+            mgr.release(key)
+            async with mgr._lock:
+                mgr._sessions[key].last_used = time.monotonic() - 10_000
+
+        await mgr._expire_idle(3600)
+
+        assert mgr.count == 0
+        assert sorted(told) == ["thread1", "thread2"]
+        await mgr.close_all()
+
+
 class TestTouchLastUsed:
     @pytest.mark.asyncio
     async def test_touch_advances_last_used(self, cfg) -> None:

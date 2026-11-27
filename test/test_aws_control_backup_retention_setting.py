@@ -248,7 +248,12 @@ class TestTheStatusFieldDoesNotClaimAConsumerItDoesNotHave:
         assert "console renders" not in doc
         # The absence is stated rather than merely unclaimed, so the gap is disclosed
         # where someone deciding whether to build the panel will find it.
-        assert "NO\n    console renderer ships" in doc or "NO console renderer" in doc
+        # CPython 3.13 strips a docstring's indentation at compile time.
+        assert (
+            "NO\n    console renderer ships" in doc
+            or "NO\nconsole renderer ships" in doc
+            or "NO console renderer" in doc
+        )
 
     def test_the_count_survives_a_round_trip_without_any_frontend(self, tmp_path, monkeypatch):
         # Why the field stays despite having no renderer: without it the route is

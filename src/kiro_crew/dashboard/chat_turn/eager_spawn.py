@@ -13,6 +13,10 @@ from kiro_crew import resource_status
 from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
 from kiro_crew.config.loader import normalize_agent_model
+from kiro_crew.dashboard.effort_overlay_mark import (
+    effort_overlay_clear_kwargs,
+    settle_effort_overlay_clear,
+)
 from kiro_crew.security import redact_and_truncate
 from kiro_crew.session import SessionEndingError
 from kiro_crew.session_capabilities import CapabilityStartupError
@@ -1032,11 +1036,12 @@ async def _spawn_admitted_prefetch(
         _requested_model = slot.model or agent_model or ""
         from kiro_crew.agent_sdk.kas_project_hooks import person_turn_claim
 
+        _overlay_mark = effort_overlay_clear_kwargs(slot)
         try:
             # The tab's own next turn is its person's, so the start it prefetches is
             # marked as that turn's (``kas_project_hooks.PERSON_TURN``).
             with person_turn_claim(True):
-                _, is_new, resumed = await sessions.get_or_create(
+                _provider, is_new, resumed = await sessions.get_or_create(
                     session_key,
                     agent=kiro_agent or slot.agent or None,
                     # Canonical crew identity — the resolver's alias, which
@@ -1054,6 +1059,7 @@ async def _spawn_admitted_prefetch(
                     reasoning_effort_override=slot.reasoning_effort or None,
                     start_priority=start_priority,
                     focus_resume=focus_resume,
+                    **_overlay_mark,
                     **_app_allocation_kwargs(slot),
                     **_slot_backend_allocation_kwargs(slot),
                 )
@@ -1152,6 +1158,7 @@ async def _spawn_admitted_prefetch(
         await asyncio.shield(sessions.remove(session_key))
         return
     sessions.release(session_key)
+    settle_effort_overlay_clear(slot, _overlay_mark, is_new=is_new, provider=_provider)
     if not resumed:
         # Stamp first, matching the turn site. This call IS the allocation, so the
         # two agree whenever a tier resolved one, and the stamp additionally carries

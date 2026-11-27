@@ -50,6 +50,12 @@ def test_the_package_reports_this_build_level_and_is_published_at_seven() -> Non
     assert sdk.SDK_LEVEL >= sdk.BACKEND_SDK_LEVEL
 
 
+def test_every_later_name_is_exported_above_the_package_level() -> None:
+    for name, level in sdk._EXPORT_LEVELS.items():
+        assert name in sdk._LAZY_EXPORTS and name in sdk.__all__, name
+        assert sdk.BACKEND_SDK_LEVEL < level <= sdk.SDK_LEVEL, name
+
+
 def test_a_spawned_child_imports_it_without_loading_unused_controls(tmp_path) -> None:
     probe = (
         "import sys\n"

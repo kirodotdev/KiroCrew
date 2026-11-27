@@ -209,6 +209,7 @@ def close_run(
     being_cancelled: bool,
     prior_status: str | None = None,
     prior_error: str | None = None,
+    prior_error_kind: str = "",
     dispatched: bool = True,
 ) -> tuple[CronJob, str, str | None]:
     """Write a finished run's own terminal fields on ``job``; return its frozen record.
@@ -222,10 +223,11 @@ def close_run(
     flag, so it reaches this path. When it has no outcome of its own -- stopped
     before ``_execute`` (``dispatched`` false: the job still holds the previous
     run's fields) or before its callback set a status -- its row is
-    ``cancelled``, and ``last_status`` / ``last_error`` go back to
-    ``prior_status`` / ``prior_error``, what the job held when the run began,
-    so the registry is not handed a blank status or a stale error as this
-    run's. A stopped run that had already recorded its outcome keeps it.
+    ``cancelled``, and ``last_status`` / ``last_error`` / ``last_error_kind`` go
+    back to ``prior_status`` / ``prior_error`` / ``prior_error_kind``, what the job
+    held when the run began, so the registry is not handed a blank status or a
+    stale error as this run's. A stopped run that had already recorded its
+    outcome keeps it.
     """
     # For 'every' jobs, use started_at to prevent cumulative drift.
     # `_execute` bound this run's retry count to the `last_run_ts` it
@@ -254,6 +256,7 @@ def close_run(
         if not (dispatched and job.schedule.kind == "at"):
             job.last_status = prior_status
             job.last_error = prior_error
+            job.last_error_kind = prior_error_kind
         status = "cancelled"
     else:
         status = "success" if job.last_status == "ok" else "failure"
@@ -301,6 +304,7 @@ def apply_run_record(target: CronJob, run: CronJob) -> None:
     target.last_run_ts = run.last_run_ts
     target.last_status = run.last_status
     target.last_error = run.last_error
+    target.last_error_kind = run.last_error_kind
     # Only propagate enabled=False for one-shot at-jobs that fired.
     # Never overwrite enabled for recurring jobs — user_paused is the
     # sole authority for user-controlled pause/resume state.

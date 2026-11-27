@@ -25,10 +25,10 @@ the import this module replaces.
 
 from __future__ import annotations
 
-from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpSandboxInitFailed, AcpTimeoutError
 from kiro_crew.acp.engine_fallback import (
     EngineFallbackWalk,
     ModelFallbackNotice,
+    RefusalHopText,
     engine_served_model,
     follow_engine_promotion,
     is_unpinned_pick,
@@ -55,17 +55,23 @@ from kiro_crew.acp.raw_sdk_tasks import (
 from kiro_crew.acp.raw_sdk_tasks import live_card_ids as live_background_card_ids
 from kiro_crew.acp.raw_sdk_tasks import on_cards_lost as on_background_cards_lost
 from kiro_crew.acp.raw_sdk_workflow_cards import BackgroundCardRow
-from kiro_crew.acp.session_handle import (
+from kiro_crew.acp.session_handle_native_children import (
+    AUTO_REJECT_MISSING_SECURITY_CONTEXT,
+    AUTO_REJECT_STRANDED_BETWEEN_TURNS,
     NATIVE_CHILD_NOT_RESUMABLE,
+)
+from kiro_crew.acp.session_handle_runtime_contract import (
     AcpRequestTimeout,
     AcpRuntimeError,
     AcpScopeAdmissionTimeout,
 )
-from kiro_crew.acp.session_handle_native_children import (
-    AUTO_REJECT_MISSING_SECURITY_CONTEXT,
-    AUTO_REJECT_STRANDED_BETWEEN_TURNS,
-)
 from kiro_crew.acp.timed_out_continuation import continue_timed_out_calls, timed_out_continuation
+from kiro_crew.acp.transport_errors import (
+    AcpError,
+    AcpProcessDied,
+    AcpSandboxInitFailed,
+    AcpTimeoutError,
+)
 from kiro_crew.acp.types import (
     EVENT_HARNESS_NOTICE,
     EVENT_MODEL_FALLBACK,
@@ -83,6 +89,7 @@ from kiro_crew.acp.types import (
     STOP_CLASS_SUCCEEDED,
     STOP_REASON_CANCEL_UNACKED,
     STOP_REASON_CANCELLED,
+    STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TIMEOUT,
     STOP_RECOVERY_MAX_RETRIES,
@@ -118,6 +125,7 @@ __all__ = [
     "STOP_CLASS_SUCCEEDED",
     "STOP_REASON_CANCEL_UNACKED",
     "STOP_REASON_CANCELLED",
+    "STOP_REASON_REFUSAL",
     "STOP_REASON_STALE_RECOVER",
     "STOP_REASON_TIMEOUT",
     "STOP_RECOVERY_MAX_RETRIES",
@@ -134,10 +142,12 @@ __all__ = [
     "StructuredStatus",
     "classify_stop_reason",
     # The engine's own in-prompt model fallback (``acp/engine_fallback.py``): the
-    # per-turn walk a surface ends with one line, the verdict it reads, and the
-    # readers a surface that shows the model uses to follow the engine.
+    # per-turn walk a surface ends with one line, the verdict it reads, the
+    # readers a surface that shows the model uses to follow the engine, and the
+    # cut a refusal hop makes in the text a turn loop collects.
     "EngineFallbackWalk",
     "ModelFallbackNotice",
+    "RefusalHopText",
     "engine_served_model",
     "follow_engine_promotion",
     "is_unpinned_pick",

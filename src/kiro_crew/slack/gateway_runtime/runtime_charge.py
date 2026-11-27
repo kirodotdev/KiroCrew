@@ -283,6 +283,7 @@ async def _inject_with_retry(
     turn). Every refusal of the call, a retried attempt's included, leads the
     reply.
     """
+    from kiro_crew.channel_spec_hooks import SessionSpecGate
     from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
     from kiro_crew.session_directive import strip_quoted_markers
 
@@ -305,6 +306,9 @@ async def _inject_with_retry(
                 retry_transient=False,
                 on_complete=_note_complete,
                 on_event=_refuse_person_only,
+                # The parent agent's own spec PreToolUse hooks, read from this
+                # attempt's session (a reload hands the next attempt a new one).
+                spec_hooks=SessionSpecGate(client, parent_key),
             )
             # The parent's turn consumed the report: the positive
             # acknowledgement an owed expiry report is cleared on.

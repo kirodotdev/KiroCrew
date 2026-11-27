@@ -30,7 +30,10 @@ import { useCallback, useRef, type SyntheticEvent } from 'react'
  * needs `armSkipRestore()`.
  *
  * Usage:
- *   - `rememberOpener` on the trigger's `onPointerDown` / `onKeyDown`. It reads
+ *   - `rememberOpener` on the trigger's `onPointerDown` / `onKeyDown` /
+ *     `onClick`. The `onClick` binding covers a screen reader's activation,
+ *     Switch Control and `element.click()`, which open the menu with a click
+ *     alone and send no pointer or key event. It reads
  *     `currentTarget` from the trigger's own event rather than
  *     `document.activeElement`: Safari does not focus a button on pointer
  *     click, so the active element would still be whatever had focus before.

@@ -80,6 +80,9 @@ _BYPASS_EXACT = {
     # without this entry every `kirocrew logout` is denied 403 by the middleware
     # before the handler (and its audit events) ever run.
     "/api/logout",
+    # `kirocrew logout --link`: the same caller and the same two checks, re-run by
+    # api_logout_link before it revokes anything.
+    "/api/logout/link",
     "/api/theme/boot",
     # Liveness/readiness probes (rec #6): orchestrators / load balancers carry
     # no auth cookie, so these must be reachable without a token. Each exposes

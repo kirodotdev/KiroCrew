@@ -445,8 +445,9 @@ conductor session — it answers from the record.
 
 ### When a run is done
 
-A conductor ends its run by sending you one final report and then stopping its
-patrol loop. The board reads that: once it has items and no loop is active on the
+A conductor ends its run by sending you one final report in the turn that
+closes its last item. Once that turn is over and no item is open, the gateway
+stops the conductor's patrol loop itself. The board reads that: once it has items and no loop is active on the
 conductor's session, the run is **done** when every item is closed and **stopped**
 when some are still open. A rejected or abandoned item counts as closed but not
 done. Nothing is stored for this, so a new goal, a re-armed patrol or a new item

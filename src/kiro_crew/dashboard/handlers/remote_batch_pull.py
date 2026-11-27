@@ -143,7 +143,7 @@ UNCHANGED: dict[str, Any] = {}
 
 async def _crew_ready(state: Any, mgr: Any, board: str, crew: str) -> bool:
     """Whether *crew* may be batch-read now: connected, a unit to file into, its
-    version matching. Anything else is left to the per-item read, which says why."""
+    version readable. Anything else is left to the per-item read, which says why."""
     from kiro_crew.dashboard.handlers import remote_ingest as ri
 
     if mgr is None or ri._crew_state(mgr, crew) != "connected":

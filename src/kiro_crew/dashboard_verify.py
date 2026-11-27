@@ -157,6 +157,7 @@ from kiro_crew import (
     platform_compat,
 )
 from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
+from kiro_crew.platform.context import redact_via_context
 
 logger = logging.getLogger(__name__)
 
@@ -713,28 +714,28 @@ class _Raw:
 
 
 def _clip(text: str) -> str:
-    text = " ".join(text.split())
+    """*text* on one line, redacted whole and then cut: a cut first can keep the start of
+    a secret too short for the redactor to know."""
+    text = redact_via_context(" ".join(text.split()))
     return text if len(text) <= MAX_MESSAGE_CHARS else text[: MAX_MESSAGE_CHARS - 1] + "\u2026"
+
+
+#: A URL and its query or fragment, which :func:`_without_queries` cuts off.
+_URL_AND_QUERY: Final[re.Pattern[str]] = re.compile(r"(https?://[^\s'\"?#]+)(?:[?#][^\s'\"]*)?")
 
 
 def _without_queries(text: str) -> str:
     """*text* with the query and fragment cut off every URL in it. A page that builds a
     URL out of its data would otherwise have that data echoed back in an error.
 
-    Quadratic in the length of *text* when it holds many ``http://`` and no query, so a
-    caller hands it a bounded text."""
-    return re.sub(r"(https?://[^\s'\"?#]+)[?#][^\s'\"]*", r"\1", text)
-
-
-#: How much of a page's message is scrubbed for URL queries. The page chooses the message
-#: and its length, and what the agent is shown is clipped to :data:`MAX_MESSAGE_CHARS`
-#: anyway, so the scrub looks at a bounded stretch and the work stays small.
-_SCRUB_CHARS: Final[int] = 2048
+    Callers run it before redacting, since a redaction placeholder ends a URL early.
+    Linear: a URL with no query also matches, so the search never restarts inside it."""
+    return _URL_AND_QUERY.sub(r"\1", text)
 
 
 def _message(text: str) -> str:
-    """Page-controlled *text* as the agent reads it: no URL query, one line, clipped."""
-    return _clip(_without_queries(" ".join(text.split())[:_SCRUB_CHARS]))
+    """Page-controlled *text* as the agent reads it: no URL query, one line, redacted, clipped."""
+    return _clip(_without_queries(text))
 
 
 def _first_frame(stack: Any) -> tuple[int | None, int | None, str]:
@@ -787,7 +788,11 @@ def _defined_by(name: str, url: str) -> bool:
     still reported. ``js`` is filler on its own but joins a neighbouring library word, so
     ``jsyaml`` for ``.../js-yaml`` and ``videojs`` for ``.../video.js@8``.
     """
-    every = re.sub(r"[^a-z0-9]+", " ", urlsplit(url).path.lower()).split()
+    try:
+        path = urlsplit(url).path
+    except ValueError:  # a redacted userinfo leaves brackets in the host
+        return False
+    every = re.sub(r"[^a-z0-9]+", " ", path.lower()).split()
     words = [word for word in every if word not in _URL_FILLER]
     words += [a + b for a, b in zip(words, words[1:])]
     words += [
@@ -827,8 +832,8 @@ class _Collector:
 
     def refuse(self, url: str, resource_type: str) -> None:
         """Note a request that was refused. The page chooses the URL, so how many are kept
-        and how long each is are bounded here."""
-        kept = url[:_MAX_URL_CHARS]
+        and how long each is are bounded here, once its query is cut and it is redacted."""
+        kept = redact_via_context(_without_queries(url))[:_MAX_URL_CHARS]
         if kept not in self.blocked:
             if len(self.blocked) < _MAX_BLOCKED_URLS:
                 self.blocked.append(kept)
@@ -919,7 +924,7 @@ class _Collector:
 
 
 def _short_url(url: str) -> str:
-    url = _without_queries(url)
+    """A refused URL as :meth:`_Collector.refuse` stored it (query cut, redacted), cut."""
     return url if len(url) <= 120 else url[:119] + "\u2026"
 
 

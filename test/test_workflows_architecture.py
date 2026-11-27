@@ -44,7 +44,9 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
     #                       llm_helpers (external), no intra-pkg siblings — OPTIONAL adapter
     "store": set(),  # durable JSON-per-run persistence; imports config.paths + security
     #                  (external), no intra-pkg siblings — an OPTIONAL persistence adapter
-    "library": {"store"},  # reusable-definition persistence; shares store path resolution
+    # reusable-definition persistence; shares store path resolution and
+    # validates the shipped built-in tier
+    "library": {"store", "validate"},
     "context": {"validate"},
     "budget_watch": set(),  # leaf: warn-only estimate of a run's token use, stdlib only
     "runner": {"validate", "dsl", "events", "context", "schema", "registry", "budget_watch"},

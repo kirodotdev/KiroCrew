@@ -192,7 +192,9 @@ def launch_preview(
     return None, display_launches(name, launches[name])
 
 
-def matches_entry(entry: Mapping[str, Any], launches: list[ResolvedLaunch]) -> bool:
+def matches_entry(
+    entry: Mapping[str, Any], launches: list[ResolvedLaunch], *, server: str | None = None
+) -> bool:
     """Whether the complete resolved set is exactly the card's one launch.
 
     A token read during Apply can bind freshness, but cannot authorize launches
@@ -216,11 +218,13 @@ def matches_entry(entry: Mapping[str, Any], launches: list[ResolvedLaunch]) -> b
     ):
         return False
     emitted, _ = emit_mcp_entry(
-        entry, lambda cmd, spec_env: (_resolve_target_command(cmd, spec_env or {}, None), "")
+        entry,
+        lambda cmd, spec_env: (_resolve_target_command(cmd, spec_env or {}, None), ""),
+        server=server,
     )
     if emitted is None:
         return False
     command, args, env = emitted["command"], emitted.get("args", []), emitted.get("env", {})
     return launches[0].fingerprint == launch_fingerprint(command, args, env) and launches[
         0
-    ].derived_env == frozenset({env_fingerprint(_expand_env_map(env))})
+    ].derived_env == frozenset({env_fingerprint(_expand_env_map(env, server=server))})

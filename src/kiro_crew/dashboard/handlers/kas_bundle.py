@@ -29,6 +29,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.sel import sel
 
@@ -234,9 +235,11 @@ async def _install_task(state: dict[str, Any]) -> None:
 async def api_kas_bundle_install(request: web.Request) -> web.Response:
     if not is_owner_dashboard_request(request):
         await _audit(request, "denied", error="non-owner caller")
-        return web.json_response(
-            {"error": "Only the dashboard owner can install the KAS engine.", "code": "owner_only"},
-            status=403,
+        # The caller is refused above. The shared tail only picks the label: 401
+        # ``stale_session_reauth`` for a session signed before the owner was
+        # configured, 403 ``owner_only`` for everyone else.
+        return _owner_denial_response(
+            request, "Only the dashboard owner can install the KAS engine."
         )
     state = _install_state(request.app)
     if not _installing(state):

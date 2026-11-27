@@ -9,9 +9,12 @@ import { renderWithProviders } from './helpers'
 import BottomTerminalPanel from '../components/BottomTerminalPanel'
 import { __resetBottomTerminal, openBottomTerminal, closeBottomTerminal } from '../hooks/useBottomTerminal'
 
-const h = vi.hoisted(() => ({ prewarm: vi.fn(), mobile: { value: true } }))
-vi.mock('../components/CliPanel', () => ({
+const h = vi.hoisted(() => ({ prewarm: vi.fn(), preload: vi.fn(), mobile: { value: true } }))
+vi.mock('../components/LazyCliPanel', () => ({
   default: () => <div data-testid="cli" />,
+}))
+vi.mock('../components/terminalSessions', () => ({
+  preloadTerminal: h.preload,
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
   prewarmTerminal: h.prewarm,
@@ -38,7 +41,7 @@ function closedWithTab() {
 }
 
 describe('BottomTerminalPanel prewarm', () => {
-  beforeEach(() => { __resetBottomTerminal(); h.prewarm.mockClear(); h.mobile.value = true; vi.useFakeTimers() })
+  beforeEach(() => { __resetBottomTerminal(); h.prewarm.mockClear(); h.preload.mockClear(); h.mobile.value = true; vi.useFakeTimers() })
   afterEach(() => { vi.useRealTimers(); __resetBottomTerminal() })
 
   it('builds the restored tab off screen once the phone is idle', () => {
@@ -62,5 +65,21 @@ describe('BottomTerminalPanel prewarm', () => {
     renderWithProviders(<BottomTerminalPanel />)
     act(() => { vi.advanceTimersByTime(5000) })
     expect(h.prewarm).not.toHaveBeenCalled()
+  })
+
+  // The first terminal's focus stand-in must mount inside the opening tap, so a
+  // phone has the terminal's code loaded before any tab exists.
+  it('loads the terminal code once the phone is idle, with no tab yet', () => {
+    renderWithProviders(<BottomTerminalPanel />)
+    expect(h.preload).not.toHaveBeenCalled()
+    act(() => { vi.advanceTimersByTime(5000) })
+    expect(h.preload).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads no terminal code ahead of time on a wide screen', () => {
+    h.mobile.value = false
+    renderWithProviders(<BottomTerminalPanel />)
+    act(() => { vi.advanceTimersByTime(5000) })
+    expect(h.preload).not.toHaveBeenCalled()
   })
 })

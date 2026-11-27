@@ -20,7 +20,10 @@ stop work that only served it, and propose dropping or relinking milestones
 left serving no goal. The setup nudge names the goal
 that changed by its number and lists every goal. When the crewmate is
 busy the nudge waits for its thread to go idle, for a bounded time, and one
-crewmate holds at most one waiting nudge: a newer save replaces it.
+crewmate holds at most one waiting nudge: a newer save replaces it. After a
+person's Stop in the thread it also waits for the next turn that starts in the
+thread (a person's message, a scheduled check-in, a cron or patrol turn, a queued
+entry) to end, and the bound starts again when that turn ends the hold.
 
 Every nudge names the ``kirocrew-mate`` card tools only when the crewmate's
 sessions load them (:func:`kiro_crew.member_mate_tools.member_has_mate_tools`);
@@ -147,6 +150,7 @@ Build = Callable[[dict[str, Any], bool], str | None]
 
 
 async def _wait_and_send(state: Any, slug: str, member: str, build: Build) -> str:
+    from kiro_crew.dashboard import mate_thread_wakes
     from kiro_crew.dashboard.goal_reminder import _idle_thread
     from kiro_crew.dashboard.mate_welcome import dispatch_hidden_turn
 
@@ -156,6 +160,9 @@ async def _wait_and_send(state: Any, slug: str, member: str, build: Build) -> st
         binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
         slot_key = binding.get("slot_key", "") if binding else ""
         slot, skip = _idle_thread(state, slot_key, member)
+        if mate_thread_wakes.stop_held(state, slot_key):
+            slot = None  # a person's Stop: wait for the thread's next turn to end
+            deadline = loop.time() + WAIT_SECS  # the bound starts again after the hold
         if slot is not None:
             try:
                 rec = await asyncio.to_thread(member_goals.read_goals, slug, member)
@@ -170,6 +177,8 @@ async def _wait_and_send(state: Any, slug: str, member: str, build: Build) -> st
                 return "skipped: nothing left to talk about"
             # The read ran off the loop: a turn may have started meanwhile.
             again, skip = _idle_thread(state, slot_key, member)
+            if mate_thread_wakes.stop_held(state, slot_key):
+                continue  # a Stop during the reads: the next pass re-arms the bound and waits
             if again is slot:
                 dispatch_hidden_turn(state, slot, prompt, human_seen=True)
                 return "started"

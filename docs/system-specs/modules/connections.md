@@ -207,7 +207,9 @@ the warm reaper reads each adopted row's session (`fail_refused_sign_ins`), so t
 row turns `failed` / `mint_sign_in_rejected` within one poll instead of waiting out
 the TTL, and the card says the provider did not accept the sign-in. A grant on disk
 still wins over the frame, because a server can fail its own start after a good
-exchange. So a refused row means no grant was observed or proven, and the card fences
+exchange. That grant is kiro-cli's, as the row's watcher reads, on every
+backend: a warm row is a kiro-cli sign-in, and a Connect that signs in on the KAS engine
+never adopts one, so the reaper does not read the vault. So a refused row means no grant was observed or proven, and the card fences
 any grant files still on disk the way it fences `mint_grant_unproven`: a reconnect
 whose check disproved the stored grant does not read Connected beside the refusal.
 A return address relayed from the card holds that tab's wait when the
@@ -1438,10 +1440,13 @@ the remote MCP entry's `oauth` block, and only kiro-cli reads that block
 (`ACP_BACKENDS_REMOTE_MCP_OAUTH`, asked as
 `SessionCapabilities.honors_remote_mcp_oauth`). KAS engines before 0.66.104 had
 no slot for it (#27711); from 0.66.104 KAS takes a public client's `clientId` and
-`redirectUri`, but Crew withholds a block that names a `clientSecret` on every
-engine (`kas_engine_features.carry_oauth`), and every pre-registered provider is
-confidential. KAS joins the set once Crew sends the secret through
-`_kiro/mcp/oauth/setClientSecret` (#41723). A pre-registered provider's Connect
+`redirectUri`. A block that names a `clientSecret` reaches only an engine that
+announces `mcpOAuthClientSecret` (0.66.135, with `agent.kas_persist_mcp_sign_in`
+on): Crew sends it without the secret and the secret through
+`_kiro/mcp/oauth/setClientSecret` (`acp/kas_client_secret.py`); every other engine
+gets no block (`kas_engine_features.carry_oauth`). Every pre-registered provider
+is confidential, and this page is read before any engine runs, so it cannot tell
+whether a KAS chat will take the secret: KAS stays out of the set (#41723). A pre-registered provider's Connect
 therefore keeps the kiro-cli mint on every backend (the KAS route above excludes
 it), so Connect stays available and the grant it writes is real for kiro-cli
 chats; whether a KAS chat can use that grant is not established. So while the resolved `agent.acp_backend`
@@ -1479,6 +1484,11 @@ unreadable config get no line. Off KAS the card's verdict does not read the vaul
 (`status._grant_presence_maps`), since no other chat does: a grant only the vault
 holds reads not connected, and Connect signs in on kiro-cli. The MCP Servers row
 still reads it as Signed in, because its probe counts both stores on every backend.
+A `connection.connect` change card records which grant it saw by the same rule
+(`change_cards_readers._connection_grant_fingerprint`): kiro-cli's token stat, and while
+the card's verdict reads the vault, the digest of the vault's tokens entry at that url
+(`mcp_grant_kas.kas_grant_fingerprint`, ciphertext only, never decrypted), so a new
+sign-in in either store reads as a different grant.
 
 A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` while chats run
 on a bridged harness, `ACP_BACKENDS_CREW_OAUTH_BRIDGE`) carries
@@ -1594,8 +1604,8 @@ preview is on but Crew's sign-in does not serve the configured `slack` entry
 (`crew_oauth.owns` is False: the entry sends its own credential header or points
 at another url, so the mint answers `crew_sign_in_required`), the status row
 carries `crewSignInNotOwned` (`status._crew_sign_in_not_owned_slugs`) instead:
-the card offers no Connect, no setup steps and no OAuth app form, says in one line that the entry
-signs in by itself, links to MCP Servers, and the MCP Servers row keeps its
+the card offers no Connect, no setup steps and no OAuth app form, says in one line that the server
+listed in MCP Servers handles its own sign-in, links to MCP Servers, and the MCP Servers row keeps its
 own sign-in path. A url that differs only by a trailing slash or letter case
 (`status.card_url`, as `normalizedUrl` in `registry.ts`) is the card's row and keeps
 Connect, which writes the registry url onto the entry before minting.
@@ -1694,6 +1704,14 @@ the row, the audit, a log line or the page. `access_denied` covers both a user
 who declined and an organization policy that blocks the client, so the card's
 copy names both. Every listener (the shared loopback, a pre-registered card's
 own port, the public route) answers through the same `SignIn._callback`.
+A callback with a usable code holds its page until `SignIn.finish` settles: it
+says "Signed in" only once the code swap and the vault write landed, says the
+sign-in did not finish when either failed or the sign-in was shut down, and
+after `_CALLBACK_PAGE_WAIT_SECS` (45 s) points the user back to Kiro Crew for
+the result. Each page is a fixed string. The dashboard's return-address relay
+waits `_CALLBACK_STATUS_TIMEOUT_SECS` for the status line, longer than that
+hold, so a slow swap is not reported as an unreachable callback. Both waits
+live in `connections/callback_timing.py`, so the relay never loads `crew_oauth`.
 
 A registry entry with an `org_admin_guide` (a `<file>.md#<anchor>` docs
 section, DCR entries only; Atlassian today) gets `signInRedirect` on its

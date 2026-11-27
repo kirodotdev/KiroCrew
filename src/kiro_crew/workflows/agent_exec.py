@@ -29,7 +29,7 @@ import asyncio
 import itertools
 import logging
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from kiro_crew.acp_backends import (
     backend_from_stored,
@@ -37,7 +37,13 @@ from kiro_crew.acp_backends import (
     selectable_backends,
     selectable_stored_backend_values,
 )
-from kiro_crew.agent_sdk.drivers.acp_vocab import STOP_REASON_CANCEL_UNACKED, STOP_REASON_CANCELLED
+from kiro_crew.agent_sdk.capabilities import capabilities_of
+from kiro_crew.agent_sdk.drivers.acp_vocab import (
+    EVENT_TOOL_CALL,
+    EVENT_TOOL_CALL_UPDATE,
+    STOP_REASON_CANCEL_UNACKED,
+    STOP_REASON_CANCELLED,
+)
 from kiro_crew.agent_sdk.mcp_problems import UNATTENDED_MCP_WAIT_SECS, wait_for_declared_mcp
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import ToolApprovalPolicy, provider_last_turn_usage, stream_and_collect
@@ -103,6 +109,43 @@ def step_text(refusals: list[str], text: str, opts: dict) -> str:
     for refusal in refusals:
         opts["_on_refusal"](refusal)
     return text
+
+
+def step_on_event(
+    key: str, refusals: list[str], opts: dict, provider: Any
+) -> Callable[[Any], Awaitable[None]]:
+    """A step's ``stream_and_collect`` ``on_event``, shared by every executor path.
+
+    It refuses person-only directives on *key* (``person_only_directive_refuser``)
+    and tells the runner's ``_on_progress`` in *opts* the display title of each
+    tool call the step starts, once per call id, for the run's ``agent_progress``.
+    On a harness that names a call generically first and refines its title in a
+    ``tool_call_update`` (``refines_tool_call_titles``, claude), the refined title
+    of the newest call replaces it without counting another call.
+    """
+    # Local import: the dashboard-side module is not loaded at this adapter's import time.
+    from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+
+    refuse = person_only_directive_refuser(key, refusals)
+    report = opts.get("_on_progress")
+    if report is None:
+        return refuse
+    refines = capabilities_of(provider).refines_tool_call_titles
+    started: set[str] = set()
+    newest = ""
+
+    async def _on_event(event: Any) -> None:
+        nonlocal newest
+        await refuse(event)
+        call_id = event.tool_call_id
+        if event.kind == EVENT_TOOL_CALL and call_id and call_id not in started:
+            started.add(call_id)
+            newest = call_id
+            report(event.title or event.tool_name or "")
+        elif refines and event.kind == EVENT_TOOL_CALL_UPDATE and event.title and call_id == newest:
+            report(event.title, new_call=False)
+
+    return _on_event
 
 
 class WorkflowSpawnRefused(Exception):
@@ -409,10 +452,6 @@ def build_agent_fn(
                 )
             # A step is never a person's turn and no session applier reads its
             # stream, so a person-only directive it calls is refused out loud.
-            from kiro_crew.dashboard.session_directive_apply import (
-                person_only_directive_refuser,
-            )
-
             stop = StepStopWatch()
             refusals: list[str] = []
             text = await stream_and_collect(
@@ -421,7 +460,7 @@ def build_agent_fn(
                 approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
                 max_turns=_MAX_TURNS_PER_STEP,
                 on_complete=stop.on_complete,
-                on_event=person_only_directive_refuser(key, refusals),
+                on_event=step_on_event(key, refusals, opts, provider),
             )
             text = step_text(refusals, text, opts)
             # ── Per-turn usage row: attribute workflow spend. ──

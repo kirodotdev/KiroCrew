@@ -161,13 +161,43 @@ def _resolved_kiro_mcp_registry_targets() -> list[str]:
 _EMPTY_KIRO_MCP_REGISTRY = b'{\n  "mcpServers": {}\n}\n'
 
 
+#: How many links a registry chain may pass through before it is left unsealed.
+_MAX_REGISTRY_LINK_HOPS = 40
+
+
+def _registry_chain_end(link: str, value: str) -> tuple[str, str] | None:
+    """The absent far end of the link chain at *link*, and its folder, or ``None``.
+
+    *value* is *link*'s own ``readlink``. Each further hop is read exactly once
+    with ``readlink`` and the next name is worked out from that value; only a
+    hop's FOLDER is resolved, never a name a hop was read from. ``None`` means
+    the chain reaches an existing non-link. Raises ``ValueError`` for a chain
+    longer than :data:`_MAX_REGISTRY_LINK_HOPS`, and ``OSError`` as the calls do.
+    """
+    current, hop_value = link, value
+    for _ in range(_MAX_REGISTRY_LINK_HOPS):
+        lexical = os.path.join(os.path.dirname(current), hop_value)
+        parent = os.path.realpath(os.path.dirname(lexical))
+        current = os.path.join(parent, os.path.basename(lexical))
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            return current, parent
+        if not stat.S_ISLNK(mode):
+            return None
+        hop_value = os.readlink(current)
+    raise ValueError("too many links")
+
+
 def _materialize_kiro_mcp_registry() -> list[str]:
     """Create an absent kiro-cli ``settings/mcp.json`` so the Linux seal has a file to bind.
 
     The namespace launcher seals only a name that exists. An absent registry is created
     only under a kiro home that exists, with ``settings`` made 0o700 when missing.
     A dangling registry symlink is preserved and its absent referent is published only
-    when its resolved parent is a real directory; no referent parents are created.
+    when its resolved parent is a real directory; no referent parents are created. The
+    link is read once with ``readlink`` and the referent comes from that value, so no
+    link screen is followed by a second resolve of the same name.
 
     Published through ``_publish_empty_ceiling`` (a 0o600 sibling temp, then ``os.link``),
     so the name appears only once the whole document is in it: a full disk, a short write
@@ -181,20 +211,35 @@ def _materialize_kiro_mcp_registry() -> list[str]:
     unsealed for this spawn; the file tools stay refused on it either way.
     """
     created: list[str] = []
+    targets = _resolved_kiro_mcp_registry_targets()
+    # The far end of every registry link is also a target (its resolved spelling).
+    # It is reached only through the link branch below, never through the plain
+    # branch's settings mkdir, so a dangling chain creates no folder at its end.
+    # Each link is read ONCE (``_registry_chain_end`` reads every further hop once
+    # too), and the far end is worked out from those values, never by resolving
+    # the registry name again: a link swapped after an ``islink`` screen would
+    # otherwise send the publish somewhere unscreened.
+    link_values: dict[str, str] = {}
     referents: set[str] = set()
-    for target in _resolved_kiro_mcp_registry_targets():
+    for target in targets:
+        with contextlib.suppress(OSError, ValueError):
+            link_values[target] = os.readlink(target)
+            # This resolve only SKIPS a target; it never chooses where to write.
+            referents.add(os.path.realpath(target))
+    for target in targets:
         # Referents use only their existing parent, never the settings mkdir below.
         if target in referents:
             continue
-        if os.path.islink(target) and not os.path.exists(target):
+        link_value = link_values.get(target)  # None: not a link, the plain branch
+        if link_value is not None:
             try:
-                referent = os.path.realpath(target)
+                end = _registry_chain_end(target, link_value)
+                if end is None:
+                    continue  # the chain reaches a real file: nothing to publish
+                referent, parent = end
                 referents.add(referent)
-                parent = os.path.dirname(referent)
-                if (
-                    not os.path.lexists(referent)
-                    and stat.S_ISDIR(os.lstat(parent).st_mode)
-                    and _publish_empty_ceiling(referent, parent, _EMPTY_KIRO_MCP_REGISTRY)
+                if stat.S_ISDIR(os.lstat(parent).st_mode) and _publish_empty_ceiling(
+                    referent, parent, _EMPTY_KIRO_MCP_REGISTRY
                 ):
                     created.append(referent)
                     continue

@@ -271,6 +271,7 @@ from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
     api_chat_slot_project,
     api_chat_slot_reload,
     api_chat_slot_workspace,
+    probe_project_dir,
     reload_slot_session,
 )
 from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
@@ -302,6 +303,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
     _app_hides_own_mode,
     _birth_default_project,
+    _birth_project,
     _check_new_slot_assignment,
     _created_slot_row,
     _default_template_stamp,
@@ -337,6 +339,7 @@ from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
     _approve_for_me_field,
     _configured_backend_for_slot,
     _own_models_field,
+    _push_live_effort,
     _restart_for_approve_for_me,
     _write_session_switch,
     api_chat_slot_approve_for_me,
@@ -381,6 +384,7 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_model import (  # noqa: F401
     _auto_repick_moves_session,
     _broadcast_context_reset,
+    _bulk_effort_only_switch,
     _is_jev_route_pick,
     _model_rejected_reason,
     _read_model_field,
@@ -443,6 +447,7 @@ from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _compaction_in_flight,
     _decline_compacting_interrupt,
     _dispatch_run_now_idle,
+    _end_runner_past_its_provider_turn,
     _interrupt_claimed_turn,
     _log_interrupt,
     _make_stop_resolver,
@@ -599,6 +604,7 @@ from kiro_crew.dashboard.deny_override import (  # noqa: F401
     DENY_OVERRIDE_ACTIONS,
     is_deny_override_card,
 )
+from kiro_crew.dashboard.effort_overlay_mark import set_effort_overlay_clear_mark  # noqa: F401
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _SLOT_SCOPED_TRUST_MODES,
     _owner_denial_response,
@@ -616,7 +622,7 @@ from kiro_crew.dashboard.handlers.agents_harness_effort import (  # noqa: F401
 )
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request  # noqa: F401
 from kiro_crew.dashboard.interaction_coordinator import native_resolution_target  # noqa: F401
-from kiro_crew.dashboard.relay_archive import relay_archive_refusal  # noqa: F401
+from kiro_crew.dashboard.relay_archive import is_relay_archive, relay_archive_refusal  # noqa: F401
 from kiro_crew.dashboard.request_priority import owner_start_priority  # noqa: F401
 from kiro_crew.dashboard.session_approval_refusal import (  # noqa: F401 -- read by chat_api.slot_approval
     session_approval_refusal,
@@ -937,6 +943,9 @@ _DEFERRED_PLAIN_CREATE_KNOWN_KEYS = frozenset(
         # Only a request; a create that it actually files is not plain,
         # because the handler then sees a folder_id.
         "default_folder",
+        # Only a request for the owner's start mode, applied in memory before the
+        # slot's first frame (``chat_default_mode``).
+        "start_mode_default",
     }
 )
 

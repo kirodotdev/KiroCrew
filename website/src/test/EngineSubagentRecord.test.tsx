@@ -38,17 +38,31 @@ describe('engine sub-agent record under a reply', () => {
     expect(screen.queryByTestId('engine-subagent-record')).toBeNull()
   })
 
-  it('is closed by default and names how many ran', () => {
-    render(<AssistantMessage {...BASE} engineSubagents={RECORD} />)
+  it('is drawn as the batch card: N of N finished, closed when every child succeeded', () => {
+    const ok = { children: [RECORD.children[0], { ...RECORD.children[0], task: 'second' }] }
+    render(<AssistantMessage {...BASE} engineSubagents={ok} />)
+    const card = screen.getByTestId('engine-subagent-record')
+    expect(card).toHaveTextContent('2 of 2 subagents finished')
+    expect(within(card).getByTestId('chip-ok')).toHaveTextContent('2')
+    expect(within(card).queryByTestId('chip-failed')).toBeNull()
     const toggle = screen.getByTestId('engine-subagent-record-toggle')
-    expect(toggle).toHaveTextContent('Sub-agents in this turn: 3')
+    expect(toggle).toHaveTextContent('Show details')
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByTestId('engine-record-child')).toBeNull()
   })
 
-  it('opens to each child: end, task, reason and tool titles, as reported', () => {
+  it('opens on a failure, counts it, and says how many ends the engine reported', () => {
     render(<AssistantMessage {...BASE} engineSubagents={RECORD} />)
-    fireEvent.click(screen.getByTestId('engine-subagent-record-toggle'))
+    const card = screen.getByTestId('engine-subagent-record')
+    // One child's end was never reported, so the card does not claim the wave finished.
+    expect(card).toHaveTextContent('2 of 3 results delivered')
+    expect(within(card).getByTestId('chip-ok')).toHaveTextContent('1')
+    expect(within(card).getByTestId('chip-failed')).toHaveTextContent('1')
+    expect(screen.getByTestId('engine-subagent-record-toggle')).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('opens to each child: end, task, reason and tool titles, as reported', () => {
+    render(<AssistantMessage {...BASE} engineSubagents={{ children: [{ ...RECORD.children[0] }, ...RECORD.children.slice(1)] }} />)
     expect(screen.getByTestId('engine-subagent-record-toggle')).toHaveAttribute('aria-expanded', 'true')
     const rows = screen.getAllByTestId('engine-record-child')
     expect(rows.map(r => r.getAttribute('data-end'))).toEqual(['completed', 'failed', 'not_reported'])
@@ -64,7 +78,6 @@ describe('engine sub-agent record under a reply', () => {
 
   it('draws a failed child\'s reason as the shared error notice, with no hand-off', () => {
     render(<AssistantMessage {...BASE} engineSubagents={RECORD} />)
-    fireEvent.click(screen.getByTestId('engine-subagent-record-toggle'))
     // One failed child with a reason: one notice, and it is the error surface.
     const reason = screen.getByTestId('engine-record-reason')
     expect(reason).toHaveAttribute('role', 'alert')
@@ -81,7 +94,6 @@ describe('engine sub-agent record under a reply', () => {
       { agent: 'a', task: 't', end: 'failed', tools: [], tool_count: 0 },
     ] }
     render(<AssistantMessage {...BASE} engineSubagents={rec} />)
-    fireEvent.click(screen.getByTestId('engine-subagent-record-toggle'))
     expect(screen.getAllByTestId('engine-record-child')).toHaveLength(2)
     expect(screen.queryByTestId('engine-record-reason')).toBeNull()
     expect(within(screen.getByTestId('engine-subagent-record')).queryByRole('alert')).toBeNull()
@@ -103,8 +115,7 @@ describe('engine sub-agent record under a reply', () => {
     expect(got.children[0].tools).toEqual(['x'])
     expect(got.children[0].toolCount).toBe(1)
     render(<AssistantMessage {...BASE} engineSubagents={{ ...RECORD, more: 4 }} />)
-    expect(screen.getByTestId('engine-subagent-record-toggle')).toHaveTextContent('Sub-agents in this turn: 7')
-    fireEvent.click(screen.getByTestId('engine-subagent-record-toggle'))
+    expect(screen.getByTestId('engine-subagent-record')).toHaveTextContent('2 of 7 results delivered')
     expect(screen.getByTestId('engine-subagent-record')).toHaveTextContent('More sub-agents not listed: 4')
   })
 

@@ -102,11 +102,40 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for all four: the credential redactor reads Unicode's default-ignorable
 #: table from the leaf ``kiro_crew.default_ignorable`` (moved there from the artifact
 #: store's tag rules, so both share one pinned table); that one file is the whole rise.
+#: Raised for the managed-environment lane: the default context the composition root
+#: builds wraps its provisioner provider and dashboard contributor in the lane's
+#: (``kiro_crew.managed_env`` and ``.provider``: 2 modules for ``mcp-core`` and ``mcp-mate``,
+#: 1 for the other two, which have no more room). The lane's client, engine and settings load only
+#: when it is used.
+#: Raised by 1 for all four: the git/tar self-target floor's GNU ``parallel`` replacement
+#: readings move to ``kiro_crew.security.argv_floor_git_tar_parallel``, which the deny-gate
+#: security path imports eagerly, so one more module loads before the listing on every server.
+#: Raised by 1 for each server: every thread pool ``kiro_crew.executors`` builds is now a
+#: ``kiro_crew.enqueue_only_pool.EnqueueOnlyThreadPoolExecutor``, which the module imports
+#: at its top (it was imported inside ``configure_default_executor()`` alone); that
+#: stdlib-only module is the one file added, and nothing else loads.
+#: Raised by 1 for each server: the line-cap split of ``security.argv_floor_git_tar`` moved
+#: the git grammar it reads a git argv with into the owner ``security.argv_floor_git_grammar``,
+#: which the facade imports with the rest of its owners; the module count rose by that one
+#: file and nothing new loads.
+#: Raised by 1 for each server: the line-cap split of ``security.deny_gate`` moved its
+#: substitution-nesting cap into ``security.deny_gate_nesting``, which the deny gate imports
+#: when the security package loads; the module count rose by that one file and nothing new
+#: loads.
+#: Raised by 1 for each server: the manifest's ``contributes`` block reads its Sessions New
+#: rows from the new owner ``apps.manifest_session_create``, which ``manifest_contributes``
+#: imports; the module count rose by that one file and nothing new loads.
+#: Raised by 1 for ``mcp-mate`` (368 to 369): the memory-change card tools read their
+#: limits and kind names from ``kiro_crew.change_card_memory``, a ``typing``-only leaf;
+#: that one file is the whole rise.
+#: Raised by 1 for ``mcp-core`` (505 to 506): the App Store search's declaration lives in
+#: its own ``kiro_crew.mcp_tools.catalog.app_store``, which the core listing loads from
+#: ``mcp_tools.DOMAIN_MODULES`` like every other domain.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 498,
-    "mcp-cron": 365,
-    "mcp-guide": 359,
-    "mcp-mate": 361,
+    "mcp-core": 506,
+    "mcp-cron": 372,
+    "mcp-guide": 366,
+    "mcp-mate": 369,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
@@ -277,15 +306,19 @@ def test_the_live_hint_readers_are_inside_cores_budget(
 
 #: command -> the most ``kiro_crew`` modules its HANDLER module may load. The listing
 #: bounds above stop at the list; these hold what loads right after it, in every chat,
-#: whether or not a tool of that server is ever called. The three small servers reach the
+#: whether or not a tool of that server is ever called. These small servers reach the
 #: gateway through ``mcp_core_parts`` and never load the core server: importing
-#: ``kiro_crew.mcp_core`` for its HTTP helpers took each of them to about 970 modules.
+#: ``kiro_crew.mcp_core`` for its HTTP helpers took each of them to 750-970 modules.
 #: Same rules as the listing ceiling: room for a platform's extras, lowered when a change
 #: brings a count down.
 HANDLER_MODULE_CEILING = {
     "mcp-cron": 500,
+    "mcp-crew-log": 320,
+    "mcp-debug": 320,
     "mcp-guide": 380,
     "mcp-mate": 380,
+    "mcp-panel": 400,
+    "mcp-work": 320,
 }
 
 _HANDLER_PROBE = f"""

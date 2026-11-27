@@ -29,7 +29,9 @@ from kiro_crew import agent_sdk
 from kiro_crew.acp import types as acp_types
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
 from kiro_crew.agent_sdk.drivers import acp_vocab
-from kiro_crew.dashboard import crew_api_approvals, crew_api_owner
+from kiro_crew.dashboard import crew_api_approvals
+from kiro_crew.dashboard import crew_api_conversations as conversations
+from kiro_crew.dashboard import crew_api_owner
 from kiro_crew.dashboard import crew_api_responses as responses
 from kiro_crew.dashboard import crew_api_scopes, route_access
 from kiro_crew.dashboard.chat_api.turn_stop import stop_slot_turn
@@ -119,9 +121,13 @@ def test_a_body_that_is_not_an_object_is_refused(body) -> None:
         {"text": {"format": {"type": "markdown"}}},
         {"metadata": ["a"]},
         {"metadata": {"k": 1}},
-        {"metadata": {f"k{n}": "v" for n in range(responses.METADATA_MAX_PAIRS + 1)}},
-        {"metadata": {"k" * (responses.METADATA_KEY_MAX + 1): "v"}},
-        {"metadata": {"k": "v" * (responses.METADATA_VALUE_MAX + 1)}},
+        {"metadata": {f"k{n}": "v" for n in range(conversations.METADATA_MAX_PAIRS + 1)}},
+        {"metadata": {"k" * (conversations.METADATA_KEY_MAX + 1): "v"}},
+        {"metadata": {"k": "v" * (conversations.METADATA_VALUE_MAX + 1)}},
+        {"conversation": 7},
+        {"conversation": ["conv_" + "0" * 32]},
+        {"previous_response_id": 7},
+        {"previous_response_id": {"id": "resp_" + "0" * 32}},
         {"input": [{"role": "user", "content": "hi"}] * (_MAX_MESSAGES + 1)},
     ],
 )
@@ -148,8 +154,6 @@ def test_a_field_the_contract_refuses_is_a_400(change, code) -> None:
     "change",
     [
         {"background": True},
-        {"conversation": "conv_1"},
-        {"previous_response_id": "resp_1"},
         {"tools": [{"type": "function", "name": "lookup"}]},
         {"tools": [{"type": "mcp", "server_label": "docs", "server_url": "https://example.com"}]},
         {"tool_choice": "none"},
@@ -209,8 +213,9 @@ def test_fields_the_route_honours_are_not_listed_as_ignored() -> None:
 
 def test_metadata_at_its_limits_is_accepted() -> None:
     metadata = {
-        f"{n:02d}".ljust(responses.METADATA_KEY_MAX, "k"): "v" * responses.METADATA_VALUE_MAX
-        for n in range(responses.METADATA_MAX_PAIRS)
+        f"{n:02d}".ljust(conversations.METADATA_KEY_MAX, "k"): "v"
+        * conversations.METADATA_VALUE_MAX
+        for n in range(conversations.METADATA_MAX_PAIRS)
     }
     assert responses.parse_request({**ASK, "metadata": metadata}).metadata == metadata
 
@@ -392,7 +397,7 @@ async def test_the_owner_gets_the_reply_as_one_message(client) -> None:
     assert body["status"] == "completed"
     assert body["model"] == MODEL
     assert body["usage"] is None and body["error"] is None
-    assert "conversation" not in body
+    assert re.fullmatch(r"conv_[0-9a-f]{32}", body["conversation"]["id"])
     assert body["metadata"] == {"k": "v"}
     assert body["crew"] == {"ignored_parameters": ["temperature"]}
     (item,) = body["output"]
@@ -1040,6 +1045,94 @@ async def test_the_live_session_ceiling_is_a_concurrency_limit(client, monkeypat
     # No wait time is known for a full set of sessions: none is sent.
     assert "Retry-After" not in response.headers
     assert "retry_after" not in error
+    assert client.turn.entered == []
+    _no_slot_left(client)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_input_preparation_cannot_overbook_the_last_live_slot(
+    client, monkeypatch, stream
+) -> None:
+    count = client.state.live_slot_count
+    assert count() == 0
+    # Existing sessions occupy every slot but one; count new allocations for real.
+    monkeypatch.setattr(client.state, "live_slot_count", lambda: MAX_LIVE_SLOTS - 1 + count())
+    preparing = asyncio.Event()
+    release_input = threading.Event()
+    held_admitted = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    input_items = responses._input_items
+    turn = client.turn
+    turn.release = asyncio.Event()
+
+    def _prepare(parsed):
+        if parsed.prompt == "held":
+            loop.call_soon_threadsafe(preparing.set)
+            assert release_input.wait(30), "the held input preparation was not released"
+        return input_items(parsed)
+
+    async def _turn(state, slot, message, **kwargs):
+        if message == "held":
+            held_admitted.set()
+        await await_until(
+            asyncio.ensure_future(turn(state, slot, message, **kwargs)),
+            what="the admitted turn to finish",
+        )
+
+    monkeypatch.setattr(responses, "_input_items", _prepare)
+    monkeypatch.setattr(responses, "_run_chat", _turn)
+    held = asyncio.ensure_future(_ask(client, {**ASK, "input": "held", "stream": stream}))
+    asking = [held]
+    admitted_wait = asyncio.ensure_future(held_admitted.wait())
+    try:
+        await await_until(preparing, what="the first request to prepare its input off-loop")
+        other = asyncio.ensure_future(_ask(client))
+        asking.append(other)
+        await await_until(turn.started, what="the second request to occupy the last slot")
+        release_input.set()
+        await await_until(
+            asyncio.ensure_future(
+                asyncio.wait({held, admitted_wait}, return_when=asyncio.FIRST_COMPLETED)
+            ),
+            what="the held request to be refused or admitted",
+        )
+        occupied = client.state.live_slot_count()
+        turn.release.set()
+        results = await await_until(asyncio.gather(*asking), what="both POSTs to finish")
+        response, body = results[0]
+        error = _contract_error(response, body, 429, "concurrency_limit")
+        assert error["limit"] == "turns"
+        assert results[1][0].status == 200
+        assert occupied == MAX_LIVE_SLOTS
+        assert len(turn.entered) == 1
+        _no_slot_left(client)
+    finally:
+        release_input.set()
+        turn.release.set()
+        admitted_wait.cancel()
+        await await_until(
+            asyncio.gather(*asking, admitted_wait, return_exceptions=True),
+            what="the requests and admission waiter to settle",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("change", "status", "code"),
+    [
+        ({"model": "nobody"}, 404, "model_not_found"),
+        ({"model": "nobody", "input": ""}, 400, "invalid_request"),
+    ],
+)
+async def test_body_and_model_refusals_precede_the_live_session_ceiling(
+    client, monkeypatch, change, status, code
+) -> None:
+    monkeypatch.setattr(client.state, "live_slot_count", lambda: MAX_LIVE_SLOTS)
+    response, body = await await_until(
+        asyncio.ensure_future(_ask(client, {**ASK, **change})), what="the refused POST"
+    )
+    _contract_error(response, body, status, code)
     assert client.turn.entered == []
     _no_slot_left(client)
 

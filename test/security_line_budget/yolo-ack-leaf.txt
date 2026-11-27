@@ -1,0 +1,2 @@
++4
+The yolo_ack.json leaf on the read-gate floor in paths_lists: the owner's acknowledgement of the YOLO confirmation, which an agent must not be able to write.

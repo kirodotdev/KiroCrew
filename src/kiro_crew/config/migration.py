@@ -13,6 +13,7 @@ not on the loader. This module imports neither the loader nor schema/validation.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Callable
@@ -86,6 +87,15 @@ LAZY_LOAD_KEY = LEGACY_LAZY_LOAD_ADOPTION[0]
 #: the star writes it directly, the stock template included, so any stored
 #: value, even ``kirocrew``, is a choice already made and the predicate is false.
 MIGRATE_STAR_DEFAULT_TEMPLATE = "star_default_template"
+
+#: Write ``slack.shared_access.verify_with_slack: true`` into a config that already
+#: shares Slack access (``enabled: true``) and does not name the key. Such an install
+#: was admitting listed IDs only after Slack confirmed them, and the key's default
+#: (``false``, list-only) would drop that check on upgrade. A stored value, either
+#: way, is the owner's choice and is never touched; a config with sharing off, and a
+#: config with no ``slack.shared_access`` at all, are left as they are and read the
+#: default. Decided on the base document, re-decided inside the write lock.
+MIGRATE_SHARED_ACCESS_VERIFY = "shared_access_verify"
 
 #: The newest release line whose writes are rewritten. ``CONNECTIONS_UI_MIGRATION_MARKER``
 #: first shipped in 0.7.0 (0.7.0-insider.1) and every clean load of a later build
@@ -183,6 +193,42 @@ def star_default_template_due(
     if not isinstance(kiro, str) or not kiro or kiro == DEFAULT_KIRO_TEMPLATE:
         return None
     return kiro
+
+
+def shared_access_verify_due(data: dict, overlay: dict | None = None) -> dict | None:
+    """The stored ``slack.shared_access`` section when it needs ``verify_with_slack: true``.
+
+    ``None`` unless the section holds ``enabled: true`` (the literal, as the builder
+    reads it) and no ``verify_with_slack`` key at all: any stored value, ``false``
+    and a malformed one included, is a choice already made and is never rewritten.
+    *overlay* is ``config.local.json`` when the load has it: a key it names wins over
+    the base, so nothing is due. Pure over the documents, so the load's decision and
+    the write inside the lock apply one rule.
+    """
+    overlay_slack = overlay.get("slack") if overlay else None
+    overlay_shared = overlay_slack.get("shared_access") if isinstance(overlay_slack, dict) else None
+    if isinstance(overlay_shared, dict) and "verify_with_slack" in overlay_shared:
+        return None
+    slack = data.get("slack")
+    shared = slack.get("shared_access") if isinstance(slack, dict) else None
+    if not isinstance(shared, dict) or shared.get("enabled") is not True:
+        return None
+    return None if "verify_with_slack" in shared else shared
+
+
+def base_shared_access_verify_due(path: Path) -> bool:
+    """Whether ``config.json`` ITSELF (not the merged view) needs ``verify_with_slack: true``.
+
+    The load's document is the base with ``config.local.json`` merged over it, so a
+    section the overlay alone turns on looks due there while the base holds nothing
+    to write. This reads the base file, and only when the merged view already looks
+    due, so an ordinary load pays nothing. An unreadable file is never due.
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(raw, dict) and shared_access_verify_due(raw) is not None
 
 
 def apply_document_migrations(
@@ -309,6 +355,14 @@ def apply_document_migrations(
                 section = {}
                 data["agent"] = section
             section["default_agent"] = dispatch(carried)
+            changed = True
+
+    # Keep the Slack check for an install that already shares access. Re-detected on
+    # *data*: a key another writer stored since this load's read is left alone.
+    if MIGRATE_SHARED_ACCESS_VERIFY in pending:
+        due = shared_access_verify_due(data)
+        if due is not None:
+            due["verify_with_slack"] = True
             changed = True
 
     # Un-materialize the auto-adopting superseded defaults this load found. Four

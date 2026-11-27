@@ -318,6 +318,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _fresh_config_load_debug_memories,
     _fresh_dev_fleet_service_reads,
     _fresh_hardlink_spec_warnings,
+    _fresh_harness_floor_warnings,
     _fresh_reexec_environment,
     _fresh_released_sessions_warning,
     _fresh_unhashable_agents_dir_warnings,
@@ -352,7 +353,6 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_cjk_segmenter,
     _reset_code_channel_owner_only_notices,
     _reset_create_rate_limit_buckets,
-    _reset_crewmate_worker_slots,
     _reset_degraded_config_observations,
     _reset_env_boot_record_and_ownership,
     _reset_kas_machine_fence_config,
@@ -377,16 +377,51 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
 
 # Per-test resets of process-global kiro_crew.acp state.
 from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and importers
+    _isolate_kas_model_catalog_recording,
     _reset_kas_agent_config_error_reports,
+    _reset_kas_secret_storage_unknown_kind_warnings,
+    _reset_kas_skill_facts,
+)
+from conftest_resets_bot_chat import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_bot_chat_app_tools_state,
+)
+from conftest_resets_computer_use import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_computer_use_warning,
+)
+from conftest_resets_connected_computers import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_connected_computers_state,
+)
+from conftest_resets_crewmate import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_crewmate_worker_slots,
 )
 from conftest_resets_decisions import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_decision_provider_error_warnings,
 )
+from conftest_resets_managed_env import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_managed_env_shared_client,
+)
 from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_backend_tmp_socket_room_warnings,
     _fresh_kas_env_left_out_marks,
     _reset_managed_server_tool_spellings,
     _reset_mcp_probe_same_process_locks,
     _reset_mcp_sources_read_snapshot,
+)
+from conftest_resets_relay_client import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_unsaved_relay_instance_ids,
+)
+from conftest_resets_remote_dispatch import (  # noqa: E402,F401 -- bound for pytest and importers
+    _forget_remote_crew_versions,
+)
+from conftest_resets_search import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_chat_search_cache_stores,
+    _reset_search_shown_text_memo,
+)
+from conftest_resets_shared_crew import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_ssm_invite_store,
+)
+from conftest_resets_token_auth import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_would_refuse_session_key_log,
 )
 
 # The in-memory Slack client and the Slack state resets.
@@ -395,10 +430,14 @@ from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importer
     _clean_emojis,
     _clean_slack_thread_state,
     _enterprise_bypass,
+    _reset_channel_handler_locks,
+    _reset_channel_handler_threads,
     _reset_code_channel_audience,
+    _reset_code_channel_senders,
     _reset_conductor_thread_notices,
     _reset_options_control_state,
     _reset_thread_board,
+    _reset_thread_messages,
 )
 
 # ``make_dir_link`` lives in kiro_crew.testing.links so the app-embedded test
@@ -649,6 +688,21 @@ def _fresh_update_ownership(_floor_monkeypatch):
     yield
     open_steps = [entry.step.label for entry in registry]
     assert not open_steps, f"the test left update steps open: {open_steps}"
+
+
+@per_test_guard
+def _cold_sessionless_log_window(_floor_monkeypatch):
+    """Give each test fresh session-less log counts and last-emission timestamps.
+
+    A row one test wrote must not suppress a later test's first row or count toward
+    its total. Patched only when the module is already imported.
+    """
+    from collections import Counter
+
+    module = sys.modules.get("kiro_crew.dashboard.token_auth_sessionless")
+    if module is not None:
+        _floor_monkeypatch.setattr(module, "_SESSIONLESS_COUNTS", Counter())
+        _floor_monkeypatch.setattr(module, "_sessionless_log_last", {})
 
 
 @per_test_guard

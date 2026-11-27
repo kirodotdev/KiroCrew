@@ -8,7 +8,8 @@ Each function here whose first parameter is ``self`` is an ``AcpProvider`` metho
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_effort_overlay_recovered``, ``_effort_per_model``.
+Instance fields written: ``_effort_overlay_clear_pending``, ``_effort_overlay_recovered``,
+``_effort_per_model``.
 
 Instance fields read: ``_client``, ``_tool_search``, ``_tool_search_min_pct``,
 ``_tool_search_min_tokens``.
@@ -22,6 +23,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew.acp.runtime_models import DEFAULT_MODEL
 from kiro_crew.acp.types import ACP_BACKENDS_EFFORT_OVERLAY, ACP_BACKENDS_TOOL_SEARCH_OVERLAY
 from kiro_crew.agent_sdk.tool_search import (
     TOOL_SEARCH_DEFAULT_MIN_PCT,
@@ -237,7 +239,9 @@ def _write_tool_search_overlay(
         _publish_cli_json(cli_json, existing)
 
 
-def _clear_cli_overlay_effort(work_dir: Path, model: str) -> bool:
+def _clear_cli_overlay_effort(
+    work_dir: Path, model: str, *, timeout: float = CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
+) -> bool:
     """Remove the effort entry for *model* from the workspace cli.json overlay.
 
     Merge-safe: leaves other models' settings intact and drops now-empty
@@ -249,16 +253,16 @@ def _clear_cli_overlay_effort(work_dir: Path, model: str) -> bool:
     startup ceiling sees -- projection's own critical section is sub-second. That
     distinction is what keeps this answer two-valued: a failure mode that happens
     by design would need a third state, and one that means "something is wrong"
-    does not. BLOCKING on the event loop for that ceiling would freeze every
-    session, so every caller must reach this off the loop.
+    does not. A start passes the startup *timeout* instead and keeps its own
+    retry for the False (:func:`_clear_default_overlay_entry`). BLOCKING on the
+    event loop for that ceiling would freeze every session, so every caller must
+    reach this off the loop.
 
     Every other exit is a success: an absent file, an absent entry, a removed
     entry and a malformed file all leave the overlay naming no effort for *model*.
     """
     try:
-        with workspace_cli_settings_lock(
-            work_dir, timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
-        ) as cli_json:
+        with workspace_cli_settings_lock(work_dir, timeout=timeout) as cli_json:
             if not cli_json.exists():
                 return True
             try:
@@ -366,8 +370,50 @@ async def _recover_effort_overlay(self: AcpProvider) -> None:
     except Exception:
         logger.debug("ACP effort overlay recovery failed", exc_info=True)
         return
+    if self._effort_overlay_clear_pending:
+        # A recorded Default whose clear has not landed yet: adopting the level
+        # would have this provider write it back on every later start.
+        recovered.pop(self._effort_model, None)
     for model, level in recovered.items():
         self._effort_per_model.setdefault(model, level)
+
+
+async def _clear_default_overlay_entry(self: AcpProvider) -> None:
+    """Remove the session's model from the overlay, once, for a Default the slot recorded.
+
+    The dashboard's effort route records Default without the live clear
+    (:meth:`AcpProvider.clear_effort`) when no session is running, and marks the
+    slot; the slot's next spawn hands the mark here as ``clear_effort_overlay``.
+    Without it this start would read back the level the slot's earlier pick left in
+    the shared file (:func:`_recover_effort_overlay`), and kiro-cli would run it
+    while every surface shows the default. A level the session inherits (a crew,
+    role or chat default) is written again afterwards by
+    :func:`_apply_effort_overlay`.
+
+    Only the overlay's own readers, and only a pinned model: an unpinned session has
+    no model id until kiro-cli names one at spawn, so its entry cannot be found and
+    the mark is dropped. A clear the lock refused keeps the mark pending, so the
+    next start of this provider tries again and the slot keeps its mark.
+    """
+    if not self._effort_overlay_clear_pending:
+        return
+    model = self._effort_model
+    if self._client.backend not in ACP_BACKENDS_EFFORT_OVERLAY or model in ("", DEFAULT_MODEL):
+        self._effort_overlay_clear_pending = False
+        return
+    if await asyncio.to_thread(
+        _clear_cli_overlay_effort,
+        self._client._work_dir,
+        model,
+        timeout=CLI_SETTINGS_LOCK_TIMEOUT_SECS,
+    ):
+        self._effort_overlay_clear_pending = False
+        return
+    logger.warning(
+        "ACP effort overlay NOT cleared for a recorded default (model=%s): the "
+        "workspace overlay was busy; the next start tries again",
+        model,
+    )
 
 
 def _apply_effort_overlay(

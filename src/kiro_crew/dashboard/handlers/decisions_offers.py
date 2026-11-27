@@ -55,3 +55,33 @@ def provider_offers(
         # part of the GET payload.
         "listed": listed,
     }
+
+
+def still_sending(cfg: object) -> dict | None:
+    """``capability.still_sending`` for the configured model, ``None`` when nothing sends.
+
+    Nothing is sent from any surface without the recorded consent for the configured
+    endpoint, or to a preset-shaped address the runtime does not serve, or to a
+    SageMaker address that names no host (the send path's own answers).
+    """
+    from kiro_crew.decisions import capability, consent, gate, impl_sagemaker
+
+    endpoint = gate.configured_endpoint(cfg)
+    model = gate.configured_provider_model(cfg)
+    if not consent.permits(endpoint, consent.load_state()):
+        return None
+    local = capability.is_local_preset(endpoint, model)
+    if not local and capability.names_local_preset(endpoint, model):
+        return None
+    target = endpoint
+    if impl_sagemaker.is_sagemaker_endpoint(endpoint):
+        try:
+            target = impl_sagemaker.policy_endpoint(endpoint)
+        except (impl_sagemaker.SageMakerConfigError, ValueError):
+            return None
+    return capability.still_sending(
+        local=local,
+        provider=capability.provider_id(endpoint, model),
+        model=gate.lane_model(cfg, lane=gate.LANE_JEV),
+        endpoint=target,
+    )

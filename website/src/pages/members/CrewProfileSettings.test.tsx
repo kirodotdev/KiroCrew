@@ -737,6 +737,109 @@ describe('CrewProfileSettings Dynamic capabilities preview', () => {
   })
 })
 
+/* The owner's Workers can conduct switch (`agents.<name>.worker_conducts`), off by
+ * default: an older gateway sends no field, and a Bot never switched on has false.
+ * Only this card writes it; the server reloads the Bot's workers after a change. */
+describe('CrewProfileSettings Workers can conduct', () => {
+  const SWITCH = "Let oncall's workers hand parts of a task to further workers"
+  const sw = () => within(screen.getByTestId('crew-profile-worker-conducts')).getByRole('switch', { name: SWITCH })
+
+  it.each([
+    ['says nothing', {}],
+    ['says false', { worker_conducts: false }],
+  ])('is off when the roster row %s', async (_label, over) => {
+    setup(member(over))
+    const row = await screen.findByTestId('crew-profile-worker-conducts')
+    expect(row).toHaveTextContent('Workers can conduct')
+    expect(sw()).toHaveAttribute('aria-checked', 'false')
+    // The line under the label says what the switch does: it wraps, never cut off.
+    expect(within(row).getByText(SWITCH)).not.toHaveClass('truncate')
+  })
+
+  it('names the limit of 4 that applies while Workers at once has no limit', async () => {
+    setup(member())
+    await screen.findByTestId('crew-profile-worker-conducts')
+    expect(screen.getByText(
+      "On: each worker oncall opens can split its task into tracked items, open further workers of oncall for them, follow them and check their results. " +
+      "Those workers keep oncall's identity, memory, permissions and limits and count toward Workers at once. " +
+      "While this is on and Workers at once has no limit, at most 4 of oncall's workers are open at once. " +
+      'Off (the default): a worker does its task itself.',
+    )).toBeInTheDocument()
+  })
+
+  it('turns it on for this Bot alone, and keeps it on once saved', async () => {
+    setupRosterBacked(member())
+    await screen.findByTestId('crew-profile-worker-conducts')
+    // A second Bot on the roster, whose row the save must leave alone.
+    act(() => {
+      lastQc.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+        [...(rows ?? []), member({ name: 'scout', slug: 'scout', slot_key: 'member-scout' })])
+    })
+    fireEvent.click(sw())
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { worker_conducts: true }))
+    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(sw()).toHaveAttribute('aria-checked', 'true'))
+    const rows = lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)
+    expect(rows?.find((r) => r.name === 'oncall')?.worker_conducts).toBe(true)
+    expect(rows?.find((r) => r.name === 'scout')?.worker_conducts).toBeUndefined()
+  })
+
+  it('turns an on Bot back off', async () => {
+    setupRosterBacked(member({ worker_conducts: true }))
+    await screen.findByTestId('crew-profile-worker-conducts')
+    expect(sw()).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(sw())
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { worker_conducts: false }))
+    await waitFor(() => expect(sw()).toHaveAttribute('aria-checked', 'false'))
+  })
+
+  it('follows a later change to the stored flag after its own save', async () => {
+    setupRosterBacked(member())
+    await screen.findByTestId('crew-profile-worker-conducts')
+    fireEvent.click(sw())
+    await waitFor(() => expect(sw()).toHaveAttribute('aria-checked', 'true'))
+    // A save from another tab writes the roster row back to off.
+    act(() => {
+      lastQc.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+        rows?.map((r) => ({ ...r, worker_conducts: false })))
+    })
+    await waitFor(() => expect(sw()).toHaveAttribute('aria-checked', 'false'))
+  })
+
+  it('holds the switch in the tab order while its write runs, so a second press sends nothing', async () => {
+    let finish: (v: unknown) => void = () => {}
+    setup(member())
+    await screen.findByTestId('crew-profile-worker-conducts')
+    // Queued only once the row is there: `vi.clearAllMocks` keeps a once-answer
+    // nobody took, and the next test's first write would get it.
+    mockApi.updateKirocrewAgent.mockReturnValueOnce(new Promise((r) => { finish = r }))
+    fireEvent.click(sw())
+    // The requested state shows while the write runs, and the switch takes no
+    // press but keeps its tab stop, so a keyboard user stays on it.
+    await waitFor(() => expect(sw()).toHaveAttribute('aria-disabled', 'true'))
+    expect(sw()).toHaveAttribute('aria-busy', 'true')
+    expect(sw()).toHaveAttribute('tabindex', '0')
+    expect(sw()).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(sw())
+    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledTimes(1)
+    act(() => finish({ ok: true }))
+    await waitFor(() => expect(sw()).not.toHaveAttribute('aria-disabled'))
+  })
+
+  it('says the save failed and shows the stored value when the server refuses', async () => {
+    // A refusal the server sends to anyone who may not change the record.
+    mockApi.updateKirocrewAgent.mockRejectedValue(
+      new ApiError(403, 'owner only', JSON.stringify({ error: 'owner only', code: 'owner_only' })),
+    )
+    setup(member())
+    await screen.findByTestId('crew-profile-worker-conducts')
+    fireEvent.click(sw())
+    expect(await screen.findByTestId('crew-profile-worker-conducts-error')).toHaveTextContent('Could not save this setting. Try again.')
+    expect(sw()).toHaveAttribute('aria-checked', 'false')
+    expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].worker_conducts).toBeUndefined()
+  })
+})
+
 /* The crewmate's own harness (`agents.<name>.acp_backend`), graduated out of preview.
  * Its stored value and the harnesses on offer come from the owner-only readout
  * (the server's `crewmate_harnesses` list), never the roster row and never a list

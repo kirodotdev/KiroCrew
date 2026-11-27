@@ -5,9 +5,10 @@ normalized ``LarkInbound`` frames into the async event loop via
 ``asyncio.run_coroutine_threadsafe``.
 
 Outbound: ``send_reply`` (an answer to an inbound message), ``send_image_reply``
-(an image answering one) and ``send_new`` (a new message to a person or group)
-wrap the sync lark-oapi REST API in ``run_in_executor`` so they never block the
-event loop.
+(an image answering one), ``send_new`` (a new message to a person or group) and
+``upload_new_file`` + ``send_uploaded_file`` (a new image or file message, for
+``file_send``) wrap the sync lark-oapi REST API in ``run_in_executor`` so they
+never block the event loop.
 
 ``lark-oapi`` is an OPTIONAL dependency: it ships in the ``feishu`` extra, and
 is installed on its own with ``pip install 'lark-oapi>=1.4,<2'`` (this project
@@ -94,6 +95,11 @@ _RESOURCE_KINDS = {
 }
 # A download that stalls this long between bytes raises and frees its thread.
 _RESOURCE_TIMEOUT_SECS = 60.0
+
+# Feishu's answer when the app lacks a scope the call needs. On an upload that
+# scope is ``im:resource``, which the error names when Feishu's own text does not.
+_SCOPE_DENIED_CODE = 99991672
+_UPLOAD_SCOPE = "im:resource"
 
 # Bounded dedup window for redelivered WS frames: keep the most recent N
 # message_ids and evict in arrival order (see ``FeishuTransport.receive`` in
@@ -303,6 +309,18 @@ def _parse_bot_open_id(content: Any) -> str:
     return open_id.strip()
 
 
+def _upload_refused(kind: str, resp: Any) -> RuntimeError:
+    """The error a refused *kind* upload raises, naming the grant it lacked.
+
+    For the missing-scope code, the scope is named here whenever Feishu's own
+    message does not already name it, so the person learns which grant to add.
+    """
+    detail = f"Feishu {kind} upload error: code={resp.code} msg={resp.msg}"
+    if resp.code == _SCOPE_DENIED_CODE and _UPLOAD_SCOPE not in str(resp.msg or ""):
+        detail += f" (the app needs the {_UPLOAD_SCOPE} permission)"
+    return RuntimeError(detail)
+
+
 class LarkClient:
     """Feishu WebSocket + REST client.
 
@@ -358,8 +376,9 @@ class LarkClient:
                 .log_level(lark.LogLevel.WARNING)
                 .build()
             )
-            # Downloads get a client with a timeout (the reply client has none),
-            # so a stalled one frees its worker like the bot-info probe.
+            # Downloads and file_send uploads get a client with a timeout (the
+            # reply client has none), so a stalled one frees its worker like the
+            # bot-info probe.
             self._lark_files = (
                 lark.Client.builder()
                 .app_id(app_id)
@@ -380,9 +399,9 @@ class LarkClient:
         # ``run_in_executor`` caller in the gateway, so a burst of Feishu
         # replies would steal its threads.
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="feishu-rest")
-        # Downloads get their own two workers, so large files cannot hold up
-        # replies, and at most two SDK responses (each read whole into memory)
-        # exist at once.
+        # Downloads and file_send uploads get their own two workers, so large
+        # files cannot hold up replies, and at most two SDK responses (each read
+        # whole into memory) exist at once.
         self._download_executor = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="feishu-download"
         )
@@ -450,8 +469,11 @@ class LarkClient:
 
     def _sync_post_create(
         self, receive_id_type: str, receive_id: str, msg_type: str, content: str
-    ) -> None:
-        """Blocking REST create of one *msg_type* message; call only from a worker thread."""
+    ) -> str:
+        """Blocking REST create of one *msg_type* message; returns its id ("" if unread).
+
+        Call only from a worker thread.
+        """
         from lark_oapi.api.im.v1 import (  # noqa: PLC0415
             CreateMessageRequest,
             CreateMessageRequestBody,
@@ -472,6 +494,7 @@ class LarkClient:
         resp = self._lark.im.v1.message.create(req)
         if not resp.success():
             raise RuntimeError(f"Feishu send error: code={resp.code} msg={resp.msg}")
+        return str(getattr(getattr(resp, "data", None), "message_id", "") or "")
 
     def _sync_reply(self, message_id: str, text: str) -> None:
         """Blocking REST reply; call only from a worker thread."""
@@ -579,13 +602,62 @@ class LarkClient:
             receive_id_type, receive_id, "image", json.dumps({"image_key": image_key})
         )
 
+    async def upload_new_file(
+        self, data: bytes, *, as_image: bool, file_name: str = "", file_type: str = "stream"
+    ) -> tuple[str, str]:
+        """Upload *data* for a NEW image or file message.  Returns ``(msg_type, content)``.
+
+        ``as_image`` uploads it the way :meth:`send_new_image` does
+        (``im.v1.image.create``, for ``msg_type=image``); otherwise through
+        ``im.v1.file.create`` under *file_name* and *file_type*, for
+        ``msg_type=file``. Nothing is sent: :meth:`send_uploaded_file` sends the
+        pair, so the caller can re-decide its recipient in between. Unlike
+        :meth:`send_new_image` a refusal RAISES, carrying Feishu's code and
+        message, so the caller can tell the person why the file did not arrive.
+        It runs on the file workers through the client with a timeout, so a
+        stalled file of up to 30 MB never holds a reply worker.
+        """
+        return await asyncio.get_running_loop().run_in_executor(
+            self._download_executor,
+            functools.partial(
+                self._sync_upload_new_file,
+                data,
+                as_image=as_image,
+                file_name=file_name,
+                file_type=file_type,
+            ),
+        )
+
+    def _sync_upload_new_file(
+        self, data: bytes, *, as_image: bool, file_name: str, file_type: str
+    ) -> tuple[str, str]:
+        """Blocking upload of an image or file message's resource; call only from a worker."""
+        if as_image:
+            image_key = self._sync_upload_image(data, self._lark_files)
+            return "image", json.dumps({"image_key": image_key})
+        return "file", json.dumps({"file_key": self._sync_upload_file(data, file_name, file_type)})
+
+    async def send_uploaded_file(
+        self, receive_id_type: str, receive_id: str, msg_type: str, content: str
+    ) -> str:
+        """Send what :meth:`upload_new_file` returned as a NEW message.  Returns its id.
+
+        A refusal RAISES; the id is "" when Feishu's answer carried none.
+        """
+        return await asyncio.get_running_loop().run_in_executor(
+            self._executor, self._sync_post_create, receive_id_type, receive_id, msg_type, content
+        )
+
     def _sync_image_reply(self, message_id: str, data: bytes) -> None:
         """Blocking upload + image reply; call only from a worker thread."""
         image_key = self._sync_upload_image(data)
         self._sync_post_reply(message_id, "image", json.dumps({"image_key": image_key}))
 
-    def _sync_upload_image(self, data: bytes) -> str:
-        """Blocking ``im.v1.image.create``; returns the image_key or raises."""
+    def _sync_upload_image(self, data: bytes, client: Any = None) -> str:
+        """Blocking ``im.v1.image.create``; returns the image_key or raises.
+
+        *client* is the reply client unless the caller passes another.
+        """
         from lark_oapi.api.im.v1 import (  # noqa: PLC0415
             CreateImageRequest,
             CreateImageRequestBody,
@@ -601,11 +673,35 @@ class LarkClient:
             )
             .build()
         )
-        resp = self._lark.im.v1.image.create(req)
+        resp = (client or self._lark).im.v1.image.create(req)
         image_key = getattr(resp.data, "image_key", "") if resp.success() else ""
         if not image_key:
-            raise RuntimeError(f"Feishu image upload error: code={resp.code} msg={resp.msg}")
+            raise _upload_refused("image", resp)
         return str(image_key)
+
+    def _sync_upload_file(self, data: bytes, file_name: str, file_type: str) -> str:
+        """Blocking ``im.v1.file.create``; returns the file_key or raises."""
+        from lark_oapi.api.im.v1 import (  # noqa: PLC0415
+            CreateFileRequest,
+            CreateFileRequestBody,
+        )
+
+        req = (
+            CreateFileRequest.builder()
+            .request_body(
+                CreateFileRequestBody.builder()
+                .file_type(file_type)
+                .file_name(file_name)
+                .file(io.BytesIO(data))
+                .build()
+            )
+            .build()
+        )
+        resp = self._lark_files.im.v1.file.create(req)
+        file_key = getattr(resp.data, "file_key", "") if resp.success() else ""
+        if not file_key:
+            raise _upload_refused("file", resp)
+        return str(file_key)
 
     # -- Bot identity --------------------------------------------------------
 

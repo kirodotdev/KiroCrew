@@ -8,10 +8,12 @@ Which resolved paths may be read is :mod:`kiro_crew.acp.kas_prompt_paths`.
 from __future__ import annotations
 
 import os
+import string
 from pathlib import Path
 from typing import Any
 
 from kiro_crew.agent_files import LITE_AGENT_FILENAME
+from kiro_crew.env import windows_twin_fills
 
 _PROMPT_FILE_SCHEME = "file://"
 
@@ -40,8 +42,22 @@ def expand_prompt_ref(ref: str) -> Path:
     """
     candidate = Path(ref)
     if not candidate.is_absolute():
-        candidate = Path(os.path.expandvars(ref)).expanduser()
+        candidate = Path(expand_ref_vars(ref)).expanduser()
     return candidate
+
+
+def expand_ref_vars(ref: str) -> str:
+    """*ref* with ``$VAR`` / ``${VAR}`` expanded; on Windows a missing ``HOME`` is ``USERPROFILE``.
+
+    A process on Windows may have no ``HOME``, so ``$HOME`` would stay literal. When
+    MCP args would fill it from its twin (:func:`kiro_crew.env.windows_twin_fills`),
+    the reference is respelled ``${USERPROFILE}`` in the text, never set in
+    ``os.environ``, and expanded once with every other name. An unset name stays
+    as written.
+    """
+    if windows_twin_fills(os.environ).get("HOME"):
+        ref = string.Template(ref).safe_substitute(HOME="${USERPROFILE}")
+    return os.path.expandvars(ref)
 
 
 def prompt_file_path(ref: str, agents_dir: Path) -> Path:
@@ -57,13 +73,19 @@ def prompt_file_path(ref: str, agents_dir: Path) -> Path:
 
 
 def prompt_unread_notice(agent: str, paths: list[Path]) -> str:
-    """The session-start notice for a ``file://`` prompt the session runs without, or ``""``."""
+    """The session-start notice for a ``file://`` prompt the session runs without, or ``""``.
+
+    One text for every backend. KAS refuses a session whose prompt path is not
+    allowed; the reader the other backends use skips such a file, so the text
+    names that case too.
+    """
     if not paths:
         return ""
     return (
-        f"ℹ Agent {agent}'s prompt file {paths[0]} is missing, unreadable or empty, "
-        "so this session runs on the backend's default prompt. Point the agent's "
-        "prompt at a readable file to use your own."
+        f"ℹ Agent {agent}'s prompt file {paths[0]} is missing, unreadable, empty or "
+        "in a place Kiro Crew does not read prompts from, so this session runs on "
+        "the backend's default prompt. Point the agent's prompt at a readable file "
+        "to use your own."
     )
 
 

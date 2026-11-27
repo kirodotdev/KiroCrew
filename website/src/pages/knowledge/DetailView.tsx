@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Copy, Download, Archive, X, RefreshCw, Link2, ArrowUpRight, Tag } from 'lucide-react'
 import { Card, Btn, Badge, ContentSkeleton } from '../../components/ui'
@@ -96,7 +97,10 @@ function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: strin
   // no blur handler, so there is no pointer-blur path to exclude.
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const close = () => {
-    setEditing(false)
+    // Commit the close now: a save closes from its PATCH callback, outside any
+    // event, and a frame that ran before React's own commit would still find
+    // the field focused and skip the hand-off below.
+    flushSync(() => setEditing(false))
     // A closed editor has no save to explain, so its failure goes with it.
     saveMutation.reset()
     // Only take back focus the unmount dropped: a save can resolve after the

@@ -123,6 +123,18 @@ def mcp_entry_is_remote(entry: Any) -> bool:
     )
 
 
+#: ``mcpServers`` entry keys that never change which process a server launches or
+#: which endpoint it reaches: tool switches, approval lists, a start budget
+#: (``timeout`` and its ``timeoutMs`` alias), the pooling hint ``poolable``, and the
+#: mute, which decides WHETHER an entry starts (:func:`mcp_entry_is_muted`), not what.
+#: Every other key counts as launch input, so a key not named here is never ignored
+#: by a site that compares launches (``acp.kas_subagent_targets``,
+#: ``project_mcp_approvals.fingerprint``).
+NOT_LAUNCH_KEYS = frozenset(
+    {"autoApprove", "disabled", "disabledTools", "poolable", "timeout", "timeoutMs"}
+)
+
+
 def mcp_entry_is_muted(entry: Any) -> bool:
     """Whether one ``mcpServers`` entry asks not to be launched.
 

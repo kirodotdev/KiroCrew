@@ -46,7 +46,8 @@ LESSON_FOLD_MODES = ("off", "enforce")
 #: ``memory.rule_authority_order`` values; :mod:`kiro_crew.memory_rule_authority` says what each does.
 RULE_AUTHORITY_ORDER_MODES = ("off", "enforce")
 #: ``memory.relevance_rule`` values; :mod:`kiro_crew.memory_relevance_rule` says what each does.
-RELEVANCE_RULE_MODES = ("off", "shadow", "enforce")
+#: Any other stored value, ``shadow`` included, reads as the default (``relevance_rule_mode_from``).
+RELEVANCE_RULE_MODES = ("off", "enforce")
 
 #: ``memory.member_lesson_dedup`` values; :mod:`kiro_crew.memory_lesson_dedup` says what each does.
 MEMBER_LESSON_DEDUP_MODES = ("off", "shadow", "enforce")
@@ -550,7 +551,9 @@ class MemoryConfig:
             "every lesson as before and only counts, within fixed size caps, what "
             "the gate would demote. 'enforce' stores such a lesson as an on_topic "
             "finding instead, and gives an agent-triggered learn_add its own source. "
-            "Stored lessons are never changed.",
+            "A span with a message from you keeps its tiers; judging each lesson by "
+            "your own words is memory.lesson_tier_policy. Stored lessons are never "
+            "changed.",
             enum=list(LESSON_ORIGIN_GATE_MODES),
         ),
     )
@@ -574,13 +577,16 @@ class MemoryConfig:
         metadata=_meta(
             "Lesson Tier Policy",
             "Which tier a new lesson from consolidation gets. 'off' (default) keeps "
-            "today's prompt and writes. 'shadow' writes every lesson as before and only "
-            "counts, within fixed size caps, which new lessons the policy would store "
-            "as on_topic findings, and how often you later teach one of them again. "
-            "'enforce' asks the model for your own words behind each 'always' lesson "
-            "and stores a lesson as an on_topic finding unless those words are found "
-            "in one of your messages. Your own learn_add and dashboard writes, and "
-            "stored lessons, are never changed.",
+            "today's prompt and writes. 'shadow' writes every lesson as before, asks "
+            "the model for your own words behind each 'always' lesson in one extra "
+            "small call after the writes, and only counts, within fixed size caps, "
+            "which new lessons the policy would store as on_topic findings, and how "
+            "often you later teach one of them again. 'enforce' asks for those words "
+            "in the consolidation prompt and stores a lesson as an on_topic finding "
+            "unless they are in one of your messages and say what the rule says "
+            "(with no embedding model, no lesson stays standing). "
+            "Your own learn_add and dashboard writes, and stored lessons, are never "
+            "changed.",
             enum=list(LESSON_TIER_POLICY_MODES),
         ),
     )
@@ -628,18 +634,17 @@ class MemoryConfig:
         ),
     )
     relevance_rule: str = field(
-        default="off",
+        default="enforce",
         metadata=_meta(
             "Relevance Rule",
             "Which word matches let past findings, task facts and the activity "
-            "block (projects, history) into a new session. 'off' (default) keeps "
-            "today's blocks. 'shadow' keeps today's blocks and only records, in "
-            "the injection receipt and within fixed size caps, which rows the new "
-            "rule would add or drop. 'enforce' counts only words of 3 or more "
-            "letters or digits and two-character pairs of Chinese or Japanese "
-            "text, and admits a task fact only with the evidence the private "
-            "store already asks for. The rule block is unchanged and no stored "
-            "row is changed.",
+            "block (projects, history) into a new session. 'enforce' (default) "
+            "counts only words of 3 or more letters or digits and two-character "
+            "pairs of Chinese, Japanese or Korean text, and admits a task fact "
+            "only with the evidence the private store already asks for. 'off' "
+            "restores the old blocks, where any shared word counts, even one of 1 "
+            "or 2 letters. A stored 'shadow' reads as 'enforce'. The rule block is "
+            "unchanged and no stored row is changed.",
             enum=list(RELEVANCE_RULE_MODES),
         ),
     )
@@ -820,7 +825,10 @@ def member_lesson_dedup_mode_from(raw: object) -> str:
 
 
 def relevance_rule_mode_from(raw: object) -> str:
-    """A stored ``memory.relevance_rule``, or the field default for anything unknown."""
+    """A stored ``memory.relevance_rule``, or the field default for anything unknown.
+
+    ``shadow`` is not one of its modes, so a stored one reads as the default.
+    """
     if isinstance(raw, str) and raw in RELEVANCE_RULE_MODES:
         return raw
     return str(field_default(MemoryConfig, "relevance_rule"))

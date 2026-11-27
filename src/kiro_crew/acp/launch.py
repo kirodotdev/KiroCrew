@@ -1183,6 +1183,9 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         extra_private_dirs=scratch_window,
         extra_expose_files=request.extra_expose_files,
         **exec_cwd_options(host),
+        # The session's own folder: its project MCP files are sealed read-only, so
+        # only a ``request_server`` card adds a server there.
+        project_folder=str(getattr(host, "_spawn_work_dir", "") or ""),
         is_kiro_cli=delegate_internal_sandbox,
         _prepare=tools.wrap_argv,
     )

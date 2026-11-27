@@ -39,9 +39,11 @@ from kiro_crew.snapshot_archive import (
 from kiro_crew.snapshot_components import (
     _LINKABLE_TREE_ROOTS,
     COMPONENTS,
+    NAMED_WORKSPACES,
     Purpose,
     UnsafeComponentRoot,
     _facade,
+    is_named_workspace_tree,
     safe_tree_root,
 )
 from kiro_crew.staging import staging_dir
@@ -68,6 +70,42 @@ def _fsize(p: Path) -> int:
         return p.stat().st_size
     except OSError:
         return 0
+
+
+def _configured_named_workspace_trees(mc: Path) -> tuple[str, ...]:
+    """The data-home folders ``named-workspaces`` stages: one per configured workspace whose
+    folder is ``<data home>/workspace-<name>`` (`is_named_workspace_tree`).
+
+    Compared by absolute path, not resolved, so a folder reached through a link is still
+    found here and then recorded as skipped by staging's `safe_tree_root`, never followed.
+    A workspace placed anywhere else is not carried; the left-out notice names it.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.config.loader_locations import workspace_dir_from_entry
+
+    try:
+        workspaces = KiroCrewConfig.load().workspaces
+    except Exception:
+        # A config that does not load names no workspace; the left-out notice reports the
+        # same, so nothing is carried silently.
+        return ()
+    home = Path(os.path.abspath(mc))
+    found: set[str] = set()
+    for entry in workspaces.values():
+        try:
+            rel = Path(os.path.abspath(workspace_dir_from_entry(entry))).relative_to(home)
+        except (RuntimeError, ValueError):
+            continue  # an unknown "~user", or a folder outside the data home
+        if len(rel.parts) == 1 and is_named_workspace_tree(rel.parts[0]):
+            found.add(rel.parts[0])
+    return tuple(sorted(found))
+
+
+def _staged_trees(mc: Path, comp: str) -> tuple[str, ...]:
+    """The trees component *comp* stages from the data home *mc*."""
+    if comp == NAMED_WORKSPACES:
+        return _configured_named_workspace_trees(mc)
+    return COMPONENTS[comp].trees
 
 
 def _estimate_selected_bytes(mc: Path, selected: list[str]) -> tuple[int, int]:
@@ -124,7 +162,7 @@ def _estimate_selected_bytes(mc: Path, selected: list[str]) -> tuple[int, int]:
         spec = COMPONENTS[comp]
         for f in spec.files:
             _count(mc / f)
-        trees.extend(spec.trees)
+        trees.extend(_staged_trees(mc, comp))
     # A tree covered by an ANCESTOR in the selection is dropped, as in staging: `seen`
     # dedupes bytes but not refusals, and the shared subtree is walked only once.
     covered = set(trees)
@@ -152,10 +190,9 @@ def _report_named_workspaces_left_out(mc: Path, selected: list[str]) -> list[tup
     """Name each configured workspace whose folder this bundle's *selected* components do
     not carry, and return them as ``(name, folder)``.
 
-    shortcut: a named workspace's folder is wherever its ``dir`` points (``workspace-<name>``
-    by default, or any path), so it cannot be a static component tree, and a bundle that
-    took them by default could cross the 4 GiB bound a working backup is under today. Until
-    a component carries them, the snapshot says plainly which ones it left out.
+    The opt-in ``named-workspaces`` component carries a folder placed at
+    ``workspace-<name>`` in the data home; one placed anywhere else, or a run that did not
+    select the component, is named here so an operator moving hosts knows what to copy.
 
     Advisory only, so nothing here may end the snapshot: it runs after the bundle is written
     and before ``--keep`` prunes. A config that does not load names nothing, and a ``dir``
@@ -169,7 +206,7 @@ def _report_named_workspaces_left_out(mc: Path, selected: list[str]) -> list[tup
         workspaces = KiroCrewConfig.load().workspaces
     except Exception:
         return []
-    trees = [PurePosixPath(t) for c in selected for t in COMPONENTS[c].trees]
+    trees = [PurePosixPath(t) for c in selected for t in _staged_trees(mc, c)]
     home = mc.resolve()
     left: list[tuple[str, str]] = []
     for name, entry in sorted(workspaces.items()):
@@ -321,15 +358,16 @@ def _build_snapshot(
         # primitive refuses a destination that already exists in a tree it created.
         wanted_trees: list[tuple[str, str]] = []
         for comp in selected:
-            for tree in COMPONENTS[comp].trees:
+            for tree in _staged_trees(mc, comp):
                 # An unsafe root FAILS the snapshot rather than being skipped: a manifest
                 # declaring a component whose tree is missing is worse than no backup.
                 # safe_tree_root returns None only for an unsafe or unresolvable root, not
                 # for an absent one, so a fresh data home passes.
                 if safe_tree_root(mc / tree, what="component root", home=mc) is None:
-                    if tree in _LINKABLE_TREE_ROOTS and platform_compat.is_link_or_junction(
-                        mc / tree
-                    ):
+                    # A named workspace kept on another disk behind a link is a supported
+                    # placement too, so it is left out the same way `members/` is.
+                    linkable = tree in _LINKABLE_TREE_ROOTS or comp == NAMED_WORKSPACES
+                    if linkable and platform_compat.is_link_or_junction(mc / tree):
                         # A supported setup, not an unsafe one: recorded in the manifest
                         # as a missing component and left out, so the backup is still
                         # written and retention keeps the last bundle that holds it.

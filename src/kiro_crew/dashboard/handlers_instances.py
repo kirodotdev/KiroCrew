@@ -1633,6 +1633,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _redact_sse_event_async,
         _remote_is_behind,
         api_instances_approval_state,
+        api_instances_bots,
         api_instances_capabilities,
         api_instances_chat_slots,
         api_instances_proxy,

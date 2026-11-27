@@ -253,7 +253,8 @@ METHOD_SESSION_LOAD = "session/load"
 #: implement full loading: it restores the session WITHOUT replaying the previous
 #: messages. Its request and response carry the same fields as ``session/load``'s,
 #: which is why one membership set (``ACP_BACKENDS_RESUME_WITHOUT_LOAD``) decides
-#: which of the two a harness is sent rather than each having a restore path.
+#: which of the two a harness is sent rather than each having a restore path. codex
+#: serves both and is sent this one, the only restore its adapter holds for MCP startup.
 METHOD_SESSION_RESUME = "session/resume"
 #: Copies a stored session into a new one and answers the new ``sessionId``; the
 #: source is left untouched. Advertised as ``sessionCapabilities.fork``.
@@ -1033,6 +1034,7 @@ class AcpEvent:
     #: classification (cache hit), not the miss-default False.
     raw_params_trusted: bool = False
     shell_classified: bool = False
+    tool_call_id_reused: bool = False  # args contradict the id's cached ones: refused
     #: spawn_target: the agent a KAS sub-agent spawn will start, read from the
     #: engine-written ``_meta.kiro.consent.resource`` of a consent-classified
     #: request (``_dispatch.kas_consent_tool``). Empty on every other event. The

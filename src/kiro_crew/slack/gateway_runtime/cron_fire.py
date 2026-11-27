@@ -71,6 +71,10 @@ class _CronCapture(NamedTuple):
     # The agent name the governance gate is handed: the alias a chat turn on
     # this agent hands it, read before a crewmate's worker swap. "" when unset.
     gate_agent: str = ""
+    # The Bot this job runs as, for the table of running Bot turns: the member id
+    # of a capture that selected a member, read before a crewmate's worker swap.
+    # "" for any other capture.
+    bot_member_id: str = ""
 
 
 def _cron_extra_env(job: CronJob) -> dict[str, str] | None:
@@ -263,6 +267,9 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
                 )
             await self._alert_cron_failure(job, gate_reason, denied=True)
             return None
+        # ── Reminder: the message reaches the user as written, no agent turn ──
+        if job.notify_only is True:
+            return await self._deliver_cron_reminder(job)
         if await _awaits_host_sign_in(job):
             return None
 
@@ -557,6 +564,11 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
             _gate_alias = cron_execution.selection_name.strip()
     else:
         _gate_alias = (job.agent_id or "").strip()
+    _bot_member_id = (
+        cron_execution.member_id
+        if cron_execution.selection_kind == "member" and isinstance(cron_execution.member_id, str)
+        else ""
+    )
     if not agent_sequence_dispatches(cron_agents):
         # A crewmate's scheduled turn is work, so it runs on that crewmate's
         # worker (its kit, servers and permissions), never on the conductor its
@@ -672,6 +684,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
         _default_substituted,
         prior_result,
         _gate_alias or cron_agent,
+        _bot_member_id,
     )
 
 

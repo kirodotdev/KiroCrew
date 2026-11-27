@@ -75,7 +75,15 @@ def test_a_completed_child_is_recorded_with_its_task_and_tool_titles() -> None:
     cards.child_tool_frame(info, "c1", "Run sleep then echo")
     cards.child_tool_frame(info, "c2", "Read result.txt")
     _sync(slot, _dispatch("completed", rawOutput="one"))
-    assert record.engine_record(slot._native_subagent_tracker) == {
+    got = record.engine_record(slot._native_subagent_tracker)
+    assert got is not None
+    [entry] = got["children"]
+    # The card's own clock, read separately below (``test_the_card_clock_is_kept``).
+    assert entry.pop("started_at") <= entry.pop("ended_at")
+    # The batch's own totals and span, read in ``test_engine_subagent_record_timing.py``.
+    for key in ("ends", "started_at", "ended_at"):
+        got.pop(key)
+    assert got == {
         "children": [
             {
                 "agent": "kirocrew-helper",

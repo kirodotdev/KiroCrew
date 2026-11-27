@@ -62,6 +62,16 @@ describe('an approval card of an engine sub-agent', () => {
     expect(screen.queryByTestId('approval-subagent-task')).toBeNull()
   })
 
+  it('never calls a live dispatch card with no input historical', async () => {
+    // A KAS dispatch's request carries only its title, and its frame never reaches
+    // the tool log, so the card's details have no input (Slack report, 0.13.1.2).
+    mount([permission('ap-4', { subagent_task: 'Look up the account' })])
+    await screen.findByText('Waiting for approval')
+    expect(screen.queryByText(/weren't saved|historical/i)).toBeNull()
+    expect(screen.queryByText('No input or output captured for this tool call.')).toBeNull()
+    expect(screen.getByTestId('approval-subagent-task')).toHaveTextContent('Task: Look up the account')
+  })
+
   it('looks as it did when the gateway sent neither field', async () => {
     mount([permission('ap-3')])
     await screen.findByText('Allow once')

@@ -610,6 +610,85 @@ async def test_structured_fields_cannot_silently_patch_a_legacy_loop(tmp_path):
     service.stop()
 
 
+@pytest.mark.asyncio
+async def test_also_wake_on_is_refused_on_a_legacy_loop_not_dropped(tmp_path):
+    service = AutoNudgeService(base_dir=tmp_path)
+    await service.add("chat-1", "legacy prompt", idle_secs=60)
+    with patch("kiro_crew.autonudge.get_instance", return_value=service):
+        result = await apply_session_directive(
+            SimpleNamespace(),
+            SimpleNamespace(key="chat-1", _app=""),
+            "dashboard:chat-1",
+            "monitor_update",
+            {"patch": {"also_wake_on": ["https://github.com/acme/widgets/pull/8"]}},
+        )
+
+    assert result.startswith("monitor_update cannot apply structured fields")
+    assert "also_wake_on" in result
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_also_wake_on_reaches_the_watch_through_both_directives(tmp_path):
+    service = AutoNudgeService(base_dir=tmp_path)
+    state = SimpleNamespace(
+        _slots={"chat-1": SimpleNamespace(workspace="default", is_closing=False)},
+        sessions=None,
+        channel_transports={},
+    )
+    slot = SimpleNamespace(key="chat-1", _app="")
+    pr_8, pr_9 = (f"https://github.com/acme/widgets/pull/{n}" for n in (8, 9))
+    with (
+        patch("kiro_crew.autonudge.get_instance", return_value=service),
+        patch("kiro_crew.autonudge_authz.sel", return_value=MagicMock()),
+    ):
+        created = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:chat-1",
+            "monitor_watch",
+            {
+                "kind": "github_pull_request",
+                "target": "https://github.com/acme/widgets/pull/7",
+                "objective": "review_ready",
+                "cadence_secs": 60,
+                "max_runtime_secs": 600,
+                "max_agent_turns": 4,
+                "max_tokens": 10000,
+                "max_provider_errors": 2,
+                "also_wake_on": [pr_8],
+            },
+        )
+        loop = service.get_by_slot("chat-1")
+        assert "started" in created and loop is not None and loop.monitor is not None
+        assert loop.monitor.also_wake_on == [pr_8]
+        generation = loop.monitor.config_generation
+        trust = MagicMock()
+        with (
+            patch(
+                "kiro_crew.autonudge_provider_trust.forget_monitor_owner_credentials",
+                trust.forget,
+            ),
+            patch(
+                "kiro_crew.autonudge_provider_trust.record_monitor_owner_credentials",
+                trust.record,
+            ),
+        ):
+            updated = await apply_session_directive(
+                state,
+                slot,
+                "dashboard:chat-1",
+                "monitor_update",
+                {"patch": {"also_wake_on": [pr_9]}},
+            )
+    # An extras-only change never runs the retarget credential follow-up.
+    assert trust.mock_calls == []
+    assert "updated" in updated
+    assert loop.monitor.also_wake_on == [pr_9]
+    assert loop.monitor.config_generation == generation + 1
+    service.stop()
+
+
 class _SteppedTime:
     """The ``time`` module with ``time()`` stepped by *step* seconds; every other name is real.
 

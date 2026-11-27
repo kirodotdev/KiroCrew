@@ -164,6 +164,9 @@ describe('WorkflowRunCard rendering', () => {
     expect(
       screen.getByRole('button', { name: 'Save workflow' }),
     ).toBeInTheDocument()
+    // The card's accent tint swallows a stock Btn's plain edge.
+    expect(screen.getByRole('button', { name: 'Save workflow' })).toHaveClass('bg-bg-elevated', 'border-border-strong')
+    expect(screen.getByRole('button', { name: 'Save workflow' })).not.toHaveClass('border-border')
     expect(container.querySelector('svg.text-ok')).not.toBeNull()
     unmount()
 
@@ -259,6 +262,9 @@ describe('WorkflowRunCard rendering', () => {
     expect(
       await screen.findByText('Saved as /workflow deep-dive-bug-hunt'),
     ).toBeInTheDocument()
+    const saved = screen.getByRole('button', { name: 'Saved as /workflow deep-dive-bug-hunt' })
+    expect(saved).toHaveClass('bg-bg-elevated', 'border-border-strong')
+    expect(saved).not.toHaveClass('border-border')
   })
 
   it('locks the save fields while promotion is pending', async () => {

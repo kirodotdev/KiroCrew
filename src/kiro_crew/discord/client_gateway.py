@@ -83,15 +83,18 @@ _OP_HEARTBEAT_ACK = 11
 # Interaction types / callback types.
 _INTERACTION_APPLICATION_COMMAND = 2
 _INTERACTION_MESSAGE_COMPONENT = 3
+_INTERACTION_AUTOCOMPLETE = 4
 
 
 #: Interaction types this client normalizes and forwards. Anything else is
 #: dropped at the dispatch boundary rather than handed on as a half-filled
-#: record — an autocomplete or modal submit needs its own response shape within
-#: Discord's 3-second callback deadline, and a handler that received one without
-#: knowing how to answer it would leave the user's client spinning.
+#: record — a modal submit needs its own response shape within Discord's
+#: 3-second callback deadline, and a handler that received one without knowing
+#: how to answer it would leave the user's client spinning. An autocomplete
+#: request is forwarded: the dispatcher answers it with its own callback type
+#: before any other gate runs (``transport_dispatch_interactions``).
 _HANDLED_INTERACTIONS = frozenset(
-    {_INTERACTION_APPLICATION_COMMAND, _INTERACTION_MESSAGE_COMPONENT}
+    {_INTERACTION_APPLICATION_COMMAND, _INTERACTION_MESSAGE_COMPONENT, _INTERACTION_AUTOCOMPLETE}
 )
 
 
@@ -140,7 +143,7 @@ class DiscordInteraction:
     guild_id: str = ""  # empty string == DM channel
     username: str = ""
     #: Discord interaction type — ``2`` application command, ``3`` message
-    #: component. Defaults to the component type so the pre-existing button
+    #: component, ``4`` autocomplete. Defaults to the component type so the pre-existing button
     #: call sites (and the tests that construct this directly) keep their
     #: meaning without naming it.
     kind: int = _INTERACTION_MESSAGE_COMPONENT
@@ -150,11 +153,19 @@ class DiscordInteraction:
     #: Discord types them, but every command here takes free text or nothing,
     #: and one shape keeps the parser shared with the ``!`` text commands.
     options: dict[str, str] = field(default_factory=dict)
+    #: The option the user is typing into (``kind == 4`` only), or "". Its
+    #: partial text is that option's entry in ``options``.
+    focused_option: str = ""
 
     @property
     def is_command(self) -> bool:
         """True for an application (slash) command invocation."""
         return self.kind == _INTERACTION_APPLICATION_COMMAND
+
+    @property
+    def is_autocomplete(self) -> bool:
+        """True for a type-ahead request on a slash command's option."""
+        return self.kind == _INTERACTION_AUTOCOMPLETE
 
 
 async def _gateway_loop(self: DiscordClient) -> None:
@@ -471,6 +482,7 @@ def _on_dispatch(self: DiscordClient, event: str, d: dict) -> None:
             kind=int(kind),
             command_name=str(data.get("name", "") or "").lower(),
             options=_command_options(data.get("options")),
+            focused_option=_focused_option(data.get("options")),
         )
         task = asyncio.create_task(self._invoke_interaction(interaction))
         self._handler_tasks.add(task)
@@ -514,6 +526,16 @@ def _command_options(raw: Any) -> dict[str, str]:
             continue
         out[name] = str(opt["value"])
     return out
+
+
+def _focused_option(raw: Any) -> str:
+    """The name of the top-level option an autocomplete request is for, or ""."""
+    if not isinstance(raw, list):
+        return ""
+    for opt in raw:
+        if isinstance(opt, dict) and opt.get("focused") is True:
+            return str(opt.get("name", "") or "")
+    return ""
 
 
 def _find_button_label(components: list[dict], custom_id: str) -> str:

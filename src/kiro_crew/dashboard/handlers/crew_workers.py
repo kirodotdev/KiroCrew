@@ -44,25 +44,28 @@ from aiohttp import web
 from kiro_crew import crew_mode
 from kiro_crew.dashboard.conditional_get import conditional_json_response
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-from kiro_crew.dashboard.handlers.members import _deny_app_caller
-from kiro_crew.dashboard.session_activity import (
-    SessionActivity,
-    session_activity,
-    session_execution_active,
+from kiro_crew.dashboard.handlers.crew_worker_status import (  # noqa: F401
+    GROUP_APPROVAL,
+    GROUP_DONE,
+    GROUP_WAITING,
+    GROUP_WITH_CONDUCTOR,
+    GROUP_WORKING,
+    STATUS_ASKING,
+    STATUS_CLOSED,
+    STATUS_IDLE,
+    STATUS_NEEDS_APPROVAL,
+    STATUS_WORKING,
+    _group,
+    _looping,
+    _progress_of,
+    _status,
 )
+from kiro_crew.dashboard.handlers.members import _deny_app_caller
+from kiro_crew.dashboard.session_activity import session_activity
 from kiro_crew.dashboard.slot_projection import summary_rows
 from kiro_crew.dashboard.slot_row_memo import is_posted_note_row
 
 logger = logging.getLogger(__name__)
-
-#: Worker statuses, in the vocabulary the side panel shows.
-STATUS_WORKING = "working"
-STATUS_IDLE = "idle"
-STATUS_NEEDS_APPROVAL = "needs_approval"
-#: A worker whose question card is open (one from before it was adopted); it
-#: waits on its conductor like a question report.
-STATUS_ASKING = "asking"
-STATUS_CLOSED = "closed"
 
 
 def _bad(code: str, message: str, status: int = 400) -> web.Response:
@@ -149,29 +152,6 @@ def _not_root() -> web.Response:
     )
 
 
-def _status(row: Mapping[str, Any], activity: tuple[SessionActivity, ...] = ()) -> str:
-    if row.get("pending_approval"):
-        return STATUS_NEEDS_APPROVAL
-    if row.get("needs_input"):
-        return STATUS_ASKING
-    if row.get("running") or row.get("subagents_running") or session_execution_active(activity):
-        return STATUS_WORKING
-    return STATUS_IDLE
-
-
-#: How the side panel groups workers. A worker never asks the person itself: its
-#: questions and blockers go to its conductor (``with_conductor``), which answers or
-#: asks the person in its own chat. The one thing a conductor cannot answer is a
-#: tool approval (``approval``), which the person resolves on the conductor's
-#: approval card. Then what is moving, what has not started, what is finished. The
-#: dashboard applies the same rule to live slot rows (``lib/crewWorkers.ts``).
-GROUP_APPROVAL = "approval"
-GROUP_WORKING = "working"
-GROUP_WITH_CONDUCTOR = "with_conductor"
-GROUP_WAITING = "waiting"
-GROUP_DONE = "done"
-
-
 class LedgerFacts(NamedTuple):
     """What a worker's ledger item on its root says: id, the card's line, and the
     item's own progress (``done``, ``with_conductor`` or ``""`` when it says neither).
@@ -179,7 +159,8 @@ class LedgerFacts(NamedTuple):
     An item placed on a remote crew also names that crew's instance id (``crew``),
     the ledger it sits on (``board``), its redacted title (it has no local session
     to read a title from) and the work item itself (``work_item``), which the
-    shared remote readers take."""
+    shared remote readers take. ``terminal`` says the item itself is closed
+    (accepted, rejected or abandoned); a ``done`` report alone leaves it open."""
 
     item: str = ""
     line: str = ""
@@ -188,62 +169,11 @@ class LedgerFacts(NamedTuple):
     board: str = ""
     title: str = ""
     work_item: Any = None
+    terminal: bool = False
 
 
 #: Ledger facts for a worker with no item on its root's ledger.
 NO_LEDGER = LedgerFacts()
-
-
-def _group(status: str, progress: str = "", looping: bool = False) -> str:
-    """The side panel group from real signals only.
-
-    A tool approval is ``approval``; a running turn or attached sub-agent is
-    ``working``; a closed tab, a closed ledger item, or a worker that reported
-    ``done`` is ``done``; a worker
-    that reported ``blocked`` or ``question`` (whatever its ``reason``), or one with
-    an open question card, waits on its conductor: ``with_conductor``. An idle
-    worker whose own loop will wake it (*looping*, ``ledger_wake.worker_looping``:
-    a bounded ``monitor_start`` loop waiting on CI) is still ``working``: the flow
-    runs, only the result is outside. Anything else is idle, ``waiting``: having
-    replied is not having finished.
-    """
-    if status == STATUS_NEEDS_APPROVAL:
-        return GROUP_APPROVAL
-    if status == STATUS_WORKING:
-        return GROUP_WORKING
-    if status == STATUS_CLOSED or progress == GROUP_DONE:
-        return GROUP_DONE
-    if status == STATUS_ASKING or progress == GROUP_WITH_CONDUCTOR:
-        return GROUP_WITH_CONDUCTOR
-    if looping:
-        return GROUP_WORKING
-    return GROUP_WAITING
-
-
-def _looping(key: str) -> bool:
-    """Whether *key*'s session holds a loop that will wake it, as the ledger reads it."""
-    from kiro_crew import ledger_wake
-    from kiro_crew.autonudge import get_instance
-
-    return ledger_wake.worker_looping(get_instance(), key)
-
-
-#: Report statuses that mean the worker waits on its conductor.
-_WAITING_REPORTS = frozenset({"blocked", "question"})
-
-
-def _progress_of(item: Any) -> str:
-    """``done`` / ``with_conductor`` / ``""`` from a ledger item's own fields.
-
-    A ``blocked`` or ``question`` report is the conductor's to answer whatever its
-    ``reason`` says: a ``needs_human`` reason tells the conductor to ask the person
-    in its own chat, never the side panel to show the worker as needing them.
-    """
-    if getattr(item, "is_terminal", False) or getattr(item, "status", None) == "done":
-        return GROUP_DONE
-    if getattr(item, "status", None) in _WAITING_REPORTS:
-        return GROUP_WITH_CONDUCTOR
-    return ""
 
 
 def _last_activity(row: Mapping[str, Any]) -> str:
@@ -303,6 +233,10 @@ CACHE_ROOTS = 64
 CACHE_ROOT_SESSIONS = 10_000
 #: The longest closed-worker title or agent name kept; a longer one is read each time.
 CACHE_TITLE_CHARS = 512
+#: The most closed workers one list answer carries, newest first, unless the request
+#: asks for more (``?closed_limit=``). A root's closed workers only ever grow, so the
+#: answer names how many it left out (``closed_omitted``) instead of growing with them.
+CLOSED_WORKERS_PAGE = 200
 
 
 class _Board(NamedTuple):
@@ -392,16 +326,33 @@ def _tree_epoch() -> int | None:
         return int(_tree_seen[1])
 
 
+def _created_at() -> dict[str, int]:
+    """Each session's creation time from the session tree's creation records, ``{}``
+    when the tree cannot answer. In memory."""
+    try:
+        from kiro_crew.crew_log.session_tree_projection import projection
+
+        return {slot: at for slot, (_by, at) in projection().created().items()}
+    except Exception:
+        logger.debug("crew workers: no creation times for closed workers", exc_info=True)
+        return {}
+
+
 def _closed_and_parents(
     entry: _RootCache, root: str, live_keys: frozenset[str]
 ) -> tuple[list[str], dict[str, str]]:
-    """:func:`_closed_workers` and the closed keys' ``crew_mode.persisted_parents``,
-    walked again only when the session tree or the live keys changed. In memory."""
+    """:func:`_closed_workers`, newest created first (a key with no creation record
+    last), and the closed keys' ``crew_mode.persisted_parents``, walked again only
+    when the session tree or the live keys changed. In memory."""
     epoch = _tree_epoch()
     walk = entry.walk
     if epoch is not None and walk is not None and walk[0] == epoch and walk[1] == live_keys:
         return walk[2], walk[3]
     closed = _closed_workers(root, set(live_keys))
+    if closed:
+        born = _created_at()
+        # Stable: keys created at the same time keep the walk's key order.
+        closed.sort(key=lambda key: born.get(key, 0), reverse=True)
     every = crew_mode.persisted_parents() if closed else {}
     parents = {key: every[key] for key in closed if key in every}
     if epoch is not None and len(closed) <= CACHE_ROOT_SESSIONS:
@@ -409,6 +360,20 @@ def _closed_and_parents(
     else:
         entry.walk = None
     return closed, parents
+
+
+def _closed_page(
+    closed: list[str], limit: int, parents: dict[str, str], keep: Iterable[str]
+) -> list[str]:
+    """The newest *limit* of *closed* (newest first), every closed key in *keep*, and
+    the closed leads above each of them up to the root, so a listed worker keeps its
+    lead's row however old that lead is. In memory."""
+    known, listed = set(closed), set()
+    for key in [*closed[:limit], *keep]:
+        while key in known and key not in listed:
+            listed.add(key)
+            key = parents.get(key, "")
+    return [key for key in closed if key in listed]
 
 
 def _board_reader(
@@ -611,7 +576,10 @@ def _ledger_items(root: str) -> dict[str, LedgerFacts]:
     remote: list[Any] = []
     for worker, item in _ledger_work_items(root, remote).items():
         out[worker] = LedgerFacts(
-            item.item_id, redacted(item.summary or item.title), _progress_of(item)
+            item.item_id,
+            redacted(item.summary or item.title),
+            _progress_of(item),
+            terminal=bool(getattr(item, "is_terminal", False)),
         )
     for item in remote:
         # Keyed by the item, never by the peer's slot key: that key names no
@@ -624,6 +592,7 @@ def _ledger_items(root: str) -> dict[str, LedgerFacts]:
             board=session_ledger.ledger_key(root),
             title=redacted(item.title),
             work_item=item,
+            terminal=bool(getattr(item, "is_terminal", False)),
         )
     return out
 
@@ -817,10 +786,21 @@ def _remote_facts(state: Any, remote: list[tuple[str, LedgerFacts]]) -> dict[str
 
 
 async def api_crew_workers(request: web.Request) -> web.Response:
-    """GET /api/chat/slots/{slot}/crew-workers -- one Crew Mode root's workers."""
+    """GET /api/chat/slots/{slot}/crew-workers -- one Crew Mode root's workers.
+
+    Every live worker, the newest ``closed_limit`` closed ones
+    (:data:`CLOSED_WORKERS_PAGE` by default), the closed ones with an open ledger item
+    and the closed leads of those listed (:func:`_closed_page`); ``closed_omitted``
+    counts the rest."""
     refused = await _gate(request, "crew_mode.workers")
     if refused is not None:
         return refused
+    try:
+        closed_limit = int(request.query.get("closed_limit", CLOSED_WORKERS_PAGE))
+        if closed_limit < 0:
+            raise ValueError(closed_limit)
+    except ValueError:
+        return _bad("invalid_closed_limit", "closed_limit must be a whole number, 0 or more")
     state = request.app["state"]
     root = request.match_info.get("slot", "")
     rows = await _stamped_rows(state)
@@ -871,10 +851,16 @@ async def api_crew_workers(request: web.Request) -> web.Response:
                 "approval": _approval_of(row),
             }
         )
+    # Kept whatever their age: the leads of live workers, and closed workers whose
+    # ledger item is still open (stuck work its milestone reopens), a done report
+    # awaiting acceptance included.
+    keep = [_dispatcher_of(row) for row in live]
+    keep += [k for k in closed if items.get(k, NO_LEDGER).item and not items[k].terminal]
+    shown = _closed_page(closed, closed_limit, parents, keep)
     closed_meta = await asyncio.to_thread(
-        _cached_closed_titles, cache, state, [*closed, root] if root_closed else closed, live_keys
+        _cached_closed_titles, cache, state, [*shown, root] if root_closed else shown, live_keys
     )
-    for key in closed:
+    for key in shown:
         item, line = items.get(key, NO_LEDGER)[:2]
         title, agent = closed_meta.get(key, ("", ""))
         workers.append(
@@ -914,6 +900,8 @@ async def api_crew_workers(request: web.Request) -> web.Response:
                 }
             )
     out: dict[str, Any] = {"root": root, "workers": workers}
+    if len(closed) > len(shown):
+        out["closed_omitted"] = len(closed) - len(shown)
     from kiro_crew.dashboard.handlers.crew_pause import pause_view
 
     paused = await asyncio.to_thread(pause_view, root)
@@ -1282,6 +1270,7 @@ async def api_crew_timeline(request: web.Request) -> web.Response:
         # The closed conductor's lane comes first, as a live one does.
         lanes[:0] = await asyncio.to_thread(closed_lanes, [root], "conductor")
     lanes.extend(await asyncio.to_thread(closed_lanes, closed, "worker"))
+    await asyncio.to_thread(crew_timeline.add_billed_credits, lanes, now=now)
     no_record = any(lane.get("record") is False for lane in lanes)
     live = any(lane["running"] or lane["waiting"] for lane in lanes)
     # Off the event loop like the lane derivation: pairing scans every seed

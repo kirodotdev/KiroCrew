@@ -138,6 +138,8 @@ def test_an_app_tokens_spawn_is_handed_to_the_gate_as_the_apps(sel_calls) -> Non
     kwargs = manager.spawn.call_args.kwargs
     # The gate proves a named agent is the app's own only when it is told the app.
     assert (kwargs["app"], kwargs["agent"]) == (APP, OWN_AGENT)
+    # An app's unattended run of its own agent keeps the mode the App Kit SDK passes.
+    assert kwargs["approval_mode"] == "auto"
     assert _denials(sel_calls) == []
 
 

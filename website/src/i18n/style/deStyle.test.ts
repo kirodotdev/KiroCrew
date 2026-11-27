@@ -113,8 +113,8 @@ describe('de register (style/de.md §4)', () => {
 
   /**
    * Blocks already moved to du whole, so they are held to it catalog-wide: the
-   * first screens a new user meets (setup, onboarding, import, AWS consent) and
-   * the top bar. A block joins once its last Sie value is gone.
+   * first screens a new user meets (setup, onboarding, import, AWS consent), the
+   * top bar and Settings. A block joins once its last Sie value is gone.
    */
   const DU_BLOCKS = [
     'app.',
@@ -123,6 +123,7 @@ describe('de register (style/de.md §4)', () => {
     'components.awsConsentGate.',
     'components.kiroPrerequisiteGate.',
     'components.onboardingFlow.',
+    'pages.settings.',
   ]
   // A possessive at a sentence start ("Ihre Rolle") is the formal "your" here.
   // A sentence-start "Sie" is left alone: it is just as often "it" or "they".
@@ -160,6 +161,13 @@ describe('de terminology (style/de.md §7)', () => {
     const bad = Object.keys(de)
       .filter(key => /\bturns?\b/i.test(en[key] ?? '')
         && /(?<!\p{L})(?:Zug|Zugs|Zuges|Züge|Zügen)(?!\p{L})/u.test(de[key]))
+    expect(bad, report(bad)).toEqual([])
+  })
+
+  it("renders 'colour theme' as Farb-Theme, never Farbthema", () => {
+    // The onboarding appearance step shows its description beside its
+    // "Farb-Theme" label, so a second spelling reads as a second setting.
+    const bad = Object.keys(de).filter(key => /Farbthem/i.test(de[key]))
     expect(bad, report(bad)).toEqual([])
   })
 })

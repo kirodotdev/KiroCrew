@@ -10,7 +10,9 @@ The apply reuses the MCP page's own routes, so the card writes exactly what the
 page would: ``POST /api/mcp/custom`` to add, ``PUT /api/mcp/custom/{name}`` to
 change, ``POST /api/mcp/apply`` with ``uninstall`` to remove (every file, kiro-cli's
 ``~/.kiro/settings/mcp.json`` included). An add with ``target`` ``kiro-cli`` also turns
-the page's kiro-cli toggle on (``kiroGlobal``), and the card names that file. With **Use in open chats now** checked
+the page's kiro-cli toggle on (``kiroGlobal``), and the card names that file. An add with
+``target`` ``project`` writes only the chat folder's own MCP file
+(``POST /api/mcp/project-file``), and the card names that file. With **Use in open chats now** checked
 (``use_now``, the default), ``POST /api/sessions/restart`` follows, so open chats
 load the change now; unchecked, new chats get it and open chats keep what they
 started with unless Apply restarts the broker or removes a served target. Those
@@ -25,6 +27,7 @@ reverse write could bind to.
 from __future__ import annotations
 
 import copy
+import os
 import shlex
 import urllib.parse
 from typing import Any
@@ -53,9 +56,19 @@ PARAM_USES_CHAT_FOLDER = "uses_chat_folder"
 PARAM_TARGET = "target"
 TARGET_CREW = "crew"
 TARGET_KIRO_CLI = "kiro-cli"
-TARGETS = (TARGET_CREW, TARGET_KIRO_CLI)
+#: The chat's own folder: the project MCP file its harness reads
+#: (``project_mcp_files``), and only that file. Add only.
+TARGET_PROJECT = "project"
+TARGETS = (TARGET_CREW, TARGET_KIRO_CLI, TARGET_PROJECT)
 #: The card row that names the second file an add to kiro-cli writes.
 KIRO_CLI_FILE_ROW = {"label": "Also written to", "after": "~/.kiro/settings/mcp.json"}
+#: Where a ``project`` add writes. The gateway fills both from the asking chat's live
+#: session (``request_server_page.request_page_change``), so the agent never picks
+#: them; the card shows the file, so the person approves the exact path.
+PARAM_PROJECT_FOLDER = "project_folder"
+PARAM_PROJECT_FILE = "project_file"
+#: The route a ``project`` add applies through.
+PROJECT_FILE_ROUTE = "/api/mcp/project-file"
 #: ``mcp_gateway.cwd_use`` answers (``config.integration_sections``).
 CWD_USES = "uses_cwd"
 CWD_NOT_USED = "not_used"
@@ -181,6 +194,8 @@ def params_schema() -> dict[str, Any]:
             OPTION_SHARE: {"type": "boolean"},
             PARAM_USES_CHAT_FOLDER: {"type": "boolean"},
             PARAM_TARGET: {"type": "string", "enum": list(TARGETS)},
+            PARAM_PROJECT_FOLDER: {"type": "string"},
+            PARAM_PROJECT_FILE: {"type": "string"},
         },
         "required": ["action", "server"],
         "additionalProperties": False,
@@ -200,7 +215,7 @@ def clean_params(p: dict[str, Any]) -> dict[str, Any]:
     _only(
         p,
         {"action", "server", "entry", OPTION_USE_NOW, OPTION_SHARE, PARAM_USES_CHAT_FOLDER}
-        | {PARAM_TARGET},
+        | {PARAM_TARGET, PARAM_PROJECT_FOLDER, PARAM_PROJECT_FILE},
     )
     action = p.get("action")
     if action not in ACTIONS:
@@ -211,11 +226,15 @@ def clean_params(p: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {"action": action, "server": server}
     target = p.get(PARAM_TARGET, TARGET_CREW)
     if target not in TARGETS:
-        raise _fail("invalid_param", "'target' must be crew or kiro-cli")
+        raise _fail("invalid_param", "'target' must be crew, kiro-cli or project")
     if target != TARGET_CREW and action != ACTION_ADD:
         raise _fail("invalid_param", "'target' is only for adding a server")
     if target != TARGET_CREW:
         out[PARAM_TARGET] = target
+    if target == TARGET_PROJECT:
+        out.update(_clean_project_place(p))
+    elif PARAM_PROJECT_FOLDER in p or PARAM_PROJECT_FILE in p:
+        raise _fail("invalid_param", "a project folder is only for target 'project'")
     entry = p.get("entry")
     if action == ACTION_REMOVE:
         if entry is not None:
@@ -257,6 +276,29 @@ def clean_params(p: dict[str, Any]) -> dict[str, Any]:
             )
         out[PARAM_USES_CHAT_FOLDER] = uses_folder
     return out
+
+
+def _clean_project_place(p: dict[str, Any]) -> dict[str, str]:
+    """The ``project`` add's folder and file, checked. Raises ``CardCatalogError``.
+
+    The folder is an absolute path and the file is one of the project MCP files
+    (:data:`kiro_crew.project_mcp_files.PROJECT_MCP_FILES`). Whether the folder
+    exists is the route's question at Apply, when it writes.
+    """
+    from kiro_crew.change_card_catalog_kinds import _fail
+    from kiro_crew.project_mcp_files import PROJECT_MCP_FILES
+
+    folder, name = p.get(PARAM_PROJECT_FOLDER), p.get(PARAM_PROJECT_FILE)
+    if not isinstance(folder, str) or not os.path.isabs(folder) or "\x00" in folder:
+        raise _fail("invalid_param", "a project add needs the chat's folder")
+    if name not in PROJECT_MCP_FILES:
+        raise _fail("invalid_param", "a project add writes .kiro/settings/mcp.json or .mcp.json")
+    return {PARAM_PROJECT_FOLDER: os.path.normpath(folder), PARAM_PROJECT_FILE: name}
+
+
+def project_file_path(p: dict[str, Any]) -> str:
+    """The file a ``project`` add writes: its folder joined with its file name."""
+    return os.path.join(p[PARAM_PROJECT_FOLDER], p[PARAM_PROJECT_FILE])
 
 
 def _share_steps(
@@ -411,6 +453,9 @@ def build_preview(p: dict[str, Any], snapshot: dict[str, Any], out: dict[str, An
 
     action, name = p["action"], p["server"]
     stored = snapshot.get("entry") if isinstance(snapshot.get("entry"), dict) else None
+    if p.get(PARAM_TARGET) == TARGET_PROJECT:
+        _build_project_preview(p, snapshot, out)
+        return
     if action == ACTION_ADD:
         if snapshot.get("exists"):
             raise _fail("already_exists", f"an MCP server '{name}' already exists")
@@ -468,5 +513,49 @@ def build_preview(p: dict[str, Any], snapshot: dict[str, Any], out: dict[str, An
     if p.get(OPTION_USE_NOW, True) or unshares:
         apply.append(step("POST", "/api/sessions/restart", {}))
     out["title"] = _TITLES[action].format(name=name)
+    out["changes"] = rows
+    out["apply"] = apply
+
+
+def _build_project_preview(
+    p: dict[str, Any], snapshot: dict[str, Any], out: dict[str, Any]
+) -> None:
+    """The ``project`` add: one entry in the chat folder's own MCP file, nothing else.
+
+    The server goes only into that file, not onto the MCP page, so it reaches the
+    sessions that start in that folder and nowhere else; nothing is shared. The
+    file the snapshot read (``project``: ``exists``, ``corrupt``, ``has_server``)
+    decides whether the add can apply.
+    """
+    from kiro_crew.change_card_catalog_kinds import RISK_CODE_EXEC, _fail
+    from kiro_crew.change_card_catalog_plans import step
+    from kiro_crew.dashboard.handlers.mcp_custom import _clean_spec
+
+    name = p["server"]
+    read = snapshot.get("project")
+    project: dict[str, Any] = read if isinstance(read, dict) else {}
+    if project.get("corrupt"):
+        raise _fail(
+            "not_editable",
+            f"{project_file_path(p)} is not a JSON object with mcpServers, or is a link; "
+            "ask the user to fix the file, or use target 'crew'",
+        )
+    if project.get("has_server"):
+        raise _fail("already_exists", f"'{name}' is already in {project_file_path(p)}")
+    rows = entry_rows(None, _clean_spec(p["entry"]))
+    # Where the press writes: the chat's folder, and the file inside it.
+    rows.append({"label": "Folder", "after": p[PARAM_PROJECT_FOLDER]})
+    rows.append({"label": "File", "after": p[PARAM_PROJECT_FILE]})
+    body = {
+        "folder": p[PARAM_PROJECT_FOLDER],
+        "file": p[PARAM_PROJECT_FILE],
+        "name": name,
+        "spec": p["entry"],
+    }
+    apply = [step("POST", PROJECT_FILE_ROUTE, body)]
+    if p.get(OPTION_USE_NOW, True):
+        apply.append(step("POST", "/api/sessions/restart", {}))
+    out["risk"] = RISK_CODE_EXEC
+    out["title"] = _TITLES[ACTION_ADD].format(name=name)
     out["changes"] = rows
     out["apply"] = apply

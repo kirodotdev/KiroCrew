@@ -64,6 +64,94 @@ class TestLogout:
         assert req.get_header("X-local-secret") == "test-secret"
         assert capsys.readouterr().out == "✅ All dashboard sessions revoked.\n"
 
+    def test_logout_link_sends_only_that_link(self, monkeypatch, capsys):
+        """``kirocrew logout --link`` names the link in the body; without it the body is empty."""
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
+        )
+
+        from kiro_crew.cli_server import _logout
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"ok": true, "scope": "link"}'
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        link = "http://127.0.0.1:5476?token=abc.def"
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp) as opener:
+            _logout(5476, link)
+        assert opener.call_args.args[0].full_url == "http://127.0.0.1:5476/api/logout/link"
+        assert json.loads(opener.call_args.args[0].data) == {"link": link}
+        assert capsys.readouterr().out == "✅ That link and every session it opened are revoked.\n"
+
+    @pytest.mark.parametrize(
+        "status, body",
+        [(404, b""), (403, b'{"error": "Token required", "code": "forbidden"}')],
+        ids=["router-404", "token-gate-403"],
+    )
+    def test_an_older_gateway_refuses_the_link_route_and_nothing_is_revoked(
+        self, monkeypatch, capsys, status, body
+    ):
+        """A gateway that predates ``--link`` has no ``/api/logout/link``: its router
+        answers 404, or its token gate refuses the unknown path first. Nothing changed."""
+        import io
+
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
+        )
+
+        from kiro_crew.cli_server import _logout
+
+        refusal = urllib.error.HTTPError(None, status, "refused", {}, io.BytesIO(body))
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=refusal):
+            with pytest.raises(SystemExit) as exited:
+                _logout(5476, "http://127.0.0.1:5476?token=abc.def")
+        assert exited.value.code == 1
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert "predates `kirocrew logout --link`, so nothing was revoked" in err
+        assert "kirocrew restart" in err
+
+    def test_plain_logout_sends_a_body_with_no_link_key(self, monkeypatch, capsys):
+        """No ``--link`` is its own ask: the body names no link, so all sessions end."""
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
+        )
+
+        from kiro_crew.cli_server import _logout
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"ok": true}'
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp) as opener:
+            _logout(5476)
+        assert json.loads(opener.call_args.args[0].data) == {}
+        assert capsys.readouterr().out == "✅ All dashboard sessions revoked.\n"
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+    def test_a_blank_link_is_refused_before_anything_is_sent(self, monkeypatch, capsys, blank):
+        """``--link ""`` names no link, so it must NOT widen into the revoke-all.
+
+        The refusal comes before the secret is read and before any connection is
+        opened, so nothing reaches the gateway that it could act on.
+        """
+
+        def _must_not_read(_port, **_kw):
+            raise AssertionError("the blank link must be refused before the secret is read")
+
+        monkeypatch.setattr("kiro_crew.cli_server.read_local_secret", _must_not_read)
+
+        from kiro_crew.cli_server import _logout
+
+        with patch("kiro_crew.cli_server.loopback_urlopen") as opener:
+            with pytest.raises(SystemExit) as exited:
+                _logout(5476, blank)
+        assert exited.value.code == 1
+        opener.assert_not_called()
+        assert "--link needs a dashboard link or its token" in capsys.readouterr().err
+
     def test_logout_gateway_not_running(self, tmp_path, monkeypatch):
         """Missing secret file means gateway not running."""
         monkeypatch.setattr("kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "")
@@ -98,11 +186,12 @@ class TestLogout:
         assert capsys.readouterr().err == "❌ Failed to revoke sessions: HTTP 403\n"
 
     @staticmethod
-    async def _logout_against_the_real_route(monkeypatch, *, server_secret, cli_secret):
+    async def _logout_against_the_real_route(monkeypatch, *, server_secret, cli_secret, link=None):
         """Serve the real ``api_logout`` on loopback and run ``kirocrew logout`` at it.
 
         ``_logout`` blocks, so it runs on a worker thread while this loop serves
-        the request; its ``SystemExit`` comes back through the await.
+        the request; its ``SystemExit`` comes back through the await. Returns the
+        exit code, or ``None`` when ``_logout`` returned without exiting.
         """
         from aiohttp import web
         from aiohttp.test_utils import TestServer
@@ -117,10 +206,35 @@ class TestLogout:
         app = web.Application()
         app["local_secret"] = server_secret
         app.router.add_post("/api/logout", core.api_logout)
+        app.router.add_post("/api/logout/link", core.api_logout_link)
         async with TestServer(app, host="127.0.0.1") as server:
-            with pytest.raises(SystemExit) as exited:
-                await asyncio.to_thread(_logout, int(server.port))
-        return exited.value.code
+            try:
+                await asyncio.to_thread(_logout, int(server.port), link)
+            except SystemExit as exited:
+                return exited.code
+        return None
+
+    @pytest.mark.asyncio
+    async def test_logout_link_against_the_real_route_names_only_that_link(
+        self, monkeypatch, capsys
+    ):
+        """The route answers ``scope: link``, so the CLI prints the one-link success line."""
+        revoke_all = AsyncMock()
+        revoke_family = MagicMock(return_value=True)
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions_async", revoke_all)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth_tokens.revoke_token_family", revoke_family
+        )
+        code = await self._logout_against_the_real_route(
+            monkeypatch,
+            server_secret="the-secret",
+            cli_secret="the-secret",
+            link="http://127.0.0.1:5476/?token=abc.def",
+        )
+        assert code is None
+        assert capsys.readouterr().out == "✅ That link and every session it opened are revoked.\n"
+        revoke_family.assert_called_once_with("abc.def")
+        revoke_all.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_an_unpersisted_revocation_says_the_logout_did_not_happen(
@@ -154,6 +268,89 @@ class TestLogout:
         assert code == 1
         assert capsys.readouterr().err == "❌ Failed to revoke sessions: HTTP 403: invalid secret\n"
         revoke.assert_not_called()
+
+    @staticmethod
+    async def _post_logout_body(monkeypatch, body: bytes | None, path: str = "/api/logout/link"):
+        """Serve the real logout routes on loopback and POST *body* at *path*.
+
+        The raw body goes straight at the route rather than through ``_logout``,
+        because the CLI cannot express a non-string ``link`` and the route has to
+        refuse one anyway. Returns ``(status, parsed body)``.
+        """
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.handlers import core
+
+        monkeypatch.setattr(core, "_sel", MagicMock)
+        app = web.Application()
+        app["local_secret"] = "the-secret"
+        app.router.add_post("/api/logout", core.api_logout)
+        app.router.add_post("/api/logout/link", core.api_logout_link)
+        async with TestClient(TestServer(app, host="127.0.0.1")) as client:
+            resp = await client.post(path, data=body, headers={"X-Local-Secret": "the-secret"})
+            return resp.status, await resp.json()
+
+    @pytest.mark.parametrize("link", ["", "   ", "\t\n", 5, None, ["a"]])
+    @pytest.mark.asyncio
+    async def test_a_link_key_that_names_nothing_revokes_nothing(self, monkeypatch, link):
+        """A supplied-but-unusable ``link`` is a 400 on the link route, never a revoke-all."""
+        revoke = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions_async", revoke)
+        status, body = await self._post_logout_body(
+            monkeypatch, json.dumps({"link": link}).encode()
+        )
+        assert (status, body["code"]) == (400, "invalid_link")
+        revoke.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "raw_body",
+        [b'{"link":"url"', b"[]", b'"url"', b"42", b"null", b"true", b" \t\n", b"\xff"],
+        ids=["malformed", "list", "string", "number", "null", "boolean", "whitespace", "encoding"],
+    )
+    @pytest.mark.asyncio
+    async def test_an_invalid_logout_body_revokes_nothing(self, monkeypatch, raw_body):
+        """A link route body that names no link is refused; nothing is revoked."""
+        revoke_all = AsyncMock()
+        revoke_family = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions_async", revoke_all)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth_tokens.revoke_token_family", revoke_family
+        )
+        status, body = await self._post_logout_body(monkeypatch, raw_body)
+        revoke_all.assert_not_called()
+        revoke_family.assert_not_called()
+        assert (status, body["code"]) == (400, "invalid_link")
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_link_url_revokes_nothing(self, monkeypatch):
+        """A URL parser refusal is an invalid link, not an internal server error."""
+        revoke_all = AsyncMock()
+        revoke_family = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions_async", revoke_all)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth_tokens.revoke_token_family", revoke_family
+        )
+        status, body = await self._post_logout_body(
+            monkeypatch, b'{"link": "http://[::1/?token=x"}'
+        )
+        revoke_all.assert_not_called()
+        revoke_family.assert_not_called()
+        assert (status, body["code"]) == (400, "invalid_link")
+
+    @pytest.mark.parametrize(
+        "raw_body",
+        [None, b"", b"{}", b'{"other": "value"}'],
+        ids=["absent", "empty", "empty-object", "unrelated-key"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_body_with_no_link_key_still_revokes_every_session(self, monkeypatch, raw_body):
+        """Plain ``/api/logout`` keeps its meaning whatever the body: end every session."""
+        revoke = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions_async", revoke)
+        status, body = await self._post_logout_body(monkeypatch, raw_body, path="/api/logout")
+        assert (status, body) == (200, {"ok": True})
+        revoke.assert_awaited_once()
 
     def test_logout_connection_error(self, tmp_path, monkeypatch):
         """Connection error means gateway not running."""

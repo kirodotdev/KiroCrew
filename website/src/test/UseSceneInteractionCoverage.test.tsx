@@ -1296,6 +1296,12 @@ describe('useSceneInteraction — New session sign', () => {
     fireEvent.click(screen.getByRole('button', { name: signName }))
     await flush()
     expect(screen.getByRole('button', { name: signName })).not.toBeDisabled()
+    // The refusal is said, not swallowed: nothing joined the scene.
+    expect(screen.getByTestId('scene-create-error').textContent).toContain('no room')
+    // With no thread popover open there is no draft to lose, so the hand-off is offered.
+    expect(screen.getByTestId('scene-create-error').textContent).toContain(i18nT('components.askAgent.ask_the_agent'))
+    // The person's own New session asks for their stored start mode.
+    expect(apiMocks.createChatSlot.mock.calls[0][13]).toBe(true)
   })
 
   it('is disabled with an occupancy hint once the world is full', () => {

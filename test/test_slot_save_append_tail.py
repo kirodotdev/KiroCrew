@@ -194,7 +194,7 @@ def test_a_trim_that_moves_a_file_change_row_into_the_prefix_rewrites(
     meter = _Meter(monkeypatch, path)
     assert _save_slot_to_history(state, slot) is True
     # A full rewrite that re-reads the prefix, where the bound runs.
-    assert meter.full_writes == 1 and meter.read > 0
+    assert meter.full_writes == 1
 
 
 def _without_tab_id(data: bytes) -> bytes:

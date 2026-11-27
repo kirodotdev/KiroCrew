@@ -33,6 +33,7 @@ export interface BotChannelConfigData {
   /** Progress-display config (optional; only Discord sends these). */
   reactions_enabled?: boolean
   show_thinking?: boolean
+  show_timing_footer?: boolean
   soft_threshold_pct: number
   /** Spoken answers (optional; only channels declaring `voiceReplies` send it). */
   voice_replies?: boolean
@@ -85,6 +86,7 @@ export interface BotChannelConfigSave {
   /** Progress-display config (optional; only Discord sends these). */
   reactions_enabled?: boolean
   show_thinking?: boolean
+  show_timing_footer?: boolean
   soft_threshold_pct: number
   voice_replies?: boolean
   allow_forum?: boolean
@@ -123,6 +125,8 @@ export interface BotChannelSpec {
   guideTitle?: string
   /** Primary guide-card button: label + href. */
   guideLink: { label: string; href: string }
+  /** Optional block under the guide-card buttons (Discord: the bot's invite links). */
+  guideExtra?: ReactNode
   /** Secret field labels. */
   tokenDescription: string
   tokenPlaceholder: string
@@ -255,9 +259,10 @@ export interface BotChannelSpec {
   }
   /**
    * Optional progress-display toggles rendered in the Behavior card: how much of
-   * a running turn the channel shows (the phase-reaction ladder, and whether the
-   * model's reasoning is surfaced). Channels that omit it are unaffected and
-   * never send ``reactions_enabled`` or ``show_thinking``.
+   * a running turn the channel shows (the phase-reaction ladder, whether the
+   * model's reasoning is surfaced, and the timing line under each reply). Channels
+   * that omit it are unaffected and never send ``reactions_enabled``,
+   * ``show_thinking`` or ``show_timing_footer``.
    */
   progressDisplay?: {
     reactionsLabel: string
@@ -268,6 +273,10 @@ export interface BotChannelSpec {
     thinkingDescription: string
     /** Config path the thinking toggle writes, for `<SettingRef>` deep-links. */
     thinkingConfigKey: string
+    footerLabel: string
+    footerDescription: string
+    /** Config path the timing-footer toggle writes, for `<SettingRef>` deep-links. */
+    footerConfigKey: string
   }
   /**
    * Optional SDK extra. Present only for a channel whose client library ships
@@ -299,6 +308,7 @@ type Draft = {
   auto_thread: boolean
   reactions_enabled: boolean
   show_thinking: boolean
+  show_timing_footer: boolean
   soft_threshold_pct: string
   voice_replies: boolean
   allow_forum: boolean
@@ -329,6 +339,8 @@ function draftFrom(c: BotChannelConfigData): Draft {
     // Default OFF, so `!!` is the faithful read here: reasoning stays private
     // until someone asks for it.
     show_thinking: !!c.show_thinking,
+    // Default ON like the backend, for the reason `auto_thread` gives.
+    show_timing_footer: c.show_timing_footer ?? true,
     soft_threshold_pct: String(c.soft_threshold_pct),
     voice_replies: !!c.voice_replies,
     allow_forum: !!c.allow_forum,
@@ -572,6 +584,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
     if (spec.progressDisplay) {
       payload.reactions_enabled = draft.reactions_enabled
       payload.show_thinking = draft.show_thinking
+      payload.show_timing_footer = draft.show_timing_footer
     }
     payload.session_folder = savedSessionFolder(draft, spec.name)
     if (botClear) payload.bot_token_clear = true
@@ -661,6 +674,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               {i18nT('pages.settings.botChannelPanel.setup_guide')} <ExternalLink size={13} />
             </a>
           </div>
+          {spec.guideExtra}
         </SettingsCard>
       </SettingsSection>
 
@@ -928,6 +942,14 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
                 configKey={spec.progressDisplay.thinkingConfigKey}
                 checked={draft.show_thinking}
                 onChange={v => upd({ show_thinking: v })}
+                disabled={ro}
+              />
+              <SettingsToggle
+                label={spec.progressDisplay.footerLabel}
+                hint={spec.progressDisplay.footerDescription}
+                configKey={spec.progressDisplay.footerConfigKey}
+                checked={draft.show_timing_footer}
+                onChange={v => upd({ show_timing_footer: v })}
                 disabled={ro}
               />
             </>

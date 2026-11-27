@@ -27,6 +27,12 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
     "xfce4-terminal",
 )
 
+# The values ``dashboard.default_approval_mode`` takes: the mode a plain chat the
+# owner starts from the dashboard opens on (``dashboard.chat_default_mode``).
+# ``trust`` is deliberately absent (rfc-default-approval-mode section 6), and
+# ``yolo`` is process-wide, never one chat's start mode.
+DEFAULT_APPROVAL_MODES: tuple[str, ...] = ("normal", "trust_reads")
+
 # The local editors the Markdown panel's "Open in <editor>" row can target
 # (``dashboard.remote_editor.editor``). Each id is the URL scheme of an editor
 # that keeps the ``vscode-remote`` authority, so the row's link is
@@ -56,6 +62,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     # and every permissions.browser verb.
     "app_browser_sdk",
     "artifact_deploy",
+    "bot_chat_app_tools",
     "bridge_approvals",
     "chat_runtime_sharing",
     # Has server behavior: kiro_crew.connected_computers.flag gates enrollment,
@@ -236,6 +243,33 @@ class DashboardConfig:
             restart=True,
         ),
     )
+    entry_port: int = field(
+        default=0,
+        metadata=_meta(
+            "Entry Port",
+            "Off at 0. From 1024 to 65535: also listen at this port on both loopback "
+            "addresses (127.0.0.1 and ::1; the bind address is not configurable), "
+            "for a reverse proxy on this computer that forwards callers on other "
+            "machines. The port serves the Crew API only, reads no cookie, never "
+            "treats a request as a direct local request (it always counts as "
+            "forwarded by the proxy) and refuses Owner routes. "
+            "The proxy must send a Host naming 127.0.0.1, [::1] or localhost; a "
+            "request to a Crew API route with any other Host is refused with 400. "
+            "A computer with no IPv6 loopback serves 127.0.0.1 alone. An integer that is "
+            "neither 0 nor 1024 to 65535, or that equals the gateway's own port or "
+            "dashboard.shared_crew.ssm_port while the SSM listener is on, stops the "
+            "start of the regular or headless kirocrew gateway (EntryPortError), as "
+            "does a port that cannot be bound. The "
+            "API-only server (--slack-only) does not check the value: it logs a "
+            "warning and starts. "
+            'Shared config validation replaces wrong-typed values (8443.5, "abc", '
+            "true, null) with 0, so the entry port stays off, and logs "
+            "Config: type mismatch at 'dashboard.entry_port': ...; using default. "
+            'Legacy numeric handling coerces "8443" and 8443.0 to integer 8443, '
+            "so the port opens if it can be bound.",
+            restart=True,
+        ),
+    )
     tailscale: TailscaleConfig = field(
         default_factory=TailscaleConfig,
         metadata=_meta(
@@ -280,6 +314,31 @@ class DashboardConfig:
             "Repeat reads of one secret by one caller share a row per 10 minutes, which "
             "counts them. Off by default. Takes effect on the next read; no restart (within "
             "30 seconds in the MCP gateway process).",
+        ),
+    )
+    sessionless_internal_calls: str = field(
+        default="log",
+        metadata=_meta(
+            "Session-less internal calls",
+            "What the gateway does with an internal call that names no session and comes "
+            "from a process it cannot place outside the agent sandbox. 'log' admits it and "
+            "writes a security log row (one per caller and path every 10 minutes); "
+            "'enforce' refuses it. Stays 'log' until the log shows no Kiro Crew tool of "
+            "this shape. Takes effect on the next call; no restart.",
+            enum=["log", "enforce"],
+        ),
+    )
+    unattested_session_keys: str = field(
+        default="log",
+        metadata=_meta(
+            "Unattested session-key internal calls",
+            "What the gateway does with an internal call over loopback TCP that declares "
+            "a session key no transport can prove is the caller's own (no kernel peer "
+            "attestation and no valid session token). 'log' (today's behavior) records the "
+            "request and answers it as before; 'enforce' refuses it with 403. A blank key "
+            "and 'dashboard:ui' are exempt. Stays 'log' until the log shows which callers "
+            "would be refused. Takes effect on the next call; no restart.",
+            enum=["log", "enforce"],
         ),
     )
     turn_cache_estimate: bool = field(
@@ -562,6 +621,18 @@ class DashboardConfig:
             "'temporary' neither reads nor writes. Explicit per-session choices "
             "still win.",
             enum=["persistent", "incognito", "temporary"],
+        ),
+    )
+    default_approval_mode: str = field(
+        default="normal",
+        metadata=_meta(
+            "New chats start on",
+            "Approval mode a plain chat you start from the dashboard opens on: "
+            "'normal' asks before each tool; 'trust_reads' runs read-only tools "
+            "and read-only shell commands without asking. Crewmates, channels, "
+            "schedules and agents keep their own settings, and the approval-modes "
+            "policy can hold a chat on 'normal'.",
+            enum=list(DEFAULT_APPROVAL_MODES),
         ),
     )
     new_chat_crew_mode: bool = field(
@@ -1113,6 +1184,15 @@ class DashboardConfig:
             "are not affected.",
         ),
     )
+    expand_linked_items: bool = field(
+        default=False,
+        metadata=_meta(
+            "Show Linked Items Expanded",
+            "Start each session card with its linked pull requests and issues "
+            "shown under it. Pressing the count on a card still folds or opens "
+            "that card.",
+        ),
+    )
     command_bar_enabled: bool = field(
         default=True,
         metadata=_meta(
@@ -1160,10 +1240,11 @@ class DashboardConfig:
             "Sidebar Session Order",
             "How the chat sidebar orders sessions: 'date-desc' / 'date-asc' by last "
             "activity, 'created-desc' / 'created-asc' by creation time, 'name-asc' / "
-            "'name-desc' by title, 'manual' in the order the user drags them into. A "
-            "view preference only; pinned sessions keep their own order. Stored here "
-            "(not only in the browser) so the choice follows the user across browsers "
-            "and the desktop app.",
+            "'name-desc' by title, 'manual' in the order the user drags them into, "
+            "'active-then-date' with running sessions first and then the rest, each "
+            "part by last activity, newest first. A view preference only; pinned "
+            "sessions keep their own order. Stored here (not only in the browser) so "
+            "the choice follows the user across browsers and the desktop app.",
             enum=[
                 "date-desc",
                 "date-asc",
@@ -1172,6 +1253,7 @@ class DashboardConfig:
                 "name-asc",
                 "name-desc",
                 "manual",
+                "active-then-date",
             ],
         ),
     )

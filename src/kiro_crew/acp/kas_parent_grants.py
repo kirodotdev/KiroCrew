@@ -113,7 +113,7 @@ _WHOLE_TOOL = {
 #: ``ScriptHook`` fields that name a hook or record its last runs. Every other
 #: field decides whether the hook runs or what it stops.
 _HOOK_NAMING_FIELDS = frozenset(
-    {"id", "name", "last_run", "last_status", "last_error", "run_count"}
+    {"id", "name", "spec_name", "last_run", "last_status", "last_error", "run_count"}
 )
 #: What decides which process or endpoint an MCP server entry is.
 _LAUNCH_KEYS = ("type", "command", "args", "env", "url", "headers")
@@ -245,10 +245,12 @@ def _specs_of(agent: str, key: str, run_cwd: str = "") -> list[dict[str, Any]]:
 
 def _rules(spec: dict[str, Any], *effects: str) -> list[Any]:
     """The rules of *spec*'s own ``permissions`` block with one of *effects*; none
-    when KAS would refuse the block whole."""
+    when KAS would refuse the block whole. A ``policies`` bundle leaves out the
+    ``allow`` rules beside it, as the projection does."""
+    from kiro_crew.acp.kas_policy_bundle import without_policy_bundle
     from kiro_crew.agent_sdk.kas_tool_view import permissions_block_readable
 
-    block = spec.get("permissions")
+    block = without_policy_bundle(spec.get("permissions"))
     if not isinstance(block, dict) or not permissions_block_readable(block):
         return []
     return [

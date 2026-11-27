@@ -140,6 +140,7 @@ class AcpRuntime:
     _session_work_dir = _rt_setup._session_work_dir
     _refuse_if_loader_unreachable = _rt_setup._refuse_if_loader_unreachable
     _refuse_over_ceiling_start = _rt_setup._refuse_over_ceiling_start
+    _hold_project_servers = _rt_setup._hold_project_servers
     _start_launch_name = _rt_setup._start_launch_name
     _kas_custom_agents = _rt_setup._kas_custom_agents
     _mount_member_panel = _rt_setup._mount_member_panel
@@ -280,6 +281,7 @@ class AcpRuntime:
     _reader_loop = _rt_reader._reader_loop
     _route_owned_child_frame = _rt_reader._route_owned_child_frame
     _notification_aliases = _rt_reader._notification_aliases
+    _follow_shared_model_picker = _rt_reader._follow_shared_model_picker
     # A remote session's workspace: ``kiro_crew.acp.runtime_remote_workspace``.
     _close_remote_workspace = _rt_remote._close_remote_workspace
     set_remote_workspace = _rt_remote.set_remote_workspace
@@ -407,6 +409,10 @@ class AcpRuntime:
         # declared ``secretStorage`` (``agent.kas_persist_mcp_sign_in``); None
         # otherwise, and those requests then get -32601. Set at each handshake.
         self._mcp_secret_server: kas_secret_storage.SecretStorageServer | None = None
+        # Per MCP OAuth client (url, client id), the digest (never the value) of the
+        # last secret this process's engine took through ``setClientSecret``
+        # (``kas_client_secret``). Reset at each handshake.
+        self._mcp_prereg_sent: dict[tuple[str, str], str] = {}
         # Set for a remote session: built-in file/shell tools give way to the workspace server.
         self._remote_workspace: Any = None
         # First answered credential callback per runtime is logged at INFO as a
@@ -435,7 +441,7 @@ class AcpRuntime:
         # so the chat withdraws the dead link -- see set_mcp_sign_in_ended_hook.
         self._mcp_sign_in_ended_hooks: dict[str, Callable[[str], None]] = {}
         if model is not None:
-            if not MODEL_ID_RE.match(model):
+            if not MODEL_ID_RE.fullmatch(model):
                 raise ValueError(
                     f"Invalid model identifier: {model!r} — must match "
                     f"^[a-zA-Z0-9][a-zA-Z0-9._-]{{0,127}}$"
@@ -698,6 +704,10 @@ class AcpRuntime:
         # descendant survived. Consumers use it to decide whether a work
         # directory is safe to reclaim.
         self._process_tree_confirmed_dead = False
+        # The PIDs the last kill could not show gone, re-checked by a later evict.
+        self._unreaped_pids: tuple[int, ...] = ()
+        # The Windows tree cleanup a kill left pending, retired once drained.
+        self._windows_cleanup_receipt: object | None = None
         self._death_summary: str | None = None
         # The composed summary's parts, so the post-reap amendment rebuilds the
         # line instead of editing its text -- a tail carrying this format's own

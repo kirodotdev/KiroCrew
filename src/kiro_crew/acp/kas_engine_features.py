@@ -12,13 +12,19 @@ what it was before the flag existed, so an older engine sees no difference.
   :func:`carry_oauth`: ``clientId``, ``redirectUri`` and ``oauthScopes``.
   ``clientMetadataUrl`` is not sent, so the engine keys every url entry's grant
   ``<url>|``, the one key :mod:`kiro_crew.mcp_grant_kas` reads.
-  ``clientSecret`` is never sent over ACP: no engine accepts it,
-  and older ones keep the raw ``customAgents`` payload in their session file. A
-  block that carries one names a confidential client the engine cannot use, so
-  that block is withheld whole, and so is one that keeps nothing Crew can send
-  (only a ``clientMetadataUrl``). :func:`~kiro_crew.mcp_oauth_projection.wire_oauth`
-  is what Crew sends, read by this projection and the session notice alike.
-  :func:`engine_discards_oauth` says when Crew knows the engine is the older kind.
+  ``clientSecret`` is never sent in the block: KAS strips it from config on
+  purpose, and older engines keep the raw ``customAgents`` payload in their
+  session file. A block that carries one names a confidential client. On an
+  engine without :data:`MCP_OAUTH_CLIENT_SECRET` it is withheld whole, and so is
+  one that keeps nothing Crew can send (only a ``clientMetadataUrl``).
+  :func:`~kiro_crew.mcp_oauth_projection.wire_oauth` is what Crew sends, read by
+  this projection and the session notice alike. :func:`engine_discards_oauth`
+  says when Crew knows the engine is the older kind.
+- :data:`MCP_OAUTH_CLIENT_SECRET`: the engine takes a confidential client's
+  secret through ``_kiro/mcp/oauth/setClientSecret`` (KAS 0.66.135, announced
+  only to a client that declared ``secretStorage``). The session's own agent then
+  gets its block without the secret, and the secret goes to that request after
+  ``session/new`` or ``session/load`` (:mod:`kiro_crew.acp.kas_client_secret`).
 - :data:`MCP_REGISTRY_POINTERS`: a ``{"type": "registry"}`` pointer survives both
   ``customAgents`` and the session ``mcpServers`` array (as ``_meta.kiro.type``).
   Crew then sends a user entry that carries the registry marker as a pointer
@@ -37,8 +43,10 @@ from typing import Any
 
 from kiro_crew.mcp_cleanup import MCP_REGISTRY_TYPE
 from kiro_crew.mcp_oauth_projection import (
+    CLIENT_SECRET_KEY,
     OAUTH_SCOPES_KEY,
     names_client_secret,
+    sends_with_secret,
     wire_oauth,
     wire_scopes,
 )
@@ -48,7 +56,10 @@ from kiro_crew.mcp_oauth_projection import (
 MCP_SERVER_OAUTH = "mcpServerOAuth"
 #: ``agentCapabilities._meta.kiro`` flag: registry pointers survive the wire.
 MCP_REGISTRY_POINTERS = "mcpRegistryPointers"
-_KNOWN = (MCP_SERVER_OAUTH, MCP_REGISTRY_POINTERS)
+#: ``agentCapabilities._meta.kiro`` flag: the engine serves
+#: ``_kiro/mcp/oauth/setClientSecret``, so a confidential client can sign in.
+MCP_OAUTH_CLIENT_SECRET = "mcpOAuthClientSecret"
+_KNOWN = (MCP_SERVER_OAUTH, MCP_REGISTRY_POINTERS, MCP_OAUTH_CLIENT_SECRET)
 
 #: First engine release that keeps a ``customAgents`` server's ``oauth`` block.
 OAUTH_MIN_ENGINE_VERSION: tuple[int, int, int] = (0, 66, 104)
@@ -110,7 +121,12 @@ def advertised_by(handle: object) -> frozenset[str]:
 
 
 def carry_oauth(
-    projected: dict[str, Any], *, agent_id: str, name: str, logger: logging.Logger
+    projected: dict[str, Any],
+    *,
+    agent_id: str,
+    name: str,
+    logger: logging.Logger,
+    prereg_out: dict[str, str] | None = None,
 ) -> None:
     """Narrow *projected*'s ``oauth`` block to what the engine accepts over ACP.
 
@@ -119,23 +135,30 @@ def carry_oauth(
     top-level list exactly as kiro-cli reads it. Everything else in the block is
     dropped.
 
-    A block with a ``clientSecret`` names a confidential client. The engine
-    exchanges the code with PKCE and no secret, so that client cannot finish a
+    A block with a ``clientSecret`` names a confidential client. With
+    *prereg_out* (the session's own agent on an engine that announced
+    :data:`MCP_OAUTH_CLIENT_SECRET`) and a ``clientId`` in the block, the block is
+    sent without the secret and the secret is put in *prereg_out* under
+    *name*, for ``_kiro/mcp/oauth/setClientSecret``. Otherwise the engine would
+    exchange the code with PKCE and no secret, so that client cannot finish a
     sign-in there, and its ``clientId`` would stop the engine's own registration
-    for a server that offers it. Such a block is withheld whole, with one log line
+    for a server that offers it: the block is withheld whole, with one log line
     naming the field, never its value.
     """
     oauth = projected.pop("oauth", None)
     if not isinstance(oauth, Mapping):
         return
     if names_client_secret(oauth):
-        logger.info(
-            "agent %r: MCP server %r: its oauth block names a clientSecret, which this "
-            "backend cannot use, so the block is not sent",
-            agent_id,
-            name,
-        )
-        return
+        if prereg_out is None or not sends_with_secret(oauth):
+            logger.info(
+                "agent %r: MCP server %r: its oauth block names a clientSecret, which this "
+                "backend cannot use, so the block is not sent",
+                agent_id,
+                name,
+            )
+            return
+        prereg_out[name] = oauth[CLIENT_SECRET_KEY]
+        oauth = {k: v for k, v in oauth.items() if k != CLIENT_SECRET_KEY}
     kept, nested = wire_oauth(oauth)
     if nested is not None:
         projected[OAUTH_SCOPES_KEY] = nested

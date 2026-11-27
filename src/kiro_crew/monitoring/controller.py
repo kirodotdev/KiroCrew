@@ -11,11 +11,13 @@ from typing import Any, Protocol
 
 from kiro_crew import autonudge_provider_trust
 from kiro_crew.dashboard.state import MONITOR_WAKE_PREFIX
+from kiro_crew.monitoring.also_wake import honoured_also_wake_claim, open_also_wake_targets
 from kiro_crew.monitoring.azure_devops_pull_request import AzureDevOpsPullRequestProvider
 from kiro_crew.monitoring.bitbucket_pull_request import BitbucketPullRequestProvider
-from kiro_crew.monitoring.decision import monitor_budget_reason
+from kiro_crew.monitoring.decision import monitor_budget_note, monitor_budget_reason
 from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProvider
 from kiro_crew.monitoring.gitlab_merge_request import GitLabMergeRequestProvider
+from kiro_crew.monitoring.limits import budget_notice_pct
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_PROVIDER_CONCURRENCY,
     MonitorCreationSurface,
@@ -45,6 +47,12 @@ _CHANNEL_OWNER_CREDENTIAL_KINDS = frozenset({"github_pull_request", "gitlab_merg
 
 logger = logging.getLogger(__name__)
 
+_ALSO_WAKE_EVENTS = {
+    "merged": "merged",
+    "closed": "was closed without merging",
+    "unreadable": "could not be read and is no longer checked",
+}
+
 
 class _Loop(Protocol):
     id: str
@@ -67,6 +75,7 @@ class _Service(Protocol):
         *,
         now: float,
         config_generation: int,
+        also_wake_results: Mapping[str, MonitorProbeResult] | None = None,
     ) -> MonitorVerdict: ...
 
     async def record_monitor_dispatch_failure(
@@ -227,6 +236,9 @@ class MonitorController:
         previous_fingerprint = state.last_fingerprint
         previous_observation = deepcopy(state.last_observation)
         provider = self._providers.get(state.kind)
+        # Read on the target's tick, in the same call, so they share its batched
+        # documents; their errors are their own and never the target's.
+        extras = open_also_wake_targets(state)
         result: MonitorProbeResult
         if provider is None:
             result = provider_error_result(ProviderErrorKind.SETUP, "provider_unsupported")
@@ -247,7 +259,7 @@ class MonitorController:
             async with self._provider_gate:
                 results = await asyncio.to_thread(
                     provider.probe,
-                    (target,),
+                    (target, *extras),
                     previous_observations={target: previous_observation},
                     use_owner_credentials=(
                         dashboard_owner_credentials or state.kind in _CHANNEL_OWNER_CREDENTIAL_KINDS
@@ -256,6 +268,7 @@ class MonitorController:
         except Exception:
             logger.exception("structured monitor provider raised unexpectedly")
             result = transient_probe_failure()
+            results = {}
         else:
             # resolve_probe_result logs the unusable case itself: a status test here
             # cannot distinguish its synthesized fallback from a transient the
@@ -267,6 +280,11 @@ class MonitorController:
             result,
             now=now,
             config_generation=config_generation,
+            **(
+                {"also_wake_results": {e: resolve_probe_result(results, e) for e in extras}}
+                if extras
+                else {}
+            ),
         )
         self._record_observation(
             loop,
@@ -361,15 +379,20 @@ class MonitorController:
         so the delivered verdict still names its evidence. A retry of a claim
         persisted on an earlier tick has none to carry.
         """
+        also_wake = honoured_also_wake_claim(state)
         envelope = format_monitor_wake(
             monitor_id=loop.id,
             kind=state.kind,
             target=state.target,
             objective=state.objective,
             fingerprint=state.last_wake_fingerprint,
-            reason_code=state.last_wake_reason_code,
+            reason_code=(
+                str(also_wake["reason_code"]) if also_wake else state.last_wake_reason_code
+            ),
             canonical=state.last_observation,
             wake_instructions=state.wake_instructions,
+            also_wake=also_wake,
+            budget_note=monitor_budget_note(state, now=now, pct=budget_notice_pct()),
         )
         if not await self._service.monitor_dispatch_is_authorized(
             loop.id,
@@ -422,6 +445,8 @@ def format_monitor_wake(
     reason_code: str,
     canonical: Mapping[str, object],
     wake_instructions: str = "",
+    also_wake: Mapping[str, object] | None = None,
+    budget_note: str = "",
 ) -> str:
     """Render only allowlisted canonical facts, redacted before the hard cap.
 
@@ -439,6 +464,11 @@ def format_monitor_wake(
     simply reports its state changed. Everything rendered here passes through the
     redaction and the hard cap below, so a canonical field a provider fills reaches
     the woken agent scrubbed, not raw.
+
+    *also_wake* is the claim of a wake one of the watch's extras caused; it adds
+    one opening line naming that extra and what happened to it. *budget_note* is
+    the one line ``monitor_budget_note`` builds from the watch's used budget; it
+    sits above the next action and is empty unless the operator turned it on.
     """
     entry = monitor_kind(kind)
     changed: list[str] = []
@@ -462,12 +492,22 @@ def format_monitor_wake(
         changed_line = "; ".join(changed) or "canonical state changed"
     head = canonical.get("head_revision")
     action = wake_instructions.strip() or "Inspect the changed facts and take the next safe action."
+    opening = ""
+    if also_wake:
+        event = _ALSO_WAKE_EVENTS.get(str(also_wake.get("state")), "changed")
+        opening = (
+            f"Also waiting on {subject_noun} {also_wake.get('target')}: it {event}. "
+            "The lines below describe the watched one.\n"
+        )
+    budget_line = f"{budget_note}\n" if budget_note else ""
     envelope = (
         f"{MONITOR_WAKE_PREFIX}\n"
+        f"{opening}"
         f"Monitor {monitor_id}: {subject_noun} {target}; objective: {objective}.\n"
         f"Fingerprint: {fingerprint}. Classification: {reason_code or 'actionable'}.\n"
         f"Head: {head if isinstance(head, str) else 'unknown'}. "
         f"Changed: {changed_line}.\n"
+        f"{budget_line}"
         f"Next action: {action}"
     )
     envelope, _ = redact_exfiltration_urls(envelope)

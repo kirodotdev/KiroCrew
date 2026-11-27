@@ -21,8 +21,8 @@ interface Props {
   testIdPrefix?: string
   /** Mark the open tooltip `data-escape-owner`. Set by callers whose own Escape
    *  handler dismisses this preview (PasteHoverLayer, PastedChip) so the
-   *  composer's Escape-to-stop gate yields and one Escape does not both close
-   *  the preview AND stop the running turn (chat-input/escapeOwners.ts, #22315). */
+   *  composer's Escape gate yields and one Escape closes only the preview
+   *  (chat-input/escapeOwners.ts). */
   escapeOwner?: boolean
   /** One short line naming what the user can do with the token (the composer
    *  passes its expand/remove gestures). Omitted, nothing is shown. */

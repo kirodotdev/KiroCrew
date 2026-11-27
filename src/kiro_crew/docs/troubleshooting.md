@@ -27,11 +27,17 @@ This writes a zip to `~/.kiro/crew/diagnostics/` holding the gateway logs (the
 current run and up to four earlier ones, `gateway.log.prev` and `logs/gateway-boots/`) and
 crash reports, `versions.txt` and `manifest.json`. Every text file in it passes
 through the credential redaction first, and the command prints how many secrets it
-removed. Home-directory paths are shortened to `~`, and this machine's current
-host name is replaced with `<host>`, including its escaped, percent-encoded and
-IDNA spellings. A name the machine had before, the domain after a short name, a
-name followed by `-`, `_` or a digit, or a less common spelling of the name can
-remain, so look through the zip before you attach it.
+removed. Home-directory paths are shortened to `~` (on Windows also where they
+are written with the 8.3 short name, such as `JONATH~1`), your login name becomes
+`<user>` wherever it stands as a word of its own (so a login that is also an
+ordinary word, such as `dev`, or the product's own name, as the `kirocrew` user
+of the container image, is replaced as that word too), and this machine's
+current host name is replaced with `<host>`, including its escaped,
+percent-encoded and IDNA spellings. A login joined into a longer name by `-`, `_`
+or `.`, a login written escaped or percent-encoded, a profile folder named
+differently from the login, a name the machine had before, the domain after a
+short name, a name followed by `-`, `_` or a digit, or a less common spelling of
+the name can remain, so look through the zip before you attach it.
 It then prints a GitHub new-issue link on the bug-report form; drag the
 zip into that issue. The link fills in the version and the release channel from
 the build's own release record. When the build cannot prove its channel, the
@@ -306,7 +312,10 @@ ready. The first message after you re-open a saved chat is sent the same way.
 Neither message waits for the servers you added, so one that is slow to start
 may still be connecting while the agent works on that message. (The few servers
 Kiro Crew attaches to the session itself, a Connection's bridge for example, get
-a wait of at most 5 seconds.)
+a wait of at most 5 seconds.) On the Codex harness a new chat's first message
+waits for all of the chat's servers, yours included, for up to 30 seconds, and so
+does the first message after you re-open a saved chat: Codex offers a message
+only the tools of the servers that are ready when it starts.
 
 The agent is told which of the chat's servers it cannot use and why: still
 starting, failed to start, waiting for a sign-in, switched off, or left out by
@@ -316,7 +325,9 @@ a server settles in one of the other states. When your request needs a server
 that is still starting, the agent says so in a sentence, waits for that server
 with the `mcp_server_wait` tool (up to 90 seconds in one call), then uses its
 tool and finishes the request in the same reply. If the server is still not
-ready after that, the agent says so and you can ask again a moment later. For a
+ready after that, the agent says so and you can ask again a moment later. (On
+the Codex harness a server that finishes starting during a message is offered
+from your next message, not in that reply.) For a
 server in any other state it does not wait: it tells you what is true of the
 server and does what it can without it. For one that failed to start, it tells
 you that **Test** on that server's row of the **MCP Servers** page shows its error

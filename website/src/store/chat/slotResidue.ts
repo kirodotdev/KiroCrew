@@ -36,7 +36,7 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
   state.endedTurn,
   state.followups, state.folderSuggestions, state.restoredQuestionNotices,
-  state.pendingQuestions, state.subagentQueued, state.subagentQueuedReason,
+  state.pendingQuestions, state.subagentQueued, state.subagentQueuedReason, state.subagentReplayCut ?? {},
   state.automations,
   // A surviving pane marker makes a recreated slot's hydrate early-return into
   // nothing, so these must die with the transcript they describe. The retained

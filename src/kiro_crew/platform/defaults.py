@@ -369,6 +369,9 @@ class DefaultMcpToolingProvider:
     def custom_agent_servers(self) -> Tuple[str, ...]:
         return ()
 
+    def launch_token_normalizer(self, token: str) -> str:
+        return token
+
 
 class DefaultAgentCatalogProvider:
     """No edition agent-catalog rows — discovery is the on-disk scan only."""

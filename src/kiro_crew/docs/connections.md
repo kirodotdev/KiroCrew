@@ -494,7 +494,7 @@ reset control — do not edit the user's MCP config to work around it.
 
 ## Sharing MCP servers across chats
 
-Each chat normally starts its own copy of every stdio MCP server. **MCP
+Each chat normally launches its own MCP server for every stdio server. **MCP
 Management**, at the top of **MCP Servers** above the server list,
 lets all your chats use one copy of a server instead, which saves memory when many
 chats are open. A shared copy runs outside each chat's sandbox, with your access, so
@@ -503,21 +503,26 @@ share a server only if you added it yourself and its command is what you expect.
 **Turn on MCP server sharing** is the switch on the
 **Share MCP servers across chats** card at the top of the page
 (`mcp_gateway.enabled`). The card's diagram
-shows the difference: off, each chat runs its own copy of a server; on, all chats
-use one copy. A link can open the card directly at
+shows the difference: off, each chat launches its own MCP server; on, all chats
+use one. A link can open the card directly at
 `/capabilities?tab=mcp-servers&view=sharing#mcp-sharing`. Turning it on asks first and lists every server it will
 share: the ones you turned on by hand, plus the shareable ones nobody chose for. It
 never turns on a server you turned off by hand, a server that hands out
-credentials, or one that waits for your OK. **Memory now** and **Memory with
+credentials, or one that still needs your approval. **Memory now** and **Memory with
 sharing** show what the MCP servers use, to the crew owner only. Chats that are
 already open keep their own copies until you reload them: the banner under the
 switch offers to reload them, and skips a chat that is busy.
 
-When servers wait for your OK, a card counts them. **Review and approve** opens
-them in a dialog, each with **Share across chats** (one copy runs it for all
-chats, outside their sandbox) and **Don't share** (it keeps running inside
-each chat). There is no
-approve-all.
+When servers need your approval, the card **Share N MCP servers across chats?**
+counts them: until you approve, each chat launches its own MCP server.
+**Review and approve** opens them in a dialog, each with **Share across chats**
+(one server runs for all chats, outside their sandbox) and **Don't share** (it
+keeps running inside each chat). There is no approve-all. Check **Always trust
+changes to this server** before approving to keep it shared when its command,
+arguments or environment change later; unchecked, any such change asks again.
+The choice is per server and shows on its row in the **Sharing** view while
+the row's launch is approved: unchecking it there takes it off, and checking it
+again turns it back on. Stopping sharing, or removing the server, drops it.
 
 The **Sharing** view, beside **Servers** under the card, holds the rest. In
 **Per-server sharing**, each row has a switch in
@@ -532,7 +537,7 @@ changes, Details names the folders added and removed. A row's state is one of:
 | State | Meaning |
 |---|---|
 | **shared** | All new chats use one copy |
-| **direct** | Each chat starts its own copy. A row with Share on also reads **direct** while the switch at the top is off, when its env names a vault secret, or when it needs a setting each chat keeps |
+| **direct** | Each chat launches its own MCP server. A row with Share on also reads **direct** while the switch at the top is off, when its env names a vault secret, or when it needs a setting each chat keeps |
 | **Can't share** | It has no stdio pipe, it hands out credentials, or its command cannot be approved here, such as when too many agents start it with different settings (the row names the limit and the way back) |
 | **Paused · command changed** | Its command or settings changed since you approved it, so it runs inside each chat until you press **Approve update** |
 | **Paused · not approved yet** | It was added in a config file and never approved here; **Share across chats** shares it |

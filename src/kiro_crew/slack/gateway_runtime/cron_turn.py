@@ -707,6 +707,10 @@ async def _cron_run_single(
         await asyncio.to_thread(tag_run_transcript)
 
     _acquired = False
+    # This run's entry in the table of running Bot turns (``GET /v1/crew/bots``).
+    from kiro_crew.dashboard import running_bot_turns
+
+    _bot_turn = object()
     # Whether a re-projection left this run holding the replay gap.
     _reprojected = False
     _model_downgraded = False
@@ -885,6 +889,9 @@ async def _cron_run_single(
             job, cron_execution, session_key, _dispatch_agent, _single_cwd, _single_crew
         )
         _acquired = True
+        # The run holds its session: the Bot list reads this run as the Bot's the
+        # fire captured, also where that Bot's schedule runs on its worker.
+        running_bot_turns.begin_scheduled(_bot_turn, cap.bot_member_id)
         _run_provider = client
         # A KAS batch that auto-approves what a PreToolUse hook now covers is reset
         # and claimed again under the replay gap, which the ``finally`` closes after
@@ -1361,6 +1368,7 @@ async def _cron_run_single(
         )
         raise
     finally:
+        running_bot_turns.end(_bot_turn)  # first, so nothing below can skip it; never raises
         assert self.sessions is not None
         # Before the reset below: a turn that consumed the post-compaction
         # flag but never landed, or whose backend compacted the session,

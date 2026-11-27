@@ -1,14 +1,11 @@
 """``kirocrew memory shadow report``: what each memory stage's new policy would change.
 
 Read-only. It reads only what the stages already record and writes nothing:
-
-* the render stage (relevance rule) from the injection receipts under ``<data home>/usage/injections``: the daily counters
-  and the policy window in ``stage-log.json``, and the sampled stage fields on the
-  ``YYYY-MM-DD.jsonl`` lines;
-* the write stages (origin gate, tier policy, fact origin gate, private dedup,
-  Dreaming) from the store's ``memory_meta`` counter rows (``<prefix>counts:<day>``)
-  and window keys (``rules_changed_at``, ``rules_version``), through a
-  ``mode=ro`` connection.
+the write stages (origin gate, tier policy, fact origin gate, private dedup,
+Dreaming) from the store's ``memory_meta`` counter rows (``<prefix>counts:<day>``)
+and window keys (``rules_changed_at``, ``rules_version``), through a
+``mode=ro`` connection, and the session-start and outcome lines of the
+injection receipts under ``<data home>/usage/injections``.
 
 The report carries ids-free counts only. The counters come from ``read_meta``,
 which never selects a sample row, an id row or the Dreaming approval list. The
@@ -17,19 +14,14 @@ outcome scorecard comes from ``read_trace``, which pulls only the ``key``,
 SQLite (``json_each``), so an entry's value text never leaves the database. A missing or unreadable source is "no data", never an error.
 
 Session starts come from the receipts (``phase == "session_start"`` lines of the
-store) since each stage's window start. The stage-log counters are per data home,
-so a render stage's days and line counts cover every store; its change rate comes
-from the store's own sampled lines.
+store) since each stage's window start.
 
 The scorecard joins what a stage would drop with what followed
 (:mod:`kiro_crew.memory_shadow_trace`). A dropped item is *missed* when a later
 outcome line names its key: a ``memory_recall`` that delivered it, or a
-``learn_add`` that came within the re-teach bar of it. A render stage drops per
-session, so its item is a session tag and key and only that session's outcomes
-count; a write stage changes the store, so its item is the key and any later
-outcome counts. The control sample, rows the stage keeps, is scored the same way.
-Activity section ids (``projects:<hash>``) are not scored: no outcome can name
-them. Verdict: ``wait`` until the bar (:data:`DAYS_BAR` days,
+``learn_add`` that came within the re-teach bar of it. A write stage changes the
+store, so its item is the key and any later outcome counts. The control sample,
+rows the stage keeps, is scored the same way. Verdict: ``wait`` until the bar (:data:`DAYS_BAR` days,
 :data:`SESSIONS_BAR` session starts), a control sample and at least one outcome
 line in the window exist; then ``pass`` when the miss rate is at
 most :data:`MISS_BAR` and at most the control's, else ``fail``.
@@ -67,10 +59,8 @@ STATUS_OFF: Final = "off"
 STATUS_WAITING: Final = "waiting"
 STATUS_ENOUGH: Final = "enough data"
 
-SOURCE_RECEIPTS: Final = "receipts"
 _SHADOW_MODE: Final = "shadow"
 _SESSION_START: Final = "session_start"
-_STAGE_LOG_NAME: Final = "stage-log.json"
 
 
 @dataclass(frozen=True)
@@ -86,14 +76,12 @@ class Stage:
 
 
 STAGES: Final[tuple[Stage, ...]] = (
-    Stage("relevance_rule", SOURCE_RECEIPTS, _modes.relevance_rule_mode_from),
     Stage("lesson_origin_gate", "memory_origin_log:", _modes.lesson_origin_gate_mode_from),
     Stage(
         "lesson_tier_policy",
         "memory_tier_log:",
         _modes.lesson_tier_policy_mode_from,
-        "upper bound: shadow asks for no quote, so every standing rule counts as demoted",
-        ("consolidation",),
+        drop_paths=("consolidation",),
     ),
     Stage("fact_origin_gate", "memory_fact_origin_log:", _modes.fact_origin_gate_mode_from),
     Stage("member_lesson_dedup", "memory_dedup_log:", _modes.member_lesson_dedup_mode_from),
@@ -158,23 +146,13 @@ def parse_since(raw: str | None, *, today: date | None = None) -> datetime | Non
 # ── Readers (read-only) ─────────────────────────────────────────────────────
 
 
-def read_stage_log(receipt_dir: Path) -> dict:
-    """``stage-log.json``, or ``{}`` when it is missing or unreadable."""
-    try:
-        return _dict(json.loads((receipt_dir / _STAGE_LOG_NAME).read_text(encoding="utf-8")))
-    except (OSError, ValueError):
-        return {}
-
-
 def read_receipts(receipt_dir: Path, since: datetime | None) -> list[dict]:
     """The receipt lines at or after *since*, keeping only the fields the report reads.
 
     Shards are named by local day, so a shard one day before *since* is still read
     and each line is filtered on its own ``ts``.
     """
-    keep = ("ts", "session_key", "sk", "phase", "memory_store", *_OUTCOMES) + tuple(
-        s.name for s in STAGES if s.source == SOURCE_RECEIPTS
-    )
+    keep = ("ts", "session_key", "sk", "phase", "memory_store", *_OUTCOMES)
     floor = (since.date() - timedelta(days=1)).isoformat() if since else ""
     lines: list[dict] = []
     try:
@@ -213,8 +191,6 @@ def read_meta(db_path: Path | None) -> dict[str, str]:
         return {}
     patterns: list[str] = []
     for stage in STAGES:
-        if stage.source == SOURCE_RECEIPTS:
-            continue
         patterns.append(stage.source + "counts:*")
         patterns.append(stage.source + "rules_changed_at")
         patterns.append(stage.source + "rules_version")
@@ -247,7 +223,7 @@ def read_trace(db_path: Path | None) -> list[tuple[str, str, dict]]:
         return []
     patterns: list[str] = []
     for stage in STAGES:
-        if stage.source == SOURCE_RECEIPTS or stage.name in _UNTRACED:
+        if stage.name in _UNTRACED:
             continue
         patterns.append(f"{stage.source}ids:*")
         patterns.append(f"{stage.source}control:*")
@@ -315,44 +291,13 @@ def _first_seen(units: dict, unit: tuple[str, str], at: datetime) -> None:
 def _score(
     units: dict[tuple[str, str], datetime],
     outcomes: dict[str, list[tuple[datetime, str]]],
-    per_session: bool,
 ) -> dict:
-    """Of *units* (``(session tag, key) -> first time``), how many a later outcome names."""
+    """Of *units* (``("", key) -> first time``), how many a later outcome names."""
     missed = 0
-    for (tag, key), at in units.items():
-        missed += any(
-            ts > at and (not per_session or sk == tag) for ts, sk in outcomes.get(key, ())
-        )
+    for (_, key), at in units.items():
+        missed += any(ts > at for ts, _sk in outcomes.get(key, ()))
     total = len(units)
     return {"items": total, "missed": missed, "rate": round(missed / total, 4) if total else None}
-
-
-def _render_units(stage: Stage, lines: list[dict], store: str, start) -> tuple[dict, dict]:
-    from kiro_crew.memory_shadow_trace import session_tag
-
-    dropped: dict = {}
-    control: dict = {}
-    for line in lines:
-        field = line.get(stage.name)
-        if not isinstance(field, dict) or field.get("mode") != _SHADOW_MODE:
-            continue
-        if not _store_matches(line, store) or (start is not None and line["ts"] < start):
-            continue
-        tag = session_tag(line.get("session_key"))
-        drops = [k for k in field.get("would_drop") or () if isinstance(k, str)]
-        for key in drops:
-            if _traceable(key):
-                _first_seen(dropped, (tag, key), line["ts"])
-        for key in field.get("control") or ():
-            if _traceable(key):
-                _first_seen(control, (tag, key), line["ts"])
-    return dropped, control
-
-
-def _traceable(key: object) -> bool:
-    """Whether an outcome line could ever name *key*: a memory key, not an
-    activity section id such as ``projects:<hash>``, which no recall returns."""
-    return isinstance(key, str) and bool(key) and ":" not in key
 
 
 def _write_units(stage: Stage, trace: list, start) -> tuple[dict, dict]:
@@ -441,41 +386,6 @@ def _first_day(days: Iterable[str]) -> datetime | None:
     return datetime.fromisoformat(first).replace(tzinfo=timezone.utc) if first else None
 
 
-def _receipt_stage(stage: Stage, stage_log: dict, lines: list[dict], store: str, since) -> dict:
-    window = _dict(_dict(stage_log.get("stages")).get(stage.name))
-    started = _instant(window.get("started_at"))
-    policy = _count(window.get("policy")) or None
-    by_day: dict[str, dict[str, int]] = {}
-    for raw_day, kinds in _dict(stage_log.get("counts")).items():
-        day = _day(raw_day)
-        if day is None:
-            continue
-        tally = _dict(_dict(_dict(kinds).get(stage.name)).get(_SHADOW_MODE))
-        if not tally:
-            continue
-        by_day[day] = {
-            name: _count(tally.get(name)) for name in ("lines", "would_add", "would_drop")
-        }
-    start = _window_start(started or _first_day(by_day), since)
-    if start is not None:
-        by_day = {d: v for d, v in by_day.items() if d >= start.date().isoformat()}
-    sampled = changed = 0
-    for line in lines:
-        field = line.get(stage.name)
-        if not isinstance(field, dict) or field.get("mode") != _SHADOW_MODE:
-            continue
-        if not _store_matches(line, store) or (start is not None and line["ts"] < start):
-            continue
-        sampled += 1
-        changed += int(bool(field.get("would_add") or field.get("would_drop")))
-    detail = {
-        "lines": sum(v["lines"] for v in by_day.values()),
-        "would_add": sum(v["would_add"] for v in by_day.values()),
-        "would_drop": sum(v["would_drop"] for v in by_day.values()),
-    }
-    return _card(stage, policy, start, by_day, sampled, changed, detail, lines, store)
-
-
 def _meta_counts(meta: dict[str, str], stage: Stage) -> dict[str, dict]:
     prefix = stage.source + "counts:"
     out: dict[str, dict] = {}
@@ -524,14 +434,46 @@ def _base_and_changed(stage: Stage, total: dict[str, int]) -> tuple[int, int | N
     return total.get("rows", 0), None
 
 
+#: The stages that judge each standing lesson by the person's quote.
+_QUOTE_STAGES: Final = frozenset({"lesson_tier_policy"})
+#: The first tier-policy rules version whose counters measure quotes.
+_QUOTE_RULES_VERSION: Final = 2
+
+
+def _quote_summary(stage: Stage, total: dict[str, int], policy: int | None) -> dict | None:
+    """How the quotes behind a lesson stage's standing lessons came out, or ``None``.
+
+    ``absent``, ``fail`` and ``pass`` count measured ``always`` lessons; ``backed``
+    is the passing quotes that state their rule; ``unmeasured`` the lessons whose
+    shadow quote call failed. ``support`` counts passing quotes by cosine bucket.
+    """
+    if stage.name not in _QUOTE_STAGES or (policy or 0) < _QUOTE_RULES_VERSION:
+        return None
+    absent = total.get("always", 0) - total.get("quote_present", 0) - total.get("unmeasured", 0)
+    prefix = "support_"
+    return {
+        "absent": max(absent, 0),
+        "fail": total.get("quote_fail", 0),
+        "pass": total.get("quote_pass", 0),
+        "backed": total.get("backed", 0),
+        "unmeasured": total.get("unmeasured", 0),
+        "support": {k[len(prefix) :]: n for k, n in sorted(total.items()) if k.startswith(prefix)},
+        "calls": total.get("quote_calls", 0),
+        "call_failed": total.get("quote_call_failed", 0),
+        "cut": total.get("quote_cut", 0),
+    }
+
+
 def _meta_stage(stage: Stage, meta: dict[str, str], lines: list[dict], store: str, since) -> dict:
     # The window opens on the first day with shadow counters, or later at the
     # stage's rules-change instant. ``shadow_started_at`` is not read: the origin,
     # tier and dedup stages stamp it only on the first pass that keeps an id, after
     # their counters have already started.
-    # shortcut: origin/tier/dedup record no rules-change instant and their counters
-    # carry no rules_version, so a rules bump there needs a window key written
-    # with the counters before this report can split the days.
+    # Only the tier policy stamps ``rules_changed_at``, with its first counter
+    # write under a new rules version, so the window skips older days.
+    # shortcut: dedup records no rules-change instant and its counters carry no
+    # rules_version, so a rules bump there needs that window key written with the
+    # counters before this report can split the days.
     changed_at = _instant(meta.get(stage.source + "rules_changed_at"))
     raw_version = meta.get(stage.source + "rules_version")
     policy = int(raw_version) if raw_version and raw_version.isdigit() else None
@@ -582,7 +524,6 @@ def build_report(
     stage: str | None = None,
 ) -> dict[str, Any]:
     """The report as plain data: one scorecard per stage, ids-free."""
-    stage_log = read_stage_log(receipt_dir)
     lines = read_receipts(receipt_dir, since)
     meta = read_meta(db_path)
     trace = read_trace(db_path)
@@ -591,10 +532,13 @@ def build_report(
     for s in STAGES:
         if stage is not None and s.name != stage:
             continue
-        if s.source == SOURCE_RECEIPTS:
-            card = _receipt_stage(s, stage_log, lines, store, since)
-        else:
-            card = _meta_stage(s, meta, lines, store, since)
+        card = _meta_stage(s, meta, lines, store, since)
+        card["quotes"] = _quote_summary(s, card["detail"], card["policy"])
+        if s.name in _QUOTE_STAGES and card["quotes"] is None and card["data"]:
+            card["bias"] = (
+                "upper bound: these counters predate the quote measurement "
+                f"(rules version < {_QUOTE_RULES_VERSION}), so every standing rule counts as demoted"
+            )
         mode = s.mode_from(getattr(memory_config, s.name, None))
         card["mode"] = mode
         if mode == "off":
@@ -604,17 +548,12 @@ def build_report(
         else:
             card["status"] = STATUS_WAITING
         start = _instant(card["window_start"])
-        if s.source == SOURCE_RECEIPTS:
-            dropped, control = _render_units(s, lines, store, start)
-        else:
-            dropped, control = _write_units(s, trace, start)
+        dropped, control = _write_units(s, trace, start)
         # A unit the stage also drops (a dedup vector fold of a row first kept) is
-        # not a kept row, so it leaves the control. Whole units: a render stage
-        # keeps a row in one session and may drop it in another.
+        # not a kept row, so it leaves the control.
         control = {u: t for u, t in control.items() if u not in dropped}
-        per_session = s.source == SOURCE_RECEIPTS
-        card["miss"] = _score(dropped, outcomes, per_session)
-        card["control"] = _score(control, outcomes, per_session)
+        card["miss"] = _score(dropped, outcomes)
+        card["control"] = _score(control, outcomes)
         in_window = sum(
             1
             for line in lines
@@ -658,6 +597,16 @@ def _fraction(score: dict) -> str:
     return f"{score['missed']}/{score['items']}" if score["items"] else "-"
 
 
+def _quote_line(card: dict) -> str:
+    q = card["quotes"]
+    support = " ".join(f"{k}={v}" for k, v in q["support"].items()) or "-"
+    return (
+        f"quotes {card['stage']}: absent={q['absent']} fail={q['fail']} pass={q['pass']} "
+        f"(backed={q['backed']}) unmeasured={q['unmeasured']}  support {support}  "
+        f"quote calls={q['calls']} failed={q['call_failed']} cut={q['cut']}"
+    )
+
+
 def _row(cells: Iterable[str]) -> str:
     return "  ".join(str(c).ljust(w) for c, (_, w) in zip(cells, _COLUMNS)).rstrip()
 
@@ -692,9 +641,13 @@ def render_text(report: dict[str, Any]) -> list[str]:
     if notes:
         out.append("")
         out.extend(f"note {c['stage']}: {c['bias']}" for c in notes)
+    quoted = [c for c in report["stages"] if c.get("quotes") and c["data"]]
+    if quoted:
+        out.append("")
+        out.extend(_quote_line(c) for c in quoted)
     out.append("")
     out.append(
-        "seen = lines (render stages: sampled receipt lines) or items the stage looked at; "
+        "seen = items the stage looked at; "
         "changed = how many the new policy would change. "
         "miss = dropped items a later recall or re-teach named, of all dropped; "
         "ctrl = the same for a sample of kept items. "

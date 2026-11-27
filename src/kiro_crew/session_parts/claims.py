@@ -829,6 +829,11 @@ def enqueue(
     return self._allocation_boundary().enqueue(key, msg_ts, text, force=force, **kwargs)
 
 
+def has_queued(self: SessionManager, key: str) -> bool:
+    """Read whether a folded session has queued entries without consuming them."""
+    return self._allocation_boundary().has_queued(key)
+
+
 def dequeue(self: SessionManager, key: str) -> tuple[str, str, dict] | None:
     """Pop the next non-cancelled queued message."""
     return self._allocation_boundary().dequeue(key)

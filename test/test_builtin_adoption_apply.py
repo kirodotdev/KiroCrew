@@ -772,15 +772,15 @@ async def test_a_kill_before_the_retired_tree_goes_finalizes_and_is_swept_after(
     from kiro_crew.apps import manager_adopt, manager_records
 
     await _stage()
-    real_remove = manager._remove_any_shape
+    real_remove = manager._remove_tree
 
-    def killed_at_the_retired_tree(path):
-        if "-update-old-" in path.name:
+    def killed_at_the_retired_tree(pin):
+        if "-update-old-" in pin.path.name:
             raise _HardKill
-        real_remove(path)
+        real_remove(pin)
 
     with monkeypatch.context() as kill:
-        kill.setattr(manager, "_remove_any_shape", killed_at_the_retired_tree)
+        kill.setattr(manager, "_remove_tree", killed_at_the_retired_tree)
         kill.setattr(manager_records._UpdateMarker, "__exit__", lambda *_a: None)
         with pytest.raises(_HardKill):
             await _boot()

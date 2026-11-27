@@ -14,6 +14,10 @@ import { isUnsafeKey, safeKey } from './wire'
 import { jsonEqual } from '../../utils/structuralEqual'
 
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
+/** A card's reasoning past this many characters keeps only its newest
+ *  `SUBAGENT_THINKING_KEEP`, behind the truncation marker. */
+export const SUBAGENT_THINKING_CAP = 20_000
+export const SUBAGENT_THINKING_KEEP = 16_000
 /** Per-slot subagent map, falling back to the global active mirror — the
  *  read-only selector twin of the internal `getSlotSubs`. Exists so the
  *  Activity panel can subscribe to this itself instead of having ChatPage hold
@@ -229,6 +233,15 @@ export const isActiveSubagent = (a: SubagentActivity) =>
  */
 export const isChipSubagent = (a: SubagentActivity) =>
   a.engine === true || !a.id.startsWith('native:')
+
+/** A frame's `engine_turn` (the gateway's random per-turn key), or undefined for any
+ *  other value. */
+const engineTurnOf = (v: unknown): string | undefined =>
+  typeof v === 'string' && /^[0-9a-f]{1,32}$/.test(v) ? v : undefined
+
+/** The start (ms) a replayed engine card's done frame names, or undefined. */
+const engineStartOf = (p: { engine?: boolean; started?: unknown }): number | undefined =>
+  p.engine === true && typeof p.started === 'number' && Number.isFinite(p.started) && p.started > 0 ? p.started * 1000 : undefined
 
 /**
  * Live "sub-agents running" signal for a slot, derived from the
@@ -493,6 +506,8 @@ export const subagentReducers = {
     // only when non-empty, so an idle reconnect keeps both maps' identity.
     if (Object.keys(state.subagentQueued ?? {}).length) state.subagentQueued = {}
     if (Object.keys(state.subagentQueuedReason ?? {}).length) state.subagentQueuedReason = {}
+    // The replay this subscription starts says again what it cuts.
+    if (Object.keys(state.subagentReplayCut ?? {}).length) state.subagentReplayCut = {}
   },
   /** The gateway's `subagent_replay_done`: drop every card the replay did not
    *  name (see `clearSubagentsForSnapshot`). A marker with no replay in
@@ -508,6 +523,22 @@ export const subagentReducers = {
     }
     sweep(state.subagents)
     for (const activity of Object.values(state.slotActivity)) sweep(activity.subagents)
+  },
+  /** The gateway's `subagent_replay_truncated`: per slot, how many finished
+   *  runs the replay left out. Each slot named is SET from its own entry; a
+   *  slot the frame does not name keeps what it had. */
+  subagentReplayTruncated(state: ChatState, action: PayloadAction<{ slots?: unknown }>) {
+    const slots = action.payload?.slots
+    if (!slots || typeof slots !== 'object') return
+    state.subagentReplayCut ??= {}
+    for (const [slot, entry] of Object.entries(slots as Record<string, unknown>)) {
+      if (isUnsafeKey(slot) || !entry || typeof entry !== 'object') continue
+      const { n, at_least: atLeast } = entry as { n?: unknown; at_least?: unknown }
+      if (typeof n !== 'number' || !Number.isInteger(n) || n < 0) continue
+      const key = safeKey(slot)
+      if (n === 0 && atLeast !== true) delete state.subagentReplayCut[key]
+      else state.subagentReplayCut[key] = { n, atLeast: atLeast === true }
+    }
   },
   /** Aggregate "waiting to start" count for a slot. Agents queued behind the
    *  concurrency cap / stagger gate have no individual card; this count lets
@@ -683,7 +714,7 @@ export const subagentReducers = {
     current.approvalRetired = true
     current.elapsed = 0
   },
-  sseSubagentSpawn(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; engine?: boolean }>) {
+  sseSubagentSpawn(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; engine?: boolean; engine_turn?: string }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
     // The run's own card replaces an approval card raised for it on another slot.
     for (const [m, copy] of otherSlotCopies(state, action.payload.slot, action.payload.id)) {
@@ -720,7 +751,9 @@ export const subagentReducers = {
       childSession: action.payload.child_session || undefined,
       batchId: action.payload.batch_id || existing?.batchId || undefined,
       engine: action.payload.engine === true || existing?.engine || undefined,
+      engineTurn: engineTurnOf(action.payload.engine_turn) || existing?.engineTurn,
       status: 'running', streaming: existing?.streaming || '', lastTool: '', startedAt: existing?.startedAt || Date.now(), elapsed: 0,
+      ...(existing?.thinking ? { thinking: existing.thinking } : {}),
       // Reusing an entry's start time inherits whether that time was ASSUMED.
       // Rebuilding the entry without this would silently promote an assumption
       // to an assertion, because a spawn frame carries no start time of its own
@@ -803,12 +836,20 @@ export const subagentReducers = {
       }
     }
   },
-  /** One coalesced ~1s frame of concatenated streaming text per agent. */
-  sseSubagentBatchChunks(state: ChatState, action: PayloadAction<{ chunks: { id: string; slot: string; text: string }[] }>) {
+  /** One coalesced ~1s frame of concatenated streaming text per agent, and the
+   *  reasoning a `subagent_thinking` frame carried (`thinking`), kept apart from
+   *  the output. */
+  sseSubagentBatchChunks(state: ChatState, action: PayloadAction<{ chunks: { id: string; slot: string; text: string; thinking?: string }[] }>) {
     for (const c of action.payload.chunks || []) {
       const a = upsertSlotSub(state, c.slot, c.id)
       if (!a) continue
       a.retrying = false
+      if (c.thinking) {
+        const thinking = (a.thinking ?? '') + c.thinking
+        a.thinking = thinking.length > SUBAGENT_THINKING_CAP
+          ? i18nT('store.chatSlice.truncated') + '\n' + thinking.slice(-SUBAGENT_THINKING_KEEP)
+          : thinking
+      }
       a.streaming += c.text
       if (a.streaming.length > 50_000) {
         a.streaming = i18nT('store.chatSlice.truncated') + '\n' + a.streaming.slice(-40_000)
@@ -824,6 +865,9 @@ export const subagentReducers = {
   clearTerminalSubagents(state: ChatState, action: PayloadAction<{ slot: string }>) {
     const slot = action.payload.slot
     if (isUnsafeKey(slot)) return
+    // The note counts finished runs too. The older ones it did not dismiss come
+    // back as cards on the next reload, whose replay states its own cut.
+    if (state.subagentReplayCut?.[safeKey(slot)]) delete state.subagentReplayCut[safeKey(slot)]
     const subs = slot !== state.activeSlot
       ? state.slotActivity[safeKey(slot)]?.subagents
       : state.subagents
@@ -833,7 +877,7 @@ export const subagentReducers = {
       if (st === 'done' || st === 'error' || st === 'stopped') delete subs[id]
     }
   },
-  sseSubagentDone(state: ChatState, action: PayloadAction<{ slot: string; id: string; elapsed: number; credits?: number; cost_usd?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; result?: string; engine?: boolean }>) {
+  sseSubagentDone(state: ChatState, action: PayloadAction<{ slot: string; id: string; elapsed: number; credits?: number; cost_usd?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; result?: string; engine?: boolean; engine_turn?: string; started?: number }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
     confirmReplayed(state, action.payload.id)
     const subs = action.payload.slot !== state.activeSlot
@@ -894,6 +938,7 @@ export const subagentReducers = {
       if (action.payload.label && !a.label) a.label = action.payload.label
       if (isNative && action.payload.result !== undefined) a.result = action.payload.result
       if (action.payload.engine === true && !a.engine) a.engine = true
+      if (!a.engineTurn && engineTurnOf(action.payload.engine_turn)) a.engineTurn = engineTurnOf(action.payload.engine_turn)
       // A done frame carries authoritative `elapsed`, which reconstructs the
       // real start for an entry whose start was only ASSUMED -- the same
       // reconstruction the no-entry branch below already performs. Without it
@@ -903,6 +948,9 @@ export const subagentReducers = {
         a.startedAt = Date.now() - action.payload.elapsed * 1000
         a.startedAtAssumed = undefined
       }
+      // A replayed engine card's done frame names its real start (the gateway's clock).
+      const replayedStart = engineStartOf(action.payload)
+      if (replayedStart !== undefined) a.startedAt = replayedStart
     }
     else {
       subs[action.payload.id] = {
@@ -920,13 +968,14 @@ export const subagentReducers = {
         retrying: false,
         streaming: '',
         lastTool: '',
-        startedAt: Date.now() - action.payload.elapsed * 1000,
+        startedAt: engineStartOf(action.payload) ?? Date.now() - action.payload.elapsed * 1000,
         elapsed: action.payload.elapsed,
         credits,
         costUsd,
         error: doneStatus === 'stopped' ? undefined : action.payload.error,
         result: isNative ? action.payload.result : undefined,
         engine: action.payload.engine === true || undefined,
+        engineTurn: engineTurnOf(action.payload.engine_turn),
       }
     }
     // A copy of the run still live under another slot ends with it.
@@ -934,7 +983,7 @@ export const subagentReducers = {
       if (copy !== a && isActiveSubagent(copy)) copy.status = doneStatus
     }
   },
-  sseSubagentSnapshot(state: ChatState, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; streaming: string; last_tool: string; last_tool_call_id?: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number; engine?: boolean }>) {
+  sseSubagentSnapshot(state: ChatState, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; streaming: string; last_tool: string; last_tool_call_id?: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number; engine?: boolean; engine_turn?: string }>) {
     const d = action.payload
     // A snapshot without an owning slot is an orphan, not evidence that it
     // belongs to whichever chat this browser happens to show. Popout windows
@@ -975,6 +1024,7 @@ export const subagentReducers = {
         childSession: d.child_session || existing.childSession,
         batchId: d.batch_id || existing.batchId,
         engine: d.engine === true || existing.engine || undefined,
+        engineTurn: engineTurnOf(d.engine_turn) || existing.engineTurn,
         startedAt: d.started * 1000, startedAtAssumed: undefined,
       }
       if (!jsonEqual(withoutUndefined(existing), withoutUndefined(hydrated))) subs[safeKey(d.id)] = hydrated
@@ -1006,9 +1056,12 @@ export const subagentReducers = {
       childSession: d.child_session || existing?.childSession || undefined,
       batchId: d.batch_id || existing?.batchId || undefined,
       engine: d.engine === true || existing?.engine || undefined,
+      engineTurn: engineTurnOf(d.engine_turn) || existing?.engineTurn,
       // No replayed frame restores a Stop, so a reconnect keeps the mark it left.
       parentStopped: existing?.parentStopped || undefined,
       status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
+      // Reasoning is client-only: no snapshot carries it, so a replay keeps it.
+      ...(existing?.thinking ? { thinking: existing.thinking } : {}),
       // Replay applies the live tool-frame rule to a copy of a held timeline.
       // A card the replay creates seeds its timeline from the latest tool.
       toolCalls: existing?.toolCalls?.length

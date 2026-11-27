@@ -42,8 +42,10 @@ opening message, not from the title.
   runs it with shell escape disabled. It uses `pdflatex` when present, otherwise
   `tectonic`, otherwise a Tectonic install it manages itself. Because the engine
   can be Tectonic, do not assume a TeX Live-only package is available — prefer
-  packages the document already loads. When your turn ends the app re-reads the
-  open file and recompiles on its own, so do not ask the author to press Cmd+S.
+  packages the document already loads. When your turn ends, a Papyrus page that
+  is open in the browser re-reads the open file and recompiles on its own; with
+  no page open nothing compiles, so check the `.log` is newer than your edit and
+  ask the author to press Cmd+S when it is not.
   If they had unsaved typing in a file you edited, the editor goes read-only
   with a "Co-author changed this file" notice until they discard their changes
   and load yours — say which files you touched so they can expect it.

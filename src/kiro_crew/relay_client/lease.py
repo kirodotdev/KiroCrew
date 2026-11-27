@@ -66,6 +66,7 @@ import os
 import random
 import re
 import socket
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field, replace
@@ -369,6 +370,11 @@ def _data_home() -> Path:
     return data_home()
 
 
+_INSTANCE_ID_LOCK = threading.Lock()
+#: An ID that could not be saved, by its file: every caller of this run gets the same one.
+_UNSAVED_INSTANCE_IDS: dict[Path, str] = {}
+
+
 def crew_instance_id(home: Path) -> str:
     """The UUID this Crew made once for its lease, made and kept on first use.
 
@@ -376,22 +382,30 @@ def crew_instance_id(home: Path) -> str:
     old lease to free (``IDENTITY_IN_USE``). Blocking: call it in a thread.
     """
     path = home / INSTANCE_ID_FILE
-    try:
-        return str(uuid.UUID(path.read_text(encoding="ascii").strip()))
-    except FileNotFoundError:
-        pass
-    except (OSError, ValueError):
-        logger.warning("the relay's crew instance ID file is unreadable; making a new one")
-    value = str(uuid.uuid4())
-    try:
-        from kiro_crew.atomic_write import atomic_write
-        from kiro_crew.owner_only_files import mkdirs_owner_only
+    # One reader makes the ID: the lease and GET /v1/crew/info both call this, and two
+    # first reads side by side would each make one and answer with different values.
+    with _INSTANCE_ID_LOCK:
+        try:
+            return str(uuid.UUID(path.read_text(encoding="ascii").strip()))
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError):
+            logger.warning("the relay's crew instance ID file is unreadable; making a new one")
+        if path in _UNSAVED_INSTANCE_IDS:
+            return _UNSAVED_INSTANCE_IDS[path]
+        value = str(uuid.uuid4())
+        try:
+            from kiro_crew.atomic_write import atomic_write
+            from kiro_crew.owner_only_files import mkdirs_owner_only
 
-        mkdirs_owner_only(path.parent)
-        atomic_write(path, value + "\n", restrict_to_owner=True)
-    except Exception:  # noqa: BLE001 - an unsaved ID still serves this run
-        logger.warning("the relay's crew instance ID could not be saved; it lasts this run only")
-    return value
+            mkdirs_owner_only(path.parent)
+            atomic_write(path, value + "\n", restrict_to_owner=True)
+        except Exception:  # noqa: BLE001 - an unsaved ID still serves this run
+            logger.warning(
+                "the relay's crew instance ID could not be saved; it lasts this run only"
+            )
+            _UNSAVED_INSTANCE_IDS[path] = value
+        return value
 
 
 def stored_lease_version(home: Path, instance_id: str) -> Optional[int]:

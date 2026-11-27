@@ -50,8 +50,8 @@ vi.mock('../utils/clipboard', () => ({
   copyToClipboard: (text: string) => copyToClipboardMock(text),
 }))
 const disposeTerminalSessionSpy = vi.hoisted(() => vi.fn())
-vi.mock('../components/CliPanel', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../components/CliPanel')>()
+vi.mock('../components/terminalSessions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../components/terminalSessions')>()
   return {
     ...actual,
     disposeTerminalSession: (sessionId: string) => {

@@ -36,6 +36,7 @@ from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     STOP_CLASS_CANCELLED,
     STOP_CLASS_SUCCEEDED,
@@ -57,7 +58,7 @@ from kiro_crew.constants import (
 )
 from kiro_crew.deny_notice import steer_refusal_notice
 from kiro_crew.executors import run_in_tool_gate_pool
-from kiro_crew.messaging.alternation_echo import could_be_echo, echo_prefix_len, is_echo
+from kiro_crew.messaging.alternation_echo import could_be_echo, drop_echo, echo_prefix_len, is_echo
 from kiro_crew.messaging.directive_tracker import DirectiveTracker
 from kiro_crew.messaging.driver_quoted_markers import QuotedDirectiveFilter
 from kiro_crew.messaging.empty_turn_copy import (
@@ -80,6 +81,7 @@ from kiro_crew.messaging.renderer import (
     THINKING,
     TOOL_CALL,
     TOOL_RESULT,
+    TOOL_TITLE,
     OutputEvent,
     Renderer,
     trusted_mcp_identity,
@@ -510,6 +512,24 @@ def _redact(text: str | None) -> str:
     return out
 
 
+def _card_title(event: Any, kind: str, tool_name: str, mcp_server: str) -> tuple[str, str]:
+    """A tool event's card title, and the whole command behind a raw-fallback one.
+
+    The identity is passed in because a ``tool_call_update`` does not repeat the
+    identity of the call it refines.
+    """
+    derived = derive_tool_call_title(
+        title=event.title or "",
+        kind=kind,
+        raw_input=getattr(event, "tool_input", "") or "",
+        is_shell=bool(getattr(event, "is_shell", False)),
+        tool_name=tool_name,
+        mcp_server=mcp_server,
+    )
+    raw = "" if derived.derived or not derived.title else _redact(derived.raw_title)
+    return _redact(derived.title or event.title), raw
+
+
 class TurnDriver:
     """Channel-neutral turn loop: provider events -> abstract output events.
 
@@ -570,13 +590,14 @@ class TurnDriver:
         whatever it raises ends the turn with nothing sent. Not passed when
         ``None``, so a provider without the keyword is called as before.
     event_tap:
-        Optional synchronous observer handed every RAW provider event, before
-        the driver acts on it. For a second surface that shows the turn as it
-        runs (the dashboard tab of a channel conversation) and needs fields an
-        ``OutputEvent`` does not carry -- a tool call's arguments and identity,
-        a tool's result. It only observes: its return value is ignored, and an
-        exception it raises is logged and swallowed, so a broken observer can
-        never change or end the turn.
+        Optional synchronous observer handed every provider event, after a
+        timed-out call's continuation has its opening alternation placeholder
+        dropped (``drop_echo``) and before the driver acts on it. For a second
+        surface that shows the turn as it runs (the dashboard tab of a channel
+        conversation) and needs fields an ``OutputEvent`` does not carry -- a
+        tool call's arguments and identity, a tool's result. It only observes:
+        its return value is ignored, and an exception it raises is logged and
+        swallowed, so a broken observer can never change or end the turn.
     hook_agent:
         The agent the session runs, whose spec's own ``hooks`` Crew fires on a
         backend whose harness never receives them
@@ -715,6 +736,7 @@ class TurnDriver:
     async def _drive(self, message: str) -> str:
         # Bound here, not at module scope: ``kiro_crew.acp`` imports this package
         # while it initialises (``acp.prompt_blocks`` reads ``messaging.raster``).
+        from kiro_crew.agent_sdk.capabilities import capabilities_of
         from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls
 
         accumulated = ""
@@ -815,6 +837,12 @@ class TurnDriver:
         # last purpose" can pair one tool's name with another's purpose. Turn-local
         # and bounded by the turn's tool-call count.
         tool_purposes: dict[str, str] = {}
+        # Each call's card title and the identity it was derived with, keyed by
+        # its tool_call_id, on a backend that sends a call's real title in a
+        # later ``tool_call_update`` (claude names a call "Read" or "Terminal"
+        # before its input has streamed). Turn-local, like ``tool_purposes``.
+        refines_titles = capabilities_of(self.provider).refines_tool_call_titles
+        card_titles: dict[str, tuple[str, str, str, str]] = {}
 
         def place_tool_break(safe: str) -> str:
             """Put the pending tool-call break into redacted output.
@@ -1005,11 +1033,17 @@ class TurnDriver:
         if self.monitor_completion is not None:
             self.monitor_completion.mark_accepted()
         gated = {} if self.prompt_gate is None else {"prompt_gate": self.prompt_gate}
-        # A call whose own silence timer ends the prompt is handed back to the
-        # model in this turn, on the same session (``acp.timed_out_continuation``).
-        async for event in continue_timed_out_calls(
-            lambda prompt: self.provider.stream(prompt, **gated), message
-        ):
+        # ``drop_echo`` drops a continuation's opening placeholder; the first prompt's is held in
+        # ``dispatch_frames``, after ``text_after_terminal`` counts text past a terminal directive.
+        opened = 0
+
+        def open_prompt(prompt: str) -> Any:
+            nonlocal opened
+            opened += 1
+            stream = self.provider.stream(prompt, **gated)
+            return stream if opened == 1 else drop_echo(stream)
+
+        async for event in continue_timed_out_calls(open_prompt, message):
             if self.event_tap is not None:
                 try:
                     self.event_tap(event)
@@ -1057,14 +1091,10 @@ class TurnDriver:
                 # that way escapes the redactors that run on the finished
                 # title, so unredacted input would leak key-body bytes into a
                 # persisted channel status.
-                _derived = derive_tool_call_title(
-                    title=event.title or "",
-                    kind=getattr(event, "tool_kind", "") or "",
-                    raw_input=getattr(event, "tool_input", "") or "",
-                    is_shell=bool(getattr(event, "is_shell", False)),
-                    tool_name=getattr(event, "tool_name", "") or "",
-                    mcp_server=getattr(event, "mcp_server_name", "") or "",
-                )
+                _tool_kind = getattr(event, "tool_kind", "") or ""
+                _tool_name = getattr(event, "tool_name", "") or ""
+                _mcp_server = getattr(event, "mcp_server_name", "") or ""
+                _title, _raw_title = _card_title(event, _tool_kind, _tool_name, _mcp_server)
                 # The call ends the line the quoted-marker filter holds, so that
                 # text stays ahead of the card like the rest of the text before it.
                 held_line = quoted_marker_filter.flush()
@@ -1082,26 +1112,29 @@ class TurnDriver:
                 if segment_tail is None and stream_redactor.held:
                     segment_tail = stream_redactor.held
                     tail_fed_at = len(fed_raw)
+                if refines_titles and event.tool_call_id:
+                    card_titles[str(event.tool_call_id)] = (
+                        _title,
+                        _tool_kind,
+                        _tool_name,
+                        _mcp_server,
+                    )
                 await self.renderer.dispatch(
                     OutputEvent(
                         kind=TOOL_CALL,
                         tool_call_id=event.tool_call_id,
-                        title=_redact(_derived.title or event.title),
+                        title=_title,
                         # Programmatic identity travels beside the display title
                         # so a renderer's behaviour rules (Slack's `wait` stream
                         # rollover) key on the tool, not on derived copy.
-                        tool_name=getattr(event, "tool_name", "") or "",
+                        tool_name=_tool_name,
                         tool_kind=getattr(event, "tool_kind", ""),
                         tool_purpose=_purpose,
                         text_held=segment_tail is not None,
                         # The whole command behind a raw-fallback title, which
                         # the title cuts to a line; a renderer that rewrites
                         # the label for its audience starts from all of it.
-                        raw_title=(
-                            ""
-                            if _derived.derived or not _derived.title
-                            else _redact(_derived.raw_title)
-                        ),
+                        raw_title=_raw_title,
                     )
                 )
                 # Forgery gate: the directive-tool name is recorded ONLY from
@@ -1109,6 +1142,29 @@ class TurnDriver:
                 if directives is not None:
                     directives.record_tool_call(event)
                 await hooks.on_tool_call(event)
+            elif kind == EVENT_TOOL_CALL_UPDATE:
+                # The call's real title, for the card its tool_call opened: the
+                # same derivation as that call's, from the update's redacted
+                # ``tool_input`` (never ``raw_tool_params``), with the call's
+                # identity and, when the update names none, its kind. Only on a
+                # backend whose capabilities say its updates refine titles:
+                # kiro-cli's closing update names a failed call with the bare
+                # tool name, which would replace a better title.
+                card = card_titles.get(str(event.tool_call_id or ""))
+                if card is not None:
+                    shown, call_kind, tool_name, mcp_server = card
+                    _kind = getattr(event, "tool_kind", "") or call_kind
+                    _title, _raw_title = _card_title(event, _kind, tool_name, mcp_server)
+                    if _title and _title != shown:
+                        card_titles[str(event.tool_call_id)] = (_title, *card[1:])
+                        await self.renderer.dispatch(
+                            OutputEvent(
+                                kind=TOOL_TITLE,
+                                tool_call_id=event.tool_call_id,
+                                title=_title,
+                                raw_title=_raw_title,
+                            )
+                        )
             elif kind == EVENT_SUBAGENT_ACTIVITY:
                 # Native sub-agent lifecycle marker. Its only role in this
                 # driver is the isolation gate: remember which tool_call_ids

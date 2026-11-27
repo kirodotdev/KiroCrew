@@ -20,9 +20,11 @@ from kiro_crew.auth.service import (
     SignedOutDuringLoginError,
     UnknownIdentityError,
     UnknownLoginError,
+    UnknownProfileError,
 )
 from kiro_crew.auth.store import TokenStore, TokenStoreError
 from kiro_crew.config.paths import data_home
+from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.sel import sel
 
@@ -62,16 +64,16 @@ async def _require_owner(request: web.Request, operation: str) -> web.Response |
 
     The KAS token store is a single machine-global Kiro credential, so a device
     login or logout replaces/deletes it for the whole gateway. Only the dashboard
-    owner may drive those; a non-owner allowed user gets an audited, coded 403.
-    Returns the 403 response to short-circuit with, or None when the caller is owner.
+    owner may drive those; anyone else gets an audited, coded refusal.
+    Returns the refusal to short-circuit with, or None when the caller is owner.
     """
     if is_owner_dashboard_request(request):
         return None
     await _audit(request, operation, "denied", error="non-owner caller")
-    return web.json_response(
-        {"error": "Only the dashboard owner can manage Kiro sign-in.", "code": "owner_only"},
-        status=403,
-    )
+    # The caller is refused above. The shared tail only picks the label: 401
+    # ``stale_session_reauth`` for a session signed before the owner was
+    # configured, 403 ``owner_only`` for everyone else.
+    return _owner_denial_response(request, "Only the dashboard owner can manage Kiro sign-in.")
 
 
 def _caller(request: web.Request) -> str:
@@ -253,7 +255,10 @@ async def api_kas_login_begin_device(request: web.Request) -> web.Response:
 
 
 async def api_kas_login_poll(request: web.Request) -> web.Response:
-    """POST /api/kas-login/poll {login_id} — one non-blocking poll of a pending login."""
+    """POST /api/kas-login/poll {login_id, profile_arn?} — one non-blocking poll of a pending login.
+
+    ``profile_arn`` picks a profile for a company sign-in that answered ``choose_profile``.
+    """
     denied = await _require_owner(request, "kas_login_poll")
     if denied is not None:
         return denied
@@ -266,12 +271,20 @@ async def api_kas_login_poll(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Missing 'login_id'.", "code": "missing_login_id"}, status=400
         )
+    profile_arn = (body or {}).get("profile_arn")
     try:
-        result = await service.poll_device(login_id)
+        result = await service.poll_device(
+            login_id, profile_arn if isinstance(profile_arn, str) else None
+        )
     except UnknownLoginError:
         return web.json_response(
             {"error": "No pending login with that id.", "code": "unknown_login_id"},
             status=404,
+        )
+    except UnknownProfileError:
+        return web.json_response(
+            {"error": "That profile is not one this sign-in offered.", "code": "unknown_profile"},
+            status=400,
         )
     except (aiohttp.ClientError, asyncio.TimeoutError) as err:
         # Auth service offline / slow during a poll: coded 502, not an uncoded 500.

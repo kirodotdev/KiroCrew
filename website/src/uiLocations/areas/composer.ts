@@ -263,6 +263,27 @@ export const LOCATIONS = {
       requires: [SESSION_OPEN, EXPANDED, { kind: 'condition', id: 'monitor_running' }],
     }],
   },
+  // The AWS profile row at the foot of the project picker (ProjectAwsProfileSection),
+  // which the folder button under the message box opens. Its text names the
+  // chat's folder and the bound profile, so the index carries a description.
+  // The folder button's own name is the folder, so it cannot be a quotable
+  // parent step; the condition says how to open the picker instead.
+  'composer.project-aws-profile': {
+    kind: 'button',
+    label: { from: 'description', key: 'uiLocations.description.composer_project_aws_profile' },
+    terms: {
+      en: [
+        'aws profile', 'which aws profile does a chat use', 'aws profile for this project',
+        'aws profile for this chat', 'set an aws profile', 'change the aws profile', 'pick an aws profile',
+        'which aws account', 'aws account for this project', 'aws credentials for a chat',
+      ],
+      'zh-CN': ['AWS 配置文件', 'AWS profile', '这个项目用哪个 AWS profile', '聊天用哪个 AWS 账号', '设置 AWS profile', '切换 AWS 账号'],
+    },
+    placements: [{
+      surface: 'chat', parent: 'page.chat', entry: 'toolbar',
+      requires: [SESSION_OPEN, EXPANDED, { kind: 'condition', id: 'project_aws_profile_shown' }],
+    }],
+  },
   'composer.approval-mode': {
     kind: 'button',
     label: { from: 'description', key: 'uiLocations.description.composer_approval_mode' },

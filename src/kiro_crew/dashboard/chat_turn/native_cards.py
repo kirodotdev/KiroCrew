@@ -32,9 +32,11 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
 )
 from kiro_crew.agent_sdk.kas_subagent_runs import liveness_key
 from kiro_crew.dashboard.engine_subagent_cards import (
+    ENGINE_TURN_FIELD,
     EngineRow,
     child_tool_frame,
     engine_rows,
+    engine_turn_key,
     remember_dispatch_tasks,
     turn_runs_engine_children,
 )
@@ -192,8 +194,10 @@ def _native_card_field(value: object, limit: int = _NATIVE_CARD_FIELD_MAX) -> st
 
 
 def _native_card_extras(info: dict) -> dict[str, Any]:
-    """The optional ``label``, ``model`` and ``engine`` mark a card's frames carry."""
-    return {key: info[key] for key in ("label", "model", "engine") if info.get(key)}
+    """The optional ``label``, ``model``, ``engine`` mark and engine turn a card's frames carry."""
+    return {
+        key: info[key] for key in ("label", "model", "engine", ENGINE_TURN_FIELD) if info.get(key)
+    }
 
 
 def _native_card_result(card_output, card_id: str, info: dict) -> str:
@@ -291,6 +295,8 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
             }
             if isinstance(sub, EngineRow):
                 tracker[sid]["engine"] = True
+                if sub.get(ENGINE_TURN_FIELD):
+                    tracker[sid][ENGINE_TURN_FIELD] = sub[ENGINE_TURN_FIELD]
             if isinstance(sub, BackgroundCardRow):
                 tracker[sid]["background"] = sub.get("background") is True
                 for key in ("label", "model"):
@@ -664,9 +670,10 @@ async def _on_subagent_list(turn: _ChatTurn, event) -> None:
     # A co-tenant's roster, fanned out by a shared runtime, is not this turn's.
     turn._turn_native_activity = turn._turn_native_activity or not event.runtime_global
     _rows = event.subagents
+    # Every KAS turn: a dispatch's approval card shows the task (approval_card_fields).
+    remember_dispatch_tasks(turn._engine_dispatch_tasks, _rows)
     if turn_runs_engine_children(turn):
-        remember_dispatch_tasks(turn._engine_dispatch_tasks, _rows)
-        _rows = engine_rows(_rows, _native_tracker)
+        _rows = engine_rows(_rows, _native_tracker, engine_turn_key(turn))
     _native_subagent_sync(state, slot, _rows, _native_tracker, _native_card_output)
 
 

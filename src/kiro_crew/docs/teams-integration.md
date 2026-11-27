@@ -49,7 +49,8 @@ Framework **pushes** activities to a messaging endpoint you host. Kiro Crew:
 
   This is the whole of the `teams` extra. Installing the dependency directly is
   the form that works on every layout: Kiro Crew is not published on PyPI, so
-  `pip install "kirocrew[teams]"` cannot resolve, and the direct-URL form below
+  `pip install "kirocrew[teams]"` would fetch an unrelated PyPI project of that
+  name, and the direct-URL form below
   reinstalls Kiro Crew itself rather than just adding the dependency.
 
   If the channel is enabled without it, Kiro Crew logs an actionable error and
@@ -279,7 +280,9 @@ of auto-approval, so anything denied by policy stays denied.
 - **`/dashboard` issues a login credential.** It mints a presigned dashboard
   session URL for the asking user (default 1 hour, capped at 20), and issuance is
   recorded in the security event log. Everyone on `allowed_emails` can do this, so
-  treat that list as the set of people you would hand a dashboard session to.
+  treat that list as the set of people you would hand a dashboard session to. Only
+  the identity in `teams.owner_id` gets your own session, chat included; anyone
+  else's link cannot chat in your sessions.
 - The App Password and all bearer tokens are treated as secrets: the
   `app_password` field is env-only and never logged, the `MICROSOFT_APP_*`
   variables are hidden from agent subprocesses, and a preview pod force-disables

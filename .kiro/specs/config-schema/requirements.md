@@ -1,10 +1,10 @@
 # Requirements Document
 
-Status: implemented in `src/kiro_crew/config/schema.py`, `src/kiro_crew/config/validation.py`, and `scripts/generate_config_baseline.py`.
+Status: implemented in `src/kiro_crew/config/schema.py`, `src/kiro_crew/config/validation.py`, and `scripts/generate_config_baseline.py`. Historical where it differs from main: the dataclasses live in `config/sections_*.py` and `config/memory_sections.py`, not all in `config/loader.py`; the handler is `api_config_schema` in `src/kiro_crew/dashboard/handlers/agents.py` (it also returns `lockedByPolicy` and a settings descriptor); `agent.provider` is `enum=["acp"]` (`config/sections_agent.py`), with no Bedrock fields; the data home is `~/.kiro/crew/config.json`, not `~/.kirocrew/config.json`; and the baseline carries `generatedBy` and `entries` only, with no `generatedAt` (`KIROCREW_BASELINE_OUTPUT` can redirect where it is written).
 
 ## Introduction
 
-KiroCrew's configuration (`~/.kirocrew/config.json`) is defined implicitly by Python dataclasses in `config/loader.py`, with several keys (`workspaces`, `default_workspace`, `slack.*`) parsed ad-hoc outside the dataclass hierarchy. This feature formalizes the config schema by pulling all keys into the dataclass hierarchy, attaching rich metadata to the dataclass fields, generating a flat baseline document, exposing the schema via API for dashboard consumption, and adding runtime validation with graceful degradation. After this feature, the dataclasses are the complete and sole source of truth — no ad-hoc parsing remains.
+Kiro Crew's configuration (`~/.kiro/crew/config.json`) is defined implicitly by Python dataclasses in `config/loader.py`, with several keys (`workspaces`, `default_workspace`, `slack.*`) parsed ad-hoc outside the dataclass hierarchy. This feature formalizes the config schema by pulling all keys into the dataclass hierarchy, attaching rich metadata to the dataclass fields, generating a flat baseline document, exposing the schema via API for dashboard consumption, and adding runtime validation with graceful degradation. After this feature, the dataclasses are the complete and sole source of truth — no ad-hoc parsing remains.
 
 ## Glossary
 
@@ -60,7 +60,7 @@ KiroCrew's configuration (`~/.kirocrew/config.json`) is defined implicitly by Py
 #### Acceptance Criteria
 
 1. THE Baseline_Generator SHALL import the Schema_Registry and serialize its entries to a JSON file at `config-baseline.json` in the repository root.
-2. THE Baseline_Generator SHALL include a top-level `generatedBy` field with the value `"scripts/generate_config_baseline.py"` and a `generatedAt` ISO-8601 timestamp.
+2. THE Baseline_Generator SHALL include a top-level `generatedBy` field with the value `"scripts/generate_config_baseline.py"`.
 3. THE Baseline_Generator SHALL include a top-level `entries` array containing one JSON object per Config_Entry.
 4. FOR ALL Config_Entry records in the Schema_Registry, serializing to JSON and deserializing back SHALL produce an equivalent Config_Entry (round-trip property).
 5. THE Baseline_Generator SHALL be executable via `python scripts/generate_config_baseline.py` from the repository root.

@@ -40,6 +40,7 @@ from kiro_crew.sandbox_probe import (
     _PROBE_TRANSIENT_RETRY_DELAY_SECS,
     _WARM_JOIN_TIMEOUT_SECS,
     REMEDY_MOUNT_DENIED,
+    REMEDY_USERNS_CAP_ZERO,
     _inside_kirocrew_sandbox,
     _inside_macos_sandbox,
     _linux_remedy_guidance,
@@ -183,6 +184,28 @@ def remedy_guidance(remedy: str) -> str:
     for a mechanism instead of maintaining a drifting copy.
     """
     return _linux_remedy_guidance(remedy)
+
+
+def remedy_recovery(remedy: str, transient: bool) -> str:
+    """Public: what happens once the operator fixes the host, for a ``REMEDY_*`` token.
+
+    ``""`` for every token but :data:`REMEDY_USERNS_CAP_ZERO`, whose recovery turns
+    on the cache policy alone: an ENOSPC verdict (``transient``) is never cached, so
+    the next spawn sees a raised cap without a restart, while an EUSERS verdict is
+    cached until the gateway restarts. Shared by the refusal text and doctor so the
+    two state the same rule for the same verdict.
+    """
+    if remedy != REMEDY_USERNS_CAP_ZERO:
+        return ""
+    if transient:
+        return (
+            "This result is not cached: the next spawn checks the host again, so no "
+            "restart is needed once the value is raised. "
+        )
+    return (
+        "This result is cached for the life of the gateway, so restart the gateway "
+        "after raising the value. "
+    )
 
 
 # ── Background warm thread (never-block-on-loop policy) ──
@@ -496,13 +519,21 @@ def detect_backend(config_mode: str = "auto") -> str:
     elif _probe_sandbox_exec():
         _backend = "sandbox-exec"
     else:
-        transient, reason, _remedy = _last_unshare_failure or (False, "none", "")
+        transient, reason, remedy = _last_unshare_failure or (False, "none", "")
         if transient:
-            logger.warning(
-                "Sandbox backend probe failed transiently (%s); result NOT cached — "
-                "the next spawn re-probes",
-                reason,
-            )
+            if remedy == REMEDY_USERNS_CAP_ZERO:
+                logger.warning(
+                    "Sandbox backend unavailable: user namespaces are disabled on this "
+                    "host (user.max_user_namespaces=0; %s); result NOT cached — the next "
+                    "spawn checks again",
+                    reason,
+                )
+            else:
+                logger.warning(
+                    "Sandbox backend probe failed transiently (%s); result NOT cached — "
+                    "the next spawn re-probes",
+                    reason,
+                )
             return "none"
         _backend = "none"
     logger.info("Sandbox backend: %s (config_mode=%s)", _backend, config_mode)
@@ -533,6 +564,7 @@ def wrap_argv(
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     exec_cwd: str = "",
+    project_folder: str = "",
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
 ) -> tuple[list[str], str | None]:
@@ -571,6 +603,10 @@ def wrap_argv(
         exec_cwd: A directory the Linux namespace launcher enters after its seals
             and before it execs, failing closed unless it is read-only and empty
             (an app agent's launch copy). Ignored by every other backend.
+        project_folder: The folder the spawn works in. Its project MCP files are
+            sealed read-only (``project_mcp_files.project_mcp_targets``), so only a
+            ``request_server`` card changes them. Like ``extra_private_dirs`` it
+            never costs a delegation: a delegated sandbox applies no Crew seal.
         is_kiro_cli: Explicit executable classification for descriptor-backed
             Kiro snapshots whose launch path has no ``kiro-cli``
             basename. ``None`` retains basename detection for other callers.
@@ -916,6 +952,7 @@ def wrap_argv(
                     extra_private_dir_ids=extra_private_dir_ids,
                     extra_writable_dirs=extra_writable_dirs,
                     extra_expose_files=extra_expose_files,
+                    project_folder=project_folder,
                 )
         else:
             delegated = _delegate_to_kiro_internal_sandbox(
@@ -934,6 +971,7 @@ def wrap_argv(
                     sandbox_level,
                     strip_python_env=strip_python_env,
                     forward_ssh_auth_sock=forward_ssh_auth_sock,
+                    project_folder=project_folder,
                 )
 
     backend = detect_backend(config_mode=mode)
@@ -959,6 +997,7 @@ def wrap_argv(
             or extra_writable_dirs
             or extra_expose_files
             or exec_cwd
+            or project_folder
         ):
             wrapped = namespace_argv(
                 argv,
@@ -975,6 +1014,7 @@ def wrap_argv(
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
                 exec_cwd=exec_cwd,
+                project_folder=project_folder,
             )
         else:
             wrapped = namespace_argv(
@@ -996,6 +1036,7 @@ def wrap_argv(
             or extra_private_dirs
             or extra_writable_dirs
             or extra_expose_files
+            or project_folder
         ):
             return sandbox_exec_argv(
                 argv,
@@ -1009,6 +1050,7 @@ def wrap_argv(
                 extra_private_dir_ids=extra_private_dir_ids,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
+                project_folder=project_folder,
             )
         return sandbox_exec_argv(
             argv,
@@ -1079,18 +1121,26 @@ def wrap_argv(
                 and not governance_floor
             ):
                 return _first_party_no_backend_passthrough(argv, sandbox_level, strip_python_env)
-            if transient:
-                # The mechanism follows the retry advice rather than leading it: the
-                # cap case is permanently reported transient, so withholding it here
-                # would leave doctor and the logs unable to name the one sysctl that
-                # fixes the host, while leading with it would read as "reconfigure"
-                # to someone whose host is merely busy.
+            if transient and probe_remedy != REMEDY_USERNS_CAP_ZERO:
+                # The ambiguous cap token follows the retry advice rather than
+                # leading it: an ENOSPC whose cap did not read as 0 may be momentary
+                # pressure, so leading with the sysctl would read as "reconfigure" to
+                # someone whose host is merely busy, while withholding it would leave
+                # a host at its cap unable to learn which sysctl fixes it.
                 guidance = (
                     "This probe failure looks TRANSIENT (momentary resource "
                     "pressure) — it is not cached and the next spawn re-probes "
                     "automatically. Do NOT disable the sandbox for this; retry "
                     "instead. "
                 ) + _linux_remedy_guidance(probe_remedy)
+            elif probe_remedy == REMEDY_USERNS_CAP_ZERO:
+                # The cap read as 0, so the cause is certain for either cache policy:
+                # name the disabled cap and how this verdict recovers, ahead of the
+                # container and no-backend branches, whose opt-out text does not fit
+                # a host whose fix is one sysctl.
+                guidance = _linux_remedy_guidance(probe_remedy) + remedy_recovery(
+                    probe_remedy, transient
+                )
             elif _inside_macos_sandbox():
                 # Nesting under a FOREIGN sandbox — say so, and point at the
                 # config-level fix that hands isolation back to Kiro Crew's own
@@ -1276,12 +1326,12 @@ def wrap_argv(
                 detail=probe_reason,
                 # A transient verdict is never cached, so the host is free to
                 # recover on the next call — but it can still name a mechanism.
-                # `user.max_user_namespaces` exhaustion surfaces as ENOSPC, which
-                # is indistinguishable from momentary fd/disk pressure, so a
-                # configured cap of 0 is permanently reported as transient. Withholding
-                # the remedy there leaves the one host this token exists for with
-                # no way out; the steps are framed as "if this keeps happening" so
-                # they never read as advice to reconfigure a merely busy host.
+                # A NEWUSER ENOSPC is the user-namespace cap or momentary fd/disk
+                # pressure; the probe reads user.max_user_namespaces to tell a cap
+                # of 0 apart (REMEDY_USERNS_CAP_ZERO, named as a disabled cap) and
+                # otherwise keeps the ambiguous token, whose steps are framed as
+                # "if this keeps happening" so they never read as advice to
+                # reconfigure a merely busy host.
                 remedy=probe_remedy,
             )
         # Permitted: audit, warn (or info), and return unmodified argv.

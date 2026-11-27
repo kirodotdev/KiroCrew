@@ -14,8 +14,10 @@ admission and the ``stop_turn`` answer):
 * the press cancels the record's own runner, the inner task a bounded turn
   runs under ``asyncio.shield``, and that still ends the outer ``slot.task``;
 * a second press while that runner unwinds cancels nothing;
-* a runner that already opened its stream is never cancelled by an ``idle``
-  answer.
+* a runner that already opened its stream is not cancelled by an ``idle``
+  answer while it finishes within the soft-stop budget;
+* one still running after the budget (its provider turn over) is ended by the
+  press, by Stop and by Run now alike.
 """
 
 from __future__ import annotations
@@ -239,3 +241,166 @@ async def test_an_idle_answer_never_cancels_a_runner_whose_stream_is_open() -> N
     assert not press.task.cancelled()
     assert [row["content"] for row in record.rows("assistant")] == ["the reply"]
     assert record.stop_reason == STOP_REASON_END_TURN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["stop", "interrupt"])
+async def test_an_idle_answer_wakes_priority_after_the_runner_finishes(route: str) -> None:
+    from kiro_crew.dashboard import responsive_chat
+    from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+    press = _Press()
+
+    async def _act(ctx: TurnContext) -> Any:
+        if route == "stop":
+            return await _stop(ctx)
+        chosen = responsive_chat.first_priority_id(ctx.slot)
+        assert chosen is not None
+        response = await api_chat_slot_interrupt(
+            _interrupt_request(ctx.state, ctx.slot.key, chosen)
+        )
+        return json.loads(response.body)
+
+    def setup(ctx: TurnContext) -> None:
+        _answer_idle(ctx)
+        chosen = ctx.slot.queue_append("responsive follow-up", directive_user_origin=True)
+        ctx.slot._queue[-1][responsive_chat.RESPONSIVE_KEY] = True
+        assert responsive_chat.first_priority_id(ctx.slot) == chosen
+        _press_while_held(ctx, press, _act)
+
+    record = await run_turn(
+        TurnScript(
+            events=[_REPLY, Do(lambda _ctx: press.entered.set()), Wait(1), _DONE],
+            setup=setup,
+        )
+    )
+
+    expected = (
+        {"ok": True, "info": "no active turn"}
+        if route == "stop"
+        else {"ok": True, "outcome": "idle"}
+    )
+    assert press.replies == [expected]
+    assert press.ended_before_release is True
+    assert not press.task.cancelled()
+    assert record.stop_reason == STOP_REASON_END_TURN
+    assert press.stop_state == "idle"
+    assert [call.args[0] for call in record.successors] == ["responsive follow-up"]
+
+
+#: Virtual seconds a runner stays wedged after its provider turn: past the soft-stop
+#: budget's 60 s ceiling, whatever the config says.
+_WEDGED = 3600.0
+
+
+def _stop_card_states(ctx: TurnContext) -> list[str]:
+    states = []
+    for msg in ctx.slot.messages:
+        try:
+            data = json.loads(msg.get("cls") or "")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("kind") == "stop_event":
+            states.append(data["state"])
+    return states
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["stop", "interrupt"])
+async def test_a_press_ends_a_runner_that_outlives_its_provider_turn(route: str) -> None:
+    """The provider holds no turn, yet the runner never ends. The press
+    waits the soft-stop budget, then ends the runner, so the slot goes idle and
+    the composer takes the next prompt instead of every press adding a card."""
+    press = _Press()
+    cards: list[list[str]] = []
+
+    async def _interrupt(ctx: TurnContext) -> Any:
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+        chosen = ctx.slot.queue_append("chosen card")
+        response = await api_chat_slot_interrupt(
+            _interrupt_request(ctx.state, ctx.slot.key, chosen)
+        )
+        return json.loads(response.body)
+
+    async def _act(ctx: TurnContext) -> Any:
+        reply = await (_stop(ctx) if route == "stop" else _interrupt(ctx))
+        cards.append(_stop_card_states(ctx))
+        return reply
+
+    def setup(ctx: TurnContext) -> None:
+        _answer_idle(ctx)
+        ctx.slot.queue_append("queued first")
+        _press_while_held(ctx, press, _act)
+
+    record = await run_turn(
+        TurnScript(
+            events=[_REPLY, Do(lambda _ctx: press.entered.set()), Wait(_WEDGED), _DONE],
+            setup=setup,
+        )
+    )
+
+    if route == "stop":
+        assert press.replies == [{"ok": True}]
+        assert cards == [["stopped"]]
+        successors = ["queued first"]
+    else:
+        assert press.replies == [{"ok": True, "outcome": "idle"}]
+        successors = ["chosen card"]
+    # The press ended the runner long before the wedge would have let go.
+    assert press.ended_before_release is True
+    assert press.runner is not None and press.runner.done() and press.task.done()
+    assert press.stop_state == "idle"
+    assert record.stop_reason != STOP_REASON_END_TURN
+    assert [call.args[0] for call in record.successors] == successors
+
+
+@pytest.mark.asyncio
+async def test_a_second_press_during_the_wait_escalates_and_owns_the_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pressing again while the first press waits out the budget is the hard
+    kill. The first press still ends the runner after the budget, but never labels
+    the card "stopped": the escalation owns the card."""
+    from kiro_crew.dashboard import turn_dispatch
+
+    press = _Press()
+    seen: dict[str, Any] = {}
+    # Set when the press reads its budget, right before it parks in the wait.
+    waiting = asyncio.Event()
+    read_budget = turn_dispatch.native_cancel_ack_timeout_secs
+
+    def _budget() -> float:
+        waiting.set()
+        return read_budget()
+
+    monkeypatch.setattr(
+        turn_dispatch, "native_cancel_ack_timeout_secs", _budget  # flake-ok: spy, real value kept
+    )
+
+    async def _two_presses(ctx: TurnContext) -> Any:
+        # The turn's own start reads the budget too; only the press's read counts.
+        waiting.clear()
+        first = asyncio.ensure_future(_stop(ctx))
+        await asyncio.wait_for(waiting.wait(), _BOUND)
+        seen["second"] = await _stop(ctx)
+        seen["first"] = await first
+        seen["cards"] = _stop_card_states(ctx)
+        return seen["first"]
+
+    def setup(ctx: TurnContext) -> None:
+        _answer_idle(ctx)
+        _press_while_held(ctx, press, _two_presses)
+
+    await run_turn(
+        TurnScript(
+            events=[_REPLY, Do(lambda _ctx: press.entered.set()), Wait(_WEDGED), _DONE],
+            setup=setup,
+        )
+    )
+
+    assert seen["second"] == {"ok": True}
+    assert press.ended_before_release is True
+    assert press.runner is not None and press.runner.done() and press.task.done()
+    assert "stopped" not in seen["cards"]
+    assert press.stop_state == "killing"

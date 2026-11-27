@@ -577,12 +577,16 @@ def test_a_session_that_cannot_be_read_keeps_the_cards_as_they_were() -> None:
         (ACP_BACKEND_KIRO, "kirocrew", "dashboard:chat-1", "on", False),
         (ACP_BACKEND_CLAUDE, "kirocrew", "dashboard:chat-1", "on", False),
         (ACP_BACKEND_CODEX, "kirocrew", "dashboard:chat-1", "on", False),
-        # A session that is not a person's dashboard chat.
-        (ACP_BACKEND_KAS, "kirocrew", "cron:nightly", "on", False),
+        # Every chat kind the preview reaches is marked: a cron run, a channel chat,
+        # a crew member's chat.
+        (ACP_BACKEND_KAS, "kirocrew", "cron:nightly", "on", True),
+        (ACP_BACKEND_KAS, "kirocrew", "slack:C1:T1", "on", True),
+        (ACP_BACKEND_KAS, "kirocrew", "dashboard:member-ada", "on", True),
+        # A session that is not a chat: a Kiro Crew sub-agent run.
         (ACP_BACKEND_KAS, "kirocrew", "subagent:abc123", "on", False),
     ],
 )
-async def test_only_a_kas_default_agent_dashboard_chat_on_engine_is_marked(
+async def test_only_a_kas_chat_the_engine_mount_reached_is_marked(
     agents_dir, setting, tmp_path, backend: str, agent: str, key: str, preview: str, expected: bool
 ) -> None:
     """Through the session's real registration: what ``KasHarness.session_extras``
@@ -607,13 +611,15 @@ def test_a_replayed_card_keeps_the_engine_mark_running_and_finished() -> None:
     state._slots = {slot.key: slot}
     _sync(state, slot, _roster(_dispatch("in_progress")), engine=True)
     [running] = DashboardState.native_subagent_snapshots(state)
-    assert running["frame_extras"] == {"engine": True}
+    assert running["frame_extras"]["engine"] is True
     assert running["done"] is False
     assert running["task"] == PROMPT
 
     _sync(state, slot, _roster(_dispatch("completed", rawOutput="one")), engine=True)
     [done] = DashboardState.native_subagent_snapshots(state)
-    assert done["frame_extras"] == {"engine": True}
+    assert done["frame_extras"]["engine"] is True
+    # The gateway start rides on the replayed done frame (``state_parts.slot_directory``).
+    assert done["frame_extras"]["started"] == running["started"]
     assert done["done"] is True
 
 

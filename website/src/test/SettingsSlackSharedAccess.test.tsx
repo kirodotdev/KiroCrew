@@ -47,6 +47,26 @@ describe('Share Slack access', () => {
     expect(toggle()).toHaveAttribute('aria-checked', 'false')
   })
 
+  it('says Slack does not check listed IDs when verify_with_slack is off', async () => {
+    vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({
+      enabled: true,
+      verify_with_slack: false,
+      users: [{ user_id: 'U0FRIEND01', name: '', confirmed: true, reason: 'listed' }],
+    }))
+    renderWithProviders(<SlackSharedAccess />)
+    const note = await screen.findByRole('note')
+    expect(note).toHaveTextContent('Slack does not check the IDs you add.')
+    expect(note).toHaveTextContent('slack.shared_access.verify_with_slack')
+    expect(screen.getByText('On: everyone on the list below can use this Crew from Slack.')).toBeInTheDocument()
+    expect(screen.getByText('On your list. Slack was not asked to check this ID.')).toBeInTheDocument()
+  })
+
+  it('drops the not-checked line when Slack checks each ID', async () => {
+    vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({ enabled: true, verify_with_slack: true }))
+    renderWithProviders(<SlackSharedAccess />)
+    expect(await screen.findByRole('note')).not.toHaveTextContent('Slack does not check the IDs you add.')
+  })
+
   it('keeps the warning on the page while on', async () => {
     vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({ enabled: true }))
     renderWithProviders(<SlackSharedAccess />)
@@ -556,7 +576,7 @@ describe('Share Slack access', () => {
   it('names what only the owner can do in plain words, except on a remote session', async () => {
     vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({ enabled: true }))
     const { unmount } = renderWithProviders(<SlackSharedAccess />)
-    expect(await screen.findByText("Only you can change this list or switch, or approve tool prompts for a whole session. In Slack Code, each person works only in the code channels they open, and only you can change a code channel's settings.")).toBeInTheDocument()
+    expect(await screen.findByText("Only you can change this list or switch, turn on YOLO or change the approval mode. Each person can answer only the tool prompts their own messages asked for, “Trust session” included; you can answer any. In Slack Code, each person works only in the code channels they open, and only you can change a code channel's settings.")).toBeInTheDocument()
     unmount()
     vi.spyOn(api, 'getSlackSharedAccess').mockResolvedValue(data({ enabled: true, read_only: true }))
     renderWithProviders(<SlackSharedAccess />)

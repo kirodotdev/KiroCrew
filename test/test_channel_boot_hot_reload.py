@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -846,6 +847,77 @@ class TestSlackApplierReconciles:
         orch._tracking_channels = {"C_OLD"}
         orch._open_channels = {"C_OPEN_OLD"}
         return orch
+
+    @pytest.mark.parametrize(
+        "changed", ["slack.channels", "slack.channels.C1.agent", "slack.reactions"]
+    )
+    def test_only_channel_reloads_retire_stale_marks(self, changed):
+        from kiro_crew.config.loader import config_path
+
+        orch = self._orch()
+        path = config_path()
+        doc = {"slack": {"channels": {"C1": {"agent": "research", "shared_agent": "other"}}}}
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        # The first load of a new file rewrites it once through the locked writer,
+        # which deletes the stale mark. Put it back the way a hand edit would.
+        KiroCrewConfig.load()
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["slack"]["channels"]["C1"]["shared_agent"] = "other"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        cfg = KiroCrewConfig.load()
+        live.watch().prime(cfg)
+        assert (
+            "shared_agent"
+            in json.loads(path.read_text(encoding="utf-8"))["slack"]["channels"]["C1"]
+        )
+
+        asyncio.run(orch._on_slack_config_change(_change(cfg, changed)))
+
+        entry = json.loads(path.read_text(encoding="utf-8"))["slack"]["channels"]["C1"]
+        assert ("shared_agent" not in entry) == changed.startswith("slack.channels")
+        assert entry["agent"] == "research"
+
+    def test_a_degraded_channel_reload_does_not_retire_marks(self):
+        from kiro_crew.config.loader import config_path
+
+        orch = self._orch()
+        path = config_path()
+        path.write_text(
+            '{"slack":{"channels":{"C1":{"agent":"B","shared_agent":"A"}}}}', encoding="utf-8"
+        )
+        before = path.read_bytes()
+        cfg = _cfg_with("slack", degraded=frozenset({"slack"}))
+        with pytest.raises(live.ConfigDeferred):
+            asyncio.run(orch._on_slack_config_change(_change(cfg, "slack.channels")))
+        assert path.read_bytes() == before
+
+    def test_a_retire_write_does_not_make_the_watcher_write_again(self):
+        from kiro_crew.config.loader import config_path
+
+        orch = self._orch()
+        path = config_path()
+        path.write_text(
+            '{"slack":{"channels":{"C1":{"agent":"A","shared_agent":"A"}}}}', encoding="utf-8"
+        )
+        watcher = live.watch()
+        watcher.prime(KiroCrewConfig.load())
+        watcher.subscribe("slack", callback=orch._on_slack_config_change)
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["slack"]["channels"]["C1"]["agent"] = "B"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+
+        async def reload_twice():
+            assert await watcher.refresh_now() is not None
+            assert (
+                "shared_agent"
+                not in json.loads(path.read_text(encoding="utf-8"))["slack"]["channels"]["C1"]
+            )
+            before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+            await watcher.refresh_now()
+            assert path.read_bytes() == before
+            assert path.stat().st_mtime_ns == mtime
+
+        asyncio.run(reload_twice())
 
     def test_tracking_channels_are_reconciled_in_place(self, monkeypatch):
         orch = self._orch()

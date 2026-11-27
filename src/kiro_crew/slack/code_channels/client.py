@@ -235,6 +235,21 @@ class CodeChannelsClient:
         }
         await self._call("agents.conversations.setProperties", body)
 
+    async def set_pr_status(self, channel_id: str, value: str) -> None:
+        """``agents.conversations.setProperties`` with the channel-wide ``pr_status``.
+
+        Its own call, never batched with the context bar or ``agent_resource``,
+        so a refused value takes neither with it. *value* must be one of :data:`~.workspace.context_bar.PR_STATUS_VALUES` exactly (``""``
+        clears the status); anything else is refused before it is sent.
+        """
+        from kiro_crew.slack.code_channels.workspace.context_bar import PR_STATUS_VALUES
+
+        _check_id(channel_id, "channel_id")
+        if not isinstance(value, str) or value not in PR_STATUS_VALUES:
+            raise CodeChannelRequestError("pr_status must be one of Slack's values")
+        body = {"channel_id": channel_id, "code_channel": {"pr_status": value}}
+        await self._call("agents.conversations.setProperties", body)
+
     async def list_views(self, channel_id: str) -> list[dict[str, Any]]:
         """``agents.conversations.listViews``: every view tab (at most five)."""
         _check_id(channel_id, "channel_id")

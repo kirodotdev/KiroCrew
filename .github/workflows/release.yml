@@ -1544,7 +1544,10 @@ jobs:
             fi
             printf '%s' "${matches[0]:-}"
           }
-          WHEEL=$(one wheel -name '*.whl')
+          # Scoped to the pure-wheel artifact: build-platform-wheels uploads one
+          # cli-wheel-<platform> artifact per platform beside it, and a stable
+          # rebuild builds those again rather than promoting them.
+          WHEEL=$(one wheel -path '*/cli-wheel/*' -name '*.whl')
           SDIST=$(one sdist -name '*.tar.gz')
           # The bundle records every Linux artifact the promotion will republish:
           # three formats x two arches. Each lookup is scoped to BOTH its arch

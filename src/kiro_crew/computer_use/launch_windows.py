@@ -234,6 +234,12 @@ _ERR_UNTRUSTED_ROOT = (
     "system-wide — a per-user or temporary copy is indistinguishable from one this "
     "agent planted"
 )
+_ERR_CHANGEABLE_TARGET = (
+    "'{name}' is inside a protected install directory, but part of its path ({path}) can "
+    "be changed by this user or could not be verified, so it was not launched: what it "
+    "runs may not be what was installed (a gateway running with administrator rights can "
+    "change every install directory). Open the application yourself"
+)
 _ERR_NAME_MISMATCH = (
     "'{name}' resolves to an executable called '{actual}', so it was not launched: "
     "a catalog entry that points somewhere other than its own name cannot be "
@@ -369,23 +375,40 @@ def _under_protected(path: str) -> bool:
     Fails CLOSED on an unresolvable path or an unexpected error: a target we cannot
     vouch for is not one to run.
     """
+    return _protection_refusal(path, path) is None
+
+
+def _protection_refusal(path: str, name: str) -> "str | None":
+    """Why *path* is not trusted as a launch target, worded for *name*; ``None`` when it is.
+
+    The refusal names the condition that failed. Inside a root the target sits in a
+    system-wide install directory, so the outside-the-roots text would send the user after a
+    reinstall that cannot help; :data:`_ERR_CHANGEABLE_TARGET` names the writable directory,
+    or the replaceable file, instead. That is what every target inside a root meets on a
+    gateway running with administrator rights, which can write every root.
+    """
     try:
         real = os.path.realpath(path)
     except OSError:
-        return False
+        return _ERR_UNTRUSTED_ROOT.format(name=name)
     folded = real.casefold()
     for root in _protected_roots():
         root_folded = root.casefold().rstrip(os.sep)
         if folded != root_folded and not folded.startswith(root_folded + os.sep):
             continue
-        if _any_directory_is_writable(os.path.dirname(real), root_folded):
-            return False
-        return not _file_is_replaceable(real)
-    return False
+        changeable = _first_writable_directory(os.path.dirname(real), root_folded)
+        if changeable is None and _file_is_replaceable(real):
+            changeable = real
+        if changeable is None:
+            return None
+        return _ERR_CHANGEABLE_TARGET.format(name=name, path=changeable)
+    return _ERR_UNTRUSTED_ROOT.format(name=name)
 
 
-def _any_directory_is_writable(directory: str, root_folded: str) -> bool:
-    """Whether ANY directory from *directory* up to (and including) the root is writable.
+def _first_writable_directory(directory: str, root_folded: str) -> "str | None":
+    """The first directory from *directory* up to (and including) the root that is writable.
+
+    ``None`` when none is; the refusal names the directory it returns.
 
     **Every level, not just the immediate parent**, and that is the difference between a
     check and a formality. Write access to any single directory on the path is enough to
@@ -406,14 +429,14 @@ def _any_directory_is_writable(directory: str, root_folded: str) -> bool:
     current = directory
     while True:
         if _directory_is_writable(current):
-            return True
+            return current
         if current.casefold().rstrip(os.sep) == root_folded:
-            return False
+            return None
         parent = os.path.dirname(current)
         if parent == current:
             # Reached the filesystem root without meeting the protected root. Should be
             # unreachable (the prefix test ran first), so treat it as unverifiable.
-            return True
+            return current
         current = parent
 
 
@@ -771,8 +794,9 @@ def resolve_target(query: str) -> "tuple[str, str]":
     # (3) What it would RUN, as opposed to what was asked for at (1).
     if basename.casefold() in _REFUSED_EXECUTABLES:
         raise ComputerUseError(_ERR_SHELL_TARGET.format(name=app.name))
-    if not _under_protected(real):
-        raise ComputerUseError(_ERR_UNTRUSTED_ROOT.format(name=app.name))
+    refusal = _protection_refusal(real, app.name)
+    if refusal is not None:
+        raise ComputerUseError(refusal)
     if basename.casefold() != app.key.casefold():
         # A catalog entry pointing somewhere other than its own name. Legitimate on
         # exactly one measured entry (Microsoft's IEDIAG.EXE -> IEDIAGCMD.EXE alias)

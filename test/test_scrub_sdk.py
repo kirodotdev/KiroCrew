@@ -9,11 +9,13 @@ without a permission, and that nothing it reports can carry a payload.
 
 from __future__ import annotations
 
+import string
+
 import pytest
 
 from kiro_crew.apps.context import build_app_context
 from kiro_crew.apps.scrub_sdk import ScrubSDK
-from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN, synth
 
 _TOKEN = SAMPLE_SLACK_BOT_TOKEN
 
@@ -163,10 +165,28 @@ def test_a_link_the_dashboard_blocks_leaves_app_egress_as_the_placeholder(
     assert [r["url"] for r in blocked_links(text)] == [_EXFIL_URL]
     out = ScrubSDK().outbound(text)
     assert out.text == (
-        "see [REDACTED: suspicious URL to collector.example] and "
+        "see [REDACTED: suspicious URL to collector.example] (random-looking query) and "
         "https://example.com/docs?page=2 done"
     )
     assert out.urls_removed == 1 and out.redacted is True
+
+
+@pytest.mark.parametrize(
+    ("query", "reason"),
+    [
+        ("q=" + "a" * 250, "long query"),
+        # An access key id: the value masks keep it, and the link verdict flags it.
+        ("k=AKIA" + synth(16, string.ascii_uppercase + string.digits), "credential"),
+    ],
+)
+def test_the_placeholder_names_the_rule_that_blocked_the_link(
+    allowed_hosts_store, query, reason
+) -> None:
+    """A reader can tell a likely secret from a shape check a legitimate link can trip:
+    a fixed reason follows the tag, which keeps its shape, and carries no URL text."""
+    out = ScrubSDK().outbound(f"see https://collector.example/c?{query} done")
+    assert out.text == f"see [REDACTED: suspicious URL to collector.example] ({reason}) done"
+    assert out.urls_removed == 1
 
 
 def test_an_allowed_host_passes_untouched_in_both(allowed_hosts_store) -> None:

@@ -124,7 +124,7 @@ def check(target: Path, run_dir: Path) -> tuple[int, str]:
                 f"runs from ({source}). Do not rebase, checkout, switch, merge, pull "
                 f"or reset here. Make a worktree instead:\n"
                 f"  git -C {quoted} fetch origin main\n"
-                f"  git -C {quoted} worktree add ../<name> -b <branch> origin/main"
+                f"  git -C {quoted} worktree add --no-track ../<name> -b <branch> origin/main"
             )
     return EXIT_SAFE, f"OK: no running gateway runs from {root}"
 

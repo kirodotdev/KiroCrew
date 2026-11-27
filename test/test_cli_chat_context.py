@@ -9,6 +9,7 @@ skills. These drive ``cli_chat._chat`` end to end against a recording provider.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_CODEX,
     JsonRpcMessage,
 )
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.capabilities import SessionCapabilities, capabilities_for
 from kiro_crew.agent_sdk.mcp_problems import session_mcp_states
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import KiroCrewAgentConfig
@@ -259,6 +262,12 @@ class _KiroHarnessSession(_RecordingSession):
     def is_kas_backend(self) -> bool:
         return self._flag == "is_kas_backend"
 
+    @property
+    def capabilities(self) -> SessionCapabilities:
+        return capabilities_for(
+            ACP_BACKEND_KAS if self._flag == "is_kas_backend" else ACP_BACKEND_KIRO
+        )
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("flag", ["is_kiro_backend", "is_kas_backend"])
@@ -273,6 +282,38 @@ async def test_a_kiro_harness_gets_the_typed_text_as_before(monkeypatch, tmp_pat
     await cli_chat._chat(None, None, agent="pirate")
 
     assert provider.sent == ["say hello", "one", "two"]
+
+
+class _CapabilitySession(_RecordingSession):
+    """A session on no Kiro harness by name whose record says *loads* the agent."""
+
+    def __init__(self, loads: bool) -> None:
+        super().__init__(PROVIDER_LABEL_CLAUDE)
+        self._caps = dataclasses.replace(
+            capabilities_for(ACP_BACKEND_CLAUDE), harness_loads_agent_context=loads
+        )
+
+    @property
+    def capabilities(self) -> SessionCapabilities:
+        return self._caps
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loads", [True, False])
+async def test_the_typed_text_follows_the_capability_not_the_backend_name(
+    monkeypatch, tmp_path, loads
+) -> None:
+    """``harness_loads_agent_context``, not kiro's or KAS's name, sends the text as typed."""
+    _pirate_agent(tmp_path / "agent-skills")
+    provider = _CapabilitySession(loads)
+    _run_on(monkeypatch, provider)
+
+    await cli_chat._chat("say hello", None, agent="pirate")
+
+    if loads:
+        assert provider.sent == ["say hello"]
+    else:
+        assert _carries_the_agent(provider.sent[0], "say hello"), provider.sent
 
 
 class _KasSessionStillStartingAServer(_KiroHarnessSession):

@@ -350,6 +350,19 @@ describe('crewmateBubbleClass', () => {
       expect(crewmateBubbleClass(pos)).toMatch(/\bforced-colors:border\b/)
     }
   })
+
+  // #30200: the bubble's width is the content column, which the transcript row
+  // clamps to --mc-content-width (Settings → Chat → Content Width), the same
+  // bound the user's bubble has. A fixed measure (`max-w-[72ch]`) stops every
+  // reply short of the column whatever the setting says; `w-fit` would collapse
+  // a widget-only reply or a change card, which take no intrinsic width.
+  it('reaches the content column: no fixed measure, no shrink-to-fit', () => {
+    for (const pos of ['single', 'start', 'cont', 'end'] as const) {
+      expect(crewmateBubbleClass(pos)).toMatch(/(^|\s)max-w-full(\s|$)/)
+      expect(crewmateBubbleClass(pos)).not.toMatch(/(^|\s)max-w-(?!full(\s|$))/)
+      expect(crewmateBubbleClass(pos)).not.toMatch(/(^|\s)w-fit(\s|$)/)
+    }
+  })
 })
 
 /** The frontend half of the shared pin: the backend's `is_speech_row`

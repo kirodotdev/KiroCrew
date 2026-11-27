@@ -41,8 +41,20 @@ export const DEFAULT_BUDGET_BYTES = 500 * KB
  * Re-measured on main @ c275f70106: 347 chunks, 9,464,931 B. Bundling the first
  * load into 11 chunks (the `firstLoadGroups(...)` call in vite.config.ts) takes
  * it to 9,416,379 B, so the ceiling is lowered to 9,416,379 B * 1.05.
+ *
+ * Re-measured on main @ 976b681edc, same 5% rule (#42062): 11 chunks,
+ * 9,886,330 B, 1,414 B under the 9656 KB ceiling, its headroom spent by
+ * first-load growth across many features since c275f70106.
+ *
+ * Lowered on main @ 55e47ba417 plus the change that loads the Lottie player
+ * (lottie-web) on demand from PackAvatar: 11 chunks, 9,829,769 B. Ceiling =
+ * 9,829,769 B * 1.05, rounded up to whole KB.
+ *
+ * Lowered on main @ c31700d145 plus the change that loads the xterm terminal
+ * (CliPanel) on demand: 11 chunks, 9,478,468 B (main alone 9,830,620 B).
+ * Ceiling = 9,478,468 B * 1.05, rounded up to whole KB.
  */
-export const FIRST_LOAD_BUDGET_BYTES = 9656 * KB
+export const FIRST_LOAD_BUDGET_BYTES = 9720 * KB
 
 /**
  * Explicit ceilings for the chunks that are already known-large, keyed by
@@ -145,7 +157,15 @@ export const CHUNK_BUDGETS = {
   // `first-load-shared` holds the first-load modules an app window also reaches,
   // the English catalog among them (English is the always-loaded fallback), so no
   // lazy `import()` can move most of it out.
-  'first-load-shared': 3216 * KB, // measured 3,135,505 B
+  //
+  // Re-measured on main @ 2b4661001d, same 5% rule (#42738): 3,298,086 B, 4,902 B
+  // over the 3216 KB ceiling, its headroom spent by English strings added across
+  // many features since c275f70106.
+  //
+  // Lowered on main @ 55e47ba417, same 5% rule: PackAvatar now loads the Lottie
+  // player (lottie-web, ~170 KB) on demand, taking the chunk from 3,301,397 B
+  // to 3,129,668 B (bundle-report.json sizes, which this gate checks).
+  'first-load-shared': 3210 * KB, // measured 3,129,668 B
   // The dashboard's own first-load code, cut by import depth into four parts of
   // near-equal size; `main` is the top part, holding the entry. Because the cut
   // is by size, growth anywhere in it raises all four by about a quarter each.
@@ -165,7 +185,11 @@ export const CHUNK_BUDGETS = {
   // growth spread across many features; the other parts were still under.
   'first-load-1': 1164 * KB, // measured 1,134,732 B
   'first-load-2': 1240 * KB, // measured 1,209,236 B
-  main: 1410 * KB, // measured 1,374,200 B
+  //
+  // `main` re-measured on an analyze build of main @ d95060b87c, same 5% rule
+  // (#43195): it was 338 B over its 1410 KB ceiling, its headroom spent by
+  // first-load growth across many features since 666d93c742.
+  main: 1481 * KB, // measured 1,444,178 B
 
   // `heic-to/csp`: libheif and its HEVC decoder compiled to plain JavaScript,
   // which is why one decoder is this large. `utils/heicImage.ts`

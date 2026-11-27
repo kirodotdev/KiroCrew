@@ -34,7 +34,7 @@ import logging
 import socket
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 # Module level, not deferred inside the function: these are the seams both callers'
@@ -56,7 +56,6 @@ from kiro_crew.apps.hooks_integration import (
     stop_app_startup_hooks,
 )
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script
-from kiro_crew.apps.manifest import lifecycle_timeout_seconds
 from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact
@@ -92,6 +91,13 @@ class TeardownResult:
 
     warnings: list[str]
     failures: list[str]
+    # Slugs of Bot chats that could not be stopped during teardown.  Populated by
+    # teardown_app_runtime when stop_app_bot_chat_servers reports failures.
+    bot_stop_failures: list[str] = field(default_factory=list)
+    # True when stop_app_bot_chat_servers raised an exception and the stop state is
+    # unknown.  Callers must treat this as a failure and surface it even when
+    # bot_stop_failures is empty (no slug list is available).
+    bot_stop_errored: bool = False
 
     @property
     def ok(self) -> bool:
@@ -201,9 +207,17 @@ def port_released(port: int) -> bool:
 
 
 async def teardown_app_runtime(
-    name: str, record: dict[str, Any], *, withdrawing_trust: bool = False
+    name: str,
+    record: dict[str, Any],
+    *,
+    withdrawing_trust: bool = False,
+    state: "Any | None" = None,
 ) -> TeardownResult:
     """Stop *name*'s running code.
+
+    Every caller runs this inside ``bot_chat_app_tools.app_stop_fence(name)`` and
+    keeps that span open until its own state write (disabled, uninstalled, trust
+    revoked) is on disk, so no Bot chat can mount the app during any await here.
 
     Never raises for a failing step: once teardown starts, aborting halfway leaves
     the app in a worse state than pushing through and reporting. The sole preflight
@@ -240,9 +254,7 @@ async def teardown_app_runtime(
     # and refuses BEFORE any teardown mutation. Ordinary disable keeps its existing
     # unbounded wait contract. The proven result is passed into on_app_disable so
     # ownership cannot be checked a second time after teardown has begun.
-    startup_stopped = await stop_app_startup_hooks(
-        name, bounded=withdrawing_trust
-    )
+    startup_stopped = await stop_app_startup_hooks(name, bounded=withdrawing_trust)
     if not startup_stopped:
         return TeardownResult(
             warnings=[],
@@ -262,7 +274,40 @@ async def teardown_app_runtime(
     # call is first so the window is closed before it can open, and it runs before
     # ``disable_app`` writes the ``enabled`` flag, so a hook must not wait on that
     # flag to decide it has been switched off.
-    await notify_app_disabled(name)
+    await notify_app_disabled(name, state=state)
+
+    # Stop Bot chats that have this app's servers mounted AFTER the in-process
+    # workers are down.  Notify FIRST so app workers lose their authority before
+    # Bot teardown (which can block on network-bound close timeouts) starts.
+    # This is the ONE place the bot stop runs, so paths that never reach a route
+    # handler (session_consent.py, uninstall_app_in_process, handle_migrate_cleanup)
+    # are covered too.
+    _bot_stop_failures: list[str] = []
+    _bot_stop_errored = False
+    if state is not None:
+        try:
+            from kiro_crew.bot_chat_app_tools import (
+                revoke_app_generation,
+                stop_app_bot_chat_servers,
+            )
+
+            revoke_app_generation(name)
+            _bot_stopped, _bot_failed = await stop_app_bot_chat_servers(state, name)
+            _bot_stop_failures = _bot_failed
+            if _bot_failed:
+                logger.warning(
+                    "teardown_app_runtime: could not stop Bot chats for %r (slugs %s)",
+                    name,
+                    _bot_failed,
+                )
+        except Exception as exc:  # noqa: BLE001
+            # stop_app_bot_chat_servers raised: we do not know which Bot chats were
+            # stopped.  Mark this as a stop error so callers report incomplete cleanup
+            # rather than silently claiming success.
+            _bot_stop_errored = True
+            logger.warning(
+                "teardown_app_runtime: bot chat stop failed for %r: %s", name, exc, exc_info=True
+            )
 
     # Every note is scrubbed HERE, as it is created, rather than by each caller.
     #
@@ -351,12 +396,8 @@ async def teardown_app_runtime(
     # (a)'s benefit is kept where it is free: on an ORDINARY disable there is no
     # security urgency, so an app that is off and has no observed port still does
     # not get its code launched.
-    live_port = await loop.run_in_executor(
-        subprocess_executor(), recorded_backend_port, name
-    )
-    app_may_be_running = (
-        withdrawing_trust or record.get("enabled") is True or live_port is not None
-    )
+    live_port = await loop.run_in_executor(subprocess_executor(), recorded_backend_port, name)
+    app_may_be_running = withdrawing_trust or record.get("enabled") is True or live_port is not None
     if not app_may_be_running:
         logger.info(
             "skipping %r's own shutdown code: not enabled and no backend port observed",
@@ -364,6 +405,11 @@ async def teardown_app_runtime(
         )
 
     if on_disable and app_may_be_running:
+        # Call time: the bound's module stays off a manifest load (the facade serves it lazily).
+        from kiro_crew.apps.manifest_lifecycle_timeouts import (  # noqa: PLC0415
+            lifecycle_timeout_seconds,
+        )
+
         try:
             script_output = await run_lifecycle_script(
                 name,
@@ -441,7 +487,8 @@ async def teardown_app_runtime(
         if live_port is not None:
             logger.warning(
                 "backend for app %r is still listening on port %s after stop",
-                name, live_port,
+                name,
+                live_port,
             )
             _fail(
                 f"backend still running on port {live_port} — the gateway stopped "
@@ -471,10 +518,23 @@ async def teardown_app_runtime(
             logger.warning("deregistering app %r failed: %s", name, exc, exc_info=True)
             _fail(f"deregister failed: {exc}")
 
-    return TeardownResult(warnings=warnings, failures=failures)
+    # Reconcile after the teardown so live Bot chats that were affected reload.
+    if state is not None:
+        try:
+            from kiro_crew.bot_chat_app_tools import after_app_change
+
+            await after_app_change(state)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("teardown_app_runtime: after_app_change failed for %r: %s", name, exc)
+    return TeardownResult(
+        warnings=warnings,
+        failures=failures,
+        bot_stop_failures=_bot_stop_failures,
+        bot_stop_errored=_bot_stop_errored,
+    )
 
 
-async def stop_app_hooks_for_uninstall(name: str) -> TeardownResult:
+async def stop_app_hooks_for_uninstall(name: str, *, state: Any = None) -> TeardownResult:
     """Stop *name*'s in-process code before an uninstall removes its files.
 
     The uninstall handler runs its own backend stop and deregistration, so it does
@@ -501,7 +561,7 @@ async def stop_app_hooks_for_uninstall(name: str) -> TeardownResult:
     """
     warnings: list[str] = []
     failures: list[str] = []
-    await notify_app_disabled(name)
+    await notify_app_disabled(name, state=state)
     retained = loaded_hook_manifest(name)
     try:
         result = await on_app_disable(
@@ -569,16 +629,20 @@ def unregister_app_disable_hook(app: str) -> None:
     _APP_DISABLE_HOOKS.pop(app, None)
 
 
-async def notify_app_disabled(app: str) -> None:
+async def notify_app_disabled(app: str, *, state: Any = None) -> None:
     """Tell *app* its in-process workers must stop now.
 
     Never raises: the teardown has to complete whether or not the app could stand
     its workers down, for the same reason every other step here pushes through.
 
     The app's worker auto-approve grants end FIRST, before its own hook runs, so a
-    hook that fails or stalls cannot keep one alive (``worker_auto_approve``).
+    hook that fails or stalls cannot keep one alive (``worker_auto_approve``). The
+    goal loops on its slots stop next, for the same reason (``app_loops``).
     """
     revoke_worker_auto_approve(app)
+    from kiro_crew.apps.app_loops import stop_app_loops  # noqa: PLC0415
+
+    await stop_app_loops(app, state=state)
     hook = _APP_DISABLE_HOOKS.get(app)
     if hook is None:
         return
@@ -651,9 +715,7 @@ async def notify_slot_close_undone(app: str, slot_key: str) -> bool:
     try:
         await hook(slot_key)
     except Exception:  # noqa: BLE001 - reported to the caller, never raised
-        logger.warning(
-            "slot-close UNDO hook for app %r failed on %r", app, slot_key, exc_info=True
-        )
+        logger.warning("slot-close UNDO hook for app %r failed on %r", app, slot_key, exc_info=True)
         return False
     return True
 
@@ -685,9 +747,7 @@ async def notify_slot_closed(app: str, slot_key: str) -> bool:
     try:
         await hook(slot_key)
     except Exception:  # noqa: BLE001 - reported to the caller, never raised
-        logger.warning(
-            "slot-close hook for app %r failed on %r", app, slot_key, exc_info=True
-        )
+        logger.warning("slot-close hook for app %r failed on %r", app, slot_key, exc_info=True)
         return False
     return True
 

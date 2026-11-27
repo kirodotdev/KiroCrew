@@ -44,9 +44,14 @@ _root = _load_root_conftest()
 
 
 def _mirror_of(prefix: pathlib.Path, source_root: pathlib.Path) -> pathlib.Path:
-    """The mirror path CPython would use for sources under *source_root*."""
-    drive, tail = os.path.splitdrive(str(source_root.absolute()))
-    return prefix / (drive.replace(":", "") + tail.lstrip(os.sep))
+    """The mirror path CPython uses under *prefix* for sources under *source_root*."""
+    probe = os.path.join(str(source_root.absolute()), "probe.py")
+    previous = sys.pycache_prefix
+    sys.pycache_prefix = str(prefix)
+    try:
+        return pathlib.Path(os.path.dirname(importlib.util.cache_from_source(probe)))
+    finally:
+        sys.pycache_prefix = previous
 
 
 @pytest.fixture

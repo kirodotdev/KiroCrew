@@ -279,6 +279,7 @@ class AcpSessionHandle:
     _refuse_unidentifiable_mcp_approval = _sh_permissions._refuse_unidentifiable_mcp_approval
     _refuse_unreadable_mcp_identity = _sh_permissions._refuse_unreadable_mcp_identity
     _refuse_unretained_provenance = _sh_permissions._refuse_unretained_provenance
+    _refuse_reused_call_id = _sh_permissions._refuse_reused_call_id
     _tool_call_unclassified = _sh_permissions._tool_call_unclassified
     _refuse_by_harness = _sh_permissions._refuse_by_harness
     _note_permission_state = _sh_permissions._note_permission_state

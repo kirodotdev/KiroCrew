@@ -96,7 +96,7 @@ describe('user bubble stays inside a phone viewport', () => {
     // own cap — the column (`max-w-full`), which is what keeps a phone viewport
     // capped and what keeps a long steered bubble on the shared end edge in a
     // wide column: wrapper and bubble resolve to the same width.
-    const wrapper = container.querySelector('[data-role="user"] .relative')!
+    const wrapper = container.querySelector('[data-role="user"] .relative.w-fit')!
     expect(wrapper.className).toContain('max-w-full')
     expect(wrapper.className).not.toMatch(PIXEL_CAP)
   })

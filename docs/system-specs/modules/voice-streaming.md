@@ -576,12 +576,13 @@ surface can show:
 
 `slack.handler` accepts `!voice` thread commands (`_bang_voice`,
 `slack/handler_runtime/commands.py`) for enabling and disabling a
-thread, toggling global replies, and choosing a voice, engine, speed, or pitch.
-`!voice global` toggles `voice_reply.enabled` in config.json under the config write
-lock first and changes the live flag only after the write lands; when
-config.local.json sets that key, the overlay's value stays live and the reply says
-so. `!voice off` clears the thread's own setting and does not silence a thread
-while `voice_reply.enabled` is `true`.
+thread, turning global replies on or off, and choosing a voice, engine, speed, or
+pitch. `!voice global on` and `!voice global off` set `voice_reply.enabled` in
+config.json (a bare `!voice global` toggles it; any other word gets a usage reply
+and writes nothing) under the config write lock first and change the live flag only
+after the write lands; when config.local.json sets that key, the overlay's value
+stays live and the reply says so. `!voice off` clears the thread's own setting and
+does not silence a thread while `voice_reply.enabled` is `true`.
 Both Slack turn paths call `_reply_by_voice()` (`slack/handler_runtime/voice.py`)
 once the answer is out: the default transport path
 (`transport_dispatch.handle_message_transport()`, `messaging.use_transport`) and

@@ -344,6 +344,7 @@ describe('direct terminal commands', () => {
     )
     const run = screen.getByRole('button', { name: 'Review terminal command' })
     const review = screen.getByRole('group', { name: 'Review and run in terminal' })
+    expect(review.className).toMatch(/\bliquid-glass\b.*\bglass-thick\b/)
     expect(within(review).getAllByRole('button')).toEqual([run])
     expect(within(review).getByRole('status')).toHaveTextContent('Terminal panel · selected project')
     expect(run).toBeEnabled()

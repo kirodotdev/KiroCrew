@@ -165,6 +165,17 @@ def _list_themes_sync() -> list[dict[str, Any]]:
     return result
 
 
+async def _theme_write_refusal(request: web.Request, operation: str) -> web.Response | None:
+    """The owner gate for a theme write: the owner or a teammate, never another session.
+
+    Reads and asset serving stay open, since every dashboard renders a theme.
+    Imported in the body: ``_shared`` reaches back into sibling handler modules.
+    """
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    return await require_owner_for_dashboard_caller(request, operation)
+
+
 async def api_themes(request: web.Request) -> web.Response:
     """GET /api/themes — list all custom themes, sorted by creation date."""
     result = await asyncio.get_running_loop().run_in_executor(
@@ -175,6 +186,9 @@ async def api_themes(request: web.Request) -> web.Response:
 
 async def api_themes_create(request: web.Request) -> web.Response:
     """POST /api/themes — create a new custom theme."""
+    denied = await _theme_write_refusal(request, "themes.create")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -868,6 +882,9 @@ async def api_themes_install(request: web.Request) -> web.Response:
     Fetch/move -> validate (data + structure) -> register as
     ``_themes_dir()/<slug>/``.
     """
+    denied = await _theme_write_refusal(request, "themes.install")
+    if denied is not None:
+        return denied
     refused = _theme_install_admission()
     if refused is not None:
         return refused
@@ -921,6 +938,9 @@ async def api_themes_install_zip(request: web.Request) -> web.Response:
     temporary directory and installed through the same stage -> validate ->
     promote pipeline as a local folder.
     """
+    denied = await _theme_write_refusal(request, "themes.install_zip")
+    if denied is not None:
+        return denied
     refused = _theme_install_admission()
     if refused is not None:
         return refused
@@ -951,6 +971,10 @@ async def api_themes_install_zip(request: web.Request) -> web.Response:
 
 async def api_theme_detail(request: web.Request) -> web.Response:
     """GET/PUT/DELETE /api/themes/{slug} — get, update, or delete a custom theme."""
+    if request.method not in ("GET", "HEAD"):
+        denied = await _theme_write_refusal(request, f"themes.{request.method.lower()}")
+        if denied is not None:
+            return denied
     slug = request.match_info["slug"]
     # Sanitize slug to prevent path traversal
     safe_slug = re.sub(r"[^a-z0-9\-]", "", slug)

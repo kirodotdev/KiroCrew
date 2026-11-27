@@ -502,6 +502,8 @@ WORKER_WRITERS: dict[tuple[str, str], tuple[frozenset[str], ...]] = {
     ("board/publisher.py", "_send"): (frozenset({"_writable"}),),
     ("board/publisher.py", "_pin"): (frozenset({"_writable"}),),
     ("board/publisher.py", "_alert"): (frozenset({"_writable"}),),
+    # the pointer line on a moved Conductor-thread board Slack would not delete
+    ("board/publisher.py", "_retire"): (frozenset({"_writable"}),),
 }
 #: Modules that produce worker content: every raw send in them is classified above.
 WORKER_MODULES = ("board/__init__.py", "board/publisher.py", "board/source.py")

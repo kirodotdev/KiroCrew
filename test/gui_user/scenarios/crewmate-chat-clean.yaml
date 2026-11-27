@@ -1,9 +1,10 @@
 # Nightly: a mate's chat shows only what the mate SAYS. The gateway
 # writes many machinery rows into a chat (nudges, tool calls, tool results,
 # patrol injections); an ordinary chat renders them as cards, a mate's chat
-# hides them and lays the spoken text out as Slack-style bubble runs with the
-# mate's avatar and name on the first bubble of each run
-# (docs/system-specs/modules/crew-mode.md, "A mate's chat").
+# hides them and lays the spoken text out as bubble runs with no author line:
+# the chat header's identity pill (the mate's face and name) names the one
+# speaker, so a reply carries no avatar or name of its own
+# (website/src/pages/chat/CrewmateMessage.tsx).
 #
 # The seeded state is produced live rather than shipped as a fixture: the
 # packaged fake ACP backend emits a tool_call + tool_call_update titled
@@ -39,7 +40,7 @@ steps:
   - Look at the whole conversation, top to bottom, without scrolling past it.
 expectations:
   - Two reply bubbles are visible, each containing "pong from the fake ACP backend", one under each of your messages.
-  - Each reply bubble shows the mate's avatar and its name (Nova Sky or "nova-sky") above the text, on the first bubble of that reply.
+  - The header above the conversation shows the mate's avatar with its name (Nova Sky or "nova-sky"). The replies are plain bubbles with no avatar or name of their own; that header is what names the speaker.
   - Nothing on screen mentions "fake demo tool", "echo hello-from-fake", a tool call or a command; no tool card, spinner or collapsed tool row sits between your messages and the replies.
   - No red error banner or error bubble is visible in the conversation.
 max_steps: 20

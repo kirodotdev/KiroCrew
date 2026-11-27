@@ -40,6 +40,7 @@ import { desktopWindowBridge, desktopWindowTarget } from './desktopWindow/deskto
 // fetches a non-English catalog on demand; plain `./i18n` has no loader, so
 // importing it here would render English for every user whatever they picked.
 import { ensureCatalog, i18next, initI18n, isCatalogChunkError } from './i18n/lazy'
+import { isSpeculativeTerminalChunkError } from './components/terminalSessions'
 import { DEFAULT_LANGUAGE } from './i18n/languages'
 import { LanguageProvider } from './i18n/LanguageProvider'
 import { AppMotionConfig } from './AppMotionConfig'
@@ -123,6 +124,8 @@ window.addEventListener('vite:preloadError', (event) => {
   // Suppress only known catalog chunks; URL-less errors keep the normal reload path.
   const preloadError = (event as Event & { payload?: unknown }).payload
   if (isCatalogChunkError(preloadError)) return
+  // A hover or idle preload of the terminal is not worth a reload over unsaved work.
+  if (isSpeculativeTerminalChunkError(preloadError)) return
   const AT_KEY = 'vite-preload-reloaded-at'
   const N_KEY = 'vite-preload-reload-count'
   const COOLDOWN_MS = 10_000

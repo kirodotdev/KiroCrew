@@ -255,7 +255,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
   // The server's groups (the worker list API), so the row, the panel and the
   // breadcrumb agree. Only what needs attention is drawn (CrewRowAttention); the
   // full counts live in the tooltip. A failed poll says so in the status line.
-  const { lastWorkers, failed, paused } = useCrewWorkerSummary(root)
+  const { lastWorkers, failed, paused, closedOmitted } = useCrewWorkerSummary(root)
   const { groups, done, total } = summarizeCrewWorkers(lastWorkers ?? [])
   const rowCounts = crewRowCounts(groups)
   const running = rowCounts.find(c => c.bucket === 'working')?.count ?? 0
@@ -287,7 +287,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
   const member = longest ? lastWorkers?.find(w => w.key === longest.worker) : undefined
   const stalledForMs = longest ? Date.now() - longest.since : 0
   const stalledName = member?.title || member?.agent || longestSlot || i18nT('commandCenter.worker_untitled')
-  const title = crewRowTooltip(total, rowCounts, stall.stalled, needsYou)
+  const title = crewRowTooltip(total + closedOmitted, rowCounts, stall.stalled, needsYou)
   // Finished only when the main chat is settled too, and, with a ledger, the gateway's run verdict says done.
   const allDone = (work?.run ? work.run.settled === 'done' : total > 0 && done === total) && !own
   // An interrupted turn or a stalled goal loop of the main chat is said first.
@@ -300,7 +300,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
       {failed && own && <CrewStateWord kind={own.kind} title={own.title} />}
       {!failed && ownFirst && <CrewStateWord kind={ownFirst.kind} title={ownFirst.title} />}
       {failed ? (
-        <ErrorNotice variant="inline" askAgent className="min-w-0" messageClassName="truncate" message={i18nT('commandCenter.workers_error')} />
+        <ErrorNotice variant="inline" askAgent className="min-w-0" messageClassName="truncate" messageTooltip={i18nT('commandCenter.workers_error')} message={i18nT('commandCenter.workers_error')} />
       ) : (
         <CrewRowAttention needsYou={needsYou} stalled={stall.stalled} running={running} done={allDone} paused={paused}
           stalledName={stall.stalled > 0 ? stalledName : undefined} stalledForMs={stall.stalled > 0 ? stalledForMs : undefined} title={title} />
@@ -367,7 +367,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const {
     connected, mode, isMobile, colorMode, defaultAgent, installedAgents, memoryRows, tagById, paletteColors, boost, boostFor,
     recentTintCount, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort,
-    guideOnRowControl, showUnreadDot, manualReorderOff,
+    guideOnRowControl, showUnreadDot, expandLinkedItems, manualReorderOff,
   } = view.shell
   const {
     onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder, onManualKeyboardReorder,
@@ -1930,7 +1930,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                     rootOwes={s.pending_approval || s.needs_input || subagentAwaiting > 0 || (loopWaiting && !(crewWork?.person ?? 0)) ? 1 : 0} />
                 : <SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />}
               // A session whose chips are turned off shows no linked-items count and no chips.
-              slotKey={s.key} links={s.source_links_off ? undefined : s.source_links} total={s.source_links_total} connected={connected} isActive={isActive} onOpenSource={onOpenSource}
+              slotKey={s.key} links={s.source_links_off ? undefined : s.source_links} total={s.source_links_total} defaultOpen={expandLinkedItems} connected={connected} isActive={isActive} onOpenSource={onOpenSource}
               onActivateSlot={() => { dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true })); onSelectSlot?.(s.key) }} />
             {/* No tag chips here: every tag renders in the meta line above as
              *  tinted `· name` text. A chip row would print each tag twice. */}

@@ -271,7 +271,11 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "port is part of the target, so a forwarded port on a loopback address (a container "
         "or VM behind `ssh -p 2222 localhost`) is denied like the host, since sshd here "
         "could listen on that port too. Operator recourse for container/VM workflows is "
-        "the per-rule toggle in Settings until a port-scoped exemption ships."
+        "the per-rule toggle in Settings until a port-scoped exemption ships. (4) WILDCARD: "
+        "a `*` word can be read as a possible ssh, and a later word that names this machine, "
+        "such as a bare `0` (0.0.0.0, read as this machine), as its target. A backtick span "
+        "is read this way even inside single quotes, so a cron schedule such as `0 3 * * 0` "
+        "in backticks is refused; in a schedule, write Sunday as `7`."
     ),
     "sandbox-escape-git-tar-self": (
         "Matched structurally on the command's argv, not by the pattern text above: a git "

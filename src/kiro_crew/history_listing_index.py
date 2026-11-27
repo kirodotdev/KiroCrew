@@ -287,6 +287,25 @@ class SessionListingIndex:
         :data:`MAX_ROWS` transcripts or :data:`MAX_RETAINED_BYTES` it is
         ``log.list_sessions()`` itself.
         """
+        rows, over, _listed, _complete = self._listing()
+        return self._log.list_sessions() if over else rows
+
+    def list_sessions_status(self) -> tuple[list[dict], bool]:
+        """:meth:`list_sessions` plus whether it is complete, both as the direct scan answers.
+
+        When this call could not read the directory (its names pass or build failed),
+        no rows and False. When a listed transcript's last stat failed with an error
+        other than a missing file, the rows and False. A missing directory lists
+        complete and empty. Over a bound it is the direct scan.
+        """
+        rows, over, listed, complete = self._listing()
+        if over:
+            return self._log._catalog_projection.list_sessions_status()
+        return (rows if listed else []), complete
+
+    def _listing(self) -> tuple[list[dict], bool, bool, bool]:
+        """The indexed rows; whether the index is over a bound; whether the rows rest on a
+        successful read of the directory; and whether they are complete."""
         with self._lock:
             if self._built:
                 # Before the journal replay and any scan: a change landing after this
@@ -318,8 +337,11 @@ class SessionListingIndex:
             if self._snapshot is None:
                 self._snapshot = self._build_snapshot()
             rows = [dict(row) for row in self._snapshot]
-        if over:
-            return self._log.list_sessions()
+            # A failed directory read leaves a pass due; a failed stat leaves its row to retry.
+            listed = self._built and not self._names_due and not self._rebuild_due
+            complete = listed and all(
+                self._entries[stem].status != "unreadable" for stem in self._retry
+            )
         if due:
             try:
                 self._submit(self._run_reconcile)
@@ -327,7 +349,7 @@ class SessionListingIndex:
                 logger.debug("Session listing reconcile not scheduled", exc_info=True)
                 with self._lock:
                     self._reconciling = False
-        return rows
+        return rows, over, listed, complete
 
     def has_messages(self, key: str, *, identity: CacheIdentity | None = None) -> bool | None:
         """Return the indexed ``log.has_messages(key)`` answer, else None.

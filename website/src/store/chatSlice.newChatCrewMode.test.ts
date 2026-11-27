@@ -4,7 +4,8 @@ import { configureStore } from '@reduxjs/toolkit'
  * true`, the person's own New chat entry points) turns conductor mode on the way the
  * composer chip does, by the ordinary agent switch to the conductor after the
  * create, and only for a chat the chip would be offered on. The create request
- * itself is unchanged. */
+ * carries one more flag for the same entry points, `start_mode_default`, which
+ * asks for the person's stored start mode (`dashboard.default_approval_mode`). */
 
 const api = vi.hoisted(() => ({
   createChatSlot: vi.fn(),
@@ -52,6 +53,18 @@ describe('createSlot new chat conductor mode default', () => {
   })
   afterEach(() => {
     resetCrewModeCatalog()
+  })
+
+  it('asks for the stored start mode only from a New chat entry point', async () => {
+    await created({ crewModeDefault: true, defaultFolder: true })
+    expect(api.createChatSlot.mock.calls[0][13]).toBe(true)
+    api.createChatSlot.mockClear()
+    await created({ agent: 'kirocrew', sessionFolder: false })
+    expect(api.createChatSlot.mock.calls[0][13]).toBe(false)
+    api.createChatSlot.mockClear()
+    // New Incognito / Temporary ask for it on their own, outside conductor mode.
+    await created({ memory_mode: 'incognito', defaultFolder: true, startModeDefault: true })
+    expect(api.createChatSlot.mock.calls[0][13]).toBe(true)
   })
 
   it('switches an opted-in New chat to the conductor and opens it switched', async () => {

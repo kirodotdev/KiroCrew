@@ -2,7 +2,12 @@
 
 ``POST`` body ``{"session_key", "action", "value"?}``, ``action`` one of ``play``,
 ``pause``, ``seek``, ``volume``; ``value`` is seconds for ``seek`` and 0-1 for
-``volume``. ``GET ?session_key=`` reads the state: a GET, so a player's poll writes no
+``volume``. ``action`` ``recipe`` with ``recipe: "<name>"`` runs one of the app's
+approved ``permissions.browserRecipes`` (``apps/browser_recipes.py``,
+``browser_harness/recipes.py``) and answers ``{"ok": true, "session_key", "recipe",
+"steps"}``, or a refusal naming the failed ``step``; a recipe the owner has not
+approved (or the app does not declare) is 403 ``recipe_not_approved``, and any
+recipe while the ``app_browser_sdk`` Feature Preview is off is 403 ``preview_off``. ``GET ?session_key=`` reads the state: a GET, so a player's poll writes no
 row through the mutating-call audit middleware. Answers ``{"ok": true, "session_key", "media": {...}}`` with the
 element's state (``paused``, ``currentTime``, ``duration``, ``volume``, ``muted``),
 or ``{"ok": false, "code", "error"}`` with HTTP 200 when the tab said no
@@ -40,7 +45,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.apps import browser_sites
-from kiro_crew.browser_harness import media
+from kiro_crew.browser_harness import media, recipes
 from kiro_crew.browser_harness.budgets import LOCK_WAIT_S, OP_TIMEOUT_S
 from kiro_crew.browser_harness.governance import DASHBOARD_SURFACE_KEY
 from kiro_crew.browser_harness.live_hub import get_live_hub
@@ -53,6 +58,8 @@ logger = logging.getLogger(__name__)
 
 #: Largest body; a real one is under 100 bytes.
 _MAX_BODY_BYTES = 1024
+#: The ``action`` that runs one of the app's approved browser recipes.
+RECIPE_ACTION = "recipe"
 
 
 def _error(code: str, message: str, status: int) -> web.Response:
@@ -145,9 +152,20 @@ async def api_browser_media(request: web.Request) -> web.Response:
     if key is None:
         return _error("unknown_session", "session_key does not name an open session", 404)
     action = body.get("action")
-    allowed = ("state",) if request.method == "GET" else media.ACTIONS[1:]
+    allowed = ("state",) if request.method == "GET" else (*media.ACTIONS[1:], RECIPE_ACTION)
     if not isinstance(action, str) or action not in allowed:
         return _error("bad_action", f"action must be one of: {', '.join(allowed)}", 400)
+    recipe = None
+    if action == RECIPE_ACTION:
+        if not await _recipes_preview_on():
+            return _error("preview_off", _preview_off_text(), 403)
+        recipe = await _approved_recipe(request, key, body.get("recipe"))
+        if recipe is None:
+            return _error(
+                "recipe_not_approved",
+                "the app has no recipe of that name the owner approved",
+                403,
+            )
     ok, value = _value(action, body.get("value"))
     if not ok:
         return _error("bad_value", "value must be seconds for seek, or 0 to 1 for volume", 400)
@@ -172,6 +190,32 @@ async def api_browser_media(request: web.Request) -> web.Response:
         async with hub.op_fence(key):
             if hub.in_control(key):
                 result = {"ok": False, "code": "user_in_control", "error": "you are using this tab"}
+            elif action == RECIPE_ACTION:
+                # Approval must still hold after waiting for the browser and takeover locks.
+                sites = await browser_ops.session_sites(request, key)
+                recipe = await _approved_recipe(request, key, body.get("recipe"))
+                if not await _recipes_preview_on():
+                    result = {"ok": False, "code": "preview_off", "error": _preview_off_text()}
+                elif not sites or sites == browser_sites.NO_PAGES:
+                    result = {
+                        "ok": False,
+                        "code": "not_app_browser",
+                        "error": (
+                            browser_ops.SITES_REVOKED_TEXT
+                            if sites == browser_sites.NO_PAGES
+                            else "this session is not an app's own browsing session"
+                        ),
+                    }
+                elif recipe is None:
+                    result = {
+                        "ok": False,
+                        "code": "recipe_not_approved",
+                        "error": "the app has no recipe of that name the owner approved",
+                    }
+                else:
+                    result = await asyncio.wait_for(
+                        _run_recipe(hub, key, supervisor, sites, recipe), timeout=OP_TIMEOUT_S
+                    )
             else:
                 result = await asyncio.wait_for(
                     _run(hub, key, supervisor, sites, action, value), timeout=OP_TIMEOUT_S
@@ -186,16 +230,80 @@ async def api_browser_media(request: web.Request) -> web.Response:
     # A ``state`` read changes nothing and a player page polls it, so it writes no
     # row: one per poll would crowd real events out of the size-capped log.
     if action != "state":
+        # A recipe row names the recipe and how it clicked (``recipes.CLICK_KIND``),
+        # so a click the site ignored is traceable to a script click.
+        named = str(body.get("recipe"))[:32]
+        extra = (
+            {"resources": f"{request.path} recipe={named!r} click={recipes.CLICK_KIND}"}
+            if action == RECIPE_ACTION
+            else {}
+        )
         browser_live._audit(
             request,
-            operation="browser_media",
+            operation="browser_recipe" if action == RECIPE_ACTION else "browser_media",
             outcome="allowed" if result.get("ok") else "error",
             error="" if result.get("ok") else str(result.get("code") or ""),
+            **extra,
+        )
+    if result.get("ok") and recipe is not None:
+        return web.json_response(
+            {
+                "ok": True,
+                "session_key": key,
+                "recipe": recipe.name,
+                "steps": result.get("steps"),
+                "click": recipes.CLICK_KIND,
+            }
         )
     if result.get("ok"):
         state = {k: v for k, v in result.items() if k not in ("ok", "center")}
         return web.json_response({"ok": True, "session_key": key, "media": state})
     return web.json_response(result)
+
+
+async def _recipes_preview_on() -> bool:
+    """Whether the ``app_browser_sdk`` preview that recipes sit behind is on, read fresh."""
+    from kiro_crew.apps.browser_recipes import preview_on  # noqa: PLC0415
+
+    return await asyncio.to_thread(preview_on)
+
+
+def _preview_off_text() -> str:
+    from kiro_crew.apps.browser_sdk import PREVIEW_OFF_TEXT  # noqa: PLC0415
+
+    return PREVIEW_OFF_TEXT
+
+
+async def _approved_recipe(request: web.Request, key: str, name: Any) -> Any:
+    """The approved recipe *name* of the app that owns slot *key*, read fresh; else ``None``."""
+    from kiro_crew.apps.browser_recipes import app_browser_recipes  # noqa: PLC0415
+
+    app = browser_ops.slot_app(request.app["state"], key)
+    if not app or not isinstance(name, str):
+        return None
+    approved = await asyncio.to_thread(app_browser_recipes, app)
+    return next((r for r in approved if r.name == name), None)
+
+
+async def own_tab_context(hub: Any, key: str, supervisor: Any, sites: tuple[str, ...]) -> Any:
+    """An op context on *key*'s own tab, switched to without raising it; ``None`` when
+    the session has no tab the gateway opened."""
+    target = hub.target_of(key)
+    if not target or target not in set(browser_ops._ledgered_targets(supervisor)):
+        return None
+    ctx = browser_ops.build_context(
+        key, supervisor, hub, caller_key=DASHBOARD_SURFACE_KEY, sites=sites
+    )
+    tab = await ctx.helper("current_tab")
+    current = (
+        str(tab.get("targetId") or tab.get("target_id") or "") if isinstance(tab, dict) else ""
+    )
+    if current != target:
+        await ctx.helper("switch_tab", target=target, activate=False)
+    return ctx
+
+
+_NO_TAB = {"ok": False, "code": "no_tab", "error": "this session has no open browser tab"}
 
 
 async def _run(
@@ -207,19 +315,20 @@ async def _run(
     value: float | None,
 ) -> dict[str, Any]:
     """Point the daemon at *key*'s own tab, then run the media action there."""
-    target = hub.target_of(key)
-    if not target or target not in set(browser_ops._ledgered_targets(supervisor)):
-        return {"ok": False, "code": "no_tab", "error": "this session has no open browser tab"}
-    ctx = browser_ops.build_context(
-        key, supervisor, hub, caller_key=DASHBOARD_SURFACE_KEY, sites=sites
-    )
-    tab = await ctx.helper("current_tab")
-    current = (
-        str(tab.get("targetId") or tab.get("target_id") or "") if isinstance(tab, dict) else ""
-    )
-    if current != target:
-        await ctx.helper("switch_tab", target=target, activate=False)
+    ctx = await own_tab_context(hub, key, supervisor, sites)
+    if ctx is None:
+        return dict(_NO_TAB)
     return await media.control(ctx, action, value)
 
 
-__all__ = ["api_browser_media"]
+async def _run_recipe(
+    hub: Any, key: str, supervisor: Any, sites: tuple[str, ...], recipe: Any
+) -> dict[str, Any]:
+    """Point the daemon at *key*'s own tab, then run *recipe* there."""
+    ctx = await own_tab_context(hub, key, supervisor, sites)
+    if ctx is None:
+        return dict(_NO_TAB)
+    return await recipes.run(ctx, recipe)
+
+
+__all__ = ["RECIPE_ACTION", "api_browser_media", "own_tab_context"]

@@ -644,6 +644,28 @@ def _delete_ref_if_unchanged(root: str, branch: str, base_sha: str) -> bool:
     return proc.returncode == 0
 
 
+def _deregister_missing(root: str, dest: str) -> None:
+    """Drop git's registration of ``dest`` once its folder is gone, and nothing else.
+
+    Never ``git worktree prune``. This git runs inside the sandbox, which hides
+    every session's scratch root, so a repository-wide prune reads every scratch
+    worktree of ``root`` another session keeps there as "gitdir file points to
+    non-existent location" and deletes its ``.git/worktrees/<id>`` while that
+    session is still working in it. ``git worktree remove <path>`` on a path that
+    is gone drops that one registration and exits 0; on a path git never
+    registered it exits 128 and touches nothing, so a call with nothing to drop is
+    harmless. It is only run once the folder is gone: with the folder in place git
+    would delete the tree itself, and a tree still standing here is not proven to
+    be this request's own. That check and the remove are two steps, so the caller
+    holds the lock that serializes creation at ``dest`` across them (``_repo_lock``
+    for the follow-up card, ``crewmate_worktree._lock`` for Bot and run worktrees);
+    otherwise a worktree added at ``dest`` in between would be the one removed.
+    """
+    if os.path.lexists(dest):
+        return
+    _run_git(["worktree", "remove", dest], root)
+
+
 def _cleanup_partial(
     root: str,
     dest: str,
@@ -683,23 +705,23 @@ def _cleanup_partial(
                 # `worktree remove` refused (e.g. never registered) — drop the
                 # directory we created ourselves so the retry path is clear.
                 shutil.rmtree(dest, ignore_errors=True)
-    # Prune BEFORE deleting the branch: when `worktree remove` failed and the tree
-    # was dropped with rmtree, git still lists the worktree as checked out on this
-    # branch and refuses `branch -D` ("used by worktree"). Pruning afterwards left
-    # the claimed branch behind, so the retry the docstring promises hit "branch
-    # already exists". Delete is retried once after a
-    # second prune, and a branch that survives both is logged rather than ignored.
-    _run_git(["worktree", "prune"], root)
+    # Deregister BEFORE deleting the branch: when `worktree remove` failed and the
+    # tree was dropped with rmtree, git still lists the worktree as checked out on
+    # this branch and refuses `branch -D` ("used by worktree"), which would leave
+    # the claimed branch behind and make the retry the docstring promises hit
+    # "branch already exists". Delete is retried once after a second
+    # deregistration, and a branch that survives both is logged rather than ignored.
+    _deregister_missing(root, dest)
     if claimed:
         # A concurrent `git worktree add` (or a plain checkout) can ADOPT the
         # branch we claimed while this request was failing. `update-ref -d` has
         # none of `branch -D`'s "used by worktree" protection, so deleting here
         # would leave that worktree sitting on a dangling ref. Re-list AFTER the
-        # prune — the prune is what removes our own stale registration — and keep
-        # the branch when any surviving worktree other than our own destination
-        # holds it. An unreadable listing cannot PROVE nobody adopted it, so it
-        # keeps the branch too: a retry reporting "already exists" is recoverable,
-        # breaking someone else's worktree is not.
+        # deregistration — that is what removes our own stale registration — and
+        # keep the branch when any surviving worktree other than our own
+        # destination holds it. An unreadable listing cannot PROVE nobody adopted
+        # it, so it keeps the branch too: a retry reporting "already exists" is
+        # recoverable, breaking someone else's worktree is not.
         registered = _worktree_branches(root)
         if registered is None or any(
             held == branch and path != _norm_path(dest) for path, held in registered.items()
@@ -716,7 +738,7 @@ def _cleanup_partial(
         # `update-ref -d <ref> <old>` deletes ONLY while the ref still points at
         # the value we claimed, so an advanced branch is left alone.
         elif _delete_ref_if_unchanged(root, branch, base_sha) is False:
-            _run_git(["worktree", "prune"], root)
+            _deregister_missing(root, dest)
             if _delete_ref_if_unchanged(root, branch, base_sha) is False:
                 logger.warning(
                     "worktree cleanup could not delete claimed branch %s in %s; "

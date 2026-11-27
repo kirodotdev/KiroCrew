@@ -245,6 +245,26 @@ class TestAugmentedPath:
             "", home=home
         ).split(os.pathsep)
 
+    def test_windows_has_no_home_toolbox_entry_and_spells_the_rest_natively(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Toolbox on Windows installs into ``%LOCALAPPDATA%\\Toolbox\\bin`` only.
+
+        A ``~/.toolbox/bin`` entry would rank a folder nothing installs into
+        ahead of that one. The home entries left are the normalized spellings
+        ``user_tool_bin_dirs`` gives, on both builders (the ``..`` in *home*
+        stands in for the mixed separators a raw Windows entry carries).
+        """
+        monkeypatch.setattr(env_mod.platform_compat, "IS_WINDOWS", True)
+        home = os.path.join(str(tmp_path), "x", os.pardir)
+        dead = os.path.normcase(os.path.join(str(tmp_path), ".toolbox", "bin"))
+        path_dirs = augmented_path("", home=home).split(os.pathsep)
+        tool_dirs = env_mod.user_tool_bin_dirs(home)
+        for dirs in (path_dirs, tool_dirs):
+            assert dead not in [os.path.normcase(os.path.normpath(d)) for d in dirs]
+        assert tool_dirs and set(tool_dirs) <= set(path_dirs)
+        assert os.path.join(home, "AppData", "Local", "Toolbox", "bin") in path_dirs
+
     def test_includes_every_node_manager_shim_dir(self, tmp_path) -> None:
         """A shim dir the build toolchain searches is also on the MCP/ACP search path.
 
@@ -626,7 +646,7 @@ class TestAugmentedPath:
 
         ``_SYSTEM_BIN_DIRS`` holds POSIX dirs only, so on Windows it never cuts
         the anchor scan. Without the Windows guard ``~/.local/bin`` at the end
-        became an anchor and every later extra (``.toolbox/bin``, mise shims,
+        became an anchor and every later extra (mise shims, the Toolbox bin,
         node bins) landed behind ``System32`` and ``Program Files\\nodejs``.
         On Windows every extra is prepended exactly as on main.
         """
@@ -639,7 +659,7 @@ class TestAugmentedPath:
         system32 = str(tmp_path / "Windows" / "system32")
         nodejs = str(tmp_path / "Program Files" / "nodejs")
         local_bin = os.path.normpath(f"{tmp_path}/.local/bin")
-        toolbox_bin = os.path.normpath(f"{tmp_path}/.toolbox/bin")
+        toolbox_bin = str(tmp_path / "Local" / "Toolbox" / "bin")
         entries = [system32, nodejs, local_bin]
         env_mod._node_all_bin_dirs.cache_clear()
         try:

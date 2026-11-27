@@ -80,8 +80,8 @@ _STRIP_TAGS_RE = re.compile(r"<[^>]+>")
 # and a label stops at the next ``[`` so a run of ``[`` cannot rescan the text.
 _MD_LINK_RE = re.compile(rf"!?\[([^\[\]]*)\]\({md_link_destination('[^()]')}*\)")
 _MD_HEADING_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s*")  # # headings
-_MD_BLOCKQUOTE_RE = re.compile(r"(?m)^\s*>\s?")  # > quotes
-_MD_LIST_RE = re.compile(r"(?m)^\s*(?:[-*+]|\d+\.)\s+")  # -, *, 1. list markers
+_MD_BLOCKQUOTE_RE = re.compile(r"(?m)^[^\S\n]*>\s?")  # > quotes
+_MD_LIST_RE = re.compile(r"(?m)^[^\S\n]*(?:[-*+]|\d+\.)\s+")  # -, *, 1. list markers
 _MD_FENCE_RE = re.compile(r"`{1,3}")  # code ticks/fences
 _MD_EMPHASIS_RE = re.compile(r"[*_~]")  # bold/italic/strike markers
 

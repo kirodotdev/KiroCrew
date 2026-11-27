@@ -129,7 +129,7 @@ jobs:
             status="$(gh api "repos/$REPO/actions/runs/$run_id" --jq '.status')"
           done
           if [ "$status" != "completed" ]; then
-            echo "::error::Sensitive Change Review run $run_id did not finish in time; re-run it from the Actions tab."
+            echo "::error::Sensitive Change Review run $run_id is still running; once it completes, re-run this job."
             exit 1
           fi
           gh api --method POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null

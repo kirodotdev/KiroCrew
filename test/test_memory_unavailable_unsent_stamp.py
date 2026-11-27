@@ -25,12 +25,22 @@ _TEXT = "Leave the watchers on"
 
 
 async def _fail_turn(
-    tmp_path, *, row_role: str = "user", row_meta=None, during=None, **run_kwargs
+    tmp_path,
+    *,
+    row_role: str = "user",
+    row_meta=None,
+    during=None,
+    hand_row: bool = False,
+    **run_kwargs,
 ) -> tuple:
-    """Run one turn that ends ``memory_unavailable``; return (its record, sent row)."""
+    """Run one turn that ends ``memory_unavailable``; return (its record, sent row).
+
+    *hand_row* hands the turn its row the way the queue drain does."""
     state, _client = _runner_state(tmp_path)
     slot = _slot()
     sent = slot.append(row_role, _TEXT, "msg msg-u", meta=row_meta)
+    if hand_row:
+        run_kwargs["_current_message"] = sent
     slot._empty_response_retries = 2
     refusal = UnknownMemoryStore("the memory pool was busy")
 
@@ -98,6 +108,30 @@ async def test_a_verbatim_resume_replay_is_recorded_so_a_second_failure_resends(
     )
 
     assert recorded is not None and recorded[0] == _TEXT
+
+
+@pytest.mark.parametrize("stamped", [True, False])
+@pytest.mark.asyncio
+async def test_a_resend_is_a_replay_to_the_prompt_hooks_only_if_an_earlier_attempt_ran_them(
+    tmp_path, stamped
+):
+    """A re-send whose own attempt died preparing its prompt (before its prompt
+    hooks fired) keeps the stamp its row carried, so Resume's re-send is a replay
+    exactly when an earlier attempt ran the hooks."""
+    from kiro_crew.dashboard.slot_queue_repository import PROMPT_HOOKS_RAN_META
+
+    meta = {"injectKind": "user_replay", **({PROMPT_HOOKS_RAN_META: True} if stamped else {})}
+    recorded, _sent = await _fail_turn(
+        tmp_path,
+        row_role="inject",
+        row_meta=meta,
+        hand_row=True,
+        _directive_user_origin=True,
+        _synthetic_recovery_turn=True,
+    )
+
+    assert recorded is not None and recorded[0] == _TEXT
+    assert (recorded[1].get(PROMPT_HOOKS_RAN_META) is True) is stamped, recorded
 
 
 @pytest.mark.asyncio
@@ -213,6 +247,8 @@ def _bare_turn() -> SimpleNamespace:
         _attachments=(),
         _attachment_meta=None,
         _current_replay_message=row,
+        _current_message=row,
+        _prompt_hooks_fired=False,
         slot=SimpleNamespace(_turn_generation=1, _handoff_generation=-1),
     )
 

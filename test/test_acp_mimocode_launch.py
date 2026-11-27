@@ -256,8 +256,9 @@ def test_the_floor_and_the_version_gate_precede_the_read_back(monkeypatch, tmp_p
     rig.run()
     names = rig.names()
     assert (
-        names.index("session_mcp")
-        < names.index("preflight")
+        names.index("preflight")
+        < names.index("resolve")
+        < names.index("session_mcp")
         < names.index("wrap_version")
         < names.index("version_probe")
         < names.index("reclaim_version")

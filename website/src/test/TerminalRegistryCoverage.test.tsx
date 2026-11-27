@@ -43,7 +43,9 @@ import {
   sendToTerminalSession,
   sendRawToTerminalSession,
   ensureTerminalConnection,
+  pasteWhenOpen,
   disposeTerminalConnection,
+  dropTerminalDataForThisKey,
   useTerminalConnStatus,
   useTerminalManualRetry,
   useTerminalInvalidCwd,
@@ -445,6 +447,22 @@ describe('terminalRegistry', () => {
       expect(ws.send).not.toHaveBeenCalled()
     })
 
+    it('pastes text typed before the socket opened ahead of keys typed after it, without a newline', () => {
+      const id = session('paste-when-open')
+      const term = new FakeTerm()
+      const paste = vi.fn((data: string) => term.dataCb?.(data))
+      Object.assign(term, { paste })
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+
+      pasteWhenOpen(id, 'echo \nhi')
+      expect(paste).not.toHaveBeenCalled()
+      ws.simulateOpen()
+      term.dataCb?.('!')
+      expect(paste).toHaveBeenCalledWith('echo hi')
+      expect(ws.send.mock.calls.map((_, i) => decode(ws, i))).toEqual(['echo hi', '!'])
+    })
+
     it('does not type into a socket that has not finished dialing', () => {
       const id = session('dialing')
       ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
@@ -637,6 +655,21 @@ describe('terminalRegistry', () => {
       term.resizeCb?.({ cols: 100, rows: 30 })
       expect(decode(ws, 0)).toBe('ls -al')
       expect(JSON.parse(decode(ws, 1))).toEqual({ type: 'resize', cols: 100, rows: 30 })
+    })
+
+    it('drops what xterm sends during the key it is told to drop, and nothing after it', async () => {
+      const id = session('drop-key')
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+
+      dropTerminalDataForThisKey(id)
+      term.dataCb?.('~') // sent from inside the same keydown
+      await Promise.resolve() // the key event is handled
+      term.dataCb?.('~') // sent later, from xterm's compositionend timer
+      expect(ws.send).toHaveBeenCalledOnce()
+      expect(decode(ws, 0)).toBe('~')
     })
 
     it('closes the socket from the error handler without reconnecting itself', () => {

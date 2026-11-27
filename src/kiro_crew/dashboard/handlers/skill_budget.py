@@ -3,8 +3,9 @@
 This is the *control-plane* read endpoint powering the Context Budget screen.
 Unlike ``list_skills()`` (runs on the event loop during context assembly and
 must be O(skills) with no extra IO), this does deliberate filesystem work
-(``Path.resolve()`` per ledger key) and caches the expensive alias map so
-repeated dashboard refreshes are cheap.
+(``Path.resolve()`` per ledger key). The alias map is rebuilt on every call:
+``resolve_ledger_aliases`` says why it is not cached, and ``_iter()``'s own TTL
+is what keeps a dashboard refresh from re-walking the skills tree.
 
 The fold logic lives here — not in ``list_skills()`` — because:
 1. ``list_skills()`` guarantees one stat per skill (its docstring contract) and
@@ -117,7 +118,7 @@ def _compute_budget(
     confine_by_key = {name: root for name, _path, root in skill_items}
     ledger: SkillUsageLedger | None = skills_loader._usage
 
-    # Build the alias map via the loader's public method (cached on key set).
+    # Build the alias map via the loader's public method (rebuilt on every call).
     alias_map: dict[str, list[str]] = {}
     ledger_snapshot: dict[str, tuple[int, float]] = {}
     if ledger is not None:
@@ -165,43 +166,29 @@ def _compute_budget(
 
         is_always = meta.get("always", "").strip().lower() == "true"
 
-        # Deliveries: own key + aliases
+        # Deliveries: own key + aliases. Both stay None ("untracked") when the
+        # key has no ledger entry and no alias folds into it, which is also the
+        # no-ledger case: the snapshot and the alias map are then both empty.
         deliveries: int | None = None
         idle_days: float | None = None
+        own_entry = ledger_snapshot.get(key)
+        alias_keys = alias_map.get(key, [])
 
-        if ledger is not None:
-            own_entry = ledger_snapshot.get(key)
-            alias_keys = alias_map.get(key, [])
-
-            if own_entry is not None or alias_keys:
-                total_hits = 0
-                latest_seen = 0.0
-                if own_entry is not None:
-                    total_hits += own_entry[0]
-                    latest_seen = max(latest_seen, own_entry[1])
-                for ak in alias_keys:
-                    alias_entry = ledger_snapshot.get(ak)
-                    if alias_entry is not None:
-                        total_hits += alias_entry[0]
-                        latest_seen = max(latest_seen, alias_entry[1])
-                # This branch already established that the skill IS tracked, so a
-                # zero total reads as "tracked, never delivered" (0) rather than
-                # "untracked" (None, set in the else branch below).
-                deliveries = max(total_hits, 0)
-                # idle_days: days since last_seen
-                if latest_seen > 0:
-                    idle_days = (now - latest_seen) / 86400.0
-                    idle_days = round(idle_days, 1)
-                else:
-                    idle_days = None
-            else:
-                # No ledger entry at all — untracked.
-                deliveries = None
-                idle_days = None
-        else:
-            # No ledger available.
-            deliveries = None
-            idle_days = None
+        if own_entry is not None or alias_keys:
+            total_hits = 0
+            latest_seen = 0.0
+            for entry_key in (key, *alias_keys):
+                entry = ledger_snapshot.get(entry_key)
+                if entry is not None:
+                    total_hits += entry[0]
+                    latest_seen = max(latest_seen, entry[1])
+            # This branch already established that the skill IS tracked, so a
+            # zero total reads as "tracked, never delivered" (0) rather than
+            # "untracked" (None).
+            deliveries = max(total_hits, 0)
+            # idle_days: days since last_seen
+            if latest_seen > 0:
+                idle_days = round((now - latest_seen) / 86400.0, 1)
 
         # chars computation:
         # For always:true skills, the ledger never records deliveries (they are

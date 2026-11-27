@@ -21,7 +21,8 @@ jobs:
   # installer runs the staged Node once; then the leg is the release gate for its
   # wheel: `verify` fails unless the wheel carries the pinned engine with the
   # manifest's digests, and a clean install must report it "(built into the
-  # wheel)" with nothing downloaded into the data home. A failed leg fails this
+  # wheel)" with nothing downloaded into the data home and pass `pip check`, the
+  # check the update runs before it promotes a new venv. A failed leg fails this
   # reusable workflow, and publish-cli.yml refuses to publish without every tag.
   build-platform-wheels:
     name: Build platform wheel (${{ matrix.tag }})
@@ -89,6 +90,17 @@ jobs:
           if [ -e "$HOME_DIR/engines/kas" ] && [ -n "$(ls -A "$HOME_DIR/engines/kas")" ]; then
             echo "::error::the platform wheel downloaded an engine into the data home"; exit 1
           fi
+
+      - name: Gate - pip check accepts the installed wheel
+        # The update promotes a new venv only when `python -I -m pip check` passes
+        # there (wheel_engine.py). pip install judges the filename, pip check reads
+        # the WHEEL Tag headers, so a wheel can install cleanly and still be
+        # refused as "not supported on this platform" by every update.
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/kc/bin/python" -I -m pip check || {
+            echo "::error::pip check refuses the installed platform wheel, so the update would not promote it"; exit 1
+          }
 
       - name: Upload platform wheel artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

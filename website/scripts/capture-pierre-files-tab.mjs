@@ -257,7 +257,7 @@ async function main() {
     // 11-12px tree rows and menu type render soft at 1x on GitHub.
     deviceScaleFactor: 2,
   })
-  const page = await context.newPage()
+  let page = null
 
   /** The five project/file endpoints no sibling harness stubs, plus the slot
    *  list/detail pair. Consulted BEFORE the shared boot map. */
@@ -299,9 +299,6 @@ async function main() {
     if (path === '/api/recent-projects') return json(route, { dirs: [PROJECT] }), true
     return false
   }
-
-  await stubDashboardApi(page, { slots, extra })
-  logPageProblems(page)
 
   const wrote = []
 
@@ -388,7 +385,8 @@ async function main() {
   const probe = (selector, locator, opts = {}) => ({ selector, locator, min: opts.min, attr: opts.attr })
 
   /**
-   * Seed the persisted panel stores and load the dashboard.
+   * Open a fresh page, stubbed once with the persisted panel stores as its
+   * seed, and load the dashboard.
    *
    * `?sid=` selects the slot deterministically (the localStorage restore key is
    * per-MODE — `mc-active-slot-chat` — so the bare `mc-active-slot` does
@@ -415,37 +413,32 @@ async function main() {
    *                                      that effect checks.
    */
   async function load(tabs, activeId, opts = {}) {
-    await page.addInitScript(([slot, project, tabsJson, railOpen, panelW, railW, diffSplit]) => {
-      localStorage.clear()
-      localStorage.setItem('mc-theme', 'dark')
-      localStorage.setItem('mc-onboarded', '1')
-      localStorage.setItem('mc-active-slot-chat', slot)
-      localStorage.setItem('mc-activity-open:' + slot, 'true')
-      localStorage.setItem('mc-panel-tabs:' + slot, tabsJson)
-      // '1'/'0', NOT 'true'/'false': every one of these is read through
-      // `usePersistedBool`, whose getter is `v === '1'` — so a 'true' here reads
-      // as FALSE and silently closes the rail / unsets the toggle. (The
-      // `mc-activity-open:` key above is the exception: chatSlice persists it
-      // with `String(open)` and compares against 'true'.)
-      localStorage.setItem('mc-files-rail-open', railOpen)
-      localStorage.setItem('mc-diff-split', diffSplit)
-      localStorage.setItem('mc-file-linenums', '1')
-      localStorage.setItem('mc-file-wordwrap', '1')
-      localStorage.setItem('mc-file-collapse-unchanged', '0')
-      localStorage.setItem('mc-files-rail-w', railW)
-      localStorage.setItem('mc-side-panel-width', panelW)
-      localStorage.setItem('kirocrew:comment-hint-dismissed', '1')
-      localStorage.setItem('mc-git-panel-opened:' + slot + ':' + project, '1')
-      localStorage.setItem('mc-chat-config', JSON.stringify({ pinLastPrompt: false, streamMode: 'immediate' }))
-    }, [
-      SLOT,
-      PROJECT,
-      bucket(tabs, activeId),
-      opts.railOpen === false ? '0' : '1',
-      String(opts.panelW ?? 820),
-      String(opts.railW ?? 320),
-      opts.diffSplit === false ? '0' : '1',
-    ])
+    await page?.close()
+    page = await context.newPage()
+    await stubDashboardApi(page, {
+      slots, extra,
+      localStorageEntries: {
+        'mc-active-slot-chat': SLOT,
+        ['mc-activity-open:' + SLOT]: 'true',
+        ['mc-panel-tabs:' + SLOT]: bucket(tabs, activeId),
+        // '1'/'0', NOT 'true'/'false': every one of these is read through
+        // `usePersistedBool`, whose getter is `v === '1'` — so a 'true' here reads
+        // as FALSE and silently closes the rail / unsets the toggle. (The
+        // `mc-activity-open:` key above is the exception: chatSlice persists it
+        // with `String(open)` and compares against 'true'.)
+        'mc-files-rail-open': opts.railOpen === false ? '0' : '1',
+        'mc-diff-split': opts.diffSplit === false ? '0' : '1',
+        'mc-file-linenums': '1',
+        'mc-file-wordwrap': '1',
+        'mc-file-collapse-unchanged': '0',
+        'mc-files-rail-w': String(opts.railW ?? 320),
+        'mc-side-panel-width': String(opts.panelW ?? 820),
+        'kirocrew:comment-hint-dismissed': '1',
+        ['mc-git-panel-opened:' + SLOT + ':' + PROJECT]: '1',
+        'mc-chat-config': JSON.stringify({ pinLastPrompt: false, streamMode: 'immediate' }),
+      },
+    })
+    logPageProblems(page)
     await page.goto(base + '/?sid=' + encodeURIComponent(SLOT), { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2600)
   }

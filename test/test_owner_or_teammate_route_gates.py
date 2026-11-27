@@ -7,6 +7,11 @@ preview. Each is walked from the registered route table, so a route added to one
 these families later is checked too: the owner and an admitted Shared Crew teammate
 pass, while any other dashboard session (an empty app claim, a subject that is
 neither) is refused 403 ``owner_only``.
+
+The second half covers the follow-up families: approvals, lessons, cron reads and
+folders, sub-agent runs, notification writes, theme writes, speech, the owner's
+configuration reads, chat uploads, logs, saved workflows, task reads, and the
+strict internal paths' cookie arm.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -297,3 +302,564 @@ async def test_an_internal_caller_keeps_its_captured_store() -> None:
         request, app["state"], "memory.preferences", require_ready=False
     )
     assert (store, refusal) == ("", None)
+
+
+# ── Follow-up families ──────────────────────────────────────────────────────────
+#
+# Each row is one registered route, found in the real route table. A refused caller
+# must get the gate's 403 ``owner_only``; an admitted one must get anything else.
+# The stub state holds nothing, so an admitted caller often fails further in (a
+# missing attribute, a 400 on the empty body): that is past the gate, which is all
+# these rows decide. A handler that would stream forever is stopped after a moment,
+# which also means it got past the gate.
+
+#: Routes that act on the owner's agent: chat send, approvals, lessons, cron reads
+#: and folders, and sub-agent runs.
+FOLLOWUP_ACTIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        # approvals, both legs of the decide
+        ("GET", "/api/approvals"),
+        ("POST", "/api/approvals/{id}/{action}"),
+        # lessons
+        ("GET", "/api/lessons"),
+        ("POST", "/api/lessons"),
+        ("DELETE", "/api/lessons"),
+        ("PATCH", "/api/lessons"),
+        # cron reads and folders
+        ("GET", "/api/crons"),
+        ("GET", "/api/crons/history"),
+        ("GET", "/api/crons/{job_id}"),
+        ("POST", "/api/crons/{job_id}/to-chat"),
+        ("GET", "/api/crons/{job_id}/history"),
+        ("GET", "/api/crons/{job_id}/history/{run_id}"),
+        ("GET", "/api/crons/{job_id}/script"),
+        ("GET", "/api/cron-folders"),
+        ("POST", "/api/cron-folders"),
+        ("PATCH", "/api/cron-folders/{folder_id}"),
+        ("DELETE", "/api/cron-folders/{folder_id}"),
+        # sub-agent runs
+        ("GET", "/api/spawn"),
+        ("POST", "/api/spawn/stop-all"),
+        ("POST", "/api/spawn/lost"),
+        ("POST", "/api/spawn/mark-collected"),
+        ("GET", "/api/spawn/{agent_id}"),
+        ("DELETE", "/api/spawn/{agent_id}"),
+        ("POST", "/api/spawn/{agent_id}/retry"),
+        ("POST", "/api/spawn/{agent_id}/steer"),
+        ("POST", "/api/spawn/{agent_id}/release"),
+    }
+)
+
+#: The owner's data and settings: feed writes, themes, speech, configuration
+#: reads, uploads, logs, saved workflows, tasks and task-runner plans.
+FOLLOWUP_OWNER_DATA: frozenset[tuple[str, str]] = frozenset(
+    {
+        # notification writes
+        ("DELETE", "/api/notifications"),
+        ("POST", "/api/notifications/clear"),
+        ("POST", "/api/notifications/ack"),
+        ("POST", "/api/notifications/unack"),
+        ("POST", "/api/notifications/ack-all"),
+        # theme writes
+        ("POST", "/api/themes"),
+        ("POST", "/api/themes/install"),
+        ("POST", "/api/themes/install-zip"),
+        ("PUT", "/api/themes/{slug}"),
+        ("DELETE", "/api/themes/{slug}"),
+        # speech
+        ("GET", "/api/voice/config"),
+        ("PUT", "/api/voice/config"),
+        ("POST", "/api/voice/synthesize"),
+        ("GET", "/api/config/stt"),
+        ("PUT", "/api/config/stt"),
+        ("POST", "/api/stt/transcribe"),
+        ("POST", "/api/stt/polish"),
+        # the owner's configuration reads
+        ("GET", "/api/hooks"),
+        ("GET", "/api/webhooks"),
+        ("GET", "/api/security/denied-commands"),
+        ("GET", "/api/security/tool-grants"),
+        ("GET", "/api/security/posture"),
+        ("GET", "/api/governance/policy"),
+        ("GET", "/api/config/schema"),
+        # chat uploads
+        ("POST", "/api/upload/file"),
+        # logs, saved workflows, tasks, task-runner plan reads
+        ("GET", "/api/logs"),
+        ("GET", "/api/workflows/definitions"),
+        ("GET", "/api/workflows/definitions/{workflow_ref}"),
+        ("GET", "/api/taskrunner"),
+        ("GET", "/api/tasks"),
+        ("GET", "/api/tasks/{task_id}"),
+        ("GET", "/api/taskrunner/{task_id}/plan-context"),
+        ("GET", "/api/taskrunner/{task_id}/plan.yaml"),
+    }
+)
+
+FOLLOWUP = FOLLOWUP_ACTIONS | FOLLOWUP_OWNER_DATA
+
+
+def _route_table() -> dict[tuple[str, str], Any]:
+    """``(method, canonical) -> handler`` across every registrar, each on its own app."""
+    from kiro_crew.dashboard import routes as routes_pkg
+    from kiro_crew.dashboard.server import _register_mcp_routes
+
+    registrars = [
+        getattr(routes_pkg, name).register
+        for name in (
+            "agent_config",
+            "chat",
+            "memory",
+            "messaging",
+            "sessions",
+            "system",
+            "taskrunner",
+            "themes",
+        )
+    ]
+    table: dict[tuple[str, str], Any] = {}
+    for register in [*registrars, _register_mcp_routes]:
+        app = web.Application()
+        register(app)
+        for route in app.router.routes():
+            canonical = route.resource.canonical if route.resource else ""
+            table.setdefault((route.method, canonical), route.handler)
+    return table
+
+
+def _followup_rows() -> list[tuple[str, str, Any, dict]]:
+    table = _route_table()
+    rows = []
+    for method, canonical in sorted(FOLLOWUP):
+        names = [part[1:-1] for part in canonical.split("/") if part.startswith("{")]
+        # An approval action outside the three is a 400 before anyone is asked.
+        match_info = {name: "approve" if name == "action" else f"{name}1" for name in names}
+        path = canonical
+        for name, value in match_info.items():
+            path = path.replace("{" + name + "}", value)
+        rows.append((method, path, table.get((method, canonical)), match_info))
+    return rows
+
+
+FOLLOWUP_ROWS = _followup_rows()
+
+
+def test_every_followup_route_is_registered() -> None:
+    missing = [f"{m} {p}" for m, p, handler, _ in FOLLOWUP_ROWS if handler is None]
+    assert missing == []
+
+
+async def _past_gate(handler, request) -> bool:
+    """Whether *handler* got past the owner gate for *request*."""
+    try:
+        if request.path == "/api/logs":
+            # The log stream runs until its client leaves; a client that has left
+            # by the time the stream opens ends it right after the gate.
+            with patch.object(web.StreamResponse, "prepare", side_effect=ConnectionResetError):
+                resp = await handler(request)
+        else:
+            resp = await handler(request)
+    except web.HTTPException as exc:
+        return not _is_owner_refusal(exc)
+    except Exception:  # noqa: BLE001 - the stub state ran out after the gate
+        return True
+    return not _is_owner_refusal(resp)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), FOLLOWUP_ROWS)
+async def test_followup_refuses_a_session_that_is_neither_owner_nor_teammate(
+    method: str, path: str, handler, match_info: dict
+) -> None:
+    request = _request(_app(), "other", method, path, match_info)
+    assert await _refused(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", ("owner", *TEAMMATES))
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), FOLLOWUP_ROWS)
+async def test_followup_admits_the_owner_and_each_teammate(
+    who: str, method: str, path: str, handler, match_info: dict
+) -> None:
+    request = _request(_app(), who, method, path, match_info)
+    assert await _past_gate(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), FOLLOWUP_ROWS)
+async def test_followup_leaves_app_tokens_and_internal_callers_to_their_own_controls(
+    method: str, path: str, handler, match_info: dict
+) -> None:
+    app_request = _request(_app(), "owner", method, path, match_info)
+    app_request["app"] = "notes"
+    app_request["is_dashboard_user"] = False
+    assert await _past_gate(handler, app_request)
+    # The internal transport leaves the app claim absent.
+    internal = make_mocked_request(method, path, app=_app(), match_info=match_info)
+    internal["internal_auth"] = True
+    assert await _past_gate(handler, internal)
+
+
+# ── Requests through a real router: body, query and header shapes ─────────────
+
+
+@web.middleware
+async def _identity(request: web.Request, handler):
+    who = request.headers.get("X-Test-Who", "")
+    if who:
+        _publish(request, who)
+    else:  # an internal caller: the claim absent, the secret verified
+        request["internal_auth"] = True
+    return await handler(request)
+
+
+def _routed_client(*registrars, middlewares=()) -> Any:
+    from aiohttp.test_utils import TestClient, TestServer
+
+    app = _app()
+    app.middlewares.extend([_identity, *middlewares])
+    for register in registrars:
+        register(app)
+    return TestClient(TestServer(app))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("who", "refused"), [("other", True), ("relay", False), ("ssm", False)])
+async def test_the_coordinator_targeted_decide(who: str, refused: bool) -> None:
+    """The leg that names a slot and instance, as a card would."""
+    async with _routed_client(system.register) as client:
+        resp = await client.post(
+            "/api/approvals/req1/approve?origin=coordinator&slot=main&instance=inst1",
+            headers={"X-Test-Who": who},
+        )
+        body = await resp.json(content_type=None) if resp.status != 500 else {}
+        assert (resp.status == 403 and body.get("code") == "owner_only") is refused
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["GET", "POST", "DELETE", "PATCH"])
+async def test_naming_the_browser_key_does_not_make_a_session_the_owner(method: str) -> None:
+    """``X-Session-Key: dashboard:ui`` is a slot name, not proof of who is calling."""
+    from kiro_crew.dashboard.server import _register_mcp_routes
+
+    async with _routed_client(_register_mcp_routes) as client:
+        resp = await client.request(
+            method,
+            "/api/lessons",
+            json={"rule": "skip the checks"},
+            headers={"X-Test-Who": "other", "X-Session-Key": "dashboard:ui"},
+        )
+        assert resp.status == 403
+        assert (await resp.json())["code"] == "owner_only"
+
+
+# ── The strict internal paths' cookie arm ────────────────────────────────────
+
+
+def _strict_paths() -> list[str]:
+    from kiro_crew.dashboard.server import _STRICT_INTERNAL_API_PATHS
+
+    return sorted(_STRICT_INTERNAL_API_PATHS)
+
+
+def _strict_client(secret: str, local_only: bool = True) -> Any:
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard.server import _STRICT_INTERNAL_API_PATHS
+    from kiro_crew.dashboard.token_auth import token_auth_middleware
+
+    async def reached(_request: web.Request) -> web.Response:
+        return web.json_response({"reached": True})
+
+    app = _app()
+    app.middlewares.append(
+        token_auth_middleware(
+            internal_paths=_STRICT_INTERNAL_API_PATHS,
+            internal_secret=secret,
+            local_only=local_only,
+        )
+    )
+    for path in _STRICT_INTERNAL_API_PATHS:
+        app.router.add_route("*", path, reached)
+    return TestClient(TestServer(app))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("local_only", [True, False])
+async def test_a_strict_path_cookie_caller_must_be_the_owner(local_only: bool) -> None:
+    """Every strict path, with no secret: the owner's cookie reaches the handler,
+    another dashboard session's cookie and an app token's do not, and the secret
+    holder does. With ``local_only`` off the gateway reads strict paths as mixed,
+    and the cookie caller is still held to the owner."""
+    from kiro_crew.dashboard.token_auth import generate_token
+
+    owner_cookie = generate_token(OWNER, 3600)
+    other_cookie = generate_token(OTHER_USER, 3600)
+    app_cookie = generate_token("app:notes", 3600, app="notes")
+    failures = []
+    async with _strict_client("the-secret", local_only) as client:
+        for path in _strict_paths():
+            for label, kwargs, reaches in (
+                ("owner", {"params": {"token": owner_cookie}}, True),
+                ("other", {"params": {"token": other_cookie}}, False),
+                ("app", {"params": {"token": app_cookie}}, False),
+                ("secret", {"headers": {"X-Internal-Secret": "the-secret"}}, True),
+            ):
+                resp = await client.post(path, **kwargs)
+                body = await resp.json(content_type=None) if resp.status == 200 else {}
+                if bool(body.get("reached")) is not reaches:
+                    failures.append(f"{path} as {label}: {resp.status}")
+    assert failures == []
+
+
+# ── Routes a later review named ──────────────────────────────────────────────
+#
+# Rows from the real route table, judged like the follow-up families above. The
+# three speech routes also refuse an app token and an internal caller: they serve a
+# dashboard session only. An admitted speech request starts nothing and no file
+# chooser opens, so the allowed cases leave the host alone.
+
+#: Refused to a session that is neither the owner nor a teammate.
+NAMED_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("PUT", "/api/notifications/channels/settings"),
+        ("POST", "/api/upload"),
+        ("POST", "/api/stt/prepare"),
+        ("POST", "/api/stt/prewarm"),
+        ("POST", "/api/stt/ffmpeg/download"),
+        ("GET", "/api/spawn/{agent_id}/resume"),
+        ("GET", "/api/spawn/lanes"),
+    }
+)
+
+#: The speech routes, which serve a dashboard session only.
+SPEECH_PATHS = frozenset({"/api/stt/prepare", "/api/stt/prewarm", "/api/stt/ffmpeg/download"})
+
+NAMED_TABLE = _route_table()
+
+
+def _named_rows() -> list[tuple[str, str, Any, dict]]:
+    rows = []
+    for method, canonical in sorted(NAMED_ROUTES):
+        match_info = {"agent_id": "agent_id1"} if "{agent_id}" in canonical else {}
+        path = canonical.replace("{agent_id}", "agent_id1")
+        rows.append((method, path, NAMED_TABLE.get((method, canonical)), match_info))
+    return rows
+
+
+NAMED_ROWS = _named_rows()
+
+
+@pytest.fixture
+def _host_untouched(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew import platform_compat
+    from kiro_crew.dashboard.handlers import core
+
+    _floor_monkeypatch.setattr(core, "_spawn_stt_background", lambda work: work.close())
+    _floor_monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda _name: None)
+
+
+def test_every_named_route_is_registered() -> None:
+    missing = [f"{m} {p}" for m, p, handler, _ in NAMED_ROWS if handler is None]
+    assert missing == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_host_untouched")
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), NAMED_ROWS)
+async def test_named_route_refuses_a_session_that_is_neither_owner_nor_teammate(
+    method: str, path: str, handler, match_info: dict
+) -> None:
+    request = _request(_app(), "other", method, path, match_info)
+    assert await _refused(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_host_untouched")
+@pytest.mark.parametrize("who", ("owner", *TEAMMATES))
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), NAMED_ROWS)
+async def test_named_route_admits_the_owner_and_each_teammate(
+    who: str, method: str, path: str, handler, match_info: dict
+) -> None:
+    request = _request(_app(), who, method, path, match_info)
+    assert await _past_gate(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_host_untouched")
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), NAMED_ROWS)
+async def test_named_route_leaves_app_tokens_and_internal_callers_to_their_own_controls(
+    method: str, path: str, handler, match_info: dict
+) -> None:
+    app_request = _request(_app(), "owner", method, path, match_info)
+    app_request["app"] = "notes"
+    app_request["is_dashboard_user"] = False
+    internal = make_mocked_request(method, path, app=_app(), match_info=match_info)
+    internal["internal_auth"] = True
+    for request in (app_request, internal):
+        if path in SPEECH_PATHS:
+            resp = await _answer(handler, request)
+            assert resp.status == 403
+            assert json.loads(resp.body)["code"] == "dashboard_user_required"
+        else:
+            assert await _past_gate(handler, request)
+
+
+@pytest.mark.asyncio
+async def test_the_load_reading_answers_a_session_that_is_neither_owner_nor_teammate() -> None:
+    """``GET /api/spawn/adaptive`` is the load chip every chat page reads; it stays open."""
+    handler = NAMED_TABLE[("GET", "/api/spawn/adaptive")]
+    request = _request(_app(), "other", "GET", "/api/spawn/adaptive")
+    assert (await _answer(handler, request)).status == 200
+
+
+# ── The remaining reads: live streams, run snapshots, speech status, milestones ──
+#
+# Rows from the real route table, judged like the families above. The two
+# WebSocket routes are stopped where they would open the socket: reaching that
+# point means the caller got past the gate. The workflow rows run against a stub
+# service whose run scope admits everyone, so only the owner gate can refuse.
+
+
+class _Reached(Exception):
+    """Raised where a handler would start its real work: the caller is past the gate."""
+
+
+def _reached(*_args, **_kwargs):
+    raise _Reached
+
+
+#: Refused to a session that is neither the owner nor a teammate.
+REMAINING_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        # live streams
+        ("GET", "/api/ws"),
+        ("GET", "/api/ws/stt"),
+        # speech status reads
+        ("GET", "/api/stt/status"),
+        ("GET", "/api/stt/vocabularies"),
+        # workflow runs: the list, the snapshot and the cancel share the run scope
+        ("GET", "/api/workflows/runs"),
+        ("GET", "/api/workflows/runs/{run_id}"),
+        ("POST", "/api/workflows/runs/{run_id}/cancel"),
+        # the milestones table
+        ("GET", "/api/milestones"),
+        ("POST", "/api/milestones/event"),
+        ("POST", "/api/milestones/mark-done"),
+        ("POST", "/api/milestones/mark-all-done"),
+        ("POST", "/api/milestones/skip-all"),
+    }
+)
+
+
+def _remaining_table() -> dict[tuple[str, str], Any]:
+    from kiro_crew.dashboard import routes as routes_pkg
+
+    table = dict(_route_table())
+    for name in ("realtime", "memory"):
+        app = web.Application()
+        getattr(routes_pkg, name).register(app)
+        for route in app.router.routes():
+            canonical = route.resource.canonical if route.resource else ""
+            table.setdefault((route.method, canonical), route.handler)
+    return table
+
+
+def _remaining_rows() -> list[tuple[str, str, Any, dict]]:
+    table = _remaining_table()
+    rows = []
+    for method, canonical in sorted(REMAINING_ROUTES):
+        match_info = {"run_id": "run1"} if "{run_id}" in canonical else {}
+        path = canonical.replace("{run_id}", "run1")
+        rows.append((method, path, table.get((method, canonical)), match_info))
+    return rows
+
+
+REMAINING_ROWS = _remaining_rows()
+
+
+class _Runs:
+    """A workflow service holding one run that the run scope never refuses."""
+
+    registry = None
+
+    def list_runs(self) -> list[dict]:
+        return [{"run_id": "run1"}]
+
+    def result(self, run_id: str) -> dict:
+        return {"run_id": run_id, "source": "def workflow(ctx): ..."}
+
+    async def cancel(self, _run_id: str) -> bool:
+        return True
+
+
+def _remaining_app() -> web.Application:
+    app = _app()
+    app["state"].workflow_service = _Runs()
+    return app
+
+
+@pytest.fixture
+def _streams_stopped(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew.dashboard import stt_stream
+    from kiro_crew.dashboard import ws as dashboard_ws
+
+    _floor_monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda _request: None)
+    _floor_monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", _reached)
+    _floor_monkeypatch.setattr(stt_stream, "check_origin", lambda *_a, **_k: True)
+    _floor_monkeypatch.setattr(stt_stream.KiroCrewConfig, "load", _reached)
+    _floor_monkeypatch.setattr("kiro_crew.workflow_memory.authorize_run", AsyncMock())
+
+
+def test_every_remaining_route_is_registered() -> None:
+    missing = [f"{m} {p}" for m, p, handler, _ in REMAINING_ROWS if handler is None]
+    assert missing == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_streams_stopped")
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), REMAINING_ROWS)
+async def test_remaining_route_refuses_a_session_that_is_neither_owner_nor_teammate(
+    method: str, path: str, handler, match_info: dict
+) -> None:
+    request = _request(_remaining_app(), "other", method, path, match_info)
+    assert await _refused(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_streams_stopped")
+@pytest.mark.parametrize("who", ("owner", *TEAMMATES))
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), REMAINING_ROWS)
+async def test_remaining_route_admits_the_owner_and_each_teammate(
+    who: str, method: str, path: str, handler, match_info: dict
+) -> None:
+    request = _request(_remaining_app(), who, method, path, match_info)
+    assert await _past_gate(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_streams_stopped")
+@pytest.mark.parametrize(("method", "path", "handler", "match_info"), REMAINING_ROWS)
+async def test_remaining_route_leaves_app_tokens_and_internal_callers_to_their_own_controls(
+    method: str, path: str, handler, match_info: dict
+) -> None:
+    app_request = _request(_remaining_app(), "owner", method, path, match_info)
+    app_request["app"] = "notes"
+    app_request["is_dashboard_user"] = False
+    internal = make_mocked_request(method, path, app=_remaining_app(), match_info=match_info)
+    internal["internal_auth"] = True
+    for request in (app_request, internal):
+        assert await _past_gate(handler, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_streams_stopped")
+async def test_an_admitted_session_still_reads_the_run_snapshot() -> None:
+    """The gate sits in front of the run scope; it does not replace it."""
+    handler = _remaining_table()[("GET", "/api/workflows/runs/{run_id}")]
+    request = _request(
+        _remaining_app(), "relay", "GET", "/api/workflows/runs/run1", {"run_id": "run1"}
+    )
+    resp = await _answer(handler, request)
+    assert resp.status == 200
+    assert json.loads(resp.body)["run_id"] == "run1"

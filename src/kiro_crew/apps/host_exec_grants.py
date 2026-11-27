@@ -25,8 +25,11 @@ uninstall, so a disabled app can never keep one.
 
 These functions are generic -- they act on whatever app name they are handed and know
 no specific app id, so core (`sandbox_leaves`, `manager_records`, `manager_uninstall`)
-stays app-agnostic. A marker for an app with no host-exec path is harmless: nothing
-reads it. The only reader is the pod gate inside ``apps/builtins/dev_fleet/``.
+stays app-agnostic. Every app gets the marker on its owner's enable, and it is read as
+the owner's enable for any app: by the pod gate inside ``apps/builtins/dev_fleet/``,
+the app-token exchange and scope check (``dashboard/token_auth_tokens.py``,
+``dashboard/token_auth_app_scope.py``) and the core-route grant seam
+(``apps/core_route_grants.py``).
 """
 
 from __future__ import annotations

@@ -7,13 +7,14 @@ import type { DisplayItem } from '../types'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { inspectorOn, devLog } from '../../../dev/scrollInspector'
 import { useTurnStepper } from '../useTurnStepper'
-import { openPanelView } from '../../../hooks/usePanelTabs'
+import { offerPanelView, openPanelView } from '../../../hooks/usePanelTabs'
 import { useChatNavigation } from '../../../hooks/useChatNavigation'
 import { useChatPins } from '../../../hooks/useChatPins'
 import type { ChatMessage } from '../../../types'
 import { i18nT } from '../../../i18n/t'
 import { buildMessageToDisplayIdx, supersededSuccessorIdx } from '../groupDisplayItems'
 import { userResendText } from '../userMessageText'
+import { findQuotedReply } from '../quotedReply'
 
 /**
  * The row a jump to `messages[idx]` should land on. A superseded steer is not
@@ -154,6 +155,8 @@ export function useTranscriptPins({
     unpinById,
   } = useChatPins(activeSlot ?? undefined)
   const [pinNotice, setPinNotice] = useState<string | null>(null)
+  // The words a jump from a sent `>` quote marks in the reply it landed on.
+  const [quoteMark, setQuoteMark] = useState<{ ts: string; mid: string | null; quoted: string } | null>(null)
   // A pinned-message page load that was REFUSED — kept apart from `pinNotice`
   // (which carries the not-found / unavailable answers) so it renders as an
   // error rather than as status text.
@@ -188,6 +191,8 @@ export function useTranscriptPins({
     if (!navToMessage(messages[msgIdx], { behavior: 'smooth', align: 'center' })) return false
     setPinNotice(null)
     setPinLoadError(null)
+    // Any jump drops a quote's words; a quote's own jump sets them again after.
+    setQuoteMark(null)
     // A reader sent here from elsewhere gets the landing highlight; a jump they
     // made inside this chat (a pin, a quote) gets the flash.
     const markedMid = (messages[msgIdx].meta as Record<string, unknown> | undefined)?.mid
@@ -215,9 +220,10 @@ export function useTranscriptPins({
       return
     }
   }, [activeSlot, slotRunning, regenerating, activeSlotRemoteBound, navToMessage, editSeqRef, messagesRef, setEditLast])
-  const handleJumpToPinnedMessage = useCallback((messageTs: string, mid: string | undefined, { origin, fill }: { origin: PendingJumpOrigin; fill?: boolean }) => {
+  /** True when the jump (and its fill) landed now; false when it is pending or unavailable. */
+  const handleJumpToPinnedMessage = useCallback((messageTs: string, mid: string | undefined, { origin, fill }: { origin: PendingJumpOrigin; fill?: boolean }): boolean => {
     // A jump that lands at once replaces a pending one, so its fill cannot fire later.
-    if (jumpToLoadedPinnedMessage(messageTs, mid, fill, origin === 'link')) { setPendingPinnedJump(null); return }
+    if (jumpToLoadedPinnedMessage(messageTs, mid, fill, origin === 'link')) { setPendingPinnedJump(null); return true }
     // Pending while the message may still turn up: older history to page in, a
     // cursor that still describes another chat, or rows on screen that trail
     // the list, where a loaded message has no row yet (the effect below waits
@@ -227,11 +233,12 @@ export function useTranscriptPins({
       setPinNotice(null)
       setPinLoadError(null)
       setPendingPinnedJump({ slotKey: activeSlot, messageTs, mid, origin, fill })
-      return
+      return false
     }
     // Same writer as the async branch below, so the synchronous dead-link case
     // cannot drift into pin wording while the paging case reports the truth.
     setPinNotice(jumpUnavailableNotice(origin))
+    return false
   }, [activeSlot, cursorIsForActiveSlot, jumpToLoadedPinnedMessage, rowsTrailList, slotHasMore, slotOldestIndex])
   // A sent quote card jumps to the quoted row through the pinned-message jump,
   // which already pages older history in when the target is off the loaded window.
@@ -239,15 +246,36 @@ export function useTranscriptPins({
     if (!q.ts) return
     handleJumpToPinnedMessage(q.ts, q.mid, { origin: 'quote' })
   }, [handleJumpToPinnedMessage])
+  // A `>` quote in a sent message jumps to the reply it was selected from, found
+  // by its words (`findQuotedReply`). The words are marked there while that
+  // jump's flash lasts (the row draws the mark only while it is the flash target).
+  const quoteJumpFor = useCallback((quoted: string, fromTs: string): (() => void) | null => {
+    const msgs = messagesRef.current
+    const reply = findQuotedReply(msgs, quoted, msgs.findLastIndex(m => m.ts === fromTs))
+    if (!reply?.ts) return null
+    const { ts } = reply
+    const mid = typeof reply.meta?.mid === 'string' ? reply.meta.mid : undefined
+    return () => {
+      if (!jumpToLoadedPinnedMessage(ts, mid)) {
+        setPinNotice(jumpUnavailableNotice('quote'))
+        return
+      }
+      // As in handleJumpToPinnedMessage: landing at once replaces a pending jump.
+      setPendingPinnedJump(null)
+      setQuoteMark({ ts, mid: mid ?? null, quoted })
+    }
+  }, [messagesRef, jumpToLoadedPinnedMessage])
   // The pins list's own entry point, so pin copy is claimed HERE by a caller that
   // means it rather than inherited by one that passed nothing.
   const handleJumpToPin = useCallback((messageTs: string, mid?: string) => {
     handleJumpToPinnedMessage(messageTs, mid, { origin: 'pin' })
   }, [handleJumpToPinnedMessage])
-  // Put in composer on a pinned user message: the same jump, plus one composer fill.
-  const handlePutPinInComposer = useCallback((messageTs: string, mid?: string) => {
+  // Put in composer on a pinned user message: the same jump, plus one composer
+  // fill. True only when the fill happened now, so the button claims nothing a
+  // pending page-in may still fail to do.
+  const handlePutPinInComposer = useCallback((messageTs: string, mid?: string): boolean => (
     handleJumpToPinnedMessage(messageTs, mid, { origin: 'pin', fill: true })
-  }, [handleJumpToPinnedMessage])
+  ), [handleJumpToPinnedMessage])
   useEffect(() => {
     if (!pendingPinnedJump) return
     if (pendingPinnedJump.slotKey !== activeSlot) {
@@ -357,14 +385,16 @@ export function useTranscriptPins({
     if (isFirstPin && activeSlot) {
       // Addressed by slot, not through tabsCtl, for the same reason as the
       // source-reveal path: that binding can be a chat being left.
-      openPanelView(activeSlot, 'pins')
       // Pinning is NOT a navigation request, so it must not cost the user state
       // they are mid-way through. Unlike the source-reveal path this does not
-      // close the find pane: someone who searched the transcript to FIND the
-      // message they are pinning would lose the pane and its results on the very
-      // click that acts on a result. Below the mobile breakpoint the panel opens
-      // full width, so opening it would navigate them off the chat entirely.
-      // The tab is still created above -- it is revealed quietly instead.
+      // end the history search: someone who searched the transcript to FIND the
+      // message they are pinning would lose the search and its results on the
+      // very click that acts on a result. On desktop the Pins tab is added
+      // behind the Search tab, which stays in front. Below the mobile breakpoint
+      // the panel opens full width, so opening it would navigate them off the
+      // chat entirely; the tab is created and revealed quietly instead.
+      if (search.isOpen && !isMobile) offerPanelView(activeSlot, 'pins')
+      else openPanelView(activeSlot, 'pins')
       if (!search.isOpen && !isMobile) dispatch(openActivityPanel())
     }
   }, [activeSlot, chatPins.length, dispatch, isMobile, isPinned, pinMessage, search.isOpen, unpinMessage])
@@ -398,6 +428,6 @@ export function useTranscriptPins({
 
   return {
     messageToDisplayIdx, navigateToTurn, chatNav, turnStepAnnouncement, chatPins, chatPinsLoading, isPinned, setPendingPinnedJump, handleEditLastRequest, handleJumpToPinnedMessage, handleJumpToQuote,
-    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus,
+    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus, quoteJumpFor, quoteMark,
   }
 }

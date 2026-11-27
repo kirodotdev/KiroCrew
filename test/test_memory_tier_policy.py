@@ -8,6 +8,7 @@ bounded log (with a re-teach signal from ``learn_add``), and ``enforce`` applies
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -42,11 +43,30 @@ UNTAGGED = {"rule": "Prefer small pull requests", "negative": "one big PR"}
 FINDING = {"rule": "The flaky test was a clock skew", "applies": "on_topic"}
 
 
+#: The person's own words, but not what the rule says.
+UNBACKED = {
+    "rule": "Indent with tabs, not spaces",
+    "applies": "always",
+    "user_quote": "Please ALWAYS run the linter",
+}
+
+
 def _answer() -> dict:
     return {
         "history_entry": "x",
         "lessons": [dict(QUOTED), dict(GUESSED), dict(UNTAGGED), dict(FINDING)],
     }
+
+
+def _embed(text: str) -> list[float]:
+    """A stand-in embedder: one axis per topic word, so only same-topic texts agree."""
+    low = text.lower()
+    return [float(word in low) for word in ("linter", "stash", "tabs")] + [0.01]
+
+
+def _quotes(answer: dict, rows: list, embed=_embed) -> mtp.QuoteRun:
+    """The answer's own quotes, checked and scored, as enforce gathers them."""
+    return asyncio.run(mtp.gather_quotes(answer, rows, ask=None, embed=embed))
 
 
 def _v1(tmp_path, name: str = "m") -> VectorMemoryStore:
@@ -124,20 +144,71 @@ def test_off_hands_back_the_answer_itself() -> None:
     assert policy.result is answer and not policy.loggable
 
 
-def test_shadow_writes_the_answer_unchanged_and_counts_every_standing_lesson() -> None:
+def test_shadow_writes_the_answer_unchanged_and_counts_the_measured_quotes() -> None:
     answer = _answer()
-    policy = mtp.apply_tier_policy(answer, [PERSON, ASSISTANT], "shadow")
+    rows = [PERSON, ASSISTANT]
+    policy = mtp.apply_tier_policy(answer, rows, "shadow", quotes=_quotes(answer, rows))
     assert policy.result is answer and answer == _answer()
     assert (policy.lessons, policy.unstated, policy.always) == (4, 1, 2)
     assert (policy.quote_present, policy.quote_pass, policy.quote_fail) == (1, 1, 0)
-    # Shadow asked for no quote, so a passing one is still counted as a would-be demotion.
-    assert policy.demoted == 3
-    assert policy.demoted_keys == tuple(_lesson_key(i["rule"]) for i in (QUOTED, GUESSED, UNTAGGED))
+    assert (policy.backed, policy.unmeasured, policy.support) == (1, 0, (("0.9", 1),))
+    # The backed quote stays standing, as under enforce: shadow is no upper bound.
+    assert policy.demoted == 2
+    assert policy.demoted_keys == tuple(_lesson_key(i["rule"]) for i in (GUESSED, UNTAGGED))
+    assert [label for _, label, _ in policy.labels] == ["absent", "unstated"]
+
+
+def test_shadow_with_no_measurement_counts_unmeasured_not_demoted() -> None:
+    answer = _answer()
+    failed = mtp.QuoteRun(None, asked=True, failed=True)
+    policy = mtp.apply_tier_policy(answer, [PERSON], "shadow", quotes=failed)
+    assert (policy.always, policy.unmeasured, policy.quote_present) == (2, 2, 0)
+    assert policy.demoted_keys == (_lesson_key(UNTAGGED["rule"]),)
+    assert _lesson_key(QUOTED["rule"]) not in policy.kept_keys, "unmeasured is not a control"
+    assert dict(policy.calls) == {"quote_calls": 1, "quote_call_failed": 1, "quote_cut": 0}
+
+
+@pytest.mark.parametrize(
+    "score, bucket",
+    [(None, "none"), (0.1, "<0.4"), (0.4, "0.4"), (0.59, "0.5"), (0.6, "0.6"), (1.0, "0.9")],
+)
+def test_support_buckets(score, bucket) -> None:
+    assert mtp.support_bucket(score) == bucket
+
+
+def test_a_verbatim_quote_must_also_back_its_rule() -> None:
+    answer = {"lessons": [dict(QUOTED), dict(UNBACKED)]}
+    quotes = _quotes(answer, [PERSON])
+    assert quotes.evidence[QUOTED["rule"]].backed
+    unbacked = quotes.evidence[UNBACKED["rule"]]
+    assert unbacked.outcome == "pass" and not unbacked.backed
+    assert unbacked.score is not None and unbacked.score < mtp.SUPPORT_COSINE
+    policy = mtp.apply_tier_policy(answer, [PERSON], "enforce", quotes=quotes)
+    assert [i["applies"] for i in policy.result["lessons"]] == ["always", "on_topic"]
+    assert (policy.quote_pass, policy.backed, policy.demoted) == (2, 1, 1)
+    assert policy.labels == ((_lesson_key(UNBACKED["rule"]), "pass", "<0.4"),)
+
+
+def test_with_no_embedder_no_quote_backs_its_rule() -> None:
+    answer = {"lessons": [dict(QUOTED)]}
+    for embed in (None, lambda _t: None, lambda _t: 1 / 0):
+        quotes = _quotes(answer, [PERSON], embed=embed)
+        assert quotes.evidence[QUOTED["rule"]] == mtp.QuoteEvidence("pass", None)
+        policy = mtp.apply_tier_policy(answer, [PERSON], "enforce", quotes=quotes)
+        assert policy.result["lessons"][0]["applies"] == "on_topic", "fails toward a finding"
+        assert policy.support == (("none", 1),)
+
+
+def test_enforce_with_no_evidence_demotes_every_standing_rule() -> None:
+    policy = mtp.apply_tier_policy(_answer(), [PERSON], "enforce")
+    assert {i["applies"] for i in policy.result["lessons"]} == {"on_topic"}
+    assert (policy.demoted, policy.unmeasured) == (3, 0)
 
 
 def test_enforce_keeps_only_a_quoted_rule_standing() -> None:
     answer = _answer()
-    policy = mtp.apply_tier_policy(answer, [PERSON, ASSISTANT], "enforce")
+    rows = [PERSON, ASSISTANT]
+    policy = mtp.apply_tier_policy(answer, rows, "enforce", quotes=_quotes(answer, rows))
     assert answer == _answer(), "the model's answer is not mutated"
     assert [i.get("applies") for i in policy.result["lessons"]] == [
         "always",
@@ -155,7 +226,9 @@ def test_enforce_keeps_only_a_quoted_rule_standing() -> None:
 
 
 def test_enforce_demotes_a_quote_only_an_agent_said() -> None:
-    policy = mtp.apply_tier_policy({"lessons": [dict(QUOTED)]}, [RELAY, ASSISTANT], "enforce")
+    answer = {"lessons": [dict(QUOTED)]}
+    rows = [RELAY, ASSISTANT]
+    policy = mtp.apply_tier_policy(answer, rows, "enforce", quotes=_quotes(answer, rows))
     assert policy.result["lessons"][0]["applies"] == "on_topic"
     assert (policy.quote_present, policy.quote_fail, policy.demoted) == (1, 1, 1)
 
@@ -172,32 +245,92 @@ def test_a_channel_session_is_left_as_it_is() -> None:
 
 def test_the_log_counts_by_mode_and_keeps_ids_only_in_shadow(tmp_path) -> None:
     store = _v1(tmp_path)
+    answer = {"lessons": [*_answer()["lessons"], dict(UNBACKED)]}
+    quotes = _quotes(answer, [PERSON])
     try:
-        shadow = mtp.apply_tier_policy(_answer(), [PERSON], "shadow")
+        shadow = mtp.apply_tier_policy(answer, [PERSON], "shadow", quotes=quotes)
         assert mtp.record_tier_policy(store, shadow, now=_T0)
-        enforce = mtp.apply_tier_policy(_answer(), [PERSON], "enforce")
+        enforce = mtp.apply_tier_policy(answer, [PERSON], "enforce", quotes=quotes)
         assert mtp.record_tier_policy(store, enforce, now=_T0)
         assert not mtp.record_tier_policy(
-            store, mtp.apply_tier_policy(_answer(), [PERSON], "off"), now=_T0
+            store, mtp.apply_tier_policy(answer, [PERSON], "off"), now=_T0
         )
         log = _log(store)
     finally:
         store.close()
-    base = {"passes": 1, "lessons": 4, "unstated": 1, "always": 2, "quote_present": 1}
-    assert log[mtp.COUNTS_PREFIX + "2026-10-01"] == {
-        "shadow": {"consolidation": {**base, "quote_pass": 1, "quote_fail": 0, "demoted": 3}},
-        "enforce": {"consolidation": {**base, "quote_pass": 1, "quote_fail": 0, "demoted": 2}},
+    row = {
+        "passes": 1,
+        "lessons": 5,
+        "unstated": 1,
+        "always": 3,
+        "quote_present": 2,
+        "quote_pass": 2,
+        "quote_fail": 0,
+        "backed": 1,
+        "unmeasured": 0,
+        "demoted": 3,
+        "support_0.9": 1,
+        "support_<0.4": 1,
+        "quote_calls": 0,
+        "quote_call_failed": 0,
+        "quote_cut": 0,
     }
+    assert log[mtp.COUNTS_PREFIX + "2026-10-01"] == {
+        "shadow": {"consolidation": row},
+        "enforce": {"consolidation": row},
+    }, "shadow counts what enforce does"
     ids = log[mtp.IDS_PREFIX + "2026-10-01"]
     assert [i["key"] for i in ids] == list(shadow.demoted_keys), "enforce adds no ids"
-    assert all(set(i) == {"key", "path", "rules", "at"} for i in ids), "ids and counts only"
-    assert all(i["at"] == _T0.isoformat() for i in ids)
-    assert QUOTE not in json.dumps(log) and GUESSED["rule"] not in json.dumps(log)
+    assert [(i["quote"], i.get("support")) for i in ids] == [
+        ("absent", None),
+        ("unstated", None),
+        ("pass", "<0.4"),
+    ]
+    assert all(set(i) - {"support"} == {"key", "path", "rules", "at", "quote"} for i in ids)
+    assert all(i["at"] == _T0.isoformat() and i["rules"] == 2 for i in ids)
+    assert log[mtp.RULES_VERSION_KEY] == "2"
+    assert log[mtp.RULES_CHANGED_KEY] == _T0.isoformat()
+    text = json.dumps(log, ensure_ascii=False)
+    assert QUOTE not in text and GUESSED["rule"] not in text and UNBACKED["user_quote"] not in text
+
+
+def test_a_new_rules_version_stamps_its_change_on_the_first_counter_write(tmp_path) -> None:
+    store = _v1(tmp_path)
+    try:
+        with store._db_lock:
+            for key, value in ((mtp.RULES_VERSION_KEY, "1"), (mtp.SHADOW_STARTED_KEY, "x")):
+                store.db.execute(
+                    "INSERT INTO memory_meta (key, value, updated_at) VALUES (?, ?, ?)",
+                    (key, value, "2026-09-01T00:00:00+00:00"),
+                )
+            store.db.commit()
+        later = _T0 + timedelta(hours=3)
+        enforce = mtp.apply_tier_policy({"lessons": [dict(GUESSED)]}, [PERSON], "enforce")
+        assert mtp.record_tier_policy(store, enforce, now=_T0)
+        assert mtp.record_tier_policy(store, enforce, now=later)
+        log = _log(store)
+        # The id window is cleared, not started: enforce keeps no ids, so a later
+        # shadow run still gets its whole window from its first id write.
+        assert mtp.SHADOW_STARTED_KEY not in log
+        shadow_at = _T0 + timedelta(days=20)
+        shadow = mtp.apply_tier_policy({"lessons": [dict(UNTAGGED)]}, [PERSON], "shadow")
+        assert mtp.record_tier_policy(store, shadow, now=shadow_at)
+        after = _log(store)
+    finally:
+        store.close()
+    assert log[mtp.RULES_VERSION_KEY] == str(mtp.RULES_VERSION)
+    assert log[mtp.RULES_CHANGED_KEY] == _T0.isoformat()
+    assert after[mtp.SHADOW_STARTED_KEY] == shadow_at.isoformat()
+    assert [i["key"] for i in after[mtp.IDS_PREFIX + shadow_at.date().isoformat()]] == [
+        _lesson_key(UNTAGGED["rule"])
+    ]
 
 
 def _many(n: int, start: int = 0) -> mtp.TierPolicy:
     keys = tuple(f"lesson.k{i}" for i in range(start, start + n))
-    return mtp.TierPolicy({}, "shadow", n, n, 0, 0, 0, 0, n, keys)
+    return mtp.TierPolicy(
+        {}, "shadow", n, n, 0, 0, 0, 0, n, keys, labels=tuple((k, "unstated", None) for k in keys)
+    )
 
 
 def test_ids_stop_at_the_daily_cap_and_after_the_window(tmp_path) -> None:
@@ -239,7 +372,9 @@ def _seeded(tmp_path) -> VectorMemoryStore:
     store.write_lesson(GUESSED["rule"], "knowledge", None, "consolidation", [1.0, 0, 0, 0])
     store.write_lesson("Unrelated finding", "knowledge", None, "consolidation", [0, 0, 1.0, 0])
     key = _lesson_key(GUESSED["rule"])
-    policy = mtp.TierPolicy({}, "shadow", 1, 0, 1, 0, 0, 0, 1, (key,))
+    policy = mtp.TierPolicy(
+        {}, "shadow", 1, 0, 1, 0, 0, 0, 1, (key,), labels=((key, "absent", None),)
+    )
     assert mtp.record_tier_policy(store, policy, now=_T0)
     return store
 
@@ -259,6 +394,22 @@ def test_a_learn_add_close_to_a_would_be_demotion_is_a_reteach(tmp_path) -> None
     assert day["reteach"] == {"checked": 3, "matched": 1}
     reteach = [i for i in log[mtp.IDS_PREFIX + "2026-10-01"] if i["path"] == "reteach"]
     assert [i["key"] for i in reteach] == [_lesson_key(GUESSED["rule"])]
+
+
+def test_reteach_ignores_demotions_from_previous_rules(tmp_path, monkeypatch) -> None:
+    with monkeypatch.context() as old_rules:
+        old_rules.setattr(mtp, "RULES_VERSION", 1)
+        store = _seeded(tmp_path)
+    try:
+        assert mtp.record_reteach(store, [0.99, 0.05, 0, 0], "shadow", now=_T0)
+        log = _log(store)
+    finally:
+        store.close()
+    assert log[mtp.COUNTS_PREFIX + "2026-10-01"]["shadow"]["reteach"] == {
+        "checked": 1,
+        "matched": 0,
+    }
+    assert all(i["rules"] == 1 for i in log[mtp.IDS_PREFIX + "2026-10-01"])
 
 
 @pytest.mark.parametrize(
@@ -295,7 +446,8 @@ def test_v1_writes_by_mode(tmp_path) -> None:
     for mode in ("off", "shadow", "enforce"):
         store = _v1(tmp_path, mode)
         try:
-            policy = mtp.apply_tier_policy(_answer(), [PERSON], mode)
+            answer = _answer()
+            policy = mtp.apply_tier_policy(answer, [PERSON], mode, quotes=_quotes(answer, [PERSON]))
             _consolidator(store)._save_lessons(policy.result["lessons"], key="s1")
             written[mode] = _tiers(store)
         finally:
@@ -326,7 +478,10 @@ def test_member_store_enforce_writes_by_the_policy(tmp_path, monkeypatch) -> Non
         directory / "memory.db", member_id="alice", store_id="member-alice", embedding_dim=4
     )
     try:
-        policy = mtp.apply_tier_policy(_answer(), [PERSON], "enforce")
+        answer = _answer()
+        policy = mtp.apply_tier_policy(
+            answer, [PERSON], "enforce", quotes=_quotes(answer, [PERSON])
+        )
         store.apply_consolidation(
             source_id="src-1",
             session_key="s1",
@@ -353,12 +508,31 @@ def test_member_store_enforce_writes_by_the_policy(tmp_path, monkeypatch) -> Non
 # the pass
 
 
-async def _run_pass(monkeypatch, mode: str) -> tuple[str, list, list]:
-    """One history pass over a person's span; returns the prompt, saved lessons, log entries."""
+#: The span the pass reads: a person, an agent's relay, the assistant.
+SPAN = [PERSON, RELAY, ASSISTANT]
+_QUOTE_CALL = "Find the user's own words"
+
+
+def _quote_answer(prompt: str) -> dict:
+    """What the quote call answers: the person's sentence for the linter rule only."""
+    rules = json.loads(prompt.split("\nRules: ", 1)[1].split("\n", 1)[0])
+    return {"quotes": {str(r["id"]): QUOTE if "linter" in r["rule"] else "" for r in rules}}
+
+
+async def _run_pass(
+    monkeypatch,
+    mode: str,
+    *,
+    origin: str = "off",
+    quote_answer=_quote_answer,
+    span: list = SPAN,
+) -> tuple[list[str], list, list]:
+    """One history pass over *span*; returns the prompts, saved lessons, log entries."""
     from kiro_crew import consolidation_write_offload, executors
+    from kiro_crew import memory_origin_gate as mog
 
     log = lease_aware_log()
-    log.snapshot_for_consolidation.return_value = ([PERSON, ASSISTANT], 2, 0, 0)
+    log.snapshot_for_consolidation.return_value = (list(span), len(span), 0, 0)
     log.consolidation_retry_state.return_value = (0, 0.0)
     memory = MagicMock()
     memory.read_preferences.return_value = ""
@@ -366,6 +540,7 @@ async def _run_pass(monkeypatch, mode: str) -> tuple[str, list, list]:
     store = MagicMock()
     store.algorithm_version = "v1"
     store.get_all_semantic.return_value = []
+    store.embed_lesson.side_effect = _embed
     c = HistoryConsolidator(
         log=log, memory=memory, sessions=None, vector_store=store, migrated=True
     )
@@ -376,13 +551,17 @@ async def _run_pass(monkeypatch, mode: str) -> tuple[str, list, list]:
     async def inline(func, /, *args, **kwargs):
         return func(*args, **kwargs)
 
-    async def fake_llm(prompt: str, **_: Any) -> dict:
+    async def fake_llm(prompt: str, **_: Any) -> object:
         prompts.append(prompt)
+        if prompt.startswith(_QUOTE_CALL):
+            return quote_answer(prompt)
         return _answer()
 
     monkeypatch.setattr(executors, "run_in_memory_background_pool", inline)
     monkeypatch.setattr(mtp, "configured_mode", lambda: mode)
+    monkeypatch.setattr(mog, "configured_mode", lambda: origin)
     monkeypatch.setattr(mtp, "record_tier_policy", lambda s, p, **_: recorded.append(p) or True)
+    monkeypatch.setattr(mog, "record_origin_gate", lambda s, g, **_: True)
     monkeypatch.setattr(
         consolidation_write_offload, "save_lessons", lambda _c, raw, *a, **k: saved.append(raw)
     )
@@ -391,29 +570,185 @@ async def _run_pass(monkeypatch, mode: str) -> tuple[str, list, list]:
         patch.object(c, "_write_structured_memory"),
     ):
         await c._consolidate("k", include_history=True)
-    (prompt,) = prompts
     (lessons,) = saved
-    return prompt, lessons, recorded
+    return prompts, lessons, recorded
 
 
 @pytest.mark.asyncio
 async def test_the_pass_applies_the_policy_and_only_enforce_changes_the_prompt(
     monkeypatch,
 ) -> None:
-    off_prompt, off_lessons, off_log = await _run_pass(monkeypatch, "off")
+    off_prompts, off_lessons, off_log = await _run_pass(monkeypatch, "off")
+    (off_prompt,) = off_prompts
     assert off_lessons == _answer()["lessons"]
     assert off_log == []
     assert mtp.QUOTE_INSTRUCTION not in off_prompt
 
-    shadow_prompt, shadow_lessons, shadow_log = await _run_pass(monkeypatch, "shadow")
-    assert shadow_prompt == off_prompt, "shadow asks today's prompt, byte for byte"
-    assert shadow_lessons == off_lessons
-    assert [p.demoted for p in shadow_log] == [3]
+    shadow_prompts, shadow_lessons, shadow_log = await _run_pass(monkeypatch, "shadow")
+    consolidation, quote_call = shadow_prompts
+    assert consolidation == off_prompt, "shadow asks today's prompt, byte for byte"
+    assert shadow_lessons == off_lessons, "shadow writes today's lessons"
+    # The quote call sees the rules and the person's own words, nothing an agent said.
+    assert quote_call.startswith(_QUOTE_CALL)
+    assert PERSON["content"] in quote_call
+    assert QUOTED["rule"] in quote_call and GUESSED["rule"] in quote_call
+    assert "session_send" not in quote_call and UNTAGGED["rule"] not in quote_call
+    (policy,) = shadow_log
+    assert (policy.demoted, policy.quote_pass, policy.backed) == (2, 1, 1)
+    assert dict(policy.calls)["quote_calls"] == 1
 
-    enforce_prompt, enforce_lessons, enforce_log = await _run_pass(monkeypatch, "enforce")
+    enforce_prompts, enforce_lessons, enforce_log = await _run_pass(monkeypatch, "enforce")
+    (enforce_prompt,) = enforce_prompts
     assert enforce_prompt.replace(mtp.QUOTE_INSTRUCTION, "", 1) == off_prompt
     assert [i.get("applies") for i in enforce_lessons] == ["always"] + ["on_topic"] * 3
     assert [p.demoted for p in enforce_log] == [2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "quote_answer",
+    [lambda _p: 1 / 0, lambda _p: "junk", lambda _p: {"quotes": []}],
+    ids=["raises", "junk", "wrong-shape"],
+)
+async def test_a_failed_quote_call_leaves_shadow_unmeasured_and_writes_as_off(
+    monkeypatch, quote_answer
+) -> None:
+    _, off_lessons, _ = await _run_pass(monkeypatch, "off")
+    prompts, lessons, (policy,) = await _run_pass(monkeypatch, "shadow", quote_answer=quote_answer)
+    assert len(prompts) == 2 and lessons == off_lessons
+    assert (policy.unmeasured, policy.demoted, policy.quote_present) == (2, 1, 0)
+    assert dict(policy.calls) == {"quote_calls": 1, "quote_call_failed": 1, "quote_cut": 0}
+
+
+@pytest.mark.asyncio
+async def test_only_the_tier_policy_asks_for_quotes_never_the_origin_gate(monkeypatch) -> None:
+    for origin in ("shadow", "enforce"):
+        prompts, _, recorded = await _run_pass(monkeypatch, "off", origin=origin)
+        assert len(prompts) == 1 and recorded == [], f"origin {origin} sends no quote call"
+        assert mtp.QUOTE_INSTRUCTION not in prompts[0], f"origin {origin} asks today's prompt"
+    # The origin gate's enforce does not ask the prompt for a quote, so tier shadow
+    # still measures with one quote call after the writes.
+    prompts, _, (policy,) = await _run_pass(monkeypatch, "shadow", origin="enforce")
+    assert len(prompts) == 2 and mtp.QUOTE_INSTRUCTION not in prompts[0]
+    assert prompts[1].startswith(_QUOTE_CALL)
+    assert dict(policy.calls)["quote_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_shadow_measures_the_answer_the_origin_gate_returned(monkeypatch) -> None:
+    # No person in the span: the origin gate's enforce demotes every standing lesson,
+    # so the shadow re-run reads no ``always`` lesson and sends no quote call.
+    prompts, lessons, (policy,) = await _run_pass(
+        monkeypatch, "shadow", origin="enforce", span=[RELAY, ASSISTANT]
+    )
+    assert len(prompts) == 1 and not prompts[0].startswith(_QUOTE_CALL)
+    assert all(i.get("applies") != "always" for i in lessons)
+    assert (policy.always, policy.demoted, policy.unmeasured) == (0, 0, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_store", [True, False])
+async def test_the_provider_path_scores_quotes_with_crews_embedder(monkeypatch, with_store) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew import history_consolidation
+    from kiro_crew.memory_provider import consolidation
+
+    monkeypatch.setattr(mtp, "configured_mode", lambda: "enforce")
+    monkeypatch.setattr(history_consolidation, "_prompt_rows", lambda chunk: chunk)
+    seen: list[dict] = []
+    monkeypatch.setattr(consolidation, "extracted_items", lambda result: seen.append(result) or [])
+    prompts: list[str] = []
+
+    async def call_llm(prompt, session_key):
+        prompts.append(prompt)
+        return {"lessons": [dict(QUOTED)]}
+
+    async def moved():
+        return "moved"
+
+    caps = SimpleNamespace(ingest="items", read_only=False)
+    provider = SimpleNamespace(capabilities=lambda: caps)
+    store = SimpleNamespace(embed_lesson=_embed) if with_store else None
+    consolidator = SimpleNamespace(_call_llm=call_llm, _vector_store=store)
+    answer = await consolidation.publish(
+        consolidator,  # type: ignore[arg-type]
+        "dashboard:x",
+        SimpleNamespace(provider=provider, unavailable=None),  # type: ignore[arg-type]
+        store_name="default",
+        execution=SimpleNamespace(memory_mode="persistent", member_id=None),
+        chunk=[PERSON],
+        attempted=SimpleNamespace(offset=0, prompted=1),
+        lease="l",
+        include_history=True,
+        commit_state=None,
+        transcript_moved=moved,
+        refused=object(),  # type: ignore[arg-type]
+    )
+    assert answer == "moved"
+    (prompt,) = prompts
+    assert mtp.QUOTE_INSTRUCTION in prompt
+    ((lesson,),) = [r["lessons"] for r in seen]
+    assert lesson["applies"] == ("always" if with_store else "on_topic")
+
+
+def _gather(answer: dict, rows: list, ask) -> mtp.QuoteRun:
+    return asyncio.run(mtp.gather_quotes(answer, rows, ask=ask, embed=_embed))
+
+
+def test_the_quote_call_is_not_sent_without_an_always_lesson_or_a_person() -> None:
+    sent: list[str] = []
+
+    async def ask(prompt: str) -> dict:
+        sent.append(prompt)
+        return {"quotes": {}}
+
+    assert _gather({"lessons": [dict(UNTAGGED), dict(FINDING)]}, [PERSON], ask) == mtp.QuoteRun({})
+    run = _gather(_answer(), [RELAY, ASSISTANT], ask)
+    assert set(run.evidence.values()) == {mtp.QuoteEvidence("absent")} and not run.asked
+    assert sent == []
+
+
+def test_the_quote_call_keeps_the_newest_messages_within_its_bound(monkeypatch) -> None:
+    sent: list[str] = []
+
+    async def ask(prompt: str) -> dict:
+        sent.append(prompt)
+        return {"quotes": {"0": QUOTE}}
+
+    old = {**PERSON, "content": "an old message " + "x" * 1_900}
+    monkeypatch.setattr(mtp, "QUOTE_INPUT_TOKENS", 500)
+    run = _gather({"lessons": [dict(QUOTED)]}, [old, old, PERSON], ask)
+    (prompt,) = sent
+    assert mtp._kind_log.label_prompt_tokens(prompt) <= 500
+    assert PERSON["content"] in prompt and "an old message" not in prompt
+    assert run.cut and run.asked and run.evidence[QUOTED["rule"]].backed
+    # Even one message over the bound: nothing is sent, nothing is measured.
+    monkeypatch.setattr(mtp, "QUOTE_INPUT_TOKENS", 50)
+    assert _gather({"lessons": [dict(QUOTED)]}, [PERSON], ask).evidence is None
+    assert len(sent) == 1
+
+
+def test_a_quote_call_that_never_reached_the_provider_is_not_counted_as_sent() -> None:
+    from kiro_crew.history_consolidation import _ConsolidationNotDispatched
+
+    async def ask(prompt: str) -> dict:
+        raise _ConsolidationNotDispatched("no model")
+
+    run = _gather({"lessons": [dict(QUOTED)]}, [PERSON], ask)
+    assert run.evidence is None
+    assert run.counts() == {"quote_calls": 0, "quote_call_failed": 0, "quote_cut": 0}
+
+
+def test_the_quote_call_answer_is_checked_like_any_quote() -> None:
+    async def ask(prompt: str) -> dict:
+        # The call names an agent's text and a paraphrase: neither is the person's.
+        return {"quotes": {"0": "always run the linter before every commit!", "1": "skip it"}}
+
+    answer = {"lessons": [dict(QUOTED), dict(GUESSED)]}
+    run = _gather(answer, [RELAY, {**PERSON, "content": "skip it please"}], ask)
+    assert run.evidence[QUOTED["rule"]].outcome == "fail"
+    assert run.evidence[GUESSED["rule"]].outcome == "fail", "two words are too few"
 
 
 # the learn_add route

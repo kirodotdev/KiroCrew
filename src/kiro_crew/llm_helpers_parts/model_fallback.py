@@ -57,6 +57,27 @@ def first_advertised_fallback(advertised: Any, rejected: str | None) -> str | No
     return None
 
 
+def reactive_model_candidate(exc: BaseException, rejected: str | None) -> str | None:
+    """The model a turn retries on after *exc* rejected *rejected*, or ``None``.
+
+    The first advertised model (:func:`first_advertised_fallback`) when the
+    harness advertised a list. A harness that advertises none (KAS) still
+    names an entitlement refusal with its own token, which ``_raise_acp_error``
+    keeps as ``exc.unentitled``; the backend's routing choice ``"auto"`` is then
+    the candidate, since every Kiro account is served it and a retry on the
+    refused id would answer the same refusal.
+    """
+    advertised = getattr(exc, "advertised", None) or []
+    candidate = first_advertised_fallback(advertised, rejected)
+    if candidate is not None or advertised:
+        return candidate
+    if getattr(exc, "unentitled", False) is not True:
+        return None
+    if (rejected or "").strip().lower() == "auto":
+        return None
+    return "auto"
+
+
 # Throttle-exhaustion fallback chain (agent.fallback_model).
 #
 # When the same-model transient budget (TRANSIENT_RETRIES) is spent on a

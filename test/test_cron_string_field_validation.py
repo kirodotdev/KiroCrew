@@ -366,6 +366,8 @@ class TestAntiDrift:
             # read from the verified caller session; no caller sets either.
             "owner_member_id",
             "owner_approval_mode",
+            # Set only by the run, from the raised error's transport tags.
+            "last_error_kind",
         }
     )
 

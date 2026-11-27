@@ -45,8 +45,8 @@ export default memo(function CrewDispatchNoticeCard({
   useLanguageGeneration()
   if (!crewMode) return null
   const openBoard = i18nT('pages.chat.crewDispatchNotice.openBoard')
-  // Revealing the Board (Workers view) is the HOST's job, not the card's: it must close
-  // the find pane (which keeps the side-panel dock unmounted while open) and,
+  // Revealing the Board (Workers view) is the HOST's job, not the card's: it must end
+  // the history search, as every tab opened from the chat does, and,
   // in a split pane, rebind this card's slot to the active one before opening
   // the panel for it — neither reachable from here. The card used to call
   // openPanelView + openActivityPanel itself, which left both cases broken

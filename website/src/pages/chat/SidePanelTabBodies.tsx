@@ -18,7 +18,7 @@ import ArtifactPanel, { type ArtifactPanelHandle } from '../../components/Artifa
 import FolderPanel from './FolderPanel'
 import FileBrowserRail from './FileBrowserRail'
 import PreviewTabBody from '../../components/PreviewTabBody'
-import CliPanel from '../../components/CliPanel'
+import CliPanel from '../../components/LazyCliPanel'
 import { countLines } from '../../components/FileChangeChips'
 import { pathBasename } from '../../utils/pathBasename'
 import { useQueryClient } from '@tanstack/react-query'

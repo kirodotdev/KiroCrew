@@ -25,11 +25,6 @@ import { HOLD_MS_DEFAULT } from '../lib/pushToTalk'
  * tell the two apart (#5753).
  */
 
-vi.mock('../components/Strands', () => ({
-  __esModule: true,
-  default: () => <div data-testid="strands-stub" />,
-  strandsSupported: () => true,
-}))
 
 const sampleRef = { current: createAudioSample() }
 
@@ -147,8 +142,9 @@ describe('ChatInput — hold-to-talk mode', () => {
 
       // Capture goes live and a partial arrives: the composer now holds text, but
       // the finger is still down — the bar must not be unmounted from under it.
-      rerender(<ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceRecording: true }}><ChatInput {...base} value="arm auto merge on" /></ComposerVoiceSliceOverride>)
+      rerender(<ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceRecording: true, voiceDictationPanel: true }}><ChatInput {...base} value="arm auto merge on" /></ComposerVoiceSliceOverride>)
       expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
+      expect(screen.getByTestId('hold-to-talk-transcript')).toHaveTextContent('arm auto merge on')
       expect(screen.getByRole('button', { name: 'Switch to keyboard' })).toBeTruthy()
 
       // The finger lifts, committing the capture. Ownership ends AT the release,

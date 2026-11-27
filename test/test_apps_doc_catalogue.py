@@ -42,21 +42,21 @@ BUILTINS = REPO / "src" / "kiro_crew" / "apps" / "builtins"
 #: shell example is not mistaken for a catalogue row.
 _ROW_RE = re.compile(r"\*\*(?P<display>[^*]+)\*\* \(`(?P<slug>[a-z0-9-]+)`\)")
 
-#: How the page spells a count in its lead paragraph. Only the range the wheel could
-#: plausibly reach is listed; a count outside it fails loudly rather than silently
-#: passing an unspelled number.
+#: How the page spells a count in its lead paragraph. The wheel only loses apps (Kiro
+#: Crew accepts no new built-in app), so only the counts it can still reach are listed;
+#: a count outside them fails loudly rather than silently passing an unspelled number.
 _COUNT_WORDS = {
+    10: "Ten",
+    11: "Eleven",
+    12: "Twelve",
+    13: "Thirteen",
+    14: "Fourteen",
+    15: "Fifteen",
+    16: "Sixteen",
+    17: "Seventeen",
+    18: "Eighteen",
+    19: "Nineteen",
     20: "Twenty",
-    21: "Twenty-one",
-    22: "Twenty-two",
-    23: "Twenty-three",
-    24: "Twenty-four",
-    25: "Twenty-five",
-    26: "Twenty-six",
-    27: "Twenty-seven",
-    28: "Twenty-eight",
-    29: "Twenty-nine",
-    30: "Thirty",
 }
 
 #: Agent counts are prose, too; this is vocabulary, not a second per-app catalogue.

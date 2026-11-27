@@ -1565,6 +1565,7 @@ class SessionMap:
     set_slack_paused = _links.set_slack_paused
     is_slack_paused = _links.is_slack_paused
     get_session_for_thread = _links.get_session_for_thread
+    slack_thread_owners = _links.slack_thread_owners
     set_mirror_link = _links.set_mirror_link
     mirror_claim_blockers = _links.mirror_claim_blockers
     _mirror_key = _links._mirror_key

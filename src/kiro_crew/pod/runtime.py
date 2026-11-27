@@ -1100,16 +1100,15 @@ def recent_journal(
         secs, usecs = divmod(since[JOURNAL_SINCE_USEC], 1_000_000)
         bound.append(f"--since=@{secs}.{usecs:06d}")
     unit = pod_unit(cfg, name)
+    journalctl_bin = platform_compat.trusted_system_bin("journalctl")
+    if journalctl_bin is None:
+        return "(could not read the pod journal: no journalctl in the trusted system directories)"
     try:
-        cp = subprocess.run(
-            ["journalctl", "--user", "-u", unit, "-n", str(lines), "--no-pager", *bound],
-            capture_output=True,
+        # _run decodes as UTF-8: journalctl prints the journal's UTF-8 raw even
+        # under the LC_ALL=C it pins, and a boot failure may name a non-ASCII path.
+        cp = _run(
+            [journalctl_bin, "--user", "-u", unit, "-n", str(lines), "--no-pager", *bound],
             timeout=10,
-            env=_systemctl_env(),
-            # The journal stores UTF-8 and journalctl prints it raw, even under the
-            # LC_ALL=C that _systemctl_env pins, so a locale decode can garble or
-            # raise on a non-ASCII path in the very boot failure this surfaces.
-            **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         # Said, not raised: `pod up` prints this tail and must still stop the unit.
@@ -1491,6 +1490,13 @@ def build_pod_env(
     # Same cross-plane guard for the companion host evidence (exported only
     # for specific-interface binds — see dashboard.server).
     env.pop("KIROCREW_BOUND_HOST", None)
+    # An agent session's temp dir is its scratch under the caller's data home,
+    # which every sandbox masks; a `pod exec` child that works there (`eval`
+    # builds its workspace under TMPDIR) would hand its agent a missing cwd.
+    # Only values under that scratch root go; the user's own temp dir stays.
+    from kiro_crew.agent_scratch import drop_inherited_scratch_env
+
+    drop_inherited_scratch_env(env)
     if skip_model_download:
         # Set AFTER the scrub loop so no present-or-future scrub pattern can strip
         # the guarantee back out.

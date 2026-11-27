@@ -26,7 +26,7 @@ from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew.browser_harness import HARNESS_VERSION, chromium, credentials, discover, supervisor
 from kiro_crew.browser_harness.supervisor import HarnessSupervisor
-from kiro_crew.testing.wait import await_until, finished
+from kiro_crew.testing.wait import async_wait_until, await_until, finished, until_parked
 
 POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="pipe fds and AF_UNIX are POSIX")
 
@@ -364,6 +364,7 @@ async def test_call_reuses_a_live_worker_discards_a_fatal_one_and_raises_failure
     sup = HarnessSupervisor(tmp_path, config_reader=lambda: {})
     first = _Proc()
     live = _handle(daemon=_Proc(), worker=first)
+    sup._handle = live
     replacements: list[_Proc] = []
     sent: list[dict[str, Any]] = []
     replies: list[dict[str, Any]] = [
@@ -396,6 +397,96 @@ async def test_call_reuses_a_live_worker_discards_a_fatal_one_and_raises_failure
         await sup.call("current_tab")
     assert sent[2]["proc"] is replacements[0], "the next call starts a fresh worker"
     assert [b["id"] for b in sent] == sorted({b["id"] for b in sent})
+
+
+def _stand_in_children(
+    sup: HarnessSupervisor, monkeypatch: pytest.MonkeyPatch, stopped: list[Any]
+) -> list[str]:
+    """Stand-ins for a teardown over ``_Proc`` children: a stop kills (``returncode``)
+    and records; the daemon's IPC answers nothing; every helper request is recorded."""
+    requests: list[str] = []
+
+    async def _stop(proc: Any) -> None:
+        if proc is not None and proc.returncode is None:
+            proc.returncode = -15
+            stopped.append(proc)
+
+    async def _request(proc: Any, body: dict[str, Any], timeout: float) -> dict[str, Any]:
+        requests.append(body["helper"])
+        return {"id": body["id"], "ok": True, "result": []}
+
+    async def _no_ipc() -> None:
+        return None
+
+    monkeypatch.setattr(supervisor, "_stop_process", _stop)
+    monkeypatch.setattr(supervisor, "_worker_request", _request)
+    sup._ipc_shutdown = _no_ipc  # type: ignore[method-assign]
+    return requests
+
+
+@pytest.mark.asyncio
+async def test_a_call_queued_behind_a_helper_is_refused_once_a_rebuild_stop_retires_its_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stop kills the worker without the call lock, which frees the call queued
+    behind it: that call must not start a worker from the venv the install clears."""
+    sup = HarnessSupervisor(tmp_path, config_reader=lambda: {})
+    worker = _Proc()
+    sup._handle = _handle(daemon=_Proc(), worker=worker)
+    stopped: list[Any] = []
+    requests = _stand_in_children(sup, monkeypatch, stopped)
+    started: list[Any] = []
+
+    async def _start_worker(handle: Any) -> Any:
+        started.append(_Proc())
+        return started[-1]
+
+    sup._start_worker = _start_worker  # type: ignore[method-assign]
+    await sup._call_lock.acquire()  # the helper in flight
+    try:
+        queued = asyncio.ensure_future(sup.call("list_tabs", include_chrome=False))
+        await until_parked(sup._call_lock)
+        rebuild = asyncio.ensure_future(sup.stop_for_harness_rebuild())
+        await async_wait_until(lambda: worker in stopped, describe=lambda: stopped)
+    finally:
+        sup._call_lock.release()
+    with pytest.raises(supervisor.BrowserRestarted):
+        await await_until(queued, what="the queued call")
+    await await_until(rebuild, what="the rebuild stop")
+    assert started == [] and requests == [] and sup._handle is None
+
+
+@pytest.mark.asyncio
+async def test_a_worker_started_as_a_rebuild_stop_retires_the_handle_is_stopped_before_it_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The call passed the handle check and is spawning a worker when the stop runs:
+    that worker is stopped, and the rebuild stop, after which the install clears the
+    venv, returns only once it is."""
+    sup = HarnessSupervisor(tmp_path, config_reader=lambda: {})
+    daemon, fresh = _Proc(), _Proc()
+    sup._handle = _handle(daemon=daemon)  # its last worker was discarded
+    order: list[Any] = []
+    requests = _stand_in_children(sup, monkeypatch, order)
+    start_entered = asyncio.Event()
+
+    async def _start_worker(handle: Any) -> Any:
+        start_entered.set()
+        await async_wait_until(lambda: daemon in order)  # the spawn lands mid-teardown
+        return fresh
+
+    async def _rebuild() -> None:
+        await sup.stop_for_harness_rebuild()
+        order.append("rebuild returned")
+
+    sup._start_worker = _start_worker  # type: ignore[method-assign]
+    call = asyncio.ensure_future(sup.call("page_info"))
+    await await_until(start_entered, what="the call starting a worker")
+    rebuild = asyncio.ensure_future(_rebuild())
+    with pytest.raises(supervisor.BrowserRestarted):
+        await await_until(call, what="the call")
+    await await_until(rebuild, what="the rebuild stop")
+    assert requests == [] and order == [daemon, fresh, "rebuild returned"]
 
 
 # ── _choose / _start ──
@@ -1028,20 +1119,46 @@ async def test_a_stray_daemon_is_shut_down_and_its_runtime_files_removed(
     (runtime / supervisor._PORT_FILE).write_text("{}", encoding="utf-8")
     # A directory where the socket should be: unlink fails, and that is tolerated.
     (runtime / supervisor._SOCK_FILE).mkdir()
-    pings = [True, True, False]
+    # A reply with no pid: the wait is on the socket alone.
+    pings: list[Any] = [{"pong": True}, {"pong": True}, None]
     shutdowns: list[int] = []
 
-    async def _ping() -> bool:
+    async def _request(body: dict[str, Any]) -> Any:
+        assert body == {"meta": "ping"}
         return pings.pop(0)
 
     async def _shutdown() -> None:
         shutdowns.append(1)
 
-    sup._ipc_ping = _ping  # type: ignore[method-assign]
+    sup._ipc_request = _request  # type: ignore[method-assign]
     sup._ipc_shutdown = _shutdown  # type: ignore[method-assign]
     await sup._shutdown_stray_daemon()
     assert shutdowns == [1] and pings == []
     assert not (runtime / supervisor._PORT_FILE).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_stray_daemon_is_waited_for_until_its_process_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # It stops answering before it exits: its shutdown cleanup still runs from the venv.
+    sup = HarnessSupervisor(tmp_path)
+    _point_runtime_at(sup, tmp_path)
+    sent: list[dict[str, Any]] = []
+    alive = [True, True, False]
+
+    async def _request(body: dict[str, Any]) -> Any:
+        sent.append(body)
+        return {"pong": True, "pid": 4242} if len(sent) == 1 else None
+
+    def _pid_exists(pid: int) -> bool:
+        assert pid == 4242
+        return alive.pop(0)
+
+    sup._ipc_request = _request  # type: ignore[method-assign]
+    monkeypatch.setattr(supervisor.platform_compat, "pid_exists", _pid_exists)
+    await sup._shutdown_stray_daemon()
+    assert sent[1] == {"meta": "shutdown"} and alive == []
 
 
 @pytest.mark.asyncio
@@ -1051,11 +1168,11 @@ async def test_no_stray_check_without_a_runtime_dir(tmp_path: Path) -> None:
     def _refused() -> Path:
         raise supervisor.BrowserUnavailable("too deep")
 
-    async def _ping() -> bool:
+    async def _request(_body: dict[str, Any]) -> Any:
         raise AssertionError("no runtime dir, nothing to ping")
 
     sup.runtime_dir = _refused  # type: ignore[method-assign]
-    sup._ipc_ping = _ping  # type: ignore[method-assign]
+    sup._ipc_request = _request  # type: ignore[method-assign]
     await sup._shutdown_stray_daemon()
 
 
@@ -1288,6 +1405,57 @@ async def test_no_start_launches_kiros_chromium_while_a_redownload_replaces_it(
     with pytest.raises(supervisor.BrowserUnavailable, match="being redownloaded"):
         await sup._start()
     assert sup.status()["detail"] == supervisor.CHROMIUM_REPLACING_DETAIL
+
+
+@pytest.mark.asyncio
+async def test_no_start_runs_while_the_harness_venv_is_being_reinstalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reinstall empties the venv in place: a start then would spawn a missing
+    interpreter, so it is refused with what is going on instead."""
+    sup = HarnessSupervisor(tmp_path, config_reader=lambda: {})
+    monkeypatch.setattr(
+        supervisor.install, "install_state", lambda home: _installed(home, python=Path("py"))
+    )
+    monkeypatch.setattr(sup, "runtime_dir", lambda: tmp_path / "run")
+    monkeypatch.setattr(sup, "_choose", lambda state: _choice("kiro_chromium"))
+
+    async def _must_not_spawn(*_a: Any, **_kw: Any) -> Any:
+        raise AssertionError("a start spawned during the harness reinstall")
+
+    monkeypatch.setattr(sup, "_spawn", _must_not_spawn)
+    monkeypatch.setattr(sup, "_launch_chromium", _must_not_spawn)
+    sup.installing_harness = True
+    with pytest.raises(supervisor.HarnessNotInstalled, match="being reinstalled"):
+        await sup._start()
+    assert sup.status()["detail"] == supervisor.HARNESS_REINSTALLING_DETAIL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", ["daemon", "worker"])
+async def test_an_interpreter_gone_at_spawn_reads_as_a_reinstall_not_an_errno(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, which: str
+) -> None:
+    """The venv can be emptied between the install read and the spawn: the person
+    sees the reinstall, not ``[Errno 2] ... venv/bin/python``."""
+    sup = HarnessSupervisor(tmp_path, base_env={})
+    gone = tmp_path / "venv" / "bin" / "python"
+    monkeypatch.setattr(
+        supervisor.install, "install_state", lambda home: _installed(home, python=gone)
+    )
+    sup._daemon_env = lambda url: {}  # type: ignore[method-assign]
+
+    async def _no_stray() -> None:
+        return None
+
+    sup._shutdown_stray_daemon = _no_stray  # type: ignore[method-assign]
+    with pytest.raises(Exception) as raised:
+        if which == "daemon":
+            await sup._start_daemon(gone, "http://relay")
+        else:
+            await sup._start_worker(_handle())
+    assert isinstance(raised.value, supervisor.HarnessNotInstalled), repr(raised.value)
+    assert "being reinstalled" in str(raised.value)
 
 
 def test_runs_kiro_chromium_reads_the_live_handle_not_the_configured_choice(

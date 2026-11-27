@@ -23,6 +23,8 @@ from denied_commands_security_helpers import (
 )
 from named_cases_helpers import named_cases
 
+from kiro_crew.security import argv_floor as _argv_floor
+
 # Each test starts with the macOS libc and libproc handle caches unbuilt and puts them
 # back after, as every test of the test_denied_commands_security family does (see conftest.py).
 pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
@@ -313,6 +315,42 @@ class TestSelfProtectionKillTargetScoping:
                 (f"X={_NAME}; ${{X}} {_TOK}", _RULE_MINT),
                 (f"X={_NAME}; $X>/tmp/x {_TOK}", _RULE_MINT),
                 (f"P={_PK}; $P -f {_NAME}", _RULE_KILL),
+            ),
+            # PowerShell's `$name = value`, however its `=` or `;` is spaced, binds the name for a
+            # later use by the mint; a value that is not the verb keeps the command allowed.
+            # A bare value after `=` runs a command and binds nothing, alone or with more words.
+            # The name an assignment writes is never read as its earlier value.
+            # Bash runs the same words as a command or a test, so each line's bash reading
+            # is judged too and still refuses what it refused before.
+            *_named(
+                "test_powershell_assignment_resolves",
+                (f"$t = '{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f'$t = "{_TOK}"; {_NAME} $t', _RULE_MINT),
+                (f"$t='{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f"$t= '{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f"$t ='{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f"$t = 'doctor'; $t = '{_TOK}'; {_NAME} $t", _RULE_MINT),
+                (f"T=doctor; $T = '{_TOK}'; {_NAME} $T", _RULE_MINT),
+                (f"$x = '{_NAME}'; & $x {_TOK}", _RULE_MINT),
+                (f"$a = 'x';$t='{_TOK}';{_NAME} $t", _RULE_MINT),
+                (f"$a = '{_TOK}'; $b = $a; {_NAME} $b", _RULE_MINT),
+                (f"$t = '{_TOK}'; $t = '' | {_NAME} $t", _RULE_MINT),
+                (f"echo \"$( $t = '{_TOK}'; {_NAME} $t )\"", _RULE_MINT),
+                (f"$t = 'doctor'; {_NAME} $t", None),
+                (f'[ "$m" = {_TOK} ] || {_NAME} $m', None),
+                (f"T={_TOK}; [ $T = doctor ] || {_NAME} $T", _RULE_MINT),
+                (f"T={_TOK}; $T = doctor; {_NAME} $T", _RULE_MINT),
+                (f"$t = 'x'; t+={_TOK}; {_NAME} $t", _RULE_MINT),
+                (f"T={_TOK}; $BASH = 'x'; echo \"{_NAME} $T\" | $BASH", _RULE_MINT),
+                (f"${_NAME} = 'x'; ${_NAME} {_TOK}", _RULE_MINT),
+                (f"$out = {_NAME} doctor; $out -match '{_TOK}'", None),
+                (f"$out = ({_NAME} doctor); $out -match '{_TOK}'", None),
+                (f"$s = {_NAME} status | out-string; $s -match '{_TOK}'", None),
+                (f"$out = {_NAME} ; $out -match '{_TOK}'", None),
+                (f"$out = {_NAME}\n$out -match '{_TOK}'", None),
+                (f"$t = {_TOK}; {_NAME} $t", None),
+                (f"$cli = '{_NAME}'\n$cli = Join-Path '/tmp' '{_TOK}'", None),
+                (f"$a = '{_NAME}'; $b = $a; $b = Join-Path '/tmp' '{_TOK}'", None),
             ),
             # A carrier's quoted script that assigns the name and then uses it is read
             # as a script of its own, so the assignment resolves inside it.
@@ -1641,3 +1679,24 @@ class TestWindowsKillByNamePrograms:
     def test_a_windows_kill_is_read_where_the_pkill_twin_is(self, cmd, verb):
         windows = _denied_by(cmd.format(verb=verb, n=_NAME))
         assert windows == _denied_by(cmd.format(verb="pkill -f", n=_NAME)) == _RULE_KILL
+
+
+_X = "x" * 6000
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "$a0 = 'x'; "
+        + " ".join(f"$a{i} = $a{i - 1}$a{i - 1};" for i in range(1, 21))
+        + f" {_NAME} $a20",
+        f"$a = '{_X}'; {_NAME} doctor \"{'$a' * 6000}\"",
+        f"$a = '{_X[:3000]}'; $b = {'$a' * 3000}; {_NAME} $b",
+    ],
+    ids=["doubled-each-step", "repeated-in-one-word", "repeated-in-one-value"],
+)
+def test_a_powershell_reading_never_outgrows_the_line(line):
+    # A bound name is read only as a whole word and copied only whole, so no word of
+    # the reading grows past the line, however often the line repeats the name.
+    spoken = _argv_floor._powershell_tokens(line)
+    assert spoken is not None and max(map(len, spoken)) <= len(line)

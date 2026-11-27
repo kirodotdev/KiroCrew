@@ -23,6 +23,7 @@ from kiro_crew.agent import (
     AGENT_FILENAME,
     SharedAgentHomeRefused,
     _atomic_json_write,
+    _declares_server,
     _declined_foreign_spec_write,
     entry_as_enabled,
     gateway_routed_names,
@@ -63,6 +64,7 @@ from kiro_crew.dashboard.handlers.mcp_agent_sync import (
 from kiro_crew.dashboard.handlers.mcp_config_entries import (
     _find_server_spec_anywhere,
     _kirocrew_entry_is_muted,
+    _name_held_elsewhere,
     _remove_kirocrew_entry,
     _scope_has_entry,
     _set_kirocrew_entry,
@@ -118,9 +120,11 @@ from kiro_crew.mcp_gateway import hazards, is_gateway_supported, launch_resolve
 from kiro_crew.mcp_gateway.hashing import hash_command
 from kiro_crew.mcp_gateway.launch_approval import (
     approve,
+    check_store_rewritable,
     display_launches,
     load_approvals,
     refused_servers,
+    refused_share_records,
     refused_shares,
     restore,
     revoke,
@@ -730,7 +734,21 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
             return _mcp_config_corrupt()
 
         servers = data.setdefault("mcpServers", {})
-        if server not in servers:
+        # By the ONE key the row stands for, as POST /api/mcp/toggle does: the
+        # table names ``playwright-mcp`` while the file may hold
+        # ``npm:@playwright/mcp``, and a stub beside the raw entry would hold
+        # disabledTools that the mounted entry never reads. An alias of
+        # several raw keys is refused rather than guessed. A name another store
+        # holds itself is that store's mount, so its list stays under the name.
+        key: str | None = None
+        if server in servers or not await asyncio.to_thread(_name_held_elsewhere, server):
+            try:
+                key = _config_key_for(servers, server)
+            except AmbiguousServerKey as exc:
+                return web.json_response(
+                    {"error": str(exc), "code": "mcp_server_name_ambiguous"}, status=409
+                )
+        if key is None:
             # Server may exist in another scope (agent config, ~/.claude.json)
             # but not in kiro global mcp.json. Create a stub entry to hold
             # disabledTools state — kiro-cli reads this file for enforcement.
@@ -742,11 +760,12 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
             if server not in known:
                 return _mcp_server_not_found(server)
             servers[server] = {}
+            key = server
 
-        spec = servers[server]
+        spec = servers[key]
         if not isinstance(spec, dict):
             if isinstance(spec, str):
-                servers[server] = spec = {"command": spec}
+                servers[key] = spec = {"command": spec}
             else:
                 return _mcp_spec_invalid(server, spec)
         disabled_tools: list[str] = spec.get("disabledTools", [])
@@ -1195,6 +1214,8 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    import functools  # noqa: F401
+
     from kiro_crew.config.loader import read_endorsed_config_text  # noqa: F401
     from kiro_crew.dashboard.handlers.mcp_agent_sync import (  # noqa: F401
         _builtin_mcp_server_names,
@@ -1206,7 +1227,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sync_mcp_to_agent_unlocked,
     )
     from kiro_crew.dashboard.handlers.mcp_config_entries import (  # noqa: F401
+        _another_scope_declares,
         _get_kirocrew_entry,
+        _muted_raw_keys,
         _remove_from_agent_file,
         _replace_kirocrew_spec,
         _rmw_remove_entry,
@@ -1258,9 +1281,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.mcp_gateway_stubs import (  # noqa: F401
         _MAX_STUB_BATCH,
+        _grant_trust_from_row,
         _record_stub_decisions,
         _set_cwd_bindings,
         _stub_eligibility,
+        _trust_refusal,
         api_mcp_gateway_server_launches,
         api_mcp_gateway_set_stub,
     )
@@ -1279,6 +1304,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _evaluate_shareability,
         _invalid_flag_reason,
         _kirocrew_mcp_servers,
+        _live_backend_of_slot,
         _mcp_probe_cache,
         _mcp_probe_in_progress,
         _mcp_probe_task,
@@ -1303,6 +1329,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_mcp_quarantine_clear,
         api_mcp_servers,
     )
+    from kiro_crew.mcp_gateway.launch_approval_heal import forget_trust  # noqa: F401
 
 
 async def api_mcp_apply(request: web.Request) -> web.Response:

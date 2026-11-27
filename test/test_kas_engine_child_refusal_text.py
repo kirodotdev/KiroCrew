@@ -69,8 +69,8 @@ async def test_with_no_agent_left_out_no_rule_is_added(agents_dir, setting):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "value, kw",
-    [("off", {}), ("on", {"key": "cron:job"}), ("on", {"member_dispatch": True})],
-    ids=["off", "cron", "member-dispatch"],
+    [("off", {}), ("on", {"key": "subagent:1"}), ("on", {"key": "wf:run-1"})],
+    ids=["off", "kiro-crew-sub-agent", "workflow"],
 )
 async def test_a_session_without_the_mount_names_no_one(agents_dir, setting, value, kw):
     _write(agents_dir, _default_spec())

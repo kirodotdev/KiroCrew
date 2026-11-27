@@ -39,7 +39,7 @@ from kiro_crew import build_reuse
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew import session_head
 from kiro_crew.acp import kas_agents as kas_agents_mod
-from kiro_crew.acp import kas_approve_for_me, kas_build_default
+from kiro_crew.acp import kas_approve_for_me, kas_build_default, kas_client_secret
 from kiro_crew.acp import kas_route as kas_route_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -63,6 +63,7 @@ from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_endpoints import CLOUD_CONFIG_ENDPOINT_ENV
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
+from kiro_crew.acp.kas_member_goal_tools import with_member_goal_tools
 from kiro_crew.acp.kas_native_batch import name_left_out, native_batch
 from kiro_crew.acp.kas_parent_grants import founding_grants_spec, limit_to_founders
 from kiro_crew.acp.kas_parent_limits import (
@@ -463,7 +464,7 @@ def resolve_projected_spec(
         # A user-level custom agent gets Crew's default servers, through the helper
         # the kiro-cli skill view applies too, so the two paths cannot drift. Added
         # first, so the checkout's switch-offs reach them as well.
-        spec = with_default_crew_servers(agent, spec)
+        spec = with_default_crew_servers(agent, spec, edition_ask_rules=True)
         if isinstance(project, dict):
             spec = _with_project_switch_offs(spec, project)
         return spec, agents_dir
@@ -498,7 +499,7 @@ def resolve_projected_spec(
     if not declared:
         try:
             spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
-            return with_default_crew_servers(agent, spec), agents_dir
+            return with_default_crew_servers(agent, spec, edition_ask_rules=True), agents_dir
         except KasAgentTranslationError as exc:
             # Asked again after the read failed, so a spec that appeared meanwhile
             # and cannot be read keeps its own reason.
@@ -647,15 +648,17 @@ def _skill_scope(
 
 
 def mate_worker_projection(
-    base: dict[str, Any], prompt_dir: Path, session_key: str
+    base: dict[str, Any], prompt_dir: Path, session_key: str, *, mounted: bool | None = None
 ) -> dict[str, Any]:
     """The worker spec a crewmate's worker session on *session_key* is handed.
 
     *base* is the source-defined ``kirocrew-mate-worker`` spec. KAS's own part is
     the prompt, resolved the way KAS resolves every prompt; the kit is the
     harness-neutral seam :func:`kiro_crew.mate_worker.worker_session_spec`, which
-    reads the crewmate from the session's own execution record. Blocking file
-    I/O; runs inside the projection's worker thread.
+    reads the crewmate from the session's own execution record. *mounted* is
+    whether this session start took the session-control mount; the conducting kit
+    follows it (``worker_session_spec``). Blocking file I/O; runs inside the
+    projection's worker thread.
     """
     from kiro_crew.mate_worker import worker_session_spec
 
@@ -663,7 +666,7 @@ def mate_worker_projection(
     literal["prompt"] = kas_agents_mod.resolve_prompt(
         base, agent_id=MATE_WORKER_AGENT, agents_dir=prompt_dir
     )
-    return worker_session_spec(literal, session_key)
+    return worker_session_spec(literal, session_key, mounted=mounted)
 
 
 def withdrawn_worker_stubs(
@@ -1297,6 +1300,10 @@ class KasHarness(MembershipHarness):
         handle.kas_relay_engine_version = self.relay_engine_version
         handle.kas_untested_version_notice = self.untested_version_notice
         handle.kas_engine_fallback_notice = self.engine_fallback_notice
+        # A Bot's own chat: its app snapshot follows the native session id.
+        from kiro_crew.acp.harness.kas_bot_chat import bind_bot_chat_snapshot
+
+        bind_bot_chat_snapshot(handle)
 
     async def session_extras(
         self,
@@ -1351,6 +1358,9 @@ class KasHarness(MembershipHarness):
                 )
             return SessionExtras(vault_identity=vault_identity)
 
+        # Filled by the projection of the session's own agent, read after the build.
+        prereg_clients: dict[str, str] = {}
+
         def _build() -> tuple[
             list[dict[str, Any]],
             Any,
@@ -1403,6 +1413,7 @@ class KasHarness(MembershipHarness):
 
                 spec, prompt_dir = merge_at_spawn(agent, bound), agents_dir
             else:
+                kas_agents_mod.refuse_held_spec(paths_mod.spec_dir_for(agent, agents_dir), agent)
                 try:
                     spec, prompt_dir = resolve_projected_spec(
                         agents_dir,
@@ -1438,12 +1449,26 @@ class KasHarness(MembershipHarness):
                 from kiro_crew.mate_worker import WorkerKitUnreadable
 
                 try:
-                    spec = mate_worker_projection(spec, prompt_dir, session_key)
+                    # The kit follows this start's mount, so a load that mounts no
+                    # session control (the re-inject of a worker that started plain)
+                    # carries no conductor verbs either.
+                    spec = mate_worker_projection(
+                        spec, prompt_dir, session_key, mounted=member_dispatch
+                    )
                 except WorkerKitUnreadable as exc:
                     # Refused, never the bare base: what could not be read may
                     # hold the crewmate's own limits.
                     raise AcpAgentUnavailable(str(exc), agent=agent) from exc
             else:
+                from kiro_crew.bot_chat_app_tools import carries_app_tools
+
+                if carries_app_tools(agent, session_key, ACP_BACKEND_KAS):
+                    # A Bot's own chat: the shared conductor plus the app servers its
+                    # owner turned on for THIS Bot (``bot_chat_app_tools``), per
+                    # session. Added before the held limits so they cover these too.
+                    from kiro_crew.bot_chat_app_tools import conductor_session_spec
+
+                    spec = conductor_session_spec(spec, session_key)
                 # A child a Bot started runs under the Bot's identity: its held
                 # limits ask here too (the worker's are applied in its own merge).
                 from kiro_crew.mate_held_rules import HeldLimitsNotApplied, held_child_spec
@@ -1457,6 +1482,8 @@ class KasHarness(MembershipHarness):
             # the session's own folder (a subagent's may differ from the runtime's).
             steering_dir = session_cwd or work_dir
             spec = with_kas_steering(spec, steering_dir)
+            # A Bot's own chat on an agent of the user's: goals are set there.
+            spec = with_member_goal_tools(spec, agent, session_key)
             spec_notices.extend(
                 n for n in (inheritance_off_notice(steering_dir), use_aws_notice(agent, spec)) if n
             )
@@ -1573,7 +1600,16 @@ class KasHarness(MembershipHarness):
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 governance_app=governance_app,
                 scope_muted=scope_muted,
+                prereg_out=prereg_clients,
             )
+            from kiro_crew.bot_chat_app_tools import carries_app_tools
+
+            if carries_app_tools(agent, session_key, ACP_BACKEND_KAS):
+                # A Bot's own chat: settle its app-server record from what this
+                # projection really declares, after every withholding above.
+                from kiro_crew.acp.harness.kas_bot_chat import settle_bot_chat_projection
+
+                custom_agents = settle_bot_chat_projection(session_key, custom_agents)
             if agent == MATE_WORKER_AGENT:
                 # A Bot's worker: the `deniedCommands` entries nobody can judge
                 # hold its shell at the gate, whatever its Bot's Permissions.
@@ -1742,6 +1778,7 @@ class KasHarness(MembershipHarness):
                 withdrawn_stub_names=withdrawn_stubs,
                 withheld_credentials_notice=withheld_notice,
                 shipped_helper_parent=helper_parent,
+                mcp_prereg_clients=kas_client_secret.declared_clients(built, agent, prereg_clients),
             )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc

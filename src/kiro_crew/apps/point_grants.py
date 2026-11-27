@@ -248,6 +248,20 @@ def _kiro_operation_grant_entries(permissions: Any) -> dict[str, list[str]]:
 register_permission_grants(("kiroOperations",), _kiro_operation_grant_entries, explicit_only=True)
 
 
+def _browser_recipe_grant_entries(permissions: Any) -> dict[str, list[str]]:
+    # Deferred, like ``browser_sites`` above: off the MCP server's pre-list budget.
+    from kiro_crew.apps.browser_recipes import browser_recipe_grant_entries  # noqa: PLC0415
+
+    return browser_recipe_grant_entries(permissions)
+
+
+#: ``browser_recipes.BROWSER_RECIPE_GRANT_FAMILIES`` (``permissions.browserRecipes``
+#: and the separate yes a watch recipe needs), named here so registering imports nothing.
+register_permission_grants(
+    ("browserRecipes", "browserRecipeWatch"), _browser_recipe_grant_entries, explicit_only=True
+)
+
+
 def _frame_source_grant_entries(ui: Any) -> dict[str, list[str]]:
     # Deferred: ``frame_sources`` stays off the path an MCP server walks before its
     # tool list, which has a module budget (``test_mcp_listing_import_budget``).

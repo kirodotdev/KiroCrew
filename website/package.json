@@ -29,6 +29,7 @@
     "typecheck": "tsc -p tsconfig.app.json",
     "check": "npm run typecheck && npm run lint && npm run test",
     "jscpd": "jscpd .",
+    "gen:adopted-app-classes": "node scripts/gen-adopted-app-classes.mjs",
     "gen:settings": "node scripts/gen-settings-registry.mjs",
     "gen:ui": "node scripts/gen-ui-index.mjs",
     "gen:vendor-lucide": "node scripts/gen-vendor-lucide.mjs",

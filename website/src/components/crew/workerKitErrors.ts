@@ -12,15 +12,36 @@ import { i18nT } from '../../i18n/t'
 import { ApiError, apiErrorCode } from '../../api/apiError'
 import { isDeadlineError } from '../../api/queryClient'
 
+// The write tool's `fallbackAction`, under any spelling of the write tool's key
+// (kiro-cli's `write` alias group). A bot keeps it only when it is `deny`, so
+// this refusal can say how to fix the agent instead of only to pick another.
+const WRITE_FALLBACK = /^toolsSettings\.(write|fsWrite|fs_write)\.fallbackAction$/
+
+/**
+ * The write `fallbackAction` field a refusal names when it is the only thing the
+ * bot can't keep, or `''`. The pane then offers to add the agent without it.
+ */
+export function refusedWriteFallback(err: unknown): string {
+  if (apiErrorCode(err) !== 'template_restrictions_uncarried') return ''
+  const detail = refusalField(err, 'detail')
+  return WRITE_FALLBACK.test(detail) ? detail : ''
+}
+
+function uncarriedText(detail: string): string {
+  if (!detail) return i18nT('crewWorkerKit.error_template_restrictions_uncarried')
+  if (WRITE_FALLBACK.test(detail)) {
+    return i18nT('crewWorkerKit.error_template_write_fallback_not_deny')
+  }
+  return i18nT('crewWorkerKit.error_template_restrictions_uncarried_named', { fields: detail })
+}
+
 // Literal keys, so the catalog gates can see each one.
 const CODE_TEXT: Record<string, (detail: string) => string> = {
   stale_revision: () => i18nT('crewWorkerKit.error_stale_revision'),
   revision_required: () => i18nT('crewWorkerKit.error_revision_required'),
   template_required: () => i18nT('crewWorkerKit.error_template_required'),
   template_unreadable: () => i18nT('crewWorkerKit.error_template_unreadable'),
-  template_restrictions_uncarried: detail => detail
-    ? i18nT('crewWorkerKit.error_template_restrictions_uncarried_named', { fields: detail })
-    : i18nT('crewWorkerKit.error_template_restrictions_uncarried'),
+  template_restrictions_uncarried: uncarriedText,
   template_policy_backend_unsupported: detail => i18nT('crewWorkerKit.error_template_policy_backend', { fields: detail }),
   invalid_spec: () => i18nT('crewWorkerKit.error_invalid_spec'),
   not_a_mate_file: () => i18nT('crewWorkerKit.error_not_a_mate_file'),

@@ -33,6 +33,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_REASON_TIMEOUT,
     STOP_RECOVERY_MAX_RETRIES,
     AcpTimeoutError,
+    RefusalHopText,
     timed_out_continuation,
 )
 from kiro_crew.hooks import fire_tool_hooks, get_global_hook_store, unattended_turn
@@ -54,8 +55,8 @@ from kiro_crew.llm_helpers_parts.model_fallback import (
     ActiveModelLine,
     FallbackState,
     advance_fallback_candidate,
-    first_advertised_fallback,
     probe_fallback_restore,
+    reactive_model_candidate,
 )
 from kiro_crew.llm_helpers_parts.tool_approval import ToolApprovalPolicy, _resolve_permission
 from kiro_crew.llm_helpers_parts.turn_results import parse_llm_json
@@ -308,6 +309,9 @@ async def stream_and_collect(
 
     while True:
         result_text = ""
+        # A refusal hop's cut in this prompt's text. What it cut still streamed, so
+        # a guard below that replays only an attempt with no text counts it.
+        refusal = RefusalHopText()
         # The prompt's first text, held while it could still be the backend's
         # alternation placeholder (``messaging.alternation_echo``): the model
         # repeats it at the start of a turn after one that ended on a tool result.
@@ -367,6 +371,7 @@ async def stream_and_collect(
                         )
                 if spec_hooks is not None:
                     await spec_hooks.observe(event)
+                result_text = refusal.fold(event, result_text)
                 if event.kind == EVENT_TEXT_CHUNK:
                     text = event.text
                     if not result_text:
@@ -550,14 +555,14 @@ async def stream_and_collect(
             # Guards:
             #   - retry_transient: callers that own an outer transient loop pass
             #     False so the inner arm doesn't compound their attempts.
-            #   - `not result_text`: only retry if NO tokens have streamed yet.
-            #     A partial response must not be retried — the re-run would
-            #     duplicate the already-emitted output.
+            #   - `not (result_text or refusal.kept)`: only retry if NO tokens
+            #     have streamed yet. A partial response must not be retried — the
+            #     re-run would duplicate the already-emitted output.
             #   - `not _turn_tool_activity`: only retry if no attempt fired a
             #     tool call. A textless tool can already have mutated state.
             if (
                 retry_transient
-                and not result_text
+                and not (result_text or refusal.kept)
                 and not _turn_tool_activity
                 and acp_error_is_transient(exc)
                 and transient_attempts < _TRANSIENT_RETRIES
@@ -590,16 +595,20 @@ async def stream_and_collect(
             # directly.
             #
             # ``not _turn_tool_activity`` is load-bearing over and above
-            # ``not result_text``: a tool call can complete an EXTERNAL
+            # the no-text guard: a tool call can complete an EXTERNAL
             # MUTATION before any text streams. Any fired tool across ANY
             # attempt disables every original-prompt replay for this call.
+            #
+            # Kiro's per-user rate limit is shared by every model: a swap cannot
+            # clear it, so it surfaces as its own error instead.
             if (
                 retry_transient
-                and not result_text
+                and not (result_text or refusal.kept)
                 and not _turn_tool_activity
                 and _fb_state is not None
                 and acp_error_is_transient(exc)
                 and transient_attempts >= _TRANSIENT_RETRIES
+                and getattr(exc, "user_rate_limit", False) is not True
             ):
                 if _fb_state.should_retry_active():
                     # Final attempt on the current candidate — the shared
@@ -658,15 +667,13 @@ async def stream_and_collect(
             # turn where the user picked a model must surface the rejection, not
             # swap underneath them (AGENTS.md), so the default is off.
             rejected = getattr(exc, "rejected_model", None)
-            advertised = getattr(exc, "advertised", None) or []
             if (
                 model_fallback
-                and not result_text
+                and not (result_text or refusal.kept)
                 and rejected
-                and advertised
                 and not _model_fallback_attempted
             ):
-                fallback = first_advertised_fallback(advertised, rejected)
+                fallback = reactive_model_candidate(exc, rejected)
                 if fallback:
                     _model_fallback_attempted = True
                     set_model_fn = getattr(provider, "set_model", None)

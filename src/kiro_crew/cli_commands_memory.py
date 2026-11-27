@@ -254,7 +254,7 @@ def _memory_search_embedding(store: VectorMemoryStore, query: str) -> list[float
         print(_SEARCH_KEYWORD_ONLY_NOT_READY, file=sys.stderr)
         return None
     store.embed_fn = make_sync_embed_fn()
-    return store._try_embed(query)
+    return store._try_embed(query, query=True)
 
 
 def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:

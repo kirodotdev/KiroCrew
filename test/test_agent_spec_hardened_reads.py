@@ -1140,6 +1140,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("connections_warm_mint", "dashboard"),
     ],
     "kiro_crew/context_assembly/agent_spec.py": [
+        # A pinned session's file, read for its ``includeCrossSessionContext`` key.
+        ("agent_context_scope", "context"),
         ("agent_prompt", "context"),
         ("steering_resources", "unknown"),
     ],
@@ -1495,7 +1497,11 @@ _EXPECTED_SCOPE_GUARD_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 
 
 _EXPECTED_TEMPLATE_SPEC_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
-    "kiro_crew/context_assembly/agent_spec.py": [("agent_prompt", "context")],
+    # The agent prompt, and the ``includeCrossSessionContext`` key of the same spec.
+    "kiro_crew/context_assembly/agent_spec.py": [
+        ("agent_context_scope", "context"),
+        ("agent_prompt", "context"),
+    ],
     "kiro_crew/member_essential_context.py": [("member_essentials", "context")],
 }
 _EXPECTED_LINKED_TEMPLATE_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
@@ -1514,6 +1520,8 @@ _EXPECTED_DECLARED_ENTRY_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 
 
 _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    # The KAS session start's held-file refusal, under the projection's label.
+    "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
     # The kiro-cli view's source for a contested name, and the launch refusal for
     # handing kiro-cli the authored name of one.
     "kiro_crew/acp/skill_projection_parts/preparation.py": [("native_skill_projection", "acp")],
@@ -1532,7 +1540,7 @@ _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/mcp_gateway/session_servers.py": [("mcp_overlay_pin", "unknown")],
     # The start refusal for a contested name on the hosts that read their servers
     # from the session MCP read (R-SPEC-13).
-    "kiro_crew/acp/session_mcp.py": [("session_start_spec_check", "acp")],
+    "kiro_crew/acp/session_mcp_spec_check.py": [("session_start_spec_check", "acp")],
     # The spawn roster's tool-less mark, judged on the claimant a spawn of the name runs.
     "kiro_crew/mcp_tools/spawn_parts/schemas.py": [("spawn_roster", "subagent")],
 }

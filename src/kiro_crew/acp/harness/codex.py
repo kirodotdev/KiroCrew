@@ -25,8 +25,8 @@ Sharing here does not mean a session that outlives its parent. Teardown still se
 ``session/close`` and the session still leaves the process -- a resident subagent
 session would hold its own MCP fleet on a runtime nobody is using. What a later
 ``spawn_continue`` addresses is the thread ``codex`` persisted under ``CODEX_HOME``,
-restored with ``session/load``; ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS`` is the set
-that says codex resolves such a load from the sessionId alone.
+restored with ``session/resume``; ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS`` is the set
+that says codex resolves such a restore from the sessionId alone.
 
 Eviction is a separate question with a separate answer, and the answer did not
 change. The teardown Crew sends is ``session/close``, and it evicts: after it the
@@ -145,10 +145,11 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess as subprocess_mod
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -167,7 +168,10 @@ from kiro_crew.acp.harness.base import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
+    METHOD_PROMPT,
     METHOD_SESSION_CLOSE,
+    METHOD_SESSION_NEW,
+    METHOD_SESSION_RESUME,
     METHOD_SESSION_UPDATE,
 )
 from kiro_crew.agent_sdk.codex_transcripts import delete_codex_session_files
@@ -792,7 +796,7 @@ class CodexHarness(MembershipHarness):
         # under the new name until the runtime recycles, and one that switches
         # between command and url under the same name conflicts with the
         # placeholder until then. This override is lost in a session/new or
-        # session/load that carries mcpServers. codex-acp's createSessionConfig
+        # a restore that carries mcpServers. codex-acp's createSessionConfig
         # sets the mcp_servers key of the config overrides that it sends to
         # codex to those servers alone, and codex loads the config.toml
         # servers beneath the overrides, so that session starts the
@@ -898,7 +902,7 @@ class CodexHarness(MembershipHarness):
             env[CODEX_PATH_ENV] = self._host_codex
         # codex-acp otherwise drops session entries whose names occur in global
         # config. That keeps an unbound global dashboard server in place of the
-        # gateway's verified mount, on both session/new and session/load.
+        # gateway's verified mount, on session/new and on the restore alike.
         env["DISABLE_MCP_CONFIG_FILTERING"] = "true"
         # Opt the adapter into its host-sandbox mode. resolve_spawn_masks refuses
         # every unwrapped tier, so this child always runs inside Crew's wrap. An
@@ -1011,6 +1015,87 @@ class CodexHarness(MembershipHarness):
             return requested
         return drop_unadvertised_transports(list(requested), dict(advertised))
 
+    #: How long codex-acp may hold a ``session/new`` or ``session/resume`` reply for
+    #: the array's servers. Under the runtime's own ``session/new`` floor, so a server
+    #: that never reports still leaves the session time to start.
+    MCP_STARTUP_AWAIT_MS = 30_000
+
+    def session_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        agent: str | None,
+        *,
+        agent_capabilities: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        """Ask codex-acp to answer ``session/new`` or ``session/resume`` only once
+        its MCP servers started.
+
+        Otherwise codex gives MCP startup about one second at the first turn, and
+        a server still starting then, a gateway stub most often, is offered on no
+        tool of that turn. ``mcpStartupAwaitTimeoutMs`` holds the reply until every
+        server in the array is ready or failed, up to the cap. Of the two restore
+        requests codex-acp reads it only on ``session/resume``, which is why codex
+        restores with it (``ACP_BACKENDS_RESUME_WITHOUT_LOAD``).
+        """
+        if method not in (METHOD_SESSION_NEW, METHOD_SESSION_RESUME) or not params.get(
+            "mcpServers"
+        ):
+            return params, agent
+        meta = {
+            **(params.get("_meta") or {}),
+            "mcpStartupAwaitTimeoutMs": self.MCP_STARTUP_AWAIT_MS,
+        }
+        return {**params, "_meta": meta}, agent
+
+    #: :meth:`after_session_start` runs with no per-session state.
+    checks_stateless_session_start = True
+
+    #: The title a helper session is given before its first turn.
+    HELPER_SESSION_TITLE = "Kiro Crew helper"
+
+    #: The first codex-acp with the title generator and its ``/rename`` command;
+    #: both arrive in 1.8.0.
+    TITLE_GENERATOR_SINCE = (1, 8, 0)
+
+    async def after_session_start(
+        self,
+        state: Any,
+        session_id: str,
+        resp: dict[str, Any],
+        *,
+        send_request: Callable[[str, dict[str, Any]], Awaitable[Any]],
+        close_session: Callable[[], Awaitable[None]],
+        agent_version: str = "",
+    ) -> None:
+        """Title a helper session, so codex-acp never generates one for it.
+
+        After a session's first turn, codex-acp's title generator starts an
+        ephemeral ``thread/start`` that carries only ``cwd``, not the session's
+        config. The ``CODEX_CONFIG`` disable override (:meth:`apply_spawn_env`)
+        reaches only the session's own thread, so codex starts every server in
+        the user's ``config.toml`` for that title thread. The generator skips a
+        session whose title is explicit, and codex-acp's ``/rename`` command,
+        handled without a Codex turn, sets one. A chat keeps its generated title.
+
+        codex-acp below :data:`TITLE_GENERATOR_SINCE` has no title generator, and
+        would run ``/rename`` as a model turn, so it is sent nothing. An adapter
+        whose version does not parse is renamed. A rename that fails raises, so
+        the runtime closes the session rather than run a helper that can leak.
+        """
+        if self._helper_spawn is None:
+            return
+        version = re.match(r"(\d+)\.(\d+)\.(\d+)", agent_version or "")
+        if version and tuple(map(int, version.groups())) < self.TITLE_GENERATOR_SINCE:
+            return
+        await send_request(
+            METHOD_PROMPT,
+            {
+                "sessionId": session_id,
+                "prompt": [{"type": "text", "text": f"/rename {self.HELPER_SESSION_TITLE}"}],
+            },
+        )
+
     @property
     def wants_session_file_on_load(self) -> bool:
         """No -- the adapter locates the session from its id.
@@ -1071,9 +1156,10 @@ class CodexHarness(MembershipHarness):
         ``ACP_BACKENDS_SESSION_EVICTION``.
 
         Evict, not delete: the thread record survives under ``CODEX_HOME``, and
-        ``session/load`` on the closed id replays the conversation, also from a
-        restarted adapter. ``ACP_BACKENDS_SESSION_SHARING`` membership rests on
-        this. ``session/delete`` would ARCHIVE the thread and make later loads fail,
+        restoring the closed id (``session/resume``, as ``session/load`` would)
+        brings the conversation back, also from a restarted adapter.
+        ``ACP_BACKENDS_SESSION_SHARING`` membership rests on this. ``session/delete``
+        would ARCHIVE the thread and make later restores fail,
         and the archive still keeps the rollout on disk under ``archived_sessions/``.
         So Crew deletes a disposable session's rollout files itself, after the
         teardown: ``delete_disposable_record`` names ``agent_sdk.codex_transcripts``,

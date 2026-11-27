@@ -53,7 +53,7 @@ from typing import Any, Awaitable, Callable
 from kiro_crew import acp_tool_gate, agent_scratch, agent_sdk, model_scope, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.harness import pi as pi_mod
-from kiro_crew.acp.harness import pi_node
+from kiro_crew.acp.harness import pi_node, strands_readback
 from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
 from kiro_crew.acp.harness.copilot import _config_directory
 from kiro_crew.acp.harness.strands_keys import (
@@ -70,6 +70,7 @@ from kiro_crew.acp.transport_framing import write_frames_blocking
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_STRANDS,
     STRANDS_NODE_FLOOR,
+    STRANDS_PYTHON_CRT_REQUIREMENT,
     STRANDS_PYTHON_REQUIREMENT,
     STRANDS_VERIFIED_VERSION,
     launch_effort_supported,
@@ -78,7 +79,11 @@ from kiro_crew.agent_sdk.host_auth import HOST_TERMINAL_NOTE
 from kiro_crew.bounded_read import bounded_read_fd
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.sections import AGENT_ENV_NAME_GRAMMAR, DEFAULT_MODEL
-from kiro_crew.config.sections_agent_env import STRANDS_ENV_NAMES, STRANDS_PROVIDER_CHOICES
+from kiro_crew.config.sections_agent_env import (
+    STRANDS_ENV_LITERAL_GUIDANCE,
+    STRANDS_ENV_NAMES,
+    STRANDS_PROVIDER_CHOICES,
+)
 from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX, resolve_secret_uris
 from kiro_crew.sandbox import (
     agent_env_scrub_prefixes,
@@ -106,7 +111,7 @@ __all__ = [
 
 #: The SHA-256 of the shipped gate module, LF line endings. A copy with other bytes is
 #: never loaded.
-STRANDS_GATE_SHA256 = "5caa3dc550781e4c45b18b2a31d658fc85a315cce53fe1ee74a190d3b15bf5d3"
+STRANDS_GATE_SHA256 = "1be92fe1296481a3a51a6a77d708e20052aae5dfe4af7253700aaec0a989877b"
 
 #: What the gate module names itself in its load marker; the routing table's probe.
 STRANDS_GATE_NAME = "kiro-crew-strands-gate"
@@ -236,7 +241,16 @@ def strands_python_setup_command(project_dir: str) -> str:
     python = strands_python(project_dir)
     create = "py -3 -m venv" if platform_compat.IS_WINDOWS else "python3 -m venv"
     joiner = "; " if platform_compat.IS_WINDOWS else " && "
-    return f'{create} "{venv}"{joiner}{_run_quoted(python)} -m pip install "{STRANDS_PYTHON_REQUIREMENT}"'
+    return f'{create} "{venv}"{joiner}{_pip_install_command(python)}'
+
+
+#: Every package Crew installs into the project environment.
+_STRANDS_PYTHON_REQUIREMENTS = (STRANDS_PYTHON_REQUIREMENT, STRANDS_PYTHON_CRT_REQUIREMENT)
+
+
+def _pip_install_command(python: str) -> str:
+    requirements = " ".join(f'"{requirement}"' for requirement in _STRANDS_PYTHON_REQUIREMENTS)
+    return f"{_run_quoted(python)} -m pip install {requirements}"
 
 
 def _run_quoted(program: str) -> str:
@@ -264,9 +278,48 @@ def strands_python_env_issue(project_dir: str) -> str:
             f"the Python environment at {os.path.join(project_dir, '.venv')} does not "
             f"have {STRANDS_PYTHON_REQUIREMENT} installed. Install it in a terminal on "
             f"the gateway host. {HOST_TERMINAL_NOTE} Run: "
-            f'{_run_quoted(python)} -m pip install "{STRANDS_PYTHON_REQUIREMENT}"'
+            f"{_pip_install_command(python)}"
         )
     return ""
+
+
+#: The SDK each provider's model imports, as ``(pip name, path under site-packages)``.
+#: strands-harness installs it only through that provider's extra, which
+#: ``STRANDS_PYTHON_REQUIREMENT`` carries; ``bedrock`` runs on boto3, which the harness
+#: itself needs, so it has no row.
+_STRANDS_PROVIDER_SDKS: dict[str, tuple[str, str]] = {
+    "bedrock-mantle": ("openai", "openai"),
+    "openai": ("openai", "openai"),
+    "anthropic": ("anthropic", "anthropic"),
+    "google": ("google-genai", "google/genai"),
+    "ollama": ("ollama", "ollama"),
+    "litellm": ("litellm", "litellm"),
+}
+
+
+def _strands_provider_sdk_issue(project_dir: str, model: str) -> str:
+    """Why the project environment cannot run *model*'s provider, or ``""``.
+
+    *model* is the ``--model`` value the launch passes (``<provider>/<id>``). File reads
+    only: the provider's SDK package is installed beside ``strands_harness``. An
+    environment created before the install requirement carried the provider extras has
+    the harness but not the SDK, and the CLI fails only once the session starts. No
+    ``--model`` (the CLI's own default runs) names no provider, so there is nothing to
+    check.
+    """
+    provider, sep, _ = model.partition("/")
+    sdk = _STRANDS_PROVIDER_SDKS.get(provider) if sep else None
+    if sdk is None:
+        return ""
+    package, directory = sdk
+    if any((site / directory).is_dir() for site in _site_packages(project_dir)):
+        return ""
+    return (
+        f"the Strands provider {provider!r} needs the {package!r} Python package, and "
+        f"the Python environment at {os.path.join(project_dir, '.venv')} does not have "
+        f"it. Install it in a terminal on the gateway host. {HOST_TERMINAL_NOTE} Run: "
+        f"{_pip_install_command(strands_python(project_dir))}"
+    )
 
 
 def strands_installed_version(strands_bin: str) -> str:
@@ -275,7 +328,9 @@ def strands_installed_version(strands_bin: str) -> str:
     Read from ``@strands-agents/cli``'s own ``package.json``, never by running it. On
     POSIX the bin link resolves into the package; on Windows the bin is a
     ``strands.cmd`` shim in the npm prefix, with the package under that directory's
-    ``node_modules``. Blocking (reads files).
+    ``node_modules``. A Volta shim sits in Volta's ``bin`` folder, and the install is
+    the npm prefix Volta keeps beside it under ``tools/image/packages``. Blocking
+    (reads files).
     """
     try:
         here = Path(os.path.realpath(strands_bin)).parent
@@ -284,6 +339,13 @@ def strands_installed_version(strands_bin: str) -> str:
     roots = [here / "node_modules"]
     if here.name == ".bin":
         roots.append(here.parent)
+    # The shim's own folder, unresolved: a POSIX Volta shim links to Volta's
+    # ``volta-shim``, which need not live in the Volta home.
+    shims = Path(strands_bin).parent
+    if shims.name == "bin":
+        image = shims.parent / "tools" / "image" / "packages" / _STRANDS_NPM_PACKAGE
+        # npm's global layout in that prefix: node_modules on Windows, lib/ on POSIX.
+        roots += [image / "node_modules", image / "lib" / "node_modules"]
     candidates = [root / _STRANDS_NPM_PACKAGE / "package.json" for root in roots]
     candidates += [
         directory / "package.json"
@@ -331,10 +393,8 @@ def _validate_strands_env_mapping(mapping: dict[str, str]) -> None:
     for key, value in mapping.items():
         if not value.startswith(SECRET_URI_PREFIX):
             raise ValueError(
-                f"agent.strands_env entry {key!r} holds a literal value. This mapping "
-                f"takes a '{SECRET_URI_PREFIX}<vault name>' reference only, so a provider "
-                "key is never stored in config.json. Save the key under Settings > "
-                f"Secrets, then map it as '{SECRET_URI_PREFIX}<vault name>'."
+                f"agent.strands_env entry {key!r} holds a literal value. "
+                + STRANDS_ENV_LITERAL_GUIDANCE
             )
         if not AGENT_ENV_NAME_GRAMMAR.fullmatch(key) or key.startswith(
             _STRANDS_ENV_RESERVED_PREFIXES
@@ -812,14 +872,21 @@ def _verify_strands_gate(
             cwd=session._spawn_work_dir or None,
             env=env,
             stdin=subprocess_mod.PIPE,
-            stdout=subprocess_mod.DEVNULL,
-            stderr=subprocess_mod.DEVNULL,
+            stdout=subprocess_mod.PIPE,
+            stderr=subprocess_mod.PIPE,
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
     except (OSError, subprocess_mod.SubprocessError) as exc:
         return f"the gate's load marker could not be read back ({exc})", remedy
+    # Both pipes are drained into bounded buffers, so a refusal can quote what the
+    # probe printed and a chatty child never blocks on a full pipe.
+    out = strands_readback.OutputCapture(process.stdout, keep_tail=False)
+    err = strands_readback.OutputCapture(process.stderr, keep_tail=True)
     published = False
+    # The CLI's own exit code when it ended before the wait ran out.
+    exited: int | None = None
+    failure: BaseException | None = None
     try:
         if process.stdin is not None:
             write_frames_blocking(process.stdin, requests)
@@ -827,7 +894,8 @@ def _verify_strands_gate(
             if os.path.lexists(marker_path):
                 published = True
                 break
-            if process.poll() is not None:
+            exited = process.poll()
+            if exited is not None:
                 break
             time.sleep(_READBACK_POLL_S)
         with suppress(OSError):
@@ -840,7 +908,9 @@ def _verify_strands_gate(
             with suppress(subprocess_mod.SubprocessError, OSError):
                 process.wait(timeout=_READBACK_EXIT_S)
     except (OSError, subprocess_mod.SubprocessError, ValueError) as exc:
-        return f"the gate's load marker could not be read back ({exc})", remedy
+        failure = exc
+        # Read before the cleanup below kills it: a CLI that died at once has a code.
+        exited = process.poll()
     finally:
         # Whatever ended the read-back, the probe child never outlives it.
         if process.poll() is None:
@@ -851,13 +921,20 @@ def _verify_strands_gate(
                 platform_compat.kill_popen_tree(process)
             with suppress(OSError, subprocess_mod.SubprocessError):
                 process.wait(timeout=_READBACK_EXIT_S)
-    if not published and not os.path.lexists(marker_path):
+        stdout = out.finish(_READBACK_EXIT_S)
+        stderr = err.finish(_READBACK_EXIT_S)
+    if failure is not None:
         return (
-            "the Strands project did not load Kiro Crew's gate within "
-            f"{_READBACK_TIMEOUT_S:.0f}s of starting the harness (the project failed to "
-            "load, or its agent could not be gated), so its tools would not ask",
+            strands_readback.readback_failed_issue(
+                failure, exited, stdout, stderr, _READBACK_SESSION_ID
+            ),
             remedy,
         )
+    if not published and not os.path.lexists(marker_path):
+        issue = strands_readback.gate_not_loaded_issue(
+            exited, _READBACK_TIMEOUT_S, stdout, stderr, _READBACK_SESSION_ID
+        )
+        return issue, remedy
     marker = _read_marker(marker_path)
     issue = acp_tool_gate.gate_marker_issue(
         ACP_BACKEND_STRANDS,
@@ -954,6 +1031,13 @@ class StrandsLaunch(ProcessAdapter):
             )
         except ValueError as exc:
             raise AcpError(str(exc), transient=False, user_worded=True) from None
+        sdk_issue = await asyncio.to_thread(
+            _strands_provider_sdk_issue, project_dir, strands_launched_model(model_args)
+        )
+        if sdk_issue:
+            raise AcpError(
+                f"{sdk_issue}, then start a new chat.", transient=False, user_worded=True
+            )
         argv = [*argv, "--agent", sealed_module, *model_args, *strands_effort_args(session)]
         # What the session reports as its model is what it launched with: a pin
         # this harness left out (another harness's) never ran, so it is not kept.

@@ -32,7 +32,12 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery import managed_server_is_session_bound, probe_metadata
 from kiro_crew.mcp_gateway import hazards, is_gateway_supported, launch_resolve
 from kiro_crew.mcp_gateway.hashing import hash_command
-from kiro_crew.mcp_gateway.launch_approval import refused_servers, refused_shares
+from kiro_crew.mcp_gateway.launch_approval import (
+    load_approvals,
+    refused_servers,
+    refused_shares,
+    target_stem,
+)
 from kiro_crew.mcp_gateway.rewriter import records_dir
 from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, Strength, assess
 from kiro_crew.mcp_gateway.verdict_cache import load_cache
@@ -665,6 +670,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     # payload disagree about the same file.
     observed, preflights = await asyncio.to_thread(_load_shareability_state)
     probe_current, probeable = await asyncio.to_thread(_probe_view)
+    trusted_stems = (await asyncio.to_thread(load_approvals)).trusted
 
     result: list[dict[str, Any]] = []
     for name in sorted(rows):
@@ -750,6 +756,9 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 "pooling_blocked_by_env": pooling_blocked,
                 "pooling_blocked_by_env_when_shared": nothing_shared,
                 "private_backend": env_private,
+                # "Always trust changes to this server", set only by the
+                # dashboard's approve press and cleared when sharing stops.
+                "trust_changes": target_stem(name) in trusted_stems,
                 "agents": sorted(row["agents"]),
                 "transport": row["transport"],
                 "denylisted": denylisted,

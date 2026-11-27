@@ -1963,6 +1963,9 @@ HOOK_DENY_REASON_MAX_CHARS = 2000
 #: over the payload bound), so kind, identity and target are unknown. Nothing
 #: judged the action: the notice says to reissue it alone or in smaller parts.
 DENY_CAUSE_PROVENANCE_UNRETAINED = "provenance_unretained"
+#: The session handle refused a request whose arguments contradict the ones cached
+#: for its reused toolCallId: the notice says to reissue it as a new call.
+DENY_CAUSE_REUSED_CALL_ID = "reused_call_id"
 
 #: Upper bound on the best-effort in-band deny notice steered into a running
 #: turn before a permission rejection goes back on the wire. Every deny site

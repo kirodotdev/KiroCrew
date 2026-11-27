@@ -63,6 +63,7 @@ from kiro_crew.workflows.agent_exec import (
     persist_step_usage_row,
     step_backend_kwargs,
     step_effort_kwargs,
+    step_on_event,
     step_session_name,
     step_text,
     vet_step_spawn,
@@ -113,31 +114,29 @@ async def _run_step(
     credential or exfiltration-URL leakage into workflow results stored in
     history / injected into parent chat). A person-only directive the step
     calls is refused and audited on *key*, the step's session, and the refusal
-    leads the text (``person_only_directive_refuser``) unless the step has a
-    ``schema=`` (``_STEP_OPTS``), whose text is validated as JSON.
+    leads the text unless the step has a ``schema=`` (``_STEP_OPTS``), whose text
+    is validated as JSON; each tool call it starts goes to the run's progress
+    (``agent_exec.step_on_event``).
 
     A caller that writes the turn's usage row passes its own ``stop`` and calls
     ``stop.raise_if_interrupted()`` after that write, so a turn cut off from outside
     is still billed; without one, a cut-off turn raises here.
     """
-    # Local import, as in agent_exec: the dashboard-side module is not loaded
-    # at this adapter's import time.
-    from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
-
     watch = stop if stop is not None else StepStopWatch()
     refusals: list[str] = []
+    opts = _STEP_OPTS.get() or {}
     coro = stream_and_collect(
         provider,
         prompt,
         approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
         max_turns=_MAX_TURNS_PER_STEP,
         on_complete=watch.on_complete,
-        on_event=person_only_directive_refuser(key, refusals),
+        on_event=step_on_event(key, refusals, opts, provider),
     )
     text = await (asyncio.wait_for(coro, timeout) if timeout is not None else coro)
     if stop is None:
         watch.raise_if_interrupted()
-    return redact(step_text(refusals, text, _STEP_OPTS.get() or {}))
+    return redact(step_text(refusals, text, opts))
 
 
 class _WorkflowSessionWorker:

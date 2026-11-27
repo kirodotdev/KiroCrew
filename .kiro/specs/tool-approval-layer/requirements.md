@@ -5,14 +5,14 @@ Status: partially implemented in `src/kiro_crew/hooks.py` and the dashboard appr
 ## Introduction
 
 Kiro Crew already intercepts every agent tool call before it executes. The backend
-`HookManager.on_tool_call` gate (`src/kiro_crew/hooks.py`) classifies each PreToolUse
+`HookManager.on_tool_call` gate (`src/kiro_crew/hook_runtime/hook_manager.py`) classifies each PreToolUse
 event as `TOOL_ALLOW`, `TOOL_AUTO_APPROVE`, or `TOOL_DENY` — enforcing sensitive-path,
 exfiltration, write-protected-config, deny-by-default-shell, and governance rules
 *before* the tool runs. When a call is neither auto-approved nor denied, the frontend
 surfaces it for a human decision: `ApprovalCard.tsx` renders the pending call, the
 operator approves or rejects, and the decision flows back through
-`onApprove(decision, pattern?)` → `api.resolveApproval(request_id, action)`
-(`chat-input/approval.ts`) to resume the paused turn. Only a trust grant from an
+`onApprove(decision, pattern?)` → `api.decideApproval(approvalTarget, action, responseId)`
+(`chat-input/approval.ts`) to resume the paused turn. Only a trust grant, or a rejection with a reason, from an
 attended slot goes through the slot-scoped `api.approveChatSlot(slot, action, extra)`.
 
 This is Kiro Crew's **batch-approve + inline tool-request preview** differentiator: a
@@ -28,7 +28,7 @@ the same shape lands in any AI-SDK app, not only Kiro Crew's dashboard.
 
 Scope is the interception → render → resume loop and its contracts. It is NOT a rewrite
 of the existing `on_tool_call` security gate (that gate remains the enforcement authority),
-NOT a new approval transport (it reuses `resolveApproval` and `approveChatSlot`), and NOT a change to how tools
+NOT a new approval transport (it reuses `decideApproval` and `approveChatSlot`), and NOT a change to how tools
 are defined or executed.
 
 ## Requirements
@@ -65,7 +65,7 @@ turn, so that the agent continues with my decision applied and no state is lost.
 #### Acceptance Criteria
 1. WHEN the operator approves a pending call THEN the decision SHALL flow through the existing `onApprove(decision, pattern?)` callback and the paused tool call SHALL execute.
 2. WHEN the operator rejects a pending call THEN the tool SHALL NOT execute and the agent turn SHALL resume with the rejection recorded.
-3. WHEN a plain approve or reject decision is submitted THEN it SHALL resolve via the existing id-scoped `api.resolveApproval(request_id, action)` path in `chat-input/approval.ts`; a trust grant from an attended chat slot SHALL resolve via the slot-scoped `api.approveChatSlot(slot, action, extra)` path — the layer SHALL NOT introduce a new approval API path.
+3. WHEN a plain approve or reject decision is submitted THEN it SHALL resolve via the existing id-scoped `api.decideApproval(approvalTarget, action, responseId)` path in `chat-input/approval.ts`; a trust grant, or a rejection with a reason, from an attended chat slot SHALL resolve via the slot-scoped `api.approveChatSlot(slot, action, extra)` path — the layer SHALL NOT introduce a new approval API path.
 4. WHEN a decision resumes a turn THEN the resumed state SHALL be the same interrupted invocation (same slot, same tool-call id), never a re-issued or duplicated call.
 5. IF the operator provides an approval `pattern` (e.g. "always allow this shape") THEN it SHALL be forwarded verbatim as the `extra`/`pattern` argument the existing path already accepts.
 

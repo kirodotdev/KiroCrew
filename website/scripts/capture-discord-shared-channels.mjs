@@ -65,8 +65,7 @@ async function main() {
     // and reading it is the point of state 3.
     deviceScaleFactor: 2,
   })
-  const page = await context.newPage()
-  logPageProblems(page)
+  let page = null
 
   // The panel renders its editable form ONLY on a confirmed governance ALLOW; an
   // unknown policy deliberately hides the config, so without this the capture
@@ -83,7 +82,12 @@ async function main() {
     return false
   }
 
+  /** A fresh page per scene, stubbed once: the stub's init script clears
+   *  storage and writes that scene's theme. */
   async function load() {
+    await page?.close()
+    page = await context.newPage()
+    logPageProblems(page)
     await stubDashboardApi(page, { theme: scene.theme, extra: routeDiscord })
     await page.goto(`${base}/settings?tab=channels&channel=discord`, {
       waitUntil: 'domcontentloaded',

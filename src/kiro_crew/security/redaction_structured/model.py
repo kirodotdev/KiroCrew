@@ -39,6 +39,9 @@ LABEL_BEATS_RULES = frozenset({"git.object_name"})
 TAIL_ALL = "all"
 TAIL_B64RUN = "b64run"
 TAIL_ENCRUN = "encrun"
+# ``line`` covers the rest of the line a held header, cookie or command-line value is
+# on, up to its CR or LF (``headers._held``).
+TAIL_LINE = "line"
 
 
 @dataclass(frozen=True, slots=True)

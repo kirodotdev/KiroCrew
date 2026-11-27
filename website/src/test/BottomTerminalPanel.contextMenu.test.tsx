@@ -15,8 +15,11 @@ const deleteTerminalAsync = vi.fn<() => Promise<void>>()
 const disposeTerminal = vi.fn()
 const disposeConnection = vi.fn()
 
-vi.mock('../components/CliPanel', () => ({
+vi.mock('../components/LazyCliPanel', () => ({
   default: ({ sessionId }: { sessionId: string }) => <div data-testid={`cli-${sessionId}`} />,
+}))
+vi.mock('../components/terminalSessions', () => ({
+  preloadTerminal: vi.fn(),
   disposeTerminalSession: (id: string) => disposeTerminal(id),
   useDeleteTerminalSession: () => ({
     mutate: deleteTerminal,

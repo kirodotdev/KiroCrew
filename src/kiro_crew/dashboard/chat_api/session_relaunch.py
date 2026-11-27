@@ -690,6 +690,27 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
     return web.json_response(ws_resp)
 
 
+def probe_project_dir(raw: str) -> tuple[str, bool, bool] | None:
+    """Judge a project directory the way a person's pick is judged.
+
+    Returns ``(resolved, is_dir, sensitive)``, or ``None`` when the text cannot
+    name a path. Blocking: call it off the loop. Shared by the project route and
+    a create that carries its project (``slot_create``), so both refuse alike.
+    """
+    # A NUL byte, or a lone surrogate the filesystem encoding cannot carry,
+    # makes expanduser/realpath raise ValueError; refuse it lexically first.
+    try:
+        if b"\x00" in os.fsencode(raw):
+            return None
+    except UnicodeEncodeError:
+        return None
+    resolved = os.path.realpath(os.path.expanduser(raw))
+    is_dir = os.path.isdir(resolved)
+    # *resolved* is canonical, so the canonical gate judges it: it answers
+    # inline off the loop, where a resolver stall cannot read as a match.
+    return resolved, is_dir, is_dir and is_sensitive_canonical_path(resolved)
+
+
 async def api_chat_slot_project(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/project — set project directory for file search scoping."""
     state: DashboardState = request.app["state"]
@@ -721,25 +742,12 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     if project:
-        # A NUL byte, or a lone surrogate the filesystem encoding cannot carry,
-        # makes expanduser/realpath raise ValueError; refuse it lexically first.
-        try:
-            unusable = b"\x00" in os.fsencode(project)
-        except UnicodeEncodeError:
-            unusable = True
-        if unusable:
+        probed = await asyncio.to_thread(probe_project_dir, project)
+        if probed is None:
             return web.json_response(
                 {"error": "Not a directory", "code": "not_a_directory"}, status=400
             )
-
-        def probe(raw: str) -> tuple[str, bool, bool]:
-            resolved = os.path.realpath(os.path.expanduser(raw))
-            is_dir = os.path.isdir(resolved)
-            # *resolved* is canonical, so the canonical gate judges it: it answers
-            # inline off the loop, where a resolver stall cannot read as a match.
-            return resolved, is_dir, is_dir and is_sensitive_canonical_path(resolved)
-
-        project, is_dir, sensitive = await asyncio.to_thread(probe, project)
+        project, is_dir, sensitive = probed
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
             return _slot_not_found()
         if not is_dir:

@@ -10,6 +10,9 @@ layer first, and a module imports only the ones before it, never the facade:
   first-welcome marker and create-request record a new member's directory carries;
 * ``member_sessions`` -- a member's pinned DM session: its key and alias, the backend it
   routes to, the session-level MCP mounts, and the per-turn lifecycle verdict;
+* ``worker_conducts`` -- which of a Bot's workers conduct: the thread-born lineage mark,
+  the owner's ``worker_conducts`` switch read at session start, and the one predicate
+  the session-control mount composers read;
 * ``dm_bindings`` -- the crew-to-thread binding under ``member-records/``, and the identity it
   answers for a session;
 * ``self_edit`` -- the fields a crewmate may change on its own record, their cleaning, the

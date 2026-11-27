@@ -25,7 +25,7 @@ import { api } from '../../api/client'
 import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { isMarketSourced, isRegistrySourced } from '../../components/appstore/types'
-import { isTrustDeniedError, localOnlyTrustRepository } from '../../components/appstore/TrustAppModal'
+import { isInvalidUpdateError, isTrustDeniedError, localOnlyTrustRepository } from '../../components/appstore/TrustAppModal'
 import { backendRefusedNotice } from '../../components/appstore/backendRefused'
 import type { AppsData } from './useAppsData'
 
@@ -89,6 +89,12 @@ export function useAppUpdates({
    */
   const [trustHandoff, setTrustHandoff] = useState<TrustHandoff[]>([])
   const label = (name: string) => apps.find(a => a.name === name)?.displayName || name
+  /** The notice for an update whose new version fails validation: which app,
+   *  what to do, then the validator's own words for the app's maker. */
+  const invalidUpdateNotice = (name: string, e: unknown) => [
+    i18nT('pages.appsPage.update_invalid_version', { name: label(name) }),
+    (e as Error)?.message,
+  ].filter(Boolean).join('\n')
   /** Clear both notices before a new update reports, so no earlier line outlives it. */
   const clearNotices = () => {
     setError('')
@@ -203,6 +209,7 @@ export function useAppUpdates({
       // not an error — hand it to the surface's trust modal when one is
       // wired, mirroring how the enable path branches on the same code.
       else if (onTrustDenied && isTrustDeniedError(e)) onTrustDenied(name, retryUpdate)
+      else if (isInvalidUpdateError(e)) setError(invalidUpdateNotice(name, e))
       else setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_update', { names: name }))
     } finally {
       setUpdatePending(null)
@@ -223,6 +230,7 @@ export function useAppUpdates({
     const consentNeeded: string[] = []
     const trustNeeded: string[] = []
     const refusedNotices: string[] = []
+    const invalidNotices: string[] = []
     for (let i = 0; i < targets.length; i++) {
       try {
         const updateResult = await callUpdate(targets[i])
@@ -243,6 +251,7 @@ export function useAppUpdates({
         // as needing trust (the per-row Update opens the dialog), mirroring the
         // branch `runUpdate` already takes. Anything else is a real failure.
         else if (isTrustDeniedError(e)) needsTrust.push(targets[i])
+        else if (isInvalidUpdateError(e)) invalidNotices.push(invalidUpdateNotice(targets[i], e))
         else failed.push(targets[i])
       }
       setUpdatingAll({ done: i + 1, total: targets.length })
@@ -269,7 +278,7 @@ export function useAppUpdates({
     for (const name of trustNeeded) {
       errors.push(i18nT('pages.appsPage.update_needs_repository_trust', { name: label(name) }))
     }
-    errors.push(...refusedNotices)
+    errors.push(...invalidNotices, ...refusedNotices)
     const consent = consentNeeded.map(name =>
       i18nT('pages.appsPage.updated_needs_session_approval_consent', { name: label(name) }))
     // One line per fact: both notice surfaces are whitespace-pre-wrap, so a

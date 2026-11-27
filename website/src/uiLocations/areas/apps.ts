@@ -17,8 +17,9 @@
  *    installed-app actions hang under that item.
  *
  * Each detail action is the gateway-managed (non-builtin) branch's button; the
- * builtin and self-managed branches draw twins that are not registered. Each
- * is qualified by the `open_app_*` state that draws it.
+ * builtin and self-managed branches draw twins that are not registered, except
+ * Enable: a built-in app can start turned off, so all three Enable sites are
+ * registered. Each is qualified by the `open_app_*` state that draws it.
  *
  * The ⋯ trigger itself is not registered: its name interpolates the app's
  * name, and a description location cannot be a step in a path. Instead the
@@ -27,7 +28,13 @@
  * Uninstall and Disable items are reached from it. Its Update item repeats
  * the detail page's and is not registered.
  */
-import type { UiLocationArea } from '../types'
+import type { UiLocationArea, UiSearchTerms } from '../types'
+
+/** The words for turning an installed app on, shared by the three Enable sites. */
+const APP_ENABLE_TERMS: UiSearchTerms = {
+  en: ['enable an app', 'turn on an app', 'switch on an app', 'activate an app', 'enable a built-in app', 'app is turned off'],
+  'zh-CN': ['启用应用', '开启应用', '激活应用', '启用内置应用', '应用被关闭了'],
+}
 
 export const LOCATIONS = {
   'apps.refresh-store': {
@@ -138,6 +145,39 @@ export const LOCATIONS = {
     placements: [{
       surface: 'apps-library', parent: 'apps.library.tile-details', entry: 'content',
       requires: [{ kind: 'condition', id: 'open_app_enabled' }],
+    }],
+  },
+  // Enable on the app's detail page, one site per kind of installed app
+  // (regular, built-in, independently managed). Its text is "Enable", or
+  // "Enable and allow chat control" while the app waits for that consent.
+  'apps.detail.enable': {
+    kind: 'button',
+    label: { from: 'text', key: 'pages.appDetailPage.enable' },
+    aliasKeys: ['pages.appDetailPage.enable_and_allow_chat_control'],
+    terms: APP_ENABLE_TERMS,
+    placements: [{
+      surface: 'apps-library', parent: 'apps.library.tile-details', entry: 'content',
+      requires: [{ kind: 'condition', id: 'open_app_disabled' }],
+    }],
+  },
+  'apps.detail.enable-builtin': {
+    kind: 'button',
+    label: { from: 'text', key: 'pages.appDetailPage.enable' },
+    aliasKeys: ['pages.appDetailPage.enable_and_allow_chat_control'],
+    terms: APP_ENABLE_TERMS,
+    placements: [{
+      surface: 'apps-library', parent: 'apps.library.tile-details', entry: 'content',
+      requires: [{ kind: 'condition', id: 'open_app_builtin_disabled' }],
+    }],
+  },
+  'apps.detail.enable-self-managed': {
+    kind: 'button',
+    label: { from: 'text', key: 'pages.appDetailPage.enable' },
+    aliasKeys: ['pages.appDetailPage.enable_and_allow_chat_control'],
+    terms: APP_ENABLE_TERMS,
+    placements: [{
+      surface: 'apps-library', parent: 'apps.library.tile-details', entry: 'content',
+      requires: [{ kind: 'condition', id: 'open_app_self_managed_disabled' }],
     }],
   },
   'apps.detail.sync': {

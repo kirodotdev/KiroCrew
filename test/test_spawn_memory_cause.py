@@ -24,6 +24,9 @@ import kiro_crew.subagent as sa
 GIB = 1024**3
 ROOT = PurePosixPath("/sys/fs/cgroup")
 
+# Every manager a test here builds opens the task store; close it at teardown.
+pytestmark = pytest.mark.usefixtures("close_subagent_managers")
+
 
 @pytest.fixture
 def kernel(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
@@ -106,8 +109,9 @@ def _mgr():
     )
 
 
-def _spawn(mgr, *, min_gb: float = 4.0, memory=None):
-    """Spawn with the memory guard on; ``memory`` mocks the check when given."""
+def _spawn(mgr, *, min_gb: float = 4.0, memory=None, reading=None):
+    """Spawn with the memory guard on; ``memory`` mocks the check when given,
+    and ``reading`` is an off-loop read's answer the gate is re-entered with."""
     with ExitStack() as stack:
         cfg = stack.enter_context(patch("kiro_crew.subagent.KiroCrewConfig"))
         sel = stack.enter_context(patch("kiro_crew.subagent.sel"))
@@ -118,7 +122,16 @@ def _spawn(mgr, *, min_gb: float = 4.0, memory=None):
         cfg.load.return_value.agent.spawn_min_memory_gb = min_gb
         cfg.load.return_value.agent.subagent_cost_gb = 0.5
         sel.return_value.log_tool_invocation = MagicMock()
-        info = mgr.spawn(task="test task", parent_session_key="sess-1")
+        if reading is None:
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+        else:
+            # The event-loop callers' two halves: stop at the read, then
+            # re-enter from the params the first half built.
+            point = mgr.spawn(
+                task="test task", parent_session_key="sess-1", _stop_before_memory_read=True
+            )
+            assert isinstance(point, sa.MemoryReadPoint)
+            info = mgr.spawn(**point.params, _memory_reading=reading)
     return info, sel.return_value.log_tool_invocation
 
 
@@ -151,6 +164,28 @@ def test_unreadable_usage_wait_label_names_the_cause_not_zero_available(kernel) 
     assert wait["reason"] == sa.QUEUED_REASON_LOW_MEMORY
     assert wait["cause"] == sa.MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
     assert "available_gb" not in wait and wait["required_gb"] > 0
+
+
+def test_unanswered_read_wait_label_names_the_cause_not_a_shortage(kernel) -> None:
+    """A host read that did not answer measured nothing: the ``subagent_queued``
+    label carries its cause and no ``available_gb``, so the chip can say the
+    reading did not answer instead of "not enough free memory". The receipt
+    text and the audit row are the ones the gate already wrote."""
+    mgr = _mgr()
+    unanswered = (-1.0, sa.MEMORY_CAUSE_READ_UNANSWERED)
+    info, log = _spawn(mgr, reading=unanswered)
+    assert info is not None and info.queued is True
+    wait = mgr._queue_wait["sess-1"]
+    assert wait["reason"] == sa.QUEUED_REASON_LOW_MEMORY
+    assert wait.get("cause") == sa.MEMORY_CAUSE_READ_UNANSWERED
+    assert "available_gb" not in wait and wait["required_gb"] > 0
+    reason = _deferral_reason(mgr, info)
+    assert reason.startswith(
+        "memory headroom unknown: the host memory reading did not answer in time; need "
+    )
+    meta = log.call_args[1]["metadata"]
+    assert log.call_args[1]["outcome"] == "deferred_low_memory"
+    assert meta["cause"] == sa.MEMORY_CAUSE_READ_UNANSWERED and "available_gb" not in meta
 
 
 def test_spawn_deferral_for_measured_low_memory_is_unchanged(kernel) -> None:

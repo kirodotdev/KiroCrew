@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from shipped_wheel_copies import declared_agent_names, drift
 from test_kas_spec_builtin_grant import _handle, _permission
 from test_tool_call_classification_kas import _kas_builtin_flow
 
@@ -505,7 +506,11 @@ def test_another_harness_stamps_no_parent_limits():
 
 def _shipped_specs() -> list[dict]:
     """Every agent file the repository ships, and the default agent as its installer
-    writes it (built, then governed)."""
+    writes it (built, then governed).
+
+    The walk must read exactly the agents the shipped wheel copies' manifests declare,
+    so a walk that finds none fails here instead of leaving its callers nothing to check.
+    """
     from kiro_crew.agent_materialization import auto_approve
     from kiro_crew.agent_parts.spec_build import build_agent_config
 
@@ -514,6 +519,8 @@ def _shipped_specs() -> list[dict]:
         json.loads(path.read_text(encoding="utf-8"))
         for path in sorted(builtins.glob("*/agents/*.json"))
     ]
+    differs = drift((spec["name"] for spec in specs), declared_agent_names())
+    assert not differs, f"the agent walk is not the agents the shipped manifests declare: {differs}"
     default = build_agent_config()
     auto_approve.govern_spec(default, agent_filename="kirocrew.json", source="test")
     return [*specs, {**default, "name": "kirocrew"}]
@@ -522,7 +529,6 @@ def _shipped_specs() -> list[dict]:
 def test_no_shipped_agent_hands_a_limit_to_a_child(agents, sessions):
     """A child of any shipped parent keeps the entry and the gate record it had."""
     specs = _shipped_specs()
-    assert len(specs) > 10
     child = [{"id": "plain", "prompt": "p", "tools": "*"}]
     for spec in specs:
         _write(agents, spec)

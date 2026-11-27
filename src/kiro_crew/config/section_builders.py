@@ -144,7 +144,7 @@ from kiro_crew.instances.crew_ref import clean_crew_ref
 
 # Runtime-budget policy and coercion live in the monitoring limits leaf module,
 # keeping the section builders free of duplicated bounds.
-from kiro_crew.monitoring.limits import coerce_runtime_ceiling
+from kiro_crew.monitoring.limits import coerce_budget_notice_pct, coerce_runtime_ceiling
 
 # The speech-to-text bounds come from the package that owns them, so a tuning
 # knob cannot be clamped past what the session accepts; its defaults are the
@@ -234,6 +234,7 @@ def _build_monitoring_config(data: dict, prefer_structured_arming: bool) -> Moni
     return MonitoringConfig(
         prefer_structured_arming=prefer_structured_arming,
         max_runtime_secs=coerce_runtime_ceiling(section.get("max_runtime_secs")),
+        budget_notice_pct=coerce_budget_notice_pct(section.get("budget_notice_pct")),
     )
 
 
@@ -671,6 +672,16 @@ def _build_instances_config(
         recover_backoff_max_secs=section.read("recover_backoff_max_secs", _safe_float),
         probe_failure_threshold=section.read("probe_failure_threshold", _safe_int),
         managed_env_endpoint=section.read("managed_env_endpoint", _safe_str),
+        managed_env_start_url=section.read("managed_env_start_url", _safe_str),
+        managed_env_profile_arn=section.read("managed_env_profile_arn", _safe_str),
+        managed_env_ssh_region=section.read("managed_env_ssh_region", _safe_str),
+        managed_env_kas_endpoint=section.read("managed_env_kas_endpoint", _safe_str),
+        managed_env_kas_control_plane_endpoint=section.read(
+            "managed_env_kas_control_plane_endpoint", _safe_str
+        ),
+        managed_env_kas_region=section.read("managed_env_kas_region", _safe_str),
+        managed_env_box_token_path=section.read("managed_env_box_token_path", _safe_str),
+        managed_env_box_env_drop=_name_list(section.get("managed_env_box_env_drop")),
     )
 
 
@@ -864,6 +875,12 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         agent_sessions=section.read("agent_sessions", _safe_bool),
         code_channel_dispatch=section.read("code_channel_dispatch", _safe_bool),
         code_channels=section.read("code_channels", _safe_bool),
+        # Default False for both: an unparseable value must never let a Slack thread
+        # dispatch work, nor admit a public channel's members to what it shows.
+        thread_conductor=section.read("thread_conductor", _safe_bool),
+        thread_conductor_public_channels=section.read(
+            "thread_conductor_public_channels", _safe_bool
+        ),
         # Default False: an unparseable value must never add user scopes or PKCE.
         slack_mcp=section.read("slack_mcp", _safe_bool),
         code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
@@ -872,11 +889,12 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
 
 
 def _build_shared_access(raw: object) -> SlackSharedAccessConfig:
-    """``slack.shared_access``: on only for a literal ``true``, ids well-formed."""
+    """``slack.shared_access``: switches on only for a literal ``true``, ids well-formed."""
     data = _safe_dict(raw)
     return SlackSharedAccessConfig(
         enabled=data.get("enabled") is True,
         user_ids=shared_user_ids(data.get("user_ids")),
+        verify_with_slack=data.get("verify_with_slack") is True,
     )
 
 
@@ -939,6 +957,19 @@ def _threshold_pair(section: SectionReader) -> tuple[int, int]:
     return soft, hard
 
 
+def _owner_user_id(raw: object) -> int:
+    """A channel owner's numeric user id, or 0 (no owner) for anything but a positive int.
+
+    Fail closed: a string, a boolean or a group id (negative) names nobody.
+    """
+    return raw if type(raw) is int and raw > 0 else 0
+
+
+def _owner_text(raw: object) -> str:
+    """A channel owner's identity string, or empty (no owner) for a non-string."""
+    return raw.strip() if isinstance(raw, str) else ""
+
+
 def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
     section = SectionReader(TelegramConfig, telegram_data)
     return TelegramConfig(
@@ -946,6 +977,7 @@ def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
         enabled=bool(section.get("enabled")),
         bot_token=str(section.get("bot_token")),
         allowed_user_ids=_coerce_int_ids(section.get("allowed_user_ids")),
+        owner_user_id=_owner_user_id(section.get("owner_user_id")),
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct, unclamped=_safe_int),
         show_thinking=bool(section.get("show_thinking")),
         allow_forum=bool(section.get("allow_forum")),
@@ -1014,6 +1046,7 @@ def _build_discord_config(discord_data: dict) -> DiscordConfig:
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct, unclamped=_safe_int),
         reactions_enabled=bool(section.get("reactions_enabled")),
         show_thinking=bool(section.get("show_thinking")),
+        show_timing_footer=bool(section.get("show_timing_footer")),
     )
 
 
@@ -1029,6 +1062,7 @@ def _build_webex_config(webex_data: dict) -> WebexConfig:
             if isinstance(section.get("allowed_emails"), list)
             else section.default("allowed_emails")
         ),
+        owner_email=_owner_text(section.get("owner_email")),
         # Group spaces are a SECURITY decision, so the read is as explicit
         # as the write: a field the loader forgets is not merely lost, it
         # silently reverts to the safe default on the next restart while
@@ -1079,6 +1113,7 @@ def _build_teams_config(teams_data: dict) -> TeamsConfig:
             if isinstance(section.get("allowed_emails"), list)
             else section.default("allowed_emails")
         ),
+        owner_id=_owner_text(section.get("owner_id")),
         soft_threshold_pct=soft,
         hard_threshold_pct=hard,
     )

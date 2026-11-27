@@ -43,6 +43,24 @@ def _route_pinned_kill_to_kill_pid(monkeypatch):
     monkeypatch.setattr(pc, "kill_pid_pinned", lambda pid, start, sig: pc.kill_pid(pid, sig))
 
 
+def _fabricated_pid_leads_no_group(monkeypatch):
+    """Keep a fabricated forwarder pid off the host's real process table.
+
+    With ``tree=False`` on POSIX the reclaim asks ``pgroup_of(pid) == pid`` to spot a
+    forwarder that leads its own group, then signals that group with
+    ``kill_process_group``. Left real, both read the runner's table: when a real
+    group leader owns the pid (seen on macOS runners for 4242) the reclaim signals a
+    stranger's group and polls a group that never goes, so it reports ``not_gone``.
+    """
+    from kiro_crew import platform_compat as pc
+
+    def _refuse(pgid, sig):
+        raise AssertionError(f"a fabricated pid's real process group {pgid} was signalled")
+
+    monkeypatch.setattr(pc, "pgroup_of", lambda pid: None)
+    monkeypatch.setattr(pc, "kill_process_group", _refuse)
+
+
 class TestOrphanForwarderReclaim:
     """End-to-end reclaim behavior against REAL processes holding REAL ports.
 
@@ -832,6 +850,8 @@ class TestOrphanForwarderReclaim:
         monkeypatch.setattr(pc, "pgroup_exists", lambda pgid: not (pinned or bare))
         monkeypatch.setattr(stm, "_RECLAIM_POLL_INTERVAL_SECS", 0.001)
         monkeypatch.setattr(pc, "IS_WINDOWS", windows)
+        monkeypatch.setattr(pc, "IS_POSIX", not windows)
+        _fabricated_pid_leads_no_group(monkeypatch)
 
         outcome = stm._verify_and_reclaim_forwarder(4242, "S1", ["ssh", "h"], 7778, tree, "t")
 
@@ -1124,6 +1144,7 @@ class TestOrphanForwarderReclaim:
         monkeypatch.setattr(pc, "pid_exists", lambda pid: False)  # child already exited
         monkeypatch.setattr(pc, "kill_pid", lambda pid, sig: True)
         _route_pinned_kill_to_kill_pid(monkeypatch)
+        _fabricated_pid_leads_no_group(monkeypatch)
         monkeypatch.setattr(stm, "_RECLAIM_TERM_GRACE_SECS", 0.05)
 
         try:
@@ -1154,6 +1175,7 @@ class TestOrphanForwarderReclaim:
         monkeypatch.setattr(pc, "pid_exists", lambda pid: True)
         monkeypatch.setattr(pc, "kill_pid", lambda pid, sig: delivered.append(sig) or True)
         _route_pinned_kill_to_kill_pid(monkeypatch)
+        _fabricated_pid_leads_no_group(monkeypatch)
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": False)
         monkeypatch.setattr(stm, "_RECLAIM_TERM_GRACE_SECS", 0.05)
 
@@ -1216,6 +1238,7 @@ class TestOrphanForwarderReclaim:
         monkeypatch.setattr(pc, "pid_exists", lambda pid: True)
         monkeypatch.setattr(pc, "kill_pid", lambda pid, sig: delivered.append(sig) or True)
         _route_pinned_kill_to_kill_pid(monkeypatch)
+        _fabricated_pid_leads_no_group(monkeypatch)
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": False)
         monkeypatch.setattr(stm, "_RECLAIM_TERM_GRACE_SECS", 0.05)
 

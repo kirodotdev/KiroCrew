@@ -58,6 +58,7 @@ from .events import EventStream
 from .library import (
     SOURCE_FORMAT_PYTHON,
     SOURCE_FORMAT_TASK_PLAN,
+    BuiltinWorkflowError,
     SensitiveWorkflowSourceError,
     WorkflowDefinitionLibrary,
     WorkflowRefMovedError,
@@ -1478,6 +1479,8 @@ class WorkflowService:
                 }
             if expected_id is not None and current.get("id") != expected_id:
                 return {"ok": False, "error": _REF_MOVED_ERROR, "conflict": True}
+            if current.get("builtin"):
+                return _builtin_refusal(workflow_id)
             source_format = str(current.get("format") or SOURCE_FORMAT_PYTHON)
             warnings: list[str] = []
             if source_format == SOURCE_FORMAT_PYTHON:
@@ -1502,6 +1505,8 @@ class WorkflowService:
                     description=description,
                     slug=slug,
                 )
+            except BuiltinWorkflowError:
+                return _builtin_refusal(workflow_id)
             except SensitiveWorkflowSourceError as exc:
                 return {"ok": False, "error": str(exc), "errors": [str(exc)]}
         if definition is None:
@@ -1550,6 +1555,8 @@ class WorkflowService:
                 definition = self._definition_library.remove(workflow_ref, expected_id=expected_id)
             except WorkflowRefMovedError:
                 return {"ok": False, "error": _REF_MOVED_ERROR, "conflict": True}
+            except BuiltinWorkflowError:
+                return _builtin_refusal(workflow_ref)
         if definition is None:
             return {"ok": False, "error": "no such saved workflow", "not_found": True}
         return {"ok": True, "definition": definition}
@@ -1934,6 +1941,12 @@ def _saved(definition: Any, warnings: list[str]) -> dict[str, Any]:
         return {"ok": True, "definition": definition}
     logger.warning("workflow saved with a script that cannot run: %s", "; ".join(warnings))
     return {"ok": True, "definition": definition, "warnings": warnings}
+
+
+def _builtin_refusal(workflow_ref: str) -> dict[str, Any]:
+    """The answer to a write that names a built-in workflow."""
+    error = str(BuiltinWorkflowError(workflow_ref))
+    return {"ok": False, "error": error, "errors": [error], "builtin": True}
 
 
 def _lineage_exists(value: Any, definitions: list[dict[str, Any]]) -> bool:

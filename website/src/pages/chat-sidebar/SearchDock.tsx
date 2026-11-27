@@ -27,7 +27,7 @@ import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, Fil
 import { FOLDER_SORT_MODES, folderHasCreatedStamp, type FolderSortMode } from '../../utils/folderTree'
 import { type RecentUnit, RECENT_WINDOW_PRESETS, formatRecentWindow } from '../recentWindow'
 import { STALE_COLLAPSE_PRESETS_MS } from '../staleCollapse'
-import { SORT_LABEL_KEY, type SortKey } from '../chat/sessionOrder'
+import { SORT_LABEL_KEY, staleCollapseApplies, type SortKey } from '../chat/sessionOrder'
 import { i18nT } from '../../i18n/t'
 import { openGlobalChatSearch } from '../../components/globalChatSearch/globalChatSearchStore'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
@@ -141,6 +141,9 @@ const SORT_OPTIONS: { value: SortKey }[] = [
   // The person's own drag order, under Name. A drop between two rows in any
   // sort switches to it, so it is checked whenever the list is in that order.
   { value: 'manual' },
+  // The running sessions on top, the rest newest first. Last, so the rows above
+  // keep the places people know them by.
+  { value: 'active-then-date' },
 ]
 // Kept beside `SortKey`, where the manual order's notice reads it too.
 export { SORT_LABEL_KEY }
@@ -192,7 +195,7 @@ function RemoteCrewNamesError() {
 export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode; shelf: React.ReactNode } {
   const { activeFilters, activeModelKeys, activeModelRows, activeTagIds, activeTagNames, autoTitleError,
     availableLanes, boardLaneActive, changeRecentUnit, clearHiddenFilters, clearModelFilter, clearTagFilter,
-    closeRefused, columnsError, columnsFailed, creatorFilter, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
+    closeRefused, columnsError, columnsFailed, columnsReady, creatorFilter, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
     dismissUnfiledAboveFoldersError, dispatch,
     filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, folderActionError, groupByKind, toggleGroupByKind,
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
@@ -756,7 +759,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                   // The trigger must not advertise "· 2d" while the collapse
                   // is inert (narrowed list / non-date sort): a control that
                   // displays an active setting while doing nothing is a lie.
-                  const stalePaused = staleCollapseMs > 0 && (listNarrowed || sortKey !== 'date-desc')
+                  const stalePaused = staleCollapseMs > 0 && (listNarrowed || !staleCollapseApplies(sortKey))
                   const staleRowBody = (
                     <>
                       <Clock size={14} className="text-muted shrink-0" />
@@ -1260,8 +1263,10 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
            * failure. It must not show under a toggle-SAVE failure: there its
            * "Try again" label would promise to retry the save but instead seed
            * lanes into a board the user never switched to (UX Review). The
-           * save-failure copy already carries its own next step. */}
-          {!toggleSaveFailed && (
+           * save-failure copy already carries its own next step. It also stays
+           * hidden until the columns read succeeds: seeding needs the loaded
+           * list, and while that read has failed its own Retry is the way on. */}
+          {!toggleSaveFailed && columnsReady && (
             <div>
               <Btn
                 type="button"

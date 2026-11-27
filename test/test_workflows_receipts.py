@@ -172,10 +172,12 @@ async def test_owner_can_cancel_unavailable_store_without_reading_it(world, monk
         return True
 
     state = SimpleNamespace(
+        # The owner gate reads the caller's subject against this.
+        owner_id="owner",
         workflow_service=SimpleNamespace(
             registry=SimpleNamespace(get=lambda _: handle),
             cancel=cancel,
-        )
+        ),
     )
     request = make_request(
         state,

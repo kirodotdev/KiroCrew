@@ -1,7 +1,7 @@
 ---
 name: debug-gateway
 description: Load this before concluding a change did not land, and to read what the kirocrew-debug tools actually answered - which question to ask first, the fields that mean the opposite of how they look, and what a 400 / 403 / 404 / 501 from these tools means.
-triggers: fix not landed, fix did not land, gateway_predates_head, not_derivable, unverifiable_path, everything is slow, GIL, gil contention, orphan process, orphaned processes, faulthandler dump, loop stall, what happened at, debug_gateway, debug_refusals, debug_threads, debug_processes, debug_snapshots
+triggers: fix not landed, did not land, did fix land, gateway_predates_head, not_derivable, unverifiable_path, everything is slow, GIL, gil contention, orphan process, orphaned processes, faulthandler dump, loop stall, what happened at, debug_gateway, debug_refusals, debug_threads, debug_processes, debug_snapshots
 ---
 
 # Reading the kirocrew-debug tools

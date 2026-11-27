@@ -6,7 +6,7 @@ This is the other half: it fetches the bytes and hands them to
 (the size ceilings, the raster sniff by leading bytes, the document text
 extraction, the redaction, and the prompt framing).
 
-Two things here are not obvious from the call site:
+Three things here are not obvious from the call site:
 
 - **The download is one blob, not a URL.** Every other channel hands the shared
   layer an HTTPS URL and lets it fetch. WhatsApp media is end-to-end encrypted
@@ -128,7 +128,7 @@ def attachment_for(desc: MediaDescription, message_id: str) -> Attachment:
     # called, and an ``audio/ogg`` attachment the sender named ``note.oga``
     # arrives at that same unrecognised suffix by the sender's route rather than
     # the stdlib's.
-    hint = _pinned_suffix(desc.base_mimetype) or own_suffix or mime_suffix
+    hint = _pinned_suffix(desc.base_mimetype) or own_suffix
     return Attachment(
         name=name,
         mimetype=desc.base_mimetype,

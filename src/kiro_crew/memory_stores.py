@@ -431,6 +431,14 @@ def named_store_of_db(path: Path) -> str:
         return ""
     try:
         root = memory_stores_root().resolve()
+        if os.name == "nt" and parent != root / name:
+            # Resolving a UNC path opens SMB to its host, so an untrusted share is
+            # answered lexically, as the memory read gate does. Imported here as a
+            # circular import: hooks imports security, which imports this module.
+            from kiro_crew.hooks import is_unc_shape, unc_probe_allowed
+
+            if is_unc_shape(str(parent)) and not unc_probe_allowed(str(parent)):
+                return ""
         if parent.resolve() != root / name:
             return ""
     except OSError:

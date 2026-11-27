@@ -359,6 +359,8 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
         "is_kiro_cli": True,
         "forward_ssh_auth_sock_out": [sys.platform != "win32"],
         **({} if sys.platform == "win32" else {"forward_ssh_auth_sock": True}),
+        # The session folder, whose project MCP files the wrap seals.
+        "project_folder": str(runtime._work_dir),
     }
     voice_guard.assert_called_once_with(runtime._work_dir)
     assert strip_spawn_shim(wrapped["spawn_args"]) == (

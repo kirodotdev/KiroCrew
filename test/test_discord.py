@@ -615,13 +615,19 @@ class TestRotationSplitting:
     ) -> None:
         """Input with no clean cut anywhere must finish rather than spin.
 
-        The backtick run is kept at 500: the sever grade costs the square of the
-        run, and 5000 backticks took about 4 s and timed out on a loaded shard.
+        Termination does not depend on the input's length, but the sever grade's
+        cost does. These shapes are cut into tiny pieces -- two backticks, or one
+        character of code under an opener wider than the limit -- and the grade
+        reads every run of up to 43 pieces, so each extra piece adds dozens of
+        readings. 500 backticks (201 pieces) and 20 code lines (103) took about
+        18 s under coverage and timed out on a loaded 4-core shard; 150 backticks
+        (26) and two code lines (13) are cut the same way at about a twentieth of
+        the cost.
         """
         for src, limit in [
             ("\n\n", 1),
-            ("`" * 500, 100),
-            ("```a-very-long-info-string-indeed\n" + "code\n" * 20, 12),
+            ("`" * 150, 100),
+            ("```a-very-long-info-string-indeed\n" + "code\n" * 2, 12),
         ]:
             sealed, tail = await self._rotate(monkeypatch, src, limit)
             assert sealed or tail, repr(src[:14])

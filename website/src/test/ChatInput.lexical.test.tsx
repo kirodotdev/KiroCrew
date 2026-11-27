@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { createRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import ChatInput from '../components/ChatInput'
@@ -6,6 +6,7 @@ import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import { formatToken, type PasteBlock } from '../utils/pasteTokens'
 import { renderWithProviders } from './helpers'
 import { LAZY_COMPOSER_MOUNT } from './lazyComposerReady'
+import { clickOptimize } from './optimizeRow'
 
 const paste: PasteBlock = {
   id: 'lexical-seam-paste',
@@ -87,5 +88,74 @@ describe('ChatInput Lexical migration seam', () => {
     const textarea = screen.getByRole('textbox')
     expect(textarea.tagName).toBe('TEXTAREA')
     expect(textarea).toHaveValue('kept draft')
+  })
+
+  it('sends on Enter while streaming dictation keeps Lexical text read-only', async () => {
+    const onSend = vi.fn()
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{
+        voiceRecording: true,
+        voiceTransport: 'stream',
+        voiceDictationPanel: true,
+        voiceSampleRef: { current: { level: 0, onset: 0 } },
+      }}>
+        <ChatInput {...defaultProps} onSend={onSend} value="live words" lexicalComposer />
+      </ComposerVoiceSliceOverride>,
+    )
+    const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['ctrlKey', { ctrlKey: true }],
+    ['metaKey', { metaKey: true }],
+  ])('sends on %s+Enter while streaming dictation keeps Lexical text read-only', async (_name, modifier) => {
+    const onSend = vi.fn()
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{
+        voiceRecording: true,
+        voiceTransport: 'stream',
+        voiceDictationPanel: true,
+        voiceSampleRef: { current: { level: 0, onset: 0 } },
+      }}>
+        <ChatInput {...defaultProps} onSend={onSend} value="live words" lexicalComposer />
+      </ComposerVoiceSliceOverride>,
+    )
+    const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
+    fireEvent.keyDown(input, { key: 'Enter', ...modifier })
+    expect(onSend).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps Lexical read-only after an optimize started during streaming dictation is cancelled', async () => {
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (typeof url === 'string' && url.includes('/api/optimizer/optimize')) {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => [] })
+    }))
+    try {
+      renderWithProviders(
+        <ComposerVoiceSliceOverride inputProps={{
+          voiceRecording: true,
+          voiceTransport: 'stream',
+          voiceDictationPanel: true,
+          voiceSampleRef: { current: { level: 0, onset: 0 } },
+        }}>
+          <ChatInput {...defaultProps} value="live words" connected lexicalComposer />
+        </ComposerVoiceSliceOverride>,
+      )
+      const root = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
+      await waitFor(() => expect(root.getAttribute('contenteditable')).toBe('false'))
+      clickOptimize()
+      const cancel = await screen.findByRole('button', { name: 'Cancel optimizing' })
+      await act(async () => { fireEvent.click(cancel) })
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel optimizing' })).toBeNull())
+      expect(root.getAttribute('contenteditable')).toBe('false')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

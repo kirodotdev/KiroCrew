@@ -34,6 +34,14 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # hook is the fixture, so sandboxing the spawn would test the sandbox instead.
         "apps/builtins/auto_improvement/tests/test_git_config_isolation.py"
         "::test_a_host_hook_that_refuses_commits_does_not_reach_a_fixture_commit",
+        # Fixed `git` plumbing argv (init --bare, hash-object, update-index, write-tree,
+        # commit-tree, update-ref, symbolic-ref, config --list, status) against a bare
+        # repo and a clone the test makes under `tmp_path`. Every argument is a literal
+        # or a value git itself printed. They build the fixture repo, then read two fixed
+        # facts (`config --list`, `status`) from the clone `setup_safe_clone` made there.
+        "apps/builtins/auto_improvement/tests/test_clone_setup_windows_longpaths.py::_git",
+        "apps/builtins/auto_improvement/tests/test_clone_setup_windows_longpaths.py"
+        "::_bare_with_deep_path",
         # Ops Mission Control ledger-sync tests: fixed `git` argv (init --bare / ls-files)
         # against a per-test tempdir. Nothing here is agent-influenced — the repo path is
         # `tempfile.mkdtemp()` and every argument is a literal in the test file. These are

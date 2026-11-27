@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         EVENT_COMPLETE,
         EVENT_PERMISSION_REQUEST,
         EVENT_TEXT_CHUNK,
+        EVENT_THINKING_CHUNK,
         EVENT_TOOL_CALL,
         EVENT_TOOL_RESULT,
         FALLBACK_CANDIDATE_ATTEMPTS,
@@ -342,12 +343,12 @@ async def _run_inner_impl(
     #
     # The one sharing decision (``_sharing_plan``), which admission also read
     # to price this start: template execution, not ``keep``, the eligibility
-    # predicate, and no model / reasoning-effort pin.
+    # predicate, no reasoning-effort pin, and a model only where the parent's
+    # runtime takes one per session.
     #
     # An UNPINNED start may take a model from ``model.route``'s derived tiers
     # (``decisions.model_route_derive``, off by default). Decided before the
-    # sharing plan, which reads the routed model as a pin: a routed model
-    # cannot be applied to the parent's already-started runtime.
+    # sharing plan, which reads the routed model as a pin.
     await _route_unpinned_start(info, kind, self._manager._sessions)
     plan = self._manager._sharing_plan(
         info, child_aws_profile=await self._resolve_child_aws_profile(info)
@@ -413,9 +414,10 @@ async def _run_inner_impl(
     # both arms -- a resident subagent session would hold its MCP fleet on a
     # runtime nobody is using -- and what a later ``spawn_continue`` addresses is
     # the record the host kept: kiro-cli's transcript under
-    # ``<kiro home>/sessions/cli``, or the thread ``codex`` persists under
-    # ``CODEX_HOME``. Both are driven end to end with the shared session's runtime
-    # process dead before the continuation runs. The fail-closed resume guard
+    # ``<kiro home>/sessions/cli``, the thread ``codex`` persists under
+    # ``CODEX_HOME``, or the record a KAS engine keeps after ``session/close``.
+    # Each is driven end to end with the shared session's runtime process dead
+    # before the continuation runs. The fail-closed resume guard
     # below still applies, because a record can be pruned or released between the
     # two runs; it is one of two things standing between a shared-arm run and its
     # follow-up rather than the only one.
@@ -438,8 +440,12 @@ async def _run_inner_impl(
         self._manager._sessions.mark_continuable(session_key)
         self._manager._conversations[session_key] = time.monotonic()
     # The parent's shared runtime carries its workspace server, so a remote
-    # child gets its own; a start priced shared takes the top-up below.
-    use_session_sharing = plan.shared and not inherits_remote
+    # child gets its own; a start priced shared takes the top-up below. A KAS
+    # parent's process holds a bounded number of children; the check reserves the
+    # place in the same synchronous step, so racing starts cannot both take it.
+    use_session_sharing = (
+        plan.shared and not inherits_remote and not self._kas_shared_slot_taken(info)
+    )
     client, is_new, _resumed, is_cc, use_session_sharing = await _session.acquire_session(
         self,
         info,
@@ -554,6 +560,8 @@ async def _run_inner_impl(
     # Text streamed since the run's last tool call: the final segment the
     # leaked-tool-call check reads at the end (see ``leaked_tool_call``).
     _final_segment = ""
+    # Where the prompt in flight began streaming into ``result_text``.
+    _prompt_text_start = 0
     turns = 0
     turn_limit = self._manager._effective_turn_limit(info)
     # Separate volume bound for child-origin permission escalations —
@@ -671,11 +679,14 @@ async def _run_inner_impl(
     _person_rejected = [False]
     _refusal_resumes = [0]
     # Whether the model wrote or called anything after the latest refusal.
-    # opencode answers ``reject_once`` by ending a clean turn ``end_turn`` on
-    # the refusal itself, which leaves it unanswered; other harnesses go on
-    # after a reject, so only opencode's clean ending is read as one.
+    # A harness with ``ends_turn_on_permission_reject`` (opencode, on
+    # ``reject_once``) ends a clean turn ``end_turn`` on the refusal itself,
+    # which leaves it unanswered; other harnesses go on after a reject, so only
+    # that clean ending is read as one.
     _refusal_answered = [False]
-    _reject_ends_turn = getattr(client, "is_opencode_backend", False) is True
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+
+    _reject_ends_turn = capabilities_of(client).ends_turn_on_permission_reject
     # Set when the stream ends on a generate failure after real output.
     _kept_after_generate_failure = False
     # One run owns one immutable manager deadline. Capture a transport
@@ -761,7 +772,7 @@ async def _run_inner_impl(
         Non-transient errors and exhausted budgets propagate unchanged
         (handled by _run's generic exception arm → error tombstone).
         """
-        nonlocal _final_segment
+        nonlocal _final_segment, _prompt_text_start
         attempts = 0
 
         def _report_if_landed(ended: object) -> None:
@@ -865,6 +876,7 @@ async def _run_inner_impl(
                 # The completion that ends this prompt, if the stream sent one.
                 _ended: LLMEvent | None = None
                 _prompt = _active_line.current() if msg is full_message else msg
+                _prompt_text_start = len(result_text)
                 # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
                 stream = drop_echo(
                     client.stream(_prompt)
@@ -1076,8 +1088,10 @@ async def _run_inner_impl(
                     # Two attempts per candidate
                     # (FALLBACK_CANDIDATE_ATTEMPTS), ~2s backoff each —
                     # NOT the exponential same-model curve; see
-                    # llm_helpers Case 2.75 for the rationale.
-                    if not _fb_state.chain:
+                    # llm_helpers Case 2.75 for the rationale. Kiro's
+                    # per-user rate limit is shared by every model: a swap
+                    # cannot clear it, so it surfaces as its own error.
+                    if not _fb_state.chain or getattr(exc, "user_rate_limit", False) is True:
                         raise
                     if not _fb_state.should_retry_active():
                         _cand = await advance_fallback_candidate(
@@ -1158,22 +1172,47 @@ async def _run_inner_impl(
     # waited for this turn.
     _turn_t0 = time.monotonic()
     _row_t0[0] = _turn_t0
-    from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_MODEL_FALLBACK, engine_served_model
+    from kiro_crew.agent_sdk.drivers.acp_vocab import (
+        EVENT_MODEL_FALLBACK,
+        STOP_REASON_REFUSAL,
+        engine_served_model,
+    )
+
+    _refused_text = ""  # what a refusal hop dropped, until a model answers after it
 
     # The harness the run is on: opencode names a Crew tool only in its title.
     _harness = getattr(getattr(client, "client", None), "backend", None)
     _harness = _harness if isinstance(_harness, str) else None
-    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_PI
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+    _fused_names = _harness is not None and (
+        capabilities_for(_harness).names_crew_tools_by_fused_name
+    )
 
     def _harness_servers() -> tuple[str, ...]:
-        # pi and claude name a Crew tool only by a fused name, read as Crew's only
-        # for a server the session handed the harness; read at each dispatch, since
-        # a respawn hands the servers again.
+        # A harness with ``names_crew_tools_by_fused_name`` (pi, claude) names a
+        # Crew tool only by a fused name, read as Crew's only for a server the
+        # session handed the harness; read at each dispatch, since a respawn hands
+        # the servers again.
         names = getattr(getattr(client, "client", None), "_harness_mcp_server_names", None)
-        if _harness not in (ACP_BACKEND_PI, ACP_BACKEND_CLAUDE) or not callable(names):
+        if not _fused_names or not callable(names):
             return ()
         found = names()
         return tuple(found) if isinstance(found, (tuple, list)) else ()
+
+    from kiro_crew.context_management import cap_streaming_text
+    from kiro_crew.security import StreamRedactor
+
+    # The run's reasoning goes to its card and its status read only: never the
+    # result, its file or the parent's report. Redacted as a stream, so a
+    # credential split across two thinking chunks never reaches the wire.
+    _thinking = StreamRedactor()
+
+    async def _send_thinking(text: str) -> None:
+        if not text:
+            return
+        info.streaming_thinking = cap_streaming_text(info.streaming_thinking + text)
+        await self._manager._fire_event("subagent_thinking", info, {"text": text})
 
     async for event in _stream_with_transient_retry():
         # Refresh the activity clock for every event kind that BELONGS to
@@ -1209,6 +1248,10 @@ async def _run_inner_impl(
         # one.
         if not event.runtime_global:
             await self._manager._touch_activity(info)
+        if event.kind != EVENT_THINKING_CHUNK and not event.runtime_global:
+            # Any sender's frame may sit between two thoughts: release, never flush,
+            # so a credential split around it is still read whole.
+            await _send_thinking(_thinking.release_at_boundary())
         if event.kind == EVENT_TEXT_CHUNK:
             # The CC/raw provider only learns its served model once the
             # backend answers the first turn — by the first text chunk that
@@ -1234,6 +1277,8 @@ async def _run_inner_impl(
                         )
             result_text += event.text
             _final_segment += event.text
+            if event.text.strip():
+                _refused_text = ""  # a model answered after a refusal hop
             if not _attempt_has_text:
                 # The in-memory partial a stop or a cancel delivers. It
                 # keeps growing when the file cannot be written, which is
@@ -1254,6 +1299,9 @@ async def _run_inner_impl(
             else:
                 _result_file_started = await self._manager._start_result_file(info, result_text)
             await self._manager._fire_event("subagent_chunk", info, {"text": redacted})
+        elif event.kind == EVENT_THINKING_CHUNK:
+            # A thought's last plain word ("now.") goes with its chunk, not after the reply.
+            await _send_thinking(_thinking.feed(event.text) + _thinking.release_sentence_end())
         elif event.kind == EVENT_PERMISSION_REQUEST:
             # Both kiro-cli and claude-agent-acp surface tool calls via
             # session/request_permission. Every one is settled by the run's
@@ -1423,6 +1471,24 @@ async def _run_inner_impl(
                     logger.debug(
                         "Failed to persist engine fallback model for %s", info.id, exc_info=True
                     )
+            _notice = event.model_fallback
+            if (
+                _notice is not None
+                and not _notice.promoted
+                and _notice.cause == "refused"
+                and _final_segment
+            ):
+                # The text this prompt streamed since the last tool call is the
+                # refused model's, not the answer: it leaves the result, the live
+                # partial and result.txt. An earlier prompt's preserved partial stays.
+                _cut = min(len(_final_segment), len(result_text) - _prompt_text_start)
+                if _cut > 0:
+                    if result_text[-_cut:].strip():
+                        _refused_text = result_text[-_cut:]
+                    result_text = result_text[:-_cut]
+                    _final_segment = _final_segment[:-_cut]
+                    info.streaming_text = cap_streaming_text(_redact(result_text))
+                    _result_file_started = await self._manager._start_result_file(info, result_text)
         elif event.kind == EVENT_AGENT_SWITCHED:
             # A mid-run mode switch runs a different agent, so ITS spec hooks gate
             # the permission requests that follow, not the previous agent's. An
@@ -1531,7 +1597,7 @@ async def _run_inner_impl(
                     _named = _pending_tool_ids.pop(event.tool_call_id, None)
                     # The child's own ACP session id, for its spec hooks only.
                     _sid = getattr(client, "session_id", "") if _spec.hooks else ""
-                    results = await self._manager.hook_store.fire(
+                    await self._manager.hook_store.fire(
                         HOOK_EVENT_POST_TOOL_USE,
                         tool_name=_tool_name,
                         tool_response=bounded_hook_output(_redact(event.tool_output or "")),
@@ -1557,17 +1623,15 @@ async def _run_inner_impl(
                         ),
                         acp_session_id=_sid if isinstance(_sid, str) and _sid else None,
                     )
-                    for r in results or ():
-                        if r.exit_code not in (0, 2):
-                            logger.warning(
-                                "Hook %s (%s) failed: %s", r.hook_name, r.event, r.failure_detail
-                            )
                 except Exception:
                     logger.warning("PostToolUse hook error in subagent", exc_info=True)
         elif event.kind == EVENT_COMPLETE:
             _complete_event = event
             usage.settle(event)
             break
+
+    # The run's end lands whatever the thinking redactor still holds.
+    await _send_thinking(_thinking.flush())
 
     # A provider may finish without an explicit completion event. Its
     # current prompt stats are still the authoritative billing record.
@@ -1580,6 +1644,12 @@ async def _run_inner_impl(
     from kiro_crew.messaging.driver import strip_steering_markers
     from kiro_crew.session_directive import strip_quoted_markers
 
+    if _refused_text and getattr(_complete_event, "stop_reason", "") == STOP_REASON_REFUSAL:
+        result_text += _refused_text  # nothing answered: keep the provider's words
+        if _result_file_started:
+            # The hop cut them from result.txt, which a refused ending never rewrites.
+            # On the loop, like the warning below: no await before the ending.
+            write_result_chunk(info.id, _refused_text)
     result_text = strip_quoted_markers(strip_steering_markers(result_text))
     # Strip [OPTIONS: ...] tags and redact sensitive content
     cleaned, _ = extract_options(result_text) if result_text else (result_text, [])

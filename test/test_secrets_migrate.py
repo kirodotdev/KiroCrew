@@ -1248,3 +1248,37 @@ class TestRemediationNamesOnlyRealCliSubcommands:
             f"subcommand the CLI does not register: {dead}. Point the message at a real "
             "surface (Settings > Secrets in the dashboard, or `kirocrew secrets import`)."
         )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_env_lock_path_makes_every_missing_folder_owner_only(tmp_path: Path) -> None:
+    """A config folder that does not exist yet is born ``0700`` all the way down.
+
+    ``Path.mkdir(mode=..., parents=True)`` gives the mode to the last folder only,
+    so a missing parent would otherwise be created ``0755`` under the usual umask.
+    """
+    from kiro_crew.secrets.migrate import _env_lock_path
+
+    old_umask = os.umask(0o022)
+    try:
+        ep = tmp_path / "a" / "b" / ".env"
+        _env_lock_path(ep)
+    finally:
+        os.umask(old_umask)
+
+    for folder in (tmp_path / "a", tmp_path / "a" / "b", tmp_path / "a" / "b" / ".vault"):
+        assert stat.S_IMODE(folder.stat().st_mode) == 0o700, folder
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_env_lock_path_leaves_an_existing_folder_mode_alone(tmp_path: Path) -> None:
+    """Only a folder this call creates is made owner-only; an existing one keeps its mode."""
+    from kiro_crew.secrets.migrate import _env_lock_path
+
+    config = tmp_path / "config"
+    config.mkdir(mode=0o755)
+    config.chmod(0o755)
+    _env_lock_path(config / ".env")
+
+    assert stat.S_IMODE(config.stat().st_mode) == 0o755
+    assert stat.S_IMODE((config / ".vault").stat().st_mode) == 0o700

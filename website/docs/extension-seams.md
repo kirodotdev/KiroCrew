@@ -21,6 +21,10 @@ seam (`src/pages/chat/DocumentPanelTabs.test.tsx`), which have their own suites.
 File/tree/folder menu rows are **not** a composition-root seam: an installed app
 declares them in its manifest under `contributes.fileMenuItems[]` and core
 POSTs the file context to the app's endpoint — see the App Kit publishing guide.
+Rows in the Sessions **New** menu work the same way: an app declares them under
+`contributes.sessionCreateItems[]` (`src/apps/sessionCreateContributions.tsx`),
+core POSTs `{ item_id }` to the app's endpoint and creates the session on the
+`project_dir` it answers.
 
 | Seam | Module | Registrar to reader |
 |------|--------|---------------------|
@@ -407,11 +411,14 @@ and tab-smuggled forms the URL parser treats identically — which opens with a 
 but addresses another origin, where this build has no empty page to explain.
 
 **Panel shortcuts.** `registerPanelShortcut({ code, path, label })` identifies the
-chord solely by `KeyboardEvent.code`, and the displayed key is derived from that
-code, so the advertised chord can never diverge from the handled one. A
-single-character key is labelled with what the user's keyboard layout prints on
-that physical key (`navigator.keyboard.getLayoutMap()`, read once per page load in
-Chromium and Electron; elsewhere the label is the US glyph). Beyond core
+chord solely by its `KeyboardEvent.code`, which the handler reads for a letter key
+as the letter the layout types (`KeyX` fires from the key that types `x`; a key
+typing no Latin letter, or a macOS Option chord, fires by position), and the
+displayed key is derived from that code, so the advertised chord can never diverge
+from the handled one. A chord matched by position is labelled with what the user's
+keyboard layout prints on that physical key (`navigator.keyboard.getLayoutMap()`,
+read once per page load in Chromium and Electron; elsewhere the label is the US
+glyph). Beyond core
 panel chords and prior registrations, it rejects any code in
 `RESERVED_PANEL_CODES`: the Alt chords the handler consumes before panel routing
 (shortcuts modal, settings, focus-input, MRU toggle, chat-jump digits, prev/next

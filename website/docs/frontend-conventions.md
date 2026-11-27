@@ -477,7 +477,11 @@ Rules:
   from the page's global chords — but that isolation follows the React tree, so
   an overlay rendered as a *sibling* of `<Modal>` is outside it. See
   [Keyboard isolation](#keyboard-isolation-dialogs-and-the-overlays-above-them).
-- Dynamic content that updates in place (streaming messages, notifications) uses
+- A virtualized transcript is not a live region. Scrolling mounts and unmounts
+  rows, so `aria-live` on the scroller would announce old messages again. New
+  messages are spoken through the one stable, offscreen polite live region in
+  `TranscriptLiveRegion`, with `useTranscriptAnnouncement` deciding when its
+  text changes. Small status regions that update in place still use
   `aria-live="polite"`.
 - A navigation rail (a column of buttons that each open a section or page) gives the
   row of the open destination `aria-current="page"` and no other row. A class or an
@@ -953,7 +957,10 @@ files own it:
   layers, emits `@tailwind utilities` UNLAYERED (see the header comment there:
   the component CSS after it was written against v3's unlayered utilities and
   must keep competing with them on plain specificity), and lists the template
-  sources with `@source`. Then the Preflight compensation, three v3 Preflight
+  sources with `@source`. It also imports `src/tailwind-adopted-app-classes.css`,
+  the generated, append-only list of utilities adopted former built-ins use
+  (theming-contract, *Adopted apps' utilities*); never hand-edit it. Then the
+  Preflight compensation, three v3 Preflight
   defaults restored as token-backed base rules (default border colour
   `var(--border)`, placeholder colour `var(--muted)`, `cursor: pointer` on
   enabled buttons). Then the imports of `font-faces.css`, `design-tokens.css` and

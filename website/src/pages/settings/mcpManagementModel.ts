@@ -47,6 +47,9 @@ export type LaunchRefusal = {
   envs?: string[][]
   approved_commands?: string[][]
   approved_envs?: string[][]
+  // Env keys set on both sides whose value changed, which the gateway reads
+  // from keyed digests of the real values: names only, never a value.
+  changed_env_keys?: string[]
   // False when the launch could not be read in full, which is also when
   // `expected_launch` is absent: a partial launch cannot be approved.
   complete?: boolean
@@ -132,7 +135,9 @@ export function withCurrentLaunch(
   const current = Object.hasOwn(currentLaunches, name) ? currentLaunches[name] : undefined
   if (!current || current.refused !== refusal.expected_launch) return refusal
   const { commands, envs, complete, expected_launch } = current.launch
-  return { ...refusal, commands, envs, complete, expected_launch }
+  // The refusal's changed keys describe the launch it refused, not this one.
+  const { changed_env_keys: _stale, ...rest } = refusal
+  return { ...rest, commands, envs, complete, expected_launch }
 }
 
 export function stubErrorKey(error: unknown): string {
@@ -153,6 +158,8 @@ export function stubErrorKey(error: unknown): string {
   if (code === 'launch_over_cap') return 'pages.mcpManagement.stub_error_launch_over_cap'
   if (code === 'approval_write_failed') return 'pages.mcpManagement.stub_error_approval_write_failed'
   if (code === 'cwd_unconfirmed') return 'pages.mcpManagement.stub_error_cwd_unanswered'
+  if (code === 'trust_needs_shared') return 'pages.mcpManagement.stub_error_trust_needs_shared'
+  if (code === 'trust_needs_approved_launch') return 'pages.mcpManagement.stub_error_trust_needs_approved_launch'
   return 'pages.mcpManagement.stub_failed'
 }
 

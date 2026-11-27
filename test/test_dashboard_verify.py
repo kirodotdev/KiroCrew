@@ -51,6 +51,8 @@ from kiro_crew.dashboard_verify import (
     _Collector,
     _compose,
 )
+from kiro_crew.platform.context import redact_via_context
+from kiro_crew.testing.synthetic_credentials import github_classic, synth
 from kiro_crew.testing.wait import wait_until
 
 LINUX_ONLY = pytest.mark.skipif(
@@ -348,24 +350,18 @@ def test_a_url_in_an_error_loses_its_query_and_its_fragment():
     ]
 
 
-def test_a_message_of_many_urls_is_scrubbed_over_a_bounded_stretch(monkeypatch):
-    """The page chooses its message and its length; the scrub for URL queries is quadratic in
-    what it is handed, so it is handed a bounded stretch and not the whole message."""
-    handed: list[int] = []
-    original = dashboard_verify._without_queries
-    monkeypatch.setattr(
-        dashboard_verify,
-        "_without_queries",
-        lambda text: handed.append(len(text)) or original(text),
-    )
+def test_a_run_of_urls_with_no_query_is_one_match_of_the_scrub():
+    """The page chooses its message and its length, so a run of URLs with no query is read
+    in one match: a search restarting inside each URL would rescan the rest of the run."""
+    text = "http://a.test/p" * 1000
 
-    shown = dashboard_verify._message("http://" * 500_000)
+    spans = [m.span() for m in dashboard_verify._URL_AND_QUERY.finditer(text)]
 
-    assert handed == [dashboard_verify._SCRUB_CHARS]
-    assert len(shown) <= dashboard_verify.MAX_MESSAGE_CHARS
+    assert spans == [(0, len(text))]
+    assert dashboard_verify._without_queries(text) == text
 
 
-def test_a_url_query_past_the_scrubbed_stretch_is_not_shown_either():
+def test_a_url_query_far_into_a_long_message_is_not_shown_either():
     text = "x" * 3000 + " http://a.example/p?token=abc123"
 
     assert "token" not in dashboard_verify._message(text)
@@ -376,6 +372,37 @@ def test_a_long_message_is_clipped():
     c.on_event("Runtime.exceptionThrown", _exception("Error: " + "x" * 5000, 1))
 
     assert len(c.errors[0].message) == dashboard_verify.MAX_MESSAGE_CHARS
+
+
+@pytest.mark.parametrize("pad", [260, 280])
+def test_a_secret_the_clip_falls_inside_is_redacted_not_shown_in_part(pad):
+    """Redacted whole, then clipped: the reply's own redaction pass afterwards would not
+    know a start of the key the clip kept."""
+    secret = github_classic()
+    c = _Collector()
+    message = "Error: " + "x" * pad + " " + secret + " " + "y" * 400
+    c.on_event("Runtime.exceptionThrown", _exception(message, 1))
+
+    shown = redact_via_context(c.errors[0].message)
+
+    assert len(shown) == dashboard_verify.MAX_MESSAGE_CHARS
+    assert all(secret[i : i + 8] not in shown for i in range(len(secret) - 7))
+
+
+@pytest.mark.parametrize("at", [2009, 2040])
+def test_a_secret_far_into_a_message_is_redacted_before_any_cut(at):
+    """A long credential earlier in the message shrinks when it is redacted, which pulls
+    later text into what is shown: a cut made before that would show a start of the key."""
+    secret = github_classic()
+    head = "Error: Authorization: Bearer " + synth(1900, seed=4) + " "
+    message = head + "p" * (at - len(head)) + secret + " " + "y" * 400
+    c = _Collector()
+    c.on_event("Runtime.exceptionThrown", _exception(message, 1))
+
+    shown = redact_via_context(c.errors[0].message)
+
+    assert len(shown) <= dashboard_verify.MAX_MESSAGE_CHARS
+    assert all(secret[i : i + 8] not in shown for i in range(len(secret) - 7))
 
 
 def _committed(url: str = PAGE_URL, **frame: Any) -> dict[str, Any]:
@@ -535,6 +562,46 @@ def test_a_refused_request_to_another_host_is_listed_without_the_library_remark(
     )
 
 
+@pytest.mark.parametrize("pad", [60, 80])
+def test_a_secret_the_url_cut_falls_inside_is_redacted_not_shown_in_part(pad):
+    secret = github_classic()
+    c = _Collector()
+    c.loaded = True
+    c.refuse(f"https://example.test/{'a' * pad}/{secret}/{'b' * 80}", "Fetch")
+
+    note = redact_via_context(_verdict(c).notes[0])
+
+    assert all(secret[i : i + 8] not in note for i in range(len(secret) - 7))
+
+
+@pytest.mark.parametrize("at", [276, 288])
+def test_a_secret_far_into_a_refused_url_is_redacted_before_it_is_stored(at):
+    """Stored cut to its bound: a cut before redaction would keep a start of the key that the
+    shrinking credential before it later pulls into the note."""
+    secret = github_classic()
+    head = f"https://u:{synth(240, seed=6)}@example.test/"
+    c = _Collector()
+    c.loaded = True
+    c.refuse(head + "q" * (at - len(head)) + secret + "/" + "b" * 80, "Fetch")
+
+    note = redact_via_context(_verdict(c).notes[0])
+
+    assert len(c.blocked[0]) <= dashboard_verify._MAX_URL_CHARS
+    assert all(secret[i : i + 8] not in note for i in range(len(secret) - 7))
+
+
+def test_a_query_after_a_redacted_credential_is_still_cut():
+    """The query is cut before redaction, whose placeholder would end the URL early."""
+    url = f"https://u:{synth(40, seed=6)}@api.example.test/x?d=PAGEDATA"
+    c = _Collector()
+    c.loaded = True
+    c.on_event("Runtime.exceptionThrown", _exception(f"Error: failed {url}", 1))
+    c.refuse(url, "Fetch")
+
+    assert "PAGEDATA" not in c.errors[0].message
+    assert "PAGEDATA" not in _verdict(c).notes[0]
+
+
 # --------------------------------------------------------------------------- #
 # 3b. A library the run could not fetch
 # --------------------------------------------------------------------------- #
@@ -600,6 +667,21 @@ def test_an_undefined_name_is_the_pages_own_unless_a_library_script_was_refused(
 
     assert v.status == STATUS_FAILED
     assert [e.message for e in v.errors] == ["ReferenceError: totl is not defined"]
+
+
+def test_a_refused_library_url_with_a_credential_is_stored_redacted():
+    """Its redacted host does not parse, so the name stays the page's own error."""
+    secret = synth(40, seed=6)
+    c = _after_a_refused_library(
+        "ReferenceError: Chart is not defined",
+        urls=(f"https://u:{secret}@cdn.jsdelivr.net/npm/chart.js@4",),
+    )
+
+    v = _verdict(c)
+
+    assert c.library_refused and secret not in c.library_urls[0]
+    assert v.notes and all(secret not in note for note in v.notes)
+    assert [e.message for e in v.errors] == ["ReferenceError: Chart is not defined"]
 
 
 def test_a_typo_on_a_page_that_loads_a_library_is_still_the_pages_own_error():

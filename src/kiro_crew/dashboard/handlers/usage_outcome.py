@@ -5,7 +5,9 @@ conversations' own transcripts for the outcomes a person weighs that spend
 against: commits, changed lines and pull requests, and how many of those pull
 requests were merged. Nothing here runs git or calls a provider. Every figure
 is read from text the gateway already holds. A tool row's command is the
-``command`` argument the call was made with, or its title when it has none:
+``command`` argument the call was made with, or its title when it has none, and
+a program in it is named the way Windows runs it, so ``git.exe``, ``Git`` and a
+full path to ``git.exe`` are ``git``:
 
 * a **commit** is counted when a shell tool row ran ``git commit`` and git's own
   summary line (``[branch abc1234] subject``) is in that row's output, with the
@@ -63,6 +65,7 @@ from kiro_crew.history_derivation import (
     transcript_withholds_derivation,
 )
 from kiro_crew.history_files import transcript_lock_stems
+from kiro_crew.program_name import windows_program_name
 from kiro_crew.security import shell_commands as _shell_commands
 from kiro_crew.security import shell_normalizer as _shell
 from kiro_crew.tool_call_title import parse_tool_args
@@ -178,7 +181,7 @@ def _split_commands(command: str) -> tuple[list[tuple[list[str], str]], bool]:
 
 
 def _is_program(word: str, name: str) -> bool:
-    return word == name or word.endswith("/" + name)
+    return windows_program_name(word) == name
 
 
 def _commit_call(words: list[str]) -> tuple[bool, bool] | None:
@@ -354,7 +357,7 @@ def outcome_events(rows: Iterable[Any]) -> tuple[Event, ...]:
         if command is None or not isinstance(output, str) or len(command) > _COMMAND_READ_CHARS:
             continue
         # Only a command naming a commit or a create is scanned; most are neither.
-        if not ("commit" in command and "git" in command) and "create" not in command:
+        if not ("commit" in command and "git" in command.casefold()) and "create" not in command:
             continue
         commands, complete = _split_commands(command)
         calls = [c for c in (_commit_call(words) for words, _ in commands) if c is not None]

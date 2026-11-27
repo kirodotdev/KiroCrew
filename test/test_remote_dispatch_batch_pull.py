@@ -251,6 +251,19 @@ def test_a_crew_without_the_batch_route_is_read_item_by_item(recorded, peer, old
     asyncio.run(go())
 
 
+def test_a_version_skewed_crew_is_still_batch_read(recorded, peer):
+    async def go() -> None:
+        await _remote_item(peer)
+        peer.version = "0.0.1"
+        peer.report("progress", "first", "2026-10-29T10:00:00+00:00")
+        mark = len(peer.calls)
+        await _read(peer)
+        assert _calls(peer, mark) == [("POST", remote_batch_pull.BATCH_PATH)]
+        assert _worker_summaries(recorded) == ["first"]
+
+    asyncio.run(go())
+
+
 # ── the peer route ────────────────────────────────────────────────────────
 
 

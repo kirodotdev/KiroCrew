@@ -898,7 +898,7 @@ class TestThePin:
     def test_install_pinned_fetches_this_hosts_pin(
         self, tmp_path, monkeypatch, machine, glibc, want
     ):
-        """Only a linux-x64 host below glibc 2.28 fetches the AL2 pin, with its own
+        """Only a Linux host below glibc 2.28 fetches the AL2 pin, with its own
         digest; every other host fetches the normal pin."""
         seen = {}
 
@@ -1064,10 +1064,9 @@ class TestOldGlibcRefusal:
     @pytest.mark.parametrize("glibc", [(2, 25), (2, 26), (2, 27), (2, 28)], ids=str)
     @pytest.mark.parametrize("machine", ["x86_64", "aarch64"])
     def test_the_host_pin_sets_the_floor_per_arch(self, glibc, machine):
-        """With no version named, the floor is this host's pin's: a linux-x64 host
-        below 2.28 runs the AL2 pin (floor 2.26), every other host the normal pin
-        (floor 2.28). arm64 has no AL2 build, so it stays at 2.28."""
-        floor = (2, 26) if machine == "x86_64" else (2, 28)
+        """With no version named, the floor is this host's pin's: a linux-x64 or
+        linux-arm64 host below 2.28 runs the AL2 pin (floor 2.26)."""
+        floor = (2, 26)
         key = "linux-x64" if machine == "x86_64" else "linux-arm64"
         with _patch_glibc(glibc):
             if glibc >= floor:
@@ -1085,7 +1084,7 @@ class TestOldGlibcRefusal:
     def test_each_named_pin_keeps_its_own_floor(self, glibc, machine, pin):
         """Naming a pin checks that pin's floor whatever the host would pick."""
         version = kas_bundle.KAS_PIN_AL2_VERSION if pin == "al2" else kas_bundle.KAS_PIN_VERSION
-        floor = (2, 26) if pin == "al2" and machine == "x86_64" else (2, 28)
+        floor = (2, 26) if pin == "al2" else (2, 28)
         with _patch_glibc(glibc):
             if glibc >= floor:
                 kas_bundle._require_loadable_glibc("Linux", machine, version)

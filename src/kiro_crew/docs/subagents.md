@@ -41,8 +41,12 @@ The `spawn_run` tool accepts:
 - `cwd` — absolute launch directory, which must be under a configured `subagent_cwd_allowed_roots` entry
 - `isolate` — `"worktree"` gives each task its own git worktree of the repository `cwd` is in, detached at that checkout's HEAD (uncommitted changes there are not carried over) and placed beside the repository as `<repo>-wt-<run id>`, which must also be under `subagent_cwd_allowed_roots`; parallel writers on one repository then never share a working tree. The completion event names the worktree and its commits. A worktree with commits, changes or ignored files is kept; a clean one is removed when the run's record expires. Needs `cwd`
 
-Setting `model`, `reasoning_effort` or `backend`, or `keep: true`, forces the
-dedicated-process path instead of session sharing.
+Setting `reasoning_effort` or `backend`, or `keep: true`, forces the
+dedicated-process path instead of session sharing. A `model` alone keeps
+session sharing where the parent's backend sets a model per session (Kiro CLI,
+Codex and KAS); on any other backend, or together with a reasoning effort
+(per call, the Subagent Effort setting, or the default Reasoning Effort), it
+takes the dedicated-process path too.
 
 #### Light helpers
 
@@ -65,8 +69,8 @@ them yet:
 - A light spawn beats the plain `agent.role_models.subagent` pin; any other spawn
   keeps it.
 - A spawn that names an `agent`, a `crew` or a `backend` is not changed.
-- A pinned model or effort starts the sub-agent in its own process, like any
-  per-spawn pin (see above).
+- A pinned model or effort decides whether the sub-agent shares its parent's
+  process the way any per-spawn pin does (see above).
 - With the setting off, which is the default, every spawn picks the model and
   effort it always has, and a `light` flag is ignored without a word. With the
   setting on, a `light` flag that cannot apply (no pin is set for what the call
@@ -148,6 +152,10 @@ The other spawn tools:
 3. Results are automatically injected back as `[Subagent completion event]`
 4. Kiro Crew synthesizes the results into a final response
 
+While a sub-agent runs, its card shows the sub-agent's thinking in a collapsed
+block above Output. The thinking is shown live only, so a reload does not bring
+it back, and it never becomes part of the result or the report the parent gets.
+
 After a gateway restart the dashboard's Subagents panel is rebuilt with recent
 finished runs: the newest 50 from the last day. Dismissing a card is recorded
 durably, so it stays dismissed after a restart. A dismissal that answers HTTP 503
@@ -158,23 +166,64 @@ durably, so it stays dismissed after a restart. A dismissal that answers HTTP 50
 - **Max concurrent**: free memory bounds how many start (each start must leave `agent.spawn_min_memory_gb` free); the count is a high ceiling, `agent.subagent_auto_max` = 32 by default (`agent.max_subagents = 0`); set a positive integer (3 or more) to pin a fixed cap. See [dynamic-subagent-sizing.md](dynamic-subagent-sizing.md)
 - **Timeout**: 3 hours per subagent task (`agent.subagent_timeout_secs`, clamped to 60s..86400s at load; 0 means "use the default"; a running subagent keeps the deadline it started with, so a changed value applies to the next run), 20 minutes delivery (semaphore wait + injection), 15 minutes per injection attempt (`KIROCREW_INJECTION_TIMEOUT`, clamped to the delivery cap). A **blocking** `spawn_sub_agents` call collects for at most 2 hours regardless of that setting (`KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT`, itself capped at 7200s), so use `spawn_run` for work longer than 2 hours and read the results from its completion events
 - **Turn limit**: 1000 tool calls per subagent by default (configurable via `agent.subagent_max_turns`, maximum 1000). A stored value, including 100, is preserved on upgrade; an unset key automatically uses the current default. Run `kirocrew config defaults` to inspect an older stored default, then use `kirocrew config defaults --adopt agent.subagent_max_turns` only if you want to replace that pin with the current default.
-- **Memory guard**: a start is admitted only if at least 2 GB of memory stays available after it, counting what starts still warming up will take. A dedicated-process start (a `model`/`reasoning_effort` override, `keep`, `bare`, `allowed_tools`, or a role model pin) is priced at what such a runtime settles at: about 1 GB until runs of that agent have been measured, then their learned size capped at 2 GB, and never less than `agent.subagent_cost_gb` (0.5 GB by default). A start that shares its parent's runtime is priced about 0.35 GB lower, since it still starts the agent's MCP servers. Each owes that price until two reaper sweeps have measured it (or, where they cannot, two sweep intervals after it first answered), then nothing. If a shared start has to fall back to its own process, the guard re-checks before that process starts. When headroom is insufficient the start waits in the queue rather than failing (an incognito or temporary spawn, or one with the task queue off, waits in memory) and is re-checked as soon as memory can have moved (a subagent finishing, or a free-memory reading taken every few seconds while something waits, which also notices a warming one settling), at the latest when `agent.admit_wait_secs` passes, for at most `agent.subagent_queue_max_wait_secs` (30 minutes by default) of being held back; past that the spawn ends without starting and its parent gets the result `never started: waiting for memory (not enough memory freed up in time); retry once memory frees up`. While it waits, the chip names that limit as the time after which the spawn gives up. Only this floor holds a spawn: the "critically low" memory posture (`agent.resource_critical_gb`) defers cron firings, not subagents. While another chat's subagents wait for memory, a chat that already runs its share of dedicated subagents waits for its next top-level start too, so the memory goes to the waiting chat first (shares follow `agent.lane_weights`); a nested subagent that shares its parent's runtime starts at the floor itself, since its parent already holds its memory. Configure the floor with `agent.spawn_min_memory_gb`; set it to 0 to disable this guard. An install still carrying the old 4.0 default moves to 2.0 once; a value set back afterwards is kept.
+- **Memory guard**: a start is admitted only if at least 2 GB of memory stays available after it, counting what starts still warming up will take. A dedicated-process start (a `reasoning_effort` override or role effort pin, `keep`, `bare`, `allowed_tools`, or a `model` override or role model pin the parent's runtime cannot apply to one session) is priced at what such a runtime settles at: about 1 GB until runs of that agent have been measured, then their learned size capped at 2 GB, and never less than `agent.subagent_cost_gb` (0.5 GB by default). A start that shares its parent's runtime is priced about 0.35 GB lower, since it still starts the agent's MCP servers. Each owes that price until two reaper sweeps have measured it (or, where they cannot, two sweep intervals after it first answered), then nothing. If a shared start has to fall back to its own process, the guard re-checks before that process starts. When headroom is insufficient the start waits in the queue rather than failing (an incognito or temporary spawn, or one with the task queue off, waits in memory) and is re-checked as soon as memory can have moved (a subagent finishing, or a free-memory reading taken every few seconds while something waits, which also notices a warming one settling), at the latest when `agent.admit_wait_secs` passes, for at most `agent.subagent_queue_max_wait_secs` (30 minutes by default) of being held back; past that the spawn ends without starting and its parent gets the result `never started: waiting for memory (not enough memory freed up in time); retry once memory frees up`. While it waits, the chip names that limit as the time after which the spawn gives up. Only this floor holds a spawn: the "critically low" memory posture (`agent.resource_critical_gb`) defers cron firings, not subagents. While another chat's subagents wait for memory, a chat that already runs its share of dedicated subagents waits for its next top-level start too, so the memory goes to the waiting chat first (shares follow `agent.lane_weights`); a nested subagent that shares its parent's runtime starts at the floor itself, since its parent already holds its memory. Configure the floor with `agent.spawn_min_memory_gb`; set it to 0 to disable this guard. An install still carrying the old 4.0 default moves to 2.0 once; a value set back afterwards is kept.
 - **Nesting**: a subagent can spawn its own subagents. A nested spawn is tracked apart from the parent's wave, so its children are not counted against that wave's completion total
 - **macOS memory pressure**: on macOS the memory guard also reads the kernel's memory-pressure level (the one Activity Monitor graphs). While it is WARN or CRITICAL and one of this gateway's dedicated subagents is running, a new start waits even when the free-memory figure is above the floor; the chip says "macOS reports memory pressure". Temporary and incognito spawns wait the same way. A held start is re-checked every 15 seconds and whenever a subagent finishes; if it has been held for `agent.subagent_queue_max_wait_secs` (30 minutes by default) with no other top-level start from the same chat beginning in that time (the starts ahead of it in that chat's queue, from any `spawn_run` batch; scheduled and background jobs share one queue, so a start from any of them counts for all of them), it is ended without starting ("never started: waiting for memory"), and the wave's results count it among those that never started, to resubmit once memory eases; and while an episode lasts longer than that, new starts it would hold end at once. With no dedicated subagent of ours running, the start is judged on the figure alone, and a subagent's own nested subagents are never held. `agent.spawn_min_memory_gb = 0` turns this off with the rest of the guard
 - **Redaction**: task strings in SubagentInfo are redacted (credentials, inside URLs too) before surfacing to Slack/dashboard
 
+## Sub-agents on a KAS chat's process
+
+With `agent.session_sharing` on (the default), a `spawn_run` sub-agent of a KAS
+chat runs as a session on the chat's own KAS process, as it does on Kiro CLI and
+Codex, instead of starting a process of its own. The KAS engine runs one copy of
+an MCP server for all sessions of a process that use the same server settings in
+the same folder, so such a sub-agent reuses the chat's servers and starts only
+its own Kiro Crew servers.
+
+- **Where it works**: a sub-agent given no `cwd` works in Kiro Crew's workspace
+  folder, as Kiro CLI sub-agents on a shared process do. Sub-agents running at
+  the same time then share one working folder and one `$KIROCREW_SCRATCH`, so
+  give each one its own `cwd` (or `isolate: "worktree"`) when they write files.
+- **Resume**: when a sub-agent ends, its session is closed and its record kept,
+  so `spawn_continue` works as before; the record is deleted with the run's
+  folder.
+- **Who still gets a process of its own**: a sub-agent with a reasoning effort
+  (per call or a role pin), `keep`, `bare`, `allowed_tools`, a `backend` of its
+  own, a crew member context or an AWS profile other than the chat's, and every
+  one past 8 live at once in one chat. So does every sub-agent of a chat whose
+  process does not qualify: it must advertise `session/close`, run `@kiro/agent`
+  0.66.104 or newer, not be in KAS machine mode, not run under a looser
+  `agent.sandbox` level than the one set now, and not serve other chats
+  ("ACP runtime sharing").
+- **Off switch**: `agent.session_sharing: false` gives every sub-agent a process
+  of its own, on KAS as on every other backend.
+
 ## KAS sub-agents (a feature preview)
 
 With the "KAS sub-agents" feature preview on (Settings > Developer > Feature
-previews, off by default), a KAS dashboard chat on the default agent hands short, independent tasks whose
+previews, off by default), a KAS chat hands short, independent tasks whose
 results it needs in the same reply to the KAS engine's own sub-agent tool
-(`invoke_sub_agent`), with the built-in `kirocrew-helper` agent. A KAS sub-agent
+(`invoke_sub_agent`), with the built-in `kirocrew-helper` agent, a copy of the
+chat's own agent. That is every KAS chat: your dashboard chats, a crew member's
+chat, a cron run, a messaging channel's chat, and the chats a conductor or a Bot
+creates for its work (a dispatched worker, a Bot's worker chat), on any agent Kiro
+Crew ships or builds (an agent file of your own is read as kiro-cli reads it); not a
+conductor's own chat (a Bot's own chat, which hands its work to the Bot's workers,
+and a conductor mode chat), a Kiro Crew sub-agent run, a workflow or a heartbeat,
+and not while "Chat runtime sharing" is on. In those chats the engine's tool takes
+the place of `spawn_run` and `spawn_sub_agents`, and it can run your own agents
+too (outside your own dashboard chat on the default agent, each with only the MCP
+servers it shares with the chat's agent, since no one may be there to approve a
+call to another). It takes none of `spawn_run`'s options: no model, backend, folder or turn limit
+of its own, and nothing that outlives the turn, so the built-in flows that pin a
+model for each run (the local review lanes, llm-council) run every task on the
+chat's own model there. A KAS sub-agent
 runs inside the chat's turn and process: it starts no process and no MCP server of
 its own, so the memory guard, the queue and the sub-agent count settings above do
 not apply to it, and its cost is part of the chat's turn. It holds the chat agent's
 built-in tools and the MCP servers that agent uses, on the same running servers,
 but none of Kiro Crew's own tools (memory, skills, artifacts, spawn, cron,
-messages). The chat agent's rules decide its calls as they decide the agent's own:
+messages), and it cannot start sub-agents of its own. The chat agent's rules decide its calls as they decide the agent's own:
 what the agent runs without asking, it runs without asking, and what the agent is
 asked about or denied, it is too. Each dispatch is one approval card unless the
 chat is trusted or YOLO is on.
@@ -223,9 +272,15 @@ A KAS sub-agent has no Stop or Cancel of its own and no "Retry failed". Its card
 shows no credit or model figure, because the engine reports neither for one
 sub-agent: its credits are part of the answer's total.
 
-After the answer, the reply keeps a closed "Sub-agents in this turn" line, also after
-a reload or when you reopen the chat later. Open it to see each KAS sub-agent's task,
-how it ended and the names of its tool calls, as the engine reported them.
+While they run, the chat also shows them as one card at the end of the conversation,
+the same card Kiro Crew's own sub-agents get: it spins while any of them runs and
+counts how long the batch has taken. After the answer, the reply keeps that card,
+also after a reload or when you reopen the chat later: how many finished, how many
+succeeded or failed, how long the batch took and the turn's credits. Those credits
+are for the whole turn, sub-agents included; the engine does not report credits or a
+model for one sub-agent, so the card shows neither. Show details lists each KAS
+sub-agent's task, how it ended, how long it ran and the names of its tool calls, as
+the engine reported them.
 
 Turn it on or off under Settings > Developer > Feature previews; the change applies from the next chat, not to one already
 running. Off, Kiro Crew starts its own sub-agents for that chat, as before. Either

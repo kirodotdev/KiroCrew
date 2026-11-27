@@ -732,7 +732,12 @@ class ConversationLog:
         return self._listing_index.warm(should_stop)
 
     def list_sessions_status(self) -> tuple[list[dict], bool]:
-        return self._catalog_projection.list_sessions_status()
+        """:meth:`list_sessions_indexed` plus whether the listing is complete.
+
+        Both answer as the direct scan answers them (see
+        ``SessionListingIndex.list_sessions_status``), as current as :meth:`list_sessions_indexed`.
+        """
+        return self._listing_index.list_sessions_status()
 
     def newest_session_stems(self, max_entries: int) -> tuple[list[tuple[str, float]], bool]:
         return self._catalog_projection.newest_session_stems(max_entries)

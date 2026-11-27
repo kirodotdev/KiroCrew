@@ -28,6 +28,7 @@ const VOICE = src('../components/chat-input/VoiceControls.tsx')
 const APPROVAL = src('../components/ApprovalModePicker.tsx')
 const AUTOMATION = src('../components/SessionAutomationPopover.tsx')
 const AUTO_NUDGE = src('../components/AutoNudgePopover.tsx')
+const AWS_PROFILE = src('../components/ProjectAwsProfile.tsx')
 
 const OPEN: Req = { kind: 'condition', id: 'session_open' }
 const DESKTOP: Req = { kind: 'viewport', value: 'desktop' }
@@ -128,6 +129,12 @@ const EXPECTED: Record<string, Expect> = {
     en: "The approval-mode picker in the message box's control row. It sets whether only lookups run without asking (Normal), its own memory, chat, skill and knowledge searches run too (Reads), this session is trusted (Trust), or everything is auto-approved (YOLO).",
     zh: '消息框控制栏中的审批模式选择器，用于设置是只有查找类操作直接运行（常规）、它自己的记忆、对话、技能和知识搜索也直接运行（读取）、信任本会话（信任），还是全部自动批准（YOLO）。',
     parents: ['page.chat'], entry: 'toolbar', requires: [OPEN, EXPANDED],
+  },
+  'composer.project-aws-profile': {
+    kind: 'button', labelKey: 'uiLocations.description.composer_project_aws_profile', source: AWS_PROFILE,
+    en: "The AWS profile row at the bottom of the project picker, which the folder button under the message box opens. It names this chat's folder and the AWS profile that new chats in that folder use; open it to pick a profile registered in the AWS Control app or already bound to a folder in aws.project_profiles, type another profile name, or go back to the gateway's own AWS sign-in. Profiles that are only in the computer's AWS config are not listed: when neither source has one, the row is not drawn, so register one in AWS Control \u2192 Add accounts \u2192 Register selected. The docs page Configuration, section An AWS profile per project, explains it.",
+    zh: '项目选择器底部的 AWS profile 行，点消息框下方的文件夹按钮即可打开选择器。它显示这个聊天所在的文件夹，以及该文件夹里新聊天使用的 AWS profile；展开后可以选择在 AWS Control 应用中注册过的 profile，或在 aws.project_profiles 中已绑定到文件夹的 profile，也可以输入其他 profile 名，或改回网关自身 AWS 登录。只存在于电脑 AWS 配置里的 profile 不会列出：两个来源都没有 profile 时此行不显示，请到 AWS Control → 添加账户 → 注册所选中注册一个。文档 Configuration 页的 An AWS profile per project 一节有说明。',
+    parents: ['page.chat'], entry: 'toolbar', requires: [OPEN, EXPANDED, { kind: 'condition', id: 'project_aws_profile_shown' }],
   },
 }
 

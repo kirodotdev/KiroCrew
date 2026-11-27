@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,6 +31,7 @@ from turn_harness import (
     Do,
     Raise,
     ScriptedProvider,
+    SlotSpec,
     TurnScript,
     run_turn,
 )
@@ -70,7 +73,8 @@ from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard import session_health
 from kiro_crew.dashboard.chat_runner import _native_subagent_sync
 from kiro_crew.hook_runtime.hook_types import HooksConfig
-from kiro_crew.hooks import HookManager
+from kiro_crew.hook_runtime.script_hooks import ScriptHookResult
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, HookManager
 
 CAPTURE = Path(__file__).parent / "fixtures" / "claude_native_subagents" / "agent-task-0.94.0.jsonl"
 PARENT = "parent-0001"
@@ -723,8 +727,36 @@ def _hook_off(ctx) -> None:
     ctx.state.context_builder = None
 
 
-def _approval_turn(provider: type[ScriptedProvider]) -> TurnScript:
-    """A child is running, and then the parent asks to run a shell command."""
+def _shell_request(**marks: Any) -> AcpEvent:
+    """A shell permission request; *marks* are the transport's child marks, if any."""
+    return AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id="r1",
+        title="touch out.txt",
+        tool_name="shell",
+        tool_kind="execute",
+        is_shell=True,
+        tool_input=json.dumps({"command": "touch out.txt"}),
+        raw_tool_params={"command": "touch out.txt"},
+        raw_params_trusted=True,
+        shell_classified=True,
+        **marks,
+    )
+
+
+#: A kiro-cli child's request: its frame names the child's own session, on a
+#: transport proven to mark one (``child_calls_marked``).
+_CHILD_MARKS = {"sub_session_id": CHILD, "child_calls_marked": True}
+
+
+def _approval_turn(
+    provider: type[ScriptedProvider],
+    request: AcpEvent | None = None,
+    *,
+    setup: Any = None,
+    run_kwargs: Mapping[str, Any] | None = None,
+) -> TurnScript:
+    """A child is running, and then *request* arrives (by default the parent's own)."""
     running = AcpEvent(
         kind=EVENT_SUBAGENT_LIST,
         subagents=[
@@ -736,20 +768,13 @@ def _approval_turn(provider: type[ScriptedProvider]) -> TurnScript:
             }
         ],
     )
-    parent_request = AcpEvent(
-        kind=EVENT_PERMISSION_REQUEST,
-        request_id="r1",
-        title="touch out.txt",
-        tool_name="shell",
-        tool_kind="execute",
-        is_shell=True,
-        tool_input=json.dumps({"command": "touch out.txt"}),
-    )
     done = AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
     return TurnScript(
-        events=[Do(_hook_on), running, parent_request, Do(_hook_off), done],
+        events=[Do(_hook_on), running, request or _shell_request(), Do(_hook_off), done],
         answers={"r1": REJECTED},
         provider=provider,
+        setup=setup,
+        run_kwargs=dict(run_kwargs or {}),
     )
 
 
@@ -767,15 +792,149 @@ async def test_a_running_claude_child_leaves_the_parents_request_on_a_card() -> 
     assert record.audits(request_id="r1", outcome="auto_approved") == []
 
 
+def _asked_once(record: Any) -> None:
+    """The request reached a card and nothing approved it on its own."""
+    assert len(record.approval_cards) == 1
+    assert record.calls("approve_tool") == []
+    assert record.audits(request_id="r1", outcome="auto_approved") == []
+
+
 @pytest.mark.asyncio
-async def test_a_running_kiro_cli_child_still_auto_approves_under_the_hook() -> None:
-    """The crew rule itself is unchanged: on kiro-cli the same turn approves at once."""
-    record = await run_turn(_approval_turn(_KiroProvider))
+async def test_a_running_kiro_cli_child_still_auto_approves_its_own_request() -> None:
+    """The crew rule itself is unchanged for a child: on kiro-cli it approves at once."""
+    record = await run_turn(_approval_turn(_KiroProvider, _shell_request(**_CHILD_MARKS)))
     assert record.approval_cards == []
     assert [call.args for call in record.calls("approve_tool")] == [("r1",)]
     assert record.audits(request_id="r1", outcome="auto_approved")[0]["metadata"] == {
         "reason": "native_crew"
     }
+
+
+@pytest.mark.asyncio
+async def test_a_native_kas_childs_request_auto_approves_under_the_hook() -> None:
+    """A native KAS sub-agent shares the parent's session id; the transport marks it."""
+    request = _shell_request(native_child_call=True, child_calls_marked=True, tool_call_id="tc-1")
+    record = await run_turn(_approval_turn(_KiroProvider, request))
+    assert [call.args for call in record.calls("approve_tool")] == [("r1",)]
+
+
+@pytest.mark.asyncio
+async def test_a_kas_request_naming_no_tool_call_leaves_it_on_a_card() -> None:
+    """KAS marks a request with no tool-call id a child only because it cannot tell."""
+    request = _shell_request(native_child_call=True, child_calls_marked=True)
+    _asked_once(await run_turn(_approval_turn(_KiroProvider, request)))
+
+
+@pytest.mark.asyncio
+async def test_a_running_kiro_cli_child_leaves_the_parents_own_request_on_a_card() -> None:
+    """A running child does not make the parent's own request a crew request.
+
+    The rule exists so a child's call does not wait on a card while the parent
+    turn is blocked on it. The parent's request names the parent's own session,
+    so it takes the gate it has with no child running.
+    """
+    _asked_once(await run_turn(_approval_turn(_KiroProvider)))
+
+
+@pytest.mark.asyncio
+async def test_a_child_mark_from_an_unproven_transport_leaves_the_request_on_a_card() -> None:
+    """A transport not proven to tell a child's call apart cannot vouch for one."""
+    request = _shell_request(sub_session_id=CHILD, child_calls_marked=False)
+    _asked_once(await run_turn(_approval_turn(_KiroProvider, request)))
+
+
+class _BlocksTheShell:
+    """A PreToolUse hook that blocks every call (exit 2)."""
+
+    async def fire(self, event: str, *args: Any, **kwargs: Any) -> list[Any]:
+        if event != HOOK_EVENT_PRE_TOOL_USE:
+            return []
+        return [
+            ScriptHookResult(
+                hook_id="rule", hook_name="rule", event=event, exit_code=2, stderr="no"
+            )
+        ]
+
+
+def _blocking_hooks(ctx: Any) -> None:
+    ctx.state._hook_store = _BlocksTheShell()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marks", [{}, _CHILD_MARKS], ids=["parent", "child"])
+async def test_a_request_a_pretooluse_hook_blocks_stays_blocked_with_a_child_running(
+    marks: dict[str, Any],
+) -> None:
+    record = await run_turn(
+        _approval_turn(_KiroProvider, _shell_request(**marks), setup=_blocking_hooks)
+    )
+    assert record.calls("approve_tool") == []
+    assert record.audits(request_id="r1", outcome="auto_approved") == []
+
+
+def _trusted_crew_turn(setup: Any = None) -> TurnScript:
+    """A child's request under session trust, with no hook config loaded.
+
+    With no ``context_builder`` the hook gate fires no PreToolUse, so the request
+    reaches the crew rung on trust alone.
+    """
+    return TurnScript(
+        events=[
+            Do(_hook_off),
+            *_approval_turn(_KiroProvider, _shell_request(**_CHILD_MARKS)).events[1:],
+        ],
+        answers={"r1": REJECTED},
+        provider=_KiroProvider,
+        setup=setup,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_childs_request_under_trust_alone_reaches_the_crew_rung() -> None:
+    """The control for the test below: this request is approved BY the crew rung."""
+    record = await run_turn(_trusted_crew_turn(), slot=SlotSpec(trust=True))
+    assert [call.args for call in record.calls("approve_tool")] == [("r1",)]
+    assert record.audits(request_id="r1", outcome="auto_approved")[0]["metadata"] == {
+        "reason": "native_crew"
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_crew_rung_fires_pretooluse_and_honours_its_block() -> None:
+    """A BLOCKED from PreToolUse holds on the crew rung, which fires it when no gate did."""
+    record = await run_turn(_trusted_crew_turn(_blocking_hooks), slot=SlotSpec(trust=True))
+    assert record.calls("approve_tool") == []
+    assert record.audits(request_id="r1", outcome="auto_approved") == []
+
+
+@pytest.mark.asyncio
+async def test_a_dashboard_only_yolo_does_not_reach_a_channel_turns_crew_request() -> None:
+    """``gateway --approval yolo`` stays off a channel-started turn on this rung too.
+
+    The trust rung narrows it by the turn's channel origin
+    (``yolo_reaches(..., channel_origin=...)``); the crew rung reads the same.
+    """
+    from kiro_crew.dashboard import state as dashboard_state
+
+    cli = MagicMock(is_active=MagicMock(return_value=True), is_cli_launch=True)
+
+    def _no_hook_yolo(ctx: Any) -> None:
+        ctx.state.context_builder = None
+
+    with patch.object(dashboard_state, "safety_override", lambda: cli):
+        record = await run_turn(
+            TurnScript(
+                events=[
+                    Do(_no_hook_yolo),
+                    *_approval_turn(_KiroProvider, _shell_request(**_CHILD_MARKS)).events[1:],
+                ],
+                answers={"r1": REJECTED},
+                provider=_KiroProvider,
+                run_kwargs={"_directive_channel_origin": True},
+            ),
+            slot=SlotSpec(yolo=True),
+        )
+    _asked_once(record)
 
 
 # ── 6. A turn cut short ────────────────────────────────────────────────────────

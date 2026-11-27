@@ -89,6 +89,7 @@ class _ChatSlot:
         "_crew_log_pending_channel",
         "_reasoning_effort",
         "_effort_pick_gen",
+        "_effort_overlay_clear",
         "mode",
         "workspace",
         "memory_store",
@@ -119,6 +120,8 @@ class _ChatSlot:
         "_pending",
         "_pending_consumers",
         "_pending_release_deferred",
+        "_stream_epoch",
+        "_stream_handoffs",
         "_queue",
         "_queue_persisted_sig",
         "_queue_persist_inflight",
@@ -479,6 +482,7 @@ class _ChatSlot:
     served_model: str
     _engine_promoted_model: str
     _effort_pick_gen: int
+    _effort_overlay_clear: bool
     _reasoning_effort: str
     memory_store: str
     _memory_assignment_from_history: bool
@@ -610,6 +614,8 @@ class _ChatSlot:
     _pending: list[dict[str, str]]
     _pending_consumers: int
     _pending_release_deferred: bool
+    _stream_epoch: int
+    _stream_handoffs: dict[int, list[dict[str, str]]]
     _queue: list[dict[str, Any]]
     _queue_persisted_sig: str
     _queue_persist_inflight: bool

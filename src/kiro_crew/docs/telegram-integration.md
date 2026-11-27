@@ -120,7 +120,9 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
 - `/spawn <task>` (or `/bg`) — run a task in a background subagent.
   `/spawn list` shows what is running.
 - `/task` (or `/tasks`) `run <spec> | status | cancel` — drive the unattended task runner.
-- `/kirocrew dashboard [<N>h|<N>m]` — get a dashboard login link (DM only).
+- `/kirocrew dashboard [<N>h|<N>m]` — get a dashboard login link (DM only). The
+  link opens your own dashboard session, chat included, only when your ID is
+  `telegram.owner_user_id`; anyone else's link cannot chat in your sessions.
 - `/temporary` — this conversation reads and saves no memory: no memories or
   lessons are added to the prompt, and nothing is written to the transcript. A bare
   `/temporary` just marks the conversation; `/temporary <question>` marks it and
@@ -220,6 +222,13 @@ topics that have a conversation open on the dashboard: create the topic in
 Telegram, send one message there, and it appears. A job has one destination, so
 picking one empties its Slack **Channel ID**, and filling in a Channel ID turns
 the Telegram destination off.
+
+To point several jobs at one topic, check them on the **Schedule** page and pick
+**Actions** → **Set Telegram destination**, then the chat or topic. The menu row
+shows how many of the checked jobs it changes, and after you pick, a line says
+how many jobs now report to that chat or topic. A job with a Slack
+**Channel ID** keeps it; it is listed as not updated, with any job whose update
+failed, and those jobs stay checked.
 
 Proactive messages (a cron's report, an agent's `send_message`) are plain text by
 default, so `**bold**` arrives with its asterisks. Pass `format="markdown"` to

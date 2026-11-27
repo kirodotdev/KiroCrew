@@ -95,6 +95,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "find_by_source_path": ("function", "036457a8b626", "artifacts_scans"),
     "get": ("function", "5a684f593b69", "artifacts"),
     "index_by_artifact_id": ("function", "8cab7a4db01b", "artifacts_scans"),
+    "kind_of": ("function", "7ce130b2fae4", "artifacts_scans"),
     "list": ("function", "2ce7f1b1e967", "artifacts"),
     "list_comments": ("function", "f427f0240431", "artifacts_comments"),
     "list_versions": ("function", "2a1d3d0212c8", "artifacts_disk"),

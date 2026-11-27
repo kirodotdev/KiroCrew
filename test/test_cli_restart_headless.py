@@ -4,6 +4,7 @@ import argparse
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -93,6 +94,13 @@ def restart(monkeypatch, tmp_path, holder):
         cli_server.platform_compat, "find_listening_pids", lambda port: [UNALLOCATABLE_PID]
     )
     monkeypatch.setattr(cli_server, "_wait_for_pids_exit", lambda *a, **kw: [])
+    # These tests pin the stop-and-spawn path, which a gateway that cannot restart
+    # in place reaches; the in-place restart is pinned in test_cli_restart_in_place.py.
+    # ``_restart`` imports that module when it runs, so a stand-in that declines is
+    # what it finds, and this file needs no import of the module itself.
+    declines = types.ModuleType("kiro_crew.cli_restart_in_place")
+    declines.restart_in_place = lambda port, *, headless: False  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "kiro_crew.cli_restart_in_place", declines)
     # ``_refuse_if_lock_held`` is the real one: this home (``tmp_path``) has no
     # ``gateway.lock`` holder once the faked stop returns, as after a real stop.
     monkeypatch.setattr(cli_server, "_wait_gateway_ready", lambda *a: (cli_server._READY_OK, None))

@@ -44,6 +44,7 @@ import {
   REOPEN_LAST_PAGE_SETTING_ID,
   SLACK_TOOLS_SWITCH_KEY,
   settingEntryOffered,
+  SHOW_CURSOR_MOTION_SETTING_ID,
   TERMINAL_CTRL_COPY_PASTE_SETTING_ID,
   TOUCH_LAYOUT_SETTING_ID,
   type SettingsSearchGovernance,
@@ -87,6 +88,7 @@ const GOVERNED_IDS = new Set([
   REOPEN_LAST_PAGE_SETTING_ID,
   TERMINAL_CTRL_COPY_PASTE_SETTING_ID,
   TOUCH_LAYOUT_SETTING_ID,
+  SHOW_CURSOR_MOTION_SETTING_ID,
 ])
 
 /** Any OTHER entry, as the control: the predicate must gate one card, not the corpus. */
@@ -225,6 +227,14 @@ describe('settingEntryOffered', () => {
     expect(settingEntryOffered(card, { ...ON, remoteControlShown: false })).toBe(false)
     expect(settingEntryOffered(card, { ...ON, remoteControlShown: true })).toBe(true)
     expect(settingEntryOffered(otherEntry(), { ...ON, remoteControlShown: false })).toBe(true)
+  })
+
+  it('withholds Show cursor motion only once Computer Use is known not to draw it', () => {
+    const cursor = entryById(SHOW_CURSOR_MOTION_SETTING_ID)
+    expect(settingEntryOffered(cursor, ON)).toBe(true)
+    expect(settingEntryOffered(cursor, { ...ON, cursorMotionShown: true })).toBe(true)
+    expect(settingEntryOffered(cursor, { ...ON, cursorMotionShown: false })).toBe(false)
+    expect(settingEntryOffered(otherEntry(), { ...ON, cursorMotionShown: false })).toBe(true)
   })
 
   it('offers Display > Explore only while the Explore preview is on', () => {
@@ -706,5 +716,59 @@ describe('the Instances rows follow whether remote crews are on', () => {
 
   it('offers both while the answer is unknown', async () => {
     expect(await renderWithInstances(() => {})).toEqual({ enable: true, autoConnect: true })
+  })
+})
+
+describe('Show cursor motion follows what Settings > Computer Use draws', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // ComputerUsePanel draws the row only while the driver is supported, Computer Use
+  // is on and the gateway reports `cursor_motion_supported` (macOS). The search
+  // withholds it only on the two host facts, never on `enabled`. The search reads
+  // the panel's `['computer-use-config']` cache, and before that the gateway platform
+  // the prerequisite gate caches, so each case seeds those instead of serving a fetch.
+  const renderWithComputerUse = async (cached: unknown, gatewayPlatform?: string) => {
+    const computerUse = vi.spyOn(api, 'getComputerUseConfig')
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+    vi.spyOn(api, 'tipsStatus').mockResolvedValue({ enabled_config: true } as never)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    if (cached !== undefined) client.setQueryData(['computer-use-config'], cached)
+    if (gatewayPlatform !== undefined) client.setQueryData(['kiro-prerequisite'], { platform: gatewayPlatform })
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(Provider, { store: createTestStore() },
+        createElement(QueryClientProvider, { client }, createElement(MemoryRouter, null, children)))
+    const { result } = renderHook(() => useSettingsProvider(), { wrapper })
+    await waitFor(() => expect(client.getQueryState(['tipsStatus'])?.status).not.toBe('pending'))
+    // Cache only: opening a search never runs the gateway's permission probe.
+    expect(computerUse).not.toHaveBeenCalled()
+    return (result.current.search('cursor motion') as { id?: string }[])
+      .some(r => (r.id ?? '').endsWith(SHOW_CURSOR_MOTION_SETTING_ID))
+  }
+  const config = (over: Record<string, unknown>) =>
+    ({ supported: true, enabled: true, cursor_motion_supported: true, ...over })
+
+  it.each([
+    ['a macOS gateway with Computer Use on', config({}), 'macOS', true],
+    ['a gateway without the overlay', config({ cursor_motion_supported: false }), 'Windows', false],
+    ['the overlay supported but Computer Use off', config({ enabled: false }), 'macOS', true],
+    ['a gateway with no driver', config({ supported: false, cursor_motion_supported: false }), 'Linux', false],
+  ])('on %s', async (_label, cached, gatewayPlatform, offered) => {
+    expect(await renderWithComputerUse(cached, gatewayPlatform)).toBe(offered)
+  })
+
+  it('withholds it on a Windows gateway before Computer Use has been read', async () => {
+    expect(await renderWithComputerUse(undefined, 'Windows')).toBe(false)
+  })
+
+  it.each([['macOS'], [undefined]])('offers it while unread on a %s gateway', async gatewayPlatform => {
+    expect(await renderWithComputerUse(undefined, gatewayPlatform)).toBe(true)
+  })
+
+  // A known limit, not wanted behaviour: a Linux gateway never draws the row, but the
+  // platform alone cannot say so, so the entry stays offered until Computer Use is read.
+  it('still offers it while unread on a Linux gateway, as on main', async () => {
+    expect(await renderWithComputerUse(undefined, 'Linux')).toBe(true)
   })
 })

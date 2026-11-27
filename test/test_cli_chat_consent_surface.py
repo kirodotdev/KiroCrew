@@ -72,7 +72,9 @@ class TestChatPermissionRequestConsentSurface(_TestChatPermissionRequestHarness)
         assert event is not None
 
     @staticmethod
-    def _direct_permission_message(*, tool_call_id="tc-direct", inline_path=None):
+    def _direct_permission_message(
+        *, tool_call_id="tc-direct", inline_path=None, inline_content="inline"
+    ):
         from kiro_crew.acp.types import JsonRpcMessage
 
         tool_call: dict[str, object] = {
@@ -81,7 +83,7 @@ class TestChatPermissionRequestConsentSurface(_TestChatPermissionRequestHarness)
             "kind": "edit",
         }
         if inline_path is not None:
-            tool_call["input"] = {"path": inline_path, "content": "inline"}
+            tool_call["input"] = {"path": inline_path, "content": inline_content}
         return JsonRpcMessage(
             id="req-direct",
             method="session/request_permission",
@@ -603,25 +605,54 @@ class TestChatPermissionRequestConsentSurface(_TestChatPermissionRequestHarness)
         assert [s["outcome"] for s in sels] == ["allowed"]
 
     @pytest.mark.asyncio
-    async def test_direct_client_repeat_keeps_cached_params_authoritative(
+    async def test_direct_client_contradicting_repeat_is_refused_not_trusted(
         self, monkeypatch, tmp_path
     ):
-        """A repeated request cannot replace trusted args with inline prose."""
+        """A repeated request whose inline args contradict the cached ones earns no
+        trust from either side: it is refused before any consent surface sees it."""
+        from unittest.mock import AsyncMock, MagicMock
+
         from kiro_crew.acp.client import AcpClient
         from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         self._direct_tool_call(client, path="~/.ssh/id_rsa")
-        first = client._build_permission_event(self._direct_permission_message())
         repeat = client._build_permission_event(
             self._direct_permission_message(inline_path="notes.md")
         )
 
-        assert first.raw_tool_params == repeat.raw_tool_params
-        assert repeat.raw_tool_params is not None
-        assert repeat.raw_tool_params["path"] == "~/.ssh/id_rsa"
+        assert repeat.tool_call_id_reused is True
+        assert repeat.raw_params_trusted is False
+        assert repeat.shell_classified is False
+        assert "id_rsa" not in (repeat.tool_input or "")
+        client.reject_tool = AsyncMock()
+        client._audit_spec_restriction = MagicMock()
+        assert await client._refuse_reused_call_id(repeat) is True
+        client.reject_tool.assert_awaited_once_with("req-direct")
+
+    @pytest.mark.asyncio
+    async def test_direct_client_repeat_with_the_cached_args_keeps_its_provenance(
+        self, monkeypatch, tmp_path
+    ):
+        """A repeat that states the cached args is the same call: trusted, not refused."""
+        from unittest.mock import AsyncMock
+
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        self._direct_tool_call(client, path="~/.ssh/id_rsa")
+        repeat = client._build_permission_event(
+            self._direct_permission_message(inline_path="~/.ssh/id_rsa", inline_content="updated")
+        )
+
+        assert repeat.tool_call_id_reused is False
         assert repeat.raw_params_trusted is True
-        assert repeat.shell_classified is True
+        assert repeat.raw_tool_params["path"] == "~/.ssh/id_rsa"
+        client.reject_tool = AsyncMock()
+        assert await client._refuse_reused_call_id(repeat) is False
+        client.reject_tool.assert_not_awaited()
+        # Still judged as the cached call it is: the sensitive target is refused.
         provider, _, reads = await self._drive(monkeypatch, event=repeat, answer="a")
         assert provider.calls == [("reject", "req-direct", False)]
         assert reads["n"] == 0

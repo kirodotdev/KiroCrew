@@ -1,6 +1,10 @@
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
+import { ExternalLink } from 'lucide-react'
 
 import { DiscordIcon } from '../../components/DiscordIcon'
+import ErrorNotice from '../../components/ErrorNotice'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { BotChannelPanel, type BotChannelSpec } from './BotChannelPanel'
@@ -98,13 +102,81 @@ function discordSpec(): BotChannelSpec {
       thinkingLabel: i18nT('pages.settings.discordPanel.thinking_label'),
       thinkingDescription: i18nT('pages.settings.discordPanel.thinking_description'),
       thinkingConfigKey: 'discord.show_thinking',
+      footerLabel: i18nT('pages.settings.discordPanel.footer_label'),
+      footerDescription: i18nT('pages.settings.discordPanel.footer_description'),
+      footerConfigKey: 'discord.show_timing_footer',
     },
+    guideExtra: <InviteLinks />,
     getConfig: api.getDiscordConfig,
     saveConfig: api.saveDiscordConfig,
   }
 }
 
-/** Discord channel-integration settings. */
+/** What the backend's install-URL builder emits; anything else is not rendered as a link. */
+const AUTHORIZE_PREFIX = 'https://discord.com/oauth2/authorize?'
+
+/**
+ * The connected bot's invite links, built by the backend from the application id
+ * the live connection reported (`discord/install_url.py`). Reads the panel's own
+ * query, so it adds no request. Until the bot connects there is no id to build
+ * them from, and the line says so.
+ */
+function InviteLinks() {
+  const { data } = useQuery({ queryKey: ['discord-config'], queryFn: api.getDiscordConfig, retry: false, refetchOnWindowFocus: false })
+  const threads = data?.install_url ?? ''
+  const dmOnly = data?.install_url_dm_only ?? ''
+  const ready = threads.startsWith(AUTHORIZE_PREFIX) && dmOnly.startsWith(AUTHORIZE_PREFIX)
+  return (
+    <div className="border-t border-border mt-3 pt-3" data-testid="discord-invite-links">
+      <p className="text-[13px] font-medium text-text-strong m-0">{i18nT('pages.settings.discordPanel.invite_title')}</p>
+      {ready ? (
+        <>
+          <p className="text-[12px] text-muted mt-1 mb-0">{i18nT('pages.settings.discordPanel.invite_body')}</p>
+          <div className="flex items-center gap-4 mt-2 flex-wrap">
+            <a href={dmOnly} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline">
+              {i18nT('pages.settings.discordPanel.invite_dm_only')} <ExternalLink size={13} />
+            </a>
+            <a href={threads} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline">
+              {i18nT('pages.settings.discordPanel.invite_threads')} <ExternalLink size={13} />
+            </a>
+          </div>
+        </>
+      ) : (
+        <p className="text-[12px] text-muted mt-1 mb-0">{i18nT('pages.settings.discordPanel.invite_pending')}</p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Discord channel-integration settings.
+ *
+ * A save also reconnects the running bot with what it stored. When the bot
+ * could not take part of it (a token Discord rejected, server-thread intents it
+ * refused), the save still succeeded, so the reason stays here as a `partial`
+ * notice until the next save or a dismiss, rather than in the short-lived
+ * "Saved" line.
+ */
 export function DiscordPanel() {
-  return <BotChannelPanel spec={discordSpec()} />
+  const [reconnectError, setReconnectError] = useState('')
+  const spec = discordSpec()
+  const saveConfig: BotChannelSpec['saveConfig'] = async body => {
+    const res = await api.saveDiscordConfig(body)
+    setReconnectError(res.reconnect_error || '')
+    return res
+  }
+  return (
+    <>
+      <BotChannelPanel spec={{ ...spec, saveConfig }} />
+      {/* No hand-off: the panel's fields above can hold edits made after this save. */}
+      <ErrorNotice
+        message={reconnectError}
+        impact="partial"
+        onDismiss={() => setReconnectError('')}
+        className="max-w-[720px] mb-4"
+      />
+    </>
+  )
 }

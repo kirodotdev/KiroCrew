@@ -3,7 +3,7 @@
 // the browser session, so the return lands on the same rows. The api module is
 // the only outside seam; every call resolves a fixed two-server answer.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import type { McpServer } from '../types'
@@ -78,6 +78,28 @@ describe('McpTab list view across a leave and return', () => {
     renderTab()
     expect(await screen.findByText('alpha_search')).toBeInTheDocument()
     expect(screen.queryByText('beta_search')).not.toBeInTheDocument()
+  })
+
+  it('opens a tool list as a full-width row under its server row (#42050)', async () => {
+    renderTab()
+    const serverRow = (await screen.findByText('alpha', { selector: 'code' })).closest('tr')!
+    const toggle = within(serverRow).getByRole('button', { name: '1 tool' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    const tool = await screen.findByRole('button', { name: 'alpha_search' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    const panel = document.getElementById(toggle.getAttribute('aria-controls') ?? '')!
+    expect(panel).toContainElement(tool)
+    // Not inside the server row's Tools cell: its own row, right under it, one cell wide as the table.
+    expect(serverRow).not.toContainElement(tool)
+    const panelRow = panel.closest('tr')!
+    expect(panelRow.previousElementSibling).toBe(serverRow)
+    expect(panel.closest('td')).toHaveAttribute('colspan', '6')
+    expect(panel).toHaveAttribute('role', 'group')
+    expect(panel).toHaveAccessibleName('alpha 1 tool')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'alpha_search' })).toBeNull())
   })
 
   it('ignores a saved view it cannot read', async () => {

@@ -156,7 +156,7 @@ describe('inactive tab chip close buttons are revealed on keyboard focus', () =>
   // decoration, not a control a keyboard user has to reach.
   it.each([
     ['pages/chat/SidePanelTabChip.tsx', 'group-hover:opacity-70', 'group-focus-within:opacity-70'],
-    ['pages/ArtifactDetailPageHeader.tsx', 'group-hover:opacity-100', 'group-focus-within:opacity-100'],
+    ['components/ArtifactTagChips.tsx', 'group-hover:opacity-100', 'group-focus-within:opacity-100'],
   ])('%s', (file, hoverReveal, focusReveal) => {
     const source = readFileSync(join(SRC, file), 'utf8')
     const runs = source.split('\n').filter(line =>

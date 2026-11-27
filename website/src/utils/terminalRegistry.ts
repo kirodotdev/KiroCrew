@@ -292,8 +292,39 @@ interface Conn {
    * clears the flag); the online/visibility revive listeners leave it alone.
    */
   displaced: boolean
+  /** Set by `dropTerminalDataForThisKey` until the key event being dispatched is handled. */
+  dropData?: boolean
+  /** Typed before the socket opened (see pasteWhenOpen); pasted on open. */
+  pendingPaste?: string
 }
 const conns = new Map<string, Conn>()
+
+/**
+ * Paste `text` into the session's shell as soon as its socket opens, or now if
+ * it is open. On open it goes ahead of anything typed afterwards, so keys typed
+ * into a stand-in before the terminal existed keep their order.
+ */
+export function pasteWhenOpen(sessionId: string, rawText: string): void {
+  const c = conns.get(sessionId)
+  if (!c) return
+  // It can land before the shell is ready, where the paste is not bracketed,
+  // so it must not submit a line (the typing tier's rule above).
+  const text = rawText.replace(/[\r\n]/g, '')
+  if (!text) return
+  if (c.ws?.readyState === WebSocket.OPEN) { c.term.paste(text); return }
+  c.pendingPaste = (c.pendingPaste ?? '') + text
+}
+
+/**
+ * Drop what xterm sends to the shell while it handles the key event being dispatched now; the
+ * flag clears when this task's microtasks run, before any later event or timer.
+ */
+export function dropTerminalDataForThisKey(sessionId: string): void {
+  const c = conns.get(sessionId)
+  if (!c) return
+  c.dropData = true
+  queueMicrotask(() => { c.dropData = false })
+}
 
 /**
  * The session's live socket for TYPING, or null if it has none.
@@ -583,6 +614,10 @@ function connect(sessionId: string, c: Conn) {
       c.fit.fit()
       ws.send(JSON.stringify({ type: 'resize', cols: c.term.cols, rows: c.term.rows }))
     }
+    // Before any key typed from now on: xterm sends those straight to this socket.
+    const pending = c.pendingPaste
+    c.pendingPaste = undefined
+    if (pending) c.term.paste(pending)
   }
 
   ws.onmessage = (ev) => {
@@ -713,6 +748,7 @@ export function ensureTerminalConnection(
   // Wire terminal I/O once (the term is cached for the session's lifetime;
   // its listeners are cleaned up by term.dispose() in destroyTerm).
   term.onData((data) => {
+    if (c.dropData) return
     if (c.ws?.readyState === WebSocket.OPEN) {
       c.ws.send(new TextEncoder().encode(data))
       return

@@ -21,6 +21,7 @@ from typing import Any
 from kiro_crew.apps.app_hosts import HOST_RE as _HOST_RE
 from kiro_crew.apps.app_hosts import host_list_errors, normalize_host
 from kiro_crew.apps.manifest_memory_providers import MemoryProvidersConfig
+from kiro_crew.apps.manifest_session_create import SessionCreateItemsConfig
 
 #: Hard cap on session controls per app. A control here renders inside the
 #: composer, on the path of every turn — an app must not be able to crowd the
@@ -653,9 +654,6 @@ class PanelTabConfig:
 #: provider, and a link matches the FIRST provider whose hosts list it, so a second
 #: provider in the same app would only ever shadow or be shadowed by the first.
 MAX_LINK_PREVIEWS_PER_APP = 1
-#: Host patterns per provider. Bounded because the detector tests every hovered link
-#: against every pattern of every enabled app.
-_MAX_LINK_PREVIEW_HOSTS = 64
 #: Plain-text patterns per provider, and the longest pattern source. Every pattern
 #: of every enabled app scans every rendered chat message, so both are small. The
 #: dashboard refuses a pattern whose backtracking it cannot bound before it ever
@@ -766,7 +764,7 @@ class LinkPreviewConfig:
             errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
         if not self.entry:
             errors.append(f"{where}: missing entry")
-        errors.extend(host_list_errors(where, self.hosts, self.bad_hosts, _MAX_LINK_PREVIEW_HOSTS))
+        errors.extend(host_list_errors(where, self.hosts, self.bad_hosts, None))
         if self.bad_full_url:
             errors.append(f"{where}: fullUrl must be true or false")
         if self.bad_text_patterns:
@@ -966,7 +964,9 @@ class LinkOpenConfig:
     frame (``apps/app_frame.py``, registered by ``apps/link_open_frame.py``) in a
     host-drawn dialog, which imports ``entry`` and calls the module's ``activate(ctx)``; the returned provider's ``open`` receives
     that one URL. Every other click, and every link nobody claims, behaves as it
-    did.
+    did. An entry with ``page`` instead of ``entry`` opens no frame: the host routes
+    to the app's own dashboard page with the URL in the ``page.param`` query
+    parameter.
 
     Declarative for the reason ``linkPreviews`` is: core reads ``hosts`` without
     importing app code, so a disabled or broken app costs nothing on a click.
@@ -975,6 +975,11 @@ class LinkOpenConfig:
     id: str = ""  # stable id, unique within the app
     # ESM module, relative to the app's ``ui`` directory (same base as ``ui.entry``).
     entry: str = ""
+    # ``page.param``: the query parameter of the app's page that carries the URL.
+    # Exactly one of ``entry`` and ``page``.
+    page_param: str = ""
+    #: ``page`` present but not ``{"param": <string>}``. Not serialized.
+    bad_page: bool = False
     # Exact hostnames, or a leading dot for "this domain and every subdomain".
     # https links only. Same rules as ``linkPreviews.hosts`` (``app_hosts``).
     hosts: list[str] = field(default_factory=list)
@@ -992,6 +997,8 @@ class LinkOpenConfig:
             d["id"] = self.id
         if self.entry:
             d["entry"] = self.entry
+        if self.page_param:
+            d["page"] = {"param": self.page_param}
         if self.hosts:
             d["hosts"] = list(self.hosts)
         if self.fullUrl:
@@ -1001,9 +1008,14 @@ class LinkOpenConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LinkOpenConfig:
         raw_hosts = data.get("hosts", [])
+        page = data.get("page")
+        param = page.get("param") if isinstance(page, dict) and set(page) == {"param"} else None
+        page_ok = isinstance(param, str)
         return cls(
             id=str(data.get("id", "")),
             entry=str(data.get("entry", "")),
+            page_param=param if isinstance(param, str) else "",
+            bad_page="page" in data and not page_ok,
             # Normalized, as ``LinkPreviewConfig`` does, so what is matched, signed and
             # granted is one form.
             hosts=(
@@ -1023,7 +1035,13 @@ class LinkOpenConfig:
             errors.append("contributes.linkOpen: entry missing id")
         elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
             errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
-        if not self.entry:
+        if self.bad_page:
+            errors.append(f'{where}: page must be {{"param": <name>}}')
+        elif self.page_param and not _PANEL_TAB_ID_RE.fullmatch(self.page_param):
+            errors.append(f"{where}: page.param must be a storage-safe slug ({self.page_param!r})")
+        if self.entry and self.page_param:
+            errors.append(f"{where}: declare entry or page, not both")
+        elif not self.entry and not self.page_param and not self.bad_page:
             errors.append(f"{where}: missing entry")
         # The rule every host-claiming point shares (``app_hosts``).
         errors.extend(host_list_errors(where, self.hosts, self.bad_hosts, _MAX_LINK_OPEN_HOSTS))
@@ -1558,6 +1576,21 @@ class Contributes:
     memoryProviders: MemoryProvidersConfig = field(  # noqa: N815
         default_factory=MemoryProvidersConfig
     )
+    #: Rows in the Sessions New menu (``manifest_session_create``); the endpoint's
+    #: namespace is checked in ``AppManifest.validate``, which knows the app's name.
+    sessionCreateItems: SessionCreateItemsConfig = field(  # noqa: N815
+        default_factory=SessionCreateItemsConfig
+    )
+    #: MCP servers this app offers to a Bot's own chat (``kiro_crew.bot_chat_app_tools``):
+    #: each ``{"agent", "server"}`` names a server one of the app's own agents declares.
+    #: Nothing mounts from this alone: the owner approves the ``tools`` Bot scope and
+    #: ticks the Bot (``apps.bot_grants``).
+    #: shortcut: the entry is read from that agent's rendered spec, so the app keeps an
+    #: agent that declares it; move to a top-level declaration that no ordinary session
+    #: mounts once an app needs a server with no agent of its own.
+    botChatServers: list[dict[str, str]] = field(default_factory=list)  # noqa: N815
+    #: ``botChatServers`` present but not a list of ``{agent, server}`` strings. Not serialized.
+    bad_bot_chat_servers: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -1595,6 +1628,10 @@ class Contributes:
             d["linkOpen"] = kept_opens
         if self.memoryProviders.providers:
             d["memoryProviders"] = self.memoryProviders.to_list()
+        if self.sessionCreateItems.items:
+            d["sessionCreateItems"] = self.sessionCreateItems.to_list()
+        if self.botChatServers:
+            d["botChatServers"] = [dict(s) for s in self.botChatServers]
         return d
 
     @classmethod
@@ -1636,7 +1673,20 @@ class Contributes:
         composer_entries = composer_raw if isinstance(composer_raw, list) else []
         opens_raw = data.get("linkOpen", [])
         open_entries = opens_raw if isinstance(opens_raw, list) else []
+        chat_raw = data.get("botChatServers", [])
+        chat_servers = [
+            {"agent": s["agent"], "server": s["server"]}
+            for s in (chat_raw if isinstance(chat_raw, list) else [])
+            if isinstance(s, dict)
+            and isinstance(s.get("agent"), str)
+            and isinstance(s.get("server"), str)
+            and s["agent"]
+            and s["server"]
+        ]
         return cls(
+            botChatServers=chat_servers,
+            bad_bot_chat_servers="botChatServers" in data
+            and (not isinstance(chat_raw, list) or len(chat_servers) != len(chat_raw)),
             messageActions=[
                 MessageActionConfig.from_dict(a) for a in action_entries if isinstance(a, dict)
             ],
@@ -1675,6 +1725,7 @@ class Contributes:
             bad_file_menu_items="fileMenuItems" in data and not isinstance(items_raw, list),
             dropped_file_menu_items=sum(1 for i in item_entries if not isinstance(i, dict)),
             memoryProviders=MemoryProvidersConfig.from_value(data.get("memoryProviders")),
+            sessionCreateItems=SessionCreateItemsConfig.from_value(data.get("sessionCreateItems")),
         )
 
     def validate(self) -> list[str]:
@@ -1869,6 +1920,12 @@ class Contributes:
         for link_open in self.linkOpen:
             errors.extend(link_open.validate())
         errors.extend(self._validate_selection_actions())
+        if self.bad_bot_chat_servers:
+            errors.append(
+                "contributes.botChatServers must be an array of {agent, server} "
+                "objects with non-empty string values"
+            )
+        errors.extend(self.sessionCreateItems.errors)
         return errors
 
     def _validate_selection_actions(self) -> list[str]:

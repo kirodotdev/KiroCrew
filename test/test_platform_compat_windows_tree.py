@@ -927,6 +927,7 @@ class TestCtypesStructsAreModuleScoped:
         "_windows_memory_counters",
         "_macos_current_rss_bytes",
         "proc_rss_bytes_for_pid",
+        "_memory_status",
         "system_memory",
         "apply_job_limits",
         "resume_process_main_thread",

@@ -268,7 +268,9 @@ async def api_browser_harness_install(request: web.Request) -> web.Response:
         # No start may launch Kiro's Chromium from now on; the job stops a running
         # copy before it installs.
         replacing.replacing_chromium = True
-    _start_install_job(state, components, refresh=refresh, replacing=replacing)
+    _start_install_job(
+        state, components, refresh=refresh, replacing=replacing, supervisor=_supervisor(request)
+    )
     return web.json_response(await asyncio.to_thread(_status_payload, request), status=202)
 
 
@@ -323,6 +325,7 @@ def _start_install_job(
     *,
     refresh: bool = False,
     replacing: HarnessSupervisor | None = None,
+    supervisor: HarnessSupervisor | None = None,
 ) -> None:
     """Reserve the install job at once and run it as a task.
 
@@ -331,12 +334,30 @@ def _start_install_job(
     (``chromium._swap_in``), and opens the supervisor's start gate again when it
     ends. The stop is inside the job, so the swap can never begin while the browser
     is still going down, and a second Redownload meanwhile still gets the usual 409.
+
+    A job that installs the harness holds *supervisor*'s (default: this home's)
+    browser starts while it rebuilds the venv in place: from the ``creating_venv``
+    stage until the first stage past the harness step. Before that install clears the
+    venv, the job holds starts and ends the browser session, whose daemon and worker
+    run from it (``HarnessSupervisor.stop_for_harness_rebuild``). A repair stops
+    nothing; an install that leaves the venv as it is, and the Chromium download
+    after it, hold and stop nothing.
     """
     loop = asyncio.get_running_loop()
     job = InstallJob.start(components)
     state._browser_harness_install_job = job
+    holding: HarnessSupervisor | None = None
+    if harness_install.COMPONENT_HARNESS in components:
+        holding = supervisor if supervisor is not None else get_supervisor(config_dir())
 
     def _on_stage(stage: str, _detail: str) -> None:
+        # Set here, on the install's thread and before the step runs, so the hold is
+        # in place before ``venv --clear`` empties the directory.
+        if holding is not None:
+            if stage == harness_install.STAGE_CREATING_VENV:
+                holding.installing_harness = True
+            elif stage != harness_install.STAGE_INSTALLING_HARNESS:
+                holding.installing_harness = False
         loop.call_soon_threadsafe(job.apply_stage, job.id, stage)
 
     async def _run() -> None:
@@ -344,7 +365,11 @@ def _start_install_job(
             if replacing is not None:
                 await replacing.stop_for_chromium_replace()
             await harness_install.install(
-                config_dir(), _on_stage, components=components, refresh=refresh
+                config_dir(),
+                _on_stage,
+                components=components,
+                refresh=refresh,
+                before_clear=holding.stop_for_harness_rebuild if holding is not None else None,
             )
         except asyncio.CancelledError:
             job.finish(job.id, STATUS_INTERRUPTED, "interrupted: the gateway stopped this install")
@@ -358,6 +383,8 @@ def _start_install_job(
         finally:
             if replacing is not None:
                 replacing.replacing_chromium = False
+            if holding is not None:
+                holding.installing_harness = False
         job.finish(job.id, STATUS_SUCCEEDED)
 
     state._browser_harness_install_task = asyncio.create_task(_run())

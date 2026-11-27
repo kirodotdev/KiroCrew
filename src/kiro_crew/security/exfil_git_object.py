@@ -2,10 +2,10 @@
 
 A commit permalink can carry a SHA-1 git object name in its query, and that name is a
 40+ character run of the base64 class in ``_EXFIL_PATTERNS``. A search query that
-joins plain words or ids with ``+`` (a form-encoded space) is such a run too. This
-module holds those two shapes and the blob test that skips them. The URL classifier
-and the OAuth credential diagnosis in :mod:`kiro_crew.security.exfil` call the test;
-this module never imports that facade.
+joins plain words or ids with ``+`` (a form-encoded space) is such a run too, and so
+is a permalink's ``<package>/<branch>``. This module holds those three shapes and the
+blob test that skips them. The URL classifier and the OAuth credential diagnosis in
+:mod:`kiro_crew.security.exfil` call the test; this module never imports that facade.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 
 from .exfil_url_rules import _EXFIL_PATTERNS
+from .redaction_patterns import _CDK_WORDS
 
 # A SHA-1 git object name -- 40 lowercase hex digits -- is a 40+ char run of the
 # base64 class in ``_EXFIL_PATTERNS``, so a commit permalink that carries one in
@@ -50,6 +51,28 @@ def _is_plus_joined_words(run: str) -> bool:
     )
 
 
+# A commit permalink's ``<package>/<branch>`` (``?changes=Type:<package>/mainline:<sha>``)
+# is its own run once the colons end it, and a package name is PascalCase words
+# (``MyServicePipeline``), the CDK name shape the redaction rules already read. Residual,
+# stated: words of either shape joined by ``/`` pass this heuristic in any query, as
+# ``+``-joined words do; a name holding an acronym, or a digit right after a capital
+# (``AWSPipelines``, ``MyAWSStack``, ``S3Sync``), still fires.
+_PASCAL_WORDS_RE = re.compile(_CDK_WORDS)
+
+
+def _is_slash_joined_words(run: str) -> bool:
+    """Whether *run* is two or more words or PascalCase names joined by ``/``, none a blob."""
+    pieces = run.split(sep="/")  # URL text, not a path
+    if len(pieces) < 2:
+        return False
+    return all(
+        piece
+        and (_QUERY_WORD_RE.fullmatch(piece) or _PASCAL_WORDS_RE.fullmatch(piece))
+        and not _EXFIL_PATTERNS.search(piece)
+        for piece in pieces
+    )
+
+
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
 
 
@@ -68,15 +91,16 @@ def _word_list_run(value: str, match: re.Match[str]) -> str:
 
 def _exfil_blob_hit(value: str) -> bool:
     """True when ``_EXFIL_PATTERNS`` matches ``value`` on anything but a bare git
-    object name or a ``+``-joined list of plain words. Every other alternative (AWS
-    key id, SSH/PEM header, Slack token, heavy percent encoding) is reported
-    unchanged."""
+    object name, a ``+``-joined list of plain words or ``/``-joined names. Every other
+    alternative (AWS key id, SSH/PEM header, Slack token, heavy percent encoding) is
+    reported unchanged."""
     for match in _EXFIL_PATTERNS.finditer(value):
         run = match.group(0)
         if (
             _GIT_OBJECT_NAME_RE.fullmatch(run)
             or _is_plus_joined_words(run)
             or _is_plus_joined_words(_word_list_run(value, match))
+            or _is_slash_joined_words(run)
         ):
             continue
         return True

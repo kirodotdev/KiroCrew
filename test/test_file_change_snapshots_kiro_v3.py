@@ -16,15 +16,18 @@ from typing import Any
 import pytest
 from file_change_snapshots_helpers import short_tmp_dir_fixture  # noqa: F401
 from file_change_snapshots_helpers import _LANDS, _persisted_meta, _snapshot_turn
+from turn_harness import APPROVED, SlotSpec, TurnScript, run_turn
 
 from kiro_crew.acp._dispatch_parts.session_update_parser import parse_session_update
 from kiro_crew.acp.types import (
+    EVENT_PERMISSION_REQUEST,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
     STOP_REASON_END_TURN,
     AcpEvent,
 )
 from kiro_crew.dashboard.chat_runner import _snapshot_write_target
+from kiro_crew.tool_row_prefix import tool_row_kind
 
 BEFORE = "one\ntwo\nthree\n"
 REPLACED = "one\nTWO\nthree\n"
@@ -266,3 +269,147 @@ class TestCommandlessWriteTurn:
         # The first write's before is kept: the card shows the whole turn's change.
         assert entry["before"] == ""
         assert entry["after"] == AFTER
+
+
+def _read_frames(path: Path) -> list[dict[str, Any]]:
+    args = {"path": str(path)}
+    return [
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-read",
+            "title": "Read File",
+            "kind": "read",
+            "status": "pending",
+            "rawInput": args,
+        },
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call-read",
+            "status": "completed",
+            "rawInput": args,
+        },
+    ]
+
+
+def _legacy_create_frames(path: Path) -> list[dict[str, Any]]:
+    args = {"command": "create", "path": str(path), "file_text": BEFORE}
+    return [
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-legacy",
+            "title": "Write File",
+            "kind": "edit",
+            "status": "pending",
+            "rawInput": args,
+        },
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call-legacy",
+            "status": "completed",
+            "rawInput": args,
+        },
+    ]
+
+
+def _tool_row_stamps(record: Any) -> dict[str, Any]:
+    """Each persisted tool row's ``file_change_recorded`` stamp, by tool_call_id."""
+    stamps: dict[str, Any] = {}
+    for row in record.rows("tool"):
+        meta = row.get("meta") or {}
+        if meta.get("tool_call_id"):
+            stamps.setdefault(meta["tool_call_id"], meta.get("file_change_recorded"))
+    return stamps
+
+
+class TestRecordedWriteStamp:
+    """A write the changed-files card records stamps its tool row, so the
+    dashboard may fold that row's diff card (rfc-fold-recorded-edit-cards.md)."""
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_v3_write_stamps_its_row_and_a_read_does_not(
+        self, short_tmp_dir: Path
+    ):
+        f = short_tmp_dir / "a.txt"
+        f.write_text(AFTER)
+        record = await _snapshot_turn(
+            *_events(_read_frames(f)),
+            *_events(_create_frames(f)),
+            *_events(_replace_frames(f)),
+            *_events(_append_frames(f)),
+            *_LANDS,
+        )
+        stamps = _tool_row_stamps(record)
+        assert stamps.get("call-write") is True
+        assert stamps.get("call-replace") is True
+        assert stamps.get("call-append") is True
+        assert "call-read" in stamps
+        assert stamps["call-read"] is None
+        # The open tab learns the stamp from a patch keyed on the call row.
+        [replace_row] = [
+            row
+            for row in record.rows("tool")
+            if (row.get("meta") or {}).get("tool_call_id") == "call-replace"
+        ]
+        patched = [
+            frame.payload.get("ts")
+            for frame in record.frames("chat_message_update")
+            if (frame.payload.get("meta") or {}).get("file_change_recorded") is True
+        ]
+        assert replace_row["ts"] in patched
+
+    @pytest.mark.asyncio
+    async def test_a_write_snapshotted_on_its_call_stamps_the_row_it_appends(
+        self, short_tmp_dir: Path
+    ):
+        f = short_tmp_dir / "b.txt"
+        f.write_text(BEFORE)
+        record = await _snapshot_turn(*_events(_legacy_create_frames(f)), *_LANDS)
+        assert _tool_row_stamps(record).get("call-legacy") is True
+
+    @pytest.mark.asyncio
+    async def test_a_refused_sensitive_write_leaves_its_row_unstamped(self):
+        path = Path.home() / ".aws" / "credentials"
+        frames = _create_frames(path)
+        record = await _snapshot_turn(*_events(frames), *_LANDS)
+        stamps = _tool_row_stamps(record)
+        assert "call-write" in stamps
+        assert stamps["call-write"] is None
+
+    @pytest.mark.asyncio
+    async def test_an_approval_between_call_and_update_stamps_the_call_row(
+        self, short_tmp_dir: Path
+    ):
+        # The approval appends an Approved: row for the same call. Only the
+        # Tool: row draws the diff card, so the stamp must land there, and the
+        # open tab must be told about that row, not the newest one.
+        f = short_tmp_dir / "a.txt"
+        f.write_text(AFTER)
+        first, *rest = _events(_replace_frames(f))
+        prompt = AcpEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            request_id="req-1",
+            tool_call_id="call-replace",
+            title="Replace in File",
+            tool_kind="edit",
+        )
+        record = await run_turn(
+            TurnScript(events=[first, prompt, *rest, *_LANDS], answers={"req-1": APPROVED}),
+            slot=SlotSpec(rows=[("user", "earlier"), ("assistant", "earlier answer")]),
+        )
+        rows = [
+            row
+            for row in record.rows("tool")
+            if (row.get("meta") or {}).get("tool_call_id") == "call-replace"
+        ]
+        calls = [row for row in rows if tool_row_kind(row.get("content", "")) == "call"]
+        others = [row for row in rows if tool_row_kind(row.get("content", "")) != "call"]
+        assert calls, rows
+        assert others, "the approval must leave its own row for this test to mean anything"
+        assert [row["meta"].get("file_change_recorded") for row in calls] == [True]
+        assert all(row["meta"].get("file_change_recorded") is None for row in others)
+        stamped_ts = {
+            frame.payload.get("ts")
+            for frame in record.frames("chat_message_update")
+            if (frame.payload.get("meta") or {}).get("file_change_recorded") is True
+        }
+        assert stamped_ts == {calls[0]["ts"]}

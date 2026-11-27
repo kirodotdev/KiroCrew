@@ -104,9 +104,10 @@ This is a known limitation — Hindi cannot address an unknown-gender user witho
 | placeholder parity with English | `catalogParity.test.ts` |
 | correct CLDR plural categories (2) | `catalogParity.test.ts` |
 | sentence-final Latin-period debt does not exceed 30 | `hiStyle.test.ts` |
-| formal-address debt does not exceed 113 | `hiStyle.test.ts` |
+| formal-address debt does not exceed 73 | `hiStyle.test.ts` |
 | changed values address the reader as तुम, never आप | `hiStyle.test.ts` (`I18N_BASE_REF`) |
 | the Kiro CLI setup screen (`components.kiroPrerequisiteGate`) addresses the reader as तुम throughout | `hiStyle.test.ts` |
+| the Kiro sign-in screens and the first-run chapters (`components.kasLogin`, `onboardingChapterShell`, `meetCrewmatesFlow`, `onboardingFlow`, `agentImportFlow`) address the reader as तुम throughout | `hiStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 | the generic noun crew is `क्रू`, never Latin `crew` | `crewNounNative.test.ts` |
 | balanced delimiters | `qa.test.ts` |

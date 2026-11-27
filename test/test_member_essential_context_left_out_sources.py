@@ -216,8 +216,14 @@ def test_over_budget_declared_resources_leave_out_the_tail_and_the_turn_runs(env
     """
     names = [f"context/g{i}.md" for i in range(4)]
     (env.project / "context").mkdir()
+    # Three guides alone overflow the envelope whatever the core weighs, and the
+    # two that stay leave about a third of it for the core and the notice. The
+    # notice names each guide by absolute path, so the room must not hang on how
+    # long the temp directory is or how large the persona prompt grows.
+    body = "y" * (ESSENTIAL_MAX_CHARS // 3)
     for i, name in enumerate(names):
-        (env.project / name).write_text(f"GUIDE_{i}_HEAD\n" + "y" * 24_000, encoding="utf-8")
+        (env.project / name).write_text(f"GUIDE_{i}_HEAD\n" + body, encoding="utf-8")
+    size = f"({len('GUIDE_0_HEAD') + 1 + len(body):,} characters)"
     _declare_resources(env, names)
     with caplog.at_level("WARNING"):
         message = _member_message(env)
@@ -225,9 +231,9 @@ def test_over_budget_declared_resources_leave_out_the_tail_and_the_turn_runs(env
     assert "GUIDE_2_HEAD" not in message and "GUIDE_3_HEAD" not in message
     assert "[Essential source: essential-context#omitted]" in message
     for name in names[2:]:
-        assert f"{env.project / name} (24,013 characters)" in message
+        assert f"{env.project / name} {size}" in message
     for name in names[:2]:
-        assert f"{env.project / name} (24,013 characters)" not in message
+        assert f"{env.project / name} {size}" not in message
     for core in (
         "Bound Soul: preserve the user's voice.",
         "Project Soul: write with empathy.",
