@@ -270,37 +270,12 @@ def session_memory_parts(
             injection_receipts.replay(reads.receipts)
             memory_ctx = reads.memory_ctx
             if memory_ctx:
-                # Preferences are read complete below the model-safe ceiling.
-                # The ceiling itself is the one bound they cannot cross: a
-                # preferences file the agent grew past it would otherwise
-                # overflow the window with no notice in the prompt.
                 protected_so_far = len(essentials) + sum(
                     len(parts[index]) for index in protected_parts
                 )
-                room = caps.protected_context - protected_so_far
-                if len(memory_ctx) > room:
-                    omitted_chars = len(memory_ctx) - max(0, room)
-                    notice = (
-                        f"\n[Context budget: omitted {omitted_chars} chars of "
-                        "preferences above the model-safe protected-content ceiling; "
-                        f"read {memory._preferences_file} for the complete file.]\n"
-                    )
-                    logger.warning(
-                        "Preferences exceed model-safe ceiling: chars=%d room=%d; "
-                        "keeping the head",
-                        len(memory_ctx),
-                        room,
-                    )
-                    # Imported at call time, like every Kiro Crew name an owner reads.
-                    from kiro_crew import context_omissions
-
-                    context_omissions.record(
-                        context_omissions.PREFERENCES_FILE,
-                        "cap",
-                        omitted_chars=omitted_chars,
-                        budget_chars=max(0, room),
-                    )
-                    memory_ctx = memory_ctx[: max(0, room - len(notice))] + notice
+                memory_ctx = _fit_preferences(
+                    memory_ctx, memory, caps.protected_context - protected_so_far
+                )
                 # Bounded by the model-safe ceiling (its ``pref.*`` rows by
                 # ``_PREFS_STARTUP_CAP``), not by the background pool the
                 # activity block below competes for, so it does not use that pool up.
@@ -845,6 +820,90 @@ def _lessons_renderer(
             )
 
         return _render_default_jsonl_lessons
+
+
+def _fit_preferences(memory_ctx: str, memory: MemoryStore, room: int) -> str:
+    """The preferences block, cut to *room* with an in-prompt notice when it is over.
+
+    Preferences are read complete below the model-safe ceiling. The ceiling itself
+    is the one bound they cannot cross: a preferences file the agent grew past it
+    would otherwise overflow the window with no notice in the prompt.
+    """
+    if len(memory_ctx) <= room:
+        return memory_ctx
+    omitted_chars = len(memory_ctx) - max(0, room)
+    notice = (
+        f"\n[Context budget: omitted {omitted_chars} chars of "
+        "preferences above the model-safe protected-content ceiling; "
+        f"read {memory._preferences_file} for the complete file.]\n"
+    )
+    logger.warning(
+        "Preferences exceed model-safe ceiling: chars=%d room=%d; keeping the head",
+        len(memory_ctx),
+        room,
+    )
+    # Imported at call time, like every Kiro Crew name an owner reads.
+    from kiro_crew import context_omissions
+
+    context_omissions.record(
+        context_omissions.PREFERENCES_FILE,
+        "cap",
+        omitted_chars=omitted_chars,
+        budget_chars=max(0, room),
+    )
+    return memory_ctx[: max(0, room - len(notice))] + notice
+
+
+def compaction_preferences_block(
+    builder: ContextBuilder,
+    *,
+    private: bool,
+    blocks_reads: bool,
+    context_groups: frozenset[str] | None,
+    workspace: str | None,
+    memory_store: str | None,
+    model_window: int | None,
+    essentials: str,
+    query_text: str,
+    session_key: str | None = None,
+) -> str:
+    """The session-start preferences block again, for the first turn after a compaction.
+
+    The same read as session start (:func:`read_session_memory`'s
+    ``get_context(include_activity=False)``): the whole preferences document and
+    the ``pref.*`` rows under the startup allowance, ranked against *query_text*,
+    with the same omission notice. The same gates too: nothing on a read-blocked
+    turn, when memory is withheld, for a private member (session start reads it
+    none) or on a provider route that replaces Crew's memory. A store that cannot
+    be read costs the block, never the turn.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    if blocks_reads or private:
+        return ""
+    if not _inclusion._group_included(
+        ctx._config_scoped_groups(context_groups), _inclusion.CONTEXT_GROUP_MEMORY
+    ):
+        return ""
+    from kiro_crew.memory_provider import chokepoints as _memory_provider
+
+    if _memory_provider.session_route(memory_store, session_key).replaces:
+        return ""
+    try:
+        memory = builder.get_memory_for(workspace, memory_store)
+        caps = ctx._resolve_caps(model_window)
+        memory_ctx = memory.get_context(
+            prefs_cap=caps.prefs,
+            query=query_text,
+            include_activity=False,
+            prefs_startup_cap=caps.prefs_startup,
+        )
+        if not memory_ctx:
+            return ""
+        return _fit_preferences(memory_ctx, memory, caps.protected_context - len(essentials))
+    except (OSError, ValueError, RuntimeError, ctx.sqlite3.Error, _stdlib_sqlite3.Error):
+        logger.warning("Post-compaction preferences skipped: the memory store could not be read")
+        return ""
 
 
 def compaction_lessons_block(

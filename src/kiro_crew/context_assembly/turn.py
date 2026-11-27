@@ -65,7 +65,7 @@ def post_compaction_parts(
     The agent contract, the critical rules (same variant and opt-out as session
     start, left out where the session head holds that exact text), the memory
     activity index, the skills index (same gate and glob restriction as session
-    start), the learned-lessons block (same store,
+    start), the owner's preferences and the learned-lessons block (same store,
     gates and budgets as session start, ranked against *query_text*, the user's
     own text for this turn), the CURRENT reply-style preferences, the Claude Code
     backend's steering resources (same gate as session start) and the CURRENT
@@ -174,9 +174,9 @@ def post_compaction_parts(
                 + ctx._neutralize_structural_markers(skills_ctx)
                 + "\n[END REINJECTED]\n\n"
             )
-    # Lessons are session-start context too: the user's standing corrections
-    # went with the compaction, and nothing else brings them back (the
-    # per-message block only adds new matches, and is off by default).
+    # Preferences and lessons are session-start context too: the user's standing
+    # rules and corrections went with the compaction, and nothing else brings
+    # them back (the per-message block only adds new matches, and is off by default).
     parts.extend(
         lessons_parts(
             builder,
@@ -225,14 +225,36 @@ def lessons_parts(
     essentials: str,
     query_text: str,
 ) -> list[str]:
-    """The learned-lessons block a turn re-sends when session start may be gone.
+    """The owner's preferences and learned lessons a turn re-sends when session start may be gone.
 
-    Same store, gates and budgets as session start, ranked against *query_text*.
+    Same store, gates and budgets as session start, ranked against *query_text*:
+    the whole preferences document and the ``pref.*`` rows under their startup
+    allowance, then the lessons block.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
     parts: list[str] = []
     _essentials = essentials
+    _prefs_ctx = _store_admission.compaction_preferences_block(
+        builder,
+        private=private_owner,
+        blocks_reads=blocks_reads,
+        context_groups=context_groups,
+        workspace=workspace,
+        memory_store=memory_store,
+        model_window=model_window,
+        essentials=_essentials,
+        query_text=query_text,
+        session_key=session_key,
+    )
+    if _prefs_ctx:
+        # The preferences document and its rows are user- and agent-written:
+        # scrub the payload, keep the trusted wrapper outside it.
+        parts.append(
+            "[REINJECTED AFTER COMPACTION — owner preferences]\n"
+            + ctx._neutralize_structural_markers(_prefs_ctx)
+            + "\n[END REINJECTED]\n\n"
+        )
     _lessons_ctx = _store_admission.compaction_lessons_block(
         builder,
         private=private_owner,

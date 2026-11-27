@@ -609,7 +609,17 @@ re-adds, once:
    [`[work ledger]` snapshot](#the-work-ledger-snapshot), via
    `context_assembly/turn.py` → `ledger_reinjection_part`; withheld on minimal and
    read-blocked turns.
-7. `[REINJECTED AFTER COMPACTION — learned corrections]` — the session-start
+7. `[REINJECTED AFTER COMPACTION — owner preferences]` — the session-start
+   stable-profile block, via `context_assembly/store_admission.py` →
+   `compaction_preferences_block`: the same `MemoryStore.get_context(include_activity=False)`
+   read as session start, so the whole `preferences.md` (cut only at the model-safe
+   ceiling) and the `pref.*` rows under `_PREFS_STARTUP_CAP`, ranked against the
+   user's text for that turn, with the same omission line. Same store and gates as
+   session start: nothing on a read-blocked turn, when the `memory` group or
+   `memory.inject_memory` withholds it, on a provider route that replaces Crew's
+   memory, or for a private member (its own preferences ride its essentials).
+   A slim resume re-sends it too, beside the lessons.
+   `[REINJECTED AFTER COMPACTION — learned corrections]` — the session-start
    `[Learned corrections …]` / `[Learned experience …]` blocks, via
    `context_assembly/store_admission.py` → `compaction_lessons_block`: the same
    store choice (`_lessons_renderer`), startup budgets and gates as session start

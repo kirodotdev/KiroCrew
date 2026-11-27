@@ -8707,7 +8707,7 @@ The flags resolve once at spawn and live on `SubagentInfo`. Every path that re-m
 
 `build_message(resumed=True)` uses slim resume after native `session/load`.
 It does not reinject the original full memory, skills or agent prompt. It does
-re-send the learned-lessons block, the steering resources and the folder
+re-send the owner's preferences, the learned-lessons block, the steering resources and the folder
 steering, because a compacted restored transcript may have lost them; it uses
 the post-compaction helpers (`context_assembly/turn.py` → `lessons_parts`,
 `steering_parts`) and their gates, and a minimal turn gets none of them.
@@ -8726,14 +8726,14 @@ it is not the public turn's slim-resume path.
 |---|---|
 | Thread history | Native provider history retained; no duplicate block |
 | Memory, skills, agent prompt | No full reinjection; re-sent after a compaction |
-| Lessons, steering resources, folder steering | Re-sent under the post-compaction gates |
+| Owner preferences, lessons, steering resources, folder steering | Re-sent under the post-compaction gates |
 | Date, runtime, UI language | Refreshed minimal header |
 | Member essentials/rules | Existing lifecycle delivery retained |
 | Critical rules | Existing restored context; no full duplicate |
 | Cross-tab history | Not injected |
 
 Post-compaction reinjection separately refreshes bounded skill discovery,
-protected skill bodies, memory navigation, reply preferences and member identity,
+protected skill bodies, memory navigation, the owner's preferences, reply preferences and member identity,
 and on the Claude Code, Codex, OpenCode and Pi backends the steering resources, under the session-start gate
 (`context_assembly/inclusion.py` → `steering_resources_part`).
 A minimal-context turn refreshes only what its minimal session start carried, the
