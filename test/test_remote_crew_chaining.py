@@ -1185,6 +1185,10 @@ class TestCycleGuard:
 
         assert st.state.value == "error"
         assert "loop" in st.error
+        # The row is already stored, so the dashboard that added it needs a code
+        # to tell this refusal from a transient one and take the row out.
+        assert st.to_dict()["error_code"] == "chain_cycle"
+        assert mgr.last_error_code("c") == "chain_cycle"
         built = [t for t in _FakeTunnel.made if t.iid == "c"]
         assert built and built[0].stopped, "left the looping forward open"
         assert mgr.status("c") is None
@@ -1208,6 +1212,7 @@ class TestCycleGuard:
 
         assert st.state.value == "error"
         assert "'b'" in st.error and "loop" in st.error
+        assert st.error_code == "chain_cycle"
 
     def test_a_crew_that_reports_no_id_is_allowed(self, tmp_path, monkeypatch):
         """Fail-open on a crew older than the field: the loop it cannot rule out
