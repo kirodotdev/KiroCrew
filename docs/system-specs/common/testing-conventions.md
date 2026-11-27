@@ -223,13 +223,15 @@ import as a duration-named argument.
   everywhere else: ``platform_log_append._APPEND_TIMEOUT_SECONDS`` under the
   ``model.route`` strip, ``skills._COLD_CATALOG_WAIT_SECS`` under a cold
   ``get_context``. Set it to ``FALLBACK_TIMEOUT_SECS`` in the test or a shared fixture
-  (``test_decisions_strip_rides_message.generous_decision_log_append``). A test
-  over a real ``SkillsLoader`` on a fresh root passes it through
-  ``skills_helpers._settled`` before the first read, so an enumeration, a budget
-  screen or an index count never reads the empty answer of a walk still running
+  (``test_decisions_strip_rides_message.generous_decision_log_append``). For a
+  real ``SkillsLoader`` on a fresh root, the alternative to lifting the budget is
+  to settle the scope a catalog-dependent assertion reads: pass the loader through
+  ``skills_helpers._settled`` first, so an enumeration, a budget screen or an
+  index count never reads the empty answer of a walk still running
   (``test_skill_budget.TestStartupIndexCounts``, 400 skills, ``assert 0 == 400``).
   ``_settled`` covers the global scope only; a read with ``project_dir`` walks
   its own scope, so wait on it too (``wait_until`` on ``loader._iter(project)``).
+  A test of a cold read that never enumerates stays unsettled.
   K19 sees only
   a wrong override, never a missing one, so trace the asserted value back through
   every budget on its path.
