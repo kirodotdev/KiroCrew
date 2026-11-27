@@ -10,6 +10,7 @@ patch; this module never imports it.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import re
@@ -418,6 +419,22 @@ def _is_spa_shell_request(request: web.Request) -> bool:
     return not _APPS_SPA_EXCLUDED_RE.match(path)
 
 
+# The sign-in page's one script. It is fixed text (``{reason}`` lands only in the
+# heading), so the page's own policy names it by hash and allows no other script; the
+# button is wired here rather than by an ``onclick`` attribute, which a hash cannot
+# allow.
+_403_SCRIPT = (
+    "function go(){var v=document.getElementById('u').value.trim();if(!v)return;"
+    "var t;try{var u=new URL(v);t=u.searchParams.get('token')}"
+    "catch(_){t=v}if(t){var d=new URL(window.location.href);"
+    "d.searchParams.set('token',t);window.location.href=d.toString()}"
+    "else{document.getElementById('e').style.display='block'}}"
+    "document.getElementById('b').addEventListener('click',go);"
+    "document.getElementById('u').addEventListener('keydown',"
+    "function(e){if(e.key==='Enter')go()});"
+)
+_403_SCRIPT_HASH = base64.b64encode(hashlib.sha256(_403_SCRIPT.encode()).digest()).decode()
+
 _403_HTML = (
     "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' "
     "content='width=device-width,initial-scale=1'><title>Access Denied</title>"
@@ -452,20 +469,32 @@ _403_HTML = (
     "then send the sign-in link to this device. Or paste a sign-in link below.</p>"
     "<p>No other signed-in device? Run <code>kirocrew token</code> in your terminal, then paste the URL below.</p>"
     "<input id='u' type='text' placeholder='Paste sign-in link or token…' autofocus>"
-    "<button onclick='go()'>Connect</button>"
+    "<button id='b'>Connect</button>"
     "<div class='err' id='e'>Invalid URL</div>"
     "</div>"
-    "<script>"
-    "function go(){{var v=document.getElementById('u').value.trim();if(!v)return;"
-    "var t;try{{var u=new URL(v);t=u.searchParams.get('token')}}"
-    "catch(_){{t=v}}if(t){{var d=new URL(window.location.href);"
-    "d.searchParams.set('token',t);window.location.href=d.toString()}}"
-    "else{{document.getElementById('e').style.display='block'}}}}"
-    "document.getElementById('u').addEventListener('keydown',"
-    "function(e){{if(e.key==='Enter')go()}});"
-    "</script>"
+    "<script>" + _403_SCRIPT.replace("{", "{{").replace("}", "}}") + "</script>"
     "</body></html>"
 )
+
+
+def _403_csp(request: web.Request) -> str:
+    """The sign-in page's own policy: its one script by hash, nothing else to load.
+
+    It replaces the shell's policy, which still allows inline script. ``frame-ancestors``
+    is built the way every framed dashboard response builds it, so the Instances embed
+    still shows this page inside its parent.
+    """
+    # Function-local: ``server`` imports this module through the token_auth facade,
+    # and the facade serves every module-level name of its owners.
+    from kiro_crew.dashboard.origin import frame_ancestors_value
+    from kiro_crew.dashboard.server import _extra_frame_ancestors
+
+    ancestors = frame_ancestors_value(_extra_frame_ancestors(request, request.app))
+    return (
+        f"default-src 'none'; script-src 'sha256-{_403_SCRIPT_HASH}'; "
+        "style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; "
+        f"frame-ancestors {ancestors}"
+    )
 
 
 def _credential_fingerprint(value: str) -> str:
@@ -540,7 +569,7 @@ def _deny(request: web.Request, reason: str, code: str = "") -> web.Response:
         text=_403_HTML.format(reason=reason),
         status=403,
         content_type="text/html",
-        headers=headers,
+        headers={**headers, "Content-Security-Policy": _403_csp(request)},
     )
 
 
