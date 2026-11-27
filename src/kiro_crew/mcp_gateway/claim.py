@@ -105,6 +105,7 @@ def build_claim_frame(
     session_key: str,
     channel_id: Optional[str],
     stub_session_token: str = "",
+    work_dir: str = "",
 ) -> dict:
     """Assemble the one-shot claim frame sent to gatewayd.
 
@@ -120,6 +121,10 @@ def build_claim_frame(
     session's stub connections instead of every connection under the PID. Empty
     omits the field and keeps the PID-wide behavior, which is what a runtime
     whose sessions carry no token still needs.
+
+    ``work_dir`` is the session's own folder. Crew authors it here (a stub's
+    register frame is peer-supplied and never names it); gatewayd keeps it per
+    session key so a shared backend can scope a call to its caller's folder.
     """
     frame = {
         "type": "claim",
@@ -134,6 +139,8 @@ def build_claim_frame(
     }
     if stub_session_token:
         frame["stub_session_token"] = stub_session_token
+    if work_dir:
+        frame["work_dir"] = work_dir
     return frame
 
 
@@ -143,6 +150,7 @@ async def _send_claim_inner(
     session_key: str,
     channel_id: Optional[str],
     stub_session_token: str = "",
+    work_dir: str = "",
 ) -> bool:
     """Unbounded socket round-trip; ``send_claim`` enforces the time budget."""
     # build_claim_frame resolves the runtime's start token from /proc; a
@@ -156,6 +164,7 @@ async def _send_claim_inner(
         session_key,
         channel_id,
         stub_session_token,
+        work_dir,
     )
     reader, writer = await transport.connect(socket_path)
     try:
@@ -211,6 +220,7 @@ async def send_claim(
     session_key: str,
     channel_id: Optional[str] = None,
     stub_session_token: str = "",
+    work_dir: str = "",
 ) -> bool:
     """Send one claim frame to gatewayd. Returns True when acknowledged.
 
@@ -235,7 +245,9 @@ async def send_claim(
     """
     try:
         return await asyncio.wait_for(
-            _send_claim_inner(socket_path, pid, session_key, channel_id, stub_session_token),
+            _send_claim_inner(
+                socket_path, pid, session_key, channel_id, stub_session_token, work_dir
+            ),
             timeout=_CLAIM_TIMEOUT_SECS,
         )
     except (OSError, asyncio.TimeoutError, ValueError) as exc:
@@ -254,6 +266,7 @@ def schedule_claim(
     session_key: str,
     channel_id: Optional[str] = None,
     stub_session_token: str = "",
+    work_dir: str = "",
 ) -> None:
     """Fire-and-forget claim push. Safe to call from sync code (``rekey()``).
 
@@ -276,7 +289,7 @@ def schedule_claim(
     except RuntimeError:
         return
     task = loop.create_task(
-        _claim_and_rebind(socket_path, pid, session_key, channel_id, stub_session_token)
+        _claim_and_rebind(socket_path, pid, session_key, channel_id, stub_session_token, work_dir)
     )
     # Retain a reference so the task is never GC'd mid-flight; discard on done.
     _PENDING.add(task)
@@ -292,13 +305,16 @@ async def _claim_and_rebind(
     session_key: str,
     channel_id: Optional[str],
     stub_session_token: str,
+    work_dir: str = "",
 ) -> bool:
     """Send the claim, then the token's agent binding again when one was sent before.
 
     gatewayd keeps both in memory only, so the claim a turn re-pushes
     (``reclaim``) is also what restores the agents after a daemon respawn.
     """
-    claimed = await send_claim(socket_path, pid, session_key, channel_id, stub_session_token)
+    claimed = await send_claim(
+        socket_path, pid, session_key, channel_id, stub_session_token, work_dir
+    )
     entry = _BOUND_AGENTS.get(stub_session_token) if stub_session_token else None
     if entry:
         _bound_pid, start_id, agents = entry

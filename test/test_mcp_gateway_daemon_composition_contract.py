@@ -475,6 +475,7 @@ class TestControlFrameBytes:
             "owner_pid",
             "owner_port",
             "owner_port_unverifiable",
+            "shared_roots",
             "pid",
             "start_time",
             "gateway_path",

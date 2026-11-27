@@ -164,7 +164,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     ),
     "_notification_aliases": ("function", False, "513465b2035b", "runtime_reader_loop"),
     "_one_at_a_time_ahead": ("function", False, "1250d8670681", "runtime_wire"),
-    "_own_stub_session": ("function", True, "a5917f2a34a7", "runtime_session_setup"),
+    "_own_stub_session": ("function", True, "cc5d632c99dc", "runtime_session_setup"),
     "_projected_spawn_spec": ("function", False, "e7ed4605a35e", "runtime_spawn_launch"),
     "_reader_has_buffered_input": ("function", False, "a6632a57e602", "runtime_liveness"),
     "_reader_loop": ("function", True, "b60c5fea256e", "runtime_reader_loop"),

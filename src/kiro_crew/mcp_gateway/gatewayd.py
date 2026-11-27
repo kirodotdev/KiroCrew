@@ -85,6 +85,7 @@ from kiro_crew.mcp_caller import CallerContext  # noqa: F401 - not a seam
 from kiro_crew.mcp_caller import new_tenant_nonce  # noqa: F401 - not a seam
 from kiro_crew.mcp_caller import _parent_pid as _ppid_fn  # noqa: F401
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS  # noqa: F401 - not a seam
+from kiro_crew.mcp_gateway import backend_caller_scope as _scope_hooks
 from kiro_crew.mcp_gateway import socketsec  # noqa: F401
 from kiro_crew.mcp_gateway import tool_surface  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway import backend_record, credwatch, hazards, launch_approval, transport
@@ -167,9 +168,11 @@ from kiro_crew.mcp_gateway.daemon.connection import (  # noqa: F401
     REGISTERED_CAPABILITIES,
     _await_declaring_agent,
     _declaring_agent,
+    _frame_lines,
     _handle_connection,
     _is_era_probe,
     _method_not_found,
+    _read_line_or_gone,
     _teardown_connection,
     _warn_no_declared_env,
 )
@@ -1544,6 +1547,11 @@ async def _acquire_backend(
             raise _TargetUnknown(
                 f"ssh-agent socket decision changed for server {pool_key.server_name!r}"
             )
+        # Resolved before the child exists: an await after the spawn could be
+        # cancelled and leave a process nothing registered or reaps.
+        configured_folders = await asyncio.to_thread(
+            _scope_hooks.launch_folders, list(args), fresh_target[3]
+        )
         backend = await spawn_backend(
             pool_key=pool_key,
             command=command,
@@ -1571,6 +1579,9 @@ async def _acquire_backend(
             spawn_env.pop(_sk, None)
         backend.control_plane = control_plane
         backend.control_plane_denial = denial[0] if not control_plane and denial else ""
+        # The folders the server was configured with stay in its roots once the
+        # gateway answers them (``backend_caller_scope``).
+        _scope_hooks.note_launch(backend, configured_folders)
         backend.owner_port = owner_port
         # Start the stdout pump immediately so replies to the first
         # forwarded message can route back. The task is owned by the

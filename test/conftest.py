@@ -415,6 +415,7 @@ from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and imp
     _fresh_backend_tmp_socket_room_warnings,
     _fresh_kas_env_left_out_marks,
     _reset_managed_server_tool_spellings,
+    _reset_mcp_folder_scope_folders,
     _reset_mcp_probe_same_process_locks,
     _reset_mcp_sources_read_snapshot,
 )

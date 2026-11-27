@@ -1183,7 +1183,7 @@ def test_the_shared_runtime_entry_settles_the_record_from_what_it_hands_the_sess
     monkeypatch.setattr(setup_owner, "with_ipc_pickups", lambda servers, **k: servers)
     rt = AcpRuntime(work_dir=str(tmp_path), acp_backend=ACP_BACKEND_CODEX)
 
-    async def _own(stubs, key):
+    async def _own(stubs, key, work_dir=""):
         return stubs, "tok"
 
     monkeypatch.setattr(rt, "_own_stub_session", _own)
@@ -1244,7 +1244,7 @@ def test_the_shared_runtime_withholds_the_array_when_the_seed_lags(tmp_path, wor
 
     rt = AcpRuntime(work_dir=str(tmp_path), acp_backend=ACP_BACKEND_CLAUDE)
 
-    async def _own(stubs, key):
+    async def _own(stubs, key, work_dir=""):
         return stubs, "tok"
 
     monkeypatch.setattr(rt, "_own_stub_session", _own)
@@ -1326,7 +1326,7 @@ def test_the_shared_runtime_offloads_the_seed_check_so_the_lock_does_not_block_t
 
     rt = AcpRuntime(work_dir=str(tmp_path), acp_backend=ACP_BACKEND_CLAUDE)
 
-    async def _own(stubs, key):
+    async def _own(stubs, key, work_dir=""):
         return stubs, "tok"
 
     monkeypatch.setattr(rt, "_own_stub_session", _own)
@@ -1386,7 +1386,7 @@ def test_the_preview_going_off_mid_projection_drops_the_app_servers_it_records_a
     acp_backend = ACP_BACKEND_CLAUDE if backend == "claude" else ACP_BACKEND_CODEX
     rt = AcpRuntime(work_dir=str(tmp_path), acp_backend=acp_backend)
 
-    async def _own(stubs, key):
+    async def _own(stubs, key, work_dir=""):
         return stubs, "tok"
 
     monkeypatch.setattr(rt, "_own_stub_session", _own)
@@ -1497,7 +1497,7 @@ def test_the_mirror_reads_the_preview_off_the_event_loop(tmp_path, world, monkey
     monkeypatch.setattr(setup_owner, "with_ipc_pickups", lambda servers, **k: servers)
     rt = AcpRuntime(work_dir=str(tmp_path), acp_backend=ACP_BACKEND_CLAUDE)
 
-    async def _own(stubs, key):
+    async def _own(stubs, key, work_dir=""):
         return stubs, "tok"
 
     monkeypatch.setattr(rt, "_own_stub_session", _own)

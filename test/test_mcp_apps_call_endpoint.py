@@ -179,9 +179,20 @@ async def _spawn_pooled_server() -> _LivePool:
 
 
 async def test_app_call_happy_path(apps_flag_on, spool_tmp):
-    """save_state (visibility ["app"]) is callable via a valid spool token."""
+    """save_state (visibility ["app"]) is callable via a valid spool token, and the
+    callback's stub attaches under the producing agent, so a call the gateway makes
+    on its behalf (a browser tab) is governed by that agent's profile too."""
     live = await _spawn_pooled_server()
     try:
+        seen: list[str] = []
+        real_attach = live.backend.attach_stub
+
+        async def _attach(stub_uuid: str, *, agent: str = "") -> object:
+            if stub_uuid.startswith("__app_call__"):
+                seen.append(agent)
+            return await real_attach(stub_uuid, agent=agent)
+
+        live.backend.attach_stub = _attach  # type: ignore[method-assign]
         spool_id = _spool_record()
         reply = await handle_app_call(
             live.pool,
@@ -195,6 +206,7 @@ async def test_app_call_happy_path(apps_flag_on, spool_tmp):
         )
         assert reply["type"] == "app-result", reply
         assert reply["result"]["content"][0]["text"] == "state saved"
+        assert seen[-1] == "kirocrew"
     finally:
         await live.aclose()
 

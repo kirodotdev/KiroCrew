@@ -255,6 +255,13 @@ def _owner_port_frame(port: Any) -> dict[str, Any]:
     return {"type": "owner-port", "port": port}
 
 
+def _sent_announce(port: int) -> dict[str, Any]:
+    """The announce the manager sends: its port and its own Shared Crew state."""
+    from kiro_crew.mcp_gateway.folder_scope import shared_crew_off
+
+    return {"type": "owner-port", "port": port, "shared_crew_off": shared_crew_off()}
+
+
 async def _announce(port: Any, pool: BackendPool | None = None) -> dict[str, Any]:
     """Serve one ``owner-port`` frame (the sender is whatever :func:`_sender` set)."""
     return await gw._apply_owner_port(
@@ -1507,14 +1514,12 @@ class TestAnAttachedConnectionAcrossAPortChange:
         (handed,) = respawn.calls
         assert handed[6] is stale, "the respawn replaces the backend the connection held"
         assert handed[5]["method"] == "initialize", "and re-primes from the captured handshake"
-        ((_uuid, after, *_rest),) = [c.args for c in fresh.forward_from_stub.await_args_list]
-        assert after["id"] == 2
+        # Nothing of the call was written to the old backend, so it runs on the
+        # replacement instead of failing, and the next call follows it there.
+        after = [c.args[1]["id"] for c in fresh.forward_from_stub.await_args_list]
+        assert after == [1, 2]
         frames = writer.frames()
-        assert [f.get("type") for f in frames[:2]] == ["registered", "ready"]
-        (retry,) = frames[2:]
-        assert retry["id"] == 1
-        assert "backend restarted mid-call, retry" in retry["error"]["message"]
-        assert f"owner port {OWNER_PORT}" in retry["error"]["message"]
+        assert [f.get("type") for f in frames] == ["registered", "ready"], "no error is owed"
 
     @pytest.mark.asyncio
     async def test_a_third_party_backend_keeps_forwarding(
@@ -1555,7 +1560,7 @@ class TestManagerAnnounce:
         sent: list[dict[str, Any]] = []
         monkeypatch.setattr(m, "_control_roundtrip", _acks(sent))
         assert await m.announce_owner_port(OWNER_PORT) is True
-        assert sent == [{"type": "owner-port", "port": OWNER_PORT}]
+        assert sent == [_sent_announce(OWNER_PORT)]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("port", [0, 65536, True, "47211"])
@@ -1618,7 +1623,7 @@ class TestManagerAnnounce:
             if m._watchdog is not None:
                 m._watchdog.cancel()
                 await asyncio.gather(m._watchdog, return_exceptions=True)
-        assert sent == [{"type": "owner-port", "port": OWNER_PORT}]
+        assert sent == [_sent_announce(OWNER_PORT)]
 
     @pytest.mark.asyncio
     async def test_adopting_an_unowned_daemon_warns_once(self, tmp_path, monkeypatch, caplog):
@@ -1720,6 +1725,29 @@ class TestManagerAnnounce:
         assert bool(sent) is resent
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("daemon_shared", "resent"), [(False, True), (True, False)], ids=["lost", "kept"]
+    )
+    async def test_a_respawned_daemon_that_lost_the_shared_crew_state_is_told_again(
+        self, tmp_path, monkeypatch, daemon_shared, resent
+    ):
+        """Same port, but the replacement starts reading Shared Crew as on."""
+        monkeypatch.setattr(mgr, "shared_crew_off", lambda: True)
+        m = _manager(tmp_path)
+        m.set_owner_port(OWNER_PORT)
+        sent: list[dict[str, Any]] = []
+        monkeypatch.setattr(m, "_control_roundtrip", _acks(sent))
+        pong = {"type": "pong", "owner_port": OWNER_PORT, "shared_roots": daemon_shared}
+        await m._reconcile_owner_port(pong)
+        assert bool(sent) is resent
+
+    def test_the_pong_reports_the_daemons_shared_crew_state(self, monkeypatch):
+        from kiro_crew.mcp_gateway import backend_caller_scope
+
+        monkeypatch.setattr(backend_caller_scope, "_SHARED_ROOTS", [True])
+        assert gw._pong_payload()["shared_roots"] is True
+
+    @pytest.mark.asyncio
     async def test_no_resend_reaches_a_daemon_that_a_frame_with_no_pid_switched(
         self, tmp_path, owner, monkeypatch, audit
     ):
@@ -1751,7 +1779,7 @@ class TestManagerAnnounce:
 
         monkeypatch.setattr(m, "_control_roundtrip", roundtrip)
         assert await _within_ceiling(m._liveness_probe_loop(), "one probe cycle") == "stopping"
-        assert sent == [{"type": "owner-port", "port": OWNER_PORT}]
+        assert sent == [_sent_announce(OWNER_PORT)]
 
     @pytest.mark.asyncio
     async def test_the_adopted_watchdog_reconciles_on_its_liveness_pong(
@@ -1773,7 +1801,7 @@ class TestManagerAnnounce:
 
         monkeypatch.setattr(m, "_reconcile_adopted", reconcile_adopted)
         await _within_ceiling(m._run_watchdog(), "one adopted-branch cycle")
-        assert sent == [{"type": "owner-port", "port": OWNER_PORT}]
+        assert sent == [_sent_announce(OWNER_PORT)]
 
 
 async def _spawn_argv(monkeypatch, tmp_path, m: mgr.GatewayManager) -> list[str]:

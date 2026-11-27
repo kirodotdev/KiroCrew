@@ -283,6 +283,14 @@ requires the token that hashes to the name.
   calls serialise. That defect is tracked separately and is not introduced here,
   but the separate stub decision widens the set of paths that can hit it.
 
+- **Per-caller work on a shared backend.** A shared backend runs in the neutral
+  folder, so the gateway scopes each call to its caller instead of adding a pool
+  dimension: relative folder arguments, `roots/list` answered with every attached
+  chat's folder, one `tools/call` at a time for a server with state-changing
+  tools, and a browser tab per caller. Each serialized call waits for the ones
+  ahead of it. Rules: `mcp-shareability.md` ("Serving several chats' folders",
+  "Serialized co-tenancy").
+
 ## Out of scope
 
 - Changing `PoolKey`. It gains no dimension, in this change or any other.

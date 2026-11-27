@@ -170,11 +170,9 @@ src/kiro_crew/knowledge/retrieval.py
 src/kiro_crew/knowledge/spend.py
 src/kiro_crew/knowledge/sync.py
 src/kiro_crew/knowledge/watcher.py
-src/kiro_crew/mcp_gateway/app_call.py
 src/kiro_crew/mcp_gateway/apps.py
 src/kiro_crew/mcp_gateway/breaker.py
 src/kiro_crew/mcp_gateway/evaluate.py
-src/kiro_crew/mcp_gateway/hazards.py
 src/kiro_crew/mcp_gateway/image_budget.py
 src/kiro_crew/mcp_gateway/manager.py
 src/kiro_crew/mcp_gateway/prewarm.py

@@ -77,6 +77,7 @@ def rekey(
         session_key,
         channel_id,
         getattr(self._handle, "stub_session_token", ""),
+        str(getattr(self._handle, "_bound_cwd", "") or self._runtime._work_dir),
     )
     # Re-point this session's SIGNED token mapping at the claiming session, for
     # the reason AcpClient.rekey states: the token survives the rekey so the
@@ -106,4 +107,5 @@ def reclaim(self: AcpSessionProvider) -> None:
         self._session_key,
         self._channel_id,
         token,
+        str(getattr(self._handle, "_bound_cwd", "") or self._runtime._work_dir),
     )

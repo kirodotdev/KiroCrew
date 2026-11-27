@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import time
 from collections import deque
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.json_line import parse_json_object_line, recover_line_id
+from kiro_crew.mcp_gateway import backend_caller_scope as _scope_hooks
 from kiro_crew.mcp_gateway import hazards, socketsec
 from kiro_crew.mcp_gateway.admission import QUEUED_KEEPALIVE_SECS, Admission
 from kiro_crew.mcp_gateway.backend import (
@@ -566,9 +568,30 @@ async def _handle_connection(
             private_backend=bool(exclusive_stub_uuid),
             agent_name=stub_agent,
         )
+        # The backend whose gone wake this connection already took.
+        woken: Optional[Backend] = None
         while True:
             try:
-                line = pending.popleft() if pending else await reader.readuntil(b"\n")
+                if pending:
+                    line = pending.popleft()
+                else:
+                    gone = (
+                        None
+                        if backend is None or backend is woken
+                        else _scope_hooks.gone_event(backend)
+                    )
+                    read = await _read_line_or_gone(reader, gone)
+                    if read is None:
+                        # The backend went while this stub had calls queued
+                        # behind another call: none reached the server, so they
+                        # go through the forward below, which respawns it.
+                        woken = backend
+                        if backend is not None:
+                            pending.extend(
+                                _frame_lines(_scope_hooks.take_resend(backend, stub_uuid))
+                            )
+                        continue
+                    line = read
             except asyncio.IncompleteReadError:
                 return
             except asyncio.LimitOverrunError:
@@ -830,7 +853,7 @@ async def _handle_connection(
                     # respawn below BEFORE the forward, so neither this frame
                     # nor the caller block it would carry reaches a process
                     # bound to a port that another process can now bind.
-                    raise BackendGone(
+                    raise _scope_hooks.gone_before_send(
                         f"bound to owner port {backend.owner_port}, "
                         f"which is now {facade._OWNER_PORT}"
                     )
@@ -888,6 +911,17 @@ async def _handle_connection(
                     # per-session exec rather than churn against a dead server.
                     await _write_json_line(writer, _jsonrpc_error(msg, f"backend gone: {exc}"))
                     return
+                # Calls the dead backend held for this stub while this frame
+                # was being handled run after it, on the replacement; one this
+                # frame cancels, or a cancel read during the respawn names, is
+                # dropped: none of them reached a server.
+                cancelled = _scope_hooks.cancelled_ids(pending)
+                held = [
+                    f
+                    for f in _scope_hooks.take_resend(backend, stub_uuid, msg)
+                    if not _scope_hooks.names_one_of(f.get("id"), cancelled)
+                ]
+                pending.extendleft(reversed(_frame_lines(held)))
                 replacement, inbox, writer_task = recovered
                 backend = replacement
                 if agent_rebind_initialize:
@@ -902,10 +936,40 @@ async def _handle_connection(
                         stub_uuid, msg, caller=forward_caller, tenant_nonce=conn.tenant_nonce
                     )
                     continue
+                is_request = isinstance(msg, dict) and "method" in msg and msg.get("id") is not None
+                if (
+                    is_request
+                    and msg.get("method") == "tools/call"
+                    and _scope_hooks.never_sent(exc)
+                    and _scope_hooks.names_one_of(msg.get("id"), cancelled)
+                ):
+                    # Cancelled while the replacement was made: it never ran,
+                    # and a cancelled request is owed no reply.
+                    continue
+                if (
+                    is_request
+                    and msg.get("method") in ("tools/call", "initialize")
+                    and _scope_hooks.never_sent(exc)
+                ):
+                    # The frame never reached the dead server, so it runs once
+                    # on the replacement instead of failing: a tool call, or a
+                    # new chat's initialize (the replacement was primed from it
+                    # and answers from its cache). Not a ``ping``: its failure
+                    # is how a resource holder learns of a gap.
+                    try:
+                        await replacement.forward_from_stub(
+                            stub_uuid,
+                            msg,
+                            caller=_caller_for_backend(replacement, caller, conn),
+                            tenant_nonce=conn.tenant_nonce,
+                        )
+                        continue
+                    except BackendGone as again:
+                        exc = again
                 # Fail only this in-flight request; kiro-cli retries it on the
                 # now-healthy transport. A duplicate error for this id from the
                 # dying backend's broadcast is harmless — clients dedupe by id.
-                if isinstance(msg, dict) and "method" in msg and msg.get("id") is not None:
+                if is_request:
                     await _write_json_line(
                         writer,
                         _jsonrpc_error(msg, f"backend restarted mid-call, retry: {exc}"),
@@ -917,6 +981,37 @@ async def _handle_connection(
                 return
     finally:
         await _teardown_connection(conn, _probe, backend, writer_task, pool, stub_uuid)
+
+
+async def _read_line_or_gone(
+    reader: asyncio.StreamReader, gone: Optional[asyncio.Event]
+) -> Optional[bytes]:
+    """The stub's next line, or ``None`` once *gone* is set first.
+
+    Cancelling ``readuntil`` leaves a partial line in the reader's buffer, so
+    the next read gets it whole (as in ``_await_answering_pings``).
+    """
+    if gone is None:
+        return await reader.readuntil(b"\n")
+    if gone.is_set():
+        return None
+    read = asyncio.ensure_future(reader.readuntil(b"\n"))
+    wake = asyncio.ensure_future(gone.wait())
+    try:
+        await asyncio.wait({read, wake}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        wake.cancel()
+        if not read.done():
+            read.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await read
+    if read.cancelled():
+        return None
+    return read.result()
+
+
+def _frame_lines(frames: list[dict[str, Any]]) -> list[bytes]:
+    return [(json.dumps(f, separators=(",", ":")) + "\n").encode("utf-8") for f in frames]
 
 
 async def _teardown_connection(

@@ -35,6 +35,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.env import mcp_runtime_path, pinned_gateway_spec_path, resolve_krb5_ccname
 from kiro_crew.jsonl_util import rotate_jsonl_at
 from kiro_crew.mcp_gateway import agent_socket, backend_record, transport
+from kiro_crew.mcp_gateway.folder_scope import shared_crew_off
 from kiro_crew.mcp_gateway.hashing import GATEWAY_PATH_ENV, gateway_path
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES
 from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
@@ -361,7 +362,9 @@ class GatewayManager:
         port = self._owner_port
         if port is None:
             return False
-        reply = await self._control_roundtrip({"type": "owner-port", "port": port})
+        reply = await self._control_roundtrip(
+            {"type": "owner-port", "port": port, "shared_crew_off": shared_crew_off()}
+        )
         if reply is not None and reply.get("type") == "owner-port-set" and reply.get("port") == port:
             self._owner_port_warned = False
             logger.info("mcp-gateway: the daemon on %s has owner port %d", self._spec.socket_path, port)
@@ -399,7 +402,10 @@ class GatewayManager:
             return
         if pong.get("owner_port") == 0 and pong.get("owner_port_unverifiable") is True:
             return
-        if pong.get("owner_port") != self._owner_port:
+        if pong.get("owner_port") != self._owner_port or (
+            "shared_roots" in pong and pong.get("shared_roots") is not shared_crew_off()
+        ):
+            # A respawned daemon starts with Shared Crew read as on.
             await self._send_owner_port()
 
     @staticmethod

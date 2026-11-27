@@ -224,6 +224,10 @@ async def _handle_initialize(
     stub_uuid: str,
     msg: dict[str, Any],
 ) -> None:
+    from kiro_crew.mcp_gateway import (
+        backend_caller_scope as _scope_hooks,  # lazy: the facade binds no new name
+    )
+
     original_id = msg.get("id")
     if original_id is None:
         raise ValueError("initialize without id")
@@ -259,6 +263,7 @@ async def _handle_initialize(
     # the KIROCREW_MCP_APPS flag is on). Must follow the strip so the
     # injected frame is our copy, never the stub's.
     forward_msg = _inject_inflight_capability(_inject_client_extensions(forward_msg))
+    forward_msg = _scope_hooks.offer_roots(self, forward_msg)
     self._upstream_init_frame = _without_id(forward_msg)
     forward_msg["id"] = fid
     self.touch()
@@ -383,6 +388,10 @@ async def prime_initialize(
     the shared completion event. Raises :class:`BackendGone` if the
     backend is not alive, the handshake fails, or it times out.
     """
+    from kiro_crew.mcp_gateway import (
+        backend_caller_scope as _scope_hooks,  # lazy: the facade binds no new name
+    )
+
     if not self.is_alive:
         raise BackendGone(self._dead_reason or "backend not alive")
     if self._init_state == "ready":
@@ -412,6 +421,9 @@ async def prime_initialize(
         # MCP Apps: same injection as _handle_initialize so a respawned
         # backend sees the identical ui capability (flag-gated no-op).
         forward_msg = _inject_inflight_capability(_inject_client_extensions(forward_msg))
+        # The same roots offer as the first handshake, so a respawned server
+        # that needs roots still gets them (``backend_caller_scope``).
+        forward_msg = _scope_hooks.offer_roots(self, forward_msg)
         self._upstream_init_frame = _without_id(forward_msg)
         forward_msg["id"] = fid
         self.touch()
@@ -460,7 +472,9 @@ async def _retry_after_rehandshake(self: Backend, pending: _PendingRequest) -> b
     Called when a forwarded request came back as the not-initialized refusal
     (:func:`_is_lost_session_error`). Returns True when the request is back
     on the wire, so its first answer must not reach the stub; False leaves
-    the caller to deliver that answer unchanged.
+    the caller to deliver that answer unchanged. A serialized call's slot
+    moves to the retry before the write, so a cancel arriving during it
+    reaches the slot (``backend_caller_scope.carry_refused_slot``).
 
     The ``initialize``, the ``notifications/initialized`` and the retried
     request go out in ONE write. A server reads its stdin in order, so the
@@ -496,6 +510,11 @@ async def _retry_after_rehandshake(self: Backend, pending: _PendingRequest) -> b
     # Same stub, original id, start time and captured tool fields, so the
     # answer, a cancel and the metrics all read as the one request it is.
     self._pending_requests[retry_fid] = replace(pending, retry_frame=None)
+    from kiro_crew.mcp_gateway import (
+        backend_caller_scope as _scope_hooks,  # lazy: the facade binds no new name
+    )
+
+    _scope_hooks.carry_refused_slot(self, pending)
     logger.warning(
         "backend pid=%s server=%s refused %s as not initialized; its MCP session "
         "was lost behind the pipe (a pooling proxy respawned it cold?) -- "
