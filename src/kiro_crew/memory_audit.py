@@ -54,10 +54,12 @@ def _instant(raw: Any, name: str) -> str:
         raise AuditError(f"{name} must be an ISO date or time.")
     try:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
+        if parsed.tzinfo is not None:
+            # An offset can move a date at the edge of the calendar past it in
+            # UTC ("9999-12-31T23:59:59-05:00"): an unreadable time, not a crash.
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    except (ValueError, OverflowError):
         raise AuditError(f"{name} must be an ISO date or time.") from None
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
     # Stored times are UTC ISO strings ("…+00:00"); compare on the naive prefix.
     return parsed.isoformat()
 

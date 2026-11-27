@@ -1000,6 +1000,23 @@ class TestSemanticEndpoints:
         assert (await mem_mod.api_memory_events(req)).status == 400
         assert calls == []
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "name,value",
+        [("since", "0001-01-01T00:00:00+05:00"), ("until", "9999-12-31T23:59:59-05:00")],
+    )
+    async def test_events_refuses_an_offset_bound_past_the_calendar(self, name, value) -> None:
+        state = _make_state(vector_store=_store())
+        try:
+            resp = await mem_mod.api_memory_events(_make_request(state, query={name: value}))
+        except OverflowError as exc:
+            pytest.fail(f"OverflowError escaped the handler: {exc}")
+        assert resp.status == 400
+        assert _body(resp) == {
+            "error": f"{name} must be an ISO date or time.",
+            "code": "memory_audit_bad_query",
+        }
+
 
 # episodic endpoints
 
