@@ -18,7 +18,7 @@ from kiro_crew.config import validation
 
 
 def test_published_metadata_requires_config_validator() -> None:
-    """A base install must declare the validator used by the config loader."""
+    """A base install still declares jsonschema, the parity tests' reference validator."""
     requirements = metadata.requires("kirocrew") or []
     assert any(
         req.lower().startswith("jsonschema") and "extra" not in req.partition(";")[2].lower()
@@ -304,9 +304,7 @@ class TestValidateConfigData:
         assert validation._schema_validator(first).is_valid({"n": 1})
 
     def test_schema_validator_rejects_a_broken_schema(self) -> None:
-        import jsonschema
-
-        with pytest.raises(jsonschema.SchemaError):
+        with pytest.raises(ValueError):
             validation._schema_validator({"type": 12})
 
 

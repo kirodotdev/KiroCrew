@@ -2018,11 +2018,15 @@ prevent. `test_default_emitted_section_keys_are_all_recognized` guards
 Loads config from disk. Merges `config.local.json` overlay if present.
 Returns defaults if file is missing or invalid.
 
-The installed package declares `jsonschema` as a core runtime dependency so
-schema validation runs outside development environments too. The import guard
-still lets an incomplete or manually damaged install load, but that fallback
-must not be treated as the normal packaged behavior. Generated package metadata
-is tested to ensure the validator is required without the `dev` extra.
+Schema validation runs on `config.schema_check`, an in-house Draft-07 checker
+for the keywords `JSON_SCHEMA` uses (`type`, `properties`,
+`additionalProperties`, `items`, `enum`, `maxLength`, `pattern`), so no process
+imports `jsonschema` to load its config. It yields `jsonschema.Draft7Validator`'s
+errors (keyword, path, message and order), which matters because
+`validate_config_data` deletes a field per error while it walks them; it refuses
+any keyword it does not implement when the validator is built.
+`test_config_schema_check_parity.py` compares the two on random documents, so the
+package still declares `jsonschema` as a dependency, as that reference.
 
 **Hot-path cache.** `load()` is called per message / per request on several hot
 paths. The expensive work — reading `config.json` (+ `config.local.json`),
@@ -2252,7 +2256,7 @@ reader:
     rather than automatic, and `instances.connect_timeout_secs` /
     `mint_timeout_secs` as the transport constants. Validation removes a value of
     the wrong type at these keys and at `mcp.honour_auto_approve`, so through
-    `load()` they read their field default (when jsonschema is installed).
+    `load()` they read their field default.
   - The read stage reads a present non-boolean `auto_update` as off
     (`fields._coerce_bool`) and a present non-boolean `agent.session_control`,
     `agent.member_dispatch`, `agent.crew_panel`, `agent.kas_persist_mcp_sign_in`,

@@ -32,12 +32,15 @@ from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 #: Never loaded before the list, by any server. Each is the root of a large graph that
 #: only a tool call needs: the HTTP and cloud client stacks, the agent client, the CLI,
 #: the OS sandbox, the gateway's side of the MCP socket, the conversation store, and the
-#: two facades that load every sub-agent and tool handler.
+#: two facades that load every sub-agent and tool handler. ``jsonschema`` is never
+#: loaded at all: every server validates its config before the list, with the in-house
+#: ``kiro_crew.config.schema_check`` (jsonschema and its stack cost ~3 MB RSS a server).
 FORBIDDEN_BEFORE_THE_LIST = (
     "aiohttp",
     "awscrt",
     "boto3",
     "botocore",
+    "jsonschema",
     "slack_sdk",
     "kiro_crew.acp.client",
     "kiro_crew.cli",
@@ -131,11 +134,14 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for ``mcp-core`` (505 to 506): the App Store search's declaration lives in
 #: its own ``kiro_crew.mcp_tools.catalog.app_store``, which the core listing loads from
 #: ``mcp_tools.DOMAIN_MODULES`` like every other domain.
+#: Raised by 1 for each server: config validation checks the schema with the in-house
+#: ``kiro_crew.config.schema_check`` instead of importing ``jsonschema`` (66 modules,
+#: none of them ``kiro_crew``); that one file is the whole rise.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 506,
-    "mcp-cron": 372,
-    "mcp-guide": 366,
-    "mcp-mate": 369,
+    "mcp-core": 507,
+    "mcp-cron": 373,
+    "mcp-guide": 367,
+    "mcp-mate": 370,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
