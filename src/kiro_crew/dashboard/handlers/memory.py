@@ -1229,14 +1229,38 @@ async def api_memory_import(request: web.Request) -> web.Response:
     return web.json_response(counts)
 
 
+async def _session_start_preview(state: DashboardState, store_name: str, query: str) -> dict:
+    """What a session start on *store_name* admits, with *query* as its first message."""
+    from kiro_crew.context_assembly.store_admission import session_start_store_preview
+
+    record = KiroCrewConfig.load().memory_stores.get(store_name) if store_name else None
+    parts = await run_in_embed_pool(
+        session_start_store_preview,
+        state.context_builder,
+        store_name or None,
+        private=bool(record and record.owner_member),
+        query_text=query,
+    )
+    return _redact_memory_field({"parts": [{"family": f, "text": t} for f, t in parts]})
+
+
 async def api_memory_context_preview(request: web.Request) -> web.Response:
-    """GET /api/memory/context-preview?q=... — preview what gets injected into prompts."""
+    """GET /api/memory/context-preview?q=... — preview what gets injected into prompts.
+
+    ``session_start.parts`` is the text the session-start build admits from this
+    store, with ``q`` as the session's first message (none when absent), as
+    ``{family, text}`` parts in prompt order (family ``memory``, ``lessons`` or
+    ``provider``); Test recall shows it. ``semantic_context`` and ``episodic_context``
+    are the store's own preview, kept for older readers.
+    """
+    state: DashboardState = request.app["state"]
     store, _store_name, refusal = await _vector_tier_for_request(
-        request, request.app["state"], "memory.context-preview"
+        request, state, "memory.context-preview"
     )
     if refusal is not None:
         return refusal
     query = request.query.get("q", "")[:500]
+    session_start = await _session_start_preview(state, _store_name, request.query.get("q", ""))
     if store.algorithm_version == "v2":
         preview = await run_in_embed_pool(store.get_context_preview, query_text=query)
         return web.json_response(
@@ -1244,6 +1268,7 @@ async def api_memory_context_preview(request: web.Request) -> web.Response:
                 {
                     "semantic_context": preview["semantic_context"],
                     "episodic_context": preview["episodic_context"],
+                    "session_start": session_start,
                 }
             )
         )
@@ -1265,6 +1290,7 @@ async def api_memory_context_preview(request: web.Request) -> web.Response:
         {
             "semantic_context": semantic_ctx,
             "episodic_context": episodic_ctx,
+            "session_start": session_start,
         }
     )
 

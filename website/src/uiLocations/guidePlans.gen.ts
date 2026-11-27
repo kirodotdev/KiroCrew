@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:200148dd7bae3f4911e1d7b71d1e4648b9fb271e6e2cb77c991251145935baa7"
+export const GUIDE_BUILD_DIGEST = "sha256:bd52e1cb6af77fc79a7575ae859fd7a1c7234b16f74bc51e601f1cdb823fc48a"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -106,6 +106,8 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "members.switcher.show-roster",
   "members.switcher.unread",
   "members.switcher.unread-more",
+  "memory.more-actions",
+  "memory.test-recall",
   "notifications.clear-all",
   "notifications.detail.mark-unread",
   "notifications.mark-all-read",
@@ -247,6 +249,10 @@ export const GUIDE_REVEAL_SCOPES = {
   "menu:members.switcher": {
     "kind": "menu",
     "revealer": "members.switcher"
+  },
+  "menu:memory.more-actions": {
+    "kind": "menu",
+    "revealer": "memory.more-actions"
   },
   "menu:schedule.batch-actions": {
     "kind": "menu",
@@ -2517,6 +2523,48 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "desktop:members.switcher.unread-more",
             "location": "members.switcher.unread-more",
             "label_key": "pages.membersPage.switch_crewmate"
+          }
+        ]
+      }
+    ]
+  },
+  "memory.more-actions": {
+    "version": 2,
+    "label_key": "memoryPage.more_actions",
+    "placements": [
+      {
+        "id": "desktop",
+        "route": "/settings/memory",
+        "viewport": "desktop",
+        "steps": [
+          {
+            "id": "desktop:memory.more-actions",
+            "location": "memory.more-actions",
+            "label_key": "memoryPage.more_actions"
+          }
+        ]
+      }
+    ]
+  },
+  "memory.test-recall": {
+    "version": 2,
+    "label_key": "memoryPage.test_recall",
+    "placements": [
+      {
+        "id": "desktop",
+        "route": "/settings/memory",
+        "viewport": "desktop",
+        "steps": [
+          {
+            "id": "desktop:memory.more-actions",
+            "location": "memory.more-actions",
+            "label_key": "memoryPage.more_actions",
+            "scope": "menu:memory.more-actions"
+          },
+          {
+            "id": "desktop:memory.test-recall",
+            "location": "memory.test-recall",
+            "label_key": "memoryPage.test_recall"
           }
         ]
       }

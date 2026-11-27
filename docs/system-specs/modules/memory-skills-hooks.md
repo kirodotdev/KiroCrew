@@ -1960,7 +1960,32 @@ Each Source value in the rail, and each kind pill, carries a (?)
 with one sentence on what the type means (`memoryTypeTips`); on a bot's page a
 tip that speaks of the bot names it. The (?) sits outside the checkbox's label
 and beside the pill, so opening it never ticks a filter or picks a kind.
-The embedding download's progress, its setup
+Test recall, in the header's ⋯ menu on every width and on the global page too,
+shows what a session start on this store admits from it. Both panes read
+`session_start` from `GET /api/memory/context-preview`, which runs the
+session-start build's own admissions (`session_start_store_preview` in
+`context_assembly/store_admission.py`) on the memory route a session start
+takes, with the same config gates and caps. `build_session_context` and the
+preview call the same route helpers: `routed_memory_parts` (Crew's
+`session_memory_parts`, whose V1 reads are `read_session_memory`, or, when a
+provider replaces Crew's memory, its `replace_session_parts` blocks), then
+`session_lessons_part`, then `augment_memory_part` (a read-only provider's block).
+The preview returns one `{family, text}` part per block, in prompt order, and
+takes each part's family from the helper that appended it, never from its
+text: `memory` (Crew's memory blocks and `[Memory tools]` pointer, or a replacing
+provider's memory blocks and the Crew documents it leaves in Crew), `lessons`
+(Crew's lessons, or a replacing provider's rules and findings, whose span
+`render.session_parts` returns as `SessionParts`), and `provider` (an augmenting
+provider's block). The dialog shows each part verbatim under its family label and
+parses none of it. At session start is a start with no first message; With this
+message, once a task is typed, lists the parts the same start adds or changes
+when the task is its first message (its V1 activity block and the lessons ranked
+against it). The preview uses the default
+window's caps and no project, so a project-scoped lesson is left out, and it
+skips the later background admission that can drop `[Memory activity]` from a
+large session. A bot's identity, rules and profile documents are not this
+store's text and are not shown. The page mounts the dialog, so it opens on the
+global page with vector memory off too. The embedding download's progress, its setup
 errors with Retry and the model disclosure live in the Embedding Model card
 (`EmbeddingSetupStatus`); whether the global store runs as vector memory is read
 from the same status queries (`useVectorMemoryState`). The page no longer shows
@@ -3932,7 +3957,7 @@ before reading transcript bodies, opening learned memory or billing a model.
 | POST | `/api/memory/import` | Import from JSON export (gated) |
 | POST | `/api/memory/promote` | Promote repeated episodic patterns to semantic facts, tombstoning the rows folded in (gated) |
 | POST | `/api/memory/consolidate` | Trigger consolidation for one session. Gated on the caller like every write, and additionally on the TARGET: the body's `key` is resolved through `resolve_session_memory_mode` (live slot first, then the persisted execution record and transcript header) and a temporary or incognito target is 403 `restricted_target_session` (the body carries the target's `mode` as a field, which the Memory tab's tally names) before the running claim or any other work. A channel transcript reaches the route as its filename stem (`slack_<ts>`), so the stem is first unfolded to the thread's live key through the session map (`channel_key_for_stem`) and the thread's flag is read there. When that live resolution does not refuse, the route reads the transcript header under `key` exactly as `_consolidate` does (`get_metadata`, the mode normalized), so a stem the map cannot unfold, or an entry the map no longer holds, is refused from its header here instead of answering 200 for a pass the consolidator refuses. A key no record calls restricted proceeds |
-| GET | `/api/memory/context-preview?q=` | Preview injected semantic + episodic context |
+| GET | `/api/memory/context-preview?q=` | Preview injected semantic + episodic context, plus `session_start.parts` (`[{family, text}]`, family `memory`, `lessons` or `provider`): the blocks a session start admits from the store with `q` as its first message, from the session-start build itself |
 | GET | `/api/memory/observability?q=` | `stats` + `rejections` + `context_preview`, plus `reads` — the read-volume counters (see above). `reads` is resolved LAST, so it INCLUDES the reads this request itself performed; that is what lets a caller issue the same `q` twice and compare the two objects |
 | GET | `/api/memory/recall?q=` | V2 task recall with evidence. Explicit `store` requires the dashboard owner; the authenticated MCP path uses the owning session's canonical execution context and requires memory reads to be allowed. Invalid or unavailable member memory returns an explicit error |
 | POST | `/api/memory/seed` | Owner-only selective copy. Body: destination `store`, `source_store`, and 1–50 unique `{kind, id}` items. Destination must be V2; V1 and V2 sources are read-only inputs. Each response item reports imported, existing or rejected with its reason |

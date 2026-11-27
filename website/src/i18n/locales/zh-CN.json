@@ -24086,6 +24086,7 @@
     "order_oldest": "最早在前",
     "order_z_a": "Z 到 A",
     "read_failed": "无法读取 {{store}} 中的记忆",
+    "recall_task_placeholder": "描述一个任务，例如“修复不稳定的 CI 测试”",
     "record_actions": "记忆操作",
     "remove_filter": "移除筛选：{{value}}",
     "reverse_order": "反转顺序",
@@ -24114,6 +24115,7 @@
     "tab_failures": "失败",
     "tab_graph": "图谱",
     "tab_settings": "设置",
+    "test_recall": "试试召回",
     "updated_on": "更新于 {{date}}",
     "bot_memory": "Bot 记忆",
     "global_face": "<name>全局记忆</name><kind>所有聊天</kind>",
@@ -25011,5 +25013,15 @@
       "add_again": "你的 Kiro 登录已变化，Crew 无法连接这个环境。请在启动表单中重新添加，或移除该团队。",
       "added_no_delete": "这个环境不是由此 Crew 创建的。请在创建它的地方删除。"
     }
+  },
+  "memoryRecall": {
+    "at_start": "会话开始时",
+    "family_lessons": "经验",
+    "family_memory": "记忆",
+    "family_provider": "记忆提供方（只读）",
+    "nothing": "无",
+    "task_optional": "任务（可选）",
+    "type_task": "输入任务即可查看会召回什么。",
+    "with_message": "随这条消息"
   }
 }

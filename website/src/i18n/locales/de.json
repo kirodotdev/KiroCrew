@@ -24690,6 +24690,7 @@
     "order_oldest": "Älteste zuerst",
     "order_z_a": "Z bis A",
     "read_failed": "Die Erinnerungen in {{store}} konnten nicht gelesen werden",
+    "recall_task_placeholder": "Beschreibe eine Aufgabe, z. B. „den instabilen CI-Test reparieren“",
     "record_actions": "Aktionen für die Erinnerung",
     "remove_filter": "Filter entfernen: {{value}}",
     "reverse_order": "Reihenfolge umkehren",
@@ -24718,6 +24719,7 @@
     "tab_failures": "Fehler",
     "tab_graph": "Graph",
     "tab_settings": "Einstellungen",
+    "test_recall": "Abruf testen",
     "updated_on": "Aktualisiert am {{date}}",
     "bot_memory": "Bot-Speicher",
     "global_face": "<name>Globaler Speicher</name><kind>Jeder Chat</kind>",
@@ -25624,5 +25626,15 @@
       "add_again": "Deine Kiro-Anmeldung hat sich geändert, daher erreicht Crew diese Umgebung nicht. Füge sie im Startformular erneut hinzu oder entferne die Crew.",
       "added_no_delete": "Außerhalb dieser Crew erstellt. Lösche sie dort, wo du sie erstellt hast."
     }
+  },
+  "memoryRecall": {
+    "at_start": "Beim Sitzungsstart",
+    "family_lessons": "Lektionen",
+    "family_memory": "Gedächtnis",
+    "family_provider": "Gedächtnis-Anbieter (schreibgeschützt)",
+    "nothing": "Nichts",
+    "task_optional": "Aufgabe (optional)",
+    "type_task": "Gib eine Aufgabe ein, um zu sehen, was sie abruft.",
+    "with_message": "Mit dieser Nachricht"
   }
 }

@@ -8,7 +8,7 @@ import { useState, type ReactNode } from 'react'
 import { MemoryJumpContext, type MemoryJump } from './memoryJump'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Copy, ListChecks, MoreHorizontal, Plus, Settings, X } from 'lucide-react'
+import { Copy, ListChecks, MoreHorizontal, Plus, Settings, Sparkles, X } from 'lucide-react'
 import { Btn, IconButton } from '../../../components/ui'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../../components/ui/tabs'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
@@ -16,6 +16,8 @@ import { useIsMobile } from '../../../hooks/useIsMobile'
 import { MEMORY_QUERY_PREFIXES } from '../MemoryStoreCard'
 import { NewMemoryDialog } from './MemoryNewDialogs'
 import { MemoryActionSheet, type SheetAction } from './MemoryActionSheet'
+import { MemoryRecallDialog } from './MemoryRecallDialog'
+import { uiLocation } from '../../../uiLocations/uiLocation'
 
 export type MemoryPageTab = 'memories' | 'graph' | 'profile' | 'recovery' | 'failures' | 'settings'
 export type MemoryListControls = { selecting: boolean; setSelecting: (on: boolean) => void; openTab: (tab: MemoryPageTab) => void
@@ -26,8 +28,8 @@ const TABS: [MemoryPageTab, string][] = [
   ['failures', 'memoryPage.tab_failures'], ['settings', 'memoryPage.tab_settings'],
 ]
 
-export default function MemoryPageShell({ id, label, switcher, notices, embedded, initialTab = 'memories', mountAll = false, canCreate, onCopy, copyDisabled, onCreated, onDraftChange, memories, panels }: {
-  /** Distinguishes this store's tab underline from another store's as it slides. */
+export default function MemoryPageShell({ id, label, switcher, notices, embedded, initialTab = 'memories', mountAll = false, canCreate, canRecall, onCopy, copyDisabled, onCreated, onDraftChange, memories, panels }: {
+  /** The store's id: Test recall reads it, and it keeps this store's tab underline apart from another store's as it slides. */
   id: string
   /** The store's name: the tab list's accessible name and the phone sheet's title. */
   label: string
@@ -44,6 +46,8 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
   mountAll?: boolean
   /** New memory and New lesson write the global store only. */
   canCreate: boolean
+  /** Test recall: what a bot gets from this store. */
+  canRecall: boolean
   onCopy?: () => void
   copyDisabled?: boolean
   onCreated?: () => void
@@ -59,6 +63,7 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
   const [tab, setTab] = useState<MemoryPageTab>(initialTab)
   const [visited, setVisited] = useState<Set<MemoryPageTab>>(() => new Set([initialTab]))
   const [selecting, setSelecting] = useState(false)
+  const [recallOpen, setRecallOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [saved, setSaved] = useState('')
@@ -75,9 +80,10 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
     for (const prefix of MEMORY_QUERY_PREFIXES) void client.invalidateQueries({ queryKey: prefix })
     onCreated?.()
   }
-  // On a phone the list's own Select moves into the ⋯ sheet.
+  // Select moves into the phone sheet; Test recall lives in ⋯ at every width.
   const listActions: SheetAction[] = [
     ...(phone ? [{ key: 'select', icon: ListChecks, label: t('memoryPage.select'), run: () => { open('memories'); setSelecting(true) } }] : []),
+    ...(canRecall ? [{ key: 'recall', icon: Sparkles, label: t('memoryPage.test_recall'), run: () => setRecallOpen(true) }] : []),
   ]
   // Rare actions live in ⋯ on every width.
   const createActions: SheetAction[] = [
@@ -95,8 +101,9 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
           {more && (phone
             ? <IconButton aria-label={t('memoryPage.more_actions')} aria-haspopup="dialog" className={moreButtonClass} onClick={() => setSheetOpen(true)}><MoreHorizontal className="lucide-inline" aria-hidden="true" /></IconButton>
             : <DropdownMenu>
-              <DropdownMenuTrigger asChild><IconButton aria-label={t('memoryPage.more_actions')} className={moreButtonClass}><MoreHorizontal className="lucide-inline" aria-hidden="true" /></IconButton></DropdownMenuTrigger>
+              <DropdownMenuTrigger asChild><IconButton {...uiLocation('memory.more-actions')} aria-label={t('memoryPage.more_actions')} className={moreButtonClass}><MoreHorizontal className="lucide-inline" aria-hidden="true" /></IconButton></DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-52">
+                {canRecall && <DropdownMenuItem {...uiLocation('memory.test-recall')} onSelect={listActions[0].run}><Sparkles className="lucide-inline text-muted" aria-hidden="true" />{t('memoryPage.test_recall')}</DropdownMenuItem>}
                 {createActions.map(item => <DropdownMenuItem key={item.key} disabled={item.disabled} onSelect={item.run}><item.icon className="lucide-inline text-muted" aria-hidden="true" />{item.label}</DropdownMenuItem>)}
               </DropdownMenuContent>
             </DropdownMenu>)}
@@ -126,6 +133,7 @@ export default function MemoryPageShell({ id, label, switcher, notices, embedded
       {panel('settings', panels.settings)}
     </Tabs>
     </MemoryJumpContext.Provider>
+    {recallOpen && <MemoryRecallDialog store={id} onClose={() => setRecallOpen(false)} />}
     {sheetOpen && <MemoryActionSheet title={label} groups={[listActions, createActions]} onClose={() => setSheetOpen(false)} />}
     {creating && <NewMemoryDialog onDirtyChange={onDraftChange} onClose={() => setCreating(false)} onSaved={key => created(t('memoryPage.saved_key', { key }))} onLessonSaved={() => created(t('pages.overview.memoryFailuresCard.lesson_saved'))} />}
   </div>

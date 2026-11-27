@@ -20,6 +20,7 @@ const { api } = vi.hoisted(() => ({
     memoryRetired: vi.fn(),
     memoryBackups: vi.fn(),
     memoryCarve: vi.fn(),
+    vectorContextPreview: vi.fn(),
   },
 }))
 vi.mock('../api/client', () => ({ api }))
@@ -63,6 +64,7 @@ beforeEach(() => {
   api.memoryRetired.mockResolvedValue({ retired: [] })
   api.memoryBackups.mockResolvedValue({ backups: [] })
   api.memoryCarve.mockResolvedValue({ counts: {} })
+  api.vectorContextPreview.mockResolvedValue({ session_start: { parts: [{ family: 'lessons', text: 'Work in a worktree' }] } })
 })
 afterEach(() => {
   Element.prototype.scrollIntoView = original
@@ -126,6 +128,21 @@ describe('?focus=lessons', () => {
     expect(within(dialog).getByRole('button', { name: 'Save lesson' })).toBeDisabled()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New memory' })).toBeNull())
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    expect(await screen.findByRole('menuitem', { name: 'Test recall' })).toHaveAttribute('data-ui-location', 'memory.test-recall')
+    expect(screen.queryByRole('menuitem', { name: /^New/ })).toBeNull()
+  })
+
+  it('opens Test recall on the global page while vector memory is off', async () => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    // With vector memory off the record list is not mounted; the page still mounts the dialog.
+    await waitFor(() => expect(document.getElementById(LESSONS_CARD_ID)).not.toBeNull())
+    expect(screen.queryByTestId('memory-list')).toBeNull()
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Test recall' }))
+    const dialog = screen.getByRole('dialog', { name: 'Test recall' })
+    expect(await within(within(dialog).getByTestId('recall-at-start')).findByText('Work in a worktree')).toBeVisible()
+    expect(api.vectorContextPreview).toHaveBeenCalledWith(undefined, 'default')
   })
 
   it('counts a typed lesson that was not added yet as unsaved work', async () => {

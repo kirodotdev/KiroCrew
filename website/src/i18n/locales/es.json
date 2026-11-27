@@ -25294,6 +25294,7 @@
     "order_oldest": "Más antiguos primero",
     "order_z_a": "De la Z a la A",
     "read_failed": "No se pudieron leer los recuerdos de {{store}}",
+    "recall_task_placeholder": "Describe una tarea, como “arreglar la prueba de CI inestable”",
     "record_actions": "Acciones del recuerdo",
     "remove_filter": "Quitar filtro: {{value}}",
     "reverse_order": "Invertir orden",
@@ -25322,6 +25323,7 @@
     "tab_failures": "Fallos",
     "tab_graph": "Gráfico",
     "tab_settings": "Ajustes",
+    "test_recall": "Probar recuperación",
     "updated_on": "Actualizado el {{date}}",
     "bot_memory": "Memoria del Bot",
     "global_face": "<name>Memoria global</name><kind>Todos los chats</kind>",
@@ -26237,5 +26239,15 @@
       "add_again": "Tu inicio de sesión de Kiro cambió, así que Crew no llega a este entorno. Vuelve a añadirlo desde el formulario de lanzamiento o quita la crew.",
       "added_no_delete": "Creado fuera de esta Crew. Elimínalo donde lo creaste."
     }
+  },
+  "memoryRecall": {
+    "at_start": "Al iniciar la sesión",
+    "family_lessons": "Lecciones",
+    "family_memory": "Memoria",
+    "family_provider": "Proveedor de memoria (solo lectura)",
+    "nothing": "Nada",
+    "task_optional": "Tarea (opcional)",
+    "type_task": "Escribe una tarea para ver qué recupera.",
+    "with_message": "Con este mensaje"
   }
 }

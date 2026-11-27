@@ -762,7 +762,7 @@ function GlobalMemoryTab({ switcher, notices, refreshTrigger, onDirtyChange, foc
   }
   const globalLabel = i18nT('pages.kiroCrewAgentsPage.global_memory_v1')
   return (<>
-    <MemoryPageShell id="default" label={globalLabel} onDraftChange={onNewDraft} switcher={switcher} notices={notices} embedded={<MemoryEmbeddedLine store="" />} mountAll initialTab={focusFailures ? 'failures' : focusGraph ? 'graph' : 'memories'} canCreate onCreated={() => { void showLessons('load') }}
+    <MemoryPageShell id="default" label={globalLabel} onDraftChange={onNewDraft} switcher={switcher} notices={notices} embedded={<MemoryEmbeddedLine store="" />} mountAll initialTab={focusFailures ? 'failures' : focusGraph ? 'graph' : 'memories'} canCreate canRecall onCreated={() => { void showLessons('load') }}
       memories={controls => <>
         {/* With vector memory off the store has no records to list; its lessons are the card below. */}
         {!(vectorSettled && !vectorActive) && <MemoryList jump={controls.jump} store="default" storeName={globalLabel} privateMemory={false} focusKey={focusLessons ? focusLessonKey : undefined} focusLessons={focusLessons}
