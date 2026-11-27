@@ -14,13 +14,13 @@ root is enumerated, and a symlink to an arbitrary target is still refused.
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 import pytest
 
 import kiro_crew.skills as skills_mod
 import kiro_crew.skills_discovery as skills_disc
+from conftest import requires_symlinks
 from kiro_crew.skills import _iter_skill_files, _within_any
 from kiro_crew.skills_builtin_provenance import _skill_script_index
 
@@ -29,10 +29,6 @@ from kiro_crew.skills_builtin_provenance import _skill_script_index
 # (see test/test_agent_home_isolation.py). Applied per-class rather than to the
 # whole module on purpose: the pure path-semantics tests below carry their weight
 # precisely ON Windows, where separators and case-folding differ.
-requires_symlinks = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="symlink creation needs elevation on Windows",
-)
 
 
 def _write_skill(directory: Path, body: str = "# Skill\n") -> Path:

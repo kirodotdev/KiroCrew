@@ -3,13 +3,12 @@
 import sys
 import types
 
-import pytest
-
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.testing.links import make_dir_link
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="a real symlink needs a privilege there")
+@requires_symlinks
 def test_posix_arm_makes_a_directory_symlink(tmp_path, monkeypatch):
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
     (tmp_path / "target").mkdir()

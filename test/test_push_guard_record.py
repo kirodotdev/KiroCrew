@@ -36,6 +36,7 @@ from push_guard_helpers import (
 )
 from skill_script_helpers import skill_text
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
 
@@ -485,7 +486,7 @@ class TestPushGuardRecord:
         assert rc == 40 and "it only reads them" in stderr, stderr
         assert "--max-ahead 3 --squash <message-file> -- <path>" in stderr, stderr
 
-    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="needs an unprivileged symlink")
+    @requires_symlinks
     def test_a_listed_path_under_a_parent_now_a_symlink_is_named_back(self, repo_pair):
         """A ``:(top,literal)`` name is read as written, never through the worktree's symlinks."""
         clone_dir, _ = repo_pair

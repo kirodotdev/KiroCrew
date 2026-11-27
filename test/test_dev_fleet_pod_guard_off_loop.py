@@ -9,13 +9,13 @@ same verdicts and refusal strings as before.
 
 from __future__ import annotations
 
-import os
 import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.apps.builtins.dev_fleet import repository, runtime
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops_pods as pods
 
@@ -78,7 +78,7 @@ async def test_foreign_pin_is_refused_and_resolves_off_the_loop(tmp_path, resolv
     assert [on_loop for _, on_loop in resolve_threads] == [False, False]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="directory symlinks need privilege on Windows")
+@requires_symlinks
 @pytest.mark.asyncio
 async def test_pin_through_a_symlink_names_the_same_checkout(tmp_path):
     ours = tmp_path / "repo-a" / _NAME

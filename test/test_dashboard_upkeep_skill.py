@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import dashboard_agentic, dashboard_upkeep
 from kiro_crew.dashboard_templates import instance
 from kiro_crew.dashboard_templates.manifest import (
@@ -303,7 +304,7 @@ class TestThePointer:
         assert block.startswith("[DASHBOARD]") and block.endswith(dashboard_upkeep.POINTER)
 
     @pytest.mark.parametrize("leaf", ["scripts", "slug-dir", "script"])
-    @pytest.mark.skipif(sys.platform == "win32", reason="planting a symlink needs privilege")
+    @requires_symlinks
     def test_a_planted_link_is_refused_and_nothing_outside_is_touched(
         self, tmp_path, leaf: str
     ) -> None:

@@ -31,7 +31,7 @@ from typing import Any
 
 import pytest
 
-from conftest import make_dir_link
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew.project_scan import (
     Candidate,
     CandidateTree,
@@ -422,7 +422,7 @@ class TestGitignorePruning:
 
 
 class TestSymlinks:
-    @pytest.mark.skipif(_IS_WINDOWS, reason="directory symlinks need elevation on Windows")
+    @requires_symlinks
     def test_symlinked_directory_is_not_traversed(self, tmp_path: Path) -> None:
         outside = tmp_path / "outside"
         _make(outside, "secret/package.json")
@@ -434,14 +434,14 @@ class TestSymlinks:
 
         assert _relative_paths(tree, root) == ["app"]
 
-    @pytest.mark.skipif(_IS_WINDOWS, reason="directory symlinks need elevation on Windows")
+    @requires_symlinks
     def test_symlink_loop_back_to_the_root_terminates(self, tmp_path: Path) -> None:
         _make(tmp_path, "app/.git/")
         (tmp_path / "app" / "self").symlink_to(tmp_path, target_is_directory=True)
 
         assert _relative_paths(scan(tmp_path), tmp_path) == ["app"]
 
-    @pytest.mark.skipif(_IS_WINDOWS, reason="file symlinks need elevation on Windows")
+    @requires_symlinks
     def test_symlinked_manifest_still_signals(self, tmp_path: Path) -> None:
         # Only the filename is read, never the target, so honouring a symlinked
         # manifest cannot reach outside the root.
@@ -512,7 +512,7 @@ class TestDirectorySwapRace:
 
         monkeypatch.setattr(project_scan, "_read_dir", swapping_read_dir)
 
-    @pytest.mark.skipif(_IS_WINDOWS, reason="directory symlinks need elevation on Windows")
+    @requires_symlinks
     def test_a_directory_swapped_for_a_link_after_listing_is_not_read_through(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -536,7 +536,7 @@ class TestDirectorySwapRace:
         assert _relative_paths(tree, root) == ["kept"]
         assert any(str(root / "swapped") in warning for warning in tree.warnings)
 
-    @pytest.mark.skipif(_IS_WINDOWS, reason="directory symlinks need elevation on Windows")
+    @requires_symlinks
     def test_the_identity_check_alone_refuses_a_swap_that_changed_the_inode(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -676,7 +676,7 @@ class TestDirectorySwapRace:
         assert locked not in listed
         assert any(locked in warning for warning in tree.warnings)
 
-    @pytest.mark.skipif(_IS_WINDOWS, reason="directory symlinks need elevation on Windows")
+    @requires_symlinks
     def test_an_ancestor_of_the_root_swapped_after_validation_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1040,7 +1040,7 @@ class TestRootIdentityPin:
             scan(tmp_path, expected_identity=(dev, ino + 1))
         assert excinfo.value.directory == str(tmp_path)
 
-    @pytest.mark.skipif(_IS_WINDOWS, reason="directory symlinks need a privilege on Windows")
+    @requires_symlinks
     def test_a_root_replaced_by_a_symlink_reads_as_a_different_identity(
         self, tmp_path: Path
     ) -> None:
