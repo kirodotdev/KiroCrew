@@ -1181,10 +1181,10 @@ async def test_private_consolidation_pass_reuses_one_runtime_and_retires_it(
     async def _account(*_args, **_kwargs):
         order.append(f"account {client.session_id}")
 
-    from kiro_crew.llm_helpers_parts import background_turns
+    from kiro_crew import llm_helpers
 
-    monkeypatch.setattr(background_turns, "usage_has_billing", lambda _usage: True)
-    monkeypatch.setattr(background_turns, "_record_background_crew_log", lambda *a, **k: None)
+    monkeypatch.setattr(llm_helpers, "usage_has_billing", lambda _usage: True)
+    monkeypatch.setattr(llm_helpers, "_record_background_crew_log", lambda *a, **k: None)
     monkeypatch.setattr(usage_handlers, "persist_token_record_async", _account)
     sessions = MagicMock(
         get_or_create=AsyncMock(return_value=(client, True, False)),
