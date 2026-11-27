@@ -16,7 +16,6 @@ import hashlib
 import logging
 import threading
 import time
-import urllib.parse
 from collections import OrderedDict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -36,8 +35,8 @@ from kiro_crew.embeddings_model import (
     resolve_custom_model,
 )
 from kiro_crew.embeddings_ollama import (
-    _is_loopback_host,
     build_ollama_backend,
+    egress_host,
     ollama_backend_selected,
     resolve_ollama_settings,
 )
@@ -497,6 +496,10 @@ def default_embedding_backend() -> EmbeddingBackend:
         # resolve_ollama_settings refuses an unpermitted source or host itself, and
         # the tag records that same answer (not a second read that could differ).
         server = build_ollama_backend(memory)
+        # The host the egress rule was asked about, so the re-check asks the same one.
+        server._egress_host = egress_host(  # type: ignore[attr-defined]
+            server._settings.url, memory.get("ollama_allow_remote") is True
+        )
         error = str(getattr(getattr(server, "_settings", None), "error", "") or "")
         refused = error in (
             _source_gov.refused_reason(_source_gov.OLLAMA),
@@ -564,35 +567,29 @@ def _policy_allows(backend: EmbeddingBackend, source: str) -> bool:
 
     if not _source_gov.source_permitted(source):
         return False
-    if source != _source_gov.OLLAMA:
-        return True
-    url = str(getattr(getattr(backend, "_settings", None), "url", "") or "")
-    try:
-        host = urllib.parse.urlsplit(url).hostname or ""
-    except ValueError:  # an unparsable URL never sends (resolve_ollama_settings)
-        host = ""
-    return not host or _is_loopback_host(host) or _source_gov.egress_permitted(host)
+    host = getattr(backend, "_egress_host", "") if source == _source_gov.OLLAMA else ""
+    return not host or _source_gov.egress_permitted(host)
 
 
 def _with_policy_tag(backend: _B, source: str, allowed: bool) -> _B:
     """Record, in an LTS build, which source *backend* is and whether the policy
     *allowed* it when it was built, so :func:`get_shared_embedder` notices when that
-    answer changes. A refusal is written to SEL."""
+    answer changes. That decision is written to SEL once, either way."""
     from kiro_crew.edition import is_lts
 
     if is_lts():
         backend._embedding_source = source  # type: ignore[attr-defined]
         backend._policy_allowed = allowed  # type: ignore[attr-defined]
-        if not allowed:
-            from kiro_crew import edition_locks
-            from kiro_crew import embedding_source_governance as _source_gov
+        from kiro_crew import edition_locks
+        from kiro_crew import embedding_source_governance as _source_gov
 
-            edition_locks.audit_refusal(
-                f"embedding_source:{source}",
-                _source_gov.SCOPE,
-                source,
-                _source_gov.refused_reason(source),
-            )
+        edition_locks.audit_decision(
+            f"embedding_source:{source}",
+            _source_gov.SCOPE,
+            source,
+            allowed,
+            "the backend was built" if allowed else _source_gov.refused_reason(source),
+        )
     return backend
 
 
@@ -618,21 +615,32 @@ def _drop_if_policy_changed() -> None:
     A deny then takes effect without a restart: the next read rebuilds through
     :func:`default_embedding_backend`, which refuses the source the way a broken
     path is refused. An allow likewise rebuilds a refused backend.
+
+    Called from the event loop (the status route), so it never waits: a store
+    alignment in progress keeps the backend until the next read, and the outgoing
+    backend is torn down on a thread, since its close waits for a running inference.
     """
     global _shared_embedder
     with _shared_embedder_lock:
         current = _shared_embedder
     if current is None or not _policy_answer_changed(current):
         return
-    with _embedding_alignment_lock, _shared_embedder_lock:
-        if _shared_embedder is not current:
-            return
-        _shared_embedder = None
+    if not _embedding_alignment_lock.acquire(blocking=False):
+        return
+    try:
+        with _shared_embedder_lock:
+            if _shared_embedder is not current:
+                return
+            _shared_embedder = None
+    finally:
+        _embedding_alignment_lock.release()
     logger.warning(
         "The organisation's policy changed for the %s embedding source; rebuilding the embedder",
         getattr(current, "_embedding_source", ""),
     )
-    _retire_backend(current)
+    threading.Thread(
+        target=_retire_backend, args=(current,), name="kc-embed-retire", daemon=True
+    ).start()
 
 
 def _cached_after_policy_check() -> EmbeddingBackend | None:

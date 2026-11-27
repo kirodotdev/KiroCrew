@@ -77,8 +77,12 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
-def _url_error(url: str, allow_remote: bool) -> str:
-    """Why *url* may not be used, or ``""`` when it may."""
+def _url_error(url: str, allow_remote: bool, *, check_egress: bool = True) -> str:
+    """Why *url* may not be used, or ``""`` when it may.
+
+    In an LTS build a non-loopback host that passes every other rule is also asked
+    of ``network.egress``; *check_egress* off skips only that last question.
+    """
     try:
         parts = urllib.parse.urlsplit(url)
         host = parts.hostname or ""
@@ -102,11 +106,22 @@ def _url_error(url: str, allow_remote: bool) -> str:
         )
     if parts.scheme != "https":
         return "memory.ollama_url must use https:// for a non-loopback host"
+    if not check_egress:
+        return ""
     from kiro_crew.embedding_source_governance import EGRESS_REASON, egress_permitted
 
     if not egress_permitted(host):
         return EGRESS_REASON
     return ""
+
+
+def egress_host(url: str, allow_remote: bool) -> str:
+    """The host ``network.egress`` is asked about for *url*, or ``""``: a non-loopback
+    host of a URL that every other rule accepts. Reads no policy."""
+    if _url_error(url, allow_remote, check_egress=False):
+        return ""
+    host = urllib.parse.urlsplit(url).hostname or ""
+    return "" if _is_loopback_host(host) else host
 
 
 def resolve_ollama_settings(memory: dict) -> OllamaSettings:

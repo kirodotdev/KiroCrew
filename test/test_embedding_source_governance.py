@@ -15,6 +15,8 @@ The local policy tiers and the host profile are in
 from __future__ import annotations
 
 import dataclasses
+import threading
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -97,6 +99,13 @@ def _ollama(memory: dict, url: str = _LOCAL) -> None:
 
 def _refused_local(backend: Any) -> bool:
     return backend.model_path.name == _REJECTED_MODEL_SENTINEL
+
+
+def _join_retire() -> None:
+    """Wait for the background teardown a policy change starts."""
+    for thread in threading.enumerate():
+        if thread.name == "kc-embed-retire":
+            thread.join(timeout=10)
 
 
 def _allowed() -> dict:
@@ -227,6 +236,7 @@ class TestTheCachedEmbedder:
         policy(_rule("allow", "[bundled]"))
         refused = emb.get_shared_embedder()
         assert refused is not first
+        _join_retire()
         assert first._closed is True
         assert refused.is_ready() is False
         assert emb.get_shared_embedder() is refused
@@ -296,6 +306,71 @@ class TestTheCachedEmbedder:
         assert backend.embed_batch([f"t{i}" for i in range(20)]) is None
         assert len(sent) == 1
 
+    @pytest.mark.parametrize(
+        ("url", "allow_remote"),
+        [("http://ollama.corp.example", True), (_REMOTE, False)],
+    )
+    def test_a_misconfigured_remote_url_is_not_rebuilt_on_every_read(
+        self, policy, memory, url, allow_remote
+    ):
+        """Egress is never asked about a URL an earlier rule refuses, so the build's
+        tag and the re-check agree and the backend stays cached."""
+        policy(_rule("allow", "[ollama]"))
+        _ollama(memory, url)
+        memory["ollama_allow_remote"] = allow_remote
+        first = emb.get_shared_embedder()
+        assert first.is_ready() is False
+        assert emb.get_shared_embedder() is first
+
+    def test_each_build_audits_its_decision_once(self, policy, memory, monkeypatch):
+        rows: list = []
+        monkeypatch.setattr(edition_locks, "audit_decision", lambda *args: rows.append(args[1:4]))
+        emb.get_shared_embedder()
+        emb.get_shared_embedder()
+        assert rows == [(gov.SCOPE, gov.BUNDLED, True)]
+        policy(_rule("allow", "[ollama]"))
+        emb.get_shared_embedder()
+        assert rows[-1] == (gov.SCOPE, gov.BUNDLED, False)
+
+    def test_a_policy_change_never_waits_on_the_old_backend(self, policy, memory, monkeypatch):
+        policy(_rule("allow", "[ollama]"))
+        _ollama(memory)
+        first = emb.get_shared_embedder()
+        release = threading.Event()
+        monkeypatch.setattr(first, "close", lambda: release.wait(10))
+        policy(_rule("allow", "[bundled]"))
+        started = time.monotonic()
+        assert emb.get_shared_embedder() is not first
+        assert time.monotonic() - started < 2
+        release.set()
+        _join_retire()
+
+    def test_a_running_alignment_defers_the_swap(self, policy, memory):
+        from kiro_crew import embeddings_shared
+
+        policy(_rule("allow", "[ollama]"))
+        _ollama(memory)
+        first = emb.get_shared_embedder()
+        policy(_rule("allow", "[bundled]"))
+        held = threading.Event()
+        done = threading.Event()
+
+        def hold():
+            with embeddings_shared._embedding_alignment_lock:
+                held.set()
+                done.wait(10)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        held.wait(10)
+        try:
+            assert emb.get_shared_embedder() is first
+        finally:
+            done.set()
+            holder.join(10)
+        assert emb.get_shared_embedder() is not first
+        _join_retire()
+
     def test_an_unparsable_ollama_url_falls_back_without_raising(self, policy, memory):
         policy(_rule("allow", "[ollama]"))
         _ollama(memory, "https://[::1")
@@ -313,6 +388,7 @@ def test_warming_a_denied_model_retires_it_instead(policy, memory, monkeypatch):
     policy(_rule("allow", "[bundled]"))
     emb.warm_embedder_for_person()
     assert woken == []
+    _join_retire()
     assert first._closed is True
 
 
