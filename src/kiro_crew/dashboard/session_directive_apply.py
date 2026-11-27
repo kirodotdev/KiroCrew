@@ -150,7 +150,7 @@ def person_only_directive_refuser(
     For a turn no session applier reads (a cron job, a workflow agent step): each
     ``USER_ORIGIN_DIRECTIVES`` call the turn completes is refused with
     :func:`refuse_user_origin_directive` and its text appended to *refusals* for
-    the caller to lead its result with. The call is named from any of its frames
+    the caller to lead its result with. The call is named before its result
     the way the dashboard's out-of-band claim names it
     (``directive_tool_from_call``), never from the result body, which a harness
     may reshape (KAS). Nothing is applied, so a forged title buys only a refusal
@@ -160,23 +160,34 @@ def person_only_directive_refuser(
     from kiro_crew.agent_sdk.context import CONTEXT_EVENT_TOOL_RESULT
     from kiro_crew.directive_origin import USER_ORIGIN_DIRECTIVES
 
-    person_only_calls: dict[str, str] = {}
+    call_tools: dict[str, str] = {}
+    trusted_calls: set[str] = set()
 
     async def _on_event(event: Any) -> None:
         call_id = event.tool_call_id
         if not call_id:
             return
         if event.kind != CONTEXT_EVENT_TOOL_RESULT:
-            tool = session_directive.directive_tool_from_call(
-                event.mcp_server_name or "", event.tool_name or "", event.wire_title or ""
-            )
-            if tool in USER_ORIGIN_DIRECTIVES:
-                person_only_calls[call_id] = tool
+            if call_id in trusted_calls:
+                return
+            server, name = event.mcp_server_name or "", event.tool_name or ""
+            trusted_tool = session_directive.directive_tool_for(server, name)
+            stamp = getattr(event, "claude_mcp_tool_name", "")
+            if trusted_tool:
+                trusted_calls.add(call_id)
+                call_tools[call_id] = trusted_tool
+            elif stamp or call_id not in call_tools:
+                tool = session_directive.directive_tool_from_call(
+                    server, name, event.wire_title or "", claude_mcp_tool_name=stamp
+                )
+                if tool or stamp:
+                    call_tools[call_id] = tool
             return
-        if event.tool_final and call_id in person_only_calls:
-            refusals.append(
-                refuse_user_origin_directive(session_key, person_only_calls.pop(call_id))
-            )
+        if event.tool_final:
+            trusted_calls.discard(call_id)
+            tool = call_tools.pop(call_id, "")
+            if tool in USER_ORIGIN_DIRECTIVES:
+                refusals.append(refuse_user_origin_directive(session_key, tool))
 
     return _on_event
 

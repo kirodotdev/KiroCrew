@@ -1204,10 +1204,9 @@ class AcpEvent:
     #: second ``tool_call`` frame named the same id differently in the turn; empty
     #: on every other backend.
     deepseek_tool_name: str = ""
-    #: claude-agent-acp's own ``_meta.claudeCode.toolName`` on a claude ``tool_call``
-    #: frame, when it names an MCP tool (``mcp__<server>__<tool>``); empty for a
-    #: built-in and on every other backend. Adapter-authored, never the title.
-    #: Read by ``ToolCallState.identity_of`` alone, for Crew's own server.
+    #: claude-agent-acp's ``_meta.claudeCode.toolName`` on a call or refinement.
+    #: Includes built-in names so a directive selector can distinguish an
+    #: explicit tool name from an absent stamp. Empty on other backends.
     claude_mcp_tool_name: str = ""
     #: Why a DeepSeek Harness READ_ONLY turn refuses this request outright: its
     #: launch did not prove stock dsh registers the read tools. Set only on a

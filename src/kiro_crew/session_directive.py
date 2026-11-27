@@ -675,21 +675,20 @@ def call_input_digest(tool: str, raw_args: Any) -> str:
 _RUNNING_PREFIX = "Running: "
 
 
-def directive_tool_from_call(mcp_server_name: str, tool_name: str, title: str) -> str:
+def directive_tool_from_call(
+    mcp_server_name: str, tool_name: str, title: str, *, claude_mcp_tool_name: str = ""
+) -> str:
     """The directive tool a tool CALL frame was for, or ``""`` -- the consumer's
     half of :func:`call_input_digest`'s ``tool`` argument.
 
     Trusted identity first: :func:`directive_tool_for` over the ``_meta.kiro``
-    pair (kiro-cli). A backend that emits none still names the tool on the
-    wire: kiro-agent's MCP wrapper (KAS) sets the ``tool_call`` title to
-    ``@<serverName>/<toolName>`` from its own tool config, and claude-agent-acp
-    (Claude) passes Claude's raw tool name ``mcp__<server>__<tool>`` through as
-    the title. opencode names an MCP tool ``<server>_<tool>`` with a SINGLE
-    underscore and emits no ``_meta.kiro`` at all, so for that harness the title
-    is the only identity a call carries (measured on 1.18.30 --
-    ``agent-host-contract.md`` section 9). Any of the three spellings with
-    ``kirocrew-core`` as the server resolves.
-    Anything else is ``""``, and a call with no resolvable tool records no digest.
+    pair (kiro-cli), then Claude's ``_meta.claudeCode.toolName`` stamp when
+    present. A built-in or a foreign server in that stamp resolves to ``""``.
+
+    The wire title is the fallback for frames without a stamp. KAS uses
+    ``@<serverName>/<toolName>``, older Claude frames use
+    ``mcp__<server>__<tool>``, and opencode uses ``<server>_<tool>`` with a
+    single underscore. Each spelling must name a directive on ``kirocrew-core``.
 
     *title* MUST be the frame's ``wire_title`` -- the backend's own field -- and
     never the display ``title``: ``acp/_dispatch.select_tool_title`` fills the
@@ -705,6 +704,11 @@ def directive_tool_from_call(mcp_server_name: str, tool_name: str, title: str) -
     resolved = directive_tool_for(mcp_server_name or "", tool_name or "")
     if resolved:
         return resolved
+    if claude_mcp_tool_name:
+        from kiro_crew.acp.harness_tool_names import claude_fused_mcp_tool
+
+        candidate = claude_fused_mcp_tool(claude_mcp_tool_name, CORE_MCP_SERVER, (CORE_MCP_SERVER,))
+        return candidate if candidate in DIRECTIVE_TOOLS else ""
     if not isinstance(title, str) or not title:
         return ""
     # kiro-cli and KAS both prefix a tool-call title with the backend's own
@@ -719,10 +723,7 @@ def directive_tool_from_call(mcp_server_name: str, tool_name: str, title: str) -
     if title.startswith(prefix):
         candidate = title[len(prefix) :].strip()
         return candidate if candidate in DIRECTIVE_TOOLS else ""
-    # Claude (claude-agent-acp): ``toolInfoFromToolUse`` has no MCP case, so the
-    # title is the raw Claude tool name, ``mcp__<server>__<tool>``. Same server
-    # check, spelled the way that adapter spells it; the server half is what a
-    # third-party server exposing a same-named tool fails.
+    # Legacy Claude wire title for frames without a name stamp.
     if title.startswith(f"mcp__{CORE_MCP_SERVER}__"):
         candidate = title[len(f"mcp__{CORE_MCP_SERVER}__") :].strip()
         return candidate if candidate in DIRECTIVE_TOOLS else ""

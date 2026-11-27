@@ -713,7 +713,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             mcp_identity_trusted=event_mcp_trusted,
             diff_path=_diff_path,
             harness_tool_id=_event_tool_id,
-            claude_mcp_tool_name=claude_mcp_stamp(update, _stated_tool_name, backend=self.backend),
+            claude_mcp_tool_name=claude_mcp_stamp(update, backend=self.backend),
             # Off the RAW kind: the argument naming the file this call reads, for the
             # row's thumbnail strip (``acp.read_path_arg``).
             read_path_arg=read_path_arg(self.backend, update.get("kind")),
@@ -1068,6 +1068,7 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
         raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
         is_shell=is_shell,
         diff_path=_diff_path,
+        claude_mcp_tool_name=claude_mcp_stamp(update, backend=self.backend),
     )
     # The refined input may be the first to carry the shell command, so the
     # batch window classifies the call again (``acp.batch_guard``).

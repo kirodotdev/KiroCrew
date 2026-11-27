@@ -165,6 +165,8 @@ def directive_event_observer(tracker: DirectiveTracker) -> Callable[[Any], Await
         kind = getattr(event, "kind", "")
         if kind == EVENT_TOOL_CALL:
             tracker.record_tool_call(event)
+        elif kind == EVENT_TOOL_CALL_UPDATE:
+            tracker.record_tool_call_update(event)
         elif kind == EVENT_SUBAGENT_ACTIVITY:
             tracker.on_subagent_activity(event)
         elif kind == EVENT_TOOL_RESULT:
@@ -1155,6 +1157,8 @@ class TurnDriver:
                     directives.record_tool_call(event)
                 await hooks.on_tool_call(event)
             elif kind == EVENT_TOOL_CALL_UPDATE:
+                if directives is not None:
+                    directives.record_tool_call_update(event)
                 # The call's real title, for the card its tool_call opened: the
                 # same derivation as that call's, from the update's redacted
                 # ``tool_input`` (never ``raw_tool_params``), with the call's

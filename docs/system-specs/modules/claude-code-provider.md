@@ -504,6 +504,18 @@ harness's own config, a server Crew did not place, a mismatched name) keeps the 
 identity, so it stays title-only and `_foreign_mcp_identity` never refuses the user's
 own servers. Pinned by `test/test_claude_mcp_identity.py`.
 
+For a session directive's out-of-band record, the call's tool name comes from
+the trusted `_meta.kiro` pair first, then from Claude's
+`_meta.claudeCode.toolName` stamp. A Claude stamp must name a directive as
+`mcp__kirocrew-core__<tool>`. A built-in or another server in the stamp
+prevents the call from resolving by title. The legacy fused wire title is
+a fallback when there is no stamp. In claude-agent-acp 0.109.1 the wire
+title became `kirocrew-core: <tool>`, and the stamp still carries the fused
+name. This resolution selects a record by the call's input digest. Applying
+a marker from a tool result still requires the trusted core MCP pair.
+Dashboard and messaging can use a separate refinement delivered before the
+result to replace the selector or refresh it with the complete arguments.
+
 ### Session-scoped Claude settings
 
 `_write_claude_local_settings` writes `<work_dir>/.claude/settings.local.json` before

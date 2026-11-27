@@ -1960,10 +1960,13 @@ would carry only the tool's own "requested" text and no audit row would be
 written. `_cron_stream_with_posttoken_resume`, which both agent paths
 stream through, observes the stream with `person_only_directive_refuser`
 (`dashboard/session_directive_apply.py`, shared with workflow agent steps). It
-names each tool call from any of its frames the way the
-dashboard's out-of-band claim does (`directive_tool_from_call`: the
-`_meta.kiro` pair, else the wire title), never from the result body, which KAS
-re-serialises. On the call's completed result it refuses the directive with
+names each call before its result using `directive_tool_from_call`, as the
+dashboard's out-of-band claim does. It checks the trusted `_meta.kiro` pair,
+then Claude's `_meta.claudeCode.toolName` stamp, then the wire title when the
+stamp is absent. This last fallback includes Claude's legacy
+`mcp__kirocrew-core__<tool>` title. See the
+[Claude provider spec](claude-code-provider.md#mcp-tools-on-a-claude-session).
+On the call's completed result it refuses the directive with
 `refuse_user_origin_directive`, the user-origin gate's own wording and its SEL
 `denied` row. The refusals are run-scoped, as the missing-server notes are, so
 a refusal in an earlier `agent_sequence` step survives the next step's reply,
