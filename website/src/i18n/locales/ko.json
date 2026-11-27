@@ -22462,6 +22462,8 @@
       "gauges_latest": "최신 샘플",
       "credits_by_origin": "출처별 크레딧",
       "cost_by_origin": "출처별 비용",
+      "all_origins": "모든 출처",
+      "filter_by_origin": "출처별로 세션 필터링",
       "advice_title": "절약할 수 있는 곳",
       "advice_tip": "각 줄은 이 기간의 턴에서 측정한 값이며 추정이 아닙니다. 서브에이전트의 턴은 이 수치에 포함되지 않습니다.",
       "advice_high_context": "지출 비중 {{share}}: 컨텍스트가 {{tokens}} 이상인 턴에 쓰였습니다. 더 일찍 압축하세요",

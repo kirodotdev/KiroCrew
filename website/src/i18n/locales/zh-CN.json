@@ -22462,6 +22462,8 @@
       "gauges_latest": "最新采样",
       "credits_by_origin": "按会话归属的额度",
       "cost_by_origin": "按会话归属的费用",
+      "all_origins": "所有会话归属",
+      "filter_by_origin": "按会话归属筛选会话",
       "advice_title": "可以省钱的地方",
       "advice_tip": "每一行都是按这段时间内的轮次实测得出的，不是估算。子代理的轮次不计入这些数字。",
       "advice_high_context": "花费的 {{share}} 用在上下文超过 {{tokens}} 的轮次上：早点压缩",

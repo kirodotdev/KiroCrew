@@ -23618,6 +23618,8 @@
       "gauges_latest": "dernier échantillon",
       "credits_by_origin": "Crédits par origine",
       "cost_by_origin": "Coût par origine",
+      "all_origins": "Toutes les origines",
+      "filter_by_origin": "Filtrer les sessions par origine",
       "advice_title": "Où tu peux économiser",
       "advice_tip": "Chaque ligne est mesurée sur les tours de cette période, pas estimée. Les tours des sous-agents ne comptent pas dans ces chiffres.",
       "advice_high_context": "{{share}} des dépenses vont à des tours de plus de {{tokens}} de contexte : compacte plus tôt",

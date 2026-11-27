@@ -22462,6 +22462,8 @@
       "gauges_latest": "最新サンプル",
       "credits_by_origin": "発生元別のクレジット",
       "cost_by_origin": "発生元別のコスト",
+      "all_origins": "すべての発生元",
+      "filter_by_origin": "発生元でセッションを絞り込む",
       "advice_title": "節約できるところ",
       "advice_tip": "各行はこの期間のターンから実測した値で、推定ではありません。サブエージェントのターンはこの数値に含まれません。",
       "advice_high_context": "支出の{{share}}は、コンテキストが{{tokens}}を超えるターンに使われています。早めにコンパクトにしましょう",
