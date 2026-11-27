@@ -211,12 +211,12 @@ def test_nothing_is_left_out_when_the_template_is_refused_for_something_else(hom
 
 
 @pytest.mark.parametrize(
-    ("settings", "key", "dropped"),
+    ("settings", "kept", "folded"),
     [
         pytest.param(
             {"web_fetch": {"trusted": TRUSTED}, "webFetch": {"blocked": ["evil\\.example\\.com"]}},
-            "toolsSettings.web_fetch.trusted",
-            "toolsSettings.webFetch",
+            "web_fetch",
+            {"blocked": ["evil\\.example\\.com"]},
             id="web_fetch",
         ),
         pytest.param(
@@ -224,26 +224,26 @@ def test_nothing_is_left_out_when_the_template_is_refused_for_something_else(hom
                 "subagent": {"trustedAgents": ["reviewer"]},
                 "use_subagent": {"trustedAgents": ["builder"]},
             },
-            None,
-            "toolsSettings.use_subagent",
+            "subagent",
+            {"trustedAgents": []},
             id="subagent",
         ),
     ],
 )
-def test_nothing_is_left_out_when_the_tool_is_written_under_two_spellings(
-    home, settings, key, dropped
+def test_a_tool_written_under_two_spellings_is_folded_before_any_grant_is_left_out(
+    home, settings, kept, folded
 ):
-    """kiro-cli keeps one spelling of a tool and drops the other; leaving a key out
-    must not change which one the worker keeps, so the refusal names the dropped
-    spelling (and a key the worker would not carry anyway)."""
+    """The two spellings become one entry first (``mate_alias_fold``): a grant only
+    one spelling makes is not kept, so no held-grant row names it."""
     user, mates = home
     rules = [WEB_FETCH_ALLOW, SUBAGENT_ALLOW]
     _use(user, {**ATLAS, "permissions": {"rules": rules}, "toolsSettings": settings})
-    before = _file(mates)
-    detail = _refused(dropped, alone=False)
-    if key:
-        assert key in detail
-    assert _file(mates) == before
+    preview = _add()
+    tool_rows = [r for r in preview["changes"] if r["section"] == "toolsSettings"]
+    assert [(r["id"], r["change"], r.get("merged_from")) for r in tool_rows] == [
+        (kept, "added", list(settings))
+    ]
+    assert _file(mates)["toolsSettings"] == {kept: folded}
 
 
 # --- subagent.trustedAgents --------------------------------------------------------

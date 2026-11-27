@@ -24602,6 +24602,7 @@
     "approvals_hint": "新しい能力は初回の実行前に確認を求めます。自動実行は「承認」で許可します。",
     "approvals_hint_granted": "「自動承認」にあるツールは確認なしで実行されます。それ以外は初回に確認を求めます。",
     "change_skipped": "既存",
+    "change_merged_from": "{{spellings}} の両方で設定されています。より厳しい設定を残して統合しました。",
     "preview_adds": "{{template}} から {{count}} 件を追加",
     "preview_nothing_new": "{{template}} から追加される新しい項目はありません — すべて既にあります。",
     "retry": "再試行",

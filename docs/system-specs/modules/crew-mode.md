@@ -5513,9 +5513,36 @@ merge, as `resolve_worker_spec` does): `web_fetch.trusted` when the worker's own
 `allowedTools` derive a bare `web_fetch` allow (`allow_granted_by_spec`), and
 `subagent.trustedAgents` when every entry is a literal name that a carried
 `subagent` allow with no `exclude` lists in its `match` (a pattern is never
-proved covered). Nothing is left out when either tool is written under two
-kiro-cli spellings, so the refusal still names the one kiro-cli drops, nor when
-the revoked approvals cannot be read. Each one
+proved covered). Before that, a tool the agent sets under two or more kiro-cli
+spellings of one alias group (`shell` and `execute_bash`, `write` and
+`fs_write`) is folded into one entry under the key kiro-cli reads first
+(`mate_alias_fold.fold_alias_settings`), keeping the stricter value of each
+key: the union of deny lists (`deniedCommands`, `deniedPaths`,
+`web_fetch.blocked`), the intersection of grant lists (`allowedCommands`,
+`allowedPaths`, `web_fetch.trusted`, `trustedAgents`; a spelling that does not
+set one grants nothing), the narrower `availableAgents` (one spelling's list
+when the other sets none), `denyByDefault` when either sets it, and
+`autoAllowReadonly` only when every spelling sets it. A write `fallbackAction`
+counts as kiro-cli's default `"interactive"` on a spelling that does not set
+it: `"deny"` on any spelling wins, otherwise every spelling must give the same
+value (left out when none sets it), and a disagreement is refused by name.
+A deny is read as the gate reads it (`kas_permissions._write_falls_back_to_deny`:
+any case, or a value that is not a string), and the fold writes it as `"deny"`.
+When the request carries `without_write_fallback: true`, a disagreement with
+no deny folds to the first value other than `"interactive"` instead, and the
+check of what the worker keeps leaves it out as it does an unshared value,
+recorded in `left_out` under the folded key. Any other key is kept
+only when every spelling sets it the same. The fold never allows a call that
+either spelling alone would not; a key it cannot combine (a different value
+with no rule, a value of the wrong type, an entry that is not an object) is
+refused by name as `toolsSettings.<first spelling>.<key>`. Unlike
+`mate_spec_policy.fold_shell_settings` (upgrade and repair, which reproduce
+the spelling kiro-cli ran under), Add abilities keeps only what every spelling
+grants, so a folded worker can be narrower than an ordinary kiro-cli session
+of the agent, never wider. A fold shows on
+that tool's own `added` `toolsSettings` row as `merged_from` (the spellings),
+one muted line under the row's name; it adds no row of its own. Nothing is left out when the revoked
+approvals cannot be read. Each one
 left out is a `skipped` `toolsSettings` row
 ("Already has", id `<tool>.<key>`), so the worker behaves as the agent declares
 and no prompt appears or disappears. This runs at kit time only: the worker
@@ -5529,7 +5556,10 @@ of that agent applies: shell `deniedCommands`, `allowedCommands`,
 `denyByDefault` and `autoAllowReadonly`, read and write `deniedPaths` and
 `allowedPaths`, the write tool's `fallbackAction`, `web_fetch.blocked`, and
 `subagent.availableAgents` and `trustedAgents` under the `subagent` spelling
-only. Crew's gate answers the shell keys, the `allowedPaths` and a write
+only. `subagent.autoAllow` and `subagent.defaultAgent` are carried as written
+too (`mate_spec_policy._CARRIED_INERT`): neither KAS nor kiro-cli's documented
+sub-agent settings read them, so an ordinary session of the agent ignores them
+and the worker does the same. Crew's gate answers the shell keys, the `allowedPaths` and a write
 `fallbackAction` of `"deny"`, whose `spec-write-allowlist` row refuses every
 write-tool call of the worker's own agent that no usable `allowedPaths` entry
 covers, unasked; KAS turns `trustedAgents` into a `subagent` allow. A write

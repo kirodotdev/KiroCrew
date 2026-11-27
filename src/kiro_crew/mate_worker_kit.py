@@ -192,6 +192,17 @@ def _skipped(
     return rows
 
 
+def _mark_merged(changes: list[dict[str, Any]], tkit: dict[str, Any]) -> list[dict[str, Any]]:
+    """Name on each tool's ``added`` ``toolsSettings`` row the spellings the agent
+    set it under, when ``mate_alias_fold`` folded them into that one key
+    (``merged_from``). A fold whose key the add does not write marks nothing."""
+    folds = {fold["kept"]: fold["spellings"] for fold in tkit.get("alias_folds") or []}
+    for row in changes:
+        if row["section"] == "toolsSettings" and row["change"] == "added" and row["id"] in folds:
+            row["merged_from"] = list(folds[row["id"]])
+    return changes
+
+
 def _added(
     tkit: dict[str, Any],
     spec: dict[str, Any],
@@ -477,6 +488,7 @@ def _plan(member: str, body: Any) -> tuple[Path, dict[str, Any], dict[str, Any],
     worker already grants is left out first (:func:`_without_held_grants`) and
     recorded in the kit's ``held_grants``.
     """
+    from kiro_crew.mate_alias_fold import fold_alias_settings
     from kiro_crew.mate_config import MateConfigError, _carried_restrictions, _resolved_source_spec
     from kiro_crew.mate_config_migration import uncarried_restrictions
     from kiro_crew.mate_held_rules import _bundle_beside_rules
@@ -494,13 +506,25 @@ def _plan(member: str, body: Any) -> tuple[Path, dict[str, Any], dict[str, Any],
         # refuses a block that names one. Leaving it behind narrows; the rules
         # beside it are carried, as the upgrade path does (``mate_held_rules``).
         source = {**source, "permissions": {"rules": source["permissions"]["rules"]}}
+    # One tool written under two spellings becomes one entry, the stricter of both.
+    # When the owner chose to add the agent without a write fallbackAction its bot
+    # can't keep, spellings that disagree on it fold to a value the check below
+    # then leaves out, named under the folded key.
+    folded, tkit["alias_folds"], refused = fold_alias_settings(
+        source.get("toolsSettings"), keep_fallback=body.get(WITHOUT_WRITE_FALLBACK) is True
+    )
+    tkit["left_out"] = []
+    if refused:
+        raise WorkerKitError("template_restrictions_uncarried", detail=", ".join(refused))
+    if tkit["alias_folds"]:
+        source = {**source, "toolsSettings": folded}
     source, tkit["held_grants"] = _without_held_grants(source, spec, path.stem)
     lost = uncarried_restrictions(source)
     if lost and body.get(WITHOUT_WRITE_FALLBACK) is True:
         # The owner chose to add the agent without the value its bot can't keep.
         source = _without_uncarried_write_fallback(source, lost)
         after = uncarried_restrictions(source)
-        tkit["left_out"] = [field for field in lost if field not in after]
+        tkit["left_out"] += [field for field in lost if field not in after]
         lost = after
     if lost:
         # A restriction the worker would not keep exactly.
@@ -883,15 +907,18 @@ def preview(member: str, body: Any) -> dict[str, Any]:
         # The directions the slot holds now ("" when empty), so a preview that
         # replaces them can show what gets overwritten.
         "current_directions": current,
-        "changes": [
-            *_directions_change(current, tkit.get("prompt") or ""),
-            *_added(tkit, spec, base, new_spec),
-            *_approval_changes(spec, new_spec, base),
-            *_skipped(tkit, spec, base),
-            *_exclusion_changes(spec, new_spec),
-            *_muted_server_changes(spec, new_spec),
-            *_policy_changes(spec, new_spec),
-        ],
+        "changes": _mark_merged(
+            [
+                *_directions_change(current, tkit.get("prompt") or ""),
+                *_added(tkit, spec, base, new_spec),
+                *_approval_changes(spec, new_spec, base),
+                *_skipped(tkit, spec, base),
+                *_exclusion_changes(spec, new_spec),
+                *_muted_server_changes(spec, new_spec),
+                *_policy_changes(spec, new_spec),
+            ],
+            tkit,
+        ),
     }
 
 

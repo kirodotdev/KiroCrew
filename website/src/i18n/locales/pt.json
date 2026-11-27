@@ -25816,6 +25816,7 @@
     "approvals_hint": "Novas habilidades pedem permissão antes da primeira execução. Conceda a execução automática em Aprovações.",
     "approvals_hint_granted": "As ferramentas em Aprovações automáticas serão executadas sem perguntar. Todo o resto pergunta na primeira vez.",
     "change_skipped": "Já tem",
+    "change_merged_from": "Definido como {{spellings}} ao mesmo tempo; combinado, mantendo os ajustes mais rígidos.",
     "preview_adds": "Adiciona {{count}} de {{template}}",
     "preview_nothing_new": "{{template}} não adiciona nada novo — ele já tem tudo isso.",
     "retry": "Tentar novamente",

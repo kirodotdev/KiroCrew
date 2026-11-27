@@ -24602,6 +24602,7 @@
     "approvals_hint": "新能力首次运行前会先询问。在“审批”中授予自动运行权限。",
     "approvals_hint_granted": "“自动审批”下的工具会直接运行，无需询问。其他工具首次运行时会询问。",
     "change_skipped": "已拥有",
+    "change_merged_from": "同时写成了 {{spellings}}；已合并，保留更严格的设置。",
     "preview_adds": "从 {{template}} 添加 {{count}} 项",
     "preview_nothing_new": "{{template}} 没有可添加的新内容 — 这些都已拥有。",
     "retry": "重试",

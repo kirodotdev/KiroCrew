@@ -25209,6 +25209,7 @@
     "approvals_hint": "Neue Fähigkeiten fragen vor der ersten Ausführung nach. Erlaube die automatische Ausführung unter „Freigaben“.",
     "approvals_hint_granted": "Die Tools unter „Automatische Freigaben“ laufen ohne Nachfrage. Alles andere fragt beim ersten Mal nach.",
     "change_skipped": "Bereits vorhanden",
+    "change_merged_from": "Sowohl als {{spellings}} gesetzt; zusammengeführt, die strengeren Einstellungen bleiben.",
     "preview_adds": "Fügt {{count}} aus {{template}} hinzu",
     "preview_nothing_new": "{{template}} fügt nichts Neues hinzu — das ist alles schon vorhanden.",
     "retry": "Erneut versuchen",

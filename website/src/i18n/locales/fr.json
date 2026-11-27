@@ -25816,6 +25816,7 @@
     "approvals_hint": "Les nouvelles capacités demandent avant leur première exécution. Accorde l’exécution automatique dans Approbations.",
     "approvals_hint_granted": "Les outils listés dans Approbations automatiques s’exécuteront sans demander. Tout le reste demande la première fois.",
     "change_skipped": "Déjà présent",
+    "change_merged_from": "Défini à la fois comme {{spellings}} ; fusionné en gardant les réglages les plus stricts.",
     "preview_adds": "Ajoute {{count}} depuis {{template}}",
     "preview_nothing_new": "{{template}} n’ajoute rien de nouveau — il possède déjà tout cela.",
     "retry": "Réessayer",

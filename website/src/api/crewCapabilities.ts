@@ -103,6 +103,9 @@ export interface WorkerKitChange {
   /** `added`: written by the add. `skipped`: already present, so left alone. */
   /** `replaced`: the behaviour-directions slot already holds other directions. */
   change: 'added' | 'replaced' | 'skipped'
+  /** On an added `toolsSettings` row: the spellings the agent set this tool under,
+   *  written once under this key with the stricter of their settings. */
+  merged_from?: string[]
 }
 export interface WorkerKitPreview {
   member: string
