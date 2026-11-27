@@ -74,9 +74,13 @@ SKIP_CODE = re.compile(
     r"^(?:tool-missing:[\w.+-]+|no-network|unsupported-os|red-on-base:[0-9a-f]{7,40}"
     r"|other:\S.{28,}\S)$"
 )
+# The capture ends on a non-space, so the trailing ``\s*`` is the only reader
+# of the whitespace after it: a lazy capture beside ``\s*$`` rescanned that run
+# once per captured character. A tail of whitespace alone still yields the one
+# character the lazy form took, so every match is unchanged.
 PROOF_LINE = re.compile(
     r"^Gate proof:\s*tree\s+(?P<tree>[0-9a-f]{12});\s*ran\s+(?P<ran>\d+);"
-    r"\s*skipped\s+(?P<skipped>.+?)\s*$"
+    r"\s*skipped\s+(?P<skipped>\S(?:.*\S)?|[^\S\n](?=\n*\Z))\s*$"
 )
 
 
