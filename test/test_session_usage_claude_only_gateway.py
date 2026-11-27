@@ -18,6 +18,7 @@ import pytest
 from session_usage_helpers import _reset_usage_globals
 
 import kiro_crew.dashboard.handlers.sessions as sessions_mod
+from kiro_crew import members
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
 
 pytestmark = pytest.mark.usefixtures("no_ambient_kiro_api_key")
@@ -38,7 +39,9 @@ def _config(monkeypatch: pytest.MonkeyPatch, agents: dict[str, Any]) -> None:
         agents=agents,
     )
     monkeypatch.setattr("kiro_crew.config.KiroCrewConfig.load", lambda: config)
-    monkeypatch.setattr("kiro_crew.members_parts.member_sessions._SESSION_BACKEND_PICKS", {})
+    picks = members._SESSION_BACKEND_PICKS
+    for key in list(picks):
+        monkeypatch.delitem(picks, key)
 
 
 def _request() -> MagicMock:

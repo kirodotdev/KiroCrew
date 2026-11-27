@@ -367,7 +367,7 @@ def _whoami_skip_allowed() -> bool:
     from kiro_crew.agent_sdk.host_auth import backends_retired_by_host_logout
     from kiro_crew.config import KiroCrewConfig
     from kiro_crew.crewmate_harness import kiro_cli_runs_anywhere
-    from kiro_crew.members_parts.member_sessions import _SESSION_BACKEND_PICKS
+    from kiro_crew.members import _SESSION_BACKEND_PICKS
 
     try:
         config = KiroCrewConfig.load()

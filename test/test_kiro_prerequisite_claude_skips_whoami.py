@@ -20,6 +20,7 @@ from kiro_prerequisite_helpers import _agents_dir_never_the_real_home  # noqa: F
 from kiro_prerequisite_helpers import _isolate_agent_specs  # noqa: F401
 from kiro_prerequisite_helpers import _make_executable, _no_audit
 
+from kiro_crew import members
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService, ProcessResult
 from kiro_crew.testing.wait import await_until
@@ -37,9 +38,9 @@ def _service(
         agents=agents or {},
     )
     monkeypatch.setattr("kiro_crew.config.KiroCrewConfig.load", lambda: config)
-    monkeypatch.setattr(
-        "kiro_crew.members_parts.member_sessions._SESSION_BACKEND_PICKS", {}, raising=True
-    )
+    picks = members._SESSION_BACKEND_PICKS
+    for key in list(picks):
+        monkeypatch.delitem(picks, key)
     _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
     calls: list[list[str]] = []
 
@@ -243,10 +244,10 @@ async def test_a_crewmate_pinned_to_kiro_cli_keeps_whoami_on_the_status_poll(
 async def test_a_session_created_on_kiro_cli_keeps_whoami_on_the_status_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from kiro_crew.members_parts import member_sessions
-
     service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE)
-    member_sessions.note_session_backend_pick("dashboard:kiro-chat", "kiro")
+    # The table session_create writes (members.note_session_backend_pick), set and
+    # restored through monkeypatch so no other test sees the pick.
+    monkeypatch.setitem(members._SESSION_BACKEND_PICKS, "kiro-chat", "kiro")
 
     await _status_poll(service)
 
