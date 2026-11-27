@@ -102,7 +102,8 @@ Fill `{...}` from the spec; keep every clause — each one closes a failure mode
 > most repositories' own PR commit-count gate, so omitting it lets a branch read
 > `SAFE TO PUSH` and then fail that gate. Add `--require-single-on-base` only
 > when you actually squashed to one commit with the gate's `--squash`; it
-> asserts HEAD's only parent is `origin/<base>` and that the gate committed
+> asserts HEAD's only parent is `origin/<base>` or an older commit of it, that
+> HEAD merges into the fresh `origin/<base>` without a conflict, and that the gate committed
 > every path HEAD changes, and refuses a legitimate multi-commit branch or a
 > squash made by hand.
 > Commit and amend through the gate, by name: `<gate>/push_guard.py --commit -m

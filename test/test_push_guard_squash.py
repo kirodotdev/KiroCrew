@@ -130,7 +130,7 @@ class TestPushGuardSquash:
         _git(clone_dir, "merge", "-q", "--no-ff", "-m", "merge side", "side")
 
         rc, _, stderr = _run_push_guard(clone_dir, ["--require-single-on-base"])
-        assert rc == 40 and "are not exactly origin/main" in stderr, stderr
+        assert rc == 40 and "are not one commit of origin/main" in stderr, stderr
 
     def test_squash_runs_the_history_checks_first(self, repo_pair):
         """No brief ordering can skip the count: --squash refuses what the guard refuses."""
