@@ -354,6 +354,22 @@ def test_npm_bin_link_adapter_uses_the_ladder_node(monkeypatch, tmp_path):
     assert codex.codex_argv() == ["/fixture/node", os.path.realpath(script)]
 
 
+@pytest.mark.parametrize("shim_name", ["codex-acp.cmd", "codex-acp"])
+def test_npm_windows_shim_adapter_resolves_through_the_script_it_launches(
+    monkeypatch, tmp_path, shim_name
+):
+    # `npm i -g` on Windows: text shims in the prefix, the Codex nested in the adapter.
+    shim = _touch(tmp_path / shim_name)
+    package = tmp_path / "node_modules" / "@agentclientprotocol" / "codex-acp"
+    _touch(package / "dist" / "index.js")
+    script = _touch(package / "node_modules" / "@openai" / "codex" / "bin" / "codex.js")
+    _adapter(monkeypatch, [str(shim)])
+    monkeypatch.setattr(
+        client_spawn_env.launch_mod, "_resolve_node_for_script", lambda path: "/fixture/node"
+    )
+    assert codex.codex_argv() == ["/fixture/node", os.path.realpath(script)]
+
+
 def test_nothing_installed_reports_the_adapter_install(monkeypatch):
     _adapter(monkeypatch, None)
     monkeypatch.setattr(codex.sandbox, "credential_mask_applies", lambda mode: True)
