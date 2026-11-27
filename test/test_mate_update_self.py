@@ -1007,6 +1007,21 @@ def test_the_memory_card_text_never_says_nothing_changes(monkeypatch) -> None:
         assert "nothing changes" not in text.lower()
 
 
+@pytest.mark.parametrize("name", sorted(set(mcp_mate._PROPOSALS) - {"propose_memory_changes"}))
+def test_a_card_tool_tells_the_bot_to_say_what_it_proposed(name: str, monkeypatch) -> None:
+    """Banned UI copy: a bot repeats whatever its tool text tells it to say."""
+    from kiro_crew.mcp_mate_tool_list import _tool_definitions
+
+    tool = next(t for t in _tool_definitions() if t["name"] == name)
+    monkeypatch.setattr(mcp_mate, "_strict_session_key", lambda: ("dashboard:member-mate", ""))
+    monkeypatch.setattr(mcp_mate, "_post", lambda *_a, **_k: {"id": "c1", "status": "pending"})
+    out = mcp_mate._call_tool_inner(name, {})
+    assert "Say in one short line what you proposed" in out
+    assert "Reply with one short line saying what you proposed" in tool["description"]
+    for text in (tool["description"], out):
+        assert "nothing changes" not in text.lower()
+
+
 def test_every_member_tool_is_granted_and_schema_checked() -> None:
     from kiro_crew.agent import _MATE_AUTO_GRANTS, _MATE_SERVER
     from kiro_crew.validation import MCP_MATE_SCHEMAS

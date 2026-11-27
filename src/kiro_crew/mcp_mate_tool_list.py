@@ -70,9 +70,9 @@ _ONLY_WHEN_ASKED = (
 
 
 _CARD_NOTE = (
-    "Nothing changes when you call this: the user sees a card with a button in "
-    "this chat and decides. Write ONE reply that refers to the card and end your "
-    "turn; the outcome is given to you at the start of your next turn."
+    "It puts one card in this chat for the user to decide. Reply with one short "
+    "line saying what you proposed, then end your turn. The outcome is given to "
+    "you at the start of your next turn."
 )
 
 
@@ -346,9 +346,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "Offer, once, to build a Dashboard page around your goal: this raises one "
                 "card and writes nothing. Call it only when a Kiro Crew note in your turn "
                 "says you can offer one. If the user says yes you are woken to write the "
-                "page; if they say no, or let the card expire, nothing changes and you do "
-                "not ask again. A page the user asks for in chat needs no card: write it. "
-                + _CARD_NOTE
+                "page; if they say no, or let the card expire, you do not ask again. A "
+                "page the user asks for in chat needs no card: write it. " + _CARD_NOTE
             ),
             "inputSchema": {
                 "type": "object",

@@ -286,8 +286,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     return _render(
         {
             **d,
-            "next": "The card is in this chat above your reply. Refer to its button "
-            "once and end your turn; nothing changes until the user presses it.",
+            "next": "The card is in this chat above your reply. Say in one short line "
+            "what you proposed on it, and end your turn.",
         }
     )
 
