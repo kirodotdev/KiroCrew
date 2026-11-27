@@ -1739,11 +1739,17 @@ The mirrored steering reference records engine/version differences for condition
 modes, so Kiro uses the fallback selector instead of claiming full native support.
 A KAS member session records the `file://` resources its activated wire definition
 declares and, beside them, the operator's global always-steering
-(`global_always_steering_documents`, the same scan `kiro_launch_documents` runs):
-the KAS engine that registered the agent loads that tree itself whatever the
-inheritance setting says, so the snapshot a fresh session starts with blanks those
-bodies instead of sending them a second time. A Kiro Cloud sandbox registers no
-agent and never reads this machine's files, so it records neither.
+(`global_always_steering_documents`, the same scan `kiro_launch_documents` runs)
+and the workspace guides of the session's cwd: its `AGENTS.md` and the
+always-included documents of its `.kiro/steering` tree
+(`workspace_native_documents`, keyed as the snapshot keys them). The KAS engine
+that registered the agent loads all three itself whatever the inheritance setting
+says, so the snapshot a fresh session starts with blanks those bodies instead of
+sending them a second time (a steering file in neither tree, such as a folder
+guide, keeps its body). A workspace guide the snapshot would replace with a
+not-loaded note, or a cwd the snapshot would refuse, records nothing and does not
+stop the session. A Kiro Cloud sandbox registers no agent and never reads this
+machine's files, so it records none of them.
 
 Folder steering is deliberately NOT part of that launch contract. A chat filed
 into a folder that declares `steering_dirs` (see [config](config.md)) has those

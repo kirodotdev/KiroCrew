@@ -1795,13 +1795,47 @@ def global_always_steering_documents() -> dict[str, str]:
 
     The engine loads this tree itself, so a member snapshot blanks these bodies.
     """
-    # A link here is left out, as in the snapshot: kiro-cli follows it natively.
+    return _always_steering_documents(Path.home())
+
+
+@_managed_roots_scope()
+def workspace_native_documents(cwd: str) -> dict[str, str]:
+    """The workspace guides the KAS engine loads itself from a session's *cwd*.
+
+    Its ``AGENTS.md`` and the always-included documents of its ``.kiro/steering``
+    tree, keyed the way the member snapshot keys them, so the snapshot blanks these
+    bodies instead of sending them beside the engine's own copy. KAS has no switch
+    for this load (``kas_steering.inheritance_off_notice``), so neither does this
+    record. A guide the snapshot would name as not loaded is not recorded: the
+    snapshot sends that note, not a body.
+    """
+    documents: dict[str, str] = {}
+    try:
+        root = _admitted_project_root(cwd)
+        if root is None:
+            return documents
+        agents = root / "AGENTS.md"
+        if agents.exists() or agents.is_symlink():
+            body = _read_implicit_guide(agents, root)
+            if body is not None:
+                documents[str(agents)] = body
+        documents.update(_always_steering_documents(root))
+    except MemberEssentialContextError as exc:
+        # A cwd the snapshot would refuse too: nothing to blank, and a record
+        # that cannot be taken must not stop the session.
+        logger.warning("Workspace guides of %s not recorded: %s", cwd, exc)
+    return documents
+
+
+def _always_steering_documents(root: Path) -> dict[str, str]:
+    """The always-included documents of *root*'s ``.kiro/steering`` tree."""
+    # A link here is left out, as in the snapshot: the engine follows it natively.
     # Steering past the document cap is left out too, as in the snapshot: only the
     # always-included files kept here count against it.
     documents: dict[str, str] = {}
-    for path in _matches(Path.home(), ".kiro/steering/**/*.md", linked=[], over_cap=[]):
+    for path in _matches(root, ".kiro/steering/**/*.md", linked=[], over_cap=[]):
         try:
-            body = _read(path, Path.home())
+            body = _read(path, root)
         except _UnreadableEssentialSourceError as exc:
             logger.warning("Steering %s not loaded: %s", path, exc)
             continue
