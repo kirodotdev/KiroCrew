@@ -3187,6 +3187,29 @@ also leaves the dashboard status shell available, with an unavailable lesson
 count represented as null. Configuration failures that prevent a safe restore
 pass retain the installation-wide preparation fence.
 
+**Merging missing rows back (`member_memory_merge.py`).** A restore to an older
+backup drops the rows written after it; they survive in the `superseded-*` copy.
+`kirocrew memory restore --store <member-store> --merge-from <path>` adds to the live
+store only the rows that copy has and the live store lacks, without a restart.
+`<path>` is a `memory.db` of the same store, such as the one inside a `superseded-*`
+copy, not a backup bundle (a bundle goes through a whole-store restore). It must carry
+this store's member identity and pass `PRAGMA integrity_check`; an empty `--merge-from`
+is refused, and a pending restore refuses the merge. A source
+row is skipped when the live store has a row (live or deleted) with its id or key, so
+a row the owner deleted stays deleted; a keyless row (an episode) is also skipped when
+a live keyless row has its exact text. A fact's text is its value, so two facts with
+different keys and the same value are both kept. An added
+row is copied as it was: every `memory_items` column the live table has (id, text,
+value, source, `created_at`, `updated_at`, the carve facets), its
+`memory_record_meta` row, its revisions (appended under new ids) and its
+`memory_fts` row. A source vector is kept only when both databases record the same
+`embedding_space_sig` and `embedding_rebuild_generation`; otherwise the row lands with
+no vector and is queued for the repair sweep. A row that would break the
+active-fact identity index is skipped and named. The merge runs on the live store's
+own connection under `_db_lock` in one `BEGIN IMMEDIATE` transaction, so a concurrent
+writer waits on SQLite's busy timeout instead of being overwritten. Without `--apply`
+it is a dry run that takes the same path and rolls back.
+
 If the entire member directory is missing, explicit owner restore may recover
 it using exclusive configuration ownership plus the matching backup manifest.
 The journal records whether a prior directory existed when restoration was
