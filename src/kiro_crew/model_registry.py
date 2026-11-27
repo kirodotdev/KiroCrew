@@ -88,6 +88,11 @@ _FALLBACK_PROVIDER_IDS: dict[str, str] = {
     "claude-sonnet-5.5": "global.anthropic.claude-sonnet-5-5[1m]",
     "claude-sonnet-5-5": "global.anthropic.claude-sonnet-5-5[1m]",
     "claude-sonnet-5-5[1m]": "global.anthropic.claude-sonnet-5-5[1m]",
+    "haiku-5.5-1m": "global.anthropic.claude-haiku-5-5[1m]",
+    "haiku": "global.anthropic.claude-haiku-5-5[1m]",
+    "claude-haiku-5.5": "global.anthropic.claude-haiku-5-5[1m]",
+    "claude-haiku-5-5": "global.anthropic.claude-haiku-5-5[1m]",
+    "claude-haiku-5-5[1m]": "global.anthropic.claude-haiku-5-5[1m]",
     "fable-5.1-1m": "global.anthropic.claude-fable-5-1[1m]",
     "claude-fable-5.1": "global.anthropic.claude-fable-5-1[1m]",
     "claude-fable-5-1": "global.anthropic.claude-fable-5-1[1m]",
@@ -114,7 +119,7 @@ _FALLBACK_PROVIDER_IDS: dict[str, str] = {
 # ``claude_code`` only: on the ``acp`` (kiro) path these spellings are distinct
 # models (see ``to_acp_id``), so an ``acp`` caller still folds. ``haiku`` is
 # included so Claude Code serves its real Haiku rather than the registry's
-# Sonnet fold for ``claude-haiku-4.5``.
+# versioned Haiku 5.5 id, or the Sonnet fold for ``claude-haiku-4.5``.
 CLAUDE_CODE_PASSTHROUGH_ALIASES: frozenset[str] = frozenset({"sonnet", "opus", "haiku", "fable"})
 
 _REGISTRY: dict[str, dict[str, Any]] = {}
