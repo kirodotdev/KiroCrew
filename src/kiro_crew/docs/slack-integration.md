@@ -92,7 +92,7 @@ Available to all allowed users (no `!` prefix needed):
 |---------|-------------|
 | `/kirocrew dashboard` | Same as `!dashboard` |
 | `/kirocrew agent` | Switch the active agent |
-| `/kirocrew bot` | List Crew Bots. Slack runs no slash command in a thread, so send `!bot <name>` as a thread's first message to run that thread as a Bot |
+| `/kirocrew bot` | List Crew Bots, each by the key you type and the name the dashboard's Bots page shows (the first Bot reads `` `mate` (Bot) `` until you rename it); either one names it. The reserved `default` agent is not in the list. Slack runs no slash command in a thread, so send `!bot <name>` as a thread's first message to run that thread as a Bot |
 | `/kirocrew conductor <goal>` | The owner, or a shared user (`slack.shared_access`). Post the goal as a new message here and make its thread a Conductor thread: one way, only the owner's and the starter's messages reach it, workers show as status. In an existing thread, send `!conductor [goal]` instead. Off until Conductor threads are turned on |
 | `/kirocrew voice` | Configure TTS voice settings |
 | `/kirocrew yolo` | Toggle auto-approve for all tool calls |

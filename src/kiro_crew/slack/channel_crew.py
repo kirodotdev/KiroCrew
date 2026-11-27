@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
+from kiro_crew.agent_files import member_label
+
 logger = logging.getLogger(__name__)
 
 
@@ -106,49 +108,69 @@ def context_template(name: str | None, crew: ChannelCrew | None = None) -> str |
     return record.kiro_agent if record is not None else name
 
 
-def crew_bots() -> dict[str, str]:
-    """Every Crew Bot, a ``config.agents`` key, mapped to its display name ("" if none).
-
-    The Bots a person may put a Slack thread on (``!bot``, ``/kirocrew bot``).
-    Blocking like :func:`resolve_channel_crew`; an unreadable config lists none.
-    """
+def _bot_records() -> dict[str, Any]:
+    """``config.agents`` as last applied. Blocking; an unreadable config holds none."""
     try:
         from kiro_crew.config import KiroCrewConfig, live
 
         cfg = live.snapshot() or KiroCrewConfig.load()
-        return {
-            key: str(getattr(record, "display_name", "") or "")
-            for key, record in (getattr(cfg, "agents", None) or {}).items()
-        }
+        return dict(getattr(cfg, "agents", None) or {})
     except Exception:
         logger.debug("slack bot list: config not readable", exc_info=True)
         return {}
 
 
+def crew_bots() -> dict[str, str]:
+    """Every Crew Bot, a ``config.agents`` key, mapped to the label the dashboard shows.
+
+    The Bots a person may put a Slack thread on (``!bot``, ``/kirocrew bot``). The
+    label is ``agent_files.member_label``: the display name, else "Bot" for the first
+    crewmate, else the key. Blocking like :func:`resolve_channel_crew`; an unreadable
+    config lists none.
+    """
+    return {key: member_label(key, record) for key, record in _bot_records().items()}
+
+
 def resolve_bot_name(typed: str) -> str | None:
     """The ``config.agents`` key *typed* names, or ``None``.
 
-    An exact key wins; otherwise a key or display name that differs only in case.
-    Blocking: call it off the loop.
+    An exact key wins; then a key or display name that differs only in case; then
+    the label :func:`bots_text` shows, so the first crewmate answers to "Bot" and a
+    name a person chose is never taken by that stand-in. Blocking: call it off the loop.
     """
-    bots = crew_bots()
-    if typed in bots:
+    records = _bot_records()
+    if typed in records:
         return typed
     folded = typed.casefold()
-    for key, label in bots.items():
-        if folded and folded in (key.casefold(), label.casefold()):
+    if not folded:
+        return None
+    for key, record in records.items():
+        if folded in (key.casefold(), str(getattr(record, "display_name", "") or "").casefold()):
+            return key
+    for key, record in records.items():
+        if folded == member_label(key, record).casefold():
             return key
     return None
 
 
 def bots_text() -> str:
-    """The Bots as one Slack line: `` `key` (Display name), ...``. Blocking."""
-    bots = crew_bots()
+    """The Bots as one Slack line: `` `key` (Label), ...``. Blocking.
+
+    The key is what a person types; the label is the name the dashboard's Bots page
+    shows. The reserved ``default`` record is left out: it is the install's main
+    agent, not a Bot a person made. Its key still resolves.
+    """
+    # Deferred: the members facade loads the dashboard handlers, which importing the
+    # Slack handler alone does not; a gateway that lists Bots has loaded them already.
+    from kiro_crew.dashboard.handlers.members import RESERVED_DEFAULT_MEMBER
+
+    # shortcut: the Bots page lists ``default`` once the person has written in its
+    # thread, and this list never does; read that thread here if the two must agree.
+    bots = {key: label for key, label in crew_bots().items() if key != RESERVED_DEFAULT_MEMBER}
     if not bots:
         return "(none found)"
     return ", ".join(
-        f"`{key}`" + (f" ({label})" if label and label != key else "")
-        for key, label in bots.items()
+        f"`{key}`" + (f" ({label})" if label != key else "") for key, label in bots.items()
     )
 
 
