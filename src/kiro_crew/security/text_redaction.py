@@ -469,9 +469,9 @@ class StreamRedactor:
             # A credential label glued to the dropped run (`.../Authorization:`,
             # `...SecretAccessKey = `) must survive it: its own value follows
             # whitespace the discard stops at, and would stream with no label.
-            # Only when the AWS value is the sole carrier: an enclosing Bearer,
-            # JWT or token value must keep dropping until its own terminator.
-            if self._discard_kind == ("aws-keyed",):
+            # Only when the AWS value or glued chain is the sole carrier: an
+            # enclosing Bearer, JWT or token must drop until its own terminator.
+            if self._discard_kind in (("aws-keyed",), ("credential-run",)):
                 run = stream_aws_anchor.label_backoff(self._buf, run)
                 # A key name the run ends at, followed so far only by a little
                 # whitespace, may still get its separator in the next chunk:
@@ -486,7 +486,11 @@ class StreamRedactor:
             if run == len(self._buf):
                 # Keep the tail still in the discard, so a label split across
                 # chunks is seen whole on the next pass.
-                carry = stream_aws_anchor.LABEL_CARRY if "aws-keyed" in kinds else 0
+                carry = (
+                    stream_aws_anchor.LABEL_CARRY
+                    if "aws-keyed" in kinds or "credential-run" in kinds
+                    else 0
+                )
                 kept = max(0, len(self._buf) - carry)
                 self._left(self._buf[:kept])
                 self._buf = self._buf[kept:]
@@ -762,7 +766,9 @@ class StreamRedactor:
                 # still going at the buffer end may hold more of the chain, so it
                 # is dropped whole and the next chunk continues the drop.
                 rest = _STREAM_DISCARD_RUN_RES["credential-run"].match(self._buf, chain_end)
-                if rest is not None and rest.end() == len(self._buf):
+                if rest is not None and stream_aws_anchor.label_backoff(
+                    self._buf, rest.end(), chain_end
+                ) == len(self._buf):
                     chain_end = len(self._buf)
                 commit = self._buf[:chain_start]
                 dropped = self._buf[chain_start:chain_end]

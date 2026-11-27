@@ -180,6 +180,19 @@ def test_the_chat_stream_redacts_a_glued_chain_past_its_hold(size: int, parts: l
     assert out.startswith("tokens: ") and out.endswith(" end")
 
 
+@pytest.mark.parametrize("size", [1, 7, 64])
+@pytest.mark.parametrize("label", ["Authorization:", "authorization:"])
+def test_the_chat_stream_keeps_a_label_after_a_dropped_chain(size: int, label: str) -> None:
+    from kiro_crew import security
+
+    parts = ["hf_" + synth(34, ALNUM, 100 + k) for k in range(30)]
+    token = synth(30, ALNUM, 300)
+    text = "tokens: " + "".join(parts) + "/" + label + " " * 1500 + "Bearer " + token + " end"
+    out = _streamed(security.StreamRedactor(), text, size)
+    assert token not in out
+    assert _kept(parts, out) == []
+
+
 @pytest.mark.parametrize("size", [7, 64])
 def test_the_chat_stream_keeps_the_text_after_a_dropped_chain(size: int) -> None:
     from kiro_crew import security
