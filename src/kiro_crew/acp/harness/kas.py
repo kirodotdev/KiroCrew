@@ -59,6 +59,7 @@ from kiro_crew.acp.harness.base import (
 )
 from kiro_crew.acp.harness.kas_missing_agent import _kiro_cli_builtin_reason, _missing_agent_reason
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
+from kiro_crew.acp.kas_agents_session_hoist import without_subagent_refused_servers
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_endpoints import CLOUD_CONFIG_ENDPOINT_ENV
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
@@ -1741,6 +1742,8 @@ class KasHarness(MembershipHarness):
                 # A sub-agent run is refused what the sessions above it are refused.
                 custom_agents = hold_to_parents(custom_agents, agent, session_key, folder)
                 custom_agents = limit_to_founders(custom_agents, agent, spec, founding)
+                # Nor does it start a server whose every tool refuses it.
+                custom_agents = without_subagent_refused_servers(custom_agents, session_key)
             except ParentLimitsUnreadable as exc:
                 # Refused, never started without its parents' denies.
                 raise AcpAgentUnavailable(str(exc), agent=agent) from exc
