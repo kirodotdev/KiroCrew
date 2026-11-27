@@ -753,8 +753,22 @@ take the hold in `cli.main` after argument parsing.
   process-wide, because a restart replaces the process and with it the reason for
   the note. The status frame carries it as `update_restart_ready`,
   `update_restart_ready_version` and `update_restart_ready_reason`
-  (`status_update_fields`, `status_snapshot`); the update pill reads "Update
-  ready", and the update dialog's primary action becomes "Restart to update".
+  (`status_update_fields`, `status_snapshot`). Every writer of the note records
+  the version that was on offer: the coordinator and the approved in-app wheel
+  mark the version they installed, and `note_installed_beside` marks the offered
+  version only when the restart tree holds exactly it, leaving a tree with any
+  other version unnoted until a check offers that version. So within a lane the
+  staged version is never newer than the offer, and a staged version newer than
+  the offer was staged from another lane (an insider `0.14.1rc2` staged, then
+  Stable picked with its feed at `0.14.0rc5`), where a restart would start it
+  and skip the switch. The update pill reads "Update ready", and the update
+  dialog's primary action becomes "Restart to update" when the note carries no
+  version or names the raw offer itself (`stagedConsumesOffer` in
+  `releaseVersion.ts`, equality by `compareVersions`, read by
+  `UpdateFoundModal`), as the About page's update card already offers Restart
+  only for the offer itself (`useInstalledAndWaiting`, `staged === offered`);
+  any other staged version, older or newer, keeps the offer's install action on
+  both.
   A diagnostics bundle the dashboard collects compares the running version with
   the staged one while no live-target pointer is set and
   `wheel_apply.restart_reaches` still holds for it ([cli](cli.md),

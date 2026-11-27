@@ -6,7 +6,10 @@
 //   status frame, so a fresh mount (a reload) shows a Restart action, not the
 //   Update button for the version that is already installed
 // - that Restart action posts /api/restart after its two-step confirm
-// - a staged version that is not the offered one leaves the Update offer up
+// - only the offered version staged shows Restart: an older staged version leaves
+//   the Update offer up (a restart would start the older one), and so does a
+//   newer one (it was staged from another lane, and a restart would skip the
+//   switch to this one)
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -101,6 +104,25 @@ describe('AboutPanel: an installed update waiting for a restart', () => {
     expect(posts.some(p => p.url.includes('/api/update/arm'))).toBe(false)
   })
 
+  it('keeps the Update offer when the staged version is newer than the offer', async () => {
+    // Every writer of the note records the version that was on offer, so within
+    // a lane the staged build is never newer than the offer: a newer one was
+    // staged from another lane, and a restart would start it instead of the offer.
+    stubFetch()
+    store.dispatch(sseStatus({
+      ...ARMABLE_STATUS,
+      update_restart_ready: true,
+      update_restart_ready_version: '10.0.0',
+      update_restart_ready_reason: 'staged',
+    } as never))
+    mountWeb()
+
+    await screen.findByTestId('in-app-update-action')
+    expect(screen.queryByTestId('in-app-update-installed')).toBeNull()
+    expect(screen.queryByTestId('gateway-restart-installed')).toBeNull()
+    expect(screen.queryByTestId('hero-update-ready')).toBeNull()
+  })
+
   it('offers Update for a newer build a Check finds while an older one is staged', async () => {
     // v1 (9.9.9) is staged and the status frame still names it as the latest
     // with no offer up yet; a Check then finds v2 (10.0.0) before the next
@@ -179,7 +201,7 @@ describe('AboutPanel: an installed update waiting for a restart', () => {
     expect(screen.queryByTestId('gateway-restart-armed')).toBeNull()
   })
 
-  it('keeps the Update offer when the installed version is not the offered one', async () => {
+  it('keeps the Update offer when the staged version is older than the offer', async () => {
     stubFetch()
     store.dispatch(sseStatus({
       ...ARMABLE_STATUS,
@@ -192,5 +214,57 @@ describe('AboutPanel: an installed update waiting for a restart', () => {
     await screen.findByTestId('in-app-update-action')
     expect(screen.queryByTestId('in-app-update-installed')).toBeNull()
     expect(screen.queryByTestId('gateway-restart-installed')).toBeNull()
+  })
+
+  it('keeps the Stable install when a newer insider build is staged', async () => {
+    // Insider 0.14.0rc4 running with 0.14.1rc2 staged; the person picks Stable,
+    // whose feed offers 0.14.0rc5. The running build is not ahead of Stable, so
+    // no channel move is pending, yet Stable never shipped the staged build and
+    // a restart would start it instead of installing Stable. The install flow
+    // stays and no Restart replaces it.
+    stubFetch()
+    store.dispatch(sseStatus({
+      ...BLANK_STATUS,
+      version: '0.14.0rc4',
+      version_display: '0.14.0-insider.4',
+      update_available: true,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
+      update_can_arm: true,
+      update_channel: 'stable',
+      update_channel_move_pending: false,
+      update_latest_version: '0.14.0rc5',
+      update_latest_version_display: '0.14.0',
+      update_managed_by: 'kirocrew',
+      update_command: 'curl -fsSL https://example.invalid/cli.sh | sh -s -- --channel stable',
+      update_restart_ready: true,
+      update_restart_ready_version: '0.14.1rc2',
+      update_restart_ready_reason: 'staged',
+    } as never))
+    mountWeb()
+
+    const flow = await screen.findByTestId('in-app-update')
+    expect(flow.textContent).toContain('0.14.0')
+    expect(screen.queryByTestId('in-app-update-installed')).toBeNull()
+    expect(screen.queryByTestId('gateway-restart-installed')).toBeNull()
+    expect(screen.queryByTestId('hero-update-ready')).toBeNull()
+  })
+
+  it('names the folded display version when the staged build is the stable offer', async () => {
+    stubFetch()
+    store.dispatch(sseStatus({
+      ...ARMABLE_STATUS,
+      update_channel: 'stable',
+      update_latest_version: '0.14.0rc5',
+      update_latest_version_display: '0.14.0',
+      update_restart_ready: true,
+      update_restart_ready_version: '0.14.0rc5',
+      update_restart_ready_reason: 'staged',
+    } as never))
+    mountWeb()
+
+    const card = await screen.findByTestId('in-app-update-installed')
+    expect(card.textContent).toContain('0.14.0')
+    expect(card.textContent).not.toContain('0.14.0rc5')
   })
 })
