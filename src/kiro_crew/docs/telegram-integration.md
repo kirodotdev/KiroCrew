@@ -91,7 +91,8 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
   it after the current turn (overrides `queue_mode` for this message)
 - `/agent` (or `/agents`) — pick the agent from an inline-button list of the specs installed on
   this machine, except Kiro Crew's own internal agents and app-installed
-  (`<app>--<agent>`) agents. It shows at most 24; a final inert
+  (`<app>--<agent>`) agents. A Bot's own copy of a template is labelled with the
+  Bot's name as the Bots page shows it. It shows at most 24; a final inert
   "… and N more not shown" row counts the rest. Button-only for the same reason `/model` is. Unlike a model, an
   agent cannot be swapped inside a running session — the spec decides which MCP
   servers and skills that process loaded at spawn — so a pick opens a fresh

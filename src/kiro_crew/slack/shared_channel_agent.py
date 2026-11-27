@@ -342,7 +342,9 @@ async def _handle(cmd_text: str, channel: str, user: str) -> str:
     _audit(user, "allowed", f"{channel}:{key or 'default'}")
     if not key:
         return CLEARED_TEXT
+    # The setting holds the key; the Bot goes by the name the Bots page gives it.
+    shown = await asyncio.to_thread(handler.bot_label, key)
     return (
-        f"Agent for this channel: *{key}*. Bot *{key}* now answers new threads here, "
+        f"Agent for this channel: *{key}*. Bot *{shown}* now answers new threads here, "
         "for everyone. `!channel agent off` takes it back."
     )
