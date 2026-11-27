@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+from skills_helpers import _settled
 
 from kiro_crew import platform_compat, skill_trust
 from kiro_crew.skill_usage import SkillUsageLedger
@@ -1478,7 +1479,7 @@ class TestStartupIndexCounts:
         skills_root = tmp_path / "skills"
         self._seed(skills_root, 400)
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: KiroCrewConfig()))
-        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        loader = _settled(SkillsLoader(skills_path=skills_root, install_builtins=False))
 
         result = _budget_response(loader)
 
