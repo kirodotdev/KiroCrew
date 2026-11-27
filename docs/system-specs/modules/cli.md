@@ -839,8 +839,10 @@ timeout through the one public `loopback_http.deadline_expired` seam (beside
 `loopback_urlopen`): a read timeout or a `URLError` wrapping a connect timeout
 reports the gateway as up but busy, and only a refused connection keeps the
 not-running remedy. `kirocrew artifact` and `spawn run`'s result poll take the
-same seam for their busy line only; any other failure keeps its own text (the
-raw error, or `lost connection to gateway`). The two `kirocrew doctor` gateway
+same seam for their busy line only. `kirocrew artifact` also reports a refused
+connection as `gateway not running (cannot reach dashboard on port N)`, as
+`spawn list` does; any other failure keeps its own text (the raw error, or
+`lost connection to gateway`). The two `kirocrew doctor` gateway
 reads — the Connectivity gateway row and the adaptive-controller row — use a
 short 2 s timeout, which on
 native Windows coincides with the SYN-retry delay before a closed loopback port

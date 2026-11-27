@@ -84,7 +84,7 @@ from kiro_crew.apps.manager_tree import (
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.apps.point_grants import grant_source
 from kiro_crew.loop_lock import LoopBoundLock
-from kiro_crew.platform_compat import is_link_or_junction
+from kiro_crew.platform_compat import is_link_or_junction, rmtree_force
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -424,11 +424,17 @@ def install_app(
             # keeps: a directory holding only data/, the expected reinstall case.
             # Anything else left in it is an orphaned partial copy from a prior
             # crash (e.g. hard kill mid-install). Either way, remove and re-copy.
+            # rmtree_force clears a read-only entry the earlier copy kept from its
+            # source. It never raises, so a folder that still stays fails the install.
             if any(dest.iterdir()):
                 logger.warning("Removing orphaned partial install at %s", dest)
             else:
                 logger.info("Reinstalling %s into the folder its uninstall kept", name)
-            shutil.rmtree(dest)
+            stuck: list[str] = []
+            if not rmtree_force(dest, failures=stuck):
+                raise OSError(
+                    f"cannot remove the leftover app folder: {(stuck or [str(dest)])[0]} stays"
+                )
         _copy_app_tree(source, dest)
         # The scripts the dashboard will run: copied from the source this install
         # copies, never from the sandbox-writable tree (``protected_app_ui``).

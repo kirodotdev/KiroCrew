@@ -359,11 +359,19 @@ def resolve_codex_cli() -> CodexCliResolution:
     if len(adapter_argv) > 2:
         return unresolved
     entry = os.path.realpath(adapter_argv[-1])
+    shim_target = launch_mod._npm_windows_shim_target(
+        adapter_argv[-1], CODEX_ACP_BIN, _CODEX_ACP_PKG_ENTRY
+    )
     if len(adapter_argv) == 2:
         node: str | None = adapter_argv[0]
     elif Path(entry).suffix.lower() in _NODE_SCRIPT_SUFFIXES:
         # An executable npm bin link (``npm i -g``): the ladder runs it as-is and its
         # shebang picks node. The same node rungs the ladder uses for a script.
+        node = _node_for_script(entry, search_path)
+    elif shim_target is not None:
+        # An npm Windows shim (``npm i -g`` there writes text shims, not links): the
+        # Codex dependency is found from the adapter script the shim launches.
+        entry = os.path.realpath(shim_target)
         node = _node_for_script(entry, search_path)
     else:
         # A native adapter or a launcher shim (Volta, asdf): no node_modules tree

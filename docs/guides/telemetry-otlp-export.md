@@ -537,12 +537,13 @@ each finished turn's credits in a session an app owns, with no other
 attribute; a turn that billed no credits (zero, or a backend that bills in
 dollars) adds nothing. `present` counts each installed
 app once per UTC day, with `status` (`enabled` / `disabled` / `other`) and
-`backend` (`none` / `running` / `stopped` / `other`). `opened` carries `surface` (`page` / `popout` / `desktop` / `other`), and
+`backend` (`none` / `running` / `stopped` / `other`). `opened` carries `surface` (`page` / `popout` / `desktop` / `shortcut` / `other`), and
 `surface` (`page` / `popout` / `other`) and `duration` (`le_10s`, `le_1m`, `le_5m`,
 `le_15m`, `le_1h`, `le_4h`, `gt_4h`, `other`) on `foreground_time`, whose value is
 the seconds an app page was visible (unit `s`, spans under 1 s not counted, one
 span cut to 24 h). `opened` and `foreground_time` count **owner views only**: the
-dashboard sends them through the owner-only `POST /api/telemetry/app-view`, so a
+dashboard sends them (and the desktop app sends `opened` for a press of an app's
+desktop shortcut) through the owner-only `POST /api/telemetry/app-view`, so a
 non-owner's or a Shared Crew teammate's tabs add nothing, while `session.started` and the turn metrics count
 every session. Do not divide one population by the other. Each records one thing a person
 or an app did. They are exported under the instrumentation scope `kiro.crew`, so a

@@ -246,3 +246,25 @@ def test_papyrus_keeps_the_main_document_when_one_realpath_is_prefixed(tree, mon
         store.delete_file(root, "main.tex")
     assert len(calls) == 2
     assert main.exists()
+
+
+def test_subagent_run_dir_containment(tree, monkeypatch) -> None:
+    from kiro_crew.subagent_persistence_layout import _agent_dir_under
+
+    root, _inside, outside = tree
+    child = root / "67b111a6ff1b5e74"
+    _prefix_resolve_of(monkeypatch, child)
+    assert _agent_dir_under(root, root, child.name) == child
+    assert _agent_dir_under(root, Path(_prefixed(root)), child.name) == child
+    _resolve_to(monkeypatch, str(outside.parent), "escapes")
+    with pytest.raises(ValueError, match="Path traversal blocked"):
+        _agent_dir_under(root, Path(_prefixed(root)), "escapes")
+
+
+def test_subagent_run_dir_refuses_a_verbatim_only_name(tree, monkeypatch) -> None:
+    from kiro_crew.subagent_persistence_layout import _agent_dir_under
+
+    root, _inside, _outside = tree
+    _resolve_to(monkeypatch, _PREFIX + "C:\\Users\\u\\subagents\\run.", "run.")
+    with pytest.raises(ValueError, match="Invalid agent_id"):
+        _agent_dir_under(root, root, "run.")

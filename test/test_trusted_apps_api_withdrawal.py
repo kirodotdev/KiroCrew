@@ -332,8 +332,8 @@ def test_uninstall_withdraws_a_grant_that_landed_during_the_delete(home: Path, t
     # admit a different app under that name with no consent prompt.
     #
     # Injected deterministically here: the concurrent write is performed from inside
-    # `rmtree`, which is exactly the window (after the first withdrawal, before the
-    # files are gone). No cross-process lock is needed to close it — only the second
+    # `_rmtree_app_dir`, which is exactly the window (after the first withdrawal, before
+    # the files are gone). No cross-process lock is needed to close it — only the second
     # withdrawal AFTER the delete, which by ordering must run after that write.
     from kiro_crew.apps import manager as appmanager
 
@@ -342,16 +342,16 @@ def test_uninstall_withdraws_a_grant_that_landed_during_the_delete(home: Path, t
     )
     _install(tmp_path, _APP, enabled=False)
 
-    real_rmtree = appmanager.shutil.rmtree
+    real_delete = appmanager._rmtree_app_dir
 
-    def _rmtree_racing_a_grant(path, *a, **kw):
+    def _delete_racing_a_grant(path, *a, **kw):
         # Stand in for the other process's grant handler winning the gap.
         cfg = json.loads((home / "config.json").read_text(encoding="utf-8"))
         cfg["agent"]["apps_trusted"] = [_APP]
         (home / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
-        return real_rmtree(path, *a, **kw)
+        return real_delete(path, *a, **kw)
 
-    with patch.object(appmanager.shutil, "rmtree", _rmtree_racing_a_grant):
+    with patch.object(appmanager, "_rmtree_app_dir", _delete_racing_a_grant):
         result = appmanager.uninstall_app(_APP)
 
     assert result.ok is True, result.error
@@ -397,7 +397,7 @@ def test_a_failed_delete_puts_the_trust_grant_back(home: Path, tmp_path: Path):
     def _boom(*a, **kw):
         raise OSError("device busy")
 
-    with patch.object(appmanager.shutil, "rmtree", _boom):
+    with patch.object(appmanager, "_rmtree_app_dir", _boom):
         result = appmanager.uninstall_app(_APP)
 
     assert result.ok is False
@@ -431,7 +431,7 @@ def test_a_failed_delete_restores_explicit_local_grant_kind(home: Path, tmp_path
     def _boom(*args, **kwargs):
         raise OSError("device busy")
 
-    with patch.object(appmanager.shutil, "rmtree", _boom):
+    with patch.object(appmanager, "_rmtree_app_dir", _boom):
         result = appmanager.uninstall_app(_APP)
 
     assert result.ok is False
@@ -464,11 +464,11 @@ def test_partial_delete_never_restores_grant_to_a_missing_or_replacement_app(
     )
     _invalidate_config_cache()
 
-    def _partial_rmtree(path, *args, **kwargs):
+    def _partial_delete(path, *args, **kwargs):
         (Path(path) / "installed.json").unlink()
         raise OSError("device failed after deleting installed metadata")
 
-    with patch.object(appmanager.shutil, "rmtree", _partial_rmtree):
+    with patch.object(appmanager, "_rmtree_app_dir", _partial_delete):
         result = appmanager.uninstall_app(_APP)
 
     assert result.ok is False
@@ -526,7 +526,7 @@ def test_restore_postcheck_withdraws_grant_if_installed_occupant_changes(
         return result
 
     with (
-        patch.object(appmanager.shutil, "rmtree", _delete_failure),
+        patch.object(appmanager, "_rmtree_app_dir", _delete_failure),
         patch.object(appmanager, "update_config_locked", _write_then_replace),
     ):
         result = appmanager.uninstall_app(_APP)
@@ -574,7 +574,7 @@ def test_a_failed_delete_does_not_grant_an_app_that_had_no_grant(home: Path, tmp
     def _boom(*a, **kw):
         raise OSError("device busy")
 
-    with patch.object(appmanager.shutil, "rmtree", _boom):
+    with patch.object(appmanager, "_rmtree_app_dir", _boom):
         result = appmanager.uninstall_app(_APP)
 
     assert result.ok is False

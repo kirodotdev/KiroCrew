@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.owner_only_files import mkdirs_owner_only
 
 ROOT_LEAF = "shared-crew-tailscale"
@@ -152,7 +152,9 @@ def _read_state_strict() -> dict[str, Any] | None:
     """
     path = root() / STATE_FILE
     try:
-        text = path.read_text(encoding="utf-8")
+        # A Windows read loses to update_state's replace in another thread;
+        # the retry rides out that window instead of reading it as unreadable.
+        text = read_bytes_with_retry(path).decode("utf-8")
     except FileNotFoundError:
         return None
     except (OSError, UnicodeDecodeError) as exc:

@@ -561,9 +561,10 @@ def record_app_present(
 # They count owner views, unlike ``session.started`` and ``turn.completed``,
 # which count every session.
 
-#: Where an app was opened: its routed page, its pop-out window, or its
-#: ``openCommand`` launched from the Library (``desktop``).
-APP_OPENED_SURFACE_VALUES: tuple[str, ...] = ("desktop", "page", "popout", OTHER)
+#: Where an app was opened: its routed page, its pop-out window, its
+#: ``openCommand`` launched from the Library (``desktop``), or one of its
+#: ``desktop.shortcuts`` pressed, which the desktop shell reports (``shortcut``).
+APP_OPENED_SURFACE_VALUES: tuple[str, ...] = ("desktop", "page", "popout", "shortcut", OTHER)
 
 #: Where a foreground span was measured. An ``openCommand`` app has no page here.
 APP_FOREGROUND_SURFACE_VALUES: tuple[str, ...] = ("page", "popout", OTHER)
@@ -574,7 +575,8 @@ APP_FOREGROUND_MAX_SECONDS = 24 * 3600
 
 
 def record_app_opened(app: object, surface: object) -> None:
-    """The owner opened *app*'s page (``page`` / ``popout``) or launched it (``desktop``)."""
+    """The owner opened *app*'s page (``page`` / ``popout``), launched it (``desktop``)
+    or pressed one of its desktop shortcuts (``shortcut``)."""
     _emit(
         APP_OPENED,
         {

@@ -3,7 +3,10 @@
 The dashboard website calls this, fire and forget, when an app's page mounts
 (``kirocrew.app.opened``), when the Library launches an app's ``openCommand``
 (``opened`` with ``surface=desktop``), and when a span in which the app's page
-was visible ends (``kirocrew.app.foreground_time``). A copy of
+was visible ends (``kirocrew.app.foreground_time``). The desktop shell calls it
+too, when it delivers one of an app's ``desktop.shortcuts``
+(``opened`` with ``surface=shortcut``, ``website/electron/app-window-host.js``),
+so an app used only through a hotkey window is counted. A copy of
 ``telemetry_ui_control.py``:
 
 * the dashboard owner's own session only (``require_owner_dashboard_request``),

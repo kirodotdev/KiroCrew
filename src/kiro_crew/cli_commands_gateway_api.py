@@ -469,6 +469,8 @@ def _artifact(args: argparse.Namespace) -> None:
             # for the cli_commands facade, as in `spawn list`.
             from kiro_crew.loopback_http import deadline_expired
 
+            if isinstance(getattr(exc, "reason", exc), ConnectionRefusedError):
+                return {"error": f"gateway not running (cannot reach dashboard on port {port})"}
             if not deadline_expired(exc):
                 return {"error": str(exc)}
             busy = f"gateway on port {port} is up but did not answer in time (busy)"

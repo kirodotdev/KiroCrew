@@ -6,7 +6,9 @@ claim its chain has onto both halves of the new pair. A link, the sessions it op
 and their rotations share one credential family, which ``revoke_token_family``
 (``kirocrew logout --link``) ends together without touching any other session. A child
 link a session lends a phone is a family of its own that descends from the lender's, so
-revoking the lender ends it too, and revoking it ends only what it opened.
+revoking the lender ends it too, and revoking it ends only what it opened. A chain
+minted before families carries nothing that tells an app's from an owner's, so it
+does not rotate.
 """
 
 from __future__ import annotations
@@ -483,10 +485,17 @@ async def test_revoking_a_session_rotated_from_a_chain_before_families_is_refuse
     monkeypatch, fake_sel
 ) -> None:
     """After an upgrade such a session carries the marker but no family, so a record on
-    its own nonce would end it alone while its chain mints the next one."""
+    its own nonce would end it alone. Its chain does not rotate, but the session it
+    already holds lives out its own expiry."""
     monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
     pre_family_chain, _chain, _jti, _exp = generate_refresh_token("owner", boot=current_boot_id())
-    session, chain = await _rotate(pre_family_chain)
+    # The session a rotation of that chain minted before this gateway refused it.
+    session = generate_token(
+        "owner",
+        register_nonce=False,
+        session=True,
+        extra={"boot": current_boot_id()},
+    )
     request = _req(app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
     request.can_read_body = True
 
@@ -497,4 +506,30 @@ async def test_revoking_a_session_rotated_from_a_chain_before_families_is_refuse
     resp = await core_mod.api_logout_link(request)
     assert (resp.status, json.loads(resp.body)["code"]) == (400, "legacy_link")
     assert validate_token(session, use_session_exp=True)[0] is True
-    assert (await _refresh(chain)).status == 200
+    assert (await _refresh(pre_family_chain)).status == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subject", ["notes-app", "owner"])
+async def test_a_chain_minted_before_families_does_not_rotate(subject: str) -> None:
+    """A chain from before families may be an app's (its subject is the app's name), and
+    nothing on it records that, so neither an app's nor an owner's such chain rotates."""
+    pre_family_chain, _chain, _jti, _exp = generate_refresh_token(subject, boot=current_boot_id())
+    resp = await _refresh(pre_family_chain)
+    assert resp.status == 401
+    assert json.loads(resp.text)["error"] == "invalid_refresh"
+    assert f"mc_token_{PORT}" not in resp.cookies
+    assert not _live_refresh_cookies(resp)
+    valid, _uid, reason, *_ = validate_refresh_token(pre_family_chain)
+    assert (valid, reason) == (False, rt.PRE_FAMILY_CHAIN_REASON)
+
+
+@pytest.mark.asyncio
+async def test_an_owner_chain_from_a_link_still_rotates() -> None:
+    """A chain the exchange opens carries its link's family, so it keeps rotating."""
+    _access, refresh = await _exchange(generate_token("owner"))
+    assert _claims(refresh)["family"]
+    _access, rotated = await _rotate(refresh)
+    access, rotated_again = await _rotate(rotated)
+    assert validate_token(access, use_session_exp=True)[0] is True
+    assert _claims(rotated_again)["family"] == _claims(refresh)["family"]
