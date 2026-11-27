@@ -3,8 +3,8 @@ title: Crew background jobs — run a long step off the chat and wake the same c
 status: draft
 author: iamwhatever
 created: 2026-11-22
-last-audited: 2026-11-26
-audited-at: 2bc1117160
+last-audited: 2026-11-27
+audited-at: 20827a7313
 doc-pr: null
 implementation-prs: []
 tracking-issues: [40712]
@@ -14,11 +14,11 @@ superseded-by: []
 
 # RFC: Crew background jobs — run a long step off the chat and wake the same chat when it ends
 
-- Status: draft. Nothing built. Reviewed in a worker grill on 2026-11-22 (Gateway, Launcher and Skeptic participants); its edits are applied below. Revised on 2026-11-25 after review on [#40717](https://github.com/kirodotdev/KiroCrew/pull/40717): the owner's decision on the approval path and a maintainer's answers to the open questions are applied. Revised again on 2026-11-26 with the owner's decision to borrow from KAS's jobs layer (§8). All of these choices are listed under [Decisions](#decisions).
+- Status: draft. Nothing built. Reviewed in a worker grill on 2026-11-22 (Gateway, Launcher and Skeptic participants); its edits are applied below. Revised on 2026-11-25 after review on [#40717](https://github.com/kirodotdev/KiroCrew/pull/40717): the owner's decision on the approval path and a maintainer's answers to the open questions are applied. Revised again on 2026-11-26 with the owner's decision to borrow from KAS's jobs layer (§8), and on 2026-11-27 with the owner's ruling that jobs are for plain chats, not conductor mode (decision 16). All of these choices are listed under [Decisions](#decisions).
 - Author: iamwhatever
 - Related: [`rfc-agent-started-turns`](rfc-agent-started-turns.md) (the claude-only path this generalises), [`rfc-app-sdk-durable-jobs-and-view-state`](rfc-app-sdk-durable-jobs-and-view-state.md) (the app-scoped job record this borrows from), [`rfc-crew-log-wake`](rfc-crew-log-wake.md).
 
-Code facts were first measured at `c11cc04317` (kirodotdev/KiroCrew main, 2026-11-22) and read again at `6c870d9a41` (main, 2026-11-25) and `2bc1117160` (main, 2026-11-26). They cite symbols, not line numbers. Paths are under `src/kiro_crew/` unless they say otherwise. KAS facts are read in the KAS source, kiro-team/kiro-agent `main` at `92c8574f19` (mainly `packages/acp-type-covenant/JOBS.md` and `packages/kiro-agent/src/jobs/`), and checked at tag `agent-v-0.66.117`, the engine Crew pins (`KAS_PIN_VERSION` in `acp/kas_pin.py`).
+Code facts were first measured at `c11cc04317` (kirodotdev/KiroCrew main, 2026-11-22) and read again at `6c870d9a41` (main, 2026-11-25), `2bc1117160` (main, 2026-11-26) and `20827a7313` (main, 2026-11-27). They cite symbols, not line numbers. Paths are under `src/kiro_crew/` unless they say otherwise. KAS facts are read in the KAS source, kiro-team/kiro-agent `main` at `92c8574f19` (mainly `packages/acp-type-covenant/JOBS.md` and `packages/kiro-agent/src/jobs/`), and checked at tag `agent-v-0.66.117`, the engine Crew pins (`KAS_PIN_VERSION` in `acp/kas_pin.py`).
 
 ## Summary
 
@@ -52,11 +52,13 @@ So on KAS as Crew runs it today there is no path from "command exited" to "this 
 
 ## Who uses it
 
-- An agent in a dashboard chat with a long deterministic step: build and test, a dataset export, a video render, a large download.
-- A conductor's worker that must wait on its own build without holding a chat slot.
+- A plain (non-conductor) dashboard chat that wants to keep working while a long deterministic step runs: a build, a test suite, a render, a dataset export. Today that step holds the turn for its whole run.
+- A step longer than one turn may run: `agent.chat_turn_timeout_secs` defaults to 4 h (`config/sections_agent.py`).
 - Non-coding work: convert a folder of documents, run a report script, transcode media.
 
-Not the target: work that needs the model mid-run (use a sub-agent), recurring checks (use cron or `monitor_watch`), and external callbacks (use `register_hook`).
+Conductor mode gains little. A dispatched worker already runs in the background of its conductor, so a worker that blocks its own turn on a build costs the conductor nothing. v1 leaves jobs off there (§1, decision 16).
+
+Not the target: waiting on GitHub CI (the `gh_pr` monitor probe, `probes/gh_pr.py`, already re-arms a quiet tick without a model turn), work that needs the model mid-run (use a sub-agent), recurring checks (use cron or `monitor_watch`), and external callbacks (use `register_hook`).
 
 ## Goals
 
@@ -94,6 +96,10 @@ The `job_start` description tells the agent to use it for a step likely to run l
 **Who may see a job.** A caller may see or touch only jobs its own chat started, with one widening for sub-agents. A sub-agent's job belongs to the sub-agent's key, which its token resolves to. The job record copies `parent_session_key` and `root_session_key` from the `SubagentInfo` record (`subagent_parts/run_record.py`) found by the gate-resolved key, never from an argument or env; an empty `root_session_key` reads as the parent's own key. The parent and the root may list it, read its status and output, and cancel it.
 
 `job_start` is added to `WAKE_ARMING_TOOLS` (`dashboard/chat_utils_turn_text.py`), so the deferred-follow-up notice stays quiet after it.
+
+**Where the tools are not mounted in v1.** The four `job_*` tools are put in `excludedTools` on: the conductor specs (`agent_materialization/conductor_agents.py`, which mount `@kirocrew-core` whole today); `kirocrew-worker`, the spec a conductor dispatches under a work item (`agent_materialization/worker_agent.py`); the Bot specs `kirocrew-mate-conductor` and `kirocrew-mate-worker` (`agent_materialization/service_agents.py`); and the agents an app's manifest declares. The precedent is `MATE_CONDUCTOR_EXCLUDED_TOOLS` (`mate_worker.py`), which already takes `task_run` and `workflow_run` off the Bot conductor because they start work of their own. The §3 identity check still refuses members and app-owned slots; excluding the tools means those agents are never offered a call that can only be refused.
+
+Workers are excluded for a second reason, the stale flag. `is_stale` (`work_ledger_rules.py`) clears a quiet worker only while a turn is in flight (`worker_running`) or a bounded loop is armed (`worker_looping`, both in `ledger_wake.py`). A worker that starts a job and ends its turn is neither, so after the 900 s window (`DEFAULT_STALE_WINDOW_SECS` in `work_ledger_records.py`) its conductor is woken with a stall, and a conductor that closes and redispatches it cancels the job (§6). Before jobs are ever enabled for workers, a session that owns a running job must count as live in `is_stale` and `item_liveness` (`work_ledger_remote.py`).
 
 ### 2. Check before run
 
@@ -211,7 +217,7 @@ KAS's jobs layer (`packages/acp-type-covenant/JOBS.md`) has the same job; Crew c
 
 ## Decisions
 
-Each decision below says who made it. Only decisions 4 to 6 and 15 are the owner's own.
+Each decision below says who made it. Only decisions 4 to 6, 15 and 16 are the owner's own.
 
 ### Picked by the grill
 
@@ -251,6 +257,10 @@ The owner's words for decision 4 leave two details open. This revision picks the
 
 15. **Crew keeps running jobs itself, on every backend, and borrows from KAS's jobs layer.** The borrowed parts and the one left out, auto-move, are in §8. Turning on KAS's own jobs is a possible later step for KAS chats (Alternatives).
 
+### Decided by the owner on 2026-11-27
+
+16. **Jobs are for plain chats; v1 leaves them off in conductor mode.** In conductor mode the worker already is the background, so jobs add little there. v1 does not mount `job_*` on conductor, `kirocrew-worker`, Bot or app specs (§1). Enabling them for workers later first needs a session that owns a running job to count as live in `is_stale` and `item_liveness` (§1).
+
 ## Migration plan
 
 ### Phase 0 — probe (no product code)
@@ -286,6 +296,7 @@ Job store (one file per job, one writer, as `apps/job_sdk.py` does), runner, lim
 - a job started under a time-limited Trust grant is cancelled when that grant expires, with the cause recorded;
 - a parity test runs one table of commands through both paths and asserts equal deny verdicts;
 - a job from a member, app-owned, Incognito or Temporary chat is refused;
+- the conductor, `kirocrew-worker`, Bot and app specs do not list any `job_*` tool;
 - a call carrying only a forged `KIROCREW_SESSION_KEY` env value is refused by all four tools;
 - a sub-agent's job is listed, readable with `job_status` and `job_output`, and cancellable from its parent and its root, and from no other chat;
 - a chat whose approval mode asks, with a shell-card grant or trusted pattern for the command, still raises the job card;
