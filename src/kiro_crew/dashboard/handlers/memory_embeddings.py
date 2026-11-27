@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
+from kiro_crew import embedding_source_governance as _source_gov
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import (
@@ -497,6 +498,19 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     raw_validate_only = body.get("validate_only")
     validate_only = _coerce_bool(raw_validate_only, bool(raw_validate_only))
 
+    # An LTS policy decides which source may be loaded at all; refuse before the
+    # file is probed, so a refused model is never opened. Always permitted on oss.
+    source = _source_gov.CUSTOM if raw else _source_gov.BUNDLED
+    if not _source_gov.source_permitted(source, audit=True):
+        return web.json_response(
+            {
+                "ok": False,
+                "error": _source_gov.refused_reason(source),
+                "code": _source_gov.LOCKED_CODE,
+            },
+            status=409,
+        )
+
     # Validate BEFORE writing, so a typo never lands in config.
     size_bytes = 0
     if raw:
@@ -707,7 +721,17 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
     inherited = bool(
         custom is not None and legacy_embedding_ids(memory_config.get("embed_model_legacy_ids"))
     )
-    if ollama and setup_error:
+    # The bundled model's file may be present while the policy refuses it; custom
+    # and Ollama refusals already arrive as their own setup error.
+    bundled_refused = (
+        not ollama and custom is None and not _source_gov.source_permitted(_source_gov.BUNDLED)
+    )
+    if bundled_refused:
+        error_code = _source_gov.LOCKED_CODE
+        setup_error = _source_gov.refused_reason(_source_gov.BUNDLED)
+    elif ollama and setup_error == _source_gov.refused_reason(_source_gov.OLLAMA):
+        error_code = _source_gov.LOCKED_CODE
+    elif ollama and setup_error:
         error_code = "ollama_config_invalid"
     elif custom is not None and setup_error:
         error_code = custom.error_code or "model_path_unreadable"
@@ -784,6 +808,7 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
                 (model_present or embedder.is_ready())
                 and not (custom is not None and custom.error)
                 and not runtime_failed
+                and not bundled_refused
             ),
             "needs_docker": False,
             "docker_available": True,

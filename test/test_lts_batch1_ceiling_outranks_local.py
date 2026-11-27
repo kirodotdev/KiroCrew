@@ -4,8 +4,8 @@ RFC ``docs/request-for-change/rfc-crew-lts-edition.md``, D2, D3 and D13. The sam
 as ``test_lts_remote_ceiling_outranks_local.py``: one fake control-plane (CPS) reply,
 the real transport ``enterprise_policy_fetch.fetch``, the translator, the tier fold in
 ``governance.load_security_policy``, then the installed context. Here the reply speaks
-the batch-1 terms (``harness_use``, ``app_use``, ``script_hook`` and the ``skill`` /
-``mcp`` / ``subagent`` install rows), and the decision models are checked too: hosted
+the batch-1 terms (``harness_use``, ``app_use``, ``script_hook``, ``embedding_model_use``
+and the ``skill`` / ``mcp`` / ``subagent`` install rows), and the decision models are checked too: hosted
 Jev and hand-written endpoints are locked off in an LTS build.
 
 Each answer is read at the chokepoint a feature asks:
@@ -13,7 +13,8 @@ Each answer is read at the chokepoint a feature asks:
 ``agent_sdk.backends.resolve_selected_backend`` (harness), the app activation gate and
 ``extension_governance.app_version_denied`` (apps),
 ``hook_event_governance.event_refusal`` (script hooks),
-``extension_governance.extension_install_denied`` (installs), and
+``extension_governance.extension_install_denied`` (installs),
+``embedding_source_governance.source_permitted`` (embedding sources), and
 ``decisions.capability`` (decision models).
 
 Three remote replies: one that grants a little of each term, one that denies each
@@ -47,6 +48,7 @@ from governance_distribution_helpers import install_ceiling_fixture  # noqa: F40
 from governance_distribution_helpers import profiles_dir_fixture  # noqa: F401
 from governance_distribution_helpers import _write_policy
 
+from kiro_crew import embedding_source_governance as embedding_sources
 from kiro_crew.agent_backend_governance import narrow_selectable_backends
 from kiro_crew.agent_sdk import backends
 from kiro_crew.apps.manager_activation import _app_activation_denied
@@ -86,6 +88,8 @@ rules:
   - {capability: app_use, effect: deny, exclude: ["file-explorer@1.*"]}
   - {capability: script_hook, effect: allow, match: [PreToolUse]}
   - {capability: script_hook, effect: deny, exclude: [PreToolUse]}
+  - {capability: embedding_model_use, effect: allow, match: [custom, ollama]}
+  - {capability: embedding_model_use, effect: deny, exclude: [custom, ollama]}
   - {capability: skill, effect: allow}
   - {capability: mcp, effect: allow, match: [github]}
   - {capability: mcp, effect: deny, exclude: [github]}
@@ -99,6 +103,7 @@ rules:
   - {capability: harness_use, effect: deny}
   - {capability: app_use, effect: deny}
   - {capability: script_hook, effect: deny}
+  - {capability: embedding_model_use, effect: deny}
   - {capability: skill, effect: deny}
   - {capability: mcp, effect: deny}
   - {capability: subagent, effect: deny}
@@ -156,6 +161,7 @@ _WIDENING = {
     "agent_backend": {"mode": "allow", "allow": _HARNESS_ALL},
     "apps": {"mode": "deny", "deny": []},
     "app_versions": {"mode": "deny", "deny": []},
+    "memory": {"embedding_sources": {"mode": "allow", "allow": ["bundled", "custom", "ollama"]}},
     "capabilities": {
         "script_hooks": {"enabled": True, "scopes": {"events": {"mode": "deny", "deny": []}}},
         "extension_install": {
@@ -176,6 +182,7 @@ _WIDENING = {
 _NARROWING = {
     "agent_backend": {"mode": "allow", "allow": ["kas"]},
     "apps": {"mode": "deny", "deny": ["file-explorer"]},
+    "memory": {"embedding_sources": {"mode": "deny", "deny": ["ollama"]}},
     "capabilities": {
         "script_hooks": {"enabled": False},
         "extension_install": {
@@ -363,9 +370,22 @@ _EXPECTED = {
         "apps": {("file-explorer", "1.2.0")},
         "events": {"PreToolUse"},
         "installs": {("skill", "owner/repo"), ("skill", "pdf"), ("mcp", "github")},
+        "embedding": {"custom", "ollama"},
     },
-    "denies": {"harness": {"kas"}, "apps": set(), "events": set(), "installs": set()},
-    "absent": {"harness": {"kas"}, "apps": set(), "events": set(), "installs": set()},
+    "denies": {
+        "harness": {"kas"},
+        "apps": set(),
+        "events": set(),
+        "installs": set(),
+        "embedding": set(),
+    },
+    "absent": {
+        "harness": {"kas"},
+        "apps": set(),
+        "events": set(),
+        "installs": set(),
+        "embedding": {"bundled"},
+    },
 }
 
 _HARNESS_PROBE = ["kas", "kiro", "claude", "codex", "goose"]
@@ -391,6 +411,9 @@ def _answers() -> dict:
         "apps": {a for a in _APP_PROBE if _app_runs(*a)},
         "events": {e for e in _EVENT_PROBE if _hook_runs(e)},
         "installs": {i for i in _INSTALL_PROBE if _installs(*i)},
+        "embedding": {
+            s for s in embedding_sources.SOURCES if embedding_sources.source_permitted(s)
+        },
     }
 
 
@@ -458,6 +481,9 @@ class TestALocalTierCanNarrow:
         assert answers["apps"] == set(), tier
         assert answers["events"] == set(), tier
         assert answers["installs"] == {("mcp", "github")}, tier
+        # A process-wide switch asks the policy layer only, so a host profile does
+        # not narrow it; the two local policy files fold into the ceiling and do.
+        assert answers["embedding"] == ({"custom", "ollama"} if tier == "profile" else {"custom"})
         assert capability.is_decisions_denied(_HOST, provider="sagemaker"), tier
         assert not capability.is_decisions_denied(_HOST, provider="clef"), tier
 

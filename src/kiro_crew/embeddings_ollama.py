@@ -12,7 +12,8 @@ installs onto a server they may not run.
 Data boundary: memory and knowledge text is sent to the server. A loopback URL
 keeps it on this machine. Any other host needs ``memory.ollama_allow_remote``
 AND an ``https`` URL, so text never crosses a network in the clear or without an
-explicit opt-in. Redirects are refused, and a loopback URL bypasses proxy
+explicit opt-in; an LTS build also asks ``network.egress`` about that host.
+Redirects are refused, and a loopback URL bypasses proxy
 environment variables, so a request never lands somewhere other than the
 configured endpoint.
 """
@@ -101,6 +102,10 @@ def _url_error(url: str, allow_remote: bool) -> str:
         )
     if parts.scheme != "https":
         return "memory.ollama_url must use https:// for a non-loopback host"
+    from kiro_crew.embedding_source_governance import egress_permitted
+
+    if not egress_permitted(host):
+        return "the organisation's network egress policy does not allow memory.ollama_url's host"
     return ""
 
 
@@ -121,7 +126,12 @@ def resolve_ollama_settings(memory: dict) -> OllamaSettings:
         if isinstance(raw_dim, int) and not isinstance(raw_dim, bool) and raw_dim > 0
         else _DEFAULT_DIM
     )
-    error = _url_error(url, memory.get("ollama_allow_remote") is True)
+    from kiro_crew import embedding_source_governance as source_gov
+
+    if not source_gov.source_permitted(source_gov.OLLAMA):
+        error = source_gov.refused_reason(source_gov.OLLAMA)
+    else:
+        error = _url_error(url, memory.get("ollama_allow_remote") is True)
     if not error and not model:
         error = "memory.ollama_model is empty"
     return OllamaSettings(url, model, dim, error)

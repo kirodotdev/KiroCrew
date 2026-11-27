@@ -98,8 +98,9 @@ _CONFIG_FIELDS = ("key", "value", "source", "composeBehavior")
 #: ``harness_use``, ``app_use`` and ``script_hook`` are read, and ``skill``, ``mcp`` and
 #: ``subagent`` also say what may be installed. ``t5``: a named ``skill`` deny lands
 #: as the skill names, not as skill install off. ``t6``: an ``ask`` on ``web_fetch`` or
-#: ``web_search`` lands in ``unattended_web_tools``.
-TRANSLATION_REVISION = "t6"
+#: ``web_search`` lands in ``unattended_web_tools``. ``t7``: ``embedding_model_use`` is
+#: read into ``memory.embedding_sources``.
+TRANSLATION_REVISION = "t7"
 
 
 def _sign_in_remedy() -> str:

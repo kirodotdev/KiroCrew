@@ -132,10 +132,10 @@ class TestTranslation:
     def test_allow_deny_or_no_rule_writes_no_record(self, lts, rules):
         assert "unattended_web_tools" not in t.translate("rules:\n" + rules)
 
-    def test_the_revision_names_the_web_ask_record(self):
+    def test_the_revision_is_at_or_past_the_web_ask_record(self):
         from kiro_crew.platform import enterprise_policy_fetch as epf
 
-        assert epf.TRANSLATION_REVISION == "t6"
+        assert epf.TRANSLATION_REVISION == "t7"
 
 
 # ── KAS's consent block ─────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ import hashlib
 import logging
 import threading
 import time
+import urllib.parse
 from collections import OrderedDict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ from kiro_crew.embeddings_model import (
     resolve_custom_model,
 )
 from kiro_crew.embeddings_ollama import (
+    _is_loopback_host,
     build_ollama_backend,
     ollama_backend_selected,
     resolve_ollama_settings,
@@ -484,14 +486,36 @@ def default_embedding_backend() -> EmbeddingBackend:
     and wins over a custom model path: the provider names the runtime, and the
     model path is a setting of the in-process one.
     """
+    from kiro_crew import embedding_source_governance as _source_gov
+
     memory = _read_memory_config()
     if ollama_backend_selected(memory):
-        return build_ollama_backend(memory)
+        # resolve_ollama_settings refuses an unpermitted source or host itself.
+        return _with_policy_tag(build_ollama_backend(memory), _source_gov.OLLAMA)
     spec = resolve_custom_model()
     if spec is None:
-        backend = LlamaCppEmbedder()
+        if _source_gov.source_permitted(_source_gov.BUNDLED):
+            backend = LlamaCppEmbedder()
+        else:
+            # Refused like a broken path: no vectors, keyword search, and the
+            # bundled identity kept so the stored space is not mistaken for another.
+            logger.error(
+                "%s; embeddings unavailable, memory falls back to keyword search",
+                _source_gov.refused_reason(_source_gov.BUNDLED),
+            )
+            backend = LlamaCppEmbedder(
+                model_path=models_dir() / _REJECTED_MODEL_SENTINEL,
+                dim=_DEFAULT_DIM,
+                model_id=_MODEL_ID,
+            )
         backend._uses_bundled_identity = True
-        return backend
+        return _with_policy_tag(backend, _source_gov.BUNDLED)
+    return _with_policy_tag(_custom_backend(spec), _source_gov.CUSTOM)
+
+
+def _custom_backend(spec: Any) -> LlamaCppEmbedder:
+    """The backend for a configured custom model. ``resolve_custom_model`` reports a
+    source the policy refuses as ``spec.error``, so it takes the broken-path branch."""
     # A broken custom path is still honoured as "custom": the embedder will not
     # load, embeddings stay unavailable, and memory degrades to keyword search.
     # Falling back to the bundled model here would silently swap the vector
@@ -519,13 +543,84 @@ def default_embedding_backend() -> EmbeddingBackend:
     return LlamaCppEmbedder(model_path=spec.path, dim=spec.dim, model_id=spec.model_id)
 
 
+def _policy_allows(backend: EmbeddingBackend, source: str, *, audit: bool = False) -> bool:
+    """Whether the LTS policy lets *backend* serve: its source, and for a non-loopback
+    Ollama server also its host (``network.egress``). Only called in an LTS build."""
+    from kiro_crew import embedding_source_governance as _source_gov
+
+    if not _source_gov.source_permitted(source, audit=audit):
+        return False
+    if source != _source_gov.OLLAMA:
+        return True
+    url = str(getattr(getattr(backend, "_settings", None), "url", "") or "")
+    host = urllib.parse.urlsplit(url).hostname or ""
+    return not host or _is_loopback_host(host) or _source_gov.egress_permitted(host)
+
+
+def _with_policy_tag(backend: EmbeddingBackend, source: str) -> EmbeddingBackend:
+    """Record, in an LTS build, which source *backend* is and whether the policy
+    allowed it, so :func:`get_shared_embedder` notices when that answer changes."""
+    from kiro_crew.edition import is_lts
+
+    if is_lts():
+        backend._embedding_source = source  # type: ignore[attr-defined]
+        backend._policy_allowed = _policy_allows(backend, source, audit=True)  # type: ignore[attr-defined]
+    return backend
+
+
+def _policy_answer_changed(backend: EmbeddingBackend) -> bool:
+    """True when the policy now answers *backend*'s source differently than at build.
+
+    Never true on oss (no tag is set there) or for a gated candidate: the apply
+    route checked it, and it serves nothing until activated.
+    """
+    source = getattr(backend, "_embedding_source", None)
+    if source is None or not getattr(backend, "_serving", True):
+        return False
+    try:
+        return _policy_allows(backend, source) != getattr(backend, "_policy_allowed", True)
+    except Exception:  # noqa: BLE001 - policy_permits fails closed itself; keep the backend
+        logger.debug("embedding source re-check failed", exc_info=True)
+        return False
+
+
+def _drop_if_policy_changed() -> None:
+    """Retire the cached backend when the policy's answer on its source changed.
+
+    A deny then takes effect without a restart: the next read rebuilds through
+    :func:`default_embedding_backend`, which refuses the source the way a broken
+    path is refused. An allow likewise rebuilds a refused backend.
+    """
+    global _shared_embedder
+    with _shared_embedder_lock:
+        current = _shared_embedder
+    if current is None or not _policy_answer_changed(current):
+        return
+    with _embedding_alignment_lock, _shared_embedder_lock:
+        if _shared_embedder is not current:
+            return
+        _shared_embedder = None
+    logger.warning(
+        "The organisation's policy changed for the %s embedding source; rebuilding the embedder",
+        getattr(current, "_embedding_source", ""),
+    )
+    _retire_backend(current)
+
+
 def get_shared_embedder() -> EmbeddingBackend:
     """Process-wide embedder singleton.
 
     Vector memory and the knowledge library share one loaded model — the
     GGUF costs ~700MB RSS, so loading it twice is never acceptable.
+
+    In an LTS build the cached backend is re-checked against the policy first
+    (:func:`_drop_if_policy_changed`), an in-memory read.
     """
+    from kiro_crew.edition import is_lts
+
     global _shared_embedder
+    if is_lts():
+        _drop_if_policy_changed()
     with _shared_embedder_lock:
         if _shared_embedder is not None:
             return _shared_embedder

@@ -1259,8 +1259,8 @@ class TestOss:
 
 
 class TestBatchOneRevision:
-    def test_the_revision_names_the_web_ask_translation(self):
-        assert epf.TRANSLATION_REVISION == "t6"
+    def test_the_revision_names_the_embedding_source_translation(self):
+        assert epf.TRANSLATION_REVISION == "t7"
 
     def test_a_t5_cache_is_refetched_and_reads_the_web_ask(self, enterprise, vault, cps):
         """A ``t5`` copy had no ``unattended_web_tools`` record; it is refetched."""
