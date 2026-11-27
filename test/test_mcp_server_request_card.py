@@ -240,8 +240,11 @@ def test_add_raises_a_card_and_apply_writes_the_entry_it_showed(env, tmp_path):
     assert rows["Command"]["after"] == "npx -y @acme/weather-mcp"
     assert rows["Environment"]["add"] == ["CITY=Paris"]
     assert card["params"]["use_now"] is True
-    assert statuses == [200, 200]
+    assert rows["Sharing"] == {"label": "Sharing", "after": "Off"}
+    assert statuses == [200, 200, 200]
     assert _stored(env)["weather"] == ENTRY
+    # The folder claim keeps it per chat, recorded so auto-share does not share it.
+    assert env["stubs"] == [{"name": "weather", "stub": False, "cwd_use": "uses_cwd"}]
     assert env["restarts"] == 1
 
 
@@ -345,8 +348,12 @@ def test_use_in_open_chats_now_unchecked_drops_the_restart(env, tmp_path):
         return unchecked, await _apply(c, unchecked)
 
     card, statuses = _run(store, env, go)
-    assert [s["path"] for s in card["plan"]["apply"]] == ["/api/mcp/custom"]
-    assert statuses == [200]
+    # Recording the off stops nothing running, so it adds no restart.
+    assert [s["path"] for s in card["plan"]["apply"]] == [
+        "/api/mcp/custom",
+        "/api/mcp-gateway/servers/stub",
+    ]
+    assert statuses == [200, 200]
     assert _stored(env)["weather"] == ENTRY
     assert env["restarts"] == 0
 
@@ -532,10 +539,13 @@ def test_a_safe_server_is_offered_sharing_checked_and_unticking_it_keeps_one_cop
         "/api/sessions/restart",
     ]
     assert _offer(unticked) == {"field": "share_offer", "label": "Sharing", "after": False}
+    # The untick is recorded as an off, so the gateway's auto-share keeps it per chat.
     assert [s["path"].split("?")[0] for s in unticked["plan"]["apply"]] == [
         "/api/mcp/custom",
+        "/api/mcp-gateway/servers/stub",
         "/api/sessions/restart",
     ]
+    assert unticked["plan"]["apply"][1]["body"] == {"name": "weather", "stub": False}
 
 
 def test_sharing_applies_with_the_launch_the_write_produced(env, tmp_path):
@@ -594,7 +604,14 @@ def test_a_server_that_is_not_safe_to_share_has_no_box(env, tmp_path, body):
     status, card = _run(store, env, go)
     assert status == 200, card
     assert _offer(card) is None
-    assert not [s for s in card["plan"]["apply"] if "mcp-gateway" in s["path"]]
+    gateway = [s for s in card["plan"]["apply"] if "mcp-gateway" in s["path"]]
+    if "url" in body["entry"]:
+        assert gateway == []
+    else:
+        # Kept per chat and recorded, so the gateway's auto-share leaves it alone.
+        assert [s["body"] for s in gateway] == [
+            {"name": "weather", "stub": False, "cwd_use": "uses_cwd"}
+        ]
 
 
 @pytest.mark.parametrize("field", ["args", "env"])
@@ -1366,11 +1383,12 @@ def test_card_rows_match_exactly_the_entry_apply_stores(env, tmp_path, action, b
             },
         )
         assert status == 200, card
-        assert await _apply(c, card) == [200, 200]
+        assert set(await _apply(c, card)) == {200}
         return card
 
     card = _run(store, env, go)
-    assert card["changes"] == entry_rows(before, _stored(env)["weather"])
+    entry_changes = [r for r in card["changes"] if r.get("label") != "Sharing"]
+    assert entry_changes == entry_rows(before, _stored(env)["weather"])
 
 
 @pytest.mark.parametrize("disabled", [True, False])

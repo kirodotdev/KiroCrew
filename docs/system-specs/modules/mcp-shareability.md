@@ -41,12 +41,14 @@ The bulk stub action consults whichever of the two the global sharing switch mak
 
 ## The working-folder question gates routing
 
-A routed server's backend runs in one fixed folder outside the session sandbox
+A routed server's backend runs in one fixed folder, inside the global sandbox on
+Linux and macOS (`docs/system-specs/modules/security.md`) and outside it on Windows
 (`daemon/launch.py::_backend_work_dir` ignores the session's work dir on purpose:
-an in-sandbox caller must not steer an unsandboxed interpreter's cwd). A server that
-reads the folder it starts in, like git or file search, would therefore read the
-wrong project once routed.
-No detector decides which servers do: the operator answers per server in MCP
+an in-sandbox caller must not steer a backend's cwd). A server that reads the
+folder it starts in, like git or file search, would therefore read the wrong
+project once routed.
+Kiro Crew's own reading of the launch decides first (`SOURCE_LAUNCH` and
+`folder_users`, below); otherwise the operator answers per server in MCP
 Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
 `not_used`, or absent for unanswered).
 
@@ -54,10 +56,14 @@ Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
   (`409 cwd_unconfirmed`, or a `cwd_unconfirmed` skip under
   `resolve_eligibility`) any server that is not one of Kiro Crew's own
   (`mcp_cleanup.KIROCREW_BIN_MCP_SERVERS`, whose launch the rewriter re-derives
-  from the install) and is not answered `not_used`. That route is the only writer
-  of launch approvals, and the rewriter wraps a server only for an approved
-  launch, so an unanswered server never gets a live stub on any harness: kiro-cli
-  and KAS read the same overlay.
+  from the install), is not answered `not_used`, and has no launch fact below
+  (`SOURCE_LAUNCH`). The rewriter itself asks no question: it routes a stubbed
+  server unless roots, a `uses_cwd` answer or a folder-naming launch
+  (`FolderDeclarations.folder_users`) keep it per chat, and it approves the
+  launch too, so the gate
+  that keeps a folder user per chat is Kiro Crew's reading of the launch at
+  auto-share ("Auto-share at gateway start") and the roots rule, on any harness:
+  kiro-cli and KAS read the same overlay.
 - `_resolve_stub_servers` drops a server answered `uses_cwd`, so answering it
   unroutes it. The answer route applies that change through the broker when it
   unroutes a routed server; with no broker wired it takes effect at the next start.
@@ -70,6 +76,13 @@ Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
 - Third-party servers that advertise `kirocrew.caller-identity`, and stdio remote
   proxies, are asked like any other: the extension says nothing about the folder,
   and a proxy cannot be told apart from a local server by its command alone.
+- A server whose declared launch names no folder needs no answer
+  (`folder_use.SOURCE_LAUNCH`, from `FolderDeclarations.launch_free`): every read
+  declaration has a command, and no arg or env value is `.`, a relative path or a
+  folder placeholder (`change_card_mcp_server.detects_chat_folder`). An answer of
+  `uses_cwd`, or a roots request, still keeps it per chat, and one that names the
+  folder is asked as before. So the question is asked only where Kiro Crew's own
+  reading says the server uses the folder.
 - The question is skipped when a declared fact answers it
   (`mcp_gateway/folder_use.py`). Kiro Crew's own servers and the servers the
   edition lists (`McpToolingProvider.folder_free_mcp_servers()`, none in the public
@@ -241,6 +254,8 @@ Absent or corrupt cache reads as empty, which costs a re-evaluation and never a 
 
 `mcp_gateway/evaluate.py` owns the one policy question the layers below refuse to answer: which servers are worth paying for. Only servers whose stored measurement is missing or taken under a different identity are provoked, so the steady state is a file read and a newly installed MCP costs two spawns once. A single pass provokes at most **two** servers — four short-lived processes, fanned out under the prober's own concurrency ceiling — so a machine that just had twenty MCPs added covers them over ten probes instead of paying forty spawns inside one request. Until a server is measured it reads as `unknown`, which is the honest answer rather than a delay. Names that start the same process (command plus args) are measured one after another, and never while a probe of one of them runs: each pre-flight holds `mcp_discovery.same_process_lock` across both of its spawns, taken before its fan-out slot, so a server that allows only one copy is not refused its second spawn and left unmeasured.
 
+It also runs, unasked, after every background probe round: the one at gateway start and the one a newly added server triggers (`mcp_probe._start_first_sight_measure`, its own task, so the boot path that awaits the probe never waits on it). That pass is budgeted (`MAX_EVALUATIONS_PER_PASS`) and takes only `evaluate.first_sight` of the round: stdio servers that just answered their probe (`status == "ok"`), never a disabled one, one that needs sign-in (`needs_auth`, or remote) or one whose env holds a `secret://` reference. A round that overlapped a shutdown starts none, and an open MCP Servers tab is told only when the pass stored a verdict.
+
 It runs from `POST /api/mcp/probe` — the explicit action that already spawns every configured server — and never while rendering a page. A failure there is swallowed: the probe's own contract is status and tools, and a shareability problem must not cost the operator the answer they asked for.
 
 `MAX_EVALUATIONS_PER_PASS` bounds a pass reached from a REQUEST, so a machine that just had twenty MCPs added does not spend a spawn per server while somebody waits for a page; the remainder are evaluated on the next pass and read as `unknown` until then, which is the honest answer. An operator who asks for everything gets an UNCAPPED pass instead: `POST /api/mcp/measure` runs it as a background job and `GET /api/mcp/measure` reports `{running, done, measured, total}` so the wait is visible rather than hidden in a request. `done` counts servers ATTEMPTED and `measured` counts those that produced a verdict; they are separate fields because a pre-flight that could not run leaves no row on purpose, so that server is still unmeasured when the pass ends. A progress line has to advance on `done` or it would sit at zero for a whole pass in which nothing could be reached, while any claim about the OUTCOME has to be built from `measured` — reporting one number for both is what let a pass that measured nothing close by saying it had measured everything it tried, beside a table still showing every row as unmeasured and a button still offering the same count. When `measured` is zero the closing line is withheld entirely rather than rendered with a zero: silent, but never false, and the button's own unchanged count is what tells the reader nothing landed. A BUDGETED pass does not queue behind an uncapped one: the uncapped pass runs for minutes while the budgeted caller is a request whose status and tools are already computed, so it takes the lock only if free and otherwise serves stored rows. Nothing is lost by yielding -- its own cap meant it would measure a couple of servers, "not measured yet" is a state it already renders, and the pass holding the lock is measuring the same servers. One pass runs at a time — the store is rewritten whole, so two overlapping passes would each flush their own copy and the later one would drop the other's rows. A disabled server is never provoked — probing is the act consent gates. Measuring one server is isolated from the pass: every facet compared is JSON that server chose, walked by code that recurses, so the ways a hostile or broken payload can make the walk raise are not enumerable in advance. Any failure to measure a server therefore resolves to that server being unmeasurable rather than propagating, because the pass flushes only once at the end and an escaping error would discard every verdict already paid for at two spawns each. Cancellation is not a measurement outcome and passes through.
@@ -250,6 +265,109 @@ It runs from `POST /api/mcp/probe` — the explicit action that already spawns e
 ## The row builder does no IO
 
 `GET /api/mcp-gateway/servers` loads both records ONCE, off the event loop, before it builds any row; `_assess_server` is pure and takes the loaded state as arguments. Reading per row put N synchronous parses of the cache on the loop for an N-server config — enough to stall the dashboard and every chat sharing that loop — and it also let two rows in one payload disagree about the same file. Both properties are pinned by structural tests, because reproducing the stall needs a large config and a loaded host while the property itself is exact.
+
+## Auto-share at gateway start
+
+With `mcp_gateway.enabled` on (the default since 0.15.0; a stored `false` is
+never turned back on, only reported, see `docs/system-specs/modules/config.md`),
+the gateway start shares every stdio server
+nobody decided about, before it computes the stub set
+(`mcp_gateway/auto_share.py::share_declared_servers`, run by
+`GatewayOrchestrator._auto_share_mcp_servers` as a tracked task once the
+dashboard socket is bound, off the readiness path; new stubs are applied live
+through `_apply_mcp_stub`, the path a Share press takes, so new chats get them
+with no restart and a chat that started before that runs the server per chat; a
+start with every server decided takes no config lock and applies nothing). It writes `stub_overrides[name] = true` under the config lock,
+so the MCP Servers page shows the real state, and the rewrite pass then approves the
+launch by itself (`LaunchApprovals.auto`: sharing has no approval step). The person sees no card,
+review dialog or folder question for such a server.
+
+- **The rewriter's own fleet.** Candidates come from `folder_use.read_declarations`
+  (every agent spec, the admitted crewmates, the global settings file), the
+  declarations the rewrite wraps, so a server only another agent declares is shared
+  too, and an unreadable source shares nothing.
+- **Decisions win.** A name with any override, on or off, on the roster or with a
+  folder answer is not touched, matched by exact name and canonical alias
+  (`mcp_server_alias`), so an off saved as `npm:@playwright/mcp` holds for
+  `playwright-mcp`. The page stores every off as `false`
+  (`mcp_gateway_stubs._record_stub_decisions`), so an off survives every restart.
+  The decision is taken again inside the config lock from the locked document and
+  the `config.local.json` overlay, so a global off or a decision saved meanwhile wins.
+- **Left per chat, with no step:** a server disabled in any declaration (never
+  spawned), a never-pooled one (`rewriter_spec.is_unpoolable`), Kiro Crew's own
+  `kirocrew-*` servers (they follow their roster and leader, and the opt-in ones stay a
+  choice), a remote one, a server answered `uses_cwd`, and one with any declaration
+  whose args or env name the chat's folder (`detects_chat_folder`; an IANA time
+  zone name such as `America/Chicago` is not read as a relative path). A server that
+  asks a chat for its roots is kept per chat by the rewriter afterwards
+  (`folder_use.roots_keeps_per_chat`).
+- **Crewmate servers are shared like any other (owner-accepted risk).** The crewmate
+  folder (`config.paths.mate_agents_dir`, its conductor and worker specs included)
+  sits outside the sandbox's read-only seal, so a session can add a stdio server to
+  an admitted crewmate file, or change the launch of one, and the gateway start
+  records and shares that launch with no person's look at it. It still runs inside
+  the global `standard` sandbox on Linux and macOS (not on Windows). The owner
+  accepted this risk (RFC `rfc-mcp-zero-approval-sharing`); no seal is added here.
+  The declaration watch does not follow that folder (`auto_share._declaration_paths`),
+  so an edit there restarts no broker and resets no chat; it takes effect at the
+  next gateway start, as on main.
+- **A session fenced tighter than a shared backend keeps its servers per chat.**
+  A shared backend runs in the global `standard` sandbox, so a session at a
+  stricter tier, or an enforced harness under the credential mask, is marked
+  through its environment and on each stub element's own env
+  (`session_confinement.PER_CHAT_ENV`), and each of its stubs runs the server per
+  chat through the local fallback, which refuses an unresolved `secret://` value.
+  The mount check leaves such stubs out, since they never register with the
+  broker.
+- **Live, not only at start.** The same task then watches the declaration files
+  (`_watch_mcp_declarations`: a stat pass every 15 s, a full read only when one
+  moved). When an MCP file the agent spec is built from changed by hand
+  (`~/.kiro/crew/mcp.json`, `~/.kiro/settings/mcp.json`;
+  `auto_share.mcp_sources_fingerprint`), the watch first rebuilds the agent specs
+  (`auto_share.refresh_agent_specs`), since nothing else rebuilds them from such an
+  edit on every platform. When the declared stdio launches change (a server added, removed, or
+  its command, args or env edited by hand), it re-runs the pass and applies it
+  through `_apply_mcp_stub`. It forces a broker restart (`launch_approved=True`,
+  which also resets open chats so they pick the change up) only when the pass
+  changed the shared set or the launch of a server the broker routes moved
+  (`auto_share.changed_launch_names`); an edit to a per-chat server, or sharing
+  switched back on with nothing new to share, applies without one. An unrelated
+  spec edit restarts nothing.
+  A launch is keyed by its declaring file too, so the same server added to one
+  more agent counts as a change. The watch runs for the gateway's lifetime and
+  starts even when sharing is off at boot: a poll while sharing is off does
+  nothing, and the first poll after it is turned on runs the pass once. A pass
+  that fails (the config write raises, or the live apply left no broker at all,
+  as after a rewriter failure) keeps the old state, so the next poll runs it
+  again; a failed boot pass is handed to the watch the same way (`pending`). A
+  broker start that failed and is being retried (`_mcp_gateway_pending`) counts as
+  landed, so the watch does not stop it and reset every chat on each poll.
+- **An add card's off is recorded.** An `mcp.server` add card that leaves a new
+  local server per chat (the sharing box unticked, or not safe to share because
+  of a folder signal or a missing claim) records `stub_overrides[name] = false`,
+  with the `uses_cwd` answer for a folder signal when none is recorded
+  (`change_card_mcp_server._kept_off`, the "Sharing: Off" line), so auto-share
+  does not share what the card kept per chat. A change card keeps the server's
+  current sharing, and the record restarts no chat.
+- **Servers deleted from an MCP file leave the agent spec through the rebuild.** On
+  an MCP file change the watch runs the spec rebuild, whose own reconciliation
+  (`agent_materialization.mcp_sources`) drops a copied server no file declares any
+  more and keeps an entry the owner wrote. The watch deletes nothing itself. A spec Windows refuses to open while another writer replaces
+  it (a sharing violation) makes the declaration read incomplete, so the servers it
+  holds are not taken for removed.
+- **Removed servers leave the list.** An entry that turns on a server no
+  declaration carries any more is dropped (`stale_on`), so the share list and its
+  count name only real servers; a person's off for that name is kept. Only an
+  entry the pass would write again when the server comes back is dropped: a name
+  on the roster (`stub_roster`), one with a folder answer (`cwd_use`) and a
+  `kirocrew-*` opt-in keep theirs. Nothing is dropped while a declaration file
+  will not parse (`FolderDeclarations.some_unparsed`), since the server may come
+  back with the fix. The
+  shareability ledger's own rules (a refuted server gets a private backend)
+  apply as for any stub.
+
+This is the auto-share every recommendation would otherwise have needed, so the
+verdict-driven seeding below stays unwired.
 
 ## Seeding: designed, present, not yet wired
 

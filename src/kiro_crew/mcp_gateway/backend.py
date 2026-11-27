@@ -319,6 +319,8 @@ class Backend:
     # loop and (b) outlives shutdown if the process survives SIGKILL, leaking
     # its stderr pipe fd across LRU-eviction churn.
     _stderr_task: Optional[asyncio.Task[None]] = None
+    # Removes the global sandbox's launcher file once the backend has exited.
+    _sandbox_cleanup_task: Optional[asyncio.Task[None]] = None
     # The backend's last stderr lines as the server wrote them, each PEM block
     # kept as one withheld line and each line bounded (``_keep_stderr_line``).
     # The pump logs each line only at DEBUG, so this tail is what names a death
@@ -634,6 +636,8 @@ async def spawn_backend(
     declared_temp_keys: tuple[str, ...] = (),
     secret_env_keys: tuple[str, ...] = (),
     initialize_timeout_secs: float = _DEFAULT_INITIALIZE_TIMEOUT_SECS,
+    managed_control_plane: bool = False,
+    declared_env_keys: tuple[str, ...] = (),
 ) -> Backend:
     """Spawn a real MCP subprocess and wrap it in a :class:`Backend`.
 
@@ -657,11 +661,16 @@ async def spawn_backend(
     conservatively split two equivalent managed-temp backends but can never
     collapse specs that declared different environments into one pool.
 
-    Security boundary (accepted risk, documented in
-    ``docs/system-specs/modules/security.md`` under MCP Gateway): backends
-    spawned here do NOT run inside a Linux mount namespace. The per-session
-    sandbox applied in ``AcpClient._spawn()`` protects kiro-cli sessions,
-    not gateway-spawned backends. Compensating controls:
+    Security boundary (``docs/system-specs/modules/security.md`` under MCP
+    Gateway): on Linux and macOS every backend but Kiro Crew's own managed
+    servers runs inside the same global ``standard`` sandbox each chat's agent
+    runs in, plus its cgroup scope and the session-host resource limits
+    (:func:`_sandboxed_backend_argv`). No sandbox on a host that needs one, or a
+    declared key the launcher would drop, refuses the share
+    (:class:`BackendSandboxRefused`) so the server runs per chat. Windows,
+    which has no sandbox, keeps the direct exec; for it, and for the managed
+    servers, the rest of this note still describes the boundary.
+    Compensating controls for those:
 
     1. ``command`` is taken verbatim from ``KIROCREW_MCP_TARGET_<SERVER>`` env
        vars populated at KiroCrew startup by the rewriter from the user's
@@ -790,10 +799,25 @@ async def spawn_backend(
             key: value for key, value in spawn_env.items() if key.upper() not in CANONICAL_TEMP_KEYS
         }
         spawn_env.update(declared_values)
+    sandbox_cleanup: Optional[str] = None
     try:
-        process = await asyncio.create_subprocess_exec(
-            command,
-            *args,
+        argv, sandbox_cleanup, sandboxed = await _sandboxed_backend_argv(
+            [command, *args],
+            spawn_env,
+            backend_tmp,
+            secret_env_keys,
+            server=pool_key.server_name,
+            managed_control_plane=managed_control_plane,
+        )
+        if sandboxed:
+            spawn_env = _without_inherited_channel_credentials(
+                spawn_env, (*declared_env_keys, *secret_env_keys)
+            )
+            # Inside our sandbox only: Chrome's own cannot nest in it.
+            spawn_env.update(_puppeteer_chrome_sandbox_off([command, *args], spawn_env))
+        process = await _spawn_backend_process(
+            argv,
+            sandboxed=sandboxed,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -803,6 +827,8 @@ async def spawn_backend(
             limit=READ_BUFFER_LIMIT_BYTES,
         )
     except BaseException:
+        if sandbox_cleanup:
+            Path(sandbox_cleanup).unlink(missing_ok=True)
         # The spawn itself failed: reclaim the just-allocated dir here and
         # now. Unowned directories are deliberately never deleted by the
         # sweeps (an owner record can fail on a live backend), so this is
@@ -857,7 +883,248 @@ async def spawn_backend(
         # must not delete temp storage under a survivor. Off-loop, fail-open
         # (an unowned dir falls under the sweep's grace-window rule instead).
         await asyncio.to_thread(record_owner, backend_tmp, process.pid)
+    if sandbox_cleanup:
+        backend._sandbox_cleanup_task = asyncio.create_task(
+            _unlink_after_exit(process, sandbox_cleanup),
+            name=f"mcp-gateway-backend-sandbox-cleanup-{process.pid}",
+        )
     return backend
+
+
+class BackendSandboxRefused(RuntimeError):
+    """A shared launch that cannot run inside the global sandbox.
+
+    The daemon answers it as a missing target, so the stub runs the server per
+    chat inside that chat's sandbox instead. A shared backend is never started
+    unwrapped on a host where a sandbox applies.
+    """
+
+
+def _scrubbed_env_keys(env: Mapping[str, str], forward_ssh_auth_sock: bool) -> list[str]:
+    """Keys of *env* the global sandbox's launcher would drop before the exec.
+
+    The gateway's own environment has these scrubbed already
+    (``manager._SENSITIVE_ENV_PREFIXES``), so a match is one the server's own
+    declaration (or a ``secret://`` value) put there, and a shared copy would
+    start without it.
+    """
+    from kiro_crew.sandbox import _SENSITIVE_ENV_PREFIXES
+
+    prefixes = [
+        p for p in _SENSITIVE_ENV_PREFIXES if not (forward_ssh_auth_sock and p == "SSH_AUTH_SOCK")
+    ]
+    return sorted(k for k in env if any(k.startswith(p) for p in prefixes))
+
+
+#: Dynamic-loader variables. The loader acts on them in the launcher itself,
+#: before any namespace, mask or seal exists, so a backend that sets one the
+#: daemon does not already run with cannot be confined by the wrap.
+_LOADER_ENV_PREFIXES = ("LD_", "DYLD_")
+
+
+def _with_chrome_sandbox_off(argv: list[str]) -> list[str]:
+    """*argv* with ``--no-sandbox`` added for a Playwright MCP server, else *argv*.
+
+    Chrome's own sandbox cannot start inside ours (Linux: "No usable sandbox!",
+    macOS: ``forbidden-sandbox-reinit``), so a wrapped Playwright server turns only
+    Chrome's sandbox off; ours still holds the whole process tree. Added only when
+    the launch names the ``@playwright/mcp`` package or its ``playwright-mcp``
+    binary and declares neither ``--sandbox`` nor ``--no-sandbox``: an operator's
+    explicit choice stands. A puppeteer server gets the same through its env
+    (:func:`_puppeteer_chrome_sandbox_off`).
+    """
+    if any(a in ("--sandbox", "--no-sandbox") for a in argv):
+        return argv
+    for part in argv:
+        name = part.replace("\\", "/")
+        if (
+            name in ("@playwright/mcp", "playwright-mcp")
+            or name.startswith("@playwright/mcp@")
+            or name.endswith(("/@playwright/mcp/cli.js", "/.bin/playwright-mcp"))
+        ):
+            return [*argv, "--no-sandbox"]
+    return argv
+
+
+#: The env ``@modelcontextprotocol/server-puppeteer`` reads (``dist/index.js``
+#: ``ensureBrowser``): JSON launch options merged into ``puppeteer.launch``, and the
+#: switch that lets a dangerous argument such as ``--no-sandbox`` through.
+_PUPPETEER_LAUNCH_OPTIONS_ENV = "PUPPETEER_LAUNCH_OPTIONS"
+_PUPPETEER_ALLOW_DANGEROUS_ENV = "ALLOW_DANGEROUS"
+
+
+def _puppeteer_chrome_sandbox_off(argv: list[str], env: Mapping[str, str]) -> dict[str, str]:
+    """The env that turns only Chrome's own sandbox off for a puppeteer MCP server, or ``{}``.
+
+    The puppeteer counterpart of :func:`_with_chrome_sandbox_off` (an owner
+    decision, RFC decision C): Chrome's sandbox cannot start inside ours, and the server refuses
+    ``--no-sandbox`` unless ``ALLOW_DANGEROUS`` is ``true``. Returned only when the
+    launch names the ``@modelcontextprotocol/server-puppeteer`` package or its
+    ``mcp-server-puppeteer`` binary and the env sets neither key: launch options or
+    the switch the operator declared stand as they are. Nothing else is added, and
+    the caller applies it only to a backend inside our sandbox.
+    """
+    if _PUPPETEER_LAUNCH_OPTIONS_ENV in env or _PUPPETEER_ALLOW_DANGEROUS_ENV in env:
+        return {}
+    for part in argv:
+        name = part.replace("\\", "/")
+        if (
+            name in ("@modelcontextprotocol/server-puppeteer", "mcp-server-puppeteer")
+            or name.startswith("@modelcontextprotocol/server-puppeteer@")
+            or name.endswith(
+                (
+                    "/@modelcontextprotocol/server-puppeteer/dist/index.js",
+                    "/.bin/mcp-server-puppeteer",
+                )
+            )
+        ):
+            return {
+                _PUPPETEER_LAUNCH_OPTIONS_ENV: '{"args": ["--no-sandbox"]}',
+                _PUPPETEER_ALLOW_DANGEROUS_ENV: "true",
+            }
+    return {}
+
+
+def _without_inherited_channel_credentials(
+    env: Mapping[str, str], declared_keys: tuple[str, ...] = ()
+) -> dict[str, str]:
+    """*env* without the gateway's channel credentials it inherited from the daemon.
+
+    A shared third-party backend runs in the agent's ``standard`` sandbox, which
+    leaves ``sandbox._AGENT_DENIED_ENV_KEYS`` (the Slack, Telegram and Discord
+    tokens and the owner id) in place; the agent's own spawn drops them
+    (``sandbox_spawn.scrub_agent_denied_env``), so the backend does too. A key
+    the server's own declaration names (*declared_keys*) is kept whatever its
+    value, since the operator chose it for this server.
+    """
+    from kiro_crew.sandbox_spawn import scrub_agent_denied_env
+
+    kept = scrub_agent_denied_env(dict(env))
+    # Exact names, as the scrub matches them off Windows (the only hosts that wrap):
+    # ``slack_bot_token`` declared is not ``SLACK_BOT_TOKEN`` inherited.
+    declared = set(declared_keys)
+    return {k: v for k, v in env.items() if k in kept or k in declared}
+
+
+async def _sandboxed_backend_argv(
+    argv: list[str],
+    env: Mapping[str, str],
+    backend_tmp: Optional[Path],
+    secret_env_keys: tuple[str, ...] = (),
+    *,
+    server: str = "",
+    managed_control_plane: bool = False,
+) -> tuple[list[str], Optional[str], bool]:
+    """*argv* inside the global ``standard`` sandbox and its cgroup scope.
+
+    Returns ``(argv, launcher file to remove, whether it is sandboxed)``.
+
+    Kiro Crew's own managed servers keep today's direct exec: they are
+    first-party and need the owner port. That is decided by the daemon's
+    positive attestation (*managed_control_plane*, the gateway's
+    ``_spawns_own_control_plane``), never by the reserved name, which any
+    declaration can carry. So does every backend on Windows,
+    which has no OS sandbox. Every other backend gets the same one home-wide
+    profile each chat's agent runs in (no project folder, no extra mask or
+    seal), with its private temp dir writable, as the MCP pre-flight probe and
+    App Kit app backends already do; the Python environment it inherits is
+    kept, as it is today. A wrap that confined nothing (the operator's
+    unsandboxed-exec opt-in, or an inherited in-sandbox marker) refuses the
+    share too, so a shared backend is never wider than a per-chat copy.
+
+    Raises :class:`BackendSandboxRefused` when no sandbox can be built on a
+    host that needs one, when the env sets a dynamic-loader variable
+    (``LD_*``, ``DYLD_*``, which would run code before the sandbox exists), or
+    when the launcher would scrub a key this server declares, so the server
+    runs per chat with that key. That holds for a key
+    the gateway resolved from ``secret://`` too, which no per-chat copy can
+    resolve: such a server does not start, which is the closed side. A
+    third-party backend is never started unwrapped where a sandbox applies.
+    """
+    from kiro_crew.sandbox import cgroup_scope_argv
+    from kiro_crew.sandbox_spawn import wrap_argv_async
+
+    if managed_control_plane or platform_compat.IS_WINDOWS:
+        return argv, None, False
+    # A value the daemon itself already runs with is the host's own (a CUDA or
+    # toolchain ``LD_LIBRARY_PATH``), loaded into gatewayd before any backend:
+    # only a value the spawn env introduces is a declaration's choice.
+    loader = sorted(
+        k
+        for k, v in env.items()
+        if v and k.startswith(_LOADER_ENV_PREFIXES) and os.environ.get(k) != v
+    )
+    if loader:
+        # Names only: the value is a path the declaration chose.
+        raise BackendSandboxRefused(
+            f"{', '.join(loader)} would load code before the shared sandbox starts; "
+            "this server runs per chat"
+        )
+    # ``SSH_AUTH_SOCK`` is in the spawn env only for a backend the operator named
+    # (``launch.env_target_resolver``), so its presence is the forward decision.
+    forward_ssh = "SSH_AUTH_SOCK" in env
+    dropped = _scrubbed_env_keys(env, forward_ssh)
+    argv = _with_chrome_sandbox_off(argv)
+    try:
+        wrapped, cleanup = await wrap_argv_async(
+            argv,
+            mode="standard",
+            forward_ssh_auth_sock=forward_ssh,
+            extra_writable_dirs=(str(backend_tmp),) if backend_tmp is not None else (),
+        )
+    except Exception as exc:  # noqa: BLE001 -- any failure to build it refuses the share
+        # SandboxUnavailableError is the usual one (no sandbox backend here);
+        # whatever it is, the backend must not start unwrapped.
+        raise BackendSandboxRefused(f"no sandbox for a shared backend: {exc}") from exc
+    if list(wrapped) == list(argv):
+        # The wrap was a no-op: no sandbox here (the operator's opt-in) or an
+        # inherited in-sandbox marker. A per-chat copy runs in its chat's own
+        # sandbox, so a shared one started unwrapped would reach more than it.
+        # Refused: the server runs per chat.
+        if cleanup:
+            Path(cleanup).unlink(missing_ok=True)
+        raise BackendSandboxRefused(
+            "no sandbox applies to a shared backend on this host; this server runs per chat"
+        )
+    if dropped:
+        if cleanup:
+            Path(cleanup).unlink(missing_ok=True)
+        vaulted = sorted(set(dropped) & set(secret_env_keys))
+        if vaulted:
+            # Names only: a resolved value never reaches a log line.
+            logger.warning(
+                "MCP backend [%s]: the sandbox scrubs vault-resolved %s, which a "
+                "per-chat copy cannot resolve; the server will not start until the "
+                "secret is declared under another env name",
+                server,
+                ", ".join(vaulted),
+            )
+        raise BackendSandboxRefused(
+            f"the shared sandbox would drop {', '.join(dropped)}; this server runs per chat"
+        )
+    return cgroup_scope_argv(list(wrapped)), cleanup, True
+
+
+async def _spawn_backend_process(
+    argv: list[str], *, sandboxed: bool, **kwargs: Any
+) -> asyncio.subprocess.Process:
+    """Start *argv*: a sandboxed backend with the session-host resource limits."""
+    if not sandboxed:
+        return await asyncio.create_subprocess_exec(*argv, **kwargs)
+    from kiro_crew.sandbox_rlimit import RLIMIT_PROFILE_SESSION_HOST, create_subprocess_limited
+
+    # A long-lived server, like the agent's own host: the one-shot ``tool``
+    # profile's CPU ceiling would end it mid-session.
+    return await create_subprocess_limited(*argv, profile=RLIMIT_PROFILE_SESSION_HOST, **kwargs)
+
+
+async def _unlink_after_exit(process: asyncio.subprocess.Process, path: str) -> None:
+    """Remove the sandbox launcher file once the backend it started has exited."""
+    try:
+        await process.wait()
+    finally:
+        with contextlib.suppress(OSError):
+            Path(path).unlink(missing_ok=True)
 
 
 async def _pump_stderr(

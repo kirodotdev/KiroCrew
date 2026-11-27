@@ -158,8 +158,9 @@ async def test_the_batch_share_skips_a_server_seen_asking_for_roots(
     monkeypatch.setattr(mcp_mod, "probe_metadata", lambda n: meta if n == "srv" else None)
     _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
     expected = await _expected_launch()
+    # Sharing off, as the control needs: with no stored value it is now on.
     (tmp_path / "config.json").write_text(
-        json.dumps({"mcp_gateway": {"cwd_use": {"srv": "not_used"}}})
+        json.dumps({"mcp_gateway": {"enabled": False, "cwd_use": {"srv": "not_used"}}})
     )
     if saw_roots:
         _saw_roots(_live_socket())

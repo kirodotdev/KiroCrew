@@ -27,7 +27,7 @@ from aiohttp import web
 from kiro_crew import platform_compat
 from kiro_crew.agent import _atomic_json_write
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.paths import data_home
+from kiro_crew.config.paths import data_home, kiro_home
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.user_json import has_json_comments, loads_user_jsonc
 
@@ -59,7 +59,9 @@ def _is_valid_mcp_name(name: str) -> bool:
     return bool(_VALID_MCP_NAME_RE.match(name))
 
 
-_GLOBAL_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
+# The file the agent spec builder copies from (``agent._KIRO_MCP_JSON``), so a
+# server the page writes reaches the chats: under ``KIRO_HOME`` when it is set.
+_GLOBAL_MCP_JSON = kiro_home() / "settings" / "mcp.json"
 # Surface label carried into the provenance decision so a declined rewrite names
 # the file it declined to touch.
 _KIRO_GLOBAL_SURFACE = "~/.kiro/settings/mcp.json"

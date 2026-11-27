@@ -40,6 +40,7 @@ from kiro_crew.config.loader import (
     _resolve_stub_roster,
     read_config_text,
 )
+from kiro_crew.config.paths import kiro_home  # noqa: F401 - served by mcp_config_files
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.config.sections import MANAGED_STUB_FOLLOWERS
 from kiro_crew.dashboard.chat_utils import run_to_completion
@@ -1323,6 +1324,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _mcp_probe_task,
         _mcp_probe_ts,
         _mcp_reprobe_armed_for,
+        _measure_first_sight,
         _measure_progress,
         _probe_currency,
         _probe_view,
@@ -1333,6 +1335,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _record_probe_verdicts,
         _run_mcp_probe,
         _stamp_config_state,
+        _start_first_sight_measure,
         api_mcp_active,
         api_mcp_measure_progress,
         api_mcp_measure_start,

@@ -12,7 +12,9 @@ once.
 
 Never called while rendering anything. The pre-flight spawns processes, so this
 runs from the explicit probe action the operator already triggers — the same
-action that already spawns every configured server.
+action that already spawns every configured server — and, budgeted, after each
+background probe round over the servers that round just started
+(:func:`first_sight`).
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery import PROBE_MAX_CONCURRENCY, same_process_lock
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env, runs_install_code
 from kiro_crew.mcp_gateway.preflight import PreflightResult, preflight
+from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
 from kiro_crew.mcp_gateway.stub import binary_fingerprint
 from kiro_crew.mcp_gateway.verdict_cache import (
     CachedPreflight,
@@ -237,6 +240,26 @@ async def evaluate_new_servers(
         return await asyncio.to_thread(_stored_verdicts, _measurable(servers), runtime_dir)
     async with _PASS_LOCK:
         return await _evaluate_pass(_measurable(servers), runtime_dir, budget, on_progress)
+
+
+def first_sight(servers: list[Any]) -> list[Any]:
+    """The *servers* a pass may measure unasked, right after a probe round.
+
+    Only a stdio server that just answered its probe (``status == "ok"``), so the
+    pre-flight's two spawns repeat a start that already worked. That leaves out
+    a disabled server (consent), one that needs sign-in (``needs_auth``, or a
+    remote one, which has no command), and one whose env holds a ``secret://``
+    reference (only the gateway resolves it, so a spawn here would run without
+    its credential). Its budget stays :data:`MAX_EVALUATIONS_PER_PASS`.
+    """
+    return [
+        s
+        for s in servers
+        if getattr(s, "status", "") == "ok"
+        and getattr(s, "command", "")
+        and not getattr(s, "disabled", False)
+        and not secret_reference_keys(getattr(s, "env", None))
+    ]
 
 
 def _measurable(servers: list[Any]) -> list[Any]:

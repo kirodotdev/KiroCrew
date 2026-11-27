@@ -16,7 +16,6 @@ import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-import InfoTip from '../../components/InfoTip'
 import {
   argvLine,
   commandSetUnchanged,
@@ -643,42 +642,6 @@ export function ShareAction({
           {i18nT('pages.mcpManagement.share_checking')}
         </span>
       )}
-    </div>
-  )
-}
-
-/**
- * A shared row's "Always trust changes to this server", drawn under the server
- * name while the row's launch is approved. It is checked when the server is
- * trusted; the owner can take it off and tick it again here, or set it in the
- * Review dialog. A row waiting for approval draws nothing: Review asks there.
- */
-export function TrustChangesChoice({
-  server,
-  approved,
-  busy,
-  onTrustChange,
-}: {
-  server: McpManagedServer
-  approved: boolean
-  busy: boolean
-  onTrustChange: (trusted: boolean) => void
-}) {
-  if (!server.stub || !approved) return null
-  return (
-    <div className="mt-1 flex min-w-0 items-start gap-1.5">
-      <label className="flex min-w-0 items-start gap-1.5 text-[12px] text-[var(--muted)]">
-        <input
-          type="checkbox"
-          aria-label={i18nT('pages.mcpManagement.trust_changes_label')}
-          className="mt-[2px] h-3.5 w-3.5 shrink-0 accent-[var(--accent)]"
-          checked={server.trust_changes === true}
-          disabled={busy}
-          onChange={e => onTrustChange(e.target.checked)}
-        />
-        <span className="min-w-0">{i18nT('pages.mcpManagement.trust_changes_label')}</span>
-      </label>
-      <InfoTip text={i18nT('pages.mcpManagement.trust_changes_tip')} />
     </div>
   )
 }

@@ -62,7 +62,9 @@ def _stub_args(server: str, *, envelope: bool = False) -> list[str]:
     return ["-m", STUB_MODULE, *flags]
 
 
-def _stub(server: str = _WORK, *, token: str = _TOKEN, envelope: bool = False) -> dict:
+def _stub(
+    server: str = _WORK, *, token: str = _TOKEN, envelope: bool = False, per_chat: bool = False
+) -> dict:
     """A broker stub as the client hands it over: shaped, then given the token."""
     shaped = {
         "name": server,
@@ -70,7 +72,7 @@ def _stub(server: str = _WORK, *, token: str = _TOKEN, envelope: bool = False) -
         "args": _stub_args(server, envelope=envelope),
         "env": [],
     }
-    return attach_stub_session_token([shaped], token)[0]
+    return attach_stub_session_token([shaped], token, per_chat=per_chat)[0]
 
 
 def _grant(agents_dir, *names: str) -> None:
@@ -234,3 +236,23 @@ def test_every_single_binary_harness_admits_only_the_work_ledger_stub(agents_dir
     entry = {"command": "/opt/kirocrew", "disabledTools": ["work_report"]}
     _write_spec(agents_dir, servers={_WORK: entry}, tools=[f"@{_WORK}"])
     assert _WORK not in _mounted([_stub()], project=project)
+
+
+_EVERY_HARNESS = {"opencode": opencode_projection, **_WHOLE_SERVER_HARNESSES}
+
+
+@pytest.mark.parametrize("project", list(_EVERY_HARNESS.values()), ids=list(_EVERY_HARNESS))
+def test_a_confined_sessions_stub_with_the_per_chat_mark_is_mounted(agents_dir, project):
+    """A session fenced tighter than a shared backend marks its stubs; the mark is no look-alike."""
+    from kiro_crew.mcp_gateway.session_confinement import PER_CHAT_ENV
+
+    _grant(agents_dir, _WORK)
+    stub = _stub(per_chat=True)
+    assert stub["env"][-1] == {"name": PER_CHAT_ENV, "value": "1"}
+    assert _mounted([stub], project=project).get(_WORK) == stub
+
+    # Any other value, or a pair after the mark, is not the stub this session was handed.
+    for extra in ({"name": PER_CHAT_ENV, "value": "0"}, {"name": "OTHER", "value": "1"}):
+        forged = _stub()
+        forged["env"] = [*forged["env"], extra]
+        assert _WORK not in _mounted([forged], project=project)

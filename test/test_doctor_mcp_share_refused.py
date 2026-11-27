@@ -2,8 +2,9 @@
 
 A server in ``mcp_gateway.stub_servers`` whose launch approval is refused runs one
 copy per chat while config says it is shared. These tests pin that doctor says so,
-names the reason and the approve path, and counts it as an issue -- and that it
-stays quiet about a refusal for a server that is not on the share list. A changed
+names the reason and the approve path, and reports it as info rather than an
+issue, since the refused launch still runs inside each chat -- and that it stays
+quiet about a refusal for a server that is not on the share list. A changed
 refusal whose approved launches all still run beside an added one is named as a
 new launch; anything less complete, or an approved launch shown with a redaction
 tag, keeps "command changed".
@@ -29,7 +30,24 @@ def refused(monkeypatch):
     store: dict[str, dict] = {}
     monkeypatch.setattr(launch_approval, "refused_servers", lambda path=None: store)
     monkeypatch.setattr(launch_approval, "approvals_store_problem", lambda path=None: None)
+    # No declaration names a secret:// value unless a test says so.
+    monkeypatch.setattr(mcp, "_vault_declared", lambda names: [])
     return store
+
+
+def test_a_refused_vault_backed_server_is_still_an_issue(refused, capsys, monkeypatch):
+    """It has no per-chat fallback: only the shared launch resolves its secret."""
+    refused["alpha-mcp"] = {"reason": launch_approval.REFUSED_UNAPPROVED}
+    refused["beta-mcp"] = {"reason": launch_approval.REFUSED_CHANGED}
+    monkeypatch.setattr(mcp, "_vault_declared", lambda names: ["alpha-mcp"])
+    issues: list[str] = []
+
+    mcp._doctor_mcp_share_refused(_cfg(), issues)
+
+    out = capsys.readouterr().out
+    assert "mcp sharing: ⚠ not running, launch not approved: alpha-mcp" in out
+    assert "mcp sharing: ⏹ not shared, one copy per chat: beta-mcp" in out
+    assert issues == ["1 MCP server(s) not running: launch not approved"]
 
 
 @pytest.fixture
@@ -40,7 +58,7 @@ def store_file(tmp_path, monkeypatch):
     return path
 
 
-def test_refused_share_is_reported_as_an_issue_with_the_approve_path(refused, capsys):
+def test_refused_share_is_reported_as_info_with_the_approve_path(refused, capsys):
     refused["alpha-mcp"] = {"reason": launch_approval.REFUSED_UNAPPROVED}
     refused["beta-mcp"] = {"reason": launch_approval.REFUSED_CHANGED}
     issues: list[str] = []
@@ -48,7 +66,8 @@ def test_refused_share_is_reported_as_an_issue_with_the_approve_path(refused, ca
     mcp._doctor_mcp_share_refused(_cfg(), issues)
 
     out = capsys.readouterr().out
-    assert "mcp sharing: ⚠ not shared, one copy per chat:" in out
+    assert "mcp sharing: ⏹ not shared, one copy per chat:" in out
+    assert "Their tools work as before." in " ".join(out.split())
     assert "alpha-mcp (not approved yet)" in out
     assert "beta-mcp (command changed since it was approved)" in out
     assert "/mcp?view=sharing" in out
@@ -57,7 +76,7 @@ def test_refused_share_is_reported_as_an_issue_with_the_approve_path(refused, ca
     assert "Developer Mode" not in flat
     # Unflattened on purpose: the command must stay on one line to be pasteable.
     assert "kirocrew restart" in out
-    assert issues == ["2 MCP server(s) set to share are not shared: launch not approved"]
+    assert issues == []
 
 
 def test_a_share_over_the_launch_cap_is_named_with_its_remedy(refused, capsys):
@@ -98,7 +117,7 @@ def test_a_launch_added_beside_the_approved_one_is_named_as_new(refused, capsys)
     out = capsys.readouterr().out
     assert "alpha-mcp (new launch not approved yet)" in out
     assert "beta-mcp (command changed since it was approved)" in out
-    assert issues == ["2 MCP server(s) set to share are not shared: launch not approved"]
+    assert issues == []
 
 
 #: Display tags that read the same for two different values.
@@ -218,7 +237,7 @@ def test_slash_named_server_matches_the_refusal_recorded_under_its_alias(refused
     mcp._doctor_mcp_share_refused(_cfg(stub=("npm:@playwright/mcp",)), issues)
 
     assert "npm:@playwright/mcp (not approved yet)" in capsys.readouterr().out
-    assert len(issues) == 1
+    assert issues == []
 
 
 def test_refused_shares_keys_by_configured_name():
@@ -251,7 +270,7 @@ def test_unknown_reason_is_still_reported_by_its_raw_name(refused, capsys):
     mcp._doctor_mcp_share_refused(_cfg(), issues)
 
     assert "alpha-mcp (some_future_reason)" in capsys.readouterr().out
-    assert len(issues) == 1
+    assert issues == []
 
 
 @pytest.mark.parametrize("cfg", [_cfg(enabled=False), _cfg(stub=())])

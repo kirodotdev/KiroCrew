@@ -8,6 +8,13 @@ outside the pooling budget.
 
 ## The config surface
 
+- **Defaults since 0.15.0.** `mcp_gateway.enabled` is on, the gateway start stubs
+  every undecided stdio server through `stub_overrides`
+  (`mcp_gateway/auto_share.py`, `mcp-shareability.md` "Auto-share at gateway
+  start"), and the gateway start records each launch with no review (sharing has
+  no approval step). So the broker runs on a default install with stdio servers,
+  and a shared backend runs a launch outside the session sandbox that nobody
+  looked at. The two decisions below stay separate; only their defaults moved.
 - **`mcp_gateway.stub_servers`** — the stub ROSTER, empty by default. Routing is what
   interposes a stub, so this is the per-server decision and the only thing that can
   grant MCP Apps for that server. It is a layer an edition can own: a distribution

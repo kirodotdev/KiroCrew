@@ -541,7 +541,7 @@ class McpGatewayConfig:
     """Sidecar MCP broker daemon — shares MCP backends across sessions."""
 
     enabled: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Share MCP Backends",
             "Let sessions with an identical server configuration share one MCP "
@@ -551,7 +551,8 @@ class McpGatewayConfig:
             "iff some server is stubbed, and this chooses whether stubbed servers "
             "share one backend or get one per session; see "
             "docs/architecture/design-notes/mcp-stub-decoupling.md. "
-            "Default False — opt-in.",
+            "Default True: on, every stdio server is stubbed and shared at "
+            "gateway start unless you turned that server off.",
         ),
     )
     apps_enabled: bool = field(

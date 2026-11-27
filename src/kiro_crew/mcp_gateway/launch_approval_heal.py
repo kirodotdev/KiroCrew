@@ -194,23 +194,23 @@ CASING_AUDIT_REASON = "approved launch, Windows command casing repaired"
 PREFOLD_AUDIT_REASON = "approved launch, stored before the gateway PATH fold"
 #: Audit reason for a changed launch of a server whose changes the operator trusts.
 TRUST_AUDIT_REASON = "changed launch of a server the operator trusts"
+#: Audit reason for a launch the gateway start recorded by itself (``LaunchApprovals.auto``).
+AUTO_AUDIT_REASON = "recorded automatically at gateway start (sharing has no approval step)"
 
 
 def trusts_change(approvals: LaunchApprovals, stem: str, managed: bool) -> bool:
     """Whether a changed launch of *stem* is admitted because the operator trusts it.
 
-    Only the dashboard's approve press sets the choice, and only with an
-    approval: a stem with no approved launch, a never-pooled server or a
-    managed launch is never admitted this way.
+    The dashboard's approve press sets the choice, and only with an approval: a
+    stem with no approved launch is not admitted by it. A pass with
+    ``auto`` (the gateway start) admits every stem, its first launch included. A never-pooled server or a managed launch is never admitted
+    this way.
     """
     from kiro_crew.mcp_gateway.launch_approval import _unpoolable_stems
 
-    return (
-        not managed
-        and stem in approvals.trusted
-        and bool(approvals.approved.get(stem))
-        and stem not in _unpoolable_stems()
-    )
+    if managed or stem in _unpoolable_stems():
+        return False
+    return approvals.auto or (stem in approvals.trusted and bool(approvals.approved.get(stem)))
 
 
 def captured_by_reason(
@@ -239,7 +239,7 @@ def captured_by_reason(
             if fingerprint in approvals.normalized_healed.get(stem, {}):
                 reason = NORMALIZED_AUDIT_REASON
             if fingerprint in approvals.trust_admitted.get(stem, {}):
-                reason = TRUST_AUDIT_REASON
+                reason = AUTO_AUDIT_REASON if approvals.auto else TRUST_AUDIT_REASON
             by_reason.setdefault(reason, {}).setdefault(stem, set()).add(fingerprint)
     return by_reason
 
@@ -282,7 +282,7 @@ def note_trust_live(approvals: LaunchApprovals, stem: str, fingerprint: str) -> 
     """Record a launch of a trusted server this pass found, however it is admitted."""
     from kiro_crew.mcp_gateway.launch_approval import _MAX_SERVER_LAUNCHES
 
-    if not approvals.probe and stem in approvals.trusted:
+    if not approvals.probe and approvals.trusts(stem):
         live = approvals.trust_live.get(stem, set())
         if not approvals._stem_admitted(stem, stem) or (
             len(live) >= _MAX_SERVER_LAUNCHES and fingerprint not in live
@@ -307,7 +307,7 @@ def retire_trusted(
     a pass that skipped a source or was served from cache retires nothing.
     """
     if (
-        stem not in current.trusted
+        not (approvals.auto or stem in current.trusted)
         or not approvals.full_pass
         or approvals.live_incomplete
         or approvals.declared_incomplete

@@ -62,9 +62,12 @@ def _mcp_sources() -> tuple[tuple[Path, str], ...]:
     """
     if _MCP_SOURCES is not None:
         return _MCP_SOURCES
+    from kiro_crew.config.paths import kiro_home
+
     return (
         (data_home() / "mcp.json", SCOPE_KIROCREW),
-        (Path.home() / ".kiro" / "settings" / "mcp.json", SCOPE_KIRO_GLOBAL),
+        # kiro-cli's global MCP file, under ``KIRO_HOME`` when it is set.
+        (kiro_home() / "settings" / "mcp.json", SCOPE_KIRO_GLOBAL),
     )
 
 
