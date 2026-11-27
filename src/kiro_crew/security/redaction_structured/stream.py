@@ -34,6 +34,7 @@ from kiro_crew.default_ignorable import DEFAULT_IGNORABLE
 from .charsets import B64STD
 from .encoded import RUN_CHARS
 from .engine import render, resolve, scan
+from .headers import cookie_look_behind
 from .model import SECRET, TAG, TAIL_ALL, TAIL_B64RUN, TAIL_ENCRUN, TAIL_LINE, Hit, Span
 from .table import TABLE
 
@@ -160,7 +161,7 @@ class StreamRedactor:
                 i, done = len(chunk), False
         self._pos += i
         if self._mode != TAIL_ALL:
-            self._ctx = (self._ctx + chunk[:i])[-CONTEXT:]
+            self._ctx = cookie_look_behind(self._ctx + chunk[:i], CONTEXT)
         if not done:
             return ""
         self._close_open_span(self._pos)
@@ -217,13 +218,15 @@ class StreamRedactor:
                     # A hit not yet committed keeps the text it was decided from
                     # (its anchor) in the window, so a later feed decides it alike.
                     first = h.start if h.anchor < 0 else min(h.start, h.anchor)
-                    if first < cut < h.end:
+                    # Retreat only while the cut moves back; a hit decided from
+                    # committed text (anchor below base) holds the window whole.
+                    if first < cut < h.end and max(base, first) < cut:
                         cut = max(base, first)
                         moved = True
         out = render(window, resolved, base, cut)
         self._record(resolved, base, cut, offset)
         self._note_blocks(result.armour_blocks, cut, offset)
-        self._ctx = window[:cut][-CONTEXT:]
+        self._ctx = cookie_look_behind(window[:cut], CONTEXT)
         self._pending = window[cut:]
         self._pos += cut - base
         return out
@@ -238,7 +241,7 @@ class StreamRedactor:
         self._pad = 0
         if self._mode != TAIL_ALL:
             # The window ends inside the run: no padding has been read yet.
-            self._ctx = window[-CONTEXT:]
+            self._ctx = cookie_look_behind(window, CONTEXT)
         self._pos += len(window) - base
         self._pending = ""
         return out

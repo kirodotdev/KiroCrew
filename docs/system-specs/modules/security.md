@@ -1801,12 +1801,18 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   fingerprints, documentation example keys, temp paths); `engine.py` resolves
   overlaps, so a structural Identifier that fully contains a label or pairing Secret
   hit drops it, and a Secret hit wins any other overlap. Every unit has a size bound and fails closed past it, so
-  `stream.py` yields the whole-text result for any split. The one exception is a
+  `stream.py` yields the whole-text result for any split (a stream's look-behind
+  keeps a running `Cookie:` line's name and separator in front of its latest pairs,
+  read raw and in the ignorable view, so later pairs read from it while decided ones
+  commit). The one exception is a
   header, cookie or command-line value still running past 4 KiB at the end of a
   stream window (`headers._HOLD_MAX`): both streams (`stream.StreamRedactor` and
   `text_redaction.StreamRedactor`) mask it from its start, even where the whole
   text keeps it (a non-session cookie, a placeholder), and drop the rest of its
-  line (`model.TAIL_LINE`), never less than the whole text masks. The readers
+  line (`model.TAIL_LINE`), never less than the whole text masks. A Cookie pair
+  name that runs past the same 4 KiB with no `=` is masked to the end of its line
+  by the whole text too, so both paths read it alike; this masks benign text that
+  main keeps, fail-closed by design. The readers
   of that text (a later cookie pair, a later `curl` flag) read it from the
   line's start, which a stream past the bound does not keep, so the stream
   fails closed on it instead of rebuilding the line. When the dropped line

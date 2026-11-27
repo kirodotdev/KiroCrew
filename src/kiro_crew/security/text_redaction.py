@@ -386,7 +386,7 @@ class StreamRedactor:
     def _left(self, raw: str) -> None:
         """Note raw text that left the buffer (emitted or dropped), for the look-behind."""
         keep = _submodule(_SEAM).stream_context_max()
-        self._ctx = (self._ctx + raw)[-keep:]
+        self._ctx = _submodule(_SEAM).stream_look_behind(self._ctx + raw)
         # A block whose BEGIN left the buffer is decided: whole text resumes its
         # private-key scan after the block's END line, so the stream does too.
         k = len(raw)
