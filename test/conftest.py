@@ -419,6 +419,9 @@ from conftest_resets_relay_client import (  # noqa: E402,F401 -- bound for pytes
 from conftest_resets_remote_dispatch import (  # noqa: E402,F401 -- bound for pytest and importers
     _forget_remote_crew_versions,
 )
+from conftest_resets_sandbox import (  # noqa: E402,F401 -- bound for pytest and importers
+    _forget_sandbox_exec_failure,
+)
 from conftest_resets_search import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_chat_search_cache_stores,
     _reset_search_shown_text_memo,

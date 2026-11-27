@@ -517,6 +517,18 @@ def _no_backend_guidance(include_optout: bool = True) -> str:
             )
             + (optout if include_optout else "")
         )
+    if sys.platform == "darwin":
+        # macOS always ships sandbox-exec, so "install a backend" is no step at all
+        # there: the probe named in the detail refused, and the result is kept for
+        # the life of the process, so the user needs a way to see the refusal and
+        # a way to make Kiro Crew check again.
+        return (
+            "macOS ships sandbox-exec, so the check above failed on a backend this "
+            "host has. To see why, run this in a terminal: /usr/bin/sandbox-exec -p "
+            "'(version 1)(allow default)' /usr/bin/true; echo $? — once it prints 0, "
+            "restart Kiro Crew (`kirocrew restart`, or quit and reopen the app), "
+            "because a failed check is kept until restart. "
+        ) + (optout if include_optout else "")
     # No AppArmor restriction detected: the generic case. The opt-out and the
     # "install a backend" step are two independent halves; under a floor only the
     # opt-out half is powerless, so include_optout=False keeps just the install

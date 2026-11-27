@@ -331,6 +331,31 @@ def test_fail_closed_transient_message_advises_retry_not_optout(monkeypatch):
     assert "sandbox_allow_unsandboxed_exec=true" not in msg
 
 
+def test_a_mac_reports_the_sandbox_exec_reason_not_the_namespace_one(monkeypatch):
+    """On darwin the namespace probe only says "not Linux"; sandbox-exec is what failed."""
+    from kiro_crew import sandbox_probe
+
+    monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="darwin"))
+    reason = "sandbox-exec probe exited 1: sandbox_apply: Operation not permitted"
+    monkeypatch.setattr(
+        sb, "_probe_sandbox_exec", lambda: sandbox_probe._sandbox_exec_failed(reason)
+    )
+
+    assert sb.detect_backend(config_mode="auto") == "none"
+    assert sb.unavailable_reason() == reason
+    assert sb._backend == "none"
+
+
+def test_a_mac_never_turns_a_transient_verdict_into_a_cached_one(monkeypatch):
+    calls = _install_probe(monkeypatch, [(False, True, _EAGAIN_REASON, "")])
+    monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="darwin"))
+
+    assert sb.detect_backend(config_mode="auto") == "none"
+    assert sb._backend is None
+    assert sb.unavailable_reason() == _EAGAIN_REASON
+    assert len(calls) == 1
+
+
 def test_fail_closed_permanent_message_includes_optout_and_detail(monkeypatch):
     monkeypatch.setattr(sb, "detect_backend", lambda config_mode="auto": "none")
     monkeypatch.setattr(sb, "_allow_unsandboxed_exec", lambda: False)
@@ -905,6 +930,19 @@ class TestNoBackendGuidanceNamesTheRightRemedy:
 
         assert "sandbox_allow_unsandboxed_exec=true" in msg
         assert "AppArmor" not in msg
+
+    def test_a_mac_is_told_how_to_see_the_refusal_and_check_again(self, monkeypatch):
+        """sandbox-exec ships with macOS, so "install a backend" is no step there."""
+        monkeypatch.setattr(sb.sys, "platform", "darwin")
+
+        msg = sb._no_backend_guidance()
+
+        assert "/usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true" in msg
+        assert "kirocrew restart" in msg
+        assert "install a supported sandbox backend" not in msg
+        assert "sandbox_allow_unsandboxed_exec=true" not in sb._no_backend_guidance(
+            include_optout=False
+        )
 
     def test_a_relaxed_sysctl_is_not_treated_as_the_apparmor_case(self, monkeypatch):
         monkeypatch.setattr(sb.sys, "platform", "linux")

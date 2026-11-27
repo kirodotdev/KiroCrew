@@ -48,6 +48,7 @@ from kiro_crew.sandbox_probe import (
     _probe_sandbox_exec,
     _probe_unshare_once,
     is_docker_container,
+    sandbox_exec_failure_reason,
 )
 from kiro_crew.sandbox_seals import _warn_aliased_strict_leaves
 from kiro_crew.sandbox_tiers import (
@@ -526,6 +527,14 @@ def detect_backend(config_mode: str = "auto") -> str:
     elif _probe_sandbox_exec():
         _backend = "sandbox-exec"
     else:
+        prior = _last_unshare_failure
+        if sys.platform == "darwin" and not (prior is not None and prior[0]):
+            # The namespace probe can only record "not Linux" here; the backend
+            # that failed on a Mac is sandbox-exec, so its reason is the detail.
+            # A transient verdict is never replaced: it must stay uncached.
+            _record_probe_failure(
+                False, sandbox_exec_failure_reason() or "sandbox-exec probe failed"
+            )
         transient, reason, remedy = _last_unshare_failure or (False, "none", "")
         if transient:
             if remedy == REMEDY_USERNS_CAP_ZERO:
