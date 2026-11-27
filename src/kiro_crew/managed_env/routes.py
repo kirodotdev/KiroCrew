@@ -1,16 +1,21 @@
 """The dashboard's ``/api/managed-environments/*`` routes.
 
-Seven routes, each behind the core's owner check (a Shared Crew teammate is refused there:
+Eight routes, each behind the core's owner check (a Shared Crew teammate is refused there:
 ``teammate_access.is_owner_only_for_teammates`` names this prefix), then the lane switch
 (the ``crew_client`` preview, read on every request): off, every route answers 404.
 
 * ``GET  /api/managed-environments/list``: every environment of the signed-in user,
-  ``own`` true for the ones this Crew created (only those take an action), and a deleted
-  own id missing from the List as ``GONE``;
-* ``POST /api/managed-environments/{id}/stop`` / ``resume`` / ``delete``: own ids only.
-  Delete sends DeleteSandbox and answers ``deleting``; the lane removes no Remote Crew row;
-* ``POST /api/managed-environments/{id}/ssh-session``: one fresh session for an own
-  environment, with the Region the Session Manager plugin starts in. Its answer is a
+  ``own`` true for the ones this Crew created, ``adopted`` true for the ones the person
+  added under this sign-in (both with their ``ssh_host``), and a deleted own id missing
+  from the List as ``GONE``;
+* ``POST /api/managed-environments/{id}/adopt`` with ``{"name": <crew name>}``: add an
+  environment another client made, once one List read now shows that id for this sign-in,
+  then write the crew row a launch writes. Nothing runs on the environment;
+* ``POST /api/managed-environments/{id}/stop`` / ``resume``: own or added ids; ``delete``:
+  own ids only. Delete sends DeleteSandbox and answers ``deleting``; the lane removes no
+  Remote Crew row;
+* ``POST /api/managed-environments/{id}/ssh-session``: one fresh session for an own or
+  added environment, with the Region the Session Manager plugin starts in. Its answer is a
   secret: it is never logged. An environment the last List read as not RUNNING is read
   once more first, and refused with no session while it is still not RUNNING.
 * ``GET  /api/managed-environments/ssh-config``: whether ``~/.ssh/config`` holds the lane's
@@ -35,7 +40,7 @@ from aiohttp import web
 
 from kiro_crew.managed_env import settings as lane_settings
 from kiro_crew.managed_env.client import GuardRefused, SandboxError
-from kiro_crew.managed_env.engine import SandboxEngineError, SandboxLaunchEngine
+from kiro_crew.managed_env.engine import SandboxEngineError, SandboxLaunchEngine, validate_crew_name
 from kiro_crew.managed_env.remote import ssh_host_for
 from kiro_crew.managed_env.settings import SettingsMissing
 
@@ -44,6 +49,7 @@ logger = logging.getLogger(__name__)
 PREFIX = "/api/managed-environments"
 ACTIONS = ("stop", "resume", "delete")
 _ERROR_MAX = 300
+ADOPT_NEEDS_SSH = "Allow this computer to connect first (on the launch form), then add it again."
 
 
 def _json(status: int, *, code: str, error: str) -> web.Response:
@@ -106,7 +112,13 @@ class SandboxRoutes:
         as ``GONE``. It never removes Remote Crew rows."""
         engine = self._engine()
         client = engine.client
-        entries = client.list_sandboxes()
+        entries, sign_in = client.list_for_sign_in()
+        try:
+            adopted = client.rebind_listed(entries, sign_in)
+        except GuardRefused as exc:
+            # The List still answers; the calls refuse those ids on their own.
+            logger.warning("the managed-environment added ids are unreadable (%s)", exc.reason)
+            adopted = set()
         # A deleted ledger id stays own while listed, so it can read "being deleted".
         own = client._guard.own_ids(deleted=True)
         deleted = own - client._guard.own_ids()
@@ -122,7 +134,9 @@ class SandboxRoutes:
             item = {"sandbox_id": sid, "status": status, "own": sid in own}
             if isinstance(e.get("displayName"), str):
                 item["display_name"] = e["displayName"]
-            if sid in own:
+            if sid in adopted and sid not in own:
+                item["adopted"] = True
+            if sid in own or sid in adopted:
                 item["ssh_host"] = ssh_host_for(sid)
             out.append(item)
             deleted.discard(sid)
@@ -140,6 +154,45 @@ class SandboxRoutes:
             body = await asyncio.to_thread(self.list_entries)
             return web.json_response(body)
         except Exception as exc:  # noqa: BLE001 - _refusal re-raises what it does not map
+            return _refusal(exc)
+
+    # -- adopt -----------------------------------------------------------------------
+
+    def adopt_sync(self, sid: str, crew: str) -> dict:
+        engine = self._engine()
+        if not engine._ssh_block():
+            # The row's Connect needs the block, as a launch does.
+            raise GuardRefused("ssh_config_missing", ADOPT_NEEDS_SSH)
+        entry = engine.client.adopt_sandbox(sid)
+        host = ssh_host_for(sid)
+        try:
+            engine._write_row(crew, host)
+        except Exception as exc:  # noqa: BLE001 - the id stays added; Add again writes the row
+            raise SandboxEngineError(
+                "no_row",
+                f"{host} was added but its crew row was not "
+                f"written ({type(exc).__name__}). Add it again.",
+            ) from None
+        with self._lock:
+            if entry.get("status") != "RUNNING":
+                self._not_running.add(sid)
+        return {"status": str(entry.get("status") or ""), "ssh_host": host}
+
+    async def adopt(self, request: web.Request) -> web.Response:
+        sid = request.match_info.get("sandbox_id", "")
+        refused = await self._gate(request, "managed environment adopt")
+        if refused is not None:
+            return refused
+        try:
+            body = await request.json()
+            name = body.get("name") if isinstance(body, dict) else None
+            crew = validate_crew_name(name if isinstance(name, str) else "")
+        except (ValueError, SandboxEngineError) as exc:
+            error = str(exc) if isinstance(exc, SandboxEngineError) else "not JSON"
+            return _json(400, code="bad_crew_name", error=error)
+        try:
+            return web.json_response(await asyncio.to_thread(self.adopt_sync, sid, crew))
+        except Exception as exc:  # noqa: BLE001
             return _refusal(exc)
 
     # -- stop / resume / delete ------------------------------------------------------
@@ -245,4 +298,5 @@ def register_sandbox_routes(app: web.Application, handlers: SandboxRoutes) -> No
     app.router.add_get(f"{PREFIX}/ssh-config", handlers.ssh_config_handler)
     app.router.add_post(f"{PREFIX}/ssh-config", handlers.ssh_config_handler)
     app.router.add_post(f"{PREFIX}/{{sandbox_id}}/ssh-session", handlers.ssh_session)
+    app.router.add_post(f"{PREFIX}/{{sandbox_id}}/adopt", handlers.adopt)
     app.router.add_post(f"{PREFIX}/{{sandbox_id}}/{{action}}", handlers.act)

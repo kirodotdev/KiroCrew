@@ -24833,7 +24833,13 @@
       "ssh_failed_hint": "请确认你可以编辑 {{path}}。",
       "launch_fix_name": "修正团队名称后即可启动。",
       "ssh_preview": "查看要添加的内容",
-      "ssh_preview_why": "这些行让 Crew 通过 Kiro 登录连接到你的 Kiro Managed Environments（名称以 {{hosts}} 开头），其他 ssh 主机保持不变。"
+      "ssh_preview_why": "这些行让 Crew 通过 Kiro 登录连接到你的 Kiro Managed Environments（名称以 {{hosts}} 开头），其他 ssh 主机保持不变。",
+      "others_title": "你在别处创建的环境",
+      "others_note": "这些是你在 Kiro 或另一个 Crew 中创建的。可以用上面的名称把其中一个加入你的团队。Crew 可以停止和恢复它，但不会删除它。",
+      "add": "添加",
+      "add_needs_ssh": "允许这台电脑连接后即可添加。",
+      "add_needs_name": "请先在上方输入团队名称再添加。",
+      "add_failed": "无法添加环境"
     },
     "row": {
       "stop": "停止环境",
@@ -24850,10 +24856,12 @@
       "state_deleting": "环境正在删除",
       "state_error": "环境出错",
       "state_error_hint": "服务报告此环境的状态为 {{status}}。请删除它后重新启动，或让智能体帮你排查。",
-      "managed_by": "Kiro Managed Environments · 移除只会把团队从此列表中去掉，环境仍会保留。要删除环境，请使用“删除环境”。",
+      "managed_by": "Kiro Managed Environments · 移除只会把团队从此列表中去掉，环境仍会保留。",
       "stop_failed": "无法停止 {{name}} 的环境",
       "resume_failed": "无法恢复 {{name}} 的环境",
-      "delete_failed": "无法删除 {{name}} 的环境"
+      "delete_failed": "无法删除 {{name}} 的环境",
+      "add_again": "你的 Kiro 登录已变化，Crew 无法连接这个环境。请在启动表单中重新添加，或移除该团队。",
+      "added_no_delete": "这个环境不是由此 Crew 创建的。请在创建它的地方删除。"
     }
   }
 }

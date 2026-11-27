@@ -26061,7 +26061,13 @@
       "ssh_failed_hint": "Controlla di poter modificare {{path}}.",
       "launch_fix_name": "Correggi il nome della crew per avviare.",
       "ssh_preview": "Vedi le righe che aggiunge",
-      "ssh_preview_why": "Queste righe permettono a Crew di collegarsi ai tuoi Kiro Managed Environments (nomi che iniziano con {{hosts}}) tramite il tuo accesso Kiro, e lasciano gli altri host ssh come sono."
+      "ssh_preview_why": "Queste righe permettono a Crew di collegarsi ai tuoi Kiro Managed Environments (nomi che iniziano con {{hosts}}) tramite il tuo accesso Kiro, e lasciano gli altri host ssh come sono.",
+      "others_title": "I tuoi ambienti creati altrove",
+      "others_note": "Li hai creati in Kiro o in un'altra Crew. Aggiungine uno alle tue crew con il nome qui sopra. Crew può fermarlo e riprenderlo, ma non lo elimina.",
+      "add": "Aggiungi",
+      "add_needs_ssh": "Consenti a questo computer di collegarsi, poi aggiungi.",
+      "add_needs_name": "Inserisci qui sopra un nome di crew per aggiungere.",
+      "add_failed": "Impossibile aggiungere l'ambiente"
     },
     "row": {
       "stop": "Arresta ambiente",
@@ -26078,10 +26084,12 @@
       "state_deleting": "Ambiente in eliminazione",
       "state_error": "Errore dell'ambiente",
       "state_error_hint": "Il servizio segnala questo ambiente come {{status}}. Eliminalo e avvialo di nuovo, oppure chiedi all'agente di controllare.",
-      "managed_by": "Kiro Managed Environments · Rimuovi toglie la crew da questo elenco, ma mantiene l'ambiente. Per eliminarlo, usa Elimina ambiente.",
+      "managed_by": "Kiro Managed Environments · Rimuovi toglie la crew da questo elenco, ma mantiene l'ambiente.",
       "stop_failed": "Impossibile fermare l'ambiente di {{name}}",
       "resume_failed": "Impossibile riprendere l'ambiente di {{name}}",
-      "delete_failed": "Impossibile eliminare l'ambiente di {{name}}"
+      "delete_failed": "Impossibile eliminare l'ambiente di {{name}}",
+      "add_again": "Il tuo accesso a Kiro è cambiato, quindi Crew non raggiunge questo ambiente. Aggiungilo di nuovo dal modulo di avvio o rimuovi la crew.",
+      "added_no_delete": "Creato fuori da questa Crew. Eliminalo dove l'hai creato."
     }
   }
 }

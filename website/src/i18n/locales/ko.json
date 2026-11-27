@@ -24833,7 +24833,13 @@
       "ssh_failed_hint": "{{path}}을(를) 편집할 수 있는지 확인하세요.",
       "launch_fix_name": "시작하려면 크루 이름을 고치세요.",
       "ssh_preview": "추가되는 줄 보기",
-      "ssh_preview_why": "이 줄 덕분에 Crew가 Kiro 로그인을 통해 Kiro Managed Environments(이름이 {{hosts}}(으)로 시작)에 연결하며, 다른 ssh 호스트는 그대로 둡니다."
+      "ssh_preview_why": "이 줄 덕분에 Crew가 Kiro 로그인을 통해 Kiro Managed Environments(이름이 {{hosts}}(으)로 시작)에 연결하며, 다른 ssh 호스트는 그대로 둡니다.",
+      "others_title": "다른 곳에서 만든 환경",
+      "others_note": "Kiro나 다른 Crew에서 만든 환경입니다. 위 이름으로 하나를 크루에 추가하세요. Crew는 중지하고 다시 시작할 수 있지만 삭제하지는 않습니다.",
+      "add": "추가",
+      "add_needs_ssh": "이 컴퓨터의 연결을 허용한 뒤 추가하세요.",
+      "add_needs_name": "추가하려면 위에 크루 이름을 입력하세요.",
+      "add_failed": "환경을 추가할 수 없습니다"
     },
     "row": {
       "stop": "환경 중지",
@@ -24850,10 +24856,12 @@
       "state_deleting": "환경 삭제 중",
       "state_error": "환경 오류",
       "state_error_hint": "서비스가 이 환경을 {{status}} 상태로 보고합니다. 삭제한 뒤 다시 실행하거나 에이전트에게 확인을 요청하세요.",
-      "managed_by": "Kiro Managed Environments · 제거를 누르면 크루가 이 목록에서 빠지지만 환경은 남습니다. 환경을 삭제하려면 환경 삭제를 쓰세요.",
+      "managed_by": "Kiro Managed Environments · 제거를 누르면 크루가 이 목록에서 빠지지만 환경은 남습니다.",
       "stop_failed": "{{name}}의 환경을 중지할 수 없습니다",
       "resume_failed": "{{name}}의 환경을 다시 시작할 수 없습니다",
-      "delete_failed": "{{name}}의 환경을 삭제할 수 없습니다"
+      "delete_failed": "{{name}}의 환경을 삭제할 수 없습니다",
+      "add_again": "Kiro 로그인이 바뀌어 Crew가 이 환경에 연결할 수 없습니다. 실행 양식에서 다시 추가하거나 크루를 제거하세요.",
+      "added_no_delete": "이 Crew 밖에서 만든 환경입니다. 만든 곳에서 삭제하세요."
     }
   }
 }

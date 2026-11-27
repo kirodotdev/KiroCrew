@@ -4,7 +4,8 @@
  * Drawn only on rows stamped `kiro_managed_env`, and only while the `crew_client` preview
  * is on: off, nothing here draws or calls a route. The environment's state comes from the
  * lane's List; an environment this Crew did not create gets no action (the server refuses
- * it too). The actions sit in the row's own detail block, one state button and Delete, so
+ * it too), unless the person added it under this sign-in: then it takes Stop and Resume
+ * but never Delete. The actions sit in the row's own detail block, one state button and Delete, so
  * the core's action row does not grow. Delete asks first. It sends the delete and removes
  * no row: once the List reads the environment as gone, the person takes the crew off the
  * list with the core Remove.
@@ -34,7 +35,7 @@ const ACTION_FAILED_KEY = {
   delete: 'managedEnv.row.delete_failed',
 } as const satisfies Record<ManagedEnvAction, string>
 
-const STATE_LABEL_KEY = {
+export const STATE_LABEL_KEY = {
   creating: 'managedEnv.row.state_creating',
   running: 'managedEnv.row.state_running',
   stopped: 'managedEnv.row.state_stopped',
@@ -75,6 +76,8 @@ export function sandboxManagedBy(): string | undefined {
 function useManagedEnvItem(sshHost: string | undefined): {
   on: boolean
   item: ManagedEnvItem | undefined
+  /** Listed, but added under another sign-in: nothing here can act on it until added again. */
+  stale: boolean
   loaded: boolean
   error: unknown
   /** When the current error arrived, so a dismissal covers that failure only. */
@@ -88,12 +91,14 @@ function useManagedEnvItem(sshHost: string | undefined): {
     refetchInterval: LIST_EVERY_MS,
     retry: false,
   })
-  const item = on ? list.data?.sandboxes.find((s) => s.own && s.ssh_host === sshHost) : undefined
-  return { on, item, loaded: on && list.isSuccess, error: on ? list.error : null, errorAt: list.errorUpdatedAt }
+  const rows = on ? list.data?.sandboxes : undefined
+  const item = rows?.find((s) => (s.own || s.adopted) && s.ssh_host === sshHost)
+  const stale = !item && !!rows?.some((s) => !s.own && `crew-sbx-${s.sandbox_id}` === sshHost)
+  return { on, item, stale, loaded: on && list.isSuccess, error: on ? list.error : null, errorAt: list.errorUpdatedAt }
 }
 
 export function SandboxCrewRowDetail({ inst, disabled }: CrewRowActionProps) {
-  const { on, item, loaded, error, errorAt } = useManagedEnvItem(inst.ssh_host)
+  const { on, item, stale, loaded, error, errorAt } = useManagedEnvItem(inst.ssh_host)
   // The failure the person dismissed: a later one shows again.
   const [dismissedAt, setDismissedAt] = useState(0)
   const qc = useQueryClient()
@@ -133,6 +138,12 @@ export function SandboxCrewRowDetail({ inst, disabled }: CrewRowActionProps) {
         onDismiss={() => setDismissedAt(errorAt)}
       />
     )
+  } else if (loaded && stale) {
+    body = (
+      <p className="text-xs text-[var(--text-secondary)]" data-state="not-added">
+        {i18nT('managedEnv.row.add_again')}
+      </p>
+    )
   } else if (loaded) {
     // A row the List does not show at all reads gone too: nothing here can act on it.
     const state = item ? rowState(item.status) : 'gone'
@@ -154,7 +165,7 @@ export function SandboxCrewRowDetail({ inst, disabled }: CrewRowActionProps) {
     if (item && state !== 'gone') {
       const busy = disabled || act.isPending || state === 'deleting'
       const sid = item.sandbox_id
-      // At most two buttons: the one state change that applies, then Delete.
+      // At most two buttons: the one state change that applies, then Delete (own only).
       actions = (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {state === 'running' && (
@@ -167,9 +178,13 @@ export function SandboxCrewRowDetail({ inst, disabled }: CrewRowActionProps) {
               <Play size={14} aria-hidden="true" /> {i18nT('managedEnv.row.resume')}
             </Btn>
           )}
-          <Btn danger disabled={busy} onClick={() => run(sid, 'delete')}>
-            <ServerOff size={14} aria-hidden="true" /> {i18nT('managedEnv.row.delete')}
-          </Btn>
+          {item.own ? (
+            <Btn danger disabled={busy} onClick={() => run(sid, 'delete')}>
+              <ServerOff size={14} aria-hidden="true" /> {i18nT('managedEnv.row.delete')}
+            </Btn>
+          ) : (
+            <span className="text-xs text-[var(--text-secondary)]">{i18nT('managedEnv.row.added_no_delete')}</span>
+          )}
         </div>
       )
     }

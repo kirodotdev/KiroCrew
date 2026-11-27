@@ -26061,7 +26061,13 @@
       "ssh_failed_hint": "Comprueba que puedes editar {{path}}.",
       "launch_fix_name": "Corrige el nombre de la crew para iniciar.",
       "ssh_preview": "Ver las líneas que añade",
-      "ssh_preview_why": "Estas líneas permiten que Crew se conecte a tus Kiro Managed Environments (nombres que empiezan por {{hosts}}) con tu inicio de sesión de Kiro, y dejan tus otros hosts ssh como están."
+      "ssh_preview_why": "Estas líneas permiten que Crew se conecte a tus Kiro Managed Environments (nombres que empiezan por {{hosts}}) con tu inicio de sesión de Kiro, y dejan tus otros hosts ssh como están.",
+      "others_title": "Tus entornos de otros sitios",
+      "others_note": "Los creaste en Kiro o en otra Crew. Añade uno a tus crews con el nombre de arriba. Crew puede detenerlo y reanudarlo, pero no lo eliminará.",
+      "add": "Añadir",
+      "add_needs_ssh": "Permite que este equipo se conecte y luego añade.",
+      "add_needs_name": "Escribe arriba un nombre de crew para añadir.",
+      "add_failed": "No se pudo añadir el entorno"
     },
     "row": {
       "stop": "Detener entorno",
@@ -26078,10 +26084,12 @@
       "state_deleting": "Entorno eliminándose",
       "state_error": "Error en el entorno",
       "state_error_hint": "El servicio indica que este entorno está en {{status}}. Elimínalo y vuelve a lanzarlo, o pide al agente que lo revise.",
-      "managed_by": "Kiro Managed Environments · Quitar saca la crew de esta lista, pero conserva el entorno. Para eliminarlo, usa Eliminar entorno.",
+      "managed_by": "Kiro Managed Environments · Quitar saca la crew de esta lista, pero conserva el entorno.",
       "stop_failed": "No se pudo detener el entorno de {{name}}",
       "resume_failed": "No se pudo reanudar el entorno de {{name}}",
-      "delete_failed": "No se pudo eliminar el entorno de {{name}}"
+      "delete_failed": "No se pudo eliminar el entorno de {{name}}",
+      "add_again": "Tu inicio de sesión de Kiro cambió, así que Crew no llega a este entorno. Vuelve a añadirlo desde el formulario de lanzamiento o quita la crew.",
+      "added_no_delete": "Creado fuera de esta Crew. Elimínalo donde lo creaste."
     }
   }
 }

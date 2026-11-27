@@ -118,7 +118,11 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/managed-environments/{sandbox_id}/ssh-session"): RouteAccess(
         "managed_environments.ssh_session.start", UNSTABLE
     ),
-    # Stop, resume or delete one environment this Crew made.
+    # Add one environment another client made, after a fresh List for this sign-in shows it.
+    ("POST", "/api/managed-environments/{sandbox_id}/adopt"): RouteAccess(
+        "managed_environments.adopt", UNSTABLE
+    ),
+    # Stop or resume one environment this Crew made or the person added; delete one it made.
     ("POST", "/api/managed-environments/{sandbox_id}/{action}"): RouteAccess(
         "managed_environments.change", UNSTABLE
     ),

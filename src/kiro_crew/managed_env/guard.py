@@ -5,6 +5,13 @@
   environment another client made (the Kiro web app, the IDE, another Crew) is listed
   and left alone. ``displayName`` is never a key: a name match could reach another
   client's environment.
+* **Added ids** (``adopted.json``): an environment another client of the same account
+  made, which the person added by its id after the service listed it for their sign-in.
+  Get, Stop, Resume and the ssh session take it; Delete and a launch's teardown stay
+  ledger-only. Each id is bound to the sign-in id it was listed under. Under another one
+  (a new sign-in, or a refresh that rotated the token) it is usable only after a live
+  List under the current sign-in shows it again, which rebinds it; otherwise it is
+  refused and its record kept.
 * **Pause after a lost Create reply** (``create-unconfirmed.json``): a ``CreateSandbox``
   whose reply was lost may have made an environment with no ledger row, so every
   attempt is recorded before it is sent and cleared only once its outcome is known
@@ -42,6 +49,7 @@ QUOTA_KIND = "ServiceQuotaExceededException"
 QUOTA_STATUSES = (402, 429)
 LEDGER_NAME = "ledger.json"
 UNCONFIRMED_NAME = "create-unconfirmed.json"
+ADOPTED_NAME = "adopted.json"
 
 
 class GuardRefused(Exception):
@@ -122,6 +130,43 @@ class SandboxGuard:
         repeated Delete still reads its 404 as gone."""
         if not exec_environment_id or exec_environment_id not in self.own_ids(deleted=deleted):
             raise GuardRefused("not_own_id", "Crew did not create that environment.")
+
+    def _adopted(self) -> dict[str, str]:
+        """Every added id and the sign-in id it was last listed under."""
+        data = self._read(ADOPTED_NAME, {"ids": {}})
+        ids = data.get("ids") if isinstance(data, dict) else None
+        if not isinstance(ids, dict):
+            raise GuardRefused("state_corrupt", f"{ADOPTED_NAME} has no ids map")
+        return {k: v for k, v in ids.items() if isinstance(k, str) and k and isinstance(v, str)}
+
+    def adopted_ids(self, sign_in: str) -> set[str]:
+        """Ids added, or last rebound, under *sign_in*; none for an empty sign-in."""
+        return {k for k, v in self._adopted().items() if sign_in and v == sign_in}
+
+    def all_adopted_ids(self) -> set[str]:
+        """Ids added under any sign-in (one under another is usable only after a recheck)."""
+        return set(self._adopted())
+
+    def is_adopted(self, exec_environment_id: str) -> bool:
+        return exec_environment_id in self._adopted()
+
+    def require_known(self, exec_environment_id: str, sign_in: str) -> None:
+        """Refuse an id neither in the ledger nor added under *sign_in*."""
+        sid = exec_environment_id
+        if not sid or (sid not in self.own_ids() and sid not in self.adopted_ids(sign_in)):
+            raise GuardRefused("not_own_id", "Crew did not create or add that environment.")
+
+    def record_adopted(self, exec_environment_ids: set[str], sign_in: str) -> None:
+        """Bind ids the service just listed for *sign_in* to it: an add, or the recheck
+        after the sign-in id changed. Other ids keep their record."""
+        if not sign_in or not all(exec_environment_ids):
+            raise GuardRefused("not_listed", "Crew could not tie that environment to your sign-in.")
+        with self._lock:
+            ids = self._adopted()
+            if all(ids.get(sid) == sign_in for sid in exec_environment_ids):
+                return
+            ids.update(dict.fromkeys(exec_environment_ids, sign_in))
+            self._write(ADOPTED_NAME, {"ids": ids})
 
     def record_created(self, reply: dict, display_name: str) -> dict:
         """Add the id a CreateSandbox reply returned. A reply with no id counts as lost."""
