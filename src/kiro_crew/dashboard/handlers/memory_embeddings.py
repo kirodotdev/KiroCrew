@@ -729,7 +729,10 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
     if bundled_refused:
         error_code = _source_gov.LOCKED_CODE
         setup_error = _source_gov.refused_reason(_source_gov.BUNDLED)
-    elif ollama and setup_error == _source_gov.refused_reason(_source_gov.OLLAMA):
+    elif ollama and setup_error in (
+        _source_gov.refused_reason(_source_gov.OLLAMA),
+        _source_gov.EGRESS_REASON,
+    ):
         error_code = _source_gov.LOCKED_CODE
     elif ollama and setup_error:
         error_code = "ollama_config_invalid"

@@ -36,7 +36,6 @@ from kiro_crew.embeddings_model import (
     resolve_custom_model,
 )
 from kiro_crew.embeddings_ollama import (
-    OLLAMA_EGRESS_ERROR,
     _is_loopback_host,
     build_ollama_backend,
     ollama_backend_selected,
@@ -499,7 +498,10 @@ def default_embedding_backend() -> EmbeddingBackend:
         # the tag records that same answer (not a second read that could differ).
         server = build_ollama_backend(memory)
         error = str(getattr(getattr(server, "_settings", None), "error", "") or "")
-        refused = error in (_source_gov.refused_reason(_source_gov.OLLAMA), OLLAMA_EGRESS_ERROR)
+        refused = error in (
+            _source_gov.refused_reason(_source_gov.OLLAMA),
+            _source_gov.EGRESS_REASON,
+        )
         return _with_policy_tag(server, _source_gov.OLLAMA, not refused)
     spec = resolve_custom_model()
     if spec is None:
@@ -633,6 +635,17 @@ def _drop_if_policy_changed() -> None:
     _retire_backend(current)
 
 
+def _cached_after_policy_check() -> EmbeddingBackend | None:
+    """The cached backend, or ``None``, after the LTS re-check, for a caller that
+    loads or wakes it without building one, so a refused model is never woken."""
+    from kiro_crew.edition import is_lts
+
+    if is_lts():
+        _drop_if_policy_changed()
+    with _shared_embedder_lock:
+        return _shared_embedder
+
+
 def get_shared_embedder() -> EmbeddingBackend:
     """Process-wide embedder singleton.
 
@@ -680,8 +693,7 @@ def warm_embedder_for_person() -> None:
     small machine it may read the model file's metadata, so call it off the event
     loop there.
     """
-    with _shared_embedder_lock:
-        backend = _shared_embedder
+    backend = _cached_after_policy_check()
     if backend is None:
         return
     try:
@@ -737,8 +749,7 @@ def wait_for_cold_shared_embedder(
     *timeout* or when *should_stop* says so. False when the model was already
     loaded, so a caller never retries an embed that failed for another reason.
     """
-    with _shared_embedder_lock:
-        backend = _shared_embedder
+    backend = _cached_after_policy_check()
     if backend is None or backend.is_ready():
         return False
     can_load = getattr(backend, "can_load_on_demand", None)

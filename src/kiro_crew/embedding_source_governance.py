@@ -34,6 +34,9 @@ SOURCES = (BUNDLED, CUSTOM, OLLAMA)
 #: The error code a refused source reports (the apply route's 409, the status route).
 LOCKED_CODE = "locked_by_policy"
 
+#: The Ollama settings error when ``network.egress`` refuses the server's host.
+EGRESS_REASON = "the organisation's network egress policy does not allow memory.ollama_url's host"
+
 #: Said by a refusal, so a log line or a 409 names the policy, not a broken file.
 REFUSED_REASON = "the organisation's policy does not allow the {source} embedding source"
 

@@ -303,6 +303,42 @@ class TestTheCachedEmbedder:
         assert backend.is_ready() is False
 
 
+def test_warming_a_denied_model_retires_it_instead(policy, memory, monkeypatch):
+    policy(_rule("allow", "[ollama]"))
+    _ollama(memory)
+    first = emb.get_shared_embedder()
+    woken: list = []
+    monkeypatch.setattr(first, "wake", lambda: woken.append(1), raising=False)
+    monkeypatch.setattr(first, "keep_warm", lambda: woken.append(1), raising=False)
+    policy(_rule("allow", "[bundled]"))
+    emb.warm_embedder_for_person()
+    assert woken == []
+    assert first._closed is True
+
+
+def test_the_history_tokenizer_skips_a_refused_bundled_model(policy, memory, monkeypatch):
+    from kiro_crew import embeddings_model, history_vectors_index
+
+    monkeypatch.setattr(embeddings_model, "model_file_present", lambda path=None: True)
+    assert history_vectors_index._usable_model_path() is not None
+    policy(_rule("allow", "[ollama]"))
+    assert history_vectors_index._usable_model_path() is None
+
+
+@pytest.mark.asyncio
+async def test_the_status_route_names_an_egress_refusal(policy, memory, monkeypatch):
+    from kiro_crew.dashboard.handlers import memory_embeddings
+
+    # bundled stays allowed, so only the Ollama branch can report the refusal.
+    policy(_rule("allow", "[bundled, ollama]"))
+    _ollama(memory, _REMOTE)
+    monkeypatch.setattr(memory_embeddings, "_read_memory_config", lambda: memory)
+    req = _make_request(_make_state(), method="GET")
+    body = _body(await mem_mod.api_memory_embedding_status(req))
+    assert body["setup_error"] == gov.EGRESS_REASON
+    assert body["setup_error_code"] == "locked_by_policy"
+
+
 def test_the_sentinel_path_never_loads_even_when_a_file_is_there(policy, memory, tmp_path):
     from kiro_crew import embeddings_llama
 

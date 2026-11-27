@@ -58,12 +58,6 @@ _READY_TTL_FAIL_SECS = 5.0
 _PROBE_TIMEOUT_SECS = 5.0
 
 
-#: The settings error an LTS build reports when ``network.egress`` refuses the host.
-OLLAMA_EGRESS_ERROR = (
-    "the organisation's network egress policy does not allow memory.ollama_url's host"
-)
-
-
 @dataclass(frozen=True)
 class OllamaSettings:
     """The validated ``memory.ollama_*`` settings. ``error`` is empty when usable."""
@@ -108,10 +102,10 @@ def _url_error(url: str, allow_remote: bool) -> str:
         )
     if parts.scheme != "https":
         return "memory.ollama_url must use https:// for a non-loopback host"
-    from kiro_crew.embedding_source_governance import egress_permitted
+    from kiro_crew.embedding_source_governance import EGRESS_REASON, egress_permitted
 
     if not egress_permitted(host):
-        return OLLAMA_EGRESS_ERROR
+        return EGRESS_REASON
     return ""
 
 
