@@ -2208,10 +2208,10 @@ wheel and DMG carry the image's build context and not its test suite.
 `test_crew_runtime_payload.py` pins both directions.
 
 The image's two review-sensitive fetches are pinned to what was reviewed: the
-base image, Amazon Linux 2023 from its own registry
-(`public.ecr.aws/amazonlinux/amazonlinux:2023`), by manifest-list digest (a
-bare tag can move; the digest names the multi-arch index, from which the
-builder's platform selects the per-arch manifest), and the kiro-cli tarball by a per-arch sha256
+base image by manifest-list digest on the explicit `-bookworm` tag (a bare tag
+can move -- `3.12-slim` follows newer Debian releases;
+the digest names the multi-arch index, from which the builder's platform
+selects the per-arch manifest) and the kiro-cli tarball by a per-arch sha256
 recorded in the Dockerfile. The host publishes checksums beside the tarballs,
 but a checksum served by the same host it protects verifies transport, not
 review, so the reviewed values live in the repo. A moved tag or a re-published
@@ -2221,10 +2221,8 @@ fetches are bounded but not content-addressed:
 entries (pip's hash-checking mode is all-or-nothing per invocation and the same
 install includes the locally built `vendor/*.whl`, whose hash cannot be
 recorded ahead of the build -- transitive resolution can therefore still
-drift), and dnf packages are unpinned, since AL2023 repository updates drop
+drift), and apt packages are unpinned, since bookworm point releases drop
 superseded versions and a pin would break on every security update.
-`test_docker_base_image_contract.py` holds every stage of this recipe and of
-`docker/Dockerfile` to that one pinned base.
 
 ### Four processes, one task
 

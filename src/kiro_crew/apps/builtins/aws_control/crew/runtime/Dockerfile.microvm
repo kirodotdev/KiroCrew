@@ -30,14 +30,12 @@ USER root
 # trip MachineFingerprintDoesNotMatch. Registration happens in the run hook, from
 # the one-use activation the launch payload delivers.
 #
-# Staged with `rpm2cpio | cpio -idm` into a scratch directory and copied
-# selectively, not `rpm -i`/`dnf install` and not unpacked into `/`. Installing
-# the package runs a scriptlet that enables a systemd unit, and there is no init
-# system in this container -- the hook listener is the supervisor's parent.
-# Unpacking into `/` can replace the base's merged-usr `/lib` symlink with a real
-# directory, which removes the dynamic loader from its expected path and breaks
-# every dynamically linked binary in the image. The rpm ships the same
-# `usr/bin` and `etc/amazon/ssm` trees the copies below take.
+# Staged with `dpkg -x` into a scratch directory and copied selectively, not
+# `dpkg -i` and not `dpkg -x` into `/`. `dpkg -i` runs a postinst that enables a
+# systemd unit, and there is no init system in this container -- the hook listener
+# is the supervisor's parent. Unpacking into `/` replaces Debian's merged-usr
+# `/lib` symlink with a real directory, which removes the dynamic loader from its
+# expected path and breaks every dynamically linked binary in the image.
 #
 # sudo comes with it because `cloud/ssm.py` wraps every Run Command as
 # `sudo -u <run_as> -i <cmd>` -- the same helper the EC2 and Fargate lanes use --
@@ -50,27 +48,27 @@ USER root
 # content-addressed by a recipe digest that does not change when the bucket's
 # content does. So two images with the same name could carry different agents.
 #
-# The digest below is of the linux_arm64 rpm for the version named beside it,
+# The digest below is of the arm64 package for the version named beside it,
 # fetched and hashed from the us-east-1 and eu-west-1 copies, which are
 # byte-identical -- so the pin holds whatever `SSM_REGION` is. Moving the version
 # means fetching the new package and re-hashing it; a mismatch fails the build
 # here rather than shipping an agent nobody chose.
 ARG SSM_REGION=us-east-1
 ARG SSM_AGENT_VERSION=3.3.5390.0
-ARG SSM_AGENT_SHA256=c104dfc94893b15d080a7bff3cab4ec2da37d4e1e88fe318a136a124530e1c9e
+ARG SSM_AGENT_SHA256=97a398841760c56e95f66692a21abb7040688fc38ddd92950414158f61071551
 RUN set -eux; \
-    dnf install -y --setopt=install_weak_deps=False cpio sudo; \
-    dnf clean all; \
-    curl -fsSL -o /tmp/ssm.rpm \
-      "https://s3.${SSM_REGION}.amazonaws.com/amazon-ssm-${SSM_REGION}/${SSM_AGENT_VERSION}/linux_arm64/amazon-ssm-agent.rpm"; \
-    echo "${SSM_AGENT_SHA256}  /tmp/ssm.rpm" | sha256sum -c -; \
-    mkdir -p /tmp/ssmx; \
-    (cd /tmp/ssmx && rpm2cpio /tmp/ssm.rpm | cpio -idm --quiet); \
+    apt-get update; \
+    apt-get install -y --no-install-recommends sudo; \
+    rm -rf /var/lib/apt/lists/*; \
+    curl -fsSL -o /tmp/ssm.deb \
+      "https://s3.${SSM_REGION}.amazonaws.com/amazon-ssm-${SSM_REGION}/${SSM_AGENT_VERSION}/debian_arm64/amazon-ssm-agent.deb"; \
+    echo "${SSM_AGENT_SHA256}  /tmp/ssm.deb" | sha256sum -c -; \
+    dpkg -x /tmp/ssm.deb /tmp/ssmx; \
     cp -a /tmp/ssmx/usr/bin/. /usr/bin/; \
     mkdir -p /etc/amazon/ssm /var/lib/amazon/ssm /var/log/amazon/ssm; \
     cp -a /tmp/ssmx/etc/amazon/ssm/. /etc/amazon/ssm/; \
     cp /etc/amazon/ssm/seelog.xml.template /etc/amazon/ssm/seelog.xml; \
-    rm -rf /tmp/ssm.rpm /tmp/ssmx; \
+    rm -rf /tmp/ssm.deb /tmp/ssmx; \
     /usr/bin/amazon-ssm-agent -version | grep -F "${SSM_AGENT_VERSION}"; \
     test ! -e /var/lib/amazon/ssm/registration
 

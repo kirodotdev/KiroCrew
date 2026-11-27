@@ -814,8 +814,8 @@ class TestTheAgentPackageIsPinnedAndChecked:
         code = _dockerfile_code()
         version = re.search(r"ARG SSM_AGENT_VERSION=([0-9]+(?:\.[0-9]+)+)", code)
         assert version, "the SSM agent version is not pinned"
-        assert f"/{version.group(1)}/linux_arm64/amazon-ssm-agent.rpm" in code or (
-            "${SSM_AGENT_VERSION}/linux_arm64/amazon-ssm-agent.rpm" in code
+        assert f"/{version.group(1)}/debian_arm64/" in code or (
+            "${SSM_AGENT_VERSION}/debian_arm64/" in code
         )
 
     def test_the_moving_object_is_not_what_is_fetched(self):

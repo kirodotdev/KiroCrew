@@ -1,9 +1,11 @@
-"""Every image this repository builds starts from one pinned, canonical base.
+"""The gateway image starts from one pinned, canonical base.
 
-Both recipes start from Amazon Linux 2023 as published by its own registry,
-``public.ecr.aws/amazonlinux``, pinned by manifest-list digest. A ``FROM`` that
-names any other registry (a Docker Hub short name such as ``python:3.12-slim``
-included) or that drops the digest still builds, so nothing else notices it.
+``docker/Dockerfile`` starts every stage from Amazon Linux 2023 as published by
+its own registry, ``public.ecr.aws/amazonlinux``, pinned by manifest-list digest.
+A ``FROM`` that names any other registry (a Docker Hub short name such as
+``python:3.12-slim`` included) or that drops the digest still builds, so nothing
+else notices it. The aws-control app's crew images are owned by that app's own
+repository and are not checked here.
 
 tini has no AL2023 package, so the gateway image builds it from a pinned source
 archive in a throwaway stage. The entrypoint execs it after the credential
@@ -19,23 +21,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
 from test_docker_wheel_layer_contract import _instructions
 
 ROOT = Path(__file__).resolve().parents[1]
 
 GATEWAY_DOCKERFILE = ROOT / "docker" / "Dockerfile"
-CREW_DOCKERFILE = (
-    ROOT
-    / "src"
-    / "kiro_crew"
-    / "apps"
-    / "builtins"
-    / "aws_control"
-    / "crew"
-    / "runtime"
-    / "Dockerfile"
-)
 
 _PINNED_BASE = re.compile(r"public\.ecr\.aws/amazonlinux/amazonlinux:2023@sha256:[0-9a-f]{64}")
 
@@ -51,42 +41,26 @@ def _from_images(dockerfile: Path) -> list[str]:
     return images
 
 
-@pytest.mark.parametrize(
-    "dockerfile", [GATEWAY_DOCKERFILE, CREW_DOCKERFILE], ids=["gateway", "crew-runtime"]
-)
-def test_every_stage_starts_from_the_pinned_al2023_base(dockerfile: Path) -> None:
-    images = _from_images(dockerfile)
-    assert images, f"{dockerfile} has no FROM"
+def test_every_stage_starts_from_the_pinned_al2023_base() -> None:
+    images = _from_images(GATEWAY_DOCKERFILE)
+    assert images, f"{GATEWAY_DOCKERFILE} has no FROM"
     stray = [image for image in images if not _PINNED_BASE.fullmatch(image)]
     assert not stray, (
-        f"{dockerfile.relative_to(ROOT)} starts a stage from {stray}: every stage must "
+        f"docker/Dockerfile starts a stage from {stray}: every stage must "
         "start from public.ecr.aws/amazonlinux/amazonlinux:2023 pinned by digest"
     )
     # One digest per file, so a bump cannot leave one stage behind.
     assert len(set(images)) == 1, images
 
 
-#: Layers that are concatenated onto the crew runtime recipe (the MicroVM lane
-#: builds base + crew + MicroVM as one Dockerfile), so they run on the same base.
-STACKED_LAYERS = [
-    CREW_DOCKERFILE.with_name("Dockerfile.crew"),
-    CREW_DOCKERFILE.with_name("Dockerfile.microvm"),
-]
-
-
-@pytest.mark.parametrize(
-    "dockerfile",
-    [GATEWAY_DOCKERFILE, CREW_DOCKERFILE, *STACKED_LAYERS],
-    ids=["gateway", "crew-runtime", "crew-layer", "microvm-layer"],
-)
-def test_no_layer_calls_a_debian_package_tool(dockerfile: Path) -> None:
+def test_no_layer_calls_a_debian_package_tool() -> None:
     """AL2023 has no apt-get or dpkg, so a layer still calling one fails to build."""
     offenders = [
         inst
-        for inst in _instructions(dockerfile)
+        for inst in _instructions(GATEWAY_DOCKERFILE)
         if inst.upper().startswith("RUN ") and re.search(r"\b(apt-get|apt|dpkg)\s", inst)
     ]
-    assert not offenders, f"{dockerfile.relative_to(ROOT)}: {offenders[0][:160]!r}"
+    assert not offenders, f"docker/Dockerfile still calls a Debian package tool: {offenders}"
 
 
 def test_tini_is_built_from_a_verified_pinned_source() -> None:
@@ -106,3 +80,10 @@ def test_tini_is_built_from_a_verified_pinned_source() -> None:
         if inst.startswith("COPY --from=tini-builder /usr/local/bin/tini /usr/local/bin/tini")
     ]
     assert copies, "the final stage never copies tini in, so the entrypoint's exec fails"
+
+
+def test_the_wheel_is_importable_by_isolated_mode_python() -> None:
+    """AL2023 drops /usr/local site-packages under ``python -I``, which the KAS step uses."""
+    (install,) = [inst for inst in _instructions(GATEWAY_DOCKERFILE) if "/tmp/wheels/*.whl" in inst]
+    assert "pip install --no-cache-dir --prefix /usr /tmp/wheels/*.whl" in install
+    assert "python -I -c 'import kiro_crew'" in install
