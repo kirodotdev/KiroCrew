@@ -46,13 +46,14 @@ describe('ArtifactDetailPage download as .docx', () => {
     vi.mocked(api).artifactDocx = vi.fn().mockResolvedValue(new Blob(['docx']))
   })
 
-  it.each(['markdown', 'text'] as const)('saves a %s artifact from the gateway, named from its version', async (kind) => {
-    await opened(mkArtifact({ kind }))
+  it.each(['markdown', 'text'] as const)('saves a %s artifact from the gateway, named from its slug and version', async (kind) => {
+    const split = Array.from('ghp_' + 'a'.repeat(36)).join('\0')
+    await opened(mkArtifact({ kind, name: `CR Queue ${split}` }))
     fireEvent.click(await findMoreItem(item))
 
     await waitFor(() => expect(downloadBlob).toHaveBeenCalledTimes(1))
     expect(api.artifactDocx).toHaveBeenCalledWith('cr-queue', null)
-    expect(vi.mocked(downloadBlob).mock.calls[0][1]).toBe('CR Queue plan-v2.docx')
+    expect(vi.mocked(downloadBlob).mock.calls[0][1]).toBe('cr-queue-v2.docx')
   })
 
   it.each(['image', 'canvas', 'webapp', 'json', 'svg', 'html'] as const)('does not offer it for a %s artifact', async (kind) => {
@@ -73,21 +74,24 @@ describe('ArtifactDetailPage download as .docx', () => {
     await waitFor(() => expect(api.artifactDocx).toHaveBeenCalledWith('cr-queue', 1))
   })
 
-  it('reports a failed build on the page notice and saves nothing', async () => {
-    vi.mocked(api).artifactDocx = vi.fn().mockRejectedValue(new Error('too large'))
+  it.each([false, true])('reports a refused export on the page notice and saves nothing (in-app browser: %s)', async (inApp) => {
+    vi.mocked(isAndroidWebView).mockReturnValue(inApp)
+    vi.mocked(api).artifactDocx = vi.fn().mockRejectedValue(Object.assign(new Error('too large'), { status: 413 }))
     await opened(mkArtifact())
     fireEvent.click(await findMoreItem(item))
 
     expect(await screen.findByText('Download failed')).toBeInTheDocument()
     expect(downloadBlob).not.toHaveBeenCalled()
+    expect(downloadUrl).not.toHaveBeenCalled()
   })
 
-  it('hands an in-app browser the route itself, since it drops a blob download', async () => {
+  it('checks the export, then hands an in-app browser the route itself, since it drops a blob download', async () => {
     vi.mocked(isAndroidWebView).mockReturnValue(true)
     await opened(mkArtifact())
     fireEvent.click(await findMoreItem(item))
 
-    await waitFor(() => expect(downloadUrl).toHaveBeenCalledWith('/api/artifacts/cr-queue/docx', 'CR Queue plan-v2.docx'))
-    expect(api.artifactDocx).not.toHaveBeenCalled()
+    await waitFor(() => expect(downloadUrl).toHaveBeenCalledWith('/api/artifacts/cr-queue/docx', 'cr-queue-v2.docx'))
+    expect(api.artifactDocx).toHaveBeenCalledWith('cr-queue', null)
+    expect(downloadBlob).not.toHaveBeenCalled()
   })
 })

@@ -59,9 +59,9 @@ Comments synced from an external provider cannot be deleted by the agent at all.
 
 ## Saving a copy as a Word file
 
-Open a markdown or text artifact, choose **More**, then **Download as .docx**. The file
-holds the version on screen: headings are styled and every other line is one paragraph,
-as typed. Text over 20,000 lines or 1,000,000 characters is not written.
+On a markdown or text artifact, **More** > **Download as .docx** saves the version on
+screen: headings styled, every other line one paragraph as typed. Text over 20,000 lines
+or 1,000,000 characters is not written.
 
 ## Publishing one
 

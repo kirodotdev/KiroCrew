@@ -110,12 +110,6 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
   )
 }
 
-/** Whether a character of an artifact's name stays in its .docx file name, as in the other download. */
-function keepsInDocxName(ch: string): boolean {
-  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
-    || ch === '-' || ch === '_' || ch === ' '
-}
-
 /** The More menu's state: copy, open, send to a session and download. */
 export function useArtifactDetailPageMenu({
   stateRead, documentRead, composerRead, companionRead,
@@ -254,16 +248,13 @@ export function useArtifactDetailPageMenu({
   // A markdown or text artifact as a Word file, built by the gateway from the version on screen.
   const downloadAsDocx = () => {
     if (!artifact) return
-    const kept = Array.from(artifact.name).filter(keepsInDocxName).join('')
-    const filename = `${kept || artifact.slug}-v${effectiveVersion}.docx`
-    // An Android in-app browser drops a blob: download; the route is an attachment, so it takes the URL.
-    if (isAndroidWebView()) {
-      downloadUrl(artifactDocxUrl(artifact.slug, selectedVersion), filename)
-      return
-    }
+    const filename = `${artifact.slug}-v${effectiveVersion}.docx`
     setCopyError(null)
+    // An Android in-app browser drops a blob: download, so it fetches twice: once here to check, once to save the URL.
     api.artifactDocx(artifact.slug, selectedVersion)
-      .then((blob) => downloadBlob(blob, filename))
+      .then((blob) => isAndroidWebView()
+        ? downloadUrl(artifactDocxUrl(artifact.slug, selectedVersion), filename)
+        : downloadBlob(blob, filename))
       .catch(() => setCopyError(i18nT('components.markdownPanel.download_failed')))
   }
 

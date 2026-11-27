@@ -50,20 +50,31 @@ def _paragraphs(body: bytes) -> list[tuple[str, str]]:
     return [(p.style.name, p.text) for p in Document(io.BytesIO(body)).paragraphs]
 
 
-def test_a_markdown_artifact_downloads_with_its_headings_styled_and_redacted(
-    store: ArtifactStore,
+def test_a_markdown_artifact_is_built_off_the_loop_with_headings_styled_and_redacted(
+    store: ArtifactStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     token = github_classic()
     store.create(
-        name="Plan", content=f"# Title\n\n- one\n## Part\n{token}", slug="plan", kind="markdown"
+        name="Plan",
+        content=f"# Title\n\n- one\n## Part\n{token}\n" + "\0".join(token),
+        slug="plan",
+        kind="markdown",
     )
+    handed_off: list[Any] = []
+    real = asyncio.to_thread
+
+    async def spy(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        handed_off.append(func)
+        return await real(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", spy)
 
     status, headers, body = _fetch("/api/artifacts/plan/docx")
 
     assert status == 200
     assert headers["Content-Type"] == _DOCX
     assert headers["Content-Disposition"] == (
-        "attachment; filename=\"Plan-v1.docx\"; filename*=UTF-8''Plan-v1.docx"
+        "attachment; filename=\"plan-v1.docx\"; filename*=UTF-8''plan-v1.docx"
     )
     assert {name: headers[name] for name in _SAFE_HEADERS} == _SAFE_HEADERS
     styled = _paragraphs(body)
@@ -73,8 +84,8 @@ def test_a_markdown_artifact_downloads_with_its_headings_styled_and_redacted(
         ("Normal", "- one"),
         ("Heading 2", "Part"),
     ]
-    # The text is the detail route's redacted text, so a credential is not in the file.
-    assert token not in styled[4][1]
+    assert token not in styled[4][1] + styled[5][1]  # the second copy is split by NUL characters
+    assert artifact_docx.build in handed_off
 
 
 def test_a_version_query_serves_that_snapshot_and_a_text_artifact_keeps_every_line(
@@ -87,9 +98,9 @@ def test_a_version_query_serves_that_snapshot_and_a_text_artifact_keeps_every_li
     _s, head2, body2 = _fetch("/api/artifacts/doc/docx")
 
     assert _paragraphs(body1) == [("Normal", "# old")]
-    assert "Doc-v1.docx" in head1["Content-Disposition"]
+    assert "doc-v1.docx" in head1["Content-Disposition"]
     assert _paragraphs(body2) == [("Normal", "new")]
-    assert "Doc-v2.docx" in head2["Content-Disposition"]
+    assert "doc-v2.docx" in head2["Content-Disposition"]
 
 
 @pytest.mark.parametrize(
@@ -99,12 +110,15 @@ def test_a_version_query_serves_that_snapshot_and_a_text_artifact_keeps_every_li
         ("/api/artifacts/Bad_Slug/docx", 400, "bad_slug"),
         ("/api/artifacts/doc/docx?version=x", 400, "bad_version"),
         ("/api/artifacts/data/docx", 400, "unsupported_kind"),
+        ("/api/artifacts/long/docx", 413, "too_large"),
     ],
 )
 def test_a_bad_request_is_refused_with_a_code(
-    store: ArtifactStore, path: str, status: int, code: str
+    store: ArtifactStore, monkeypatch: pytest.MonkeyPatch, path: str, status: int, code: str
 ) -> None:
+    monkeypatch.setattr(artifact_docx, "MAX_LINES", 2)
     store.create(name="Doc", content="x", slug="doc", kind="text")
+    store.create(name="Long", content="a\nb\nc", slug="long", kind="text")
     store.create(name="Data", content='{"a": 1}', slug="data", kind="json")
 
     got_status, headers, body = _fetch(path)
@@ -113,45 +127,13 @@ def test_a_bad_request_is_refused_with_a_code(
     assert "Content-Disposition" not in headers
 
 
-def test_content_over_the_cap_is_a_coded_413(
-    store: ArtifactStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(artifact_docx, "MAX_LINES", 2)
-    store.create(name="Long", content="a\nb\nc", slug="long", kind="text")
-
-    status, _headers, body = _fetch("/api/artifacts/long/docx")
-
-    assert (status, json.loads(body)["code"]) == (413, "too_large")
-
-
-def test_a_hostile_name_cannot_break_the_disposition_header(store: ArtifactStore) -> None:
-    store.create(name='a"\r\nX-Evil: 1/../é', content="x", slug="evil", kind="text")
-    store.create(name="日本語", content="x", slug="jp", kind="text")
+def test_no_text_of_the_name_reaches_the_disposition_header(store: ArtifactStore) -> None:
+    name = 'a"\r\nX-Evil: 1 ' + "\0".join(github_classic())
+    store.create(name=name, content="x", slug="evil", kind="text")
 
     _s, evil, _b = _fetch("/api/artifacts/evil/docx")
-    _s, jp, _b = _fetch("/api/artifacts/jp/docx")
 
     assert "X-Evil" not in evil
     assert evil["Content-Disposition"] == (
-        "attachment; filename=\"aX-Evil 1-v1.docx\"; filename*=UTF-8''aX-Evil%201-v1.docx"
+        "attachment; filename=\"evil-v1.docx\"; filename*=UTF-8''evil-v1.docx"
     )
-    assert 'filename="jp-v1.docx"' in jp["Content-Disposition"]
-
-
-def test_the_build_runs_off_the_event_loop(
-    store: ArtifactStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    store.create(name="Doc", content="x", slug="doc", kind="text")
-    handed_off: list[Any] = []
-    real = asyncio.to_thread
-
-    async def spy(func: Any, /, *args: Any, **kwargs: Any) -> Any:
-        handed_off.append(func)
-        return await real(func, *args, **kwargs)
-
-    monkeypatch.setattr(asyncio, "to_thread", spy)
-
-    status, _headers, _body = _fetch("/api/artifacts/doc/docx")
-
-    assert status == 200
-    assert artifact_docx.build in handed_off

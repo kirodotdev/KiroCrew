@@ -565,6 +565,8 @@ async def api_artifact_docx(request: web.Request) -> web.Response:
     from kiro_crew import artifact_docx
     from kiro_crew.dashboard.handlers.artifact_download import _content_disposition
 
+    # Drop what a Word file cannot carry before redaction, so the drop cannot join a split secret.
+    art.content = await asyncio.to_thread(artifact_docx._xml_safe, art.content or "")
     shown = await asyncio.to_thread(_serialize, art, include_content=True)
     try:
         data = await asyncio.to_thread(
@@ -572,10 +574,8 @@ async def api_artifact_docx(request: web.Request) -> web.Response:
         )
     except artifact_docx.DocxTooLarge:
         return _docx_error("the artifact is too large for a .docx", "too_large", 413)
-    stem = "".join(
-        ch for ch in str(shown.get("name") or "") if ch.isascii() and (ch.isalnum() or ch in "-_ ")
-    )
-    filename = f"{stem or slug}-v{version if version is not None else art.version}.docx"
+    # The validated slug, never the name, so no text of the name reaches the header.
+    filename = f"{art.slug}-v{version if version is not None else art.version}.docx"
     return web.Response(
         body=data,
         headers={

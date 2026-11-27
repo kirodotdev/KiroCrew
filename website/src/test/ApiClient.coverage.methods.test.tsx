@@ -536,6 +536,20 @@ describe('publishToProvider', () => {
   })
 })
 
+describe('artifactDocx', () => {
+  it('runs session-expiry recovery on a refused export, and a saved one clears the banner', async () => {
+    const banner = () => document.getElementById('mc-session-expired')
+    fetchMock.mockResolvedValueOnce(res(403, { error: 'auth' }, { headers: { 'X-Auth-Required': 'true' } }))
+    fetchMock.mockResolvedValue(res(401, 'revoked'))
+    await expect(api.artifactDocx('plan')).rejects.toBeInstanceOf(ApiError)
+    await vi.waitFor(() => expect(banner()).not.toBeNull())
+    expect(fetchMock).toHaveBeenCalledWith('/api/auth/refresh', expect.anything())
+    fetchMock.mockResolvedValue(res(200, 'docx'))
+    await expect(api.artifactDocx('plan')).resolves.toBeInstanceOf(Blob)
+    expect(banner()).toBeNull()
+  })
+})
+
 describe('voice synthesis request ownership', () => {
   it('announces the request synchronously and sends the same id to the gateway', async () => {
     const started = vi.fn()
