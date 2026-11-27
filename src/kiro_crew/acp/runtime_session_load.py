@@ -1123,7 +1123,10 @@ async def _wait_managed_mcp(
                 # is a sign-in problem, not a transient one: say so now rather
                 # than let the retry ladder meet the same wall. Only Crew-owned
                 # auth can be checked here; kiro-cli owns a cli-owned relay's.
-                if self._kas_host_auth and await sign_in_refused(self._kas_served_token_digest):
+                if self._kas_host_auth and await sign_in_refused(
+                    self._kas_served_token_digest,
+                    bundle=bool(getattr(self.kas_spawn_route, "bundle", False)),
+                ):
                     raise AcpAuthRequired(
                         host_auth.signed_out_message(self.acp_backend, route=self.kas_spawn_route),
                         backend=self.acp_backend,

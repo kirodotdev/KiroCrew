@@ -259,7 +259,7 @@ class TestAuthOwnership:
         async def record_response(request_id, result):
             sent.append((request_id, result))
 
-        async def fake_answer():
+        async def fake_answer(*, bundle=False):
             return rendered
 
         with (
@@ -283,7 +283,7 @@ class TestAuthOwnership:
         async def record_error(request_id, code, message):
             sent.append((request_id, code, message))
 
-        async def refuse():
+        async def refuse(*, bundle=False):
             raise HostAuthCallbackError("not signed in to Kiro Crew")
 
         with (
@@ -309,7 +309,7 @@ class TestAuthOwnership:
         async def record_error(request_id, code, message):
             errors.append(request_id)
 
-        async def answer():
+        async def answer(*, bundle=False):
             if not signed_in:
                 raise HostAuthCallbackError("not signed in to Kiro Crew")
             return {"accessToken": "t", "expiresAt": "2099-01-01T00:00:00+00:00"}
@@ -842,7 +842,7 @@ class TestKasInvocation:
         async def has_identity():
             return True
 
-        async def fake_answer():
+        async def fake_answer(*, bundle=False):
             return rendered
 
         runtime = AcpRuntime(
@@ -875,7 +875,7 @@ class TestKasInvocation:
         async def no_identity():
             return False
 
-        async def must_not_run():
+        async def must_not_run(*, bundle=False):
             raise AssertionError("vault answerer reached on a cli-owned spawn")
 
         runtime = AcpRuntime(
@@ -920,7 +920,7 @@ class TestKasInvocation:
         async def vault():
             return vault_identity
 
-        async def fake_answer():
+        async def fake_answer(*, bundle=False):
             return {"accessToken": "t", "expiresAt": "2099-01-01T00:00:00+00:00"}
 
         runtime = AcpRuntime(

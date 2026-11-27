@@ -1941,7 +1941,7 @@ class KasHarness(MembershipHarness):
         return (METHOD_KAS_AUTH_GET_ACCESS_TOKEN,)
 
     async def answer_request(self, method: str) -> dict[str, Any]:
-        """Build the access-token response from Crew's vault.
+        """Build the access-token response from Crew's vault (a pod host's: bundle only).
 
         The result is never cached here and never logged. Raises
         ``HostAuthCallbackError`` with a token-free message, which the runtime
@@ -1950,7 +1950,7 @@ class KasHarness(MembershipHarness):
         """
         if method != METHOD_KAS_AUTH_GET_ACCESS_TOKEN:
             raise NotImplementedError(f"KAS harness does not answer {method!r}")
-        return await answer_get_access_token()
+        return await answer_get_access_token(bundle=getattr(self.spawn_route, "bundle", False))
 
     # ── Seam 5: notification aliases ──
 

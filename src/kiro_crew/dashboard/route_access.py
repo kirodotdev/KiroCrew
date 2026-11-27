@@ -56,6 +56,10 @@ class RouteAccess:
 # Who may call a route is decided by its handler; the comment beside an entry only
 # records it.
 ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
+    # A pod's own gateway process on this gateway's unix socket, while the
+    # pod_host_sign_in preview is on (handlers/pod_host_sign_in.py).
+    ("POST", "/api/pods/host-sign-in/token"): RouteAccess("pods.host_sign_in.token", PREVIEW),
+    ("POST", "/api/pods/host-sign-in/refused"): RouteAccess("pods.host_sign_in.refused", PREVIEW),
     # Strict internal path: the ``app_store_search`` tool's read leg, called with the
     # internal secret; a loopback cookie also reaches it (apps/routes_registry.py).
     ("GET", "/api/app-store/search"): RouteAccess("app_store.search", UNSTABLE),

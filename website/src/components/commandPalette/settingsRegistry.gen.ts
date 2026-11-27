@@ -2556,6 +2556,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.dev-fleet-test-machines-use-your-kiro-account-sign-in",
+    "label": "Dev Fleet test machines use your Kiro account sign-in",
+    "labelKey": "pages.developer.featurePreviewsTab.pod_host_sign_in",
+    "description": "Test machines started by the Dev Fleet app borrow access from your Kiro account sign-in that renews about hourly while they run, never the sign-in itself; their chats use your plan's quota. Off: each machine signs in on its own.",
+    "hint": "Only machines on Kiro Crew's own engine borrow it; one with its own sign-in keeps using it. A company sign-in is never lent.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.earlier-conversation-one-decision-may-carry-in-characters",
     "label": "Earlier conversation one decision may carry, in characters",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_history_label",

@@ -11774,6 +11774,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.pod_host_sign_in",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: pod_host_sign_in",
+      "help": "Turn on the 'pod_host_sign_in' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.remote_crew_chat",
       "kind": "core",
       "type": "boolean",

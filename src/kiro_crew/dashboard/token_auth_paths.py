@@ -202,6 +202,18 @@ LOCAL_AUTH_AUTHORIZE_PATH = "/oauth/authorize"
 LOCAL_AUTH_TOKEN_PATH = "/oauth/token"
 LOCAL_AUTH_REVOKE_PATH = "/oauth/revoke"
 
+#: A pod's own gateway asks this host for an access token, and whether one it was
+#: lent is refused (``dashboard.handlers.pod_host_sign_in``). POST only, and only
+#: while the ``pod_host_sign_in`` preview is on in the live configuration
+#: (:func:`_exact_method_bypass`); off, they meet the ordinary token gate. The
+#: handler admits only this gateway's unix socket, a same-user peer whose pid is
+#: the named pod unit's main process in this gateway's namespaces, while an
+#: enabled app holds the owner's grant for these routes. It answers an access
+#: token, its expiry and its account metadata, never a refresh token.
+POD_HOST_SIGN_IN_PATHS = frozenset(
+    {"/api/pods/host-sign-in/token", "/api/pods/host-sign-in/refused"}
+)
+
 _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     LOCAL_AUTH_METADATA_PATH: frozenset({"GET"}),
@@ -225,6 +237,10 @@ def _exact_method_bypass(path: str, method: str) -> bool:
     """
     if method in _BYPASS_EXACT_METHODS.get(path, frozenset()):
         return True
+    if path in POD_HOST_SIGN_IN_PATHS and method == "POST":
+        from kiro_crew.pod_host_sign_in import live_preview_on as pod_host_sign_in_on
+
+        return pod_host_sign_in_on()
     if path != CONNECTOR_CONNECT_PATH or method != "GET":
         return False
     from kiro_crew.connected_computers.flag import live_preview_on

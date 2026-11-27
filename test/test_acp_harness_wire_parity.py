@@ -232,7 +232,7 @@ async def _capture(backend: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
     # the ownerless -32601 path every non-KAS backend gets.
     if backend == ACP_BACKEND_KAS:
 
-        async def _fail_auth():
+        async def _fail_auth(*, bundle=False):
             raise HostAuthCallbackError(_AUTH_FAILURE)
 
         monkeypatch.setattr(kas_harness_mod, "answer_get_access_token", _fail_auth)

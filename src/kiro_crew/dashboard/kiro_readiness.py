@@ -439,10 +439,11 @@ async def kas_crew_signin_ready(
     ready), so the authority is what the engine will ask Crew for:
     :class:`~kiro_crew.auth.provider.KasAuthProvider` resolves it from the vault
     and refreshes it under the identity's lock, the same call that answers the
-    engine's ``_kiro/auth/getAccessToken``. A rejected or unattemptable refresh,
-    or no stored identity, answers False, so a destructive rerun is still
-    refused before history is rewritten. Fresh on every call: there is no latch
-    to go stale. Never raises.
+    engine's ``_kiro/auth/getAccessToken``. With no stored identity, a bundle pod
+    given its host's socket asks the host for a token instead. A rejected or
+    unattemptable refresh, or an unavailable host sign-in, answers False, so a
+    destructive rerun is still refused before history is rewritten. Fresh on
+    every call: there is no latch to go stale. Never raises.
     """
     from kiro_crew import workload_identity
 
@@ -463,9 +464,19 @@ async def kas_crew_signin_ready(
         # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must
         # not load on the handlers' import path (see kiro_crew.acp.kas_host_auth).
         from kiro_crew.auth.bridge import default_token_store
-        from kiro_crew.auth.provider import KasAuthProvider
+        from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
 
-        await KasAuthProvider(default_token_store(), allow_env_api_key=False).current()
+        try:
+            await KasAuthProvider(default_token_store(), allow_env_api_key=False).current()
+        except NotAuthenticated:
+            from kiro_crew import pod_host_sign_in
+
+            # An empty vault spawns no Crew-owned relay, and a sign-out retires a
+            # live one, so this turn is on the bundle: a pod given its host's
+            # socket asks the host.
+            if not pod_host_sign_in.active():
+                raise
+            return await asyncio.to_thread(pod_host_sign_in.ready)
     except Exception as exc:  # noqa: BLE001 - an unusable sign-in is not ready
         # Type only: a refresh error's message can carry response bytes.
         logger.debug("Kiro readiness: Crew sign-in cannot serve the turn (%s)", type(exc).__name__)

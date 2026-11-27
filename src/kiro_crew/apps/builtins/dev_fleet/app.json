@@ -34,6 +34,7 @@
       "/api/apps/dev-fleet/restart-gateway",
       "/api/apps/dev-fleet/pod-token",
       "/api/apps/dev-fleet/create-release-worktree",
+      "/api/pods/host-sign-in/*",
       "=/api/apps"
     ],
     "network": true,

@@ -14,11 +14,10 @@ there is marked ``"cold": true``, and keeps the gate's 503 when its kiro-cli
 check only timed out.
 
 * **Readiness is the bundle's**: the installed engine
-  (``kas_bundle.installed_bundle``) and Crew's own sign-in vault
-  (``auth.bridge.vault_holds_identity``, the same question the KAS spawn asks),
-  never kiro-cli's latch. An engine not installed yet passes when this host can
-  install it (the first spawn does); a host that cannot, or a signed-out vault,
-  is a coded 503 and nothing is spawned.
+  (``kas_bundle.installed_bundle``) and Crew's own sign-in vault or an active
+  pod host-sign-in source, never kiro-cli's latch. An engine not installed yet
+  passes when this host can install it (the first spawn does); a host that
+  cannot, or has neither sign-in source, is a coded 503 and nothing is spawned.
 * **The list is the engine's ``model`` select**, recorded by the runtime
   driver into :mod:`kiro_crew.agent_sdk.kas_model_catalog` when a KAS session
   starts -- measured, that select is the only place the bundled engine
@@ -103,11 +102,13 @@ def _vault_signed_in() -> bool:
     """Blocking (reads the vault); call off the loop. Never raises."""
     # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must not
     # load on the handlers' import path (see kiro_crew.acp.kas_host_auth).
+    from kiro_crew import pod_host_sign_in
     from kiro_crew.auth.bridge import vault_holds_identity
 
     # DEBUG diagnostics: this runs on a poll, where the spawn-time WARNING would
-    # repeat on every tick.
-    return vault_holds_identity(warn=False)
+    # repeat on every tick. A pod given its host's socket borrows the host's
+    # sign-in on this bundle route; the token request reports a host refusal.
+    return vault_holds_identity(warn=False) or pod_host_sign_in.active()
 
 
 def _picker_row(

@@ -169,12 +169,13 @@ _CONFIGURED: Any = object()
 
 
 def vault_identity(machine: object = _CONFIGURED) -> str:
-    """The vault identity fingerprint now; ``""`` when empty or unreadable.
+    """The sign-in's catalog key now; ``""`` when no source names an identity.
 
     Blocking (reads the vault); call off the loop. Never raises. The one read
     both the KAS harness's stamp (``acp/harness/kas.py``, ``SessionExtras.vault_identity``)
     and the picker's match go through. On a workload-identity host it is the
-    workload's own key, and the vault is not read.
+    workload's own key, and the vault is not read. A pod with an empty vault
+    uses its host socket's key (``pod_host_sign_in.catalog_identity``).
 
     In KAS machine mode (``agent_sdk/kas_machine.py``) the rows are keyed by the token
     file, first, as the spawn gives machine mode precedence on any host. The
@@ -195,9 +196,10 @@ def vault_identity(machine: object = _CONFIGURED) -> str:
         return workload_identity.catalog_identity()
     # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must not
     # load on the session drivers' import path (see kiro_crew.acp.kas_host_auth).
+    from kiro_crew import pod_host_sign_in
     from kiro_crew.auth.bridge import vault_identity_fingerprint
 
-    return vault_identity_fingerprint()
+    return vault_identity_fingerprint() or pod_host_sign_in.catalog_identity()
 
 
 def record_catalog(resp: dict[str, Any], backend: str, *, identity: object) -> bool:
