@@ -1,6 +1,6 @@
 ---
 title: Agent AWS access from an owner's grant -- no forced named profile, credentials vended by Kiro Crew after the owner confirms
-status: draft
+status: accepted
 author: iamwhatever
 created: 2026-11-27
 last-audited: 2026-11-27
@@ -14,10 +14,12 @@ superseded-by: []
 
 # RFC: Agent AWS access from an owner's grant
 
-**Status:** draft. This is a proposal for a maintainer to accept, change or
-reject. Nothing here is built. **Implementation is on hold:** the maintainer who
-asked for this design said it waits for their decision, so no implementation PR
-opens until a maintainer records in §16 which of the three PRs to build. Every
+**Status:** accepted. Maintainer bolichen97 accepted this document as a whole
+on 2026-11-27, in
+[the sign-off on this PR](https://github.com/kirodotdev/KiroCrew/pull/43318#pullrequestreview-6086476618),
+and ruled that all three PRs may be built (§16). Nothing here is built, and no
+implementation PR is open. The maintainer who asked for this design asked that
+building wait for their word; that hold is theirs to lift. Every
 code reference below was read at `origin/main` `0baf480a06`. A citation names
 the file and the symbol or heading, not a line number, as the docs rules ask.
 Paths that start with `src/`, `docs/` or `test/` are from the repository root;
@@ -839,5 +841,9 @@ Questions for a maintainer:
 
 Questions the probes answer: S0-6 and S0-1 (§11.3).
 
-**Decision:** none yet. Implementation is on hold. When a maintainer decides,
-this section records who, when, and which PRs.
+**Decision:** accepted as a whole on 2026-11-27 by maintainer bolichen97, in
+[the sign-off on this PR](https://github.com/kirodotdev/KiroCrew/pull/43318#pullrequestreview-6086476618).
+All three PRs may be built: PR 1, PR 2 and PR 3. The sign-off does not rule on
+questions 2 to 8 above; each is settled in the PR that meets it, and PR 2 still
+waits on what §11.1 lists. No implementation PR is open yet (see the status line
+at the top).
