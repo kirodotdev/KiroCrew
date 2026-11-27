@@ -360,9 +360,10 @@ def _whoami_skip_allowed() -> bool:
     ``agents.<name>.acp_backend`` pin, or a session created on such a harness.
     Blocking (reads config); unreadable reads as not, which keeps the probe.
 
-    shortcut: a sub-agent spawned with an explicit ``backend=`` and the KAS bundle
-    route are not told apart here, so they keep the probe (the safe direction);
-    read the live slot table if this skips too rarely.
+    shortcut: a sub-agent spawned with an explicit ``backend=`` writes no session
+    pick, so it does not stop the skip, and the KAS bundle route is not told apart
+    from the relay, so a bot route on KAS keeps the probe even when it needs no
+    kiro-cli sign-in; read the live slot table if either matters.
     """
     from kiro_crew.acp_backends import resolve_selected_backend
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, backend_from_stored
