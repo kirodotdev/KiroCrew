@@ -68,6 +68,7 @@ from kiro_crew.sandbox_unavailable import (
     _allow_no_isolation,
     _allow_unsandboxed_exec,
     _classify_unavailable,
+    _config_unreadable,
     _first_party_no_backend_passthrough,
     _forward_for_effective_tier,
     _no_backend_guidance,
@@ -342,6 +343,9 @@ def _probe_unshare() -> bool:
     a sandbox backend.
     """
     global _last_unshare_failure
+    if sys.platform == "win32":
+        _record_probe_failure(False, "Kiro Crew has no OS sandbox backend on Windows")
+        return False
     if sys.platform != "linux":
         _record_probe_failure(False, "not Linux")
         return False
@@ -1299,6 +1303,25 @@ def wrap_argv(
                     "refused. Change that key to true (or remove it to accept this "
                     "platform's default) if you want these spawns to run unconfined. "
                 )
+            elif _config_unreadable():
+                # The opt-in may well be set: the file holding it could not be
+                # read, so the gate kept its fail-closed default. Saying "is not
+                # set" would send the reader to set a key that may already be there.
+                sel_reason = (
+                    "No sandbox backend available and the config file holding "
+                    "allow_unsandboxed_exec could not be read"
+                )
+                refusal = (
+                    "Sandbox backend unavailable and Kiro Crew could not read "
+                    "~/.kiro/crew/config.json (or config.local.json), so it cannot tell "
+                    "whether unsandboxed execution is allowed and refuses it. Check that "
+                    "the file is valid JSON and readable (the gateway log names the read "
+                    "error after 'Failed to load config from'), then retry. "
+                )
+                if sys.platform == "win32":
+                    # Windows guidance says to edit the key, which a file that
+                    # cannot be read cannot take; the sentence above is the remedy.
+                    guidance = ""
             else:
                 sel_reason = "No sandbox backend available and allow_unsandboxed_exec is not set"
                 refusal = "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "

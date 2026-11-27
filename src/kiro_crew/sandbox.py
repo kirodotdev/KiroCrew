@@ -784,6 +784,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _apparmor_userns_restricted,
         _bundled_cli_invocation,
         _classify_unavailable,
+        _config_unreadable,
         _first_party_no_backend_passthrough,
         _forward_for_effective_tier,
         _forward_ssh_auth_sock,

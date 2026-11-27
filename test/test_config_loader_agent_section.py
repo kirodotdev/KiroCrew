@@ -189,6 +189,39 @@ def test_fresh_boot_write_then_load_keeps_the_platform_default(tmp_path, monkeyp
     assert _load_from_dict({"agent": written}).agent.sandbox_allow_unsandboxed_exec is False
 
 
+def _load_with_files(tmp_path, monkeypatch, base: str | None) -> KiroCrewConfig:
+    """``KiroCrewConfig.load()`` against a tmp data home whose config.json holds *base*."""
+    main = tmp_path / "config.json"
+    local = tmp_path / "config.local.json"
+    if base is not None:
+        main.write_text(base, encoding="utf-8")
+    monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: main)
+    monkeypatch.setattr("kiro_crew.config.loader.config_local_path", lambda: local)
+    return KiroCrewConfig.load()
+
+
+def test_a_home_with_no_config_file_takes_the_platform_default(tmp_path, monkeypatch) -> None:
+    """Neither file exists, so nothing is declared and the platform default applies.
+
+    Without it a Windows home with no config.json refused every spawn with
+    "allow_unsandboxed_exec is not set" while a config.json holding no such key
+    allowed them.
+    """
+    monkeypatch.setattr("sys.platform", "win32")
+    assert _load_with_files(tmp_path, monkeypatch, None).agent.sandbox_allow_unsandboxed_exec
+    monkeypatch.setattr("sys.platform", "linux")
+    cfg = _load_with_files(tmp_path, monkeypatch, None)
+    assert cfg.agent.sandbox_allow_unsandboxed_exec is False
+
+
+def test_an_unreadable_config_file_keeps_the_opt_in_closed(tmp_path, monkeypatch) -> None:
+    """A file that exists but cannot be read may hold a declared false, so it never loosens."""
+    monkeypatch.setattr("sys.platform", "win32")
+    cfg = _load_with_files(tmp_path, monkeypatch, "{not json")
+    assert cfg._base_unreadable is True
+    assert cfg.agent.sandbox_allow_unsandboxed_exec is False
+
+
 def test_agent_spawn_min_memory_gb_parsed_and_round_trips():
     # Regression: agent.spawn_min_memory_gb was declared + consumed (the
     # subagent admission gate) and emitted by to_dict(), but NOT parsed in

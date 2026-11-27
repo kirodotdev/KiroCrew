@@ -291,7 +291,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _SSH_VISIBLE_TIERS _ssh_dir_masked _tier_lists_ssh _forward_ssh_auth_sock
         _forward_for_effective_tier _forwards_without_consent ssh_auth_sock_consent_notice
         unsandboxed_exec_permitted_by _bundled_cli_invocation
-        _apparmor_userns_restricted _no_backend_guidance _classify_unavailable
+        _apparmor_userns_restricted _no_backend_guidance _classify_unavailable _config_unreadable
         agent_confinement_evidence agent_confinement_is_kirocrew_own _warn_mode_off_unconfined
         _warn_first_party_unconfined_once _first_party_no_backend_passthrough
         CRON_SCRIPT_CHILD_ENV UnauditedSpawnRefused refuse_unaudited_on_dead_fs

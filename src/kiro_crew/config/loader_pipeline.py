@@ -57,6 +57,7 @@ from kiro_crew.config.loader_document import (
     _invalidate_config_cache,
     _shadowed_base_sections,
     _store_validated_data,
+    unsandboxed_exec_platform_default,
 )
 from kiro_crew.config.loader_locations import (
     config_local_path,
@@ -903,6 +904,12 @@ def build_config(
         )
         mark_member_backend_inherited(cfg.agent, True)
         setattr(cfg.agent, KIRO_CLI_PICK_STORED_ATTR, False)
+        # A home with no config file declares nothing, so the unsandboxed-exec
+        # opt-in takes the platform default as an undeclared key does in a loaded
+        # one. A file that exists but could not be read keeps the fail-closed field
+        # default: what it says is unknown, and an unreadable file must never loosen.
+        if not (doc.base_unreadable or doc.overlay_unreadable):
+            cfg.agent.sandbox_allow_unsandboxed_exec = unsandboxed_exec_platform_default()
         cfg._base_unreadable = doc.base_unreadable
         cfg._overlay_unreadable = doc.overlay_unreadable
         if (
