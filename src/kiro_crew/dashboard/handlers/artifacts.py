@@ -10,6 +10,7 @@ Endpoints
 - ``GET    /api/artifacts/{slug}/versions``    list version numbers
 - ``GET    /api/artifacts/{slug}/versions/{n}``  read a specific version
 - ``GET    /api/artifacts/{slug}/events``      lifecycle event log
+- ``GET    /api/artifacts/{slug}/docx``        markdown or text as a Word file
 
 Authorization
 ~~~~~~~~~~~~~
@@ -148,6 +149,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _content_cache_key,
         _content_cache_lock,
         _context_snippet,
+        _docx_error,
         _load_content,
         _scan_artifacts,
         _snippet_cache,
@@ -155,6 +157,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _strip_content,
         api_artifact_asset,
         api_artifact_detail,
+        api_artifact_docx,
         api_artifact_events,
         api_artifact_version_detail,
         api_artifact_versions,

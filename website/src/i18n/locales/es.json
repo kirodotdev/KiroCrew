@@ -13164,6 +13164,7 @@
       "discard_unsaved_changes": "¿Descartar los cambios sin guardar?",
       "document_type": "Tipo de documento",
       "download": "Descargar",
+      "download_docx": "Descargar como .docx",
       "edit_content": "Editar el contenido",
       "edited": "Editado",
       "failed_to_load_artifact": "No se pudo cargar el artefacto",

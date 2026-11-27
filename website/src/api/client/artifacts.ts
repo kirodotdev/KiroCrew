@@ -37,6 +37,11 @@ export interface DeploySitesResponse {
   error?: string
 }
 
+/** Where a markdown or text artifact downloads as a Word file: the live text, or the numbered `version`. */
+export function artifactDocxUrl(slug: string, version?: number | null): string {
+  return `/api/artifacts/${encodeURIComponent(slug)}/docx${version ? `?version=${version}` : ''}`
+}
+
 export function createArtifactsEndpoints({ get, post, del, patch, j, jfetch: fetch, checkSessionExpired, removeAuthBanner }: ClientTransport) {
   const library = {
     // Artifacts
@@ -66,6 +71,11 @@ export function createArtifactsEndpoints({ get, post, del, patch, j, jfetch: fet
       get(`/api/artifacts/${encodeURIComponent(slug)}/versions/${version}`).then(j),
     artifactVersions: (slug: string) =>
       get(`/api/artifacts/${encodeURIComponent(slug)}/versions`).then(j),
+    artifactDocx: async (slug: string, version?: number | null) => {
+      const r = await get(artifactDocxUrl(slug, version))
+      if (!r.ok) throw await toApiError(r)
+      return r.blob()
+    },
     artifactEvents: (slug: string) =>
       get(`/api/artifacts/${encodeURIComponent(slug)}/events`).then(j),
     /** Record a `referenced` breadcrumb so a chat session that merely OPENED an

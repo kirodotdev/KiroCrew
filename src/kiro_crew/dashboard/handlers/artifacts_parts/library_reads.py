@@ -532,6 +532,63 @@ async def api_artifact_asset(request: web.Request) -> web.Response:
     )
 
 
+def _docx_error(error: str, code: str, status: int) -> web.Response:
+    return web.json_response({"error": error, "code": code}, status=status)
+
+
+async def api_artifact_docx(request: web.Request) -> web.Response:
+    """``GET /api/artifacts/{slug}/docx[?version=N]``: a markdown or text artifact as a Word file.
+
+    Built from the text the detail route shows (the same redaction), live or the
+    numbered version. The redaction and the build run off the event loop.
+    """
+    slug = request.match_info.get("slug", "")
+    version = None
+    if "version" in request.query:
+        try:
+            version = int(request.query["version"])
+        except ValueError:
+            return _docx_error("version must be a whole number", "bad_version", 400)
+    try:
+        art = await _run_off_loop(lambda: get_default_store().get(slug, version=version))
+    except ArtifactNotFoundError as exc:
+        return _docx_error(str(exc), "not_found", 404)
+    except ArtifactValidationError as exc:
+        return _docx_error(str(exc), "bad_slug", 400)
+    except (ArtifactError, OSError) as exc:
+        logger.warning("artifact docx read failed for %s: %s", slug, exc)
+        return _docx_error("could not read the artifact", "read_failed", 500)
+    if art.kind not in ("markdown", "text"):
+        return _docx_error(
+            "only markdown and text artifacts can be a .docx", "unsupported_kind", 400
+        )
+    from kiro_crew import artifact_docx
+    from kiro_crew.dashboard.handlers.artifact_download import _content_disposition
+
+    shown = await asyncio.to_thread(_serialize, art, include_content=True)
+    try:
+        data = await asyncio.to_thread(
+            artifact_docx.build, shown.get("content") or "", art.kind == "markdown"
+        )
+    except artifact_docx.DocxTooLarge:
+        return _docx_error("the artifact is too large for a .docx", "too_large", 413)
+    stem = "".join(
+        ch for ch in str(shown.get("name") or "") if ch.isascii() and (ch.isalnum() or ch in "-_ ")
+    )
+    filename = f"{stem or slug}-v{version if version is not None else art.version}.docx"
+    return web.Response(
+        body=data,
+        headers={
+            "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "Content-Disposition": _content_disposition(filename),
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
 # ── Versions ─────────────────────────────────────────────────────────────────
 async def api_artifact_versions(request: web.Request) -> web.Response:
     slug = request.match_info.get("slug", "")

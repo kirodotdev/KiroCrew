@@ -12578,6 +12578,7 @@
       "discard_unsaved_changes": "放弃未保存的更改？",
       "document_type": "文档类型",
       "download": "下载",
+      "download_docx": "下载为 .docx",
       "edit_content": "编辑内容",
       "edited": "已编辑",
       "failed_to_load_artifact": "加载产物失败",

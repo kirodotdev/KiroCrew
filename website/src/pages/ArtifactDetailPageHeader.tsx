@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  ArrowLeft, Camera, Check, Copy, Download, Eye, FoldHorizontal, MoreHorizontal, Pencil,
+  ArrowLeft, Camera, Check, Copy, Download, Eye, FileText, FoldHorizontal, MoreHorizontal, Pencil,
   UnfoldHorizontal, RefreshCw, X, RotateCcw, Sparkles, MessageSquare, Upload, Star,
   Folder as FolderIcon,
 } from 'lucide-react'
@@ -29,7 +29,8 @@ import { folderBreadcrumb } from '../utils/artifactFolderTree'
 import { artifactAssetUrl } from '../components/ArtifactBody'
 import { canvasDocument, discardCanvas, flushCanvas } from '../components/canvas/canvasPending'
 import { api } from '../api/client'
-import { downloadUrl, isAndroidWebView } from '../utils/download'
+import { artifactDocxUrl } from '../api/client/artifacts'
+import { downloadBlob, downloadUrl, isAndroidWebView } from '../utils/download'
 import { ArtifactPopoutMenuItems } from '../components/ArtifactPopoutMenuItems'
 import { USER_SELECTABLE_KINDS } from '../lib/artifactKinds'
 import { COMPARE_NONE, compareChoices, isComparableKind, stateLabel } from '../lib/artifactCompare'
@@ -109,6 +110,12 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
   )
 }
 
+/** Whether a character of an artifact's name stays in its .docx file name, as in the other download. */
+function keepsInDocxName(ch: string): boolean {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+    || ch === '-' || ch === '_' || ch === ' '
+}
+
 /** The More menu's state: copy, open, send to a session and download. */
 export function useArtifactDetailPageMenu({
   stateRead, documentRead, composerRead, companionRead,
@@ -118,7 +125,7 @@ export function useArtifactDetailPageMenu({
   composerRead: ArtifactDetailPageComposerRead
   companionRead: ArtifactDetailPageCompanionRead
 }) {
-  const { slug, editing, setSendToSessionError } = stateRead
+  const { slug, editing, selectedVersion, setSendToSessionError } = stateRead
   const { effectiveVersion, artifact, exportSrcdoc } = documentRead
   const { guardSendToSession } = composerRead
   const { sendNav } = companionRead
@@ -244,9 +251,25 @@ export function useArtifactDetailPageMenu({
     saveBlob()
   }
 
+  // A markdown or text artifact as a Word file, built by the gateway from the version on screen.
+  const downloadAsDocx = () => {
+    if (!artifact) return
+    const kept = Array.from(artifact.name).filter(keepsInDocxName).join('')
+    const filename = `${kept || artifact.slug}-v${effectiveVersion}.docx`
+    // An Android in-app browser drops a blob: download; the route is an attachment, so it takes the URL.
+    if (isAndroidWebView()) {
+      downloadUrl(artifactDocxUrl(artifact.slug, selectedVersion), filename)
+      return
+    }
+    setCopyError(null)
+    api.artifactDocx(artifact.slug, selectedVersion)
+      .then((blob) => downloadBlob(blob, filename))
+      .catch(() => setCopyError(i18nT('components.markdownPanel.download_failed')))
+  }
+
   return {
     copyStatus, copyError, setCopyError, handleCopyContent, copyLabel, moreOpen, setMoreOpen, sendToSession,
-    downloadAsHtml,
+    downloadAsHtml, downloadAsDocx,
   }
 }
 
@@ -282,7 +305,7 @@ export function ArtifactDetailPageHeader({
   } = editorRead
   const { guardCommentDraft } = composerRead
   const {
-    copyStatus, handleCopyContent, copyLabel, moreOpen, setMoreOpen, sendToSession, downloadAsHtml,
+    copyStatus, handleCopyContent, copyLabel, moreOpen, setMoreOpen, sendToSession, downloadAsHtml, downloadAsDocx,
   } = menuRead
   // Version-picker rows as two PARALLEL arrays, newest snapshot first, the order
   // the <option> list had. `live` leads as a static entry: Live is always-current
@@ -631,6 +654,12 @@ export function ArtifactDetailPageHeader({
                 <Download size={13} className="shrink-0 text-muted" aria-hidden="true" />
                 <span>{i18nT('pages.artifactDetailPage.download')}</span>
               </DropdownMenuItem>
+              {(artifact.kind === 'markdown' || artifact.kind === 'text') && (
+                <DropdownMenuItem onSelect={downloadAsDocx}>
+                  <FileText size={13} className="shrink-0 text-muted" aria-hidden="true" />
+                  <span>{i18nT('pages.artifactDetailPage.download_docx')}</span>
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </span>

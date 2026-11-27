@@ -13164,6 +13164,7 @@
       "discard_unsaved_changes": "Abandonner les modifications non enregistrées ?",
       "document_type": "Type de document",
       "download": "Télécharger",
+      "download_docx": "Télécharger au format .docx",
       "edit_content": "Modifier le contenu",
       "edited": "Modifié",
       "failed_to_load_artifact": "Échec du chargement de l'artefact",

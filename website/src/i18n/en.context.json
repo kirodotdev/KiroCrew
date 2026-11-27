@@ -416,6 +416,7 @@
     "pages.artifactDeployPage.col_type": "Column header in the Deployments table: the kind of deployment in each row (static site or webapp). A noun, not the verb \"type\".",
     "pages.artifactDeployPage.col_url": "Column header in the Deployments table over each deployment's public web address (a link).",
     "pages.artifactDetailPage.copy_failed": "Brief error status on the artifact content copy button after a clipboard write fails. A past outcome, not a command.",
+    "pages.artifactDetailPage.download_docx": "Item in the artifact page's More menu: saves a markdown or text artifact as a Word file with the .docx extension. Imperative verb, like the Download item beside it. Keep \".docx\" exactly as written; it is a file extension, not a product name.",
     "pages.artifactDetailPage.tag_2": "Noun: a label attached to an artifact. Not the verb.",
     "pages.artifactDetailPage.version_label": "A version number with its \"v\" prefix, for example `v3` in the version picker. {{version}} is the number; most languages keep the \"v\" untranslated.",
     "pages.artifactDetailPage.created_at_value": "Footer of an artifact's page: when the artifact was created. {{date}} is a formatted date and time; place it where your language puts a date in this phrase.",

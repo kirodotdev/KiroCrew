@@ -12578,6 +12578,7 @@
       "discard_unsaved_changes": "保存されていない変更を破棄しますか？",
       "document_type": "ドキュメントタイプ",
       "download": "ダウンロード",
+      "download_docx": ".docx としてダウンロード",
       "edit_content": "コンテンツを編集",
       "edited": "編集",
       "failed_to_load_artifact": "アーティファクトの読み込みに失敗しました",
