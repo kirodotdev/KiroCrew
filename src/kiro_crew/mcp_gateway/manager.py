@@ -1019,7 +1019,9 @@ class GatewayManager:
         from kiro_crew.mcp_gateway import claim as _claim
 
         try:
-            if await self._wait_for_socket(self._spec.socket_path, _SOCKET_READY_TIMEOUT_SECS):
+            # The startup path's own window: a daemon slower than the 5s fast
+            # poll is still starting, and its live stubs need these bindings.
+            if await self._wait_for_socket(self._spec.socket_path, _SOCKET_READY_SLOW_START_SECS):
                 await _claim.replay_agent_bindings(str(self._spec.socket_path))
         except Exception:
             logger.debug("mcp-gateway: agent-binding replay failed", exc_info=True)

@@ -569,6 +569,41 @@ async def test_a_non_owner_binding_leaves_the_stub_with_no_declared_env(
     assert reason and "tok-cli-local" not in reason
 
 
+@pytest.mark.asyncio
+async def test_a_daemon_slower_than_five_seconds_still_gets_its_bindings_replayed(
+    monkeypatch,
+) -> None:
+    """The replay waits as long as the startup path does, not just the 5s fast poll.
+
+    The daemon's socket comes up 5.5s after the spawn: a replay that gave up at
+    the 5s fast poll would leave its reconnecting stubs with no declared env.
+    """
+    from types import SimpleNamespace
+
+    from kiro_crew.mcp_gateway import manager as manager_mod
+
+    ready_at = manager_mod._SOCKET_READY_TIMEOUT_SECS + 0.5
+    waits: list[float] = []
+
+    async def _wait_for_socket(_path, timeout):
+        waits.append(timeout)
+        return timeout >= ready_at
+
+    replayed: list[str] = []
+
+    async def _replay(socket_path):
+        replayed.append(socket_path)
+        return 1
+
+    monkeypatch.setattr(claim_mod, "replay_agent_bindings", _replay)
+    mgr = manager_mod.GatewayManager.__new__(manager_mod.GatewayManager)
+    mgr._spec = SimpleNamespace(socket_path=Path("/s"))
+    monkeypatch.setattr(mgr, "_wait_for_socket", _wait_for_socket)
+    await mgr._replay_bindings_when_ready()
+    assert waits == [manager_mod._SOCKET_READY_SLOW_START_SECS]
+    assert replayed == [str(Path("/s"))]
+
+
 def test_the_daemon_binding_table_evicts_dead_sessions_before_a_live_one(monkeypatch) -> None:
     """Over the cap, only bindings whose runtime pid is gone are dropped.
 
