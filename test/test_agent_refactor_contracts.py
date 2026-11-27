@@ -71,7 +71,7 @@ BASE_SURFACE: dict[str, str] = {
     "_HEARTBEAT_SYSTEM_PROMPT": "value str prompt",
     "_HOME_DERIVING_ENV_KEYS": "value frozenset 816c277fc333b3e0",
     "_HOOK_EVENT_CANONICAL": "value dict a09f334fa63b1a4f",
-    "_HOOK_HEADER_RE": "value Pattern 905320879920c153",
+    "_HOOK_HEADER_RE": "value Pattern b53541ac7b9529ab",
     "_HOOK_HEADER_SCAN_LINES": "value int ef2d127de37b942b",
     "_HOOK_SPEC_AUDIT_TAG": "value str 872be442e26c62c8",
     "_HOOK_SUPPRESSED_CONFIRM": "value str 287cc46175706b5e",
