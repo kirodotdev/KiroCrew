@@ -1534,6 +1534,14 @@
       "hint": "On, in KAS chats: the default agent hands quick tasks to its built-in helper or to up to 8 of your own agents inside its turn, held to the chat agent's rules and stopped with the turn; a sub-agent that spawn_run starts on another agent runs without asking only what the chat that started it runs without asking; a denyByDefault command list holds even when the agent pre-approves the shell; and an agent that excludes the sub-agent tool, or uses one of three deniedCommands forms, is read as kiro-cli reads it, which the chat says when it starts. Off: Kiro Crew starts the default agent's sub-agents as sessions of their own that you can open and stop in the Subagents panel."
     },
     {
+      "id": "developer.kiro-managed-environments",
+      "label": "Kiro Managed Environments",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.kiro-managed-environments",
+      "description": "Adds Kiro-managed remote machines to Add Crew in Settings > Remote Crew. Turning this on opens none until you launch one.",
+      "hint": "The machines use your company sign-in. While you're signed in with it, you can't chat with the agent on this computer, and the sign-in form says so first. To chat here again, sign in with another account."
+    },
+    {
       "id": "developer.let-agents-control-your-other-sessions",
       "label": "Let agents control your other sessions",
       "tab": "developer",
@@ -1627,14 +1635,6 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.shared-crew",
       "description": "People tab, invites and shared sessions"
-    },
-    {
-      "id": "developer.use-your-company-s-sign-in",
-      "label": "Use your company's sign-in",
-      "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.use-your-company-s-sign-in",
-      "description": "Uses your company's own sign-in for its portal.",
-      "hint": "Some companies install Kiro Crew with their own company sign-in. Turn this on to use it. While you're signed in with it, you can't chat with the agent on this computer, and the sign-in form says so first. Otherwise nothing changes."
     },
     {
       "id": "developer.visual-refresh",

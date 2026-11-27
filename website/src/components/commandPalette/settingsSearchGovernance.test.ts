@@ -29,7 +29,7 @@ import { updateInfoQuery } from '../../api/updateInfoQuery'
 import { useUpdateSubscription } from '../../hooks/useUpdateSubscription'
 import { sseStatus } from '../../store/dashboardSlice'
 import type { ResourceProvider } from './types'
-import { PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW_CLIENT, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
 
 import { createSettingsProvider, useSettingsProvider } from './providers/settingsProvider'
 import { SETTINGS_REGISTRY } from './settingsRegistry.gen'
@@ -208,6 +208,17 @@ describe('settingEntryOffered', () => {
     expect(settingEntryOffered(channels, { ...ON, channelsOn: false })).toBe(false)
     expect(settingEntryOffered(channels, { ...ON, channelsOn: true })).toBe(true)
     expect(settingEntryOffered(otherEntry(), { ...ON, channelsOn: false })).toBe(true)
+  })
+
+  it('offers Kiro Managed Environments once the gateway says it is set up or its switch is on', () => {
+    const managedEnv = entryById('developer.kiro-managed-environments')
+    localStorage.removeItem(PREVIEW_CREW_CLIENT)
+    expect(settingEntryOffered(managedEnv, ON)).toBe(false)
+    expect(settingEntryOffered(managedEnv, { ...ON, managedEnvAvailable: false })).toBe(false)
+    expect(settingEntryOffered(managedEnv, { ...ON, managedEnvAvailable: true })).toBe(true)
+    setPreviewFlag(PREVIEW_CREW_CLIENT, true)
+    expect(settingEntryOffered(managedEnv, { ...ON, managedEnvAvailable: false })).toBe(true)
+    localStorage.removeItem(PREVIEW_CREW_CLIENT)
   })
 
   it('withholds the Slack tools switch only once Settings > Slack is known not to draw it', () => {
@@ -626,6 +637,32 @@ describe('the Kiro sign-in entry follows whether the build offers Kiro sign-in',
   it('offers it while the build is unknown (no schema in the cache)', async () => {
     const { result } = await renderWithSchema(undefined)
     expect(offersSignIn(result.current)).toBe(true)
+  })
+})
+
+describe('Kiro Managed Environments follows the cached answer after a failed refetch', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it.each([undefined, false, true])('keeps the cached availability %s', async available => {
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+    vi.spyOn(api, 'tipsStatus').mockResolvedValue({ enabled_config: true } as never)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const cached = available === undefined ? undefined : { managed_env_available: available }
+    if (cached) client.setQueryData(['kirocrewConfig'], cached)
+    await client.prefetchQuery({
+      queryKey: ['kirocrewConfig'],
+      queryFn: () => Promise.reject(new Error('offline')),
+    })
+    expect(client.getQueryState(['kirocrewConfig'])?.status).toBe('error')
+    expect(client.getQueryData(['kirocrewConfig'])).toEqual(cached)
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(Provider, { store: createTestStore() },
+        createElement(QueryClientProvider, { client }, createElement(MemoryRouter, null, children)))
+    const { result } = renderHook(() => useSettingsProvider(), { wrapper })
+    await waitFor(() => expect(client.getQueryState(['tipsStatus'])?.status).not.toBe('pending'))
+    const offered = (result.current.search('Kiro Managed Environments') as { id?: string }[])
+      .some(r => (r.id ?? '').endsWith('developer.kiro-managed-environments'))
+    expect(offered).toBe(available === true)
   })
 })
 
