@@ -230,6 +230,7 @@ function CustomDenyRow({ rule, onToggle, onEdit, onDelete, menu, error, errorHan
               aria-label={i18nT('pages.settings.securityPanel.pattern_actions', { name: rule.pattern })}
               onPointerDown={menu.rememberOpener}
               onKeyDown={menu.rememberOpener}
+              onClick={menu.rememberOpener}
             >
               <MoreHorizontal size={14} />
             </IconButton>

@@ -210,6 +210,7 @@ export function DriveFilesSearchResults({ pane }: { pane: DriveFilesPane }) {
                             aria-label={i18nT('apps.awsControl.console.file_actions')}
                             onPointerDown={rememberMenuOpener}
                             onKeyDown={rememberMenuOpener}
+                            onClick={rememberMenuOpener}
                             data-testid="drive-search-more"
                           >
                             <MoreHorizontal className="h-3.5 w-3.5" />
@@ -468,6 +469,7 @@ export function DriveFilesGrid({ pane }: { pane: DriveFilesPane }) {
                     data-testid="drive-grid-more"
                     onPointerDown={rememberMenuOpener}
                     onKeyDown={rememberMenuOpener}
+                    onClick={rememberMenuOpener}
                   >
                     <MoreHorizontal className="h-3.5 w-3.5" />
                   </IconButton>
@@ -779,6 +781,7 @@ export function DriveFilesTable({ pane }: { pane: DriveFilesPane }) {
                           data-testid="drive-more"
                           onPointerDown={rememberMenuOpener}
                           onKeyDown={rememberMenuOpener}
+                          onClick={rememberMenuOpener}
                         >
                           <MoreHorizontal className="h-3.5 w-3.5" />
                         </IconButton>

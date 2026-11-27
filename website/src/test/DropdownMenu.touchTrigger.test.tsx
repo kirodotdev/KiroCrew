@@ -4,7 +4,7 @@
 // area), before the browser could tell a tap from a scroll. The shared
 // `DropdownMenuTrigger` defers a touch or pen press to the tap's `click`, which
 // a scroll never produces. A mouse press still opens on `pointerdown`.
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, createEvent, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu'
@@ -30,26 +30,41 @@ const trigger = () => screen.getByTestId('trigger')
 const menuOpen = () => screen.queryByTestId('content') !== null
 
 /** A finger lands on the trigger. Whether it is a tap or a scroll is not known yet. */
-function touchDown(el: HTMLElement, pointerType: 'touch' | 'pen' = 'touch'): boolean {
+function touchDown(el: HTMLElement, pointerType: 'touch' | 'pen' = 'touch', timeStamp?: number): boolean {
+  const pointerDown = new PointerEvent('pointerdown', {
+    bubbles: true, cancelable: true, pointerType, button: 0,
+  })
+  if (timeStamp !== undefined) Object.defineProperty(pointerDown, 'timeStamp', { value: timeStamp })
   let notCancelled = true
   act(() => {
-    notCancelled = el.dispatchEvent(new PointerEvent('pointerdown', {
-      bubbles: true, cancelable: true, pointerType, button: 0,
-    }))
+    notCancelled = el.dispatchEvent(pointerDown)
   })
   return !notCancelled
 }
 
 /** The finger lifts without moving: the browser fires the tap's click (detail 1). */
-function tapRelease(el: HTMLElement): void {
-  fireEvent.pointerUp(el, { pointerType: 'touch', button: 0 })
-  fireEvent.click(el, { button: 0, detail: 1 })
+function tapRelease(el: HTMLElement, timeStamp?: number): void {
+  const pointerUp = createEvent.pointerUp(el, { pointerType: 'touch', button: 0 })
+  if (timeStamp !== undefined) Object.defineProperty(pointerUp, 'timeStamp', { value: timeStamp })
+  fireEvent(el, pointerUp)
+  const click = createEvent.click(el, { button: 0, detail: 1 })
+  if (timeStamp !== undefined) Object.defineProperty(click, 'timeStamp', { value: timeStamp + 50 })
+  fireEvent(el, click)
+}
+
+/** A click with no pointer event of its own, stamped at *timeStamp* so no test waits on the clock. */
+function clickAt(el: HTMLElement, timeStamp: number): void {
+  const click = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 0 })
+  Object.defineProperty(click, 'timeStamp', { value: timeStamp })
+  act(() => { el.dispatchEvent(click) })
 }
 
 /** The finger moves and lifts elsewhere: a scroll, so the browser fires no click. */
-function scrollAway(el: HTMLElement): void {
+function scrollAway(el: HTMLElement, timeStamp?: number): void {
   fireEvent.pointerMove(el, { pointerType: 'touch', clientY: 80 })
-  fireEvent.pointerCancel(el, { pointerType: 'touch' })
+  const pointerCancel = createEvent.pointerCancel(el, { pointerType: 'touch' })
+  if (timeStamp !== undefined) Object.defineProperty(pointerCancel, 'timeStamp', { value: timeStamp })
+  fireEvent(el, pointerCancel)
 }
 
 describe('DropdownMenuTrigger on a touch pointer', () => {
@@ -74,8 +89,8 @@ describe('DropdownMenuTrigger on a touch pointer', () => {
     expect(menuOpen()).toBe(true)
     expect(onOpenChange).toHaveBeenLastCalledWith(true)
 
-    touchDown(trigger())
-    tapRelease(trigger())
+    touchDown(trigger(), 'touch', 1_000)
+    tapRelease(trigger(), 1_000)
     expect(menuOpen()).toBe(false)
     expect(onOpenChange).toHaveBeenLastCalledWith(false)
     expect(onOpenChange).toHaveBeenCalledTimes(2)
@@ -88,11 +103,11 @@ describe('DropdownMenuTrigger on a touch pointer', () => {
     tapRelease(trigger())
     expect(menuOpen()).toBe(true)
 
-    touchDown(trigger())
+    touchDown(trigger(), 'touch', 1_000)
     expect(menuOpen()).toBe(false)
     // The menu's own outside-dismiss may run between the press and its click;
     // either way the click must not open the menu again.
-    tapRelease(trigger())
+    tapRelease(trigger(), 1_000)
     expect(menuOpen()).toBe(false)
     expect(onOpenChange).toHaveBeenCalledTimes(2)
   })
@@ -109,9 +124,9 @@ describe('DropdownMenuTrigger on a touch pointer', () => {
 
   it('a press the browser turned into a scroll (pointercancel) is spent, so a later click does not open the menu', () => {
     render(<Harness />)
-    touchDown(trigger())
-    scrollAway(trigger())
-    fireEvent.click(trigger(), { detail: 0 })
+    touchDown(trigger(), 'touch', 1_000)
+    scrollAway(trigger(), 1_000)
+    clickAt(trigger(), 1_050)
     expect(menuOpen()).toBe(false)
   })
 
@@ -145,15 +160,133 @@ describe('DropdownMenuTrigger on a mouse', () => {
     const onOpenChange = vi.fn()
     render(<Harness onOpenChange={onOpenChange} />)
 
-    act(() => {
-      trigger().dispatchEvent(new PointerEvent('pointerdown', {
-        bubbles: true, cancelable: true, pointerType: 'mouse', button: 0,
-      }))
+    const pointerDown = new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, pointerType: 'mouse', button: 0,
     })
+    Object.defineProperty(pointerDown, 'timeStamp', { value: 1_000 })
+    act(() => { trigger().dispatchEvent(pointerDown) })
     expect(menuOpen()).toBe(true)
 
-    fireEvent.click(trigger(), { button: 0, detail: 1 })
+    const click = createEvent.click(trigger(), { button: 0, detail: 1 })
+    Object.defineProperty(click, 'timeStamp', { value: 1_050 })
+    fireEvent(trigger(), click)
     expect(menuOpen()).toBe(true)
     expect(onOpenChange).toHaveBeenCalledTimes(1)
+  })
+})
+
+// A screen reader's activation, Switch Control and a scripted `element.click()`
+// send a `click` with no pointer event before it. Radix listens for
+// `pointerdown` and `keydown` only, so that click has to toggle the menu itself.
+describe('DropdownMenuTrigger on a click with no pointer event', () => {
+  it('opens the closed menu, and the next such click closes it', () => {
+    const onOpenChange = vi.fn()
+    render(<Harness onOpenChange={onOpenChange} />)
+
+    fireEvent.click(trigger(), { detail: 0 })
+    expect(menuOpen()).toBe(true)
+    expect(onOpenChange).toHaveBeenLastCalledWith(true)
+
+    fireEvent.click(trigger(), { detail: 0 })
+    expect(menuOpen()).toBe(false)
+    expect(onOpenChange).toHaveBeenLastCalledWith(false)
+    expect(onOpenChange).toHaveBeenCalledTimes(2)
+  })
+
+  it('still runs the consumer\'s own click handler, once', () => {
+    const onTriggerClick = vi.fn()
+    render(<Harness onTriggerClick={onTriggerClick} />)
+    fireEvent.click(trigger(), { detail: 0 })
+    expect(onTriggerClick).toHaveBeenCalledTimes(1)
+    expect(menuOpen()).toBe(true)
+  })
+
+  it('a disabled trigger stays closed', () => {
+    render(<Harness disabled />)
+    fireEvent.click(trigger(), { detail: 0 })
+    expect(menuOpen()).toBe(false)
+  })
+
+  it('a trigger marked aria-disabled stays closed, and opens once the mark is gone', () => {
+    function Busy({ busy }: { busy: boolean }) {
+      return (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" data-testid="trigger" aria-disabled={busy}>more</button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent data-testid="content">
+            <DropdownMenuItem>Rename</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )
+    }
+    const { rerender } = render(<Busy busy />)
+    fireEvent.click(trigger(), { detail: 0 })
+    expect(menuOpen()).toBe(false)
+
+    rerender(<Busy busy={false} />)
+    fireEvent.click(trigger(), { detail: 0 })
+    expect(menuOpen()).toBe(true)
+  })
+
+  it.each([
+    ['a press that became a scroll', (el: HTMLElement) => { touchDown(el, 'touch', 1_000); scrollAway(el, 1_000) }],
+    ['a mouse press released somewhere else', (el: HTMLElement) => {
+      const pointerDown = new PointerEvent('pointerdown', {
+        bubbles: true, cancelable: true, pointerType: 'mouse', button: 0,
+      })
+      Object.defineProperty(pointerDown, 'timeStamp', { value: 1_000 })
+      act(() => { el.dispatchEvent(pointerDown) })
+      // Radix opened the menu on the press; close it again so the click below starts from closed.
+      act(() => { fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' }) })
+    }],
+  ])('%s does not swallow a later click with no pointer event', (_name, gesture) => {
+    render(<Harness />)
+    gesture(trigger())
+    expect(menuOpen()).toBe(false)
+
+    clickAt(trigger(), 1_000 + 5_000)
+    expect(menuOpen()).toBe(true)
+  })
+
+  it('a click right after a press that became a scroll still belongs to that press', () => {
+    render(<Harness />)
+    touchDown(trigger(), 'touch', 1_000)
+    scrollAway(trigger(), 1_000)
+    clickAt(trigger(), 1_050)
+    expect(menuOpen()).toBe(false)
+  })
+
+  it('a finger tap still changes the menu once: open on the first tap, closed on the second', () => {
+    const onOpenChange = vi.fn()
+    render(<Harness onOpenChange={onOpenChange} />)
+
+    touchDown(trigger(), 'touch', 1_000)
+    tapRelease(trigger(), 1_000)
+    expect(menuOpen()).toBe(true)
+    expect(onOpenChange.mock.calls).toEqual([[true]])
+
+    touchDown(trigger(), 'touch', 2_000)
+    tapRelease(trigger(), 2_000)
+    expect(menuOpen()).toBe(false)
+    expect(onOpenChange.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('a mouse press still changes the menu once: its release click does not close it', () => {
+    const onOpenChange = vi.fn()
+    render(<Harness onOpenChange={onOpenChange} />)
+    const pointerDown = new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, pointerType: 'mouse', button: 0,
+    })
+    Object.defineProperty(pointerDown, 'timeStamp', { value: 1_000 })
+    act(() => { trigger().dispatchEvent(pointerDown) })
+    const pointerUp = createEvent.pointerUp(trigger(), { pointerType: 'mouse', button: 0 })
+    Object.defineProperty(pointerUp, 'timeStamp', { value: 1_000 })
+    fireEvent(trigger(), pointerUp)
+    const click = createEvent.click(trigger(), { button: 0, detail: 1 })
+    Object.defineProperty(click, 'timeStamp', { value: 1_050 })
+    fireEvent(trigger(), click)
+    expect(menuOpen()).toBe(true)
+    expect(onOpenChange.mock.calls).toEqual([[true]])
   })
 })

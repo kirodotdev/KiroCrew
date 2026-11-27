@@ -118,6 +118,7 @@ export default function CronBatchActionsMenu({
           disabled={busy}
           onPointerDown={layer.rememberOpener}
           onKeyDown={layer.rememberOpener}
+          onClick={layer.rememberOpener}
           aria-label={i18nT('pages.schedulePage.batchActions.actions_for_selected')}
           {...uiLocation('schedule.batch-actions')}
           title={i18nT('pages.schedulePage.batchActions.actions_for_selected')}
