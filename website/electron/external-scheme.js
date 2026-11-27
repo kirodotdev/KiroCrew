@@ -22,7 +22,7 @@
 //
 // This module owns the scheme decision so it is unit-testable without a live
 // Electron process, mirroring display-media.js. The renderer half of the fix
-// (window.open instead of location.href) lives in ComputerUsePanel.tsx.
+// (window.open instead of location.href) lives in pages/settings/computerUseSetup.ts.
 "use strict";
 
 const { HOSTNAME_RE } = require("./validation");
@@ -57,7 +57,7 @@ const { HOSTNAME_RE } = require("./validation");
 //
 // MUST stay byte-identical to the backend's SETTINGS_URL_* constants
 // (`computer_use/permissions.py`) and their frontend mirrors
-// (`PANE_*` in ComputerUsePanel.tsx). A drift here is a dead button, not a
+// (`PANE_URL` in pages/settings/computerUseSetup.ts). A drift here is a dead button, not a
 // security hole — the panel's own test pins the frontend pair.
 const EXTERNAL_URLS = Object.freeze([
   "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",

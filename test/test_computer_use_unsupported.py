@@ -214,14 +214,15 @@ class TestImportSafety:
 def unsupported_backend(monkeypatch):
     """Pin the process to a driverless platform and install its backend.
 
-    LINUX is the driverless platform: Windows has a read-path driver, so pointing
-    this fixture there would assert a refusal the driver does not give. The
-    Windows read path and its per-verb input refusals are covered in
-    ``test_computer_use_windows_driver.py`` instead.
+    LINUX with ``driver: native`` is the driverless platform: Kiro Crew has no
+    native Linux driver (the default there is the upstream driver, covered in
+    ``test_computer_use_cua_backend.py``), and Windows has a read-path driver, so
+    pointing this fixture there would assert a refusal the driver does not give.
     """
     monkeypatch.setattr(platform_compat, "IS_MACOS", False)
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
     monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+    monkeypatch.setattr(backend_mod, "_driver_choice", lambda: "native")
     register_computer_use_backend(None)
     reset_shared_backend()
     service_mod.reset_shared_service()
@@ -258,15 +259,16 @@ class TestRefusalsOnUnsupportedPlatform:
         assert status.supported is False
         # Concrete rather than "not supported": a user should learn what is missing
         # and a maintainer should find the next implementation step named.
-        assert "AT-SPI" in status.reason
+        assert "upstream" in status.reason
 
-    def test_linux_reason_names_the_wayland_capture_problem(self, monkeypatch):
+    def test_linux_native_reason_names_the_driver_setting(self, monkeypatch):
         monkeypatch.setattr(platform_compat, "IS_MACOS", False)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
         monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(backend_mod, "_driver_choice", lambda: "native")
         driver = select_default_backend()
         assert driver.platform_id == PLATFORM_LINUX
-        assert "Wayland" in driver.status().reason
+        assert "driver" in driver.status().reason
 
     def test_permission_probe_reports_unsupported_not_missing(self, unsupported_backend):
         # "missing" would send the user to a System Settings pane that cannot help.

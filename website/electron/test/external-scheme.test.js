@@ -33,9 +33,9 @@ describe("pane constants agree across backend, panel and this allowlist", () => 
     assert.deepEqual(panesIn("src/kiro_crew/computer_use/permissions.py"), [...EXTERNAL_URLS].sort());
   });
 
-  it("matches website/src/pages/settings/ComputerUsePanel.tsx", () => {
+  it("matches website/src/pages/settings/computerUseSetup.ts", () => {
     assert.deepEqual(
-      panesIn("website/src/pages/settings/ComputerUsePanel.tsx"),
+      panesIn("website/src/pages/settings/computerUseSetup.ts"),
       [...EXTERNAL_URLS].sort(),
     );
   });

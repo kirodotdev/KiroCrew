@@ -37,6 +37,8 @@ from kiro_crew.sandbox_leaves import (
 #:    * ``browser-harness`` — an empty dir means the engine is not installed,
 #:      exactly as a missing dir does; its directory bind shows a later gateway
 #:      install while withholding every agent-side write;
+#:    * ``computer-use`` — an empty dir means the desktop driver is not installed
+#:      and setup has no progress, exactly as a missing dir does;
 #:    * ``computer_use.json`` — ``computer_use.enable_state.load_state`` reads ``{}``
 #:      as DISABLED, which is what an absent keystone means;
 #:    * ``oauth_endpoints.json`` — ``security._validate_operator_oauth_entries``
@@ -132,6 +134,11 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # the owner presses Install, and an absent target is a name the agent may create
     # and fill with code the gateway later imports. Empty reads as "not installed".
     "extras",
+    # The computer-use driver runtime, for the ``browser-harness`` reason: absent until
+    # the owner installs the driver, and an empty directory reads as "not installed"
+    # (``driver_runtime.install.install_state``) with no setup progress, exactly as an
+    # absent one does.
+    "computer-use",
     # The KAS engine bundle root, for the ``browser-harness`` reason: on an install
     # that has never run ``kirocrew kas install`` the directory is absent, and an
     # absent target is a seal skipped and a name the agent may create.
@@ -224,6 +231,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "app-agent-launch",
     "browser-harness",
     "extras",
+    "computer-use",
     "engines",
     "subagents",
     "member-memory-bindings",
@@ -276,6 +284,11 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
     "extras": (
         "sealed channel SDKs",
         "the agent could replace the channel SDK code the gateway imports",
+    ),
+    "computer-use": (
+        "sealed desktop driver",
+        "the agent could replace the desktop driver the gateway runs against the user's "
+        "own apps, or forge its install record and setup check",
     ),
     "engines": (
         "sealed agent engine",

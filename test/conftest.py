@@ -386,6 +386,7 @@ from conftest_resets_bot_chat import (  # noqa: E402,F401 -- bound for pytest an
     _fresh_bot_chat_app_tools_state,
 )
 from conftest_resets_computer_use import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_computer_use_driver_runtime,
     _fresh_computer_use_warning,
 )
 from conftest_resets_connected_computers import (  # noqa: E402,F401 -- bound for pytest and importers

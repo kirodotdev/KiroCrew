@@ -1,6 +1,6 @@
 ---
 name: computer-use
-description: Read and drive native desktop apps through the accessibility layer — list apps, snapshot a window as a numbered element tree, then click/type/scroll/drag by element index or screen coordinates. Use for a desktop app, not a web page. macOS + Windows; off unless enabled in Settings.
+description: Read and drive native desktop apps through the accessibility layer — list apps, snapshot a window as a numbered element tree, then click/type/scroll/drag by element index or screen coordinates. Use for a desktop app, not a web page. macOS, Windows and Linux (X11); off unless enabled in Settings.
 triggers: desktop, desktop app, native app, app window, on screen, click button, type into, accessibility, a11y, AXUIElement, computer use, drive the app, =Finder, =Preview, TextEdit, =Excel, =Word, System Events, !browser, !web page, !playwright
 ---
 
@@ -19,11 +19,43 @@ Two things to internalise before your first call:
   fallback for canvases, maps and custom-drawn UI that expose no element — see
   [Coordinates and dragging](#coordinates-and-dragging-the-fallback-not-the-default).
 - **It is off unless the user turned it on** (Settings → Computer Use). The full
-  tool set runs on macOS and Windows alike. They differ in ONE way worth relaying:
-  Windows has no per-process input, so a keystroke takes the user's keyboard focus
-  and a coordinate click moves their real cursor. A "disabled" or "not supported"
+  tool set runs on macOS, Windows and Linux. A "disabled" or "not supported"
   refusal is a real configuration answer, not a transient error — relay it and
   stop; do not retry.
+- **Snapshot, act on one element, read the refreshed tree.** Every action returns
+  the tree as it is AFTER the action; that tree, not the action's own wording, is
+  your evidence. When a result says the driver "could not confirm" the effect, look
+  for the change before repeating: a second click can toggle a setting back or
+  submit twice.
+- **Background first.** Actions are delivered without raising the window or moving
+  the user's pointer. When the desktop cannot do that for a coordinate click or
+  drag, the refusal says so and names `click_method: "global"`, which brings the
+  window forward and uses real input. Name it only then, and tell the user first.
+- **Prefer a better tool when there is one**: the `browser` tool for a web page,
+  the file tools for a file's contents. Driving a window is the slowest and least
+  exact way to do either.
+
+### Which driver runs
+
+Kiro Crew drives the desktop with one of two drivers, chosen in Settings: its
+built-in macOS/Windows driver, or the open-source driver it downloads and checks
+when the owner installs it (the default on Linux; on Windows only when the owner
+chose it).
+The tools, element indexes and refusals are the same with either. What
+differs:
+
+- **Windows, own driver**: no per-process input, so a keystroke takes the user's
+  keyboard focus and a coordinate click moves their real cursor — the result says
+  so; relay it.
+- **Open-source driver** (Linux, Windows; not offered on macOS yet): `sky_click`
+  and `app_post` do not exist here; coordinate clicks run in the background, and
+  `global` is the foreground path. A field whose password status cannot be proven
+  is treated as a password field (`<secure>`): you cannot type into it.
+- **Linux**: X11, or apps running under XWayland on a Wayland desktop. Native
+  Wayland windows are not visible. Without a virtual input device, background key
+  presses, scrolls and coordinate gestures are refused (element clicks, typing and
+  value changes still work); `global` delivers a coordinate click or drag in the
+  foreground, but a key press or scroll has no foreground path.
 
 ## The loop
 

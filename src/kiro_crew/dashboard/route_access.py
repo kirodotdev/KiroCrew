@@ -192,6 +192,13 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/connected-computers/local/off"): RouteAccess(
         "connected_computers.off", UNSTABLE
     ),
+    # Computer Use setup. Owner dashboard only (handlers/computer_use_setup._gate): 403 for
+    # an app token, an internal caller and a non-owner. The read writes nothing and never
+    # starts the driver.
+    ("GET", "/api/computer-use/setup"): RouteAccess("computer_use.setup.read", UNSTABLE),
+    # Runs one setup step: installs, verifies or restarts the driver, resets setup, or sets
+    # the keystone's ``driver`` back to ``auto``.
+    ("POST", "/api/computer-use/setup"): RouteAccess("computer_use.setup.run", UNSTABLE),
     # A verified app credential, or the owner gate and then the machine owner alone.
     # The owner's answer reads the model catalog, an app's reads its grant; writes nothing.
     # Contract test: test_crew_api_instance.py.

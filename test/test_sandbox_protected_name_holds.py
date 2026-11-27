@@ -390,6 +390,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
         "<crew>/chat_steering_off.json": "standard",
         "<crew>/cloud.json": "standard",
         "<crew>/cloud_launch_state.json": "standard",
+        "<crew>/computer-use": "standard",
         "<crew>/computer_use.json": "standard",
         "<crew>/config-provenance": "standard",
         "<crew>/config.json": "standard",

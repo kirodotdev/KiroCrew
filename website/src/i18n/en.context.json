@@ -1623,6 +1623,11 @@
     "pages.developer.featurePreviewsTab.crew_reply_status_desc_summary": "One-line summary under that switch: the latest conductor reply shows what its workers are doing.",
     "pages.developer.featurePreviewsTab.crew_reply_status_desc": "Longer help for that switch. It must say: only the latest finished reply shows the line, a click opens Workers in the side panel, older replies show nothing, and the line goes away when no worker is busy.",
     "components.crewMode.reply_status_label": "Screen-reader label of the clickable status line under a conductor's latest reply. {{status}} is a full sentence of worker counts (for example \"3 sessions, 1 needs you, 2 running\"); keep it verbatim. Ends with what a click does.",
-    "components.crewMode.reply_status_open": "Tooltip of that status line: what a click does. Use the same word as the Workers side-panel tab."
+    "components.crewMode.reply_status_open": "Tooltip of that status line: what a click does. Use the same word as the Workers side-panel tab.",
+    "pages.settings.computerUsePanel.more_title": "Title of the collapsed section at the foot of Settings > Computer Use that holds the advanced controls. 'More settings', not a quantity.",
+    "pages.settings.computerUsePanel.privacy_footer": "One grey line at the foot of Settings > Computer Use stating what the agent can see. A statement of fact, not an instruction.",
+    "pages.settings.computerUseSetup.yes": "Value in the Settings > Computer Use diagnostics list saying a driver capability is available. An adjective-like answer, not a button.",
+    "pages.settings.computerUseSetup.no": "Value in the Settings > Computer Use diagnostics list saying a driver capability is not available. An adjective-like answer, not a button.",
+    "pages.settings.computerUseSetup.readiness_off": "Status badge on the Settings > Computer Use setup card when the feature is switched off. The state 'turned off', not the verb."
   }
 }

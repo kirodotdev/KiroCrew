@@ -51,6 +51,7 @@ import { toolRailColor } from '../../utils/toolRailColor'
 import { useSecondClock } from '../../hooks/useSecondClock'
 import { toolReturned } from '../../utils/toolReturned'
 import { stripToolCallLead } from '../../lib/toolRowContract'
+import { ComputerUseSetupLink, computerUseSetupNeeded } from './ComputerUseSetupLink'
 
 // Lazy so the rarely-shown answers card stays out of the App chunk. A chunk
 // that fails to load shows one block in the card's place, with Try Again and
@@ -1485,6 +1486,10 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* A computer-use refusal that setup can clear gets the one button that
+          opens the setup dialog, visible without expanding the row. */}
+      {isDone && !denied && computerUseSetupNeeded({ mcpServer, trustedToolName, output }) && <ComputerUseSetupLink />}
 
       {/* MCP App (SEP-1865): inline sandboxed render attached to this tool
           call. Appears below the details panel; presence is driven by the
