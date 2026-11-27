@@ -273,6 +273,117 @@ def dispatch_summary(
     return " ".join(line for line in lines if line)
 
 
+#: Most names one :func:`lookup` answer lists per list; the rest are counted.
+LOOKUP_NAMES = 30
+#: Longest ``query`` :func:`lookup` takes.
+LOOKUP_QUERY_MAX = 100
+
+
+def _lookup_names(key: str, names: list[str]) -> dict[str, Any]:
+    """``{key: [names]}`` in the summary's plain character set, capped, with ``key_more``."""
+    clean = [_SUMMARY_NAME_STRIP.sub("", n).strip()[:_SUMMARY_NAME_CHARS] for n in names]
+    shown = [n for n in clean if n]
+    out: dict[str, Any] = {key: shown[:LOOKUP_NAMES]}
+    if len(shown) > LOOKUP_NAMES:
+        out[f"{key}_more"] = len(shown) - LOOKUP_NAMES
+    return out
+
+
+def _callable_tools(spec: dict[str, Any], name: str, tools: list[str]) -> list[str]:
+    """The tools of server *name* that *spec* lets its worker call, of the known *tools*.
+
+    ``@name`` (or ``*``) mounts every tool, ``@name/tool`` one; ``excludedTools``
+    and the entry's own ``disabledTools`` take one back (the KAS projection turns
+    the second into the first, ``mate_worker.disabled_tool_refs``).
+    """
+    from kiro_crew.mate_worker import disabled_tool_refs
+
+    refs = _strings(spec.get("tools"))
+    whole = "*" in refs or any(r in (f"@{name}", f"@{name}/", f"@{name}/*") for r in refs)
+    picked = {r.split("/", 1)[1] for r in refs if r.startswith(f"@{name}/")}
+    switched_off = [
+        *_strings(spec.get("excludedTools")),
+        *disabled_tool_refs(spec.get("mcpServers")),
+    ]
+    off = {r.split("/", 1)[1] for r in switched_off if r.startswith(f"@{name}/")}
+    return [t for t in tools if (whole or t in picked) and t not in off]
+
+
+def lookup(spec: dict[str, Any], query: str = "") -> dict[str, Any]:
+    """The compact answer to "can my worker reach X?", before a conductor dispatches.
+
+    With no *query*: the names of the MCP servers *spec* mounts (``servers``),
+    capped at :data:`LOOKUP_NAMES`. With one: ``worker_has`` (yes or no), the
+    worker's servers whose name or one of whose tools contains it (``matches``,
+    a tool hit as ``server/tool``), and the switched-on servers this gateway has
+    that match while the worker lacks them (``gateway_only``). Names only, cut to
+    the summary's character set, never a description, a transport or a tool
+    list, so the answer stays a few hundred characters whatever the install
+    holds. A worker tool counts only when the spec selects it
+    (:func:`_callable_tools`). Blocking (the gateway list reads the MCP config).
+
+    Advisory at the tool level: a tool name is compared literally, and the
+    gateway-wide per-tool switch-offs are not read, so a tool a pattern or that
+    switch-off removes can still match. The session's MCP report after the dispatch
+    stays the authority on what the worker got.
+    """
+    # shortcut: a hand-written spec that leaves ``includeMcpJson`` on also mounts
+    # the global mcp.json servers, which this reads as lacking; every spec Kiro Crew
+    # writes turns it off. Read them in (as ``agent_capabilities`` does) if reported.
+    from kiro_crew.agent_sdk import spec_withholds_server_whole
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    if spec.get("tools") == "*":
+        # KAS takes a bare ``"*"`` for every tool (``kas_agents._project_tools``).
+        spec = {**spec, "tools": ["*"]}
+
+    # A server entry switched off (``disabled``) starts no process, and one the spec
+    # excludes whole (``@server`` in ``excludedTools``, a deny rule) leaves the
+    # session, so neither is one the worker can call, though ``_mounted`` lists it.
+    mounted = {n: e for n, e in _mounted(spec).items() if not mcp_entry_is_muted(e)}
+    has = sorted(n for n in mounted if not spec_withholds_server_whole(spec, n))
+    needle = query.strip().lower()
+    if not needle:
+        return _lookup_names("servers", has)
+    from kiro_crew.mcp_discovery import _managed_tools_in_process, list_servers
+
+    try:
+        rows = list_servers()
+    except Exception:  # noqa: BLE001 - an unreadable config lists no gateway server
+        logger.warning("MCP config unreadable; the lookup reads no gateway server", exc_info=True)
+        rows = []
+    tools: dict[str, list[str]] = {}
+    switched_on: list[str] = []
+    for row in rows:
+        name = getattr(row, "name", "")
+        if not isinstance(name, str) or not name:
+            continue
+        tools[name] = [t for t in getattr(row, "tools", None) or [] if isinstance(t, str)]
+        # ``disabled`` is the switch the gateway list reads from config; a row's
+        # ``status`` is its last probe, which an operator's switch-off does not write.
+        if not getattr(row, "disabled", False) and getattr(row, "status", "") != "disabled":
+            switched_on.append(name)
+
+    def hit(name: str, own: bool) -> str:
+        if needle in name.lower():
+            return name
+        # A Kiro Crew server is listed before any probe has filled its tools in;
+        # its static tool set is read in-process, as discovery reads it.
+        known = tools.get(name) or _managed_tools_in_process(name) or []
+        if own:
+            known = _callable_tools(spec, name, known)
+        tool = next((t for t in sorted(known) if needle in t.lower()), "")
+        return f"{name}/{tool}" if tool else ""
+
+    matches = [h for h in (hit(n, True) for n in has) if h]
+    mine = set(has)
+    lacks = [h for h in (hit(n, False) for n in sorted(switched_on) if n not in mine) if h]
+    out: dict[str, Any] = {"worker_has": bool(matches), **_lookup_names("matches", matches)}
+    if lacks:
+        out.update(_lookup_names("gateway_only", lacks))
+    return out
+
+
 def transport_for_file(spec: dict[str, Any] | None) -> dict[str, Any] | None:
     """*spec* (a gateway's server entry) as a crewmate file's capability edit takes it.
 

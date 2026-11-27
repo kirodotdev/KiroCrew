@@ -197,6 +197,9 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             # unattended patrol cycle -- so gating it would put an approval prompt
             # in a loop with nobody at the keyboard.
             "session_status",
+            # A read of the caller's own next worker's server names, the check
+            # made before a dispatch.
+            "worker_capabilities",
         ):
             assert f"@kirocrew-dashboard/{verb}" in granted, verb
 
@@ -214,6 +217,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-dashboard/session_create",
             "@kirocrew-dashboard/session_read_message",
             "@kirocrew-dashboard/session_status",
+            "@kirocrew-dashboard/worker_capabilities",
         }
         # The bare server must never appear: it would grant every verb, including
         # the four the test above withholds.
@@ -736,6 +740,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-dashboard/session_create",
             "@kirocrew-dashboard/session_read_message",
             "@kirocrew-dashboard/session_status",
+            "@kirocrew-dashboard/worker_capabilities",
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
             "@kirocrew-work/work_ask_record",
@@ -779,6 +784,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "kirocrew-dashboard/session_create",
             "kirocrew-dashboard/session_read_message",
             "kirocrew-dashboard/session_status",
+            "kirocrew-dashboard/worker_capabilities",
         ]
         work_resources = [
             "kirocrew-work/accept_eval",
@@ -932,6 +938,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-dashboard/session_create",
             "@kirocrew-dashboard/session_read_message",
             "@kirocrew-dashboard/session_status",
+            "@kirocrew-dashboard/worker_capabilities",
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
             "@kirocrew-work/work_ask_record",

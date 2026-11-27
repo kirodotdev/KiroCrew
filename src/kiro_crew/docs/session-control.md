@@ -16,7 +16,7 @@ owner modules. Two halves:
   `session_set_color`, `session_set_note`, `session_close`, `session_revive`, `session_history_list`,
   `session_broadcast`,
   `session_status`, `session_adopt`, `session_handoff`, `session_release`,
-  `session_move_to_column`, `work_dispatch`, `crew_list`. These reach another session.
+  `session_move_to_column`, `work_dispatch`, `crew_list`, `worker_capabilities`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
@@ -526,6 +526,24 @@ and mirrored sessions are refused.
 ### `crew_list`
 
 Takes one optional argument, `logins` (boolean). Advertised only while `work_ledger.remote_dispatch` is on, and open only to the owner's own conductor-mode chat, the same caller rules as `crew=` on the session tools. It lists every remote crew registered on this hub: its id and name, its connection state, its version and whether it matches this hub's major.minor, and, for a connected crew whose version matches, the crew's headroom snapshot (free memory and disk, load per CPU, posture), its own count of open hub workers (`open_workers`), the open bindings this hub holds on it (`bound_here`), its tags (the operator's `work_ledger.remote_dispatch_tags`, the names `requires.tags` matches; a tag that is not 1-32 of `a-z0-9_-`, starting with a letter or digit, with a letter is dropped), and its agent and model names. With `logins: true` it also shows each crew's login states, the ones `requires.logins` matches: `gh`, `glab` or `az`, each `valid`, `expired` or `unknown` (still checking); any other name or word is dropped, so no account or token is shown. Logins are opt-in because each crew runs its login checks first, waiting up to a few seconds; a plain call never waits on them. A crew too old to report logins shows `logins` in `unread`. It lists at most 32 crews and counts the rest. A crew that is not connected is listed but not read. A read that failed is named in `unread`; a slow model catalog costs only the agent and model names, never the version gate or the headroom. It reads what placement and the crew window's header already read; it writes nothing.
+
+### `worker_capabilities`
+
+Takes three optional arguments: `agent` and `backend` (as `session_create` takes
+them; omitted, the ones `session_create` would pick) and `query` (a server name or
+keyword, at most 100 characters). Template additions count only on a backend that
+reads them at spawn. It answers for the worker your next `session_create` or
+`work_dispatch` would open: a Bot's own chat, and its worker that conducts, get
+the Bot's worker whatever `agent` names, as `session_create` does. With no
+`query` it lists that worker's MCP server names. With a `query` it says yes or no,
+names the worker's servers whose name or one of whose tools contains it (a tool
+hit as `server/tool`), and names the switched-on servers this gateway has that
+match while the worker lacks them. Names only, 30 per list and then a count, so
+the answer stays a line or two. A tool match is a hint: tool names are compared
+literally and gateway-wide per-tool switch-offs are not read, so the worker's MCP
+report after the dispatch stays the authority. It writes nothing. It passes the caller checks
+`session_status` passes, so a channel-linked, mirrored, incognito or app-scoped
+session is refused. It is auto-approved for conductors, team leads and Bots.
 
 ### `session_run_queued`
 
@@ -1322,7 +1340,7 @@ are blocked and refused at dispatch in the same way, because they rearrange the
 person's board.
 `session_broadcast` is blocked for that reason multiplied by the fleet, and
 `session_status` because its rows carry other sessions' titles — the names of the
-user's private work, in front of whoever is in the thread, and `crew_list` for the same reason: it names the person's machines and their agents.
+user's private work, in front of whoever is in the thread, and `crew_list` for the same reason: it names the person's machines and their agents, as `worker_capabilities` names their MCP servers.
 
 A session linked to a messaging thread (Slack, Telegram, Discord and the rest)
 is refused when it calls `session_create`: `linked_session_caller`, or

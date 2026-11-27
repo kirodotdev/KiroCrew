@@ -698,6 +698,15 @@ CREW_LIST_SCHEMA = ToolSchema(
     fields=[FieldSpec("logins", bool)],
 )
 
+WORKER_CAPABILITIES_SCHEMA = ToolSchema(
+    tool_name="worker_capabilities",
+    fields=[
+        FieldSpec("agent", str, max_len=128),
+        FieldSpec("backend", str, max_len=64),
+        FieldSpec("query", str, max_len=100),
+    ],
+)
+
 SESSION_ADOPT_SCHEMA = ToolSchema(
     tool_name="session_adopt",
     fields=[

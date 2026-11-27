@@ -468,6 +468,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SESSION_SUMMARY_SCHEMA,
         WAIT_SCHEMA,
         WORK_DISPATCH_SCHEMA,
+        WORKER_CAPABILITIES_SCHEMA,
         _validate_channel_routing,
         _validate_get_chat_session,
         _validate_session_set_model,

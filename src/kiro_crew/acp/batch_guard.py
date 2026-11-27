@@ -193,6 +193,7 @@ _READ_MCP_TOOLS: frozenset[tuple[str, str]] = frozenset(
         ("kirocrew-work", "accept_eval"),
         ("kirocrew-dashboard", "session_status"),
         ("kirocrew-dashboard", "session_read_message"),
+        ("kirocrew-dashboard", "worker_capabilities"),
         ("kirocrew-dashboard", "chat_folder_tree"),
         ("kirocrew-core", "memory_recall"),
         ("kirocrew-core", "search_chat_history"),

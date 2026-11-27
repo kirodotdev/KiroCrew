@@ -175,8 +175,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "worker reports it does not have. It changes nothing; when it names "
                 "the addition the work needs, call request_capabilities with it "
                 "straight away: the card is how the user is asked. While your Dynamic "
-                "capabilities (a Preview) is off it is refused; ask with "
-                "request_capabilities."
+                "capabilities (a Preview) is off it answers only your worker's server "
+                "names, or for a query a yes or no with the matches."
             ),
             "inputSchema": {
                 "type": "object",

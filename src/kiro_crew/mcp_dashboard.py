@@ -987,6 +987,7 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
     )
     from kiro_crew.mcp_crew_list import crew_list_tool  # noqa: F401
     from kiro_crew.mcp_tools.dashboard_client import DashboardClient, DashboardError  # noqa: F401
+    from kiro_crew.mcp_worker_capabilities import worker_capabilities_tool  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.sel import sel  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401

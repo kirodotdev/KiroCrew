@@ -76,6 +76,11 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ),
     # Owner gate (handlers_instances_gate._guard); writes nothing.
     ("GET", "/api/instances/bots"): RouteAccess("instances.bots.read", UNSTABLE),
+    # Internal secret plus session_status's caller gates (handlers/worker_capabilities.py);
+    # reads the server names of the worker that caller would dispatch, writes nothing.
+    ("GET", "/api/session-control/worker-capabilities"): RouteAccess(
+        "session_control.worker_capabilities.read", UNSTABLE
+    ),
     # Owner dashboard only (handlers/mcp_project_file.py); adds one server to a chat
     # folder's project MCP file, the Apply of an mcp.server card with target project.
     ("POST", "/api/mcp/project-file"): RouteAccess("mcp.project_file.change", UNSTABLE),

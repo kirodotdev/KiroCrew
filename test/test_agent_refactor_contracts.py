@@ -59,7 +59,7 @@ BASE_SURFACE: dict[str, str] = {
     "_CC_MCP_JSON": "value host",
     "_CONDUCTOR_AGENT_FILENAME": "value str 923f5ca0627d569f",
     "_CONDUCTOR_CORE_GRANTS": "value tuple 7152a6eb169c7c40",
-    "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 41cf09029e05ee1b",
+    "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 08d92575c62aa49c",
     "_CONDUCTOR_SYSTEM_PROMPT": "value str prompt",
     "_CREW_ONLY_HOOK_EVENTS": "value frozenset 9d900cfb866f983a",
     "_DEFAULT_KIRO_HOOKS_DIR": "value host",
@@ -104,7 +104,7 @@ BASE_SURFACE: dict[str, str] = {
     "_MAX_TOTAL_USER_HOOKS": "value int f5ca38f748a1d6ea",
     "_MAX_USER_HOOKS_PER_EVENT": "value int 4a44dc15364204a8",
     "_MCP_REGISTRY_TYPE": "value str 06c63899e16a32c5",
-    "_MEMBER_DASHBOARD_GRANTS": "value tuple efcd95e405400991",
+    "_MEMBER_DASHBOARD_GRANTS": "value tuple dec9045b86f9d0d2",
     # Moved for ``@kirocrew-panel/dashboard_types``, the dynamic dashboard's data-type
     # catalog. The readable pin for this tuple is
     # ``test_the_member_grants_extend_the_conductor_grants_in_order``, which spells the
@@ -912,6 +912,7 @@ def test_the_member_grants_extend_the_conductor_grants_in_order() -> None:
         "@kirocrew-dashboard/session_create",
         "@kirocrew-dashboard/session_read_message",
         "@kirocrew-dashboard/session_status",
+        "@kirocrew-dashboard/worker_capabilities",
     )
     assert agent._MEMBER_DASHBOARD_GRANTS == agent._CONDUCTOR_DASHBOARD_GRANTS + (
         "@kirocrew-dashboard/session_send",

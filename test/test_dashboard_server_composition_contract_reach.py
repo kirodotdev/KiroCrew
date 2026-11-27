@@ -798,7 +798,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
     _deferred _deferred
-    register_all subprocess_executor subprocess_executor subprocess_executor
+    _deferred register_all subprocess_executor subprocess_executor subprocess_executor
     _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
     setup_secrets_routes setup_whatsapp_routes setup_link_meta_routes bind_address_for
@@ -886,7 +886,7 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
     _deferred _deferred
-    _register_deploy_routes _register_stt_hooks _register_own_host_warm
+    _deferred _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown
     _register_browser_harness_lifecycle _register_connections_warm_lifecycle _register_workflow_lifecycle

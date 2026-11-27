@@ -1482,7 +1482,7 @@ writes the calling Bot's name, description or ghost face on the user's word
 and leaves one undoable row in its chat; `set_model`, `set_approval_mode`,
 `request_capabilities`, `set_goal`, `set_key_results` and `set_check_ins`, which only offer a
 change card; `find_capabilities`, which reads what the Bot's worker has and
-could be given; `goal_read`, `key_result_progress` and `save_goal_report`, which
+could be given (with Dynamic capabilities off, only its server names); `goal_read`, `key_result_progress` and `save_goal_report`, which
 read and write the calling
 Bot's own goal record directly; `save_notes`, which replaces its own
 briefing; `memory_list`, which reads one page of its own facts or experiences;

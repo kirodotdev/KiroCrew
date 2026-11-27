@@ -27,7 +27,7 @@ see inside. Widening means a purpose-built kind, never an accepted argv.
 
 **What prompts.** Granted by name, so a patrol wake with nobody at the keyboard
 never blocks: `session_create`, `session_read_message`, `session_status`,
-`work_ledger_read`, `work_ledger_record`, `work_ledger_rebuild`,
+`worker_capabilities`, `work_ledger_read`, `work_ledger_record`, `work_ledger_rebuild`,
 `work_ask_record`, `work_brief`, `work_report`, `accept_eval`, and these
 `@kirocrew-core` verbs only: `monitor_start`, `monitor_update`,
 `autonudge_stop`, `wait`, `resource_status`, `list_sessions`,
