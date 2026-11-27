@@ -127,8 +127,12 @@ const TabsList = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
 >(function TabsList({ className, ...props }, ref) {
   const underline = React.useContext(TabsValueContext)?.variant === 'underline'
+  // The underline row scrolls sideways only. `overflow-x-auto` alone turns
+  // overflow-y to auto too, and the triggers' 1px overlap (-mb-px) would then
+  // let a phone drag their labels up and down. A vertical swipe that starts on
+  // the row still scrolls the page, so no touch-action here.
   return (
-    <TabsPrimitive.List ref={ref} className={cn(underline ? 'flex max-w-full items-stretch overflow-x-auto border-b border-border' : TABS_TRACK_CLASS, className)} {...props} />
+    <TabsPrimitive.List ref={ref} className={cn(underline ? 'flex max-w-full items-stretch overflow-x-auto overflow-y-hidden overscroll-x-contain border-b border-border' : TABS_TRACK_CLASS, className)} {...props} />
   )
 })
 TabsList.displayName = TabsPrimitive.List.displayName
