@@ -750,7 +750,7 @@ class McpSessionReport:
     generation: int = 0
     #: The enabled ``mcpServers`` names of the agent spec this session runs, set
     #: by :meth:`record_declared`. An unattended run waits for each of these to
-    #: report before its first prompt (see :meth:`declared_unreported`) and names
+    #: settle before its first prompt (see :meth:`still_starting`) and names
     #: the ones that never became ready; :meth:`not_ready` expects them.
     declared: tuple[str, ...] = ()
     #: How many more enabled servers the spec declares than :attr:`declared`

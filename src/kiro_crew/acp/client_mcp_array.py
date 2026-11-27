@@ -1667,7 +1667,7 @@ async def wait_for_declared_mcp(
     empty when all are.
     """
     waited = tuple(name for name in self._mcp_report.declared if name not in skip)
-    if self._mcp_report.unreported(waited) and timeout > 0:
+    if self._mcp_report.still_starting(waited) and timeout > 0:
         try:
             await self._drain_notifications(duration=timeout, until_declared=waited)
         except Exception:
