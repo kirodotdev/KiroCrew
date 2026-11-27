@@ -16,6 +16,30 @@ from kiro_crew.slack.client import SlackClientOps
 
 
 @per_test_guard
+def _clean_sender_trust_grants():
+    """Start and end each test with no per-sender Trust grant.
+
+    ``messaging.session_trust._trusted_senders`` holds, process-wide, the shared
+    users whose own turns on a session skip the tool prompt (``!trust`` from a shared
+    user). Tests reuse session keys and user ids, so a grant one test made would run
+    a later test's tool call without asking. Cleared in place: the turn drivers read
+    the module's own dict.
+    """
+
+    def clear():
+        session_trust = sys.modules.get("kiro_crew.messaging.session_trust")
+        senders = getattr(session_trust, "_trusted_senders", None)
+        if senders is not None:
+            senders.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_options_control_state():
     """Clear the per-message OPTIONS registries between tests.
 

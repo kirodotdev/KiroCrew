@@ -63,6 +63,7 @@ from kiro_crew.platform import current_context
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.slack import thread_trust
 from kiro_crew.slack.agent_sessions.fence import fenced_turn
 from kiro_crew.slack.channel_crew import context_template, resolve_channel_crew
 from kiro_crew.slack.channel_policy import channel_refusal
@@ -1112,6 +1113,12 @@ async def handle_message_transport(
             # user's turn in a trusted thread still asks.
             auto_approve_session=lambda: (
                 not is_shared_listed(user_id) and is_slack_session_trusted(session_key)
+            ),
+            # A shared user's own grant on this session: it takes the event,
+            # since it never answers a helper agent's call.
+            auto_approve_sender=lambda event: (
+                is_shared_listed(user_id)
+                and thread_trust.sender_trusted(sessions, session_key, user_id, event)
             ),
             # PreToolUse deny/auto gate (runs before the ladder in TurnDriver;
             # a DENY is un-overridable by auto/trust/YOLO).

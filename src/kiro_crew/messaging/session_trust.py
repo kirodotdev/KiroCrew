@@ -23,7 +23,7 @@ other.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.messaging.link import telemetry_channel_of
 
@@ -43,6 +43,84 @@ logger = logging.getLogger(__name__)
 #: thorough is one that eventually gets called without it, and a PARTIAL revoke is
 #: worse than none, because it reports success while leaving subagents trusted.
 _trusted_sessions: dict[str, Any] = {}
+
+#: Session key -> sender -> the binding that sender's grant was made under: an
+#: opaque value the granting channel derives from the session as it runs (which
+#: allocation, which agent). The sender's OWN turns on it skip the prompt while the
+#: channel reads the same binding back. A narrower grant than the mapping above,
+#: for a channel where several people drive one session and one of them may not
+#: widen it for the rest: it covers no other sender's turn and never writes the
+#: approval policy, so a spawned subagent still asks. In memory only.
+_trusted_senders: dict[str, dict[str, object]] = {}
+
+
+def is_sender_trusted(session_key: str, sender: str, binding: object) -> bool:
+    """Whether *sender*'s own turns on *session_key*, read as *binding*, skip the prompt.
+
+    A grant made under another binding is dropped here, not skipped, so it cannot
+    come back when a later session happens to read the same.
+    """
+    granted = _trusted_senders.get(session_key, {}).get(sender) if sender else None
+    if granted is None:
+        return False
+    if binding is None or granted != binding:
+        remove_trusted_sender(session_key, sender)
+        return False
+    return trust_permitted()
+
+
+def sender_binding(session_key: str, sender: str) -> object | None:
+    """The binding *sender*'s grant on *session_key* was made under, or ``None``.
+
+    One read that cannot raise: a policy deny clears every grant from another
+    thread (:func:`clear_trusted_sessions`), so a caller must not check for the
+    grant and then index the map.
+    """
+    return _trusted_senders.get(session_key, {}).get(sender)
+
+
+def add_trusted_sender(session_key: str, sender: str, binding: object) -> None:
+    """Grant Trust for *sender*'s own turns on *session_key* while it reads *binding*.
+
+    Raises ``PermissionError`` when a ``permission_mode`` rule denies ``trust``, so
+    the caller reports the refusal instead of a grant. No *binding* grants nothing:
+    there is no running session to bind to.
+    """
+    if not (session_key and sender) or binding is None:
+        return
+    if not trust_permitted():
+        logger.info("sender Trust refused by policy on %s", telemetry_channel_of(session_key))
+        raise PermissionError("trust is disabled by your organization's policy")
+    _trusted_senders.setdefault(session_key, {})[sender] = binding
+
+
+def remove_trusted_sender(session_key: str, sender: str) -> bool:
+    """Drop *sender*'s own grant on *session_key*; whether there was one."""
+    senders = _trusted_senders.get(session_key)
+    if not senders or senders.pop(sender, None) is None:
+        return False
+    if not senders:
+        _trusted_senders.pop(session_key, None)
+    return True
+
+
+def trusted_senders(session_key: str) -> list[str]:
+    """The senders holding a grant on *session_key*, sorted: what a drop's audit names."""
+    return sorted(_trusted_senders.get(session_key, ()))
+
+
+def drop_trusted_senders(session_key: str) -> int:
+    """Drop every sender's grant on *session_key*; how many there were."""
+    return len(_trusted_senders.pop(session_key, ()))
+
+
+def keep_trusted_senders(keep: Callable[[str], bool]) -> int:
+    """Drop, on every session, the grant of each sender *keep* is false for; how many."""
+    dropped = 0
+    for session_key, senders in list(_trusted_senders.items()):
+        for sender in [s for s in list(senders) if not keep(s)]:
+            dropped += remove_trusted_sender(session_key, sender)
+    return dropped
 
 
 def is_session_trusted(session_key: str) -> bool:
@@ -125,7 +203,7 @@ def remove_trusted_session(session_key: str) -> None:
 
 
 def clear_trusted_sessions(keep_policy: "set[str] | None" = None) -> None:
-    """Drop every grant, INCLUDING the approval policy each one wrote.
+    """Drop every grant, per-sender ones too, INCLUDING the approval policy each one wrote.
 
     *keep_policy* names session keys whose approval policy must be left alone. The
     grant itself is always dropped; only the policy write is skipped. It exists for
@@ -155,6 +233,8 @@ def clear_trusted_sessions(keep_policy: "set[str] | None" = None) -> None:
     """
     granted = list(_trusted_sessions.items())
     _trusted_sessions.clear()
+    # The per-sender grants wrote no policy, so dropping them is the whole revoke.
+    _trusted_senders.clear()
     preserved = keep_policy or set()
     for session_key, sessions in granted:
         if sessions is None or session_key in preserved:

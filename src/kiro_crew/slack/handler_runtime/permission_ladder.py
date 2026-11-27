@@ -369,9 +369,18 @@ async def _answer_permission_request(
         return False
 
     # Trust mode (per-session) or YOLO mode (owner-only global) → auto-approve.
-    # Session Trust is the owner's grant: a shared user's turn still asks.
+    # Session Trust is the owner's grant: a shared user's turn still asks, unless
+    # that sender holds a grant of their own on this session and the call is the
+    # turn's own, not a helper agent's.
     _yolo_now = is_yolo_mode()
-    _session_trusted = not is_shared_listed(turn.user_id) and is_session_trusted(session_key)
+    if is_shared_listed(turn.user_id):
+        from kiro_crew.slack import thread_trust
+
+        _session_trusted = thread_trust.holds_grant(
+            session_key, turn.user_id
+        ) and thread_trust.sender_trusted(turn.sessions, session_key, turn.user_id, event)
+    else:
+        _session_trusted = is_session_trusted(session_key)
     if not _held and (_yolo_now or _session_trusted):
         approval_sent = await client.approve_tool(event.request_id)
         if approval_sent is False:

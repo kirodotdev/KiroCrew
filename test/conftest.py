@@ -431,6 +431,7 @@ from conftest_resets_token_auth import (  # noqa: E402,F401 -- bound for pytest 
 from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importers
     MockSlackClient,
     _clean_emojis,
+    _clean_sender_trust_grants,
     _clean_slack_thread_state,
     _enterprise_bypass,
     _reset_channel_handler_locks,

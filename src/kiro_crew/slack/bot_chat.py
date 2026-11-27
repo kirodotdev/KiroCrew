@@ -189,6 +189,11 @@ async def join_bot_chat(
             logger.warning("slack !bot: joining %s's chat was not saved", bot, exc_info=True)
             _drop_unsaved_link(state, slot, effective_session_key(slot), thread_ts)
             return None, f"Could not save joining Bot *{bot}*'s chat. Try again."
+    from kiro_crew.slack import handler, thread_trust
+
+    # The thread now runs on the Bot's chat: a shared user's own Trust on the
+    # thread's own session does not resume when it leaves.
+    thread_trust.end_sender_grants(handler.canonical_key(thread_ts), "joined_bot_chat")
     return slot, ""
 
 

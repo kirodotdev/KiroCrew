@@ -982,9 +982,14 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # model inside this turn (``acp.timed_out_continuation``): the same session
         # is told the call timed out, and its answer streams on into this reply.
         # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+        from kiro_crew.slack.thread_trust import end_grants_on_turn_event
+
         async for event in continue_timed_out_calls(
             lambda prompt: drop_echo(client.stream(prompt)), full_message
         ):
+            # A harness that switches this session's agent in place ends the Trust
+            # a shared user set for their own turns, before any later call asks.
+            end_grants_on_turn_event(session_key, event)
             if event.kind == EVENT_TEXT_CHUNK:
                 await answer.on_text(event)
 
