@@ -432,6 +432,21 @@ def test_a_base_that_moved_somewhere_else_stays_fresh(mod, monkeypatch, pair, ca
     assert "STATUS: FRESH" in out
 
 
+@pytest.mark.parametrize("base", ["origin/main", "refs/remotes/origin/main"])
+def test_a_remote_qualified_base_names_the_same_branch(
+    mod, monkeypatch, pair, capsys, base
+) -> None:
+    """``--base origin/main`` fetches ``main``, not a branch named ``origin/main``."""
+    pair.branch_changes({"src/kiro_crew/ledger/store.py": "VALUE = 2\n"})
+    pair.base_gains({"src/kiro_crew/ledger/store.py": "VALUE = 3\n"})
+
+    code = _run_main(mod, monkeypatch, pair, "--base", base)
+    stderr = capsys.readouterr().err
+
+    assert code == mod.EXIT_STALE, stderr
+    assert "origin/origin" not in stderr
+
+
 def test_a_base_that_has_not_moved_is_fresh(mod, monkeypatch, pair, capsys) -> None:
     pair.branch_changes({"src/kiro_crew/ledger/store.py": "VALUE = 2\n"})
 
