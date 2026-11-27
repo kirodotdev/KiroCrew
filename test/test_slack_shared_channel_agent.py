@@ -784,6 +784,16 @@ class TestTheCommandRouter:
             error="unauthorized sender",
         )
 
+    @pytest.mark.parametrize("text", ["/goal ship it", "/workflow nightly"])
+    def test_a_shared_users_linked_chat_command_is_refused(self, crew, monkeypatch, text):
+        # Refused before the linked-thread hand-off, which would carry it into a
+        # dashboard chat's slash gate as that chat's own command. The refusal
+        # reads the list (``is_shared_listed``), which a confirmed user is on.
+        from kiro_crew.slack.shared_access import SHARED_OWNER_ONLY_TEXT
+
+        monkeypatch.setattr(_handler, "is_shared_listed", lambda user: user == _SHARED)
+        assert _route(text, _SHARED) == [SHARED_OWNER_ONLY_TEXT]
+
     def test_the_agent_word_is_read_in_any_case(self, crew):
         assert _route("!channel Agent research", _SHARED)[0].startswith("Agent for this channel")
 
