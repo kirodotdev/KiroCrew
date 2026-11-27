@@ -136,6 +136,7 @@ from kiro_crew.validation_parts.messaging_session_schemas import (
     SESSION_SUMMARY_SCHEMA,
     WAIT_SCHEMA,
     WORK_DISPATCH_SCHEMA,
+    WORKER_CAPABILITIES_SCHEMA,
 )
 
 # ── Schema Registry ──
@@ -260,6 +261,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "work_dispatch": WORK_DISPATCH_SCHEMA,
     "session_queue": SESSION_QUEUE_SCHEMA,
     "crew_list": CREW_LIST_SCHEMA,
+    "worker_capabilities": WORKER_CAPABILITIES_SCHEMA,
     "session_run_queued": SESSION_RUN_QUEUED_SCHEMA,
     "chat_folder_tree": CHAT_FOLDER_TREE_SCHEMA,
     "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,

@@ -666,6 +666,12 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/session-control/crews",
         _deferred("remote_crew_list", "api_session_control_crews"),
     )
+    # worker_capabilities: the before-dispatch worker lookup
+    # (handlers/worker_capabilities.py).
+    app.router.add_get(
+        "/api/session-control/worker-capabilities",
+        _deferred("worker_capabilities", "api_session_control_worker_capabilities"),
+    )
     app.router.add_post(
         "/api/session-control/run-queued",
         _deferred("session_control", "api_session_control_run_queued"),

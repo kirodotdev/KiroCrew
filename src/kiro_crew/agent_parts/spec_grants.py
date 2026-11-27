@@ -267,6 +267,12 @@ _MATE_AUTO_GRANTS = (
 #:   target to carry on, so every call asks for an approval until an owner
 #:   decides it belongs in the member set.
 #:
+#: * ``worker_capabilities`` — GRANTED (below). A pure READ of the caller's OWN
+#:   next worker: the server names of the spec its ``session_create`` would open,
+#:   capped by the server, no transcript, no other session. It is the check the
+#:   conductor makes before a dispatch or before telling the user something is
+#:   unavailable, so a prompt on it would stall the very step it exists for.
+#:
 #: Every withheld verb stays MOUNTED (``@kirocrew-dashboard`` is still in
 #: ``tools``) — it just passes through ``hooks.on_tool_call`` like any ungranted
 #: tool. The cost is an approval when a round files a session, seeds a child, or
@@ -276,6 +282,7 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
     "@kirocrew-dashboard/session_create",
     "@kirocrew-dashboard/session_read_message",
     "@kirocrew-dashboard/session_status",
+    "@kirocrew-dashboard/worker_capabilities",
 )
 
 

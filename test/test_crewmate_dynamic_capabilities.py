@@ -4,8 +4,9 @@
 Stored on the crewmate's own record (``KiroCrewAgentConfig.dynamic_capabilities``)
 and set on its Profile card; there is no global key. With a
 crewmate's flag off, that crewmate's crewmate-driven capability path is
-withheld: find_capabilities is refused at its route (403, read on every call so a
-Turn on takes effect in a running session), request_capabilities raises the
+withheld: find_capabilities answers only the worker's server names, or a yes/no
+for a query (read on every call so a Turn on takes effect in a running session),
+with no gateway catalog, registry search or card pointer; request_capabilities raises the
 Preview opt-in card once, no capability summary on hand-off, a worker's gap
 reaches its conductor as one plain "ask the user" line and never a card, no
 ``[Capabilities added]`` nudge, and its worker is asked for no
@@ -184,10 +185,21 @@ def routes(monkeypatch):
     return post
 
 
-def test_off_the_catalog_route_refuses_with_dynamic_capabilities_off(off, routes):
-    status, body = routes("find", {})
-    assert (status, body["code"]) == (403, "dynamic_capabilities_off")
-    assert "request_capabilities" in body["error"]
+@pytest.fixture
+def worker_spec(monkeypatch):
+    from kiro_crew import mate_capability_catalog as catalog_mod
+
+    spec = {"mcpServers": {"notes": {}, "slack-mcp": {}}, "tools": ["@notes", "@slack-mcp"]}
+    monkeypatch.setattr(catalog_mod, "worker_spec", lambda _member: spec)
+    monkeypatch.setattr("kiro_crew.mcp_discovery.list_servers", lambda: [])
+
+
+def test_off_the_catalog_route_answers_only_the_lookup(off, routes, worker_spec):
+    """Off, the read every conductor has stays; nothing in it leads to a card."""
+    assert routes("find", {}) == (200, {"servers": ["notes", "slack-mcp"]})
+    status, body = routes("find", {"query": "Slack"})
+    assert (status, body) == (200, {"worker_has": True, "matches": ["slack-mcp"]})
+    assert "request_capabilities" not in json.dumps(body)
 
 
 def test_off_the_other_crewmate_cards_are_still_proposed(off, routes, monkeypatch):
@@ -427,10 +439,23 @@ def test_off_a_custom_template_still_configures_the_worker(off, mate_home):
 # ── per crewmate: on for one, the others unaffected ──
 
 
-def test_per_crewmate_routes(roster, routes_for):
+def test_off_an_unreadable_worker_kit_is_named(off, routes, monkeypatch):
+    from kiro_crew import mate_capability_catalog as catalog_mod
+    from kiro_crew.mate_worker import WorkerKitUnreadable
+
+    def unreadable(_member):
+        raise WorkerKitUnreadable("held limits unreadable")
+
+    monkeypatch.setattr(catalog_mod, "worker_spec", unreadable)
+    status, body = routes("find", {})
+    assert (status, body["code"]) == (409, "worker_kit_unreadable")
+
+
+def test_per_crewmate_routes(roster, routes_for, worker_spec):
     roster.agents["Atlas"].dynamic_capabilities = True
+    # Briar is off: only the lookup, which needs no crewmate file.
     status, body = routes_for("Briar", "find", {})
-    assert (status, body.get("code")) == (403, "dynamic_capabilities_off")
+    assert (status, body) == (200, {"servers": ["notes", "slack-mcp"]})
     # Atlas gets past the flag: the next refusal is its missing crewmate file.
     status, body = routes_for("Atlas", "find", {})
     assert (status, body.get("code")) == (409, "no_crewmate_file")
@@ -611,3 +636,45 @@ class TestTheProfileSwitchWritesOneCrewmate:
         agents = KiroCrewConfig.load().agents
         assert agents["Atlas"].dynamic_capabilities is True
         assert agents["Briar"].dynamic_capabilities is False
+
+
+def test_an_unreadable_worker_kit_refuses_additions_with_a_code(monkeypatch):
+    from kiro_crew import mate_capability_catalog as catalog_mod
+    from kiro_crew.dashboard.handlers import member_capability_catalog as catalog_routes
+    from kiro_crew.mate_worker import WorkerKitUnreadable
+
+    def unreadable(_member):
+        raise WorkerKitUnreadable("held limits unreadable")
+
+    class _Service:
+        def _mate_catalog(self, _member):
+            return {}
+
+    monkeypatch.setattr(catalog_routes, "_is_mate", lambda _m: True)
+    monkeypatch.setattr(catalog_routes, "_service", lambda _app: _Service())
+    monkeypatch.setattr(catalog_mod, "worker_spec", unreadable)
+    draft = {"additions": [{"skill": "kiro-user/release"}]}
+    with pytest.raises(catalog_mod.AdditionError) as caught:
+        asyncio.run(catalog_routes.additions_to_draft(object(), "pixel", draft))
+    assert caught.value.code == "worker_kit_unreadable"
+
+
+def test_on_an_unreadable_worker_kit_is_named(routes, monkeypatch):
+    from kiro_crew import mate_capability_catalog as catalog_mod
+    from kiro_crew.dashboard.handlers import member_capability_catalog as catalog_routes
+    from kiro_crew.mate_worker import WorkerKitUnreadable
+
+    def unreadable(_member):
+        raise WorkerKitUnreadable("held limits unreadable at /secret/path")
+
+    class _Service:
+        def _mate_catalog(self, _member):
+            return {}
+
+    dyn._override = True
+    monkeypatch.setattr(catalog_routes, "_is_mate", lambda _m: True)
+    monkeypatch.setattr(catalog_routes, "_service", lambda _app: _Service())
+    monkeypatch.setattr(catalog_mod, "worker_spec", unreadable)
+    status, body = routes("find", {})
+    assert (status, body["code"]) == (409, "worker_kit_unreadable")
+    assert "/secret/path" not in body["error"]

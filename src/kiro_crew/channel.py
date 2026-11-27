@@ -199,9 +199,10 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # whoever is in that thread -- the same exfiltration `session_read_message` is
     # blocked for, one step shallower.
     "session_status",
-    # The remote-crew roster: crew names and their agents, the same
-    # exfiltration reason as session_status.
+    # The remote-crew roster (crew names, their agents) and the worker lookup
+    # (MCP server names): the same exfiltration reason as session_status.
     "crew_list",
+    "worker_capabilities",
     "session_create",
     # Creates, opens, binds and seeds a worker in one call: session_create's and
     # session_send's containment reasons together.

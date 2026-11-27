@@ -8,11 +8,13 @@ server for its own worker and asking for it on a card. There is no global key.
 
 With a crewmate's flag off:
 
-* ``find_capabilities`` is refused at its route
-  (``member_capability_catalog.api_member_self_capabilities``, 403
-  ``dynamic_capabilities_off``). Its tool stays listed: the pooled
-  ``kirocrew-mate`` server caches a session's tool policy, so a cut made there
-  would outlive a Turn on; the route reads the flag on every call;
+* ``find_capabilities`` answers only the read every conductor has
+  (``mate_capability_catalog.lookup``, as ``worker_capabilities`` does): the
+  worker's server names, or a yes/no for a query naming at most the matching
+  gateway servers the worker lacks, with no gateway catalog of tools and skills,
+  no registry search and no pointer to a card
+  (``member_capability_catalog.api_member_self_capabilities``). The route reads
+  the flag on every call, so a Turn on gives the full catalog at once;
 * ``request_capabilities`` stays mounted. Its first call raises the Preview
   opt-in card instead of the capabilities card (``member_self``,
   :mod:`kiro_crew.mate_tool_access`): **Turn on** writes this flag and raises the

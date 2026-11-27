@@ -399,6 +399,9 @@ class TestWhatThisSetGrants:
         # work_ledger.remote_dispatch is on.
         "crew_list",
         "session_run_queued",
+        # The before-dispatch worker lookup: a session-control read on the same
+        # strict gate and route family.
+        "worker_capabilities",
     }
     GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | COLUMN_TOOLS | MOVE_TOOLS | PIN_TOOLS | SESSION_TOOLS
 
@@ -439,6 +442,8 @@ class TestWhatThisSetGrants:
         session |= {n for n in names if n == "work_dispatch"}
         # The remote-dispatch crew roster, on the session-control strict gate.
         session |= {n for n in names if n == "crew_list"}
+        # The before-dispatch worker lookup, on the session-control strict gate.
+        session |= {n for n in names if n == "worker_capabilities"}
         assert folder, "the folder-organization tools left this set"
         assert tags, "the tag-organization tools left this set"
         assert pins, "the pin and pinned-order tools left this set"

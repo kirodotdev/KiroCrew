@@ -6036,7 +6036,17 @@ target gets nothing, and nothing is added to the conductor's per-turn context
 source is missing, the conductor checks what the worker and the gateway can
 reach, also when the ask names no system (what users said, reported or
 complained about lives in some source): `find_capabilities`, or a worker handed
-the question of where it lives (`conductor.mate_tools_identity`). The gateway
+the question of where it lives (`conductor.mate_tools_identity`). Every
+conductor, a Bot's or not, can also ask before it dispatches with
+`worker_capabilities` (`kirocrew-dashboard`,
+`GET /api/session-control/worker-capabilities`,
+`dashboard/handlers/worker_capabilities.py`): for the worker its next
+`session_create` would open -- the Bot's own worker for a Bot's chat or its
+conducting worker, else the named agent's spec in the caller's project -- the
+server names, or for a `query` a yes or no with the matching servers or tools
+and the switched-on gateway servers the worker lacks
+(`mate_capability_catalog.lookup`, names only, 30 per list then a count). No
+prompt names it; its description is deferred like every tool's. The gateway
 adds nothing to a reply that says something is unavailable; the hand-off note
 above already shows the catalog. Once the catalog
 names the addition the work needs, the conductor raises the card straight away
@@ -6353,7 +6363,7 @@ also in a running session. Off, for that Bot:
 
 | Entry point | Off |
 | --- | --- |
-| `member_capability_catalog.api_member_self_capabilities` | `403 dynamic_capabilities_off` for that Bot (`find_capabilities`' route), pointing at `request_capabilities` |
+| `member_capability_catalog.api_member_self_capabilities` | only `mate_capability_catalog.lookup`, the read every conductor has through `worker_capabilities`: the worker's server names (30, then a count), or for a `query` `worker_has`, `matches` and `gateway_only`; no gateway catalog, registry search or card pointer |
 | `member_self.api_member_self_propose` | `request: capabilities` raises the Preview opt-in card on its first call (below); after that, `409 opt_in_pending` while it waits and `403 dynamic_capabilities_off` once it was declined, expired or failed; the other Bot cards are proposed as before |
 | `handlers/change_cards.api_cards_agent_propose` (`_crewmate_drives_capabilities_off`) | 403 `dynamic_capabilities_off` for a `crewmate.capabilities` card from the Bot's thread or its worker (judged by that worker's own Bot; one that cannot be named counts as off); any other caller proposes it |
 | `crewmate_dispatch_capabilities._note` | no capability summary on `session_create` / `session_send` |

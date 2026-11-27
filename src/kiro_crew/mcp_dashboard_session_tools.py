@@ -43,6 +43,7 @@ from kiro_crew.mcp_dashboard_session_runs import (
     _run_work_dispatch,
 )
 from kiro_crew.mcp_tools.table import Tool
+from kiro_crew.mcp_worker_capabilities import worker_capabilities_tool
 
 
 def _session_tools() -> tuple[Tool, ...]:
@@ -1187,6 +1188,7 @@ def _session_tools() -> tuple[Tool, ...]:
             routes=("POST /api/session-control/queue",),
         ),
         crew_list_tool(),
+        worker_capabilities_tool(),
         Tool(
             name="session_run_queued",
             description=(

@@ -147,6 +147,7 @@
     "work_dispatch": "Dispatch work item",
     "session_queue": "Manage session queue",
     "crew_list": "List remote crews",
+    "worker_capabilities": "Check worker tools",
     "session_run_queued": "Run queued message now"
   },
   "kirocrew-cron": {

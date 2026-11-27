@@ -220,6 +220,8 @@ GET /api/crew-sessions/read api_crew_sessions_read
 POST /api/session-control/queue api_session_control_queue
 HEAD /api/session-control/crews api_session_control_crews
 GET /api/session-control/crews api_session_control_crews
+HEAD /api/session-control/worker-capabilities api_session_control_worker_capabilities
+GET /api/session-control/worker-capabilities api_session_control_worker_capabilities
 POST /api/session-control/run-queued api_session_control_run_queued
 HEAD /api/browser/status api_browser_harness_status
 GET /api/browser/status api_browser_harness_status

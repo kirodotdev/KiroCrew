@@ -8,7 +8,8 @@ The agent half of two ``kirocrew-mate`` tools, under the strict
   what this gateway has loaded that the worker lacks, and -- given a ``query`` --
   what the MCP registry offers, through the same search the MCP page runs
   (:func:`handlers.mcp_discover.search_registry`). Data only; a read, so any
-  turn in the crewmate's own thread may ask.
+  turn in the crewmate's own thread may ask. With the crewmate's Dynamic
+  capabilities off it answers only :func:`mate_capability_catalog.lookup`.
 * :func:`additions_to_draft` turns the ``additions`` a ``request_capabilities``
   draft names into the operations of a ``crewmate.capabilities`` card
   (:mod:`handlers.member_self`). The card applies them to the crewmate's own
@@ -219,6 +220,7 @@ async def api_member_self_capabilities(request: web.Request) -> web.Response:
     from kiro_crew import crewmate_dynamic_capabilities
     from kiro_crew.dashboard.handlers.mcp_discover import search_registry
     from kiro_crew.dashboard.handlers.member_self import _caller_member
+    from kiro_crew.mate_worker import WorkerKitUnreadable
 
     try:
         slot_key, sk = await _resolve(request)
@@ -230,25 +232,37 @@ async def api_member_self_capabilities(request: web.Request) -> web.Response:
         _audit(sk, OP_FIND_CAPABILITIES, "denied", "not a Bot thread")
         return _deny(403, "not_a_crewmate", "only a Bot, in its own chat, can read this")
     member, _store = who
-    if not await asyncio.to_thread(crewmate_dynamic_capabilities.enabled_for, member):
-        # The crewmate-driven capability path, this crewmate's own preview
-        # (``kiro_crew.crewmate_dynamic_capabilities``), read on every call, so a
-        # Turn on takes effect at once even in a running session.
-        _audit(sk, OP_FIND_CAPABILITIES, "denied", "dynamic_capabilities_off")
-        return _deny(
-            403,
-            "dynamic_capabilities_off",
-            "Dynamic capabilities (a Preview) is off for you, so the catalog is not "
-            "read; ask with request_capabilities, which offers the user the Preview",
-        )
     query = body.get("query", "")
     if not isinstance(query, str) or len(query) > _QUERY_MAX:
         return _deny(400, "invalid_query", f"'query' is text of at most {_QUERY_MAX} characters")
+    if not await asyncio.to_thread(crewmate_dynamic_capabilities.enabled_for, member):
+        # The crewmate-driven capability path, this crewmate's own preview
+        # (``kiro_crew.crewmate_dynamic_capabilities``), read on every call, so a
+        # Turn on takes effect at once even in a running session. Off, only the
+        # read every conductor has stays: the worker's server names, or a yes/no
+        # for a query. Nothing here leads to a card.
+        if len(query) > catalog_mod.LOOKUP_QUERY_MAX:
+            return _deny(
+                400,
+                "invalid_query",
+                f"'query' is text of at most {catalog_mod.LOOKUP_QUERY_MAX} characters",
+            )
+        try:
+            spec = await asyncio.to_thread(catalog_mod.worker_spec, member)
+        except WorkerKitUnreadable as exc:
+            logger.warning("worker kit of %s unreadable: %s", member, exc)
+            return _deny(409, "worker_kit_unreadable", "your worker's settings cannot be read now")
+        _audit(sk, OP_FIND_CAPABILITIES, "ok")
+        return web.json_response(await asyncio.to_thread(catalog_mod.lookup, spec, query))
     if not await asyncio.to_thread(_is_mate, member):
         return _no_file()
     service = _service(request.app)
     catalog = await asyncio.to_thread(service._mate_catalog, member)
-    spec = await asyncio.to_thread(catalog_mod.worker_spec, member)
+    try:
+        spec = await asyncio.to_thread(catalog_mod.worker_spec, member)
+    except WorkerKitUnreadable as exc:
+        logger.warning("worker kit of %s unreadable: %s", member, exc)
+        return _deny(409, "worker_kit_unreadable", "your worker's settings cannot be read now")
     answer: dict[str, Any] = {
         "worker": catalog_mod.worker_has(spec, catalog),
         "gateway": await asyncio.to_thread(catalog_mod.gateway_lacks, spec, catalog),
@@ -436,8 +450,16 @@ async def additions_to_draft(
             "no_crewmate_file",
             "this Bot has no worker settings of its own yet, so nothing can be added",
         )
+    from kiro_crew.mate_worker import WorkerKitUnreadable
+
     catalog = await asyncio.to_thread(_service(app)._mate_catalog, member)
-    spec = await asyncio.to_thread(catalog_mod.worker_spec, member)
+    try:
+        spec = await asyncio.to_thread(catalog_mod.worker_spec, member)
+    except WorkerKitUnreadable as exc:
+        logger.warning("worker kit of %s unreadable: %s", member, exc)
+        raise catalog_mod.AdditionError(
+            "worker_kit_unreadable", "your worker's settings cannot be read now"
+        ) from None
     has = catalog_mod.worker_has(spec, catalog)
     have_servers = {s["name"] for s in has["servers"]}
     have_skills = set(has["skills"])

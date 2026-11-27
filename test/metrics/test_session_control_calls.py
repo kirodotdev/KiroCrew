@@ -451,6 +451,7 @@ class TestRouteOps:
                 "queue",
                 "crews",
                 "run-queued",
+                "worker-capabilities",
             )
         }
         wrong = {

@@ -207,7 +207,9 @@ def test_the_session_control_rows_are_the_strict_rows() -> None:
     table = _dashboard_table()
     assert SESSION_CONTROL_TOOLS == table.names("strict")
     session_rows = {
-        n for n in table.names() if n.startswith("session_") or n in ("work_dispatch", "crew_list")
+        n
+        for n in table.names()
+        if n.startswith("session_") or n in ("work_dispatch", "crew_list", "worker_capabilities")
     }
     assert session_rows == set(SESSION_CONTROL_TOOLS)
 
