@@ -5,6 +5,7 @@
  * a sibling owner, and every name callers import from here is re-exported:
  * - `SecurityPanelPosture.tsx`: Live security posture
  * - `SecurityPanelApprovals.tsx`: Auto-approve
+ * - `SecurityPanelSshAgent.tsx`: SSH agent forwarding
  * - `SecurityPanelDeniedCommands.tsx`: Denied commands
  * - `SecurityPanelTailnet.tsx`: Tailnet
  * - `SecurityPanelTrust.tsx`: Third-party apps, Registry trust
@@ -15,11 +16,11 @@
  * - `SecurityPanelGovernance.tsx`: Governance policy
  * Callers import from this file; an owner never imports it.
  */
-import React, { useState } from 'react'
+import React, { Suspense, lazy, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   ShieldCheck, EyeOff, Terminal, Layers, ExternalLink, Gavel, Gauge, Boxes, BookOpen,
-  Network, GitBranch, Mail, ShieldAlert,
+  Network, GitBranch, Mail, ShieldAlert, KeyRound,
 } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { SettingsSubNav } from '../../components/SettingsSubNav'
@@ -45,6 +46,12 @@ export { FEATURE_LABEL_KEY, FEATURE_DESCRIPTION_KEY } from './SecurityPanelLayer
 export { SCOPE_LABEL_KEY, humaniseScopeLeaf, GOV_PLANE_TITLE_KEY } from './SecurityPanelGovernance'
 
 /* ── Documentation section ── */
+// Its own chunk: the section is opened rarely, and inlining it put the
+// SettingsPage chunk over its bundle budget.
+const SshAgentConsentCard = lazy(async () => ({
+  default: (await import('./SecurityPanelSshAgent')).SshAgentConsentCard,
+}))
+
 function DocsSection() {
   return (
     <SettingsSection title={i18nT('pages.settings.securityPanel.documentation')}>
@@ -74,7 +81,7 @@ function DocsSection() {
  * The rail states which is which before any row is read, and the two large
  * tables (137 rules, ~20 governed scopes) get a pane instead of a fold.
  */
-type SecuritySectionKey = 'posture' | 'approval' | 'rules' | 'tailnet' | 'apps' | 'registries' | 'redaction' | 'bodyFields' | 'safety' | 'layers' | 'governance' | 'docs'
+type SecuritySectionKey = 'posture' | 'approval' | 'rules' | 'tailnet' | 'apps' | 'registries' | 'redaction' | 'bodyFields' | 'safety' | 'ssh_agent' | 'layers' | 'governance' | 'docs'
 type SecuritySectionGroup = 'status' | 'yours' | 'enforced' | 'reference'
 
 interface SecuritySectionDef {
@@ -112,6 +119,7 @@ export const SECTION_LABEL_KEY: Record<SecuritySectionKey, string> = {
   redaction: 'pages.settings.securityPanel.redaction_section',
   bodyFields: 'pages.settings.securityPanel.bodyFields.section_title',
   safety: 'pages.settings.securityPanel.safetySwitches.section_title',
+  ssh_agent: 'pages.settings.securityPanel.ssh_agent_section',
   layers: 'pages.settings.securityPanel.defense_in_depth_architecture',
   governance: 'pages.settings.securityPanel.governance_policy',
   docs: 'pages.settings.securityPanel.documentation',
@@ -137,6 +145,7 @@ const SECURITY_SECTIONS: readonly SecuritySectionDef[] = [
   { key: 'redaction', icon: <EyeOff size={15} />, group: 'yours' },
   { key: 'bodyFields', icon: <Mail size={15} />, group: 'yours' },
   { key: 'safety', icon: <ShieldAlert size={15} />, group: 'yours' },
+  { key: 'ssh_agent', icon: <KeyRound size={15} />, group: 'yours' },
   { key: 'layers', icon: <Layers size={15} />, group: 'enforced' },
   { key: 'governance', icon: <Gavel size={15} />, group: 'enforced' },
   { key: 'docs', icon: <BookOpen size={15} />, group: 'reference' },
@@ -208,6 +217,9 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
     staleTime: 300_000,
   })
 
+  // The ssh-agent row has no rail summary either: no rail-level read of an
+  // owner-gated GET for every non-owner who opens Security.
+  //
   // NO rail summary for the credential-redaction row, deliberately, and this is a
   // gate decision rather than a design preference. `SettingsSubNav` renders a
   // label and a summary as two adjacent catalog keys, which the render-time i18n
@@ -320,6 +332,13 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
             {key === 'redaction' && <RedactionSection />}
             {key === 'bodyFields' && <BodyFieldsSection />}
             {key === 'safety' && <SafetySwitchesSection />}
+            {key === 'ssh_agent' && (
+              <SettingsSection title={i18nT('pages.settings.securityPanel.ssh_agent_section')}>
+                <Suspense fallback={<div className="h-24" aria-hidden />}>
+                  <SshAgentConsentCard />
+                </Suspense>
+              </SettingsSection>
+            )}
             {key === 'layers' && <LayersSection />}
             {key === 'governance' && <GovernancePolicyViewer />}
             {key === 'docs' && <DocsSection />}

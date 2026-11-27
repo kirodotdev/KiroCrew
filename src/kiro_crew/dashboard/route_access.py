@@ -126,6 +126,11 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("POST", "/api/managed-environments/{sandbox_id}/{action}"): RouteAccess(
         "managed_environments.change", UNSTABLE
     ),
+    # Owner gate on every verb (handlers/ssh_auth_sock_consent.py), verbs from its audit
+    # operation names; the GET writes nothing but a refused caller's audit row.
+    ("GET", "/api/ssh-agent/consent"): RouteAccess("ssh_agent.consent.read", UNSTABLE),
+    ("POST", "/api/ssh-agent/consent"): RouteAccess("ssh_agent.consent.grant", UNSTABLE),
+    ("DELETE", "/api/ssh-agent/consent"): RouteAccess("ssh_agent.consent.revoke", UNSTABLE),
     # Owner dashboard only (handlers/tailnet_mobile.py _guard); removes only the listed
     # phone-access keys from config.local.json.
     ("POST", "/api/tailnet/mobile/clear-overrides"): RouteAccess(

@@ -70,7 +70,7 @@ const NO_SESSION_KEY = [
   'changelog', 'releases', 'armStatus', 'fileDiff',
   'fileSearch', 'pathComplete', 'uploadFiles', 'uploadToDirectory', 'themes',
   'dashboardConfig', 'themeDetail', 'themeBoot', 'voiceConfig',
-  'voiceVoices', 'voiceSystemVoices', 'awsConsent', 'credentialRedaction', 'channelsList', 'channelPresets',
+  'voiceVoices', 'voiceSystemVoices', 'awsConsent', 'sshAgentConsent', 'credentialRedaction', 'channelsList', 'channelPresets',
   'channelGet', 'listApps', 'getApp', 'getAppManifest',
   'uninstallPreview', 'listRegistry', 'listRegistries',
 ]

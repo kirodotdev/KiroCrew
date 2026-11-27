@@ -101,6 +101,7 @@ describe('SecurityPanel — inspector rail', () => {
       expect.stringContaining('Redaction'),
       expect.stringContaining('Message body fields'),
       expect.stringContaining('Safety switches'),
+      expect.stringContaining('SSH agent'),
       expect.stringContaining('Defense-in-Depth Architecture'),
       expect.stringContaining('Governance Policy'),
       expect.stringContaining('Documentation'),
