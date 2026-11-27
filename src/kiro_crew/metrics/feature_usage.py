@@ -221,6 +221,7 @@ BUILTIN_SKILL_IDS: tuple[str, ...] = (
     "debug-gateway",
     "explain-for",
     "feature-request",
+    "find-sources",
     "five-whys",
     "frontend-design-workflow",
     "goal-conductor",
