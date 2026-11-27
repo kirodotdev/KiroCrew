@@ -205,13 +205,19 @@ RUN --mount=type=bind,source=packaging,target=/tmp/kiro-cli-pin \
 # `kiro_crew.cli` is imported, so it cannot prove the import chain resolves.
 # The `import kiro_crew.cli` probe is what catches a runtime import the wheel
 # metadata does not declare.
+#
+# --prefix /usr: AL2023's Python puts root pip installs under /usr/local by
+# default, and drops /usr/local from sys.path in isolated mode (`python -I`),
+# which the KAS step below and its runuser read-back use. Installing into
+# /usr's site-packages keeps the package importable either way.
 RUN --mount=type=bind,source=dist,target=/tmp/wheels \
     set -eux; \
     WHEEL_COUNT=$(ls /tmp/wheels/*.whl | wc -l); \
     [ "${WHEEL_COUNT}" -eq 1 ] || { echo "expected exactly one wheel, found ${WHEEL_COUNT}" >&2; exit 1; }; \
-    pip install --no-cache-dir /tmp/wheels/*.whl; \
+    pip install --no-cache-dir --prefix /usr /tmp/wheels/*.whl; \
     kirocrew --version; \
-    python -c 'import kiro_crew.cli'
+    python -c 'import kiro_crew.cli'; \
+    python -I -c 'import kiro_crew'
 
 # Re-stamp the provenance the wheel already carries: this image installs the
 # wheel artifact, which is stamped "wheel", so without this every container
