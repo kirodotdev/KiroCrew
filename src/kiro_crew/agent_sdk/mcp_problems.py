@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+import time
 from collections import OrderedDict
 from typing import Any
 
@@ -224,6 +225,7 @@ async def wait_for_declared_mcp(provider: Any, timeout: float, *, seen_by: Any =
     if provider is None or timeout <= 0:
         return
     skip = given_up_servers(seen_by)
+    started = time.monotonic()
     try:
         if skip:
             missing = await provider.wait_for_declared_mcp(timeout, skip)
@@ -242,9 +244,12 @@ async def wait_for_declared_mcp(provider: Any, timeout: float, *, seen_by: Any =
             ", ".join(unwaited),
         )
     if waited_for:
-        # The run prompts anyway; this line is when and how long it waited.
+        # The run prompts anyway; this line is when and how long it waited. A
+        # server that failed or was dropped ends the wait early, so it is measured.
         logger.warning(
-            "Unattended run prompting after a %gs wait without declared MCP server(s): %s",
+            "Unattended run prompting after a %.1fs wait (bound %gs) without declared "
+            "MCP server(s): %s",
+            time.monotonic() - started,
             timeout,
             ", ".join(waited_for),
         )

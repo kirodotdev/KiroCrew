@@ -2834,7 +2834,11 @@ it (`AcpSessionHandle.wait_for_declared_mcp`, and `AcpClient` through
 handled exactly as the drain handles them, until every enabled `mcpServers`
 name of the agent spec, and on kiro-cli every enabled `mcp.json` server the
 spec's opt-in mounts, has reported initialized, failed or awaiting
-authorization, or the bound passes. The names come from the spec snapshot the
+authorization, or the host said it will not start it (disabled, or dropped by
+its MCP registry: `McpSessionReport.still_starting`), or the bound passes. The
+run's warning names the servers it lacks and how long it waited, measured,
+since a failed or dropped server ends the wait early. The names come from the
+spec snapshot the
 unresolved-ref guard already reads (`McpSessionReport.record_declared`, which
 skips a muted entry by the launch's own `mcp_entry_is_muted` rule), and only on
 kiro-cli and KAS (and, on the runtime, with `expect_mcp_reports`): kiro-cli
@@ -3042,6 +3046,10 @@ ends (`runtime_session_load._wait_managed_mcp`, for `session/new` and
 | Sent on the session by Kiro Crew (a Connection's bridge) | best effort, at most `MOUNTED_MCP_WAIT_SECS` (5 s) | the same |
 | One of the agent's own the gateway shares (a session element that runs `-m kiro_crew.mcp_gateway.stub`) | not waited for by the start; left to the first turn, like the row below | best effort, at most 5 s |
 | The agent's own (the user's), which stay in the agent's block | not waited for by the start; left to the first turn (below) | best effort, at most 5 s; never for `kirocrew-lite` |
+
+The 5 s wait (`session_handle_mcp.wait_mounted_mcp`) ends for a server once it
+has settled, a host-disabled or registry-dropped server included, as the app
+server wait and the first-turn hold do.
 
 `kirocrew-lite` mounts nothing. A server in its block was written into the spec
 by another tool, and a background turn on it is closed right after such a start

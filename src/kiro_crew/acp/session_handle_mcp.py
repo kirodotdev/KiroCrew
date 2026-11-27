@@ -803,9 +803,10 @@ async def wait_for_declared_mcp(
     booting when the prompt goes out, and that turn runs without its tools.
     Nobody is there to notice or retry, so this keeps draining init frames
     (exactly as ``drain_init`` handles them) until each declared server has
-    reported initialized, failed or awaiting authorization, or *timeout*
-    seconds pass. A server in *skip* is not waited for. Returns the declared
-    servers that are not ready, in spec order; empty when all are.
+    reported initialized, failed or awaiting authorization, or the host said it
+    will not start it (disabled, dropped by its registry), or *timeout* seconds
+    pass. A server in *skip* is not waited for. Returns the declared servers
+    that are not ready, in spec order; empty when all are.
     """
     waited = tuple(name for name in self._mcp_report.declared if name not in skip)
     await _drain_until_reported(self, waited, timeout)
@@ -813,16 +814,17 @@ async def wait_for_declared_mcp(
 
 
 async def wait_mounted_mcp(self: AcpSessionHandle, names: tuple[str, ...], timeout: float) -> None:
-    """Best effort: hold the first prompt until each of *names* has reported, or *timeout*.
+    """Best effort: hold the first prompt until each of *names* has settled, or *timeout*.
 
     For the servers outside the required barrier (Connections, user servers), so
-    turn 1's catalog has their tools. Never fails the start: a server still
-    unreported at *timeout* is logged and the session starts without it. Runtime
-    death still raises.
+    turn 1's catalog has their tools. A server the host already settled
+    (disabled, dropped by a registry) ends the wait for it at once. Never fails
+    the start: a server still starting at *timeout* is logged and the session
+    starts without it. Runtime death still raises.
     """
     if await _drain_until_reported(self, names, timeout):
         raise AcpRuntimeDead("Runtime exited while waiting for mounted MCP servers")
-    late = self._mcp_report.unreported(names)
+    late = self._mcp_report.still_starting(names)
     if late:
         logger.info(
             "Session %s starts before MCP servers reported (%gs cap): %s",
@@ -837,11 +839,10 @@ async def wait_own_app_servers(
 ) -> None:
     """Best effort: hold a start for an app agent's own app servers, at most *timeout*.
 
-    As :func:`wait_mounted_mcp`, except a server the host already settled
-    (disabled, dropped by a registry) ends the wait for it at once. Never fails
-    the start; runtime death still raises.
+    As :func:`wait_mounted_mcp`, on its own bound and with no log line. Never
+    fails the start; runtime death still raises.
     """
-    if await _drain_until_reported(handle, names, timeout, settled=True):
+    if await _drain_until_reported(handle, names, timeout):
         raise AcpRuntimeDead("Runtime exited while waiting for the app's own MCP servers")
 
 
@@ -942,22 +943,22 @@ async def hold_untold_first_turn(handle: AcpSessionHandle, prompt_text: str = ""
 
 
 async def _drain_until_reported(
-    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float, *, settled: bool = False
+    handle: AcpSessionHandle, names: tuple[str, ...], timeout: float
 ) -> bool:
-    """Drain init frames until every one of *names* has reported; True if the runtime died.
+    """Drain init frames until none of *names* is still starting; True if the runtime died.
 
     The report is folded where a frame arrives, not here, so it can already
     name a server whose frame is still queued. The frames that are queued are
     consumed all the same: each may carry a sign-in request or a config update
     this start owes its session. Only the WAIT for more ends once every name
-    has reported. With *settled*, a name also counts once the report says it
-    never will (``McpSessionReport.still_starting``: host-disabled or dropped
-    by a registry).
+    has reported, or the report says it never will
+    (``McpSessionReport.still_starting``: host-disabled or dropped by a
+    registry), since no frame can change what is true of that one.
     """
     report = handle._mcp_report
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
-        pending = report.still_starting(names) if settled else report.unreported(names)
+        pending = report.still_starting(names)
         if not pending:
             if handle._queue.empty():
                 break

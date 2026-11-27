@@ -1176,8 +1176,8 @@ async def _drain_notifications(
 
     ``until_declared`` is the unattended-run wait (see
     ``wait_for_declared_mcp``): the declared servers it waits for. Quiet does
-    not end the drain, it ends as soon as each of them has reported, or at
-    ``duration``.
+    not end the drain, it ends as soon as none of them is still starting
+    (``McpSessionReport.still_starting``), or at ``duration``.
 
     Captures `_kiro.dev/mcp/oauth_request` into `_pending_oauth_requests` so
     callers can surface an Authorize prompt after `ensure_ready()` returns.
@@ -1284,7 +1284,7 @@ async def _drain_notifications(
         if remaining <= 0:
             break
         if until_declared:
-            if not self._mcp_report.unreported(until_declared):
+            if not self._mcp_report.still_starting(until_declared):
                 break
             # No idle exit: a slow server is quiet while it boots.
             idle_remaining = remaining
