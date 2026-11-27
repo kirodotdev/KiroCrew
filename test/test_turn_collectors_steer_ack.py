@@ -97,6 +97,39 @@ def test_steering_ack_is_kept_off_the_slack_stream():
     assert "Pushed nothing." in sent
 
 
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        # A summary whose brackets never balance: its first "]" ends the frame.
+        ["Done. [STEERING steer-1: typed [ by mistake] ", "Here is the answer."],
+        # A link in the summary: the frame ends at its own "]".
+        [
+            "Done. [STEERING steer-1: opened [PR #7](https://x/7)",
+            " for it] ",
+            "Here is the answer.",
+        ],
+    ],
+    ids=["unbalanced-summary", "linked-summary"],
+)
+def test_the_slack_stream_keeps_the_text_after_the_ack(chunks):
+    handler_tests = importlib.import_module("test_slack_handler")
+
+    class _StreamingSlack(MockSlackClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self._stream_enabled = True
+
+    slack = _StreamingSlack()
+    sessions = handler_tests.FakeSessionManager(
+        handler_tests.FakeProvider([LLMEvent(kind="text_chunk", text=c) for c in chunks])
+    )
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    sent = "".join(str(payload.get("text", "")) for _name, payload in slack.actions)
+    assert "STEERING" not in sent.upper()
+    assert "Here is the answer." in sent
+
+
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("ample_host_free_memory")
 async def test_background_one_liner_drops_the_ack():

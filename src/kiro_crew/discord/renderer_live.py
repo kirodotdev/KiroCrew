@@ -17,14 +17,13 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.constants import strip_control_comments
 from kiro_crew.discord.renderer_text import (
-    _STEER_MARKER_RE,
-    _STEER_SUMMARY_RE,
     _extract_options,
     _neutralize_md,
     _strip_steering,
     _transform_buries_refs,
 )
 from kiro_crew.messaging.status_reactions import PHASE_THINKING
+from kiro_crew.messaging.steer_ack import find_steering_acks
 from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 
 if TYPE_CHECKING:
@@ -149,16 +148,17 @@ async def _rotate_at_markers(self: DiscordRenderer) -> None:
     while True:
         self._materialize_chip()
         raw = "".join(self._buf)
-        marker = _STEER_MARKER_RE.search(raw)
-        if marker is None:
+        # Balanced frames only: a rotation is for good, and an earlier "]" may
+        # close a link whose frame is still arriving.
+        acks = find_steering_acks(raw, unbalanced=False)
+        if not acks:
             return
-        self._buf = [raw[: marker.start()]]
+        marker = acks[0]
+        self._buf = [raw[: marker.start]]
         self._delivery_text = None
-        summary_match = _STEER_SUMMARY_RE.match(raw, marker.start())
         # Raw: ``on_steer_consumed`` neutralizes it, and the escape is not idempotent.
-        summary = summary_match.group(1) if summary_match else ""
-        await self.on_steer_consumed(summary)
-        self._buf = [raw[marker.end() :]]
+        await self.on_steer_consumed(marker.summary.lstrip())
+        self._buf = [raw[marker.end :]]
         self._delivery_text = None
 
 

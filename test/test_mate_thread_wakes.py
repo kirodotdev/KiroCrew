@@ -502,7 +502,15 @@ def test_every_top_level_turn_end_reaches_the_wake_path(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reply", ["", " \n ", "\n\n[STEERING steer-4a2f: noted the steer.]"])
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "",
+        " \n ",
+        "\n\n[STEERING steer-4a2f: noted the steer.]",
+        "\n\n[STEERING steer-4a2f: opened [PR #7](https://github.com/o/r/pull/7) for it]",
+    ],
+)
 async def test_a_quiet_worker_end_reports_nothing(dispatched, reply):
     """A loop cycle that ended on ``nothing_to_do`` with no text, or with only a
     steer ack, costs the crewmate no turn."""

@@ -2241,7 +2241,17 @@ is the single consumer of that process's stdout, so awaiting the response would
 steal the turn's own messages. kiro-cli folds the steer at its next generation
 boundary (a tool-call edge on an agentic turn, the end of stream on one long
 text turn) and emits an inline `[STEERING steer-<id>: <ack summary>]` marker in
-the text stream at the exact fold point.
+the text stream at the exact fold point. The summary is the model's own words and
+can hold a markdown link, so the frame ends at the `]` that balances its own `[`,
+or at the first `]` when the summary's brackets never balance
+(`messaging/steer_ack.py`). The stream filter, `strip_steering_markers`, the
+Discord and Telegram renderers and the sidebar preview all take the frame's end
+from there. The stream filter holds a frame whose first `]` has arrived but whose
+balancing one has not, and ends it at that first `]` at flush or past
+`_MAX_STEER_MARKER_CHARS`. Every reader of the stream filter flushes it: `TurnDriver`
+at the turn's end, and the native Slack turn (`_AnswerStream.release_quoted_hold`) at
+each tool call, approval prompt and the turn's end, so the text after such a frame is
+delivered.
 
 Two preconditions gate the steer, and both matter:
 

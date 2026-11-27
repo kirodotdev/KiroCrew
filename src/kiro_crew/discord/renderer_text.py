@@ -19,6 +19,7 @@ from kiro_crew.discord.client import DISCORD_MAX_TEXT
 from kiro_crew.messaging.display_safety import outside_redaction_tags, redact_for_display
 from kiro_crew.messaging.outbound_files import protected_ref_spans
 from kiro_crew.messaging.renderer import chunk_text, split_options_trailer
+from kiro_crew.messaging.steer_ack import strip_steering_acks
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 
@@ -35,27 +36,9 @@ def _redact_steer(text: str) -> str:
 # kiro-cli's inline "[STEERING steer-<id>: …]" steer-ack marker (see the
 # Telegram renderer for the full rationale — Discord likewise has no parser).
 #
-# The frame is recognised by its GRAMMAR, and that is where the summary is
-# allowed to contain newlines: ``messaging.driver._STEER_MARKER_RE`` reads the
-# same frame with ``re.DOTALL``, ``constants._STEERING_TAIL_PREFIX_RE`` closes
-# that grammar's prefix with ``re.DOTALL`` too, and the dashboard's own parser
-# (``website/src/app-sdk/protocol/steering.ts``) spells the summary
-# ``[\s\S]*?``. kiro-cli's rephrase is free to wrap, so a class that stopped at
-# the first line end left a real marker unrecognised. ``]`` is the terminator
-# this grammar actually has.
-#
-# ``steer-<id>`` is required, not a bare ``[STEERING`` (the same rule as
-# ``messaging.driver``), so prose that only mentions the word stays visible even
-# though the class crosses line ends. The id class matches driver's and is the
-# SAME in both patterns: the summary is matched at the marker's offset, so a
-# narrower id class there would silently drop the summary.
-_STEER_MARKER_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+(?:\s*:[^\]]*)?\]", re.IGNORECASE)
-# The summary opens on a non-space, so ``\s*`` after the colon is its only
-# reader of that whitespace: two quantifiers that can both take it make a frame
-# that never closes quadratic to reject. The captured text is unchanged.
-_STEER_SUMMARY_RE = re.compile(
-    r"\[STEERING\s+steer-[0-9a-f-]+\s*:\s*((?:[^\]\s][^\]]*)?)\]", re.IGNORECASE
-)
+# The frame's grammar and where it ends (the ``]`` that balances its ``[``, so a
+# markdown link in the summary stays inside it) come from
+# ``messaging.steer_ack``, the one place every reader takes them from.
 
 
 def _extract_options(text: str) -> tuple[str, list[str]]:
@@ -72,7 +55,7 @@ def _strip_steering(text: str) -> str:
     """Remove kiro-cli's inline ``[STEERING …]`` steer-ack marker from output,
     including an UNCLOSED trailing fragment still streaming in (see the
     Telegram renderer for the show-then-vanish rationale)."""
-    cleaned = _STEER_MARKER_RE.sub("", text)
+    cleaned = strip_steering_acks(text)
     cleaned = re.sub(r"\[STEERING\b[^\]\r\n]*$", "", cleaned)  # unclosed, streaming
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned

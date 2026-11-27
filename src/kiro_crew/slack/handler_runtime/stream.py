@@ -1026,10 +1026,12 @@ class _AnswerStream:
 
     async def release_quoted_hold(self) -> None:
         """Project what the text holds back, before a tool call, an approval prompt or
-        the turn's end breaks it off, so it is never lost: the line the quoted-marker
-        filter holds, then the turn's held opening unless it is the whole alternation
-        placeholder, which is dropped."""
-        held = self.quoted_filter.flush()
+        the turn's end breaks it off, so it is never lost: the text the steer-ack
+        filter holds behind a frame still waiting for its own ``]``, the line the
+        quoted-marker filter holds, then the turn's held opening unless it is the
+        whole alternation placeholder, which is dropped."""
+        steered = "".join(payload for kind, payload in self.steer_filter.flush() if kind == "text")
+        held = (self.quoted_filter.feed(steered) if steered else "") + self.quoted_filter.flush()
         if held:
             await self._hold_opening(held)
         opening = self.echo_held

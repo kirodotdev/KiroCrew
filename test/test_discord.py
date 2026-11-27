@@ -31,7 +31,6 @@ from discord_helpers import (  # noqa: F401
     _prime_live,
 )
 
-from kiro_crew.discord import renderer as discord_renderer
 from kiro_crew.discord.attachments import process_discord_attachments
 from kiro_crew.discord.client import (
     _INTENT_DIRECT_MESSAGES,
@@ -58,6 +57,7 @@ from kiro_crew.discord.transport import (
 from kiro_crew.messaging import driver as messaging_driver
 from kiro_crew.messaging.attachments import cleanup
 from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.steer_ack import find_steering_acks
 from kiro_crew.messaging.transport import InboundMessage
 
 _cfg = discord_helpers._cfg  # assigned, not imported: a parameter here shadows it
@@ -798,24 +798,18 @@ class TestStripSteering:
         assert out.startswith("before") and out.endswith("after")
 
     def test_the_chip_summary_survives_a_wrapped_marker(self) -> None:
-        """``_rotate_at_markers`` reads the summary at the offset the marker
-        pattern chose, so the two must agree on the same frame: a summary the
-        marker matched but this one did not leaves the steer chip blank."""
+        """``_rotate_at_markers`` takes the chip's summary from the frame it
+        found, so a wrapped summary must reach the chip whole."""
         text = "[STEERING steer-ab12: switching to the job id\nand re-running it]"
-        marker = discord_renderer._STEER_MARKER_RE.search(text)
-        assert marker is not None
-        summary = discord_renderer._STEER_SUMMARY_RE.match(text, marker.start())
-        assert summary is not None
-        assert summary.group(1) == "switching to the job id\nand re-running it"
+        (ack,) = find_steering_acks(text, unbalanced=False)
+        assert ack.summary.lstrip() == "switching to the job id\nand re-running it"
 
-    def test_a_dashed_steer_id_is_one_frame_to_both_patterns(self) -> None:
+    def test_a_dashed_steer_id_is_a_frame(self) -> None:
         """``messaging.driver`` accepts ``[0-9a-f-]+`` for the id, so a dashed id
-        is a real frame; the two patterns here have to agree about it."""
+        is a real frame, summary included."""
         text = "[STEERING steer-a180-ae7f: checked] tail"
-        marker = discord_renderer._STEER_MARKER_RE.search(text)
-        assert marker is not None
-        summary = discord_renderer._STEER_SUMMARY_RE.match(text, marker.start())
-        assert summary is not None and summary.group(1) == "checked"
+        (ack,) = find_steering_acks(text, unbalanced=False)
+        assert ack.summary.lstrip() == "checked"
         assert _strip_steering(text).strip() == "tail"
 
     def test_prose_that_merely_opens_with_the_sentinel_stays(self) -> None:
@@ -849,10 +843,10 @@ class TestStripSteering:
             "[STEERING steer-zzzz: not hex]",
         ]
         for text in frames:
-            assert discord_renderer._STEER_MARKER_RE.fullmatch(text), text
+            assert _strip_steering(f"a {text} b") == "a  b", text
             assert messaging_driver._STEER_MARKER_RE.match(text), text
         for text in not_frames:
-            assert discord_renderer._STEER_MARKER_RE.fullmatch(text) is None, text
+            assert _strip_steering(f"a {text} b") == f"a {text} b", text
             assert messaging_driver._STEER_MARKER_RE.match(text) is None, text
 
 
