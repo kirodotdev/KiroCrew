@@ -69,7 +69,17 @@ def apps_dir() -> Path:
 
 
 def app_dir(name: str) -> Path:
-    """Return the directory for a specific installed app."""
+    """Return the directory for a specific installed app.
+
+    Raises ``ValueError`` for a name that is not one plain segment
+    (``manifest_names.is_app_dir_name``): joined onto the apps folder it would name
+    another app's tree or a path outside it.
+    """
+    # Function-local: a module-level name here is served by the manager facade.
+    from kiro_crew.apps.manifest_names import is_app_dir_name
+
+    if not is_app_dir_name(name):
+        raise ValueError(f"not an app name: {name!r}")
     return apps_dir() / name
 
 
