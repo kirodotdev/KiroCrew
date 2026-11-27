@@ -1,5 +1,7 @@
 ## Browser Module
 
+<!-- docs-lint: wrong-on-purpose browser_event -->
+
 The agent browses through one driver, and the person watches it in the chat.
 [Browser Harness](https://github.com/browser-use/browser-harness) (MIT) drives a
 Chromium-family browser over CDP; the gateway pins it, runs its daemon, holds the
@@ -792,7 +794,7 @@ Chrome emits a frame only when the page changes, so a still page costs nothing.
 The relay acks a frame to Chrome only after the card has acked that frame's
 sequence number (bounded at 2 s, so a card that stopped acking slows the stream
 instead of freezing it, and the bounded wait counts as a late frame), on a fixed
-time grid (`due = max(last_due + period, now - period)`), so transit time counts
+time grid (`due = max(_last_ack_due + period, now - period)`), so transit time counts
 toward the interval. Measured in the RFC: 57.6 fps headed and 57.8 fps headless
 at cap 60 on macOS (53.5 under ack-after-sleep; headed Chrome tops out near 95
 fps on a 120 Hz display, headless Chromium's compositor is clocked at 60, and

@@ -1408,7 +1408,7 @@ The `--slack-only` gateway starts `start_api_server()` instead of
 `start_dashboard()`. It serves the **same** MCP tool route surface
 (`_register_mcp_routes`), so it mounts an auth chain at parity
 (`_install_api_middlewares`):
-`route_latency → relay_ingress (strip only: this server builds no relay ingress) →
+`make_route_latency_middleware → relay_ingress (strip only: this server builds no relay ingress) →
 relay_header_strip → deny_audit_middleware → host_validation_middleware →
 reject_compressed_body_middleware → csrf_middleware → token_auth_middleware(
 internal_paths=_STRICT_INTERNAL_API_PATHS,
@@ -1924,4 +1924,4 @@ already names where to sign in.
 9. Bounded concurrent nonces (`TokenStateManager`) — prevents unbounded memory growth while allowing active link nonces to refresh their eviction position
 10. Explicit revocation via `kirocrew logout` — clears all nonces, IP bindings, and consumed tokens, and bumps the persisted revocation generation, ending every outstanding access cookie and refresh chain
 11. App-token scope confinement (CWE-269) — an `app`-claim token is confined deny-by-default to its own namespace (`/apps/<name>`, `/api/apps/<name>`) + its manifest `permissions.api` allowlist, enforced at every grant point; no-op for dashboard-user tokens
-12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `route_latency → relay_ingress → deny_audit → host_validation → csrf → token_auth → sel_audit → slot_ownership` chain (then `_workflow_ready`) against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain
+12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `make_route_latency_middleware → relay_ingress → deny_audit → host_validation → csrf → token_auth → sel_audit → slot_ownership` chain (then `_workflow_ready`) against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain

@@ -1,5 +1,7 @@
 # Connector: Zoom contract semantics (W11-A)
 
+<!-- docs-lint: defines not_yet_sourced -->
+
 The pure contract-semantics slice for the Zoom connector (`W11` in the
 [connector-capability-manifest](connector-capability-manifest.md) DAG): the
 identity, paging, processing-state, and error/redaction logic a later Zoom

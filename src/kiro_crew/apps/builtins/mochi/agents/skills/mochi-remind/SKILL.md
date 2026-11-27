@@ -4,6 +4,8 @@ description: "Handle due reminders — notify the user with natural language and
 always: false
 ---
 
+<!-- docs-lint: defines meetingStart -->
+
 # @mochi-remind — Handle Due Reminders
 
 Handle reminders that have reached their trigger time.
