@@ -519,7 +519,9 @@ def _dsh_vault_spawn(tmp_path, monkeypatch, *, mapping, secret=None):
         deepseek_mod, "_seal_deepseek_gate_extension", lambda: str(tmp_path / "sealed.mjs")
     )
     monkeypatch.setattr(
-        deepseek_mod, "_write_deepseek_gate_patch", lambda _ext: str(tmp_path / "patch.yml")
+        deepseek_mod,
+        "_write_deepseek_gate_patch",
+        lambda _ext, _version="": str(tmp_path / "patch.yml"),
     )
     monkeypatch.setattr(deepseek_mod, "_verify_deepseek_gate", lambda *a, **k: ("", ""))
     monkeypatch.setattr(launch_mod, "_unlink_readback_launcher", lambda _p: None)

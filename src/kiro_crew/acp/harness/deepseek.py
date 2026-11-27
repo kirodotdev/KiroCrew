@@ -115,7 +115,7 @@ _DSH_GATE_MARKER_MAX_BYTES = 64 * 1024
 # Same seal, same reason, for the DeepSeek Harness gate plugin. Pinned by
 # ``test_acp_deepseek_backend``, so editing the plugin is a deliberate two-file
 # edit.
-DEEPSEEK_GATE_EXTENSION_SHA256 = "6a9ac9cf23ed7478ec61125840a8aa278690a7021a3b18f29c53681f6cd71ce7"
+DEEPSEEK_GATE_EXTENSION_SHA256 = "e98f8334e4ef7e469b159e6c6da4c3423abdb6208f39bada556d4c9f5d9bc506"
 
 # ── deepseek (ACP_BACKEND_DEEPSEEK) ──
 # DeepSeek Harness is a plugin host, and ACP is one of the profiles it boots. So the
@@ -260,7 +260,23 @@ def _seal_deepseek_gate_extension() -> str:
     )
 
 
-def _write_deepseek_gate_patch(sealed_extension: str) -> str:
+#: The first dsh release whose ``@deepseek-ai/dsh-tools`` refuses a ``mode`` row
+#: ("Removed. Mount a native or PTC tool executor instead."): one there fails the
+#: ``tools`` plugin at boot, and every plugin injecting it, the gate included.
+DEEPSEEK_DSH_TOOL_EXECUTOR_MIN_VERSION = (0, 2, 2)
+
+# What pins the tool presentation to ``native``, per release line.
+_DSH_TOOLS_MODE_ROW = "- id: tools\n  config:\n    mode: native\n"
+_DSH_TOOL_EXECUTOR_ROWS = (
+    "- id: tool-executor-native\n"
+    "  name: '@deepseek-ai/dsh-tool-executor-native'\n"
+    "  disabled: false\n"
+    "- id: tool-executor-ptc\n"
+    "  disabled: true\n"
+)
+
+
+def _write_deepseek_gate_patch(sealed_extension: str, dsh_version: str = "") -> str:
     """Write the per-launch patch that composes *sealed_extension*, and return its path.
 
     Four rows in the same owner-only gate artifact directory the sealed plugin lives
@@ -280,7 +296,12 @@ def _write_deepseek_gate_patch(sealed_extension: str) -> str:
     is the harness's own default, so this row changes nothing on a default install;
     what it does is stop an operator layer from selecting a mode that would carry
     side effects around the gate, and a ``--patch`` overlay is applied after the
-    profile's own layer, so the pin wins.
+    profile's own layer, so the pin wins. From
+    :data:`DEEPSEEK_DSH_TOOL_EXECUTOR_MIN_VERSION` (*dsh_version*, read off disk)
+    the ``mode`` row is gone and the same pin is two executor rows: the native
+    executor mounted, behind the same ``name`` match guard as the rows below, and
+    the PTC executor disabled. An unreadable version keeps the ``mode`` row; the
+    marker's read-back refuses a presentation other than ``native`` either way.
 
     The remaining rows reassert the stock approval service with policy ``ask`` and
     the stock ACP bridge as enabled with its startup dependency. dsh applies this
@@ -294,11 +315,15 @@ def _write_deepseek_gate_patch(sealed_extension: str) -> str:
     double-quoted scalar, so a directory containing a quote or a backslash
     cannot end the scalar early. Blocking; callers run it off the loop.
     """
+    # Deferred: the client modules import this harness.
+    from kiro_crew.acp.client_claude_session import _adapter_version_at_least
+
     artifact_dir = pi_mod._pi_gate_artifact_dir()
+    executor_rows = _adapter_version_at_least(dsh_version, DEEPSEEK_DSH_TOOL_EXECUTOR_MIN_VERSION)
     body = (
         f"- insert:\n    - id: kiro-crew-tool-gate\n      name: {json.dumps(sealed_extension)}\n"
-        "- id: tools\n  config:\n    mode: native\n"
-        "- id: approval\n"
+        + (_DSH_TOOL_EXECUTOR_ROWS if executor_rows else _DSH_TOOLS_MODE_ROW)
+        + "- id: approval\n"
         "  name: '@deepseek-ai/dsh-user-approval'\n"
         "  disabled: false\n"
         "  config:\n"
@@ -747,7 +772,9 @@ class DeepseekLaunch(ProcessAdapter):
         # names no marker path, and the plugin skips the write when none is named.
         # Off-loop: file reads and writes.
         extension_path = await asyncio.to_thread(_seal_deepseek_gate_extension)
-        gate_patch = await asyncio.to_thread(_write_deepseek_gate_patch, extension_path)
+        gate_patch = await asyncio.to_thread(
+            _write_deepseek_gate_patch, extension_path, session.harness_installed_version
+        )
         self._nonce = uuid.uuid4().hex
         # The nonce the permission-frame tripwire keys on, recorded on the session
         # whose frames it judges.

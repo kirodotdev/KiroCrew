@@ -950,6 +950,59 @@ def test_the_patch_pins_the_tool_presentation_to_native() -> None:
     body = open(client_module._write_deepseek_gate_patch(sealed), encoding="utf-8").read()
     assert "id: tools" in body
     assert "mode: native" in body
+    assert "tool-executor" not in body
+
+
+@pytest.mark.parametrize("version", ["0.2.2-rc.1", "0.2.2", "0.3.0"])
+def test_from_dsh_0_2_2_the_patch_pins_native_through_the_executor_rows(version) -> None:
+    """dsh-tools 0.2.2 refuses a ``mode`` row, which fails every plugin at boot.
+
+    So from that release the pin is the native executor mounted and the PTC one off.
+    """
+    from kiro_crew.acp import client as client_module
+
+    sealed = client_module._seal_deepseek_gate_extension()
+    body = open(client_module._write_deepseek_gate_patch(sealed, version), encoding="utf-8").read()
+    assert "mode:" not in body
+    assert (
+        "- id: tool-executor-native\n"
+        "  name: '@deepseek-ai/dsh-tool-executor-native'\n"
+        "  disabled: false\n"
+    ) in body
+    assert "- id: tool-executor-ptc\n  disabled: true\n" in body
+    assert "policy: ask" in body
+
+
+@pytest.mark.parametrize("version", ["", "0.2.0-rc.2", "0.2.1-rc.5"])
+def test_before_dsh_0_2_2_the_patch_keeps_the_tools_mode_row(version) -> None:
+    from kiro_crew.acp import client as client_module
+
+    sealed = client_module._seal_deepseek_gate_extension()
+    body = open(client_module._write_deepseek_gate_patch(sealed, version), encoding="utf-8").read()
+    assert "- id: tools\n  config:\n    mode: native\n" in body
+    assert "tool-executor" not in body
+
+
+def test_the_plugin_reads_the_root_executor_when_the_tools_mode_is_gone() -> None:
+    """Without ``defaultMode`` only a ``NativeToolExecutor`` reports ``native``."""
+    from kiro_crew.acp import client as client_module
+
+    source = pathlib.Path(client_module.deepseek_gate_extension_path()).read_text()
+    assert "ctx.tools?.selectExecutor" in source
+    assert '=== "NativeToolExecutor"' in source
+
+
+def test_the_spawn_writes_the_patch_for_the_installed_dsh(monkeypatch, tmp_path) -> None:
+    rig = _DeepseekLaunchRig(monkeypatch, tmp_path)
+    monkeypatch.setattr(deepseek_mod, "_dsh_installed_version", lambda _bin: "0.2.2-rc.1")
+    seen: list[tuple] = []
+    monkeypatch.setattr(
+        deepseek_mod,
+        "_write_deepseek_gate_patch",
+        lambda ext, version="": seen.append((ext, version)) or rig.PATCH,
+    )
+    rig.run()
+    assert seen == [(rig.SEALED, "0.2.2-rc.1")]
 
 
 def test_the_patch_reasserts_the_approval_service_and_acp_bridge() -> None:
@@ -1041,7 +1094,9 @@ def _deepseek_readback_spawn(tmp_path, monkeypatch, *, readback):
         deepseek_mod, "_seal_deepseek_gate_extension", lambda: str(tmp_path / "sealed.mjs")
     )
     monkeypatch.setattr(
-        deepseek_mod, "_write_deepseek_gate_patch", lambda _ext: str(tmp_path / "patch.json")
+        deepseek_mod,
+        "_write_deepseek_gate_patch",
+        lambda _ext, _version="": str(tmp_path / "patch.json"),
     )
 
     # The probe's wrap answers; the real child's wrap is where this spawn stops.
