@@ -375,13 +375,16 @@ export function useAppShell() {
   const bottomTerminalOpen = useBottomTerminalOpen()
   const mobileConnect = useMobileConnect(location.key)
   const { mobileConnectOpen, setMobileConnectOpen, hasRenderableMobileConnect } = mobileConnect
-  // Selected session's project directory: a terminal opened from the nav row
-  // starts there (server default when no session is selected or it has none).
-  const activeSlotProject = useAppSelector(selectActiveSlotProject)
   const terminalPosition = useTerminalPosition()
   const navigate = useNavigate()
   const mayLeaveForNavigation = useMayLeaveForNavigation()
   const appStore = useAppStore()
+  // Selected session's project directory: a terminal opened from the nav row
+  // starts there (server default when no session is selected or it has none).
+  // Read when a terminal opens, not subscribed: every reader acts on a click,
+  // a chord or a run request, and a subscription here would re-render the whole
+  // shell on each switch to a session in another project.
+  const getActiveSlotProject = useCallback(() => selectActiveSlotProject(appStore.getState()), [appStore])
   const pathnameRef = useRef(location.pathname)
   pathnameRef.current = location.pathname
   const locationKeyRef = useRef(location.key)
@@ -951,7 +954,7 @@ export function useAppShell() {
   const discoverInRail = !useAppNavHidden().has(BUILTIN_SURFACE_NAV.apps.navId)
 
   const { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice } = useShellKeyboard({
-    toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
+    toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut,
   })
 
   const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn } = useKiroUsageReadout()
@@ -1134,7 +1137,7 @@ export function useAppShell() {
     gatewayStatusMsg, gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayRetrying, offlineCoverKind,
     focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
-    hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
+    hasRenderableMobileConnect, getActiveSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
     colorTheme, resolvedMode, onboarded, markOnboarded, markImportOnboarded,
     firstRun, lookPreviewFrame, branding, botName, avatar, isMobile, bottomDock, activeInstanceId,
     macFullscreen, macInset, topReservePx, focusMode, toggleFocusMode, focusActive, topPeek, railPeek,

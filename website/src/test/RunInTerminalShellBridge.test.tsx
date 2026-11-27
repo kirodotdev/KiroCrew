@@ -35,7 +35,7 @@ vi.mock('../utils/terminalRegistry', async (importOriginal) => ({
 import { RunInTerminalShellNotice, useRunInTerminalShellBridge } from '../shell/runInTerminalShellBridge'
 
 function RunInTerminalShellBridge({ cwd, hasDock = true }: { cwd: string | undefined; hasDock?: boolean }) {
-  const { error, dismiss } = useRunInTerminalShellBridge(cwd, hasDock)
+  const { error, dismiss } = useRunInTerminalShellBridge(() => cwd, hasDock)
   return <RunInTerminalShellNotice error={error} onDismiss={dismiss} />
 }
 import { useRunInTerminalBridge, useRunInTerminalRefs } from '../hooks/useRunInTerminalBridge'
@@ -124,6 +124,19 @@ describe('RunInTerminalShellBridge', () => {
     // Shown already: no show follows, so nothing may linger to swallow a later one.
     run({ code: 'aws s3 ls', reqId: 'r2' })
     expect(takeSkipFocusOnShow(id)).toBe(false)
+  })
+
+  it('opens in the project selected when the request arrives, with no re-render after the switch', () => {
+    const dock = renderHook(() => useBottomTerminal())
+    let project: string | undefined = '/first'
+    function Bridge() {
+      const { error, dismiss } = useRunInTerminalShellBridge(() => project, true)
+      return <RunInTerminalShellNotice error={error} onDismiss={dismiss} />
+    }
+    render(wrap(<Bridge />))
+    project = '/second'
+    run({ code: 'ls', reqId: 'r1' })
+    expect(dock.result.current.tabs).toEqual([expect.objectContaining({ cwd: '/second' })])
   })
 
   it('starts in the server default when no project is selected', () => {
