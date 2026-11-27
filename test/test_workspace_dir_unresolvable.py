@@ -94,6 +94,39 @@ async def test_create_with_an_unresolvable_dir_is_400_and_writes_nothing(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["create", "copy", "update"])
+async def test_embedded_nul_is_rejected_before_resolution(tmp_path: Path, operation: str) -> None:
+    cfg = _cfg()
+    config = _seed_file(tmp_path, cfg)
+    seeded = config.read_bytes()
+    (tmp_path / "workspace").mkdir()
+    bad_dir = "bad\x00dir"
+    invalid_resolves = []
+    real_resolve = Path.resolve
+
+    def resolve(path: Path, strict: bool = False) -> Path:
+        if bad_dir in str(path):
+            invalid_resolves.append(path)
+            return path
+        return real_resolve(path, strict=strict)
+
+    body = {"name": "fresh", "dir": bad_dir}
+    if operation == "copy":
+        body["copy_from"] = "default"
+    a, b, c, d = _patched(tmp_path, cfg)
+    with a, b, c, d, patch.object(Path, "resolve", resolve):
+        if operation == "update":
+            response = await api_workspaces_update(_req(body, match_info={"name": "default"}))
+        else:
+            response = await api_workspaces_create(_req(body))
+
+    assert not invalid_resolves
+    assert response.status == 400
+    assert json.loads(response.body)["code"] == "invalid_path"
+    assert config.read_bytes() == seeded
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("bad", _UNRESOLVABLE)
 async def test_update_with_an_unresolvable_dir_is_400_and_writes_nothing(
     tmp_path: Path, bad: str
