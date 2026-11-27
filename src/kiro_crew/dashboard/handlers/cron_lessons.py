@@ -25,7 +25,10 @@ from aiohttp import web
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.memory_sections import memory_writes_off_key
 from kiro_crew.context import ContextBuilder
-from kiro_crew.dashboard.handlers.cron_caller_session import _recognize_session
+from kiro_crew.dashboard.handlers.cron_caller_session import (
+    _is_temporary_transcript,
+    _recognize_session,
+)
 from kiro_crew.dashboard.handlers.cron_lesson_supersede import _resolve_and_supersede
 from kiro_crew.dashboard.handlers.cron_shared import _sel
 from kiro_crew.dashboard.state import DashboardState
@@ -1322,6 +1325,19 @@ async def api_lessons(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     state: DashboardState = request.app["state"]
+    # A Channels room seat lists lessons only as a session the memory routes
+    # recognize, which is a live seat bound to a Bot's own store. Without this an
+    # unbound seat, whose add and recall are refused, still read the Global lessons
+    # into a shared room. Every other caller keeps the existing read path.
+    from kiro_crew.channel_seat_memory import ROOM_SEAT_KEY_PREFIX
+
+    list_session = request.headers.get("X-Session-Key", "")
+    if request.get("internal_auth") is True and list_session.startswith(ROOM_SEAT_KEY_PREFIX):
+        refusal = await _recognize_session(
+            state, list_session, "lessons.list", blocks_persisted_mode=_is_temporary_transcript
+        )
+        if refusal is not None:
+            return refusal
     # Parsed before any store is resolved: a 400 should not have paid for a
     # silo's first ``init()``.
     page = _lesson_list_page(request.query)

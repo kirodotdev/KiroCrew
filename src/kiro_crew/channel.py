@@ -26,6 +26,11 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import RefusalHopText, continue_timed
 from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.channel_account_check import session_after_account_check
+from kiro_crew.channel_seat_memory import (
+    _session_agent_kwargs,
+    refresh_seat_memory,
+    start_seat_memory,
+)
 from kiro_crew.channel_shell_base import _offerable_base_binary
 from kiro_crew.channel_spec_hooks import pre_tool_refusal, turn_spec
 from kiro_crew.config import KiroCrewConfig, live
@@ -962,20 +967,6 @@ class ChannelManager:
 # ── Channel Agent Execution Loop ──
 
 
-def _session_agent_kwargs(agent_name: str) -> dict[str, Any]:
-    """``get_or_create``'s agent arguments: a crewmate (``default``) runs its template.
-
-    Passed raw, a crewmate name reached the skill view as an agent with no spec.
-    Blocking (config read): run it off the event loop.
-    """
-    if not agent_name:
-        return {"agent": None}
-    from kiro_crew.cli_chat import _resolve_cli_agent
-
-    kiro_agent, crew_agent, _model, _store = _resolve_cli_agent(KiroCrewConfig.load(), agent_name)
-    return {"agent": kiro_agent, "crew_agent": crew_agent}
-
-
 async def run_channel_agent(
     agent: ChannelAgent,
     channel: Channel,
@@ -990,6 +981,8 @@ async def run_channel_agent(
     )
 
     try:
+        if not await start_seat_memory(agent, channel):
+            return
         client, _is_new, _resumed = await sessions.get_or_create(
             agent.session_key,
             **await asyncio.to_thread(_session_agent_kwargs, agent.agent_name),
@@ -1086,6 +1079,7 @@ async def run_channel_agent(
             from kiro_crew.shared_crew.admission import OperationKind
             from kiro_crew.shared_crew.turn_gate import capacity_note, run_admitted
 
+            await refresh_seat_memory(agent)
             refusal: list[object] = []
             fault = await run_admitted(
                 _stream_task(agent, channel, client, prompt, thread_id=tid, is_yolo=is_yolo),
