@@ -15,13 +15,19 @@ superseded-by: []
 # RFC: Retire the Vector Memory card; add Audit, Test recall and decay weights
 
 **Status:** partial. Accepted at team review, 2026-11-26 (maintainer Ray Xu). The document merged in
-[#42890](https://github.com/kirodotdev/KiroCrew/pull/42890). Only §7 is on main: the bot memory
-tools `memory_list` and `propose_memory_changes` (one `crewmate.memory` card of at most 20 changes)
+[#42890](https://github.com/kirodotdev/KiroCrew/pull/42890). On main: §7, the bot memory
+tools `memory_list` and `propose_memory_changes` (one `crewmate.memory` card of at most 20 changes),
 merged in [#42798](https://github.com/kirodotdev/KiroCrew/pull/42798) (`src/kiro_crew/mcp_mate.py`,
 `src/kiro_crew/change_card_memory.py`). The new Memory page it
-builds on, with its Graph tab (§8), is in
+builds on merged in
 [#43031](https://github.com/kirodotdev/KiroCrew/pull/43031), which squashes
-the earlier drafts #42246 and #42276.
+the earlier drafts #42246 and #42276: its Graph tab (§8) draws the picked store
+(`GET /api/memory/graph?store=`, `website/src/pages/overview/MemoryGraphTab.tsx`) and
+`/settings/developer/memory` opens `/settings/memory?focus=graph`; the Embedding Model card shows
+the setup progress, errors and Retry (`website/src/pages/overview/EmbeddingSetupStatus.tsx`).
+The Vector Memory card still renders for its Audit and Inspector views
+(`<VectorMemoryCard diagnosticsOnly />` in `website/src/pages/overview/MemoryTab.tsx`); the Audit
+tab, Test recall and the decay weight are not built.
 Every `file:line` below was read at `867ca8eab20` unless it names a branch.
 
 The maintainer (@buluoray) made each decision below this week. This document
