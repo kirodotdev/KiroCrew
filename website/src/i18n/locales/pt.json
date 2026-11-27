@@ -25305,6 +25305,7 @@
     "order_oldest": "Mais antigas primeiro",
     "order_z_a": "De Z a A",
     "read_failed": "Não foi possível ler as memórias de {{store}}",
+    "recall_task_placeholder": "Descreva uma tarefa, como “corrigir o teste de CI instável”",
     "record_actions": "Ações da memória",
     "remove_filter": "Remover filtro: {{value}}",
     "reverse_order": "Inverter ordem",
@@ -25333,6 +25334,7 @@
     "tab_failures": "Falhas",
     "tab_graph": "Grafo",
     "tab_settings": "Configurações",
+    "test_recall": "Testar recuperação",
     "updated_on": "Atualizada em {{date}}",
     "bot_memory": "Memória do Bot",
     "global_face": "<name>Memória global</name><kind>Todas as conversas</kind>",
@@ -26248,5 +26250,15 @@
       "add_again": "Seu login no Kiro mudou, então a Crew não alcança este ambiente. Adicione-o de novo pelo formulário de início ou remova a crew.",
       "added_no_delete": "Criado fora desta Crew. Exclua-o onde você o criou."
     }
+  },
+  "memoryRecall": {
+    "at_start": "No início da sessão",
+    "family_lessons": "Lições",
+    "family_memory": "Memória",
+    "family_provider": "Provedor de memória (somente leitura)",
+    "nothing": "Nada",
+    "task_optional": "Tarefa (opcional)",
+    "type_task": "Digite uma tarefa para ver o que ela recupera.",
+    "with_message": "Com esta mensagem"
   }
 }

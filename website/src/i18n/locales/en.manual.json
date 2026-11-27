@@ -12568,6 +12568,7 @@
     "order_oldest": "Oldest first",
     "order_z_a": "Z to A",
     "read_failed": "Could not read the memories in {{store}}",
+    "recall_task_placeholder": "Describe a task, like “fix the flaky CI test”",
     "record_actions": "Memory actions",
     "remove_filter": "Remove filter: {{value}}",
     "reverse_order": "Reverse order",
@@ -12596,6 +12597,7 @@
     "tab_failures": "Failures",
     "tab_graph": "Graph",
     "tab_settings": "Settings",
+    "test_recall": "Test recall",
     "updated_on": "Updated {{date}}",
     "bot_memory": "Bot memory",
     "global_face": "<name>Global memory</name><kind>Every chat</kind>",
@@ -13181,5 +13183,15 @@
     "header_progress": "{{done}} of {{total}} features tried",
     "more_to_try": "Also worth a look",
     "video_failed": "Feature video could not be loaded"
+  },
+  "memoryRecall": {
+    "at_start": "At session start",
+    "family_lessons": "Lessons",
+    "family_memory": "Memory",
+    "family_provider": "Memory provider (read-only)",
+    "nothing": "Nothing",
+    "task_optional": "Task (optional)",
+    "type_task": "Type a task to see what it recalls.",
+    "with_message": "With this message"
   }
 }

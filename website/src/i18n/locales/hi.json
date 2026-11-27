@@ -24700,6 +24700,7 @@
     "order_oldest": "पुराने पहले",
     "order_z_a": "Z से A",
     "read_failed": "{{store}} की स्मृतियाँ नहीं पढ़ी जा सकीं",
+    "recall_task_placeholder": "कोई काम बताओ, जैसे “अस्थिर CI टेस्ट ठीक करो”",
     "record_actions": "स्मृति कार्रवाइयाँ",
     "remove_filter": "फ़िल्टर हटाओ: {{value}}",
     "reverse_order": "क्रम उलटें",
@@ -24728,6 +24729,7 @@
     "tab_failures": "विफलताएँ",
     "tab_graph": "ग्राफ़",
     "tab_settings": "सेटिंग्स",
+    "test_recall": "रिकॉल आज़माएँ",
     "updated_on": "{{date}} को अपडेट",
     "bot_memory": "Bot मेमोरी",
     "global_face": "<name>वैश्विक मेमोरी</name><kind>हर चैट</kind>",
@@ -25634,5 +25636,15 @@
       "add_again": "तुम्हारा Kiro साइन-इन बदल गया है, इसलिए Crew इस environment तक नहीं पहुँच सकता। लॉन्च फ़ॉर्म से इसे फिर जोड़ो, या क्रू को हटाओ।",
       "added_no_delete": "इस Crew के बाहर बना है। जहाँ बनाया था, वहीं मिटाओ।"
     }
+  },
+  "memoryRecall": {
+    "at_start": "सेशन की शुरुआत में",
+    "family_lessons": "सबक",
+    "family_memory": "मेमोरी",
+    "family_provider": "मेमोरी प्रोवाइडर (सिर्फ़ पढ़ने के लिए)",
+    "nothing": "कुछ नहीं",
+    "task_optional": "काम (वैकल्पिक)",
+    "type_task": "कोई काम लिखो, तो दिखेगा कि उससे क्या याद आता है।",
+    "with_message": "इस मैसेज के साथ"
   }
 }

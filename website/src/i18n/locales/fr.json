@@ -25305,6 +25305,7 @@
     "order_oldest": "Plus anciens d’abord",
     "order_z_a": "De Z à A",
     "read_failed": "Impossible de lire les souvenirs de {{store}}",
+    "recall_task_placeholder": "Décris une tâche, par exemple « corriger le test CI instable »",
     "record_actions": "Actions du souvenir",
     "remove_filter": "Retirer le filtre : {{value}}",
     "reverse_order": "Inverser l’ordre",
@@ -25333,6 +25334,7 @@
     "tab_failures": "Échecs",
     "tab_graph": "Graphe",
     "tab_settings": "Réglages",
+    "test_recall": "Tester le rappel",
     "updated_on": "Mis à jour le {{date}}",
     "bot_memory": "Mémoire du Bot",
     "global_face": "<name>Mémoire globale</name><kind>Toutes les discussions</kind>",
@@ -26248,5 +26250,15 @@
       "add_again": "Ta connexion Kiro a changé, donc Crew ne peut pas joindre cet environnement. Ajoute-le de nouveau depuis le formulaire de lancement, ou retire la crew.",
       "added_no_delete": "Créé en dehors de cette Crew. Supprime-le là où tu l’as créé."
     }
+  },
+  "memoryRecall": {
+    "at_start": "Au début de la session",
+    "family_lessons": "Leçons",
+    "family_memory": "Mémoire",
+    "family_provider": "Fournisseur de mémoire (lecture seule)",
+    "nothing": "Rien",
+    "task_optional": "Tâche (facultatif)",
+    "type_task": "Saisis une tâche pour voir ce qu’elle rappelle.",
+    "with_message": "Avec ce message"
   }
 }

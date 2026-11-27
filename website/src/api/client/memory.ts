@@ -243,7 +243,8 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
       post('/api/memory/embedding-model', { path }).then(j),
     vectorDisableEmbeddings: () => post('/api/memory/disable-embeddings').then(j),
     vectorImport: (data: object) => post('/api/memory/import', data).then(j),
-    vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
+    /** What a session start admits from this store (`session_start`), with `query` as its first message. */
+    vectorContextPreview: (query?: string, store?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) + memoryStoreQuery(store, '&') : memoryStoreQuery(store))).then(j),
     memoryGraph: (store?: string) => fetch('/api/memory/graph' + memoryStoreQuery(store)).then(j),
     consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),
   }

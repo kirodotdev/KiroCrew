@@ -24095,6 +24095,7 @@
     "order_oldest": "古い順",
     "order_z_a": "Z から A",
     "read_failed": "{{store}} の記憶を読み込めませんでした",
+    "recall_task_placeholder": "タスクを入力（例: 「不安定な CI テストを直す」）",
     "record_actions": "記憶の操作",
     "remove_filter": "フィルターを外す: {{value}}",
     "reverse_order": "順序を逆にする",
@@ -24123,6 +24124,7 @@
     "tab_failures": "失敗",
     "tab_graph": "グラフ",
     "tab_settings": "設定",
+    "test_recall": "想起をテスト",
     "updated_on": "{{date}} に更新",
     "bot_memory": "Bot の記憶",
     "global_face": "<name>グローバル記憶</name><kind>すべてのチャット</kind>",
@@ -25020,5 +25022,15 @@
       "add_again": "Kiro のサインインが変わったため、Crew はこの環境に接続できません。起動フォームからもう一度追加するか、クルーを取り除いてください。",
       "added_no_delete": "この Crew の外で作られた環境です。作った場所で削除してください。"
     }
+  },
+  "memoryRecall": {
+    "at_start": "セッション開始時",
+    "family_lessons": "レッスン",
+    "family_memory": "メモリ",
+    "family_provider": "メモリプロバイダー（読み取り専用）",
+    "nothing": "なし",
+    "task_optional": "タスク（任意）",
+    "type_task": "タスクを入力すると、呼び出される内容が表示されます。",
+    "with_message": "このメッセージで"
   }
 }

@@ -24095,6 +24095,7 @@
     "order_oldest": "오래된 순",
     "order_z_a": "Z부터 A",
     "read_failed": "{{store}}의 기억을 읽지 못했습니다",
+    "recall_task_placeholder": "작업을 설명하세요. 예: “불안정한 CI 테스트 고치기”",
     "record_actions": "기억 작업",
     "remove_filter": "필터 제거: {{value}}",
     "reverse_order": "순서 뒤집기",
@@ -24123,6 +24124,7 @@
     "tab_failures": "실패",
     "tab_graph": "그래프",
     "tab_settings": "설정",
+    "test_recall": "기억 불러오기 테스트",
     "updated_on": "{{date}} 업데이트",
     "bot_memory": "Bot 메모리",
     "global_face": "<name>전역 메모리</name><kind>모든 채팅</kind>",
@@ -25020,5 +25022,15 @@
       "add_again": "Kiro 로그인이 바뀌어 Crew가 이 환경에 연결할 수 없습니다. 실행 양식에서 다시 추가하거나 크루를 제거하세요.",
       "added_no_delete": "이 Crew 밖에서 만든 환경입니다. 만든 곳에서 삭제하세요."
     }
+  },
+  "memoryRecall": {
+    "at_start": "세션 시작 시",
+    "family_lessons": "교훈",
+    "family_memory": "메모리",
+    "family_provider": "메모리 공급자(읽기 전용)",
+    "nothing": "없음",
+    "task_optional": "작업(선택)",
+    "type_task": "작업을 입력하면 불러오는 내용이 표시됩니다.",
+    "with_message": "이 메시지와 함께"
   }
 }

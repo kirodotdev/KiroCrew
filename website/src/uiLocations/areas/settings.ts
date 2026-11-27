@@ -34,4 +34,23 @@ export const LOCATIONS = {
     },
     placements: [{ surface: 'settings', parent: 'settings.tab.imports', entry: 'content' }],
   },
+  'memory.more-actions': {
+    kind: 'button',
+    label: { from: 'attr', attr: 'aria-label', key: 'memoryPage.more_actions' },
+    placements: [{ surface: 'settings', parent: 'settings.tab.memory', entry: 'header', requires: [{ kind: 'viewport', value: 'desktop' }] }],
+  },
+  // Settings > Memory, Test recall in the header's ⋯ menu: what a bot gets
+  // at session start and for a typed message.
+  'memory.test-recall': {
+    kind: 'menu-item',
+    label: { from: 'text', key: 'memoryPage.test_recall' },
+    terms: {
+      en: [
+        'memory inspector', 'what does the bot remember', 'preview injected memory',
+        'what memory does the bot get', 'context preview', 'what gets injected into the prompt',
+      ],
+      'zh-CN': ['测试召回', '记忆检查', '机器人记得什么', '预览注入的记忆', '会话开始时的记忆'],
+    },
+    placements: [{ surface: 'settings', parent: 'memory.more-actions', entry: 'menu' }],
+  },
 } as const satisfies UiLocationArea

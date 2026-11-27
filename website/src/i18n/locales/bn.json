@@ -24700,6 +24700,7 @@
     "order_oldest": "পুরোনোগুলো আগে",
     "order_z_a": "Z থেকে A",
     "read_failed": "{{store}}-এর স্মৃতি পড়া যায়নি",
+    "recall_task_placeholder": "একটি কাজ লেখো, যেমন “অস্থির CI টেস্ট ঠিক করো”",
     "record_actions": "স্মৃতির কাজ",
     "remove_filter": "ফিল্টার সরান: {{value}}",
     "reverse_order": "ক্রম উল্টান",
@@ -24728,6 +24729,7 @@
     "tab_failures": "ব্যর্থতা",
     "tab_graph": "গ্রাফ",
     "tab_settings": "সেটিংস",
+    "test_recall": "রিকল যাচাই",
     "updated_on": "{{date}} হালনাগাদ",
     "bot_memory": "Bot মেমোরি",
     "global_face": "<name>গ্লোবাল মেমোরি</name><kind>প্রতিটি চ্যাট</kind>",
@@ -25634,5 +25636,15 @@
       "add_again": "তোমার Kiro সাইন-ইন বদলেছে, তাই Crew এই environment-এ পৌঁছাতে পারছে না। লঞ্চ ফর্ম থেকে আবার যোগ করো, অথবা ক্রু-কে সরাও।",
       "added_no_delete": "এই Crew-এর বাইরে তৈরি। যেখানে তৈরি করেছ, সেখানে মুছো।"
     }
+  },
+  "memoryRecall": {
+    "at_start": "সেশনের শুরুতে",
+    "family_lessons": "শিক্ষা",
+    "family_memory": "মেমরি",
+    "family_provider": "মেমরি প্রোভাইডার (শুধু পড়ার জন্য)",
+    "nothing": "কিছু নেই",
+    "task_optional": "কাজ (ঐচ্ছিক)",
+    "type_task": "একটা কাজ লেখো, তাহলে দেখবে কী মনে পড়ে।",
+    "with_message": "এই মেসেজের সঙ্গে"
   }
 }

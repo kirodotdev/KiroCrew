@@ -768,6 +768,26 @@ describe('private member memory lifecycle', () => {
     expect(api.memorySettings).not.toHaveBeenCalled()
   })
 
+  it('tests recall against only the selected member', async () => {
+    api.vectorContextPreview.mockImplementation((query?: string) => Promise.resolve({ session_start: { parts: query ? [{ family: 'lessons', text: 'Selected member evidence' }] : [] } }))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await loaded()
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    const recallAction = await screen.findByRole('menuitem', { name: 'Test recall' })
+    expect(recallAction).toHaveAttribute('data-ui-location', 'memory.test-recall')
+    fireEvent.click(recallAction)
+    const dialog = screen.getByRole('dialog', { name: 'Test recall' })
+    expect(await within(within(dialog).getByTestId('recall-at-start')).findByText('Nothing')).toBeVisible()
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Task (optional)' }), { target: { value: 'review' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Test recall' }))
+    expect(await within(within(dialog).getByTestId('recall-with-message')).findByText('Selected member evidence')).toBeVisible()
+    expect(api.vectorContextPreview).toHaveBeenCalledWith(undefined, MEMBER_STORE)
+    expect(api.vectorContextPreview).toHaveBeenCalledWith('review', MEMBER_STORE)
+    expect(api.vectorContextPreview.mock.calls.every(([, store]) => store === MEMBER_STORE)).toBe(true)
+    fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' }).at(-1)!)
+    expect(screen.queryByText('Selected member evidence')).toBeNull()
+  })
+
   it('keeps an unconfirmed partial copy distinct from a skipped or successful copy', async () => {
     api.memorySeed.mockResolvedValue({ partial: true, results: [{ id: 'global.selected', outcome: 'unconfirmed', reason: 'Could not confirm the database write' }] })
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
