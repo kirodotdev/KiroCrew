@@ -19926,7 +19926,9 @@
         "what_you_d_get_in_version_plain": "Was {{version}} enthält",
         "what_you_d_get_none": "Zwischen deinem Build und diesem Update gibt es keine Changelog-Einträge.",
         "version_label": "Version",
-        "named_update_available": "{{name}} {{version}} ist verfügbar."
+        "named_update_available": "{{name}} {{version}} ist verfügbar.",
+        "update_installed_restart": "v{{version}} ist installiert. Starte neu, um von v{{current}} zu wechseln. Laufende Antworten brechen ab.",
+        "update_armed_restart": "v{{version}} wird beim nächsten Neustart installiert. Laufende Antworten brechen ab."
       },
       "botChannelPanel": {
         "allowed_user_ids": "Erlaubte Benutzer-IDs",

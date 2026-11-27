@@ -20469,7 +20469,9 @@
         "what_you_d_get_in_version_plain": "O que vem na {{version}}",
         "what_you_d_get_none": "Não há entradas no registro de mudanças entre a sua compilação e esta atualização.",
         "version_label": "Versão",
-        "named_update_available": "{{name}} {{version}} está disponível."
+        "named_update_available": "{{name}} {{version}} está disponível.",
+        "update_installed_restart": "A v{{version}} está instalada. Reinicie para trocar da v{{current}}. As respostas em andamento param.",
+        "update_armed_restart": "A v{{version}} é instalada na próxima vez que você reiniciar. As respostas em andamento param."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuário permitidos",

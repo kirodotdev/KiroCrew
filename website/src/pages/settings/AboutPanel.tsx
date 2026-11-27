@@ -10,7 +10,9 @@ import { codeBrowserBranchUrl, codeBrowserCommitUrl } from '../../lib/codeBrowse
 import SegmentedControl from '../../components/SegmentedControl'
 import ReportProblemCard from './ReportProblemCard'
 import { AGENT_REQUEST_POLL_MS, AgentUpdateRequestCard, copyCommand, useArmPollFailing } from './AboutPanelUpdateFlow'
-import { AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, useAboutPanelGatewayUpdate } from './AboutPanelGatewayUpdate'
+import {
+  AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, offeredGatewayTarget, useAboutPanelGatewayUpdate, useInstalledAndWaiting,
+} from './AboutPanelGatewayUpdate'
 import { DesktopGatewayRestartRow, useDesktopGatewayRestart } from './DesktopGatewayRestartRow'
 import { AppAutoDownloadSwitch, GatewayAutoUpdateSwitch } from './AboutPanelUpdateSwitches'
 import { AboutPanelUpcomingUpdate } from './AboutPanelUpcomingUpdate'
@@ -669,6 +671,7 @@ export function AboutPanel() {
   // status.update_available is set; the update itself is gated behind a
   // changelog confirm because applying restarts the gateway.
   const gwUpdate = useAboutPanelGatewayUpdate(queryClient, { checkedAt: lastCheckedAt, status: statusCheckStatus })
+  const gwOfferInstalled = useInstalledAndWaiting(offeredGatewayTarget(gwUpdate, gwStatusLatest))
   const {
     gwTargetDisplay, gwFound, gwAhead, gwBehind, gwSelfUpdatable, gwChannel,
     gwChannelError, gwCommand, showConfirm, setShowConfirm, restarting, gwCheck, gwApply,
@@ -878,9 +881,20 @@ export function AboutPanel() {
                     style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}
                     data-testid="hero-diverged">
                     <GitBranch size={11} className="lucide-inline" aria-hidden /> {i18nT('pages.settings.aboutPanel.diverged')}</span>
+                // The offered version is installed or armed and waits for a restart:
+                // the same status fact the Updates card reads, worded as the header
+                // pill words each state.
+                : newestUpdateAvailable && gwOfferInstalled
+                ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
+                    style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}
+                    data-testid={gwOfferInstalled === 'armed' ? 'hero-update-armed' : 'hero-update-ready'}>
+                    <RefreshCw size={11} className="lucide-inline" aria-hidden /> {i18nT(gwOfferInstalled === 'armed'
+                      ? 'components.updatePill.update_when_i_restart'
+                      : 'components.updatePill.update_ready')}</span>
                 : newestUpdateAvailable
                 ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
-                    style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}>
+                    style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}
+                    data-testid="hero-update-available">
                     <ArrowUp size={11} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.update_available')}</span>
                 // The followed lane has never published these bytes, so this
                 // install is not on it yet. Outranks "Up to date", which is what

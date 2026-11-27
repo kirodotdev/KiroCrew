@@ -19926,7 +19926,9 @@
         "what_you_d_get_in_version_plain": "{{version}}-এ কী আছে",
         "what_you_d_get_none": "তোমার বিল্ড আর এই আপডেটের মধ্যে কোনো চেঞ্জলগ এন্ট্রি নেই।",
         "version_label": "সংস্করণ",
-        "named_update_available": "{{name}} {{version}} পাওয়া যাচ্ছে।"
+        "named_update_available": "{{name}} {{version}} পাওয়া যাচ্ছে।",
+        "update_installed_restart": "v{{version}} ইনস্টল হয়েছে। v{{current}} থেকে বদলাতে রিস্টার্ট করো। চলমান উত্তর থেমে যাবে।",
+        "update_armed_restart": "পরেরবার রিস্টার্ট করলে v{{version}} ইনস্টল হবে। চলমান উত্তর থেমে যাবে।"
       },
       "botChannelPanel": {
         "allowed_user_ids": "অনুমোদিত ইউজার ID",

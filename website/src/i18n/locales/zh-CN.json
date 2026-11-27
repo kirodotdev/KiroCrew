@@ -19383,7 +19383,9 @@
         "what_you_d_get_in_version_plain": "{{version}} 包含的内容",
         "what_you_d_get_none": "你的构建和这次更新之间没有更新日志条目。",
         "version_label": "版本",
-        "named_update_available": "{{name}} {{version}} 可用。"
+        "named_update_available": "{{name}} {{version}} 可用。",
+        "update_installed_restart": "v{{version}} 已安装。重启即可从 v{{current}} 切换。正在进行的回复会停止。",
+        "update_armed_restart": "v{{version}} 会在下次重启时安装。正在进行的回复会停止。"
       },
       "botChannelPanel": {
         "allowed_user_ids": "允许的用户 ID",

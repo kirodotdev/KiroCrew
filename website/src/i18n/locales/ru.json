@@ -21012,7 +21012,9 @@
         "what_you_d_get_in_version_plain": "Что входит в {{version}}",
         "what_you_d_get_none": "Между твоей сборкой и этим обновлением нет записей в журнале изменений.",
         "version_label": "Версия",
-        "named_update_available": "{{name}} {{version}} доступна."
+        "named_update_available": "{{name}} {{version}} доступна.",
+        "update_installed_restart": "v{{version}} установлена. Перезапусти, чтобы перейти с v{{current}}. Текущие ответы прервутся.",
+        "update_armed_restart": "v{{version}} установится при следующем перезапуске. Текущие ответы прервутся."
       },
       "botChannelPanel": {
         "allowed_user_ids": "Разрешённые ID пользователей",

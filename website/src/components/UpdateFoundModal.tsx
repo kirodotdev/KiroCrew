@@ -625,6 +625,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
             <div className="mt-2">
               <InAppUpdateFlow
                 version={candidate.displayVersion}
+                rawVersion={candidate.version}
                 manualCommand=""
                 onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
                 askAgent={!required}

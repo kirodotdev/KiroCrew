@@ -9603,7 +9603,9 @@
         "what_you_d_get_in_version_plain": "What's in {{version}}",
         "what_you_d_get_none": "No changelog entries between your build and this update.",
         "version_label": "Version",
-        "named_update_available": "{{name}} {{version}} is available."
+        "named_update_available": "{{name}} {{version}} is available.",
+        "update_installed_restart": "v{{version}} is installed. Restart to switch from v{{current}}. Replies in progress stop.",
+        "update_armed_restart": "v{{version}} installs at the next restart. Replies in progress stop."
       },
       "crewmatesSection": {
         "reply_threads": "Reply threads on bot chat messages",
