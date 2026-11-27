@@ -6,7 +6,7 @@ created: 2026-11-12
 last-audited: 2026-11-19
 audited-at: fc89562d69
 doc-pr: null
-implementation-prs: [36277]
+implementation-prs: [36277, 43435]
 tracking-issues: [36209]
 supersedes: []
 superseded-by: []
@@ -22,8 +22,10 @@ its spec section "The working-folder question gates routing" in
 `docs/system-specs/modules/mcp-shareability.md` is the authority. The owner
 confirmed F on 2026-11-13 by merging this document and asking for the fix to ship,
 #36277 merged on 2026-11-14 (`538bad7fc7`), so the status is `partial`: F is built on main.
-Proposal C (section 5) is still a proposal, not decided: acceptance is requested
-from a maintainer, and section 5 records it when one does. This document changes no code. Every code reference below
+Proposal C (section 5) was decided by the repository owner on 2026-11-27 in the
+conductor chat, in a per-project form recorded in section 5.0; it is being built
+in two pull requests, the first adding the mechanism and the second wiring its
+callers. This document changes no code. Every code reference below
 names a symbol as it stands on main at `b2aac45f3a`.
 
 ## 1. Problem
@@ -118,6 +120,29 @@ the next start. A renamed server is unanswered. F does not change where a routed
 process runs. It only stops routing a server nobody has said is safe to pin.
 
 ## 5. Proposal C: per-directory backends inside the session sandbox
+
+### 5.0 Decision (2026-11-27)
+
+The repository owner decided C on 2026-11-27 in the conductor chat, with these
+terms, which replace 5.1 where the two differ:
+
+- Every MCP server takes part in sharing. A server known to be folder-free (Kiro
+  Crew's own, the edition's list, the declared facts of `folder_use.py`) keeps the
+  one shared backend. Every other server is treated as reading its folder and
+  gets one backend per project: the key is the project root (the git toplevel
+  when there is one) plus the session's sandbox plan, so chats in one project
+  share it and other projects do not.
+- Sharing is seamless: no folder question and no approval card in this flow. A
+  per-server "Don't share" switch in MCP Servers falls back to one per chat; it
+  is off by default and never prompted.
+- A per-project backend runs inside the same sandbox the session uses, never
+  outside one. Where that sandbox cannot be applied, the server runs per chat.
+- One shared process for all projects with per-call path rewriting is rejected:
+  MCP has no signal that a server keeps no state between calls.
+- It ships as two pull requests into main: the first adds the per-project pool
+  key, the owner-only session record, the sandboxed spawn and the fallback; the
+  second sends the session records, routes servers to the pool, and removes the
+  folder question.
 
 The goal is to route a `uses_cwd` server too, without the escape in section 2.
 

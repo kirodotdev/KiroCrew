@@ -858,7 +858,11 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     work_dir = _backend_work_dir()
     if work_dir is None:
         work_dir = pool_key.work_dir
-    elif os.path.normcase(pool_key.work_dir) != os.path.normcase(work_dir):
+    elif not pool_key.sandbox_hash and os.path.normcase(pool_key.work_dir) != os.path.normcase(
+        work_dir
+    ):
+        # A per-project key's work dir is the daemon's own record, not the
+        # frame's; ``_acquire_backend`` spawns it there, inside its sandbox.
         logger.warning(
             "mcp-gateway: %r registered work dir %r; spawning in %r instead",
             pool_key.server_name,

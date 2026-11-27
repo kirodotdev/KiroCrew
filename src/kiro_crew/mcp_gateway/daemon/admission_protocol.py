@@ -33,6 +33,7 @@ from kiro_crew.mcp_gateway.pool import (
     PoolAtCapacity,
     PoolKey,
 )
+from kiro_crew.mcp_gateway.project_binding import ProjectScopeUnavailable
 
 if TYPE_CHECKING:
     from kiro_crew.mcp_gateway import gatewayd as facade
@@ -219,6 +220,10 @@ def _classify_rejection(exc: BaseException, *, exclusive: bool) -> Optional[_Rej
     """
     if isinstance(exc, _TargetUnknown):
         return _Rejection(REJECT_CLASS_COMPAT, fallback=True)
+    if isinstance(exc, ProjectScopeUnavailable):
+        # No per-project backend for this connection: the stub starts the server
+        # itself, inside the chat's own sandbox, as with no pool at all.
+        return _Rejection(REJECT_CLASS_ISOLATION, fallback=True)
     if isinstance(exc, _CAPACITY_FAILURES):
         if isinstance(exc, SpawnGateClosed):
             retry_after_secs = 5

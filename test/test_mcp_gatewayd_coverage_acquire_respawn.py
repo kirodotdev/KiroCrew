@@ -78,6 +78,7 @@ class TestAcquireBackend:
         )
 
         assert _await_kwargs(spawn)["env"]["A"] == "declared"
+        assert _await_kwargs(spawn)["declared_env_keys"] == ("A",)
         await _drain_task(backend._stdout_task)
         await pool.shutdown_all(timeout=0.1)
 

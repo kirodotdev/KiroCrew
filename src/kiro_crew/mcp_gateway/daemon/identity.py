@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Collection, Optional
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_caller import CallerContext, new_tenant_nonce
 from kiro_crew.mcp_gateway import socketsec
-from kiro_crew.mcp_gateway.daemon import logger
+from kiro_crew.mcp_gateway.daemon import logger, project_scope
 from kiro_crew.mcp_gateway.daemon.audit import (
     _audit_caller_rekey,
     _audit_peer_identity_denied,
@@ -78,6 +78,7 @@ class _StubConn:
         "tenant_nonce",
         "stub_session_token",
         "identity_refused",
+        "session_attested",
         "register",
         "captured_init",
         "private_backend",
@@ -109,6 +110,11 @@ class _StubConn:
         #: either a tokenless claim (which retargets every connection on the pid
         #: unconditionally) or a tokened claim naming this connection's own token.
         self.identity_refused = False
+        #: Set when ``caller`` came from the kernel or the gateway (a claimed
+        #: session token, or the SO_PEERCRED process walk), never from a key the
+        #: Register frame named. Only such a session may pick a per-project
+        #: backend (``project_scope``).
+        self.session_attested = False
         self.pid_start_ids = pid_start_ids if pid_start_ids is not None else {}
         self.stub_session_token = stub_session_token
         # Namespace separator for a connection whose session the gateway cannot
@@ -428,6 +434,13 @@ def _resolve_peer_identity(peer_pid: int) -> tuple[str, list[int]]:
     )
 
 
+def _resolve_signed_peer_identity(peer_pid: int) -> tuple[str, list[int]]:
+    """:func:`_resolve_peer_identity` that trusts only HMAC-signed pid mappings."""
+    return resolve_peer_identity(
+        peer_pid, config_dir_fn=facade._config_dir, ppid_fn=facade._ppid_fn, signed_only=True
+    )
+
+
 def _caller_from_register(register: dict[str, Any]) -> Optional[CallerContext]:
     """Build a :class:`CallerContext` from the stub's Register payload.
 
@@ -639,8 +652,15 @@ async def _resolve_register_identity(
     # The ONE token ask sits after the last await before ``_conn_index_add``, so
     # a claim cannot bind between the answer and the index that lets it land.
     token_caller = facade._token_caller(stub_session_token, peer_host_pids, pid_start_ids)
+    # Whether this caller may pick a per-project backend (``project_scope``):
+    # only a token the owner itself claimed, or a signed process-tree mapping.
+    attested = False
     if token_caller is not None:
         caller = token_caller
+        entry = _TOKEN_BINDINGS.get(stub_session_token)
+        attested = entry is not None and project_scope.owner_claimed(
+            stub_session_token, token_caller.session_key, entry[1], entry[2]
+        )
         logger.info(
             "stub %s resolved to the session its entry names (session_key=%s)",
             stub_uuid,
@@ -684,6 +704,17 @@ async def _resolve_register_identity(
             channel_id=str(register.get("channel_id") or ""),
             from_gateway=True,
         )
+        # The lenient walk reads mappings a local process can write. Only a
+        # project-scoped stub needs more, so only it pays for the signed walk.
+        if register.get("project_scoped") is True:
+            try:
+                signed_key, _ = await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), facade._resolve_signed_peer_identity, peer_pid
+                )
+            except Exception:
+                logger.exception("signed peer walk failed for peer_pid=%d", peer_pid)
+                signed_key = ""
+            attested = bool(signed_key) and signed_key == resolved_session_key
         _audit_peer_identity_resolved(resolved_session_key, peer_pid, stub_uuid)
         logger.info(
             "peer-resolved session_key for stub %s via peer_pid=%d",
@@ -700,6 +731,7 @@ async def _resolve_register_identity(
         new_tenant_nonce(),
         stub_session_token,
     )
+    conn.session_attested = attested
     facade._conn_index_add(conn)
     return conn
 
@@ -792,6 +824,8 @@ def _apply_recaller(msg: dict[str, Any], conn: _StubConn, pool_label: str) -> No
     # key — the one allowed transition. Audit the identity change.
     caller = updated
     conn.caller = updated
+    # The recaller key is the stub's own claim, never an attested session.
+    conn.session_attested = False
     _audit_caller_rekey(caller.session_key, pool_label)
     logger.info(
         "stub %s recaller → session_key=%s type=%s",

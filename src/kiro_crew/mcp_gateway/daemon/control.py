@@ -1,8 +1,8 @@
 """The one-shot control frames served on the uid-gated socket.
 
 ``ping`` (the pong the manager's adoption gate reads), ``stats``, ``claim``,
-``abort``, ``set-spawn-capacity``, ``owner-port``, ``stand-down``, ``recycle-server``,
-``session-mounts`` and ``app-call`` each arrive as
+``abort``, ``set-spawn-capacity``, ``owner-port``, ``session-project``, ``stand-down``,
+``recycle-server``, ``session-mounts`` and ``app-call`` each arrive as
 the first frame of their own connection, get one reply, and end it. Trust basis
 for all of them is the owner-only endpoint that authenticates Register;
 ``owner-port`` also checks the sender's pid, and an unowned daemon refuses it.
@@ -21,7 +21,7 @@ from kiro_crew.env import pinned_gateway_spec_path
 from kiro_crew.mcp_gateway import socketsec
 from kiro_crew.mcp_gateway.admission import Admission
 from kiro_crew.mcp_gateway.daemon import identity as _identity
-from kiro_crew.mcp_gateway.daemon import logger
+from kiro_crew.mcp_gateway.daemon import logger, project_scope
 from kiro_crew.mcp_gateway.daemon.audit import (
     _audit_caller_claimed,
     _audit_owner_port,
@@ -339,6 +339,7 @@ async def _apply_claim(
             skipped += 1
             old_unattributable = conn.caller.session_key if conn.caller is not None else ""
             conn.caller = None
+            conn.session_attested = False
             # A verdict, not an absence: it is what stops the stub-initiated
             # recaller from filling the key-less state this clearing creates.
             conn.identity_refused = True
@@ -394,6 +395,12 @@ async def _apply_claim(
         # its frames as the previous session — wrong-principal execution.
         # A subscribe arriving during an await must likewise already be
         # authorized as the NEW caller on every connection.
+        # A claim that moves the connection to another session leaves it
+        # unattested: a per-project backend needs that session attested anew.
+        # A claim naming the same session changes nothing a backend relies on,
+        # so a live per-project connection stays attached.
+        if conn.caller is None or conn.caller.session_key != updated_caller.session_key:
+            conn.session_attested = False
         conn.caller = updated_caller
         # A re-attribution supersedes any prior clearing verdict: the flag stops
         # a stub from naming itself through the recaller, but once a claim has
@@ -749,7 +756,13 @@ async def _serve_control_frame(
     # (fixes warm-pool re-claim staleness). Validation + auditing live in
     # ``_apply_claim``.
     if register.get("type") == "claim":
-        await _write_json_line(writer, await _apply_claim(register, pool))
+        reply = await _apply_claim(register, pool)
+        if reply.get("type") != "claim-rejected":
+            caller = _caller_from_register(register)
+            await project_scope.note_owner_claim(
+                writer, register, caller.session_key if caller is not None else ""
+            )
+        await _write_json_line(writer, reply)
         return True
 
     # Abort-push short-circuit (one-shot control connection from the main
@@ -792,6 +805,14 @@ async def _serve_control_frame(
     # in ``_apply_owner_port``.
     if register.get("type") == "owner-port":
         await _write_json_line(writer, await _apply_owner_port(register, writer, pool))
+        return True
+
+    # Session-project record (one-shot control connection from the owning
+    # gateway): the project root and sandbox plan of one session, which a
+    # per-project backend is keyed and confined by. Only the owner or its exec
+    # successor may send it; the rules live in ``project_scope.apply_session_project``.
+    if register.get("type") == "session-project":
+        await _write_json_line(writer, await project_scope.apply_session_project(register, writer))
         return True
 
     # Stand-down short-circuit (one-shot control connection from a STARTING

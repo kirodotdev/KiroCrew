@@ -134,6 +134,51 @@ Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
 The answer only gates routing today. Whether `work_dir` joins the pool signature
 for `uses_cwd` servers is a separate decision.
 
+## Per-project backends
+
+`mcp_gateway/daemon/project_scope.py` lets a server that reads its folder share
+one backend among the chats of one project, inside the sandbox those chats use.
+No overlay asks for it yet: a stub opts in with `project_scoped: true` on its
+Register frame, and asking can only narrow what the connection gets.
+
+- **The record.** The owning gateway sends a `session-project` control frame per
+  session: its project root and sandbox plan (tier, hidden dirs, exposed files).
+  The daemon accepts it only when the kernel-reported sender pid is the owner or
+  its exec successor, the `owner-port` rule; a refusal is audited. The Register
+  frame never names a root.
+- **The key.** At acquire time the daemon reads the record of the session the
+  kernel attested for the connection (`_StubConn.session_attested`: a token whose
+  current binding is the owner's own claim, or an SO_PEERCRED walk whose signed
+  mapping names the same session; never a key the frame named, and a claim that
+  moves the connection to another session clears it). The key's
+  `work_dir` becomes the root and `sandbox_hash` the digest of root and plan. One
+  project with one plan shares a backend; another root or plan gets its own. A key
+  with an empty `sandbox_hash` hashes exactly as before the field existed.
+- **The spawn.** The backend starts in the root through `sandboxed_spawn_argv`,
+  with the session's tier, hidden dirs, exposed files and project folder, and its
+  own per-process temp dir as its only scratch. No session's scratch is opened.
+- **Roots.** The backend's `roots/list` is answered by the gateway with the one
+  root; the root never changes, so `roots/list_changed` is never sent.
+- **Fallback.** No attested session, no record, no sandbox backend on the host, a
+  Kiro Crew control-plane server, an env name the server's spec declares (a
+  `secret://` one included) that the sandbox launcher clears (also when the
+  declared value equals an inherited one; a chat's own kiro-cli hands declared
+  values to the server after the clear), or
+  `PROJECT_INSTANCES_PER_SERVER` live per-project backends for the server:
+  `ProjectScopeUnavailable`, an `isolation`
+  rejection with `fallback: true`. The stub starts the server itself inside its
+  chat's sandbox, as it would with no pool. A cleared name the daemon only
+  inherited (such as a messaging channel's token) is dropped by the scrub, as on
+  the per-chat path, and is no reason to fall back.
+- **Every attach and frame.** `project_scope.backend_serves_project` checks that the connection's
+  session still maps to the backend's root and plan; a claim that moved it to
+  another project ends the connection.
+- **Lifecycle.** Refcount and `idle_timeout_secs` drain apply as to any pooled
+  backend. A per-project key is never prewarmed: it needs a live session's record.
+
+Rejected design: one shared process for all projects with the gateway rewriting
+paths per call. MCP has no signal that a server keeps no state between calls.
+
 ## Session-bound by construction, which is not the same as "ours"
 
 The `disqualified` reason `session_bound_by_construction` names a server that resolves the calling session from its own PROCESS — an env var, a pid walk — so one backend can only ever serve one session correctly. It is decided by which servers actually consume the injected caller block, not by matching a name against Kiro Crew's managed set, since keying it on authorship would disqualify a managed server that does consume the block. All eleven managed servers (`kirocrew-core`, `kirocrew-cron`, `kirocrew-computer`, `kirocrew-dashboard`, `kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug`, `kirocrew-panel`, `kirocrew-guide`, `kirocrew-mate`, `kirocrew-secrets`) advertise and consume the block, and all eleven are in `_MANAGED_SERVERS_CALLER_AWARE`. Advertising is necessary but not sufficient for the shareable classification, and `kirocrew-computer` is the case that shows why: a caller the gateway cannot name proceeds under `unresolved:<pid>`, each CONNECTION gets its own namespace only from the per-connection nonce, an ADOPTED pre-nonce daemon injects none, and this classification is what `seed.py` turns into a config write. It qualifies because that separation is negotiated at the handshake rather than assumed — `gatewayd` advertises `tenant_nonce`, and a stub that asked to pool this server against a daemon that does not advertise it execs a per-session backend instead (`stub.must_degrade_nonce_blind`). A server that cannot make the guarantee would be named in `_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD` in `mcp_discovery_managed.py` and stay session-bound; that set is empty. The classification stays per-server because a new managed server starts unadopted.
