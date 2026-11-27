@@ -1,10 +1,21 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useSyncExternalStore } from 'react'
+import { useQuery, useQueryClient, type QueryState } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { parseKiroUsagePayload, kiroUsageRefetchInterval, type KiroUsageState } from '../api/kiroUsage'
 import { isKiroHarness, type AcpBackendConfig } from '../api/acpBackend'
 import type { KiroAccountUsage } from '../components/KiroAccountModal'
-import { failedWithNoData } from '../api/queryState'
+import { failedWithNoData, failedWithNoReading } from '../api/queryState'
 import { noteKiroAccount } from '../providers/adapters/acp'
+
+const KIRO_USAGE_KEY = ['kiro-usage']
+
+/** The reading the last settled usage read left: `failed` when it holds none
+ *  and an error settled after it, else the reading (`null` while warming). */
+export function settledKiroUsage(state: QueryState<KiroUsageState> | undefined): KiroUsageState | 'failed' {
+  if (!state) return null
+  if (failedWithNoReading(state)) return 'failed'
+  return state.data ?? null
+}
 
 /**
  * The Kiro credit reading one derivation serves: the capsule's credits segment,
@@ -21,13 +32,18 @@ export function useKiroAccountReading() {
   // bug that rendered a capped 10K plan as "20.0K". Returns null until the
   // background cache warms.
   //
-  // `isError` is read alongside `data` because `data` alone cannot tell "the
+  // The failure is read alongside `data` because `data` alone cannot tell "the
   // backend cache has not warmed yet" (null) apart from "the request failed"
   // (undefined) — both are falsy. Without it a failing endpoint renders as a
-  // spinner that never resolves, since the 30s refetch keeps retrying forever.
+  // spinner that never resolves, since the refetch keeps retrying forever.
   const queryClient = useQueryClient()
-  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroUsageState>({
-    queryKey: ['kiro-usage'],
+  useQuery<KiroUsageState>({
+    queryKey: KIRO_USAGE_KEY,
+    // This observer only drives the poll. The shell and Settings call this hook,
+    // so a notification here re-renders the whole dashboard. What they render
+    // is read below from the settled state, which changes only when the
+    // reading does.
+    notifyOnChangeProps: [],
     // The parser is shared with the account modal's Refresh button, which
     // writes its POST result into this same query: one normalization for both.
     // This poll is also how the browser learns of a `kiro-cli login` to another
@@ -48,8 +64,18 @@ export function useKiroAccountReading() {
         query.state.data ?? null,
         query.state.status === 'error',
         query.state.dataUpdateCount + query.state.errorUpdateCount,
+        query.state.errorUpdateCount,
       ),
   })
+  // The last SETTLED outcome, never `isError`: each poll of a data-less failed
+  // read clears its error and goes back to `pending` until it fails again, so
+  // `isError` flipped twice per poll and re-rendered every consumer with a
+  // spinner in between. The snapshot is the parsed reading (kept by reference
+  // while unchanged) or a string, so an unchanged poll re-renders nothing.
+  const kiroUsageSettled = useSyncExternalStore(
+    useCallback(onChange => queryClient.getQueryCache().subscribe(onChange), [queryClient]),
+    () => settledKiroUsage(queryClient.getQueryState<KiroUsageState>(KIRO_USAGE_KEY)),
+  )
   // ONE derivation feeds both the capsule segment and the account modal, so the
   // drill-in can never report a different state from the pill that opened it —
   // the modal spinning on "checking account" behind a pill that already says
@@ -78,11 +104,9 @@ export function useKiroAccountReading() {
   // a Kiro harness" is established, so the segment must not collapse into the
   // hidden non-Kiro case (that is a verdict; this is a failed read): it renders
   // its own dash, and the modal behind it retries the config read.
-  const kiroUsageState: KiroAccountUsage = kiroUsageFailed && !kiroUsage
-    ? 'failed'
-    : kiroUsage === 'none' && kirocrewCfgFailed
-      ? 'config-unreadable'
-      : (kiroUsage ?? null)
+  const kiroUsageState: KiroAccountUsage = kiroUsageSettled === 'none' && kirocrewCfgFailed
+    ? 'config-unreadable'
+    : kiroUsageSettled
   // The states with NOTHING TRUE TO SHOW: a usage read that produced no
   // reading, on a harness that does not run on the Kiro account. Whether this
   // surface EXISTS is the HARNESS's verdict; the reading only decides what it

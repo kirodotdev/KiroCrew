@@ -32,7 +32,7 @@ describe('kiroUsageRefetchInterval', () => {
   }
 
   it('polls fast while the cache is warming (null reading)', () => {
-    expect(kiroUsageRefetchInterval(null, false, 0)).toBe(KIRO_USAGE_WARMING_POLL_MS)
+    expect(kiroUsageRefetchInterval(null, false, 0, 0)).toBe(KIRO_USAGE_WARMING_POLL_MS)
   })
 
   it('polls fast while the read errors, even though errored data is also null', () => {
@@ -40,39 +40,51 @@ describe('kiroUsageRefetchInterval', () => {
     // null branch and the error branch resolve to the fast cadence, and the
     // error flag is asserted on its own so a future change to the data branch
     // cannot silently stop accelerating the boot 503.
-    expect(kiroUsageRefetchInterval(null, true, 0)).toBe(KIRO_USAGE_WARMING_POLL_MS)
+    expect(kiroUsageRefetchInterval(null, true, 1, 1)).toBe(KIRO_USAGE_WARMING_POLL_MS)
+  })
+
+  it('backs off on each repeated failure, up to the steady cadence', () => {
+    const waits = [1, 2, 3, 4, 5, 6].map(n => kiroUsageRefetchInterval(null, true, n, n))
+    expect(waits).toEqual([
+      KIRO_USAGE_WARMING_POLL_MS,
+      KIRO_USAGE_WARMING_POLL_MS * 2,
+      KIRO_USAGE_WARMING_POLL_MS * 4,
+      KIRO_USAGE_WARMING_POLL_MS * 8,
+      KIRO_USAGE_STEADY_POLL_MS,
+      KIRO_USAGE_STEADY_POLL_MS,
+    ])
   })
 
   it('drops to the steady cadence once a real reading lands', () => {
-    expect(kiroUsageRefetchInterval(reading, false, 0)).toBe(KIRO_USAGE_STEADY_POLL_MS)
+    expect(kiroUsageRefetchInterval(reading, false, 0, 0)).toBe(KIRO_USAGE_STEADY_POLL_MS)
   })
 
   it('drops to the steady cadence on each terminal sentinel', () => {
     for (const terminal of ['none', 'signin-required'] as const) {
-      expect(kiroUsageRefetchInterval(terminal, false, 0)).toBe(KIRO_USAGE_STEADY_POLL_MS)
+      expect(kiroUsageRefetchInterval(terminal, false, 0, 0)).toBe(KIRO_USAGE_STEADY_POLL_MS)
     }
   })
 
   it('keeps polling fast just below the cap', () => {
     const below = KIRO_USAGE_WARMING_MAX_READS - 1
-    expect(kiroUsageRefetchInterval(null, true, below)).toBe(KIRO_USAGE_WARMING_POLL_MS)
-    expect(kiroUsageRefetchInterval(null, false, below)).toBe(KIRO_USAGE_WARMING_POLL_MS)
+    expect(kiroUsageRefetchInterval(null, true, below, 1)).toBe(KIRO_USAGE_WARMING_POLL_MS)
+    expect(kiroUsageRefetchInterval(null, false, below, 0)).toBe(KIRO_USAGE_WARMING_POLL_MS)
   })
 
   it('ends a persistent error at the steady cadence', () => {
     // A signed-out kiro-cli or a down gateway keeps the query in error forever:
     // past the cap it must poll no faster than before this change.
-    expect(kiroUsageRefetchInterval(null, true, KIRO_USAGE_WARMING_MAX_READS)).toBe(KIRO_USAGE_STEADY_POLL_MS)
-    expect(kiroUsageRefetchInterval(null, true, 500)).toBe(KIRO_USAGE_STEADY_POLL_MS)
+    expect(kiroUsageRefetchInterval(null, true, KIRO_USAGE_WARMING_MAX_READS, 1)).toBe(KIRO_USAGE_STEADY_POLL_MS)
+    expect(kiroUsageRefetchInterval(null, true, 500, 500)).toBe(KIRO_USAGE_STEADY_POLL_MS)
   })
 
   it('ends a cache that never warms at the steady cadence', () => {
-    expect(kiroUsageRefetchInterval(null, false, KIRO_USAGE_WARMING_MAX_READS)).toBe(KIRO_USAGE_STEADY_POLL_MS)
+    expect(kiroUsageRefetchInterval(null, false, KIRO_USAGE_WARMING_MAX_READS, 0)).toBe(KIRO_USAGE_STEADY_POLL_MS)
   })
 
   it('does not speed up a pill that had a reading and then starts failing', () => {
     // Errors after a reading keep the old data; many reads have already settled.
-    expect(kiroUsageRefetchInterval(reading, true, 40)).toBe(KIRO_USAGE_STEADY_POLL_MS)
+    expect(kiroUsageRefetchInterval(reading, true, 40, 1)).toBe(KIRO_USAGE_STEADY_POLL_MS)
   })
 })
 
