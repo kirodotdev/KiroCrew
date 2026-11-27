@@ -635,6 +635,16 @@ class SubagentInfo:
     # True while ``_start_price_gb`` is the SHARED price: the one row a
     # dedicated launch must top up first (``_ensure_dedicated_start_priced``).
     _start_priced_shared: bool = False
+    # True when admission predicted the run shares its parent's runtime
+    # (``_sharing_plan``), whatever the memory floor: the start neither waited on
+    # nor stamped the spawn stagger, and it counts toward its KAS parent's shared
+    # places until it reserves its own or falls back to a dedicated process.
+    _admitted_shared: bool = False
+    # True for a shared start that counts in the in-startup population before
+    # its run sets ``_exec_started``: one the gate hands straight to its run, or
+    # one an approval release hands on. A start parked at the approval prompt is
+    # not counted until the pump releases it.
+    _startup_before_exec: bool = False
     # True while this row waits its turn for the dedicated top-up's re-check;
     # the row holding the turn does not count waiters queued behind it.
     _topup_waiting: bool = False

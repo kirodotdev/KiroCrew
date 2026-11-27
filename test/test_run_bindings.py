@@ -377,6 +377,11 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
         "(self, info: 'SubagentInfo') -> 'bool'",
         "run_start",
     ),
+    "_kas_shared_places_left": (
+        "function",
+        "(self, info: 'SubagentInfo', *, admitted: 'bool') -> 'int | None'",
+        "run_start",
+    ),
     "_resolve_child_aws_profile": (
         "coroutine",
         "(self, info: 'SubagentInfo') -> 'ResolvedAwsProfile | None'",

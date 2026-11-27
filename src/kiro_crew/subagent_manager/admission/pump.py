@@ -71,14 +71,15 @@ class _PumpMixin(ManagerComponent):
         @staticmethod
         def entry_is_child(params: "Mapping[str, Any]") -> bool: ...
 
-    def _should_stagger_queue_impl(self, now: float) -> tuple[bool, bool]:
+    def _should_stagger_queue_impl(self, now: float, *, shared: bool = False) -> tuple[bool, bool]:
         """Decide whether a spawn arriving at *now* must be queued.
 
         Returns ``(should_queue, slot_free)``. A spawn is queued when any of
-        three holds: no slot is free (at capacity); a spawn started within the
-        stagger window (``subagent_spawn_stagger_secs``) -- so the initial fill
-        never bursts and no two agents start within the interval
-        (dynamic-subagent-sizing.md §5.3); or as many agents are already in
+        three holds: no slot is free (at capacity); a dedicated start
+        launched within the stagger window (``subagent_spawn_stagger_secs``)
+        and this one launches a process too (*shared* False) -- so the initial
+        fill of dedicated starts never bursts (dynamic-subagent-sizing.md
+        §5.3); or as many agents are already in
         startup as ``_startup_cap`` allows (two session-start gate rounds)
         -- so a slow-start regime cannot pile the whole cap into startup at
         once. The three bound different things: the RUNNING population, the
@@ -91,7 +92,11 @@ class _PumpMixin(ManagerComponent):
         # (``CapacityView``). The reserve's root-only narrowing is applied by
         # the caller, which knows whether the spawn is nested.
         slot_free = self._manager._admission.capacity_view().any_slot
-        too_soon = (now - self._manager._last_spawn_ts) < self._manager._spawn_stagger_secs
+        # The stagger spaces process launches: a start that will share its
+        # parent's runtime (*shared*) launches none, so it is not held by it.
+        too_soon = (
+            not shared and (now - self._manager._last_spawn_ts) < self._manager._spawn_stagger_secs
+        )
         startup_full = self._manager._startup_population() >= self._manager._startup_cap()
         return (not slot_free or too_soon or startup_full, slot_free)
 
@@ -973,6 +978,7 @@ class _PumpMixin(ManagerComponent):
         self._manager._running_count = max(0, int(self._manager._running_count) - 1)
         self._manager._startup_reservations = max(0, int(self._manager._startup_reservations) - 1)
         self._manager._claim_prices.pop(agent_id, None)
+        self._manager._shared_claims.pop(agent_id, None)
         _glue_logger.debug("taskq: reservation for %s released", agent_id)
 
     def _drain_queue_sync_impl(
@@ -1682,8 +1688,11 @@ class _PumpMixin(ManagerComponent):
                     fut.set_result(False)
                 continue
             break
+        head = info
         elapsed = time.monotonic() - self._manager._last_spawn_ts
-        if elapsed < self._manager._spawn_stagger_secs:
+        # A start admitted to share its parent's runtime launches no process, so
+        # the stagger does not hold its release (``_should_stagger_queue_impl``).
+        if not info._admitted_shared and elapsed < self._manager._spawn_stagger_secs:
             try:
                 asyncio.get_event_loop().call_later(
                     self._manager._spawn_stagger_secs - elapsed, self._manager._drain_queue
@@ -1756,6 +1765,20 @@ class _PumpMixin(ManagerComponent):
             index += 1
         else:
             return "held" if held else ""
+        if (
+            info is not head
+            and not info._admitted_shared
+            and elapsed < self._manager._spawn_stagger_secs
+        ):
+            # The pressure hold passed over a shared head to a dedicated start:
+            # that one is spaced like any process launch.
+            try:
+                asyncio.get_event_loop().call_later(
+                    self._manager._spawn_stagger_secs - elapsed, self._manager._drain_queue
+                )
+            except RuntimeError:
+                pass  # no running loop (sync/test context)
+            return "held"
         queue.pop(index)
         self._manager._forget_pending_start(info.id)
         # This start begins NOW. Stamp the stagger clock as every direct
@@ -1763,15 +1786,16 @@ class _PumpMixin(ManagerComponent):
         # ``_exec_started`` on its first step, one loop iteration from here,
         # and the stamp keeps the pump from admitting into that gap -- the
         # same cover the direct paths rely on. One release per pass; the
-        # re-arm at the stagger boundary takes the next.
-        self._manager._last_spawn_ts = time.monotonic()
+        # re-arm at the stagger boundary takes the next. A shared start
+        # launches no process and leaves the clock alone.
+        released_at = time.monotonic()
+        if not info._admitted_shared:
+            self._manager._last_spawn_ts = released_at
         # A released root member is progress of its lane, where the hold may
         # keep rows waiting behind it. A child entry also ends the scan above
         # and is released here; it is not held, so it is not progress.
         if not self.entry_is_child(params):
-            self._manager._pressure_lane_started(
-                info.parent_session_key, self._manager._last_spawn_ts
-            )
+            self._manager._pressure_lane_started(info.parent_session_key, released_at)
         logger.info(
             "Releasing approved spawn %s into startup (%d left queued, in_startup=%d/%d)",
             info.id,
@@ -1779,6 +1803,9 @@ class _PumpMixin(ManagerComponent):
             self._manager._startup_population(),
             self._manager._startup_cap(),
         )
+        # A released shared start stamps no clock: it counts in startup now, so
+        # the next pass sees it before its run begins.
+        info._startup_before_exec = info._admitted_shared
         fut.set_result(True)
         self._manager._emit_queue_depth(info.parent_session_key, info.batch_id)
         if queue:
