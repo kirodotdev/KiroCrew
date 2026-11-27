@@ -198,6 +198,22 @@ describe('FirstRunHarnessSetup', () => {
     expect(onDone).toHaveBeenCalled()
   })
 
+  it('names the administrator-only sandbox fix on a harness the AppArmor userns block refuses', async () => {
+    renderStep({
+      installed: true,
+      authenticated: true,
+      sandbox_backend_available: false,
+      sandbox_blocked_backends: ['strands'],
+      sandbox_remedy: 'apparmor_userns',
+    })
+    fireEvent.click(await screen.findByTestId('harness-setup-bring-your-harness', {}, WAIT))
+    fireEvent.click(await screen.findByRole('radio', { name: /Strands/ }, WAIT))
+    const fix = await screen.findByTestId('sandbox-blocked-admin-fix', {}, WAIT)
+    expect(fix).toHaveTextContent(/it must run from the gateway's own account/)
+    expect(fix).toHaveTextContent(/ask an administrator of this machine to give this account sudo rights/)
+    expect(fix).toHaveTextContent('kirocrew service install')
+  })
+
   it('keeps Back off while a save is in flight, so a later save cannot be overwritten', async () => {
     backends(kiroInstalled, strands)
     vi.mocked(api.patchConfig).mockReturnValue(new Promise(() => {}) as never)

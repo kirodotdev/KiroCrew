@@ -7966,6 +7966,8 @@
       "unzip_missing_install_first": "먼저 unzip을 설치하세요. 설치 프로그램에 필요하지만 게이트웨이 호스트에는 없습니다. 다음 명령 중 하나나 시스템의 패키지 관리자를 사용하세요.",
       "unzip_command_debian_ubuntu": "Debian 또는 Ubuntu",
       "unzip_command_fedora_rhel": "Fedora 또는 RHEL",
+      "unzip_needs_administrator": "두 명령 모두 sudo가 필요합니다. 이 컴퓨터에서 sudo를 사용할 수 없다면 관리자에게 unzip 설치를 요청한 뒤 다시 확인하세요.",
+      "sandbox_fix_needs_administrator": "이 명령은 sudo가 필요하며, 서비스가 게이트웨이 계정용으로 설치되도록 그 계정에서 직접 실행해야 합니다. 여기서 sudo를 사용할 수 없다면 이 컴퓨터의 관리자에게 이 계정에 sudo 권한을 달라고 요청하세요. 관리자가 자기 계정에서 실행하면 서비스가 사용자가 아닌 관리자용으로 설치됩니다.",
       "install_kiro_cli_then_run_on_host": "그런 다음 {{platform}} 게이트웨이 호스트에서 다음을 실행해 Kiro CLI를 설치하세요.",
       "setup_intro": "<0>{{platform}} 게이트웨이 호스트</0>에서 코딩 에이전트를 실행하면 대시보드가 자동으로 열립니다.",
       "setup_intro_unknown_platform": "<0>게이트웨이 호스트</0>에서 코딩 에이전트를 실행하면 대시보드가 자동으로 열립니다.",

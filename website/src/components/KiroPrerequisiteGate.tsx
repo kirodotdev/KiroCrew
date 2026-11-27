@@ -237,6 +237,7 @@ function remedySteps(remedy: string): React.ReactNode {
         <ul className="mt-2 list-none space-y-3">
           <li className="text-sm leading-relaxed text-muted">
             {i18nT('components.kiroPrerequisiteGate.remedy_apparmor_service_install')}
+            <p className="mt-2">{i18nT('components.kiroPrerequisiteGate.sandbox_fix_needs_administrator')}</p>
             <CopyCommand>
               <code>kirocrew service install</code>
             </CopyCommand>
@@ -922,6 +923,7 @@ function OtherCodingAgents({
                     reason={configuredReason}
                     name={acpBackendName(configuredProbe)}
                     probe={configuredProbe}
+                    sandboxRemedy={status.sandbox_remedy}
                   />
                   {configuredRecheckable && (
                     <>
@@ -1030,7 +1032,7 @@ function OtherCodingAgents({
                       {selected && shown && (
                         <>
                           {shownReason ? (
-                            <AgentNotReadyDetail reason={shownReason} name={name} probe={shown} workloadPodNoSandbox={!podHint && workloadPodNoSandbox(status, shown.id)} />
+                            <AgentNotReadyDetail reason={shownReason} name={name} probe={shown} workloadPodNoSandbox={!podHint && workloadPodNoSandbox(status, shown.id)} sandboxRemedy={status.sandbox_remedy} />
                           ) : (
                             <p className="text-[13px] leading-relaxed text-text">
                               {i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name })}

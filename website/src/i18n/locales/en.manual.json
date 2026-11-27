@@ -3139,6 +3139,8 @@
       "unzip_missing_install_first": "First, install unzip. The installer needs it, and the gateway host does not have it. Use one of these commands or your system's package manager.",
       "unzip_command_debian_ubuntu": "Debian or Ubuntu",
       "unzip_command_fedora_rhel": "Fedora or RHEL",
+      "unzip_needs_administrator": "Both commands need sudo. If you cannot use sudo on this machine, ask its administrator to install unzip, then check again.",
+      "sandbox_fix_needs_administrator": "This command needs sudo, and it must run from the gateway's own account, so the service is installed for that account. If you cannot use sudo here, ask an administrator of this machine to give this account sudo rights for it. Run from their own account, it installs the service for them, not for you.",
       "install_kiro_cli_then_run_on_host": "Then run this on the {{platform}} gateway host to install Kiro CLI.",
       "setup_intro": "Get a coding agent running on the <0>{{platform}} gateway host</0>, then the dashboard will open automatically.",
       "setup_intro_unknown_platform": "Get a coding agent running on the <0>gateway host</0>, then the dashboard will open automatically.",

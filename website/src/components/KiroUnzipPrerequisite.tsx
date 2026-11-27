@@ -29,6 +29,9 @@ export function KiroUnzipPrerequisite() {
       <CopyCommand>
         <code>sudo dnf install unzip</code>
       </CopyCommand>
+      <p className="mt-2 text-[13px] leading-relaxed text-text">
+        {i18nT('components.kiroPrerequisiteGate.unzip_needs_administrator')}
+      </p>
     </div>
   )
 }

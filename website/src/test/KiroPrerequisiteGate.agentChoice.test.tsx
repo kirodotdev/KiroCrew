@@ -125,6 +125,8 @@ describe('KiroPrerequisiteGate agent choice', () => {
     expect(codeBlock('sudo apt install unzip')).toBeInTheDocument()
     expect(within(notice).getByText('Fedora or RHEL')).toBeInTheDocument()
     expect(codeBlock('sudo dnf install unzip')).toBeInTheDocument()
+    // A user without sudo is told who can run those commands for them.
+    expect(notice).toHaveTextContent(/If you cannot use sudo on this machine, ask its administrator to install unzip/)
     // Read before the command it unblocks.
     const curl = codeBlock(CURL)
     expect(curl).toBeInTheDocument()
@@ -749,6 +751,8 @@ describe('KiroPrerequisiteGate agent choice', () => {
     )).toBeInTheDocument()
     expect(within(detail).getByText(/Run this on the gateway host for a full prerequisite report/)).toBeInTheDocument()
     expect(within(detail).getByRole('button', { name: 'Copy command' })).toHaveTextContent('kirocrew doctor')
+    // No AppArmor remedy token: no administrator line is invented.
+    expect(within(detail).queryByTestId('sandbox-blocked-admin-fix')).not.toBeInTheDocument()
     // Not a dead end: the row keeps its own Check again, so the one enabled
     // act is not copying a command. The verdict it re-takes lives on the
     // prerequisite status, so that is re-read alongside the harness probe.
@@ -765,6 +769,26 @@ describe('KiroPrerequisiteGate agent choice', () => {
     expect(detail).not.toHaveTextContent('ready to use')
     fireEvent.click(useAgent)
     expect(api.patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('names the administrator-only fix for a sandbox-blocked agent on an AppArmor userns host', async () => {
+    // Ubuntu 24.04: AppArmor refuses unprivileged user namespaces, and the one
+    // fix is `kirocrew service install`, which needs sudo.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      sandbox_backend_available: false,
+      sandbox_remedy: 'apparmor_userns',
+    }))
+    vi.mocked(api.acpBackends).mockResolvedValue({
+      backends: [probe({ id: 'codex', policy_id: 'codex' }), probe()],
+    })
+    render()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Use other coding agents' }, GATE_READS_LAND))
+    fireEvent.click(await screen.findByRole('radio', { name: 'OpenAI Codex' }, GATE_READS_LAND))
+    const fix = within(screen.getByTestId('other-agent-detail')).getByTestId('sandbox-blocked-admin-fix')
+    expect(fix).toHaveTextContent(/it must run from the gateway's own account/)
+    expect(fix).toHaveTextContent(/ask an administrator of this machine to give this account sudo rights/)
+    expect(within(fix).getByRole('button', { name: 'Copy command' })).toHaveTextContent('kirocrew service install')
   })
 
   it('names the sandbox SETTING, not the host, when the host sandbox works but is turned off', async () => {

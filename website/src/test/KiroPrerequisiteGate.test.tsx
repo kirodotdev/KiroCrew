@@ -1358,6 +1358,9 @@ describe('KiroPrerequisiteGate', () => {
 
     expect(await screen.findByText('How to fix')).toBeInTheDocument()
     expect(screen.getByText('kirocrew service install')).toBeInTheDocument()
+    // The fix needs sudo from the gateway's own account, so a user without it
+    // asks for sudo rather than for someone else to run it as themselves.
+    expect(screen.getByText(/it must run from the gateway's own account/)).toBeInTheDocument()
     // `aa-exec -p` must NOT be offered: entering a named profile is not
     // permitted for an unconfined user and aa-exec execs unconfined instead of
     // failing, so the command looks applied and changes nothing.
