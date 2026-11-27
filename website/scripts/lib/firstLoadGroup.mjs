@@ -27,19 +27,31 @@
 // are already taken by the lower layer and stay there.
 
 /**
+ * Rolldown module ids use forward slashes on every platform, while the entry paths
+ * vite.config.ts builds with `fileURLToPath` and `path.join` are native, so on
+ * Windows they carry backslashes and `ctx.getModuleInfo` finds nothing for them:
+ * every first-load group comes back empty and the first load falls back to
+ * automatic chunking. Match the entries by their forward-slash form.
+ * @param {string} id
+ */
+const moduleId = (id) => id.replace(/\\/g, '/')
+
+/**
  * @param {object} opts
- * @param {string} opts.mainEntryId  absolute id of the SPA entry (index.html)
- * @param {string[]} opts.otherEntryIds  absolute ids of every other build entry
+ * @param {string} opts.mainEntryId  absolute path of the SPA entry (index.html)
+ * @param {string[]} opts.otherEntryIds  absolute paths of every other build entry
  * @param {number} opts.layers  how many chunks the dashboard's own code is cut into
  * @param {number} opts.priority  priority of the top layer; every other group sits above it
  */
 export function firstLoadGroups({ mainEntryId, otherEntryIds, layers, priority }) {
+  const mainId = moduleId(mainEntryId)
+  const otherIds = otherEntryIds.map(moduleId)
   /** One plan per chunking pass; a pass hands every call the same ctx. */
   const plans = new WeakMap()
   const plan = (ctx) => {
     let p = plans.get(ctx)
     if (!p) {
-      p = buildPlan(ctx, mainEntryId, otherEntryIds, layers)
+      p = buildPlan(ctx, mainId, otherIds, layers)
       plans.set(ctx, p)
     }
     return p
