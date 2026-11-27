@@ -2608,8 +2608,11 @@ in any state is a claim on the name, keeps refusing.
 A checkout whose `.kiro/agents/` is the folder the overlay was rewritten from is
 not a checkout for this rule. The home folder is exactly that when the user-level
 agents live in `~/.kiro/agents`, so a chat, cron run or sub-agent working in `~`
-finds the user-level spec itself there. `session_servers._is_overlay_source`
-compares the two folders by file identity (`config.paths.spec_dir_for`), and such a
+finds the user-level spec itself there. `agent._project_shadow_of` already answers
+"no shadow" for the installed agents directory (`agent.is_installed_agents_dir`),
+and `session_servers._is_overlay_source` compares the folder with the one the
+overlay was rewritten from by file identity (`config.paths.spec_dir_for`), which
+covers an overlay whose source is not the installed directory; either way such a
 spec is not a shadow: the overlay stays in effect and every shared server stays
 brokered. Counted as a shadow, it would run those servers raw inside the session;
 on the Claude Code backend that is inside the chat's sandbox, where a stdio server

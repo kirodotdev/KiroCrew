@@ -2241,12 +2241,18 @@ tree past the file or directory cap is refused, and so is a link that leads to a
 untrusted share or a protected location, without following it.
 A cwd whose
 `.kiro/agents` is the installed directory itself, the home directory for example,
-is not a shadow. The fork gate refuses a shadowed fork the same way. `kirocrew-worker` and `kirocrew-heartbeat`
-are reserved here too: the derived-spec gate refuses a project copy of either on
-that agent's own spawn (`_DERIVED_AGENTS`; the heartbeat spec is checked by
+is not a shadow (`agent.is_installed_agents_dir`, compared by file identity so a
+second spelling of the home directory answers the same). The fork gate refuses a
+shadowed fork the same way. `kirocrew-worker` and `kirocrew-heartbeat` are reserved
+here too: the derived-spec gate refuses a project copy of either on that agent's own
+spawn (`_DERIVED_AGENTS`; the heartbeat spec is checked by
 `_require_fresh_heartbeat_spec`), but it scans the top level only and matches the
-name exactly. A project spec
-under any other name is still the documented discovery feature.
+name exactly. That gate, the fork gate and the MCP-gateway overlay all ask
+`agent._project_shadow_of`, which applies the installed-directory exemption itself
+after the scan's protected-root fence, so a conductor session whose project is the
+home directory dispatches its worker on the derived spec instead of refusing it as a
+checkout's copy. A project spec under any other name is still the documented
+discovery feature.
 
 App command bindings scan no checkout: an app-owned turn runs the app's registered
 file on both backends that allow it (see app-kit-platform). `agents_dir_competing_claim`
