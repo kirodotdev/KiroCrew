@@ -275,7 +275,7 @@ class TestAlarm:
         assert "Kiro" in title or "KAS" in title
         assert url == crewmate_harness_notice.NOTE_URL
         assert channel == crewmate_harness_notice.NOTE_CHANNEL
-        assert "cannot run on" in body
+        assert "can't run on" in body
 
     def test_no_bell_when_crewmates_follow_the_settings_harness(self, declared):
         from kiro_crew import crewmate_harness_notice
@@ -660,7 +660,9 @@ class TestMateAlarm:
         assert asyncio.run(crewmate_harness_notice.deliver(state, cfg)) == 1
         assert asyncio.run(crewmate_harness_notice.deliver(state, cfg)) == 0
         _kind, title, body, url, _channel = state.notes[0]
-        assert title.startswith("atlas runs on") and "tool limits" in body
+        assert title.startswith("atlas uses") and "tool limits" in body
+        # The cause can be the bot's file or its Capabilities, so the note blames neither.
+        assert "atlas's settings ask for things" in body and "'s file sets" not in body
         assert url == "/members?member=atlas"
 
     def test_the_note_names_exactly_the_entries_to_change(self, limits, declared):
@@ -1033,7 +1035,7 @@ class TestUnrunnablePin:
         assert asyncio.run(crewmate_harness_notice.deliver(state, cfg)) == 1
         assert asyncio.run(crewmate_harness_notice.deliver(state, cfg)) == 0
         kind, title, _body, url, _channel = state.notes[0]
-        assert kind == "error" and title.startswith("atlas runs on") and url.endswith("atlas")
+        assert kind == "error" and title.startswith("atlas uses") and url.endswith("atlas")
 
 
 class TestModelFollowsTheHarness:

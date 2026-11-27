@@ -1090,12 +1090,15 @@ export function AgentBackendTab() {
   }
 
   /**
-   * What Kiro CLI IS, above its state: it runs with kiro-cli's own sign-in, not
-   * the Kiro account. Shown whatever the install state, because it is the reason
-   * to install it. (Kiro Agent's line is the default sentence in `lead`.)
+   * What the three Kiro-or-Claude choices ARE, one plain line each above the
+   * state, and which sign-in each one uses: the names alone do not tell Kiro
+   * Agent from Kiro CLI. Shown whatever the install state, because it is the
+   * reason to pick one.
    */
   const description = (value: string): string | null => {
+    if (value === KAS) return i18nT('pages.developer.agentBackendTab.kas_kiro_agent_description')
     if (value === KIRO) return i18nT('pages.developer.agentBackendTab.kiro_cli_description')
+    if (value === CLAUDE) return i18nT('pages.developer.agentBackendTab.claude_code_description')
     return null
   }
 
