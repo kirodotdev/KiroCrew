@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping
 
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_declared_env
+from kiro_crew.mcp_gateway.launch_approval_normalize import NORMALIZED_AUDIT_REASON
 
 if TYPE_CHECKING:
     from kiro_crew.mcp_gateway.launch_approval import LaunchApprovals
@@ -220,7 +221,9 @@ def captured_by_reason(
     A rebound fingerprint is an operator-approved declaration whose ``${VAR}``
     expansion changed, a casing-healed one an approved launch whose command the
     PATHEXT casing repair rewrote, a pre-fold one an approval stored before the
-    PATH fold, a trusted one a changed launch of a server the operator trusts;
+    PATH fold, a normalized one an approved launch whose only change is a
+    version folder the edition normalizer folds, a trusted one a changed launch
+    of a server the operator trusts;
     every other captured fingerprint is a managed launch. A fingerprint in
     *withheld* (stem -> fingerprints the save did not write) is left out.
     """
@@ -233,6 +236,8 @@ def captured_by_reason(
                 reason = CASING_AUDIT_REASON
             if fingerprint in approvals.prefold_healed.get(stem, {}):
                 reason = PREFOLD_AUDIT_REASON
+            if fingerprint in approvals.normalized_healed.get(stem, {}):
+                reason = NORMALIZED_AUDIT_REASON
             if fingerprint in approvals.trust_admitted.get(stem, {}):
                 reason = TRUST_AUDIT_REASON
             by_reason.setdefault(reason, {}).setdefault(stem, set()).add(fingerprint)

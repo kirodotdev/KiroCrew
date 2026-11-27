@@ -673,6 +673,23 @@ class McpToolingProvider(Protocol):
         """
         ...
 
+    def launch_token_normalizer(self, token: str) -> str:
+        """*token* (one argument of an MCP launch) with a known version folder folded.
+
+        WIRED: ``mcp_gateway.launch_approval_normalize.normalized_command_hash``
+        maps each argument through this in the gateway's rewrite pass and in the
+        operator's approval writer, so an approved launch whose only change is a
+        folded argument keeps its approval. The program path is never passed
+        here and stays literal in that digest, so a changed program is still
+        refused. It never reaches ``hashing.hash_command``: the pool key, the
+        broker stub and gatewayd's check stay literal. Fold only a segment that
+        names a version of the same program, such as a package manager's
+        per-update folder. A launch whose arguments this leaves unchanged, or a
+        call that raises or returns a non-string, folds nothing. The public
+        Default returns *token* unchanged.
+        """
+        ...
+
 
 class AgentCatalogProvider(Protocol):
     """Extra agent-catalog rows the edition contributes.

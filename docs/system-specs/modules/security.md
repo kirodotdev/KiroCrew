@@ -37,6 +37,20 @@ On Windows, a command that `env.saved_command_casing` rewrote from an approved
 spelling (only the extension's case moves, read from the directory entry) keeps
 the approval when its args and env pair are approved with a stored display; any
 other case change is still refused.
+An edition may supply a launch normalizer
+(`McpToolingProvider.launch_token_normalizer`) that folds a known version
+folder in an argument; the command is never passed to it and stays literal in
+the normalized digest, so a changed program is still refused. The public
+default returns each argument unchanged, so core folds nothing. Only the
+gateway's rewrite pass and the operator's approval writer call it, never
+`hashing.hash_command`, so the pool key, the stub and gatewayd's check stay
+literal. The server's `normalized` field stores the normalized digest of each
+approved pair, written by an approval and by a pass that admits the pair
+exactly or as a rebind. A launch whose normalized digest equals an approved pair's keeps the
+approval only when its declared and derived env match that pair and the pair
+has a stored display. Its literal fingerprint is recorded and audited as
+`approved launch, edition-folded version folder moved`, and is saved only while
+the store still approves the source pair. A full pass that saw every live launch retires each unused approved pair whose stored or learned normalized digest matches a live pair that remains approved with the same derived env and, when each command has one declared-env fingerprint, the same declared env, and only while the store holds no approved pair or fingerprint for that server that the pass did not load or record; otherwise that server's retirement waits for the next full pass. It drops all fingerprints whose command belonged to a retired pair only when no approved pair retains that command. Pairs without a digest or without a matching live digest remain approved.
 A command, argument or declared-env path segment that is byte-identical to one
 of three spellings the gateway computes from itself -- `sys.executable`, the
 `deps_boot` shim path, the `kiro_crew` package's parent directory -- is hashed by
