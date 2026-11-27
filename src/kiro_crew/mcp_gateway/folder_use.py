@@ -102,7 +102,11 @@ def effective_answer(
         for key, answer in answers.items()
         if roots_observed(name, (key,))
     }
-    return "not_used" if "not_used" in found else "uses_cwd" if "uses_cwd" in found else None
+    if "not_used" in found:
+        return "not_used"
+    if "uses_cwd" in found:
+        return "uses_cwd"
+    return None
 
 
 @dataclass
