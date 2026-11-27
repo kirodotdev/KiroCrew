@@ -61,7 +61,8 @@ into the local origin, and the check judges that origin. Each run directory keep
 the arm's whole stdout and, for a Crew arm, every chat transcript and
 background-agent record under `crew/`.
 
-A run is **VOID** (rerun, never counted) when the harness could not start, the
+A run is **VOID** (rerun, never counted) when the harness could not start (for a
+Crew arm, also an error before the agent ever answered), the
 arm is not built, or its output names this suite's path. Otherwise it is
 **FAILED** on any ask of a person, on passing the wall or spend cap, on any
 other non-done ending, or when the hidden check fails; else **PASSED**. Each run
