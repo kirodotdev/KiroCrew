@@ -409,3 +409,53 @@ def test_the_fast_glued_paths_match_the_full_scan(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(tokens, "_glued_groups", no_gate)
     monkeypatch.setattr(engine, "detect_formats", _reference_formats)
     assert _equivalence_outputs(corpus) == fast
+
+
+@pytest.mark.parametrize(
+    "parts,sizes",
+    [
+        pytest.param([_SK, jwt(), jwt(seed=9)], (1, 7, 64), id="key-two-jwts"),
+        pytest.param([jwt(), jwt(seed=9)], (1, 7, 64), id="two-jwts-alone"),
+        pytest.param([jwt(), jwt(seed=9), jwt(seed=10)], (1, 7, 64), id="three-jwts-alone"),
+        pytest.param([_HF, _long_jwt(), _long_jwt()], (64, 900), id="key-oversized-jwts"),
+    ],
+)
+@pytest.mark.parametrize("path", ["whole", "chat", "structured"])
+def test_glued_jose_runs_fail_closed(parts: list[str], sizes: tuple[int, ...], path: str) -> None:
+    from kiro_crew import security
+
+    text = "tokens: " + "".join(parts) + " end"
+    if path == "whole":
+        assert _kept(parts, redact(text)[0]) == []
+        assert _kept(parts, redact_credentials(text)[0]) == []
+        for part in parts:
+            assert _kept([part], redact_credentials(part)[0]) == []
+    else:
+        for size in sizes:
+            stream = security.StreamRedactor() if path == "chat" else StreamRedactor()
+            out = _streamed(stream, text, size)
+            assert _kept(parts, out) == []
+            # The chat stream may coalesce a chain past its bounded hold.
+            if path == "structured" or len(text) < 16011:
+                assert out == redact(text)[0]
+
+
+def test_glued_jose_fallback_costs_linear_work() -> None:
+    assert_linear_work(lambda n: ("eyJ." * (n // 4 + 1))[:n], redact)
+
+
+def test_oversized_glued_jose_discards_a_bounded_continuation() -> None:
+    from kiro_crew import security
+
+    parts = [_HF, _long_jwt(), _long_jwt()]
+    text = "tokens: " + "".join(parts) + "=keep/after end"
+    for factory in (StreamRedactor, security.StreamRedactor):
+        stream = factory()
+        out, held = "", 0
+        for i in range(0, len(text), 64):
+            out += stream.feed(text[i : i + 64])
+            held = max(held, len(getattr(stream, "_pending", getattr(stream, "_buf", ""))))
+        out += stream.flush()
+        assert _kept(parts, out) == []
+        assert out.endswith("=keep/after end")
+        assert held <= 17000

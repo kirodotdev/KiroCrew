@@ -31,11 +31,12 @@ from __future__ import annotations
 
 from kiro_crew.default_ignorable import DEFAULT_IGNORABLE
 
-from .charsets import B64STD
+from .charsets import B64STD, B64URL_DOT
 from .encoded import RUN_CHARS
 from .engine import render, resolve, scan
 from .model import SECRET, TAG, TAIL_ALL, TAIL_B64RUN, TAIL_ENCRUN, TAIL_LINE, Hit, Span
 from .table import TABLE
+from .tokens import TAIL_JOSE
 
 # Look-behind kept from committed text: covers the pairing window (300 + 40 + 21),
 # line leads (64), key-token expansion (64) and URL schemes (32) with margin.
@@ -44,7 +45,7 @@ CONTEXT = 1024
 # URL scheme plus ``://``), so a partial anchor is always held.
 TAIL = 47
 #: The characters each run tail drops.
-_RUN_TAILS = {TAIL_B64RUN: B64STD, TAIL_ENCRUN: RUN_CHARS}
+_RUN_TAILS = {TAIL_B64RUN: B64STD, TAIL_ENCRUN: RUN_CHARS, TAIL_JOSE: B64URL_DOT}
 #: What :func:`line_tail` reads a dropped line for: the private-key BEGIN markers, the
 #: longest one's length less one, and the characters it reads them through.
 _BEGINS = tuple({row.begin for row in TABLE.armour})
@@ -68,6 +69,8 @@ def discard(tail: str, pad: int, chunk: str) -> tuple[int, int, bool]:
     i = 0
     if pad == 0:
         i = len(chunk) - len(chunk.lstrip(_RUN_TAILS[tail]))
+    if tail == TAIL_JOSE:
+        return i, pad, i < len(chunk)
     while i < len(chunk) and chunk[i] == "=" and pad < 2:
         pad += 1
         i += 1

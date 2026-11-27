@@ -24,8 +24,10 @@ from .checks import CHECKSUMS, b64url_json_object, is_placeholder, is_placeholde
 from .model import SECRET, Hit
 from .table import FormatRow, JoseRow, PairRow, Part
 
-# JOSE runs longer than every JOSE row's maximum are decided (rejected) once read.
+# Maximum sentence punctuation after a JOSE token.
 _JOSE_TRAILING_DOTS = 3
+# A replaced oversized glued JOSE run discards only its own alphabet.
+TAIL_JOSE = "jose"
 
 
 def _match_parts(text: str, pos: int, parts: tuple[Part, ...]) -> int | None:
@@ -191,6 +193,7 @@ def detect_glued(
     groups = cached(rows, _glued_groups)
     hold = cached(jose_rows, _jose_plan)[2] if jose_rows else 0
     done = 0  # every start before this has been searched: each position once
+    jose_done = 0  # an oversized JOSE run already covered whole
     run_from, run_to, tries = -1, -1, 0  # the JOSE run read last, and its starts tried
     # (outer span, start, end, rule) of a glued token that starts inside the outer
     # span and runs past its end. Once accepted, the outer format token ends where
@@ -234,7 +237,7 @@ def detect_glued(
                                 if i < e < end:
                                     nested.append(((s, e), i, end, row.id))
                     i = text.find(prefix, i + 1, e + len(prefix))
-        i = text.find("eyJ", lo, e + 3) if jose_rows else -1
+        i = text.find("eyJ", max(lo, jose_done), e + 3) if jose_rows else -1
         while i != -1:
             if not run_from <= i < run_to:
                 # Read each run once, whole: every start in it shares its real end.
@@ -242,7 +245,13 @@ def detect_glued(
                 tries = 0
             r = run_to
             if r - i > hold:
-                pass  # longer than every JOSE row: decided (rejected) once read
+                # A long run may contain several valid tokens. Cover it once,
+                # then discard its continuation rather than releasing its tail.
+                cands.append((i, r, "jwt", "jose", "jose", -1))
+                heapq.heappush(heap, (i, r))
+                if i < e < r:
+                    nested.append(((s, e), i, r, "jwt"))
+                jose_done = r
             elif not final and r == n:
                 opens.append(i)
             else:
@@ -264,7 +273,7 @@ def detect_glued(
                     # Out of tries: the rest of the run is redacted, failing closed.
                     cands.append((i, r, "jwt", "jose", "jose", -1))
                     heapq.heappush(heap, (i, r))
-            i = text.find("eyJ", i + 1, e + 3)
+            i = text.find("eyJ", max(i + 1, jose_done), e + 3)
     if not cands:
         return [], opens
     spans += [(c[0], c[1]) for c in cands]
@@ -284,7 +293,12 @@ def detect_glued(
     accepted: set[tuple[int, int, str]] = set()
     for start, end, rule, certainty, detector, right in cands:
         if right == -1 or covered(right):
-            glued.append(Hit(start, end, rule, SECRET, detector, certainty))
+            tail = (
+                TAIL_JOSE
+                if detector == "jose" and not final and end == n and end - start > hold
+                else ""
+            )
+            glued.append(Hit(start, end, rule, SECRET, detector, certainty, tail=tail))
             accepted.add((start, end, rule))
         elif not final and (
             (n - right < _GLUED_HOLD and not any(c.isspace() for c in text[right:]))
@@ -376,6 +390,7 @@ def detect_jose(text: str, rows: tuple[JoseRow, ...], final: bool) -> tuple[list
             opens.append(i)
             i = text.find("eyJ", i + 1)
             continue
+        before = len(hits)
         for row in multi:
             if prev and prev in row.left:
                 continue
@@ -401,6 +416,17 @@ def detect_jose(text: str, rows: tuple[JoseRow, ...], final: bool) -> tuple[list
             hit = _link_at(text, i, row)
             if hit is not None:
                 hits.append(hit)
+        if multi and i == run_from and len(hits) == before:
+            # shortcut: an invalid run with two JSON payload starts is masked
+            # whole; split it only if individual JOSE spans become necessary.
+            # Check once per run, not once per eyJ, so suffix reads stay linear.
+            first = text.find(".eyJ", i, r)
+            if first != -1 and text.find(".eyJ", first + 4, r) != -1:
+                end = i + len(text[i:r].rstrip("."))
+                tail = TAIL_JOSE if not final and r == n and r - i > hold else ""
+                hits.append(Hit(i, r if tail else end, "jwt", SECRET, "jose", "jose", tail=tail))
+                i = text.find("eyJ", r)
+                continue
         i = text.find("eyJ", i + 1)
     return hits, opens
 
