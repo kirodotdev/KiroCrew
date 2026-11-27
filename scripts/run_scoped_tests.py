@@ -958,10 +958,15 @@ def main(argv: list[str]) -> int:
         return 0
 
     cwd = REPO_ROOT / "website" if args.surface == "frontend" else REPO_ROOT
-    for cmd in cmds:
-        rc = _run_batch(cmd, cwd)
-        if rc != 0:
-            return rc
+    # Every batch runs even after one fails, so one run shows every failing batch.
+    failed = [(index, rc) for index, cmd in enumerate(cmds, start=1) if (rc := _run_batch(cmd, cwd)) != 0]
+    if failed:
+        print(
+            f"run_scoped_tests[{args.surface}]: {len(failed)} of {len(cmds)} batch(es) failed: "
+            + ", ".join(f"batch {index} rc={rc}" for index, rc in failed),
+            file=sys.stderr,
+        )
+        return failed[0][1]
     return 0
 
 

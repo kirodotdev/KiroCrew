@@ -813,6 +813,67 @@ def test_missing_node_launcher_fails_cleanly(gate, monkeypatch, capsys) -> None:
     assert "not found on PATH" in err
 
 
+def _three_batch_plan(gate):
+    plan = gate.Plan("test plan")
+    for index in (1, 2, 3):
+        plan.add(f"backend (related) {index}/3", [gate.sys.executable, "-m", "pytest", f"t{index}"],
+                 gate._REPO_ROOT)
+    return plan
+
+
+def _fake_batch_runs(gate, monkeypatch, exit_codes: dict[str, int]) -> list[str]:
+    """Answer each batch's pytest run with its exit code and record which ran."""
+    ran: list[str] = []
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[0] == "git":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        ran.append(cmd[-1])
+        return subprocess.CompletedProcess(cmd, exit_codes.get(cmd[-1], 0))
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    monkeypatch.setattr(gate, "open_proofs", lambda _env: None)
+    return ran
+
+
+def test_a_failing_batch_does_not_stop_the_later_ones(gate, monkeypatch, capsys) -> None:
+    """A host where the first batch always fails must still run the rest, and the
+    summary names every failing batch so one run shows them all."""
+    monkeypatch.setattr(gate, "build_plan", lambda _args: _three_batch_plan(gate))
+    ran = _fake_batch_runs(gate, monkeypatch, {"t1": 1, "t3": 5})
+
+    assert gate.main([]) == 1
+    assert ran == ["t1", "t2", "t3"]
+    err = capsys.readouterr().err
+    assert "2 of 3 command(s) failed: [backend (related) 1/3] rc=1, [backend (related) 3/3] rc=5" in err
+
+
+def test_fail_fast_stops_at_the_first_failing_batch(gate, monkeypatch) -> None:
+    monkeypatch.setattr(gate, "build_plan", lambda _args: _three_batch_plan(gate))
+    ran = _fake_batch_runs(gate, monkeypatch, {"t1": 1})
+
+    assert gate.main(["--fail-fast"]) == 1
+    assert ran == ["t1"]
+
+
+def test_scoped_runner_runs_every_batch_after_a_failure(monkeypatch, capsys) -> None:
+    """``run_scoped_tests.py --surface`` is the profile's per-surface gate; it must
+    not stop at the first red batch either."""
+    scoped = importlib.import_module("run_scoped_tests")
+    monkeypatch.setattr(scoped, "plan", lambda _surface, _base: (["t1", "t2", "t3"], "related"))
+    monkeypatch.setattr(scoped, "argv_batches", lambda _build, targets: [["pytest", t] for t in targets])
+    ran: list[str] = []
+
+    def fake_batch(cmd, _cwd):
+        ran.append(cmd[-1])
+        return 2 if cmd[-1] == "t2" else 0
+
+    monkeypatch.setattr(scoped, "_run_batch", fake_batch)
+    assert scoped.main(["--surface", "backend"]) == 2
+    assert ran == ["t1", "t2", "t3"]
+    assert "1 of 3 batch(es) failed: batch 2 rc=2" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # End-to-end dry run against the real repo (no tests executed)
 # ---------------------------------------------------------------------------
