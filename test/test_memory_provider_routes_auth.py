@@ -56,6 +56,38 @@ async def test_an_app_token_is_refused(served) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("subject", ["local-app", "local-startup"])
+async def test_a_session_from_before_the_owner_is_told_to_sign_in_again(served, subject) -> None:
+    """Signed in before an owner was configured: still refused and audited, and the
+    refusal is the 401 the other owner gates give it, so the dashboard asks for a new
+    sign-in."""
+    request = make_request(
+        served.env.state, "/api/memory/provider", owner=True, owner_subject=subject, session=""
+    )
+    with pytest.raises(handlers.web.HTTPUnauthorized) as refused:
+        await handlers.api_memory_provider_get(request)
+    assert json.loads(refused.value.text)["code"] == "stale_session_reauth"
+    assert served.audits[-1]["args"][2] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_only_the_configured_owner_reads_the_provider(served) -> None:
+    """Another user and a caller with no credential keep 403 ``owner_only``; the
+    owner's own session reads the provider."""
+    other = make_request(
+        served.env.state, "/api/memory/provider", owner=True, owner_subject="U_ELSE", session=""
+    )
+    bare = make_request(served.env.state, "/api/memory/provider", session="")
+    for request in (other, bare):
+        with pytest.raises(handlers.web.HTTPForbidden) as refused:
+            await handlers.api_memory_provider_get(request)
+        assert json.loads(refused.value.text)["code"] == "owner_only"
+
+    response = await handlers.api_memory_provider_get(_owner(served, "/api/memory/provider"))
+    assert response.status == 200
+
+
+@pytest.mark.asyncio
 async def test_no_app_and_no_agent_can_switch(served) -> None:
     body = {"mode": "replace", "id": FIXTURE_ID}
     with pytest.raises(handlers.web.HTTPForbidden):

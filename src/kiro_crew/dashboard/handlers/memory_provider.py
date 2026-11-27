@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import math
 import secrets
@@ -126,14 +125,18 @@ def _is_owner(request: web.Request) -> bool:
 
 
 async def _caller(request: web.Request, operation: str) -> str:
-    """``"owner"``; raises a 403 for anyone else (an app token, an agent's secret)."""
+    """``"owner"``; raises a refusal for anyone else (an app token, an agent's secret)."""
     if _is_owner(request):
         return "owner"
     _audit(str(request.get("app") or request.get("user") or "unknown"), operation, "denied")
-    raise web.HTTPForbidden(
-        text=json.dumps({"error": "Only the owner may use this route.", "code": "owner_only"}),
-        content_type="application/json",
-    )
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+
+    # The caller is refused above. The shared tail only picks the label: 401
+    # ``stale_session_reauth`` for a session signed before the owner was
+    # configured, 403 ``owner_only`` for everyone else.
+    denied = _owner_denial_response(request, "Only the owner may use this route.")
+    refusal = web.HTTPUnauthorized if denied.status == 401 else web.HTTPForbidden
+    raise refusal(text=denied.text, content_type="application/json")
 
 
 def _store_name(raw: object) -> str:

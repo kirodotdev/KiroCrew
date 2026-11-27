@@ -401,6 +401,53 @@ async def test_status_refuses_non_owner():
     assert svc.calls == []
 
 
+def _request_as(user, *, body=None, owner_id="U_OWNER", app=""):
+    """A request from *user* while *owner_id* is the configured owner."""
+    svc = _StubService()
+    req = _FakeRequest(svc, body)
+    req.app["state"].owner_id = owner_id
+    req._items = {"app": app, "user": user} if app is not None else {}
+    return svc, req
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subject", ["local-app", "local-startup"])
+async def test_a_session_from_before_the_owner_is_told_to_sign_in_again(subject):
+    # Signed in before an owner was configured: still refused on every route, and the
+    # refusal is the 401 the other owner gates give it, so the dashboard asks for a
+    # new sign-in. The service is never reached.
+    for handler, body in (
+        (api_kas_login_status, None),
+        (api_kas_login_begin_device, {"provider": "google"}),
+        (api_kas_login_poll, {"login_id": "lid-1"}),
+        (api_kas_login_logout, {"identity": "social"}),
+        (api_kas_login_begin_loopback, {"provider": "google"}),
+        (api_kas_login_cancel, {"login_id": "lid-lb"}),
+    ):
+        svc, req = _request_as(subject, body=body)
+        resp = await handler(req)
+        assert resp.status == 401
+        assert _body(resp)["code"] == "stale_session_reauth"
+        assert svc.calls == []
+
+
+@pytest.mark.asyncio
+async def test_with_an_owner_configured_only_the_owner_reads_the_status():
+    # Another user, an app token and a caller with no credential keep 403
+    # ``owner_only``; the owner's own new session passes.
+    for user, app in (("U_SOMEONE_ELSE", ""), ("U_OWNER", "some-app"), ("", None)):
+        svc, req = _request_as(user, app=app)
+        resp = await api_kas_login_status(req)
+        assert resp.status == 403
+        assert _body(resp)["code"] == "owner_only"
+        assert svc.calls == []
+
+    svc, req = _request_as("U_OWNER")
+    resp = await api_kas_login_status(req)
+    assert resp.status == 200
+    assert svc.calls == ["status"]
+
+
 @pytest.mark.asyncio
 async def test_begin_and_poll_return_502_on_transport_error():
     import aiohttp

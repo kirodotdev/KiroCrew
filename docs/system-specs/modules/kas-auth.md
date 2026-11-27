@@ -616,7 +616,9 @@ access token.
   `GET /api/kas-login/sources` (`dashboard/handlers/kas_login._require_owner`, i.e.
   `is_owner_dashboard_request`: the owner and Shared Crew teammates with owner rights).
   Anyone else, an app token included, gets an audited 403 `owner_only` before the
-  store or the config is read.
+  store or the config is read. A dashboard session signed before the owner was
+  configured gets the audited 401 `stale_session_reauth` instead
+  (`_owner_denial_response`), as on the other owner gates.
 - The loopback sign-in listener (`auth/login/portal.py:bind_allowed_port`) claims its
   port per platform: `SO_REUSEADDR` on POSIX (a rebind through `TIME_WAIT`; a live
   listener still refuses it) and `SO_EXCLUSIVEADDRUSE` on Windows, where two listeners
@@ -867,7 +869,8 @@ engine instead ([aws-control.md](aws-control.md)).
   `GET /api/kas-login/sources` (`dashboard/handlers/kas_login_sources.py`), which sits
   on the dashboard listener behind the same token check as `GET /api/kas-login` and
   the same owner gate as the sign-in routes (`is_owner_dashboard_request`: the owner
-  and Shared Crew teammates with owner rights; anyone else gets an audited 403 `owner_only`
+  and Shared Crew teammates with owner rights; anyone else gets an audited 403 `owner_only`,
+  or 401 `stale_session_reauth` for a session signed before the owner was configured,
   before any store read or `whoami`), and changes nothing: it reports both stores by presence
   (`lts_sign_in.stored_sign_ins`), which of the two a new session uses, and whether
   they are one account (`lts_sign_in.same_account`, the one function that decides it:
