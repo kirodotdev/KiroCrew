@@ -175,7 +175,7 @@ describe('AboutPanel What you\u2019d get wiring', () => {
       update_latest_version: '0.13.0', update_managed_by: 'command',
     })
     mount()
-    expect(await screen.findByTestId('update-changes-empty')).toHaveTextContent(/read them on github/i)
+    expect(await screen.findByTestId('update-changes-empty')).toHaveTextContent(/release notes/i)
     expect(screen.queryByTestId('update-changes-load')).toBeNull()
     cleanup()
 
@@ -183,7 +183,7 @@ describe('AboutPanel What you\u2019d get wiring', () => {
     setStatus({ update_check_status: 'succeeded', update_can_apply: true, update_managed_by: 'command' })
     mount()
     fireEvent.click(await screen.findByTestId('about-check-for-updates'))
-    expect(await screen.findByTestId('update-changes-empty')).toHaveTextContent(/read them on github/i)
+    expect(await screen.findByTestId('update-changes-empty')).toHaveTextContent(/release notes/i)
     expect(screen.queryByTestId('update-changes-none')).toBeNull()
     expect(screen.queryByTestId('update-changes-load')).toBeNull()
   })

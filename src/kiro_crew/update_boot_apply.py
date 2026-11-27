@@ -260,6 +260,16 @@ def _reexec(launcher: str | None, exe: str | None) -> None:
         platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
 
 
+def _settle_channel_move_best_effort() -> None:
+    """Settle the channel move record; a record left in place only costs a host approval."""
+    try:
+        from kiro_crew.platform import update_channel_move
+
+        update_channel_move.settle_followed()
+    except Exception:
+        logger.warning("Could not settle the channel move record", exc_info=True)
+
+
 async def apply_armed_update_at_boot() -> bool:
     """Apply the armed update, if any, stopping it cleanly on SIGTERM.
 
@@ -436,6 +446,11 @@ async def _apply_armed_update_at_boot() -> bool:
         # Cleared BEFORE the exec: a restart that lands on this version again must
         # not apply again, for ever.
         await asyncio.to_thread(update_next_start.finish)
+        if moved:
+            # The boot apply installs the followed channel's release, so the
+            # install now came from that channel: settle the channel move record
+            # the one-click update reads (`platform.update_channel_move`).
+            await asyncio.to_thread(_settle_channel_move_best_effort)
         if not moved and not git_ahead:
             logger.info("Update applied, and this install already runs it")
             return False

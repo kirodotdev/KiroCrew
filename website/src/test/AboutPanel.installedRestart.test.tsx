@@ -152,7 +152,7 @@ describe('AboutPanel: an installed update waiting for a restart', () => {
     expect(screen.queryByTestId('hero-update-ready')).toBeNull()
   })
 
-  it('names the running version beside the installed one', async () => {
+  it('is one button naming the installed version, with the restart cost on the confirm step', async () => {
     stubFetch()
     store.dispatch(sseStatus({
       ...ARMABLE_STATUS,
@@ -165,8 +165,12 @@ describe('AboutPanel: an installed update waiting for a restart', () => {
     mountWeb()
 
     const card = await screen.findByTestId('in-app-update-installed')
-    expect(card.textContent).toContain('9.9.9')
-    expect(card.textContent).toContain('9.9.0-insider.1')
+    expect(card.querySelector('p')).toBeNull()
+    expect(screen.getByTestId('gateway-restart-installed')).toHaveTextContent('Restart to use v9.9.9')
+    expect(card.textContent).not.toMatch(/replies in progress/i)
+    // The first click primes Restart and says what it stops; nothing restarts yet.
+    fireEvent.click(screen.getByTestId('gateway-restart-installed'))
+    expect(card.textContent).toMatch(/replies in progress stop/i)
   })
 
   it('shows Restart instead of Update for an update armed for the next start after a reload', async () => {
