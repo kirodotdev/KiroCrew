@@ -15,13 +15,15 @@ import { forwardUiLocation } from '../uiLocations/uiLocation'
  * becomes the group heading ABOVE the box, and the rest sits in one plain
  * rounded box (no glow, no shadow) at the Settings content width. Settings
  * provides it around its pane, so a panel's cards line up with the grouped
- * `SettingsCard` rows beside them.
+ * `SettingsCard` rows beside them. `grouped-wide` draws the same group with no
+ * width cap, for a Settings pane whose content is data tables that fill the pane
+ * (the Memory page), so its cards line up with its full-width tab bar.
  */
-export const CardFrameContext = React.createContext<'framed' | 'grouped'>('framed')
+export const CardFrameContext = React.createContext<'framed' | 'grouped' | 'grouped-wide'>('framed')
 
 export function Card({ children, className = '', ...rest }: Omit<React.ComponentPropsWithoutRef<'div'>, 'dangerouslySetInnerHTML'>) {
   const frame = React.useContext(CardFrameContext)
-  if (frame === 'grouped') {
+  if (frame !== 'framed') {
     const { style, ...restNoStyle } = rest
     const items = React.Children.toArray(children)
     const first = items[0]
@@ -42,7 +44,7 @@ export function Card({ children, className = '', ...rest }: Omit<React.Component
     const lede = React.isValidElement(second) && second.type === 'p' && items.length > 2 ? second : null
     const body = items.slice((title ? 1 : 0) + (lede ? 1 : 0))
     return (
-      <div className={twMerge('mb-8 animate-rise max-w-[720px]', className, 'border-0 bg-transparent shadow-none rounded-none p-0 md:px-0')} {...restNoStyle}>
+      <div className={twMerge(`mb-8 animate-rise ${frame === 'grouped' ? 'max-w-[720px]' : ''}`, className, 'border-0 bg-transparent shadow-none rounded-none p-0 md:px-0')} {...restNoStyle}>
         {title}
         {lede && <div className="-mt-1 mb-2 px-4 [&>p]:m-0">{lede}</div>}
         {/* A caller's style (a hero background) paints the box, not the
@@ -83,7 +85,7 @@ export function Card({ children, className = '', ...rest }: Omit<React.Component
 
 export function CardTitle({ children, className, ...rest }: Omit<React.ComponentPropsWithoutRef<'h3'>, 'dangerouslySetInnerHTML'>) {
   const frame = React.useContext(CardFrameContext)
-  if (frame === 'grouped') {
+  if (frame !== 'framed') {
     return <h3 className={twMerge('text-base font-semibold text-text-strong mb-2 px-4 flex items-center gap-2 [&_svg.lucide-inline]:hidden', className)} {...rest}>{children}</h3>
   }
   return <h3 className={twMerge("text-sm font-semibold tracking-tight text-text-strong mb-3.5 flex items-center gap-2", className)} {...rest}>{children}</h3>

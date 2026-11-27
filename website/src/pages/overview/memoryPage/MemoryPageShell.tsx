@@ -4,12 +4,12 @@
  * the underline tabs and their panels. The global page and a bot's page each fill
  * the panels with their own cards; the Audit tab is the same on both.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { MemoryJumpContext, type MemoryJump } from './memoryJump'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Copy, ListChecks, MoreHorizontal, Plus, Settings, Sparkles, X } from 'lucide-react'
-import { Btn, IconButton } from '../../../components/ui'
+import { Btn, CardFrameContext, IconButton } from '../../../components/ui'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../../components/ui/tabs'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
 import { useIsMobile } from '../../../hooks/useIsMobile'
@@ -65,6 +65,9 @@ export default function MemoryPageShell({ id, label, botName, switcher, notices,
   const { t } = useTranslation()
   const client = useQueryClient()
   const phone = useIsMobile()
+  // Settings caps a group at its form width; this page's tables fill the pane,
+  // so its cards span the same width as the tab bar above them.
+  const frame = useContext(CardFrameContext)
   const [tab, setTab] = useState<MemoryPageTab>(initialTab)
   const [visited, setVisited] = useState<Set<MemoryPageTab>>(() => new Set([initialTab]))
   const [selecting, setSelecting] = useState(false)
@@ -127,6 +130,7 @@ export default function MemoryPageShell({ id, label, botName, switcher, notices,
     </header>
     {saved && <div role="status" className="flex items-center gap-2 rounded-lg bg-ok-subtle px-3 py-2 text-[13px] text-ok-text"><span className="min-w-0 flex-1 break-words">{saved}</span><IconButton aria-label={t('components.errorNotice.dismiss')} className="flex h-8 w-8 items-center justify-center" onClick={() => setSaved('')}><X className="lucide-inline" aria-hidden="true" /></IconButton></div>}
     <MemoryJumpContext.Provider value={jumpTo}>
+    <CardFrameContext.Provider value={frame === 'grouped' ? 'grouped-wide' : frame}>
     <Tabs variant="underline" layoutId={`memory-page-tabs-${id}`} value={shown} onValueChange={value => open(value as MemoryPageTab)}>
       {/* A phone scrolls the tab row sideways when the tabs do not fit. */}
       <div className="relative mb-4">
@@ -151,6 +155,7 @@ export default function MemoryPageShell({ id, label, botName, switcher, notices,
       {panel('audit', <MemoryAudit store={id} botName={botName} />)}
       {panel('settings', panels.settings)}
     </Tabs>
+    </CardFrameContext.Provider>
     </MemoryJumpContext.Provider>
     {recallOpen && <MemoryRecallDialog store={id} onClose={() => setRecallOpen(false)} />}
     {sheetOpen && <MemoryActionSheet title={label} groups={[listActions, createActions]} onClose={() => setSheetOpen(false)} />}

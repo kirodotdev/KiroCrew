@@ -48,6 +48,9 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
   })
 
   const rows = retired.data?.pages.flatMap(page => page.retired) ?? []
+  // The global (V1) store records no superseding key for what it retires; only a
+  // bot's V2 store does. A column that would be blank on every row is left out.
+  const showReplacedBy = rows.some(row => row.superseded_by)
   // With no rows the table holds nothing focusable, so while it hides columns
   // its scroller is the named Tab stop; a row brings its own Restore button.
   const emptyClipped = (edges.left || edges.right) && rows.length === 0
@@ -90,7 +93,7 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
           <thead>
             <tr>
               <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.memoryRetiredCard.memory')}</th>
-              <th className="w-[18%] text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('memoryV2.replaced_by')}</th>
+              {showReplacedBy && <th className="w-[18%] text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('memoryV2.replaced_by')}</th>}
               <th className="w-20 text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('memoryV2.times_replaced')}</th>
               <th className="w-28 text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('memoryV2.replaced_at')}</th>
               <th aria-label={i18nT('pages.overview.memoryRetiredCard.actions')} className="w-44 text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th>
@@ -99,7 +102,7 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={5}>
+                <td colSpan={showReplacedBy ? 5 : 4}>
                   <EmptyState
                     icon={<Archive className="lucide-inline" />}
                     title={i18nT('memoryV2.no_replaced_experiences')}
@@ -116,9 +119,9 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
                   {sliceCodePoints(row.text, 0, TEXT_PREVIEW_CHARS)}
                   {row.text.length > TEXT_PREVIEW_CHARS && <><span className="text-muted">…</span><details className="mt-2"><summary className="cursor-pointer text-muted">{i18nT('memoryV2.view_details')}</summary><p className="mt-2 whitespace-pre-wrap break-words">{row.text}</p></details></>}
                 </td>
-                <td className="px-2.5 py-2 border-b border-border text-sm break-words [overflow-wrap:anywhere]">
+                {showReplacedBy && <td className="px-2.5 py-2 border-b border-border text-sm break-words [overflow-wrap:anywhere]">
                   {row.superseded_by}
-                </td>
+                </td>}
                 {/* Retirements, not rows: the event log is append-only, so an
                     episode retired, restored and retired again counts more than
                     once here while still being one row. */}

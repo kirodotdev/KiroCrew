@@ -18731,6 +18731,8 @@
         "trend_growing": "Steigend",
         "trend_new": "Neu",
         "trend_steady": "Gleichbleibend",
+        "unnamed_tool": "Unbenanntes Tool",
+        "logged_by": "Protokolliert von {{source}}",
         "notice_label": "Wöchentlicher Hinweis in der Glocke",
         "notice_description": "Einmal pro Woche sagt dir die Glocke, wenn ein Tool-Fehler immer wiederkommt. Standardmäßig aus.",
         "notice_load_failed": "Die Einstellung für den wöchentlichen Hinweis konnte nicht gelesen werden",

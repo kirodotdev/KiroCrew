@@ -19231,6 +19231,8 @@
         "trend_growing": "In crescita",
         "trend_new": "Nuovo",
         "trend_steady": "Stabile",
+        "unnamed_tool": "Strumento senza nome",
+        "logged_by": "Registrato da {{source}}",
         "notice_label": "Avviso settimanale nella campanella",
         "notice_description": "Una volta a settimana la campanella ti avvisa quando un errore di uno strumento continua a ripetersi. Disattivato per impostazione predefinita.",
         "notice_load_failed": "Impossibile leggere l’impostazione dell’avviso settimanale",

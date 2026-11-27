@@ -18231,6 +18231,8 @@
         "trend_growing": "増加",
         "trend_new": "新規",
         "trend_steady": "横ばい",
+        "unnamed_tool": "名前のないツール",
+        "logged_by": "記録元: {{source}}",
         "notice_label": "ベルで週1回お知らせ",
         "notice_description": "ツールの失敗が繰り返されているとき、週に1回ベルでお知らせします。既定ではオフです。",
         "notice_load_failed": "週1回のお知らせの設定を読み込めませんでした",

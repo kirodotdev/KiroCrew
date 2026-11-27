@@ -4731,7 +4731,9 @@ lesson must show it to the person and write only on their say-so, through
 the last 7 days, at most 50 findings. The global Memory view's **Repeated failures**
 card (`website/src/pages/overview/MemoryFailuresCard.tsx`) lists them under every
 memory mode, vector or not. "Draft lesson" opens an editable draft built from the
-finding's name; only "Save lesson" writes, through `POST /api/lessons` with category
+finding's name. A row whose log entries named no tool kind (`unknown`, no MCP tool or
+rule) reads "Unnamed tool" with the `source` most of its rows carry under it, since a
+non-MCP row's `operation` is its command line and is never read. Only "Save lesson" writes, through `POST /api/lessons` with category
 `tool`, so the write takes the same validation, injection scan and dedup as a typed
 lesson, and a refusal keeps the draft with its reason. There is no MCP tool or CLI for
 the findings: the sandbox withholds the security log from foreign-harness children, and

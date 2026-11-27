@@ -83,6 +83,9 @@ export interface RecurringFailure {
   /** The MCP tool name, or the class error (`turn_limit`); `''` when neither applies. */
   tool: string
   rule_id: string
+  /** The surface that logged most of the rows (`dashboard`, `agent`, ...). Read
+   *  only to hint at a row with no tool name; older gateways leave it out. */
+  source?: string
   /** The error with paths, ids and numbers collapsed. */
   error: string
   hits: number
