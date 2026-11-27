@@ -29,6 +29,9 @@ from kiro_crew import mcp_entry
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
+# Keep interpreter cold starts on one worker and module-scoped snapshots shared.
+pytestmark = pytest.mark.xdist_group(name="mcp_listing_import_budget")
+
 #: Never loaded before the list, by any server. Each is the root of a large graph that
 #: only a tool call needs: the HTTP and cloud client stacks, the agent client, the CLI,
 #: the OS sandbox, the gateway's side of the MCP socket, the conversation store, and the
@@ -354,3 +357,76 @@ def test_a_small_servers_handlers_do_not_load_the_core_server(command: str, tmp_
     assert "kiro_crew.mcp_core" not in modules
     package = sorted(name for name in modules if name.split(".")[0] == "kiro_crew")
     assert len(package) <= HANDLER_MODULE_CEILING[command], (len(package), package)
+
+
+#: Never loaded by a config load. Every server loads its config before it lists, so
+#: what the load imports is on every server's floor. These are the roster and hook
+#: graph (the artifact store, webhooks, metrics, milestones: about 124 modules, about
+#: 3 MB RSS a server); the loader's unsafe-row check needs only ``kiro_crew.path_component``.
+FORBIDDEN_IN_A_CONFIG_LOAD = ("kiro_crew.hooks", "kiro_crew.members")
+
+_CONFIG_PROBE = f"""
+import json, sys
+from kiro_crew.config import KiroCrewConfig
+cfg = KiroCrewConfig.load()
+assert "keep" in cfg.agents and "../x" not in cfg.agents, sorted(cfg.agents)
+sys.stderr.write({_MARK!r} + json.dumps(sorted(sys.modules)) + "\\n")
+"""
+
+#: Never loaded by core before its first call. ``run_mcp_core_server`` imports
+#: ``kiro_crew.mcp_tools.sessions`` before it serves; that module needs one constant,
+#: ``RECALL_ROLES``, which its owner ``kiro_crew.context_assembly.replay`` serves
+#: without the agent and context-assembly graph.
+FORBIDDEN_IN_CORE_BEFORE_A_CALL = ("kiro_crew.agent", "kiro_crew.context")
+
+_IMPORTS_PROBE = f"""
+import importlib, json, sys
+for name in sys.argv[1:]:
+    importlib.import_module(name)
+sys.stderr.write({_MARK!r} + json.dumps(sorted(sys.modules)) + "\\n")
+"""
+
+
+@pytest.fixture(scope="module")
+def loaded_snapshots(tmp_path_factory: pytest.TempPathFactory) -> tuple[set[str], set[str]]:
+    tmp_path = tmp_path_factory.mktemp("loaded_snapshots")
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "config.json").write_text(
+        json.dumps({"agents": {"../x": {}, "keep": {}}}), encoding="utf-8"
+    )
+    handler_module, _ = mcp_entry.SLIM_SERVERS["mcp-core"]
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _CONFIG_PROBE + _IMPORTS_PROBE,
+            handler_module,
+            "kiro_crew.mcp_tools.sessions",
+        ],
+        env=_child_env(tmp_path, KIROCREW_PROJECT_DIR=str(tmp_path)),
+        cwd=str(tmp_path),
+        capture_output=True,
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=False,
+        **UTF8_TEXT,
+    )
+    marked = [line for line in done.stderr.splitlines() if line.startswith(_MARK)]
+    assert done.returncode == 0 and len(marked) == 2, done.stderr[-4000:]
+    config_modules, core_modules = [set(json.loads(line[len(_MARK) :])) for line in marked]
+    return config_modules, core_modules
+
+
+def test_a_config_load_cleans_the_roster_without_the_roster_graph(
+    loaded_snapshots: tuple[set[str], set[str]],
+) -> None:
+    """A disk read runs the unsafe-row check (the ``../x`` row is dropped) and still
+    leaves the roster and hook graph unloaded."""
+    modules, _ = loaded_snapshots
+    assert sorted(set(FORBIDDEN_IN_A_CONFIG_LOAD) & modules) == []
+
+
+def test_core_does_not_load_the_context_graph_before_a_call(
+    loaded_snapshots: tuple[set[str], set[str]],
+) -> None:
+    _, modules = loaded_snapshots
+    assert sorted(set(FORBIDDEN_IN_CORE_BEFORE_A_CALL) & modules) == []
