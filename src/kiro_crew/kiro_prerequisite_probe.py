@@ -279,7 +279,11 @@ def _stamp_probe(self: KiroPrerequisiteService, identity: str) -> None:
 
 
 def _latch_login_only(
-    self: KiroPrerequisiteService, whoami: ProcessResult, probe_identity: str
+    self: KiroPrerequisiteService,
+    whoami: ProcessResult,
+    probe_identity: str,
+    *,
+    authenticated: bool | None = None,
 ) -> PrerequisiteStatus:
     """Latch the sign-in verdict alone, for the LTS boot check.
 
@@ -287,10 +291,12 @@ def _latch_login_only(
     (the post-bind warm-up, the login watch) runs the full probe with the spec
     and ``acp`` checks this skipped. A ``whoami`` that did not clearly answer
     signed out carries its failure in ``probe_error``, so it is not reported
-    as a missing sign-in.
+    as a missing sign-in. *authenticated* overrides the verdict for a skipped
+    ``whoami``, which carries the latch's previous answer rather than none.
     """
     login_cmd, sso_cmd, bundled = login_commands_for(self._viable_binary, self._environ)
-    unclear = not whoami.ok and not _whoami_says_signed_out(whoami)
+    skipped = authenticated is not None
+    unclear = not skipped and not whoami.ok and not _whoami_says_signed_out(whoami)
     if unclear and whoami.timed_out:
         error = f"kiro-cli whoami timed out after {_IDENTITY_PROBE_TIMEOUT_SECS}s"
     elif unclear:
@@ -300,7 +306,7 @@ def _latch_login_only(
     self._status = PrerequisiteStatus(
         platform=_platform_label(self._platform),
         installed=True,
-        authenticated=whoami.ok,
+        authenticated=authenticated if skipped else whoami.ok,
         ready=False,
         initial_setup_complete=self._initial_setup_complete,
         login_command=login_cmd,
@@ -345,13 +351,39 @@ def _relay_route_configured() -> bool:
     return agent.acp_backend == ACP_BACKEND_KAS and not agent.kas_bundle
 
 
-def _configured_backend_is_claude() -> bool:
-    """Whether ``agent.acp_backend`` is claude. Blocking (reads config); unreadable reads as not."""
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+def _whoami_skip_allowed() -> bool:
+    """Whether a status or boot read may skip ``whoami``: nothing here signs in via kiro-cli.
+
+    True only when ``agent.acp_backend`` is claude AND no other route sends a slot
+    to a harness a host logout retires (``backends_retired_by_host_logout``, the
+    harnesses that run on kiro-cli's sign-in): the bot route
+    (``agent.member_acp_backend``, when any crewmate exists), a crewmate's own
+    ``agents.<name>.acp_backend`` pin, or a session created on such a harness.
+    Blocking (reads config); unreadable reads as not, which keeps the probe.
+
+    shortcut: a sub-agent spawned with an explicit ``backend=`` and the KAS bundle
+    route are not told apart here, so they keep the probe (the safe direction);
+    read the live slot table if this skips too rarely.
+    """
+    from kiro_crew.acp_backends import resolve_selected_backend
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, backend_from_stored
+    from kiro_crew.agent_sdk.host_auth import backends_retired_by_host_logout
     from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.members_parts.member_sessions import _SESSION_BACKEND_PICKS
 
     try:
-        return KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_CLAUDE
+        config = KiroCrewConfig.load()
+        if config.agent.acp_backend != ACP_BACKEND_CLAUDE:
+            return False
+        retired = backends_retired_by_host_logout()
+        agents = dict(getattr(config, "agents", None) or {})
+        routes = [backend_from_stored(getattr(a, "acp_backend", "")) for a in agents.values()]
+        routes.extend(backend_from_stored(v) for v in list(_SESSION_BACKEND_PICKS.values()))
+        if any(r in retired for r in routes if isinstance(r, str)):
+            return False
+        return (
+            not agents or resolve_selected_backend(config.agent.member_acp_backend) not in retired
+        )
     except Exception:  # noqa: BLE001 - keep the probe when config cannot be read
         return False
 
@@ -430,6 +462,9 @@ async def _probe(
         if self._has_probed and not force and now - self._last_probe_at < _PROBE_CACHE_SECS:
             return self._status
         self._viable_binary = ""
+        # A skipped whoami is no verdict: such a probe keeps the sign-in answer the
+        # latch already holds instead of writing ``authenticated=False``.
+        prior_authenticated = bool(self._status.authenticated)
         # Whether THIS probe skipped whoami. Kept local until the latch is written:
         # ``self._whoami_skipped`` describes the latch ``verified_ready`` reads
         # without the probe lock, so it is published with that latch, with no
@@ -524,7 +559,12 @@ async def _probe(
                         if login_only:
                             self._viable_binary = first_candidate
                             self._whoami_skipped = whoami_skipped
-                            return _latch_login_only(self, carve_out_whoami, probe_identity)
+                            return _latch_login_only(
+                                self,
+                                carve_out_whoami,
+                                probe_identity,
+                                authenticated=prior_authenticated if whoami_skipped else None,
+                            )
                     elif login_only and carve_out_version.timed_out:
                         # The boot check names the probe's own timeout. Any
                         # other failure keeps the sandbox refusal as the reason.
@@ -558,7 +598,11 @@ async def _probe(
                     # Unknown, not false: whoami also runs through the probe
                     # path, so we cannot claim either way -- unless the
                     # LTS sign-in check above answered signed in.
-                    authenticated=bool(carve_out_whoami and carve_out_whoami.ok),
+                    authenticated=(
+                        prior_authenticated
+                        if whoami_skipped
+                        else bool(carve_out_whoami and carve_out_whoami.ok)
+                    ),
                     ready=False,
                     repair_required=False,
                     initial_setup_complete=self._initial_setup_complete,
@@ -674,7 +718,12 @@ async def _probe(
             await asyncio.to_thread(self._mark_setup_complete)
         if login_only:
             self._whoami_skipped = whoami_skipped
-            return _latch_login_only(self, whoami, probe_identity)
+            return _latch_login_only(
+                self,
+                whoami,
+                probe_identity,
+                authenticated=prior_authenticated if whoami_skipped else None,
+            )
         # Kiro CLI acceptance is checked here, on the probe path, because it
         # costs a spawn per spec — the every-read overlay stays stat-only. It
         # needs a successful identity probe: ``agent validate`` refuses to run
@@ -708,7 +757,7 @@ async def _probe(
         self._status = PrerequisiteStatus(
             platform=_platform_label(self._platform),
             installed=True,
-            authenticated=whoami.ok,
+            authenticated=prior_authenticated if whoami_skipped else whoami.ok,
             # A required spec the CLI refuses fails every turn, exactly like
             # one that is absent, so it narrows readiness the same way. A CLI
             # without the ``acp`` subcommand cannot start ANY session, so it
@@ -1103,13 +1152,14 @@ async def _audited_identity_probe(
     host authenticated by Kiro CLI's own API-key variable is detected as
     signed in rather than reported "Not logged in".
 
-    With ``skip_on_claude_backend`` and the configured backend claude, ``whoami``
-    is not run: a status or boot read on a Claude-harness gateway never uses the
-    Kiro CLI sign-in, and ``whoami`` can refresh a token and write its store. The
-    default is to run it, so a check made for a Kiro-routed session always probes.
+    With ``skip_on_claude_backend``, a claude default and no slot routed to a
+    harness that signs in via kiro-cli (:func:`_whoami_skip_allowed`), ``whoami``
+    is not run: nothing on that gateway uses the Kiro CLI sign-in, and ``whoami``
+    can refresh a token and write its store. The default is to run it, so a check
+    made for a Kiro-routed session always probes.
     """
 
-    if skip_on_claude_backend and await asyncio.to_thread(_configured_backend_is_claude):
+    if skip_on_claude_backend and await asyncio.to_thread(_whoami_skip_allowed):
         return ProcessResult(ok=False, error=_WHOAMI_SKIPPED_ERROR)
     action = "probe_identity"
     await self._audit(

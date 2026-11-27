@@ -643,7 +643,10 @@ class KiroPrerequisiteService:
             # INSIDE the lock after the winner refreshed the timestamp, drop the
             # queued callers. A human Check again keeps ``force=True`` and still
             # bypasses that cache, so the button never returns a stale answer.
-            await self._probe(force=not coalesce, skip_whoami_on_claude=True)
+            # That human Check again also runs whoami on a claude default: the
+            # person asked for the sign-in answer, so it is never skipped. Only the
+            # machine poll (``coalesce``) may skip it.
+            await self._probe(force=not coalesce, skip_whoami_on_claude=coalesce)
         elif not self._has_probed:
             # Nothing has resolved yet (warm-up still pending or it failed).
             # One probe here is the boot probe, just arriving late.
@@ -656,8 +659,10 @@ class KiroPrerequisiteService:
             # "not signed in" after a terminal sign-in for just as long. It stays
             # cheap because the trigger is a local read, not a spawn, and it
             # cannot loop -- the probe stamps the new identity, so the next poll
-            # compares equal.
-            await self._probe(force=True, skip_whoami_on_claude=True)
+            # compares equal. It runs whoami even on a claude default: the latch's
+            # sign-in answer describes the old account, so a skipped probe could
+            # only carry a verdict the store no longer backs.
+            await self._probe(force=True)
         result = await self._dashboard_snapshot()
 
         # The repair arm deliberately does NOT live here. This is an ``add_get``

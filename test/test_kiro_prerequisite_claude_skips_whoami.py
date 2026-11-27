@@ -30,10 +30,15 @@ def _service(
     monkeypatch: pytest.MonkeyPatch,
     backend: str,
     before_reply: Callable[[list[str]], Awaitable[None]] | None = None,
+    agents: dict[str, Any] | None = None,
 ) -> tuple[KiroPrerequisiteService, list[list[str]]]:
+    config = SimpleNamespace(
+        agent=SimpleNamespace(acp_backend=backend, kas_bundle=False, member_acp_backend=backend),
+        agents=agents or {},
+    )
+    monkeypatch.setattr("kiro_crew.config.KiroCrewConfig.load", lambda: config)
     monkeypatch.setattr(
-        "kiro_crew.config.KiroCrewConfig.load",
-        lambda: SimpleNamespace(agent=SimpleNamespace(acp_backend=backend, kas_bundle=False)),
+        "kiro_crew.members_parts.member_sessions._SESSION_BACKEND_PICKS", {}, raising=True
     )
     _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
     calls: list[list[str]] = []
@@ -50,8 +55,27 @@ def _service(
         home=tmp_path,
         process_runner=run,
         audit_writer=_no_audit,
+        clock=_Clock(),
     )
     return service, calls
+
+
+class _Clock:
+    """A monotonic clock the test moves by hand, so no poll waits on real time."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def _status_poll(service: KiroPrerequisiteService) -> dict[str, Any]:
+    """The dashboard's machine poll (``refresh=auto``), past its floor and cache."""
+    clock = service._clock
+    assert isinstance(clock, _Clock)
+    clock.now += 10.0
+    return await service.snapshot(force=True, coalesce=True)
 
 
 @pytest.mark.asyncio
@@ -60,7 +84,7 @@ async def test_claude_backend_probe_never_runs_whoami(
 ) -> None:
     service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE)
 
-    status = await service.snapshot(force=True)
+    status = await _status_poll(service)
 
     assert status["installed"] is True
     assert ["--version"] in calls
@@ -84,7 +108,7 @@ async def test_kas_backend_probe_still_runs_whoami(
 ) -> None:
     service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_KAS)
 
-    status = await service.snapshot(force=True)
+    status = await _status_poll(service)
 
     assert status["authenticated"] is True
     assert calls[:2] == [["--version"], ["whoami"]]
@@ -108,7 +132,7 @@ async def test_a_skipped_status_probe_is_not_reused_as_a_kiro_verdict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE)
-    await service.snapshot(force=True)
+    await _status_poll(service)
     assert ["whoami"] not in calls
 
     # The status probe just ran, well inside max_age_secs, yet it skipped whoami.
@@ -122,7 +146,7 @@ async def test_a_failed_turn_sign_in_check_runs_whoami_on_a_claude_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE)
-    await service.snapshot(force=True)
+    await _status_poll(service)
 
     await service.signed_out_confirmed()
 
@@ -134,7 +158,7 @@ async def test_a_failed_turn_sign_in_check_does_not_make_a_skipped_probe_reusabl
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE)
-    await service.snapshot(force=True)
+    await _status_poll(service)
     await service.signed_out_confirmed()
     whoami_runs = calls.count(["whoami"])
 
@@ -162,11 +186,11 @@ async def test_a_status_probe_in_flight_does_not_make_a_skipped_latch_reusable(
             await await_until(release, what="the test releasing --version")
 
     service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE, hold_version)
-    await service.snapshot(force=True)
+    await _status_poll(service)
     assert ["whoami"] not in calls
 
     blocking = True
-    status_refresh = asyncio.create_task(service.snapshot(force=True))
+    status_refresh = asyncio.create_task(_status_poll(service))
     check: asyncio.Task[bool] | None = None
     try:
         await await_until(in_version, what="the status refresh reaching --version")
@@ -185,3 +209,59 @@ async def test_a_status_probe_in_flight_does_not_make_a_skipped_latch_reusable(
         for task in (status_refresh, check):
             if task is not None and not task.done():
                 task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_human_check_again_runs_whoami_on_a_claude_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Check again (refresh=explicit) is the person asking for the sign-in answer.
+    service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE)
+
+    status = await service.snapshot(force=True)
+
+    assert ["whoami"] in calls
+    assert status["authenticated"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_crewmate_pinned_to_kiro_cli_keeps_whoami_on_the_status_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A slot this gateway routes to Kiro CLI runs on kiro-cli's sign-in, so the
+    # status the dashboard shows for it must come from a real whoami.
+    pin = SimpleNamespace(acp_backend="kiro")
+    service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE, agents={"helper": pin})
+
+    status = await _status_poll(service)
+
+    assert ["whoami"] in calls
+    assert status["authenticated"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_session_created_on_kiro_cli_keeps_whoami_on_the_status_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.members_parts import member_sessions
+
+    service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE)
+    member_sessions.note_session_backend_pick("dashboard:kiro-chat", "kiro")
+
+    await _status_poll(service)
+
+    assert ["whoami"] in calls
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_probe_keeps_the_last_real_sign_in_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE)
+    assert await service.verified_ready(max_age_secs=3600.0) is True
+    whoami_runs = calls.count(["whoami"])
+
+    status = await _status_poll(service)
+
+    assert calls.count(["whoami"]) == whoami_runs
+    assert status["authenticated"] is True
