@@ -49,10 +49,12 @@ Stdlib only; Python 3.10+ (the package floor), like its sibling scripts.
 Usage:
     python3 local_review.py [--worktree PATH] [--base REF]
                             [--out-dir DIR] [--stage-dir DIR] [--json]
+                            [--served-models ID,ID,... | --model-inherited]
 
 Exit:
     0  briefs assembled (paths printed)
-    2  environment / state error (not a git repo, no diff, no reviewers, ...)
+    2  environment / state error (not a git repo, no diff, no reviewers, a
+       reviewer whose pin and tier are both unserved to this account, ...)
     40 PARITY FAILURE - a workflow does not have the shape we extract from.
        Deliberately loud: emitting a stale hand-written paraphrase instead is
        the exact failure mode this script exists to prevent. When the running
@@ -779,6 +781,11 @@ class Lane(NamedTuple):
     notes: list[str]
     budget: Optional[int]
     budget_reports_all: bool = False
+    # The profile's own pin, and whether ``local_model`` was checked against the
+    # account's served models (``resolve_served_model``).
+    profile_model: str = ""
+    served_checked: bool = False
+    model_inherited: bool = False
 
 
 def _normalise_model(model: str) -> str:
@@ -797,6 +804,111 @@ def _model_note(ci_model: str, local_model: str) -> list[str]:
         "MODEL DRIFT: the profile pins {!r} locally but the workflow pins {!r}. Local "
         "green is weaker than server green until they agree.".format(local_model, ci_model)
     ]
+
+
+#: How long the model listing may take before the pins are reported unverified.
+_LIST_MODELS_TIMEOUT_SECS = 60
+
+#: ``assemble``'s default: the pins are not checked against any served list.
+SERVED_NOT_CHECKED = object()
+
+#: ``assemble``'s ``served`` when the dispatch cannot pin a model (an engine
+#: sub-agent): every lane runs on the dispatching chat's own model.
+MODEL_INHERITED = object()
+
+
+class UnservedModel(EnvironmentError):
+    """Neither a reviewer's pin nor any model in its tier is served to this account."""
+
+
+def list_served_models() -> Optional[list[str]]:
+    """The model ids ``kiro-cli`` says this account is served, in its own order.
+
+    ``None`` when the listing cannot be read (no ``kiro-cli``, a non-zero exit, a
+    timeout, a shape this does not know): the pins are then passed on unverified,
+    never judged against a guess. ``auto`` is not a model, so it is left out.
+    """
+    argv, refused = _tool_argv.resolve(["kiro-cli", "chat", "--list-models", "--format", "json"])
+    if refused:
+        return None
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_LIST_MODELS_TIMEOUT_SECS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        rows = json.loads(proc.stdout).get("models")
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(rows, list):
+        return None
+    ids = [row.get("model_id") for row in rows if isinstance(row, dict)]
+    return [i for i in ids if isinstance(i, str) and i and i != "auto"]
+
+
+def _in_tier(model: str, tier: str) -> bool:
+    """Whether *model* belongs to *tier*: ``gpt-6.x`` is every ``gpt-6.`` id, else an exact id."""
+    if tier.endswith(".x"):
+        return model.startswith(tier[:-1])
+    return model == tier
+
+
+def resolve_served_model(
+    name: str, pin: str, tier: Optional[str], served: Optional[list[str]]
+) -> tuple[str, list[str]]:
+    """The model reviewer *name* runs on here, and the notes that say why.
+
+    The pin when it is served; else the first served model in *tier*, in the
+    listing's order, with a note naming both; with no listing, the pin, noted as
+    unverified. Raises :class:`UnservedModel` when the tier has no served model
+    either: a review spawned on an unserved pin would otherwise run on the
+    account's default and be read as the pinned model's verdict.
+    """
+    if served is None:
+        return pin, [
+            "SERVED MODEL UNVERIFIED: the account's model list could not be read, so "
+            "{!r} is passed on as pinned. Check the run's served model before reading "
+            "its verdict as that model's.".format(pin)
+        ]
+    if pin in served:
+        return pin, []
+    match = next((m for m in served if tier and _in_tier(m, tier)), None)
+    if match is None:
+        raise UnservedModel(
+            "the {} reviewer pins {!r} (tier {!r}), and this account is served neither "
+            "it nor any model in that tier. Served: {}.".format(
+                name, pin, tier, ", ".join(served) or "none"
+            )
+        )
+    return match, [
+        "MODEL FALLBACK: {!r} is not served to this account, so this lane runs on {!r} "
+        "from tier {!r}. Local green is weaker than server green.".format(pin, match, tier)
+    ]
+
+
+def _on_served_model(lane: Lane, tier: Optional[str], served: Optional[list[str]]) -> Lane:
+    """*lane* moved onto the model :func:`resolve_served_model` picks.
+
+    The profile-against-CI drift note stays as it was: a fallback's own note
+    already says the lane runs on a model other than the pin.
+    """
+    if served is MODEL_INHERITED:
+        note = (
+            "MODEL INHERITED: this lane runs on the dispatching chat's own model, not "
+            "{!r}. Local green is weaker than server green.".format(lane.profile_model)
+        )
+        return lane._replace(notes=lane.notes + [note], model_inherited=True)
+    model, notes = resolve_served_model(lane.name, lane.profile_model, tier, served)
+    return lane._replace(
+        local_model=model,
+        notes=lane.notes + notes,
+        # Unverified (no listing) keeps the brief's instruction to drop to the tier.
+        served_checked=served is not None,
+    )
 
 
 def build_spliced_lane(
@@ -1295,12 +1407,25 @@ def render_task_file(
     )
     for path in rule_paths:
         parts.append("- Base-ref rule snapshot staged at `{}`.".format(path))
-    parts.append(
-        "- Model pin: `{}` (CI pins `{}`). If unavailable, drop to `{}` and say so "
-        "in your output - local green is then weaker than server green.".format(
-            lane.local_model, lane.ci_model, lane.fallback_model
+    if lane.model_inherited:
+        parts.append(
+            "- Model: the dispatching chat's own (profile pins `{}`, CI pins `{}`). Name "
+            "the model you ran on in your output.".format(lane.profile_model, lane.ci_model)
         )
-    )
+    elif lane.served_checked:
+        parts.append(
+            "- Model: `{}` (profile pins `{}`, CI pins `{}`), checked as served to this "
+            "account. Name the model you ran on in your output.".format(
+                lane.local_model, lane.profile_model, lane.ci_model
+            )
+        )
+    else:
+        parts.append(
+            "- Model pin: `{}` (CI pins `{}`). If unavailable, drop to `{}` and say so "
+            "in your output - local green is then weaker than server green.".format(
+                lane.local_model, lane.ci_model, lane.fallback_model
+            )
+        )
     if lane.budget is not None:
         parts.append("- Blocking budget: at most {} BLOCKING findings.".format(lane.budget))
     elif lane.budget_reports_all:
@@ -1343,12 +1468,19 @@ def assemble(
     out_dir: str,
     stage_dir: str,
     resolved: Optional[dict[str, str]] = None,
+    served: Any = SERVED_NOT_CHECKED,
 ) -> dict[str, Any]:
     """Assemble every reviewer brief the profile declares. Raises ParityError.
 
     ``resolved``, when given, receives ``base_ref`` and ``base_sha`` as soon as
     they are settled, so a caller handling a ParityError knows which base
     commit the failing extraction read.
+
+    ``served`` is the account's served model ids (``None`` when they could not
+    be read). Given, each pinned lane runs on :func:`resolve_served_model`'s
+    answer, and a lane whose tier has no served model raises
+    :class:`UnservedModel`. :data:`MODEL_INHERITED` briefs every lane on the
+    dispatching chat's own model. Left out, the pins are passed on as before.
     """
     resolve_profile = _load_sibling("_lr_resolve_profile", "resolve_profile.py")
     # The ref the profile is READ from is settled BEFORE any profile value is
@@ -1446,6 +1578,8 @@ def assemble(
     written: dict[str, str] = {}
     brief_paths: dict[str, str] = {}
     claimed: dict[str, str] = {}
+    tiers: dict[str, Optional[str]] = {}
+    pinned: dict[str, bool] = {}
 
     for reviewer in reviewers:
         contract = reviewer["contract"]
@@ -1509,7 +1643,17 @@ def assemble(
                 "predates the spliced-prompt shape (#3697) produces exactly this "
                 "failure: rebase onto a base that carries it.".format(contract)
             )
-        lanes.append(lane)
+        tiers[name] = reviewer.get("model_tier")
+        pinned[name] = bool(reviewer.get("model"))
+        lanes.append(lane._replace(profile_model=local_model))
+
+    # Only after every lane extracted: a contract that does not parse is reported
+    # whatever this host's account is served.
+    if served is not SERVED_NOT_CHECKED:
+        lanes = [
+            _on_served_model(lane, tiers[lane.name], served) if pinned[lane.name] else lane
+            for lane in lanes
+        ]
 
     os.makedirs(out_dir, exist_ok=True)
     for lane in lanes:
@@ -1556,6 +1700,8 @@ def assemble(
                 "shape": lane.shape,
                 "ci_model": lane.ci_model,
                 "local_model": lane.local_model,
+                "profile_model": lane.profile_model,
+                "model_inherited": lane.model_inherited,
                 "fallback_model": lane.fallback_model,
                 "stages": [label for label, _ in lane.stages],
                 "blocking_budget": lane.budget,
@@ -1732,6 +1878,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--out-dir", default=None, help="where the task files land")
     parser.add_argument("--stage-dir", default=None, help="where auxiliary inputs are staged")
     parser.add_argument("--json", action="store_true", help="emit the summary as JSON")
+    models = parser.add_mutually_exclusive_group()
+    models.add_argument(
+        "--served-models",
+        default=None,
+        help="comma-separated model ids this account is served (default: ask kiro-cli)",
+    )
+    models.add_argument(
+        "--model-inherited",
+        action="store_true",
+        help="the dispatch cannot pin a model (an engine sub-agent): brief every lane on "
+        "the dispatching chat's own model",
+    )
     args = parser.parse_args(argv)
 
     worktree = args.worktree
@@ -1758,7 +1916,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     resolved: dict[str, str] = {}
     try:
-        summary = assemble(worktree, args.base, out_dir, stage_dir, resolved)
+        served: Any
+        if args.model_inherited:
+            served = MODEL_INHERITED
+        elif args.served_models is not None:
+            served = [m.strip() for m in args.served_models.split(",") if m.strip()]
+        else:
+            served = list_served_models()
+        summary = assemble(worktree, args.base, out_dir, stage_dir, resolved, served)
     except ParityError as exc:
         err("PARITY FAILURE: {}".format(exc))
         hint = None
@@ -1791,10 +1956,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("  rules    : {}".format(path))
     for lane in summary["lanes"]:
         print(
-            "  {:<8} -> {}  model={} (CI {}; fallback {}) contract={} stages={}{}".format(
+            "  {:<8} -> {}  model={}{} (CI {}; fallback {}) contract={} stages={}{}".format(
                 lane["name"],
                 summary["tasks"][lane["name"]],
                 lane["local_model"],
+                ""
+                if lane["profile_model"] in ("", lane["local_model"])
+                else " [profile pins {}]".format(lane["profile_model"]),
                 lane["ci_model"],
                 lane["fallback_model"],
                 lane["contract"],
