@@ -103,8 +103,14 @@ def test_two_sessions_on_one_backend():
     )
     rss = got[gauges.GAUGE_BACKENDS_RSS]
     assert rss["first_party"] == 0
-    # The pool's subtree probe reads /proc: Linux only, a gap elsewhere.
-    if sys.platform == "linux":
+    # Linux walks /proc, Windows the validated tree, macOS the libproc footprint;
+    # a host with none of them is a gap.
+    from kiro_crew import platform_compat
+
+    measurable = sys.platform in ("linux", "win32") or (
+        sys.platform == "darwin" and platform_compat.darwin_libproc_available()
+    )
+    if measurable:
         assert rss["third_party"] > 0
     else:
         assert "third_party" not in rss

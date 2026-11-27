@@ -3727,18 +3727,27 @@ no extra wait — what the stub asked for caps it before the margin comes off, a
 that constant is what has to rise instead. Because the key's help text is the
 only statement of this an operator reads, `test_config_baseline.py` pins the
 sentence against that arithmetic rather than leaving it to review;
+`max_backends` (64) caps the pool, but the broker raises the cap it hands the daemon
+to the number of `stub_servers` when that is higher
+(`admission.derive_resident_ceiling`) and logs the raise, so a lower value never
+leaves a stubbed server without a backend; the key's help text says so and
+`test_mcp_gateway_resident_ceiling.py` pins that sentence;
 `initialize_timeout_secs` (10) bounds a fresh backend's first
 `initialize` and is threaded onto each `Backend` as a constructor field (on every
-platform the effective deadline is floored to 30 s by
+platform the effective deadline is floored to 90 s by
 `_INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS` through `_effective_initialize_timeout_secs`:
-right after a daemon restart several backends cold-start at once and take 13-15 s, and a
-Windows cold start can overrun 10 s alone, so a 10 s deadline reaps backends that were
-about to answer; a configured value already above the floor is unchanged, and the spawn
-gate's initialize watcher and its slow-init fraction read the same effective value;
+right after a daemon restart several backends cold-start at once and take 13-15 s, a
+Windows cold start can overrun 10 s alone, and a first `npx` / `uvx` run resolves and
+downloads the server before it answers (a 45 s start was reaped at the old 30 s floor
+on every attempt), so the floor is the 90 s a chat itself waits for a starting server
+(`agent_sdk.mcp_problems.MCP_SERVER_WAIT_SECS`); a configured value already above the
+floor is unchanged; the spawn gate's initialize watcher waits the smaller of that
+deadline and `admission.SPAWN_PERMIT_INIT_WINDOW_SECS` (30 s) and its slow-init
+fraction is judged against that window;
 a pool key whose spawns were reaped at that deadline gets a longer one on its next
 spawn, because a reaped backend is killed and its respawn starts cold again:
 `Admission.initialize_timeout_for` doubles the effective deadline for each reap in a
-row, up to `INIT_DEADLINE_STRETCH_CAP_SECS` (120 s), never lowers a configured value
+row, up to `INIT_DEADLINE_STRETCH_CAP_SECS` (240 s), never lowers a configured value
 above that cap, and clears the count once a handshake for that key completes; the
 count is kept per SHA-256 digest of the key for at most `INIT_DEADLINE_REAP_KEYS_MAX`
 (256) keys, the key reaped longest ago forgotten first);

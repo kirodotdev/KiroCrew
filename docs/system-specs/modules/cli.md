@@ -2665,7 +2665,14 @@ Without `--expect-pid` the command is unchanged:
    port before a replacement can bind is answered by who answered, not by argv.
 4. Terminate each verified PID: `os.kill(SIGTERM)` on POSIX; `taskkill /T /F`
    (via `platform_compat.kill_process_tree`) on Windows so the gateway's detached
-   children are reaped too. Liveness is probed with `platform_compat.pid_exists`
+   children are reaped too. That walk is bounded by `_STOP_TREE_TIMEOUT_SECS`
+   (600 s), not the helper's 5 s default: a tree of about 1,500 processes took
+   11.9 s and one of about 2,300 took 158.8 s. A walk past the bound raises
+   `TimeoutError` and the command says the stop did not finish (exit 1), never
+   "No permission". `taskkill /T` exits 128 when any process of the tree is gone
+   by the time it reaches it, the gateway itself included, so a pid that was alive
+   just before the kill and answers 128 counts as stopped.
+   Liveness is probed with `platform_compat.pid_exists`
    (a raw `os.kill(pid, 0)` would *terminate* the process on Windows).
 5. Waits up to 1s for exit.
 6. SEL audit event logged.

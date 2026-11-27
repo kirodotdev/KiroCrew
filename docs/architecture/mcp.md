@@ -2223,9 +2223,13 @@ connection-private, mid-call respawn and prewarm -- through `_acquire_backend`:
   `Permit` covers the fork and the backend's first `initialize`: `ready` is sent
   to the stub before the handshake arrives (the stub forwards kiro-cli's first
   frame), so the spawn path never awaits it inline -- a detached watcher on
-  `_init_done_event`, bounded by `Backend.initialize_timeout_secs` (a
+  `_init_done_event`, bounded by the smaller of `Backend.initialize_timeout_secs` (a
   constructor field fed from `mcp_gateway.initialize_timeout_secs`, not a module
-  setter, and never below the 30 s cold-start floor), settles the permit `success` (ready), `failure` (handshake failed;
+  setter, and never below the 90 s cold-start floor) and
+  `admission.SPAWN_PERMIT_INIT_WINDOW_SECS` (30 s, so hung starts cannot hold the
+  gate for the whole deadline; when that window is shorter than the deadline it is
+  the whole hold, and a handshake still in flight at its end settles `neutral`
+  while the backend keeps its own deadline), settles the permit `success` (ready), `failure` (handshake failed;
   the permit is then held until the process is reaped) or `neutral` (no
   handshake ever arrived -- an unused prewarm or a client that never
   initialised is not congestion). The watcher also ends, `neutral`, the moment
@@ -2245,7 +2249,10 @@ connection-private, mid-call respawn and prewarm -- through `_acquire_backend`:
 - **`BackendPool.reserve_resident_slot`** moves the `max_backends` check in
   front of the fork: a slot is claimed (or `PoolAtCapacity` raised with nothing
   to reap) before `spawn_backend`, and `add` consumes it. Private backends take
-  none.
+  none. The cap the broker puts on the daemon's argv is
+  `admission.derive_resident_ceiling`: `max_backends`, raised to the number of
+  stubbed servers when that is higher, because every stubbed server needs one
+  pooled backend and the ones past the cap lost their tools in every chat.
 
 Acquisition order inside `_acquire_backend`'s spawn closure -- after the per-key
 `_spawn_locks` dedup and after `CircuitBreaker.allow`, so a permit is never held

@@ -40,6 +40,11 @@ from kiro_crew.service import controller as service_controller
 
 _SHUTDOWN_RESPONSE_MAX_BYTES = 4096
 
+#: Bound on the Windows ``taskkill /T`` that stops the gateway's tree. The walk
+#: grows fast with the tree: 11.9 s for about 1,500 processes and 158.8 s for
+#: about 2,300 on a real host, so the bound leaves room past that.
+_STOP_TREE_TIMEOUT_SECS = 600.0
+
 
 def _request_gateway_shutdown(port: int) -> bool:
     """Request graceful shutdown through the gateway's self-authenticating API.
@@ -744,6 +749,7 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
 
     sent: set[int] = set()
     denied: list[int] = []
+    timed_out: list[int] = []
     for pid in pids:
         if platform_compat.IS_WINDOWS:
             # No POSIX signals or graceful shutdown for a detached console-less
@@ -752,11 +758,20 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             # kill_pid would orphan them). kill_process_tree raises
             # ProcessLookupError / PermissionError / OSError on non-zero
             # taskkill exit — same shape POSIX uses.
+            alive_before = platform_compat.pid_exists(pid)
             try:
-                platform_compat.kill_process_tree(pid, platform_compat.SIGTERM)
+                platform_compat.kill_process_tree(
+                    pid, platform_compat.SIGTERM, timeout=_STOP_TREE_TIMEOUT_SECS
+                )
                 sent.add(pid)
             except ProcessLookupError:
-                pass  # already gone
+                # taskkill /T exits 128 when any process of the tree is gone by
+                # the time it reaches it, the gateway included, so a gateway it
+                # just ended also lands here. Alive a moment ago means stopped.
+                if alive_before:
+                    sent.add(pid)
+            except TimeoutError:
+                timed_out.append(pid)
             except PermissionError:
                 denied.append(pid)
             except OSError:
@@ -807,6 +822,23 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             else "try: sudo kirocrew stop"
         )
         print(f"❌ No permission to stop pid {', '.join(str(p) for p in denied)} — {remedy}")
+        sys.exit(1)
+    if timed_out:
+        # Not a refusal: taskkill was still walking the tree when its bound ran
+        # out, so the gateway may be half stopped. Saying "No permission" here
+        # sent operators to an Administrator terminal for nothing.
+        sel().log_api_access(
+            caller="cli",
+            operation="gateway_stop",
+            outcome="denied",
+            source="cli",
+            resources=f"pids={timed_out} port={port} reason=taskkill_timeout",
+        )
+        print(
+            f"❌ Stopping pid {', '.join(str(p) for p in timed_out)} did not finish within "
+            f"{_STOP_TREE_TIMEOUT_SECS:g} s (taskkill was still ending its processes). "
+            "Run kirocrew stop again."
+        )
         sys.exit(1)
     if not sent:
         sel().log_api_access(
