@@ -26,10 +26,22 @@ _HINT = re.compile(r"(?:`|\bwith: |\b(?:[Rr]un|[Tt]ry|[Uu]se):? )kirocrew ([a-z]
 _KNOWN = frozenset(name for _, rows in COMMAND_GROUPS for name, _ in rows)
 
 
-def _docstring_nodes(tree: ast.AST) -> set[int]:
-    ids: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+#: What the source text of any string whose value holds ``kirocrew `` contains:
+#: the word followed by the space itself, or by the quote or backslash that ends
+#: the literal when the space starts the next implicitly concatenated piece. A
+#: source without it holds no hint, so the scan skips parsing it.
+#: shortcut: a hint spelled with an escape (``kirocrew\x20``) or split inside the
+#: word is missed; widen this pattern if a message is ever written so.
+_CANDIDATE = re.compile(r"""kirocrew[ "'\\]""")
+
+_DEFS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _scan(source: str) -> list[tuple[int, str]]:
+    docstrings: set[int] = set()
+    strings: list[ast.Constant] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, _DEFS):
             body = node.body
             if (
                 body
@@ -37,22 +49,20 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
                 and isinstance(body[0].value, ast.Constant)
                 and isinstance(body[0].value.value, str)
             ):
-                ids.add(id(body[0].value))
-    return ids
+                docstrings.add(id(body[0].value))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            strings.append(node)
+    found = []
+    for node in strings:
+        if id(node) not in docstrings:
+            found.extend((node.lineno, m.group(1)) for m in _HINT.finditer(node.value))
+    return sorted(found)
 
 
 def _hinted_commands(source: str) -> list[tuple[int, str]]:
-    tree = ast.parse(source)
-    docstrings = _docstring_nodes(tree)
-    found = []
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and id(node) not in docstrings
-        ):
-            found.extend((node.lineno, m.group(1)) for m in _HINT.finditer(node.value))
-    return sorted(found)
+    if not _CANDIDATE.search(source):
+        return []
+    return _scan(source)
 
 
 def _unknown(name: str) -> bool:
@@ -83,3 +93,21 @@ def f():
     named = [name for _, name in _hinted_commands(source)]
     assert named == ["start", "bogus", "gateway"]
     assert [n for n in named if _unknown(n)] == ["start", "bogus"]
+
+
+def test_the_candidate_filter_keeps_every_hint(monkeypatch):
+    assert "kirocrew " in _HINT.pattern
+    source = '''
+def f():
+    """`kirocrew nosuch` in a docstring."""
+    a = "Start it with `kirocrew start`."
+    b = ("Run `kirocrew" " bogus` first.")
+    return a, b
+'''
+    assert _hinted_commands(source) == _scan(source) == [(4, "start"), (5, "bogus")]
+
+    def _refuse(*args, **kwargs):
+        raise AssertionError("a source with no candidate is parsed")
+
+    monkeypatch.setattr(ast, "parse", _refuse)
+    assert _hinted_commands("x = 'Run `kiro-crew start` in ~/.kirocrew/.'\n") == []
