@@ -7,7 +7,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
 import { markSlotUnread } from '../../store/dashboardSlice'
 import { setSlotStatusDetail, refreshSlot, warmSlotCache, selectSidebarSubagentCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys } from '../../store/chatSlice'
-import { dispatchMcNotification, TURN_DONE_KIND, shouldChimeOnTurnDone } from '../notificationEvent'
+import { dispatchMcNotification, APPROVAL_KIND, TURN_DONE_KIND, shouldChimeOnTurnDone } from '../notificationEvent'
 import { shouldNotifyOnChatComplete } from '../chatCompleteNotify'
 import { appsMutingSessions, isSlotMuted } from '../sessionMute'
 import { takeTurnErrored } from '../turnError'
@@ -20,7 +20,7 @@ import { i18nT } from '../../i18n/t'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { attendArrival, isSlotOnScreen } from './attention'
 import { takeIdleRowRefresh } from './idleRowRefresh'
-import { crewRootOf } from '../../lib/crewMode'
+import { crewRootOf, mateRootOf } from '../../lib/crewMode'
 import { refreshPullRequestsAfterTurn, refreshSessionControlStatusesAfterTurn } from './serverState'
 import type { FrameData } from './frames'
 
@@ -104,15 +104,24 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         // paused on a question or errored has stopped, and until the conductor's
         // own routing lands nothing else would say so, so those still sound.
         const crewWorkerQuiet = !!crewRootOf(soundSlot) && !completionNeedsInput && !turnErrored
+        // A session a Bot dispatched (`mate_root`) is the Bot's to read the same
+        // way, under the same gate. Read outside the conductor mode flag, as
+        // `mateRootOf` is everywhere: a Bot's sessions are not a Crew Mode crew.
+        const mateWorkerQuiet = !!mateRootOf(soundSlot) && !completionNeedsInput && !turnErrored
         completionNeedsAttention = shouldChimeOnTurnDone({
           slot: data.slot,
           reconnecting: reconnectingRef.current,
           continuing,
           needsInput: completionNeedsInput,
-        }) && !muteSuppresses && !crewWorkerQuiet
+        }) && !muteSuppresses && !crewWorkerQuiet && !mateWorkerQuiet
         // A live question card already requested audio. Keep its named
-        // desktop toast eligible, but do not request a second chime.
-        if (completionNeedsAttention && !questionPending) dispatchMcNotification(TURN_DONE_KIND)
+        // desktop toast eligible, but do not request a second chime. A turn
+        // that stopped for the user (a question with no card here, or a
+        // terminal error) plays the approval sound: the user has to act. Only
+        // a routine finish plays the turn sound.
+        if (completionNeedsAttention && !questionPending) {
+          dispatchMcNotification(completionNeedsInput || turnErrored ? APPROVAL_KIND : TURN_DONE_KIND)
+        }
       }
       // Native notifications can carry an OS sound too, so they share
       // the attention gate before applying the opt-in and away checks.

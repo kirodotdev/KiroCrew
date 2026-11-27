@@ -3446,7 +3446,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "select",
     "occurrence": 1,
     "label": "Approvals and questions",
-    "description": "When the agent needs a tool approval or an answer"
+    "description": "When the agent needs a tool approval or an answer, or a turn stops on an error"
   },
   {
     "id": "notifications.sound-category-turn",
@@ -3458,7 +3458,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "select",
     "occurrence": 1,
     "label": "Conversation handoffs",
-    "description": "When a conversation finishes and hands control back to you. Agent questions use the “Approvals and questions” sound instead."
+    "description": "When a conversation finishes and hands control back to you. A turn that stops on a question or an error uses the “Approvals and questions” sound instead."
   },
   {
     "id": "notifications.sound-category-cron",

@@ -200,13 +200,13 @@ describe('NotificationsPanel', () => {
   it('describes the turn sound as a conversation handoff, not an every-turn chime', () => {
     const { container } = render(<NotificationsPanel />, 'percategory')
     // The chime fires when a conversation hands control back to the user, so
-    // the row must not promise audio on every turn. An explicit question plays the approval sound instead, and
-    // the tip says so. The sentence is the row's info tip (its `title` while
-    // closed).
+    // the row must not promise audio on every turn. A turn that stops on a
+    // question or an error plays the approval sound instead, and the tip says
+    // so. The sentence is the row's info tip (its `title` while closed).
     expect(screen.getByText('Conversation handoffs')).toBeTruthy()
     expect(
       screen.getByTitle(
-        'When a conversation finishes and hands control back to you. Agent questions use the “Approvals and questions” sound instead.',
+        'When a conversation finishes and hands control back to you. A turn that stops on a question or an error uses the “Approvals and questions” sound instead.',
       ),
     ).toBeTruthy()
     expect(container.textContent).not.toContain('pauses for your input')
@@ -216,10 +216,11 @@ describe('NotificationsPanel', () => {
 
   it('describes the approval sound as covering questions too', () => {
     const { container } = render(<NotificationsPanel />, 'percategory')
-    // A question card plays the same attention sound as a tool approval, so
-    // the row names both instead of reading as tool-approval-only.
+    // A question card, and a turn that stops on an error, play the same
+    // attention sound as a tool approval, so the row names them instead of
+    // reading as tool-approval-only.
     expect(screen.getByText('Approvals and questions')).toBeTruthy()
-    expect(screen.getByTitle('When the agent needs a tool approval or an answer')).toBeTruthy()
+    expect(screen.getByTitle('When the agent needs a tool approval or an answer, or a turn stops on an error')).toBeTruthy()
     expect(container.textContent).not.toContain('Tool approval requests')
   })
 

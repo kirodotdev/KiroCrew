@@ -338,8 +338,12 @@ buffer filling up. It is sound-only for the same reason as `'turn'`: the hook
 already shows the error, and the sound is for someone dictating without watching
 the screen. A stop the user makes, a cancel and an unmount stay silent.
 `APPROVAL_KIND` (`'approval'`) is synthesized at
-three sites:
+four sites:
 
+- a `chat_done` that stops for the user, in place of `TURN_DONE_KIND`: a
+  `needs_input` end with no live question card in this window, or a turn that
+  ended in a terminal error row
+  ([turn-complete-chime](turn-complete-chime.md));
 - an `approval` frame (a coordinator-registry approval: a Slack, cron, or
   sub-agent spawn gate). The same frame *separately* adds an approval
   notification to the feed — so a coordinator approval both chimes and shows a
@@ -378,7 +382,7 @@ three sites:
   snapshot and the transcript rehydration, not through this frame, and stays
   silent.
 
-Every synthesized chime (`TURN_DONE_KIND` and all three `APPROVAL_KIND`
+Every synthesized chime (`TURN_DONE_KIND` and all four `APPROVAL_KIND`
 sites) is suppressed during reconnect catch-up replay, and
 `shouldChimeOnTurnDone` also suppresses slot-less turn completions. A real feed
 `notification` frame fires `MC_NOTIFICATION_EVENT` with its own `kind`, except

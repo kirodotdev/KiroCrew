@@ -43,7 +43,7 @@ import { store as globalStore } from '../store'
 import { setActiveSlot, clearMessages } from '../store/chatSlice'
 import { markSlotRead, sseSlots } from '../store/dashboardSlice'
 import { _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
-import { MC_NOTIFICATION_EVENT, TURN_DONE_KIND } from '../hooks/notificationEvent'
+import { APPROVAL_KIND, MC_NOTIFICATION_EVENT, TURN_DONE_KIND } from '../hooks/notificationEvent'
 import { _resetTurnErrorsForTest, isTerminalErrorRow } from '../hooks/turnError'
 import { UNREAD_ON_ATTENTION_KEY } from '../hooks/unreadOnAttention'
 
@@ -127,13 +127,17 @@ describe('muted worker turn end over the dashboard socket', () => {
   const done = { type: 'chat_done', data: { slot: WORKER, ts: '2026-10-09T00:00:05Z', continuing: false } }
   const unread = () => globalStore.getState().dashboard.unreadSlots
   const turnChimes = () => chimes.filter(k => k === TURN_DONE_KIND).length
+  // A turn that stopped for the user (a question or a terminal error) plays the
+  // approval sound, not the turn sound.
+  const approvalChimes = () => chimes.filter(k => k === APPROVAL_KIND).length
   const toastBody = () => (postNativeNotification.mock.lastCall?.[1] as { body?: string } | undefined)?.body
 
   it('muted + terminal error: chime, toast and unread all fire', () => {
     const ws = mount(true)
     send(ws, row('error'))
     send(ws, done)
-    expect(turnChimes()).toBe(1)
+    expect(turnChimes()).toBe(0)
+    expect(approvalChimes()).toBe(1)
     expect(postNativeNotification).toHaveBeenCalledTimes(1)
     expect(toastBody()).toBe(FAILED_BODY)
     expect(unread()).toContain(WORKER)
@@ -211,7 +215,8 @@ describe('muted worker turn end over the dashboard socket', () => {
     globalStore.dispatch(markSlotRead(WORKER))
     send(ws, row('error'))
     send(ws, { type: 'chat_done', data: { slot: WORKER, ts: '2026-10-09T00:00:09Z', continuing: false } })
-    expect(turnChimes()).toBe(2)
+    expect(turnChimes()).toBe(1)
+    expect(approvalChimes()).toBe(1)
     expect(postNativeNotification).toHaveBeenCalledTimes(2)
     expect(toastBody()).toBe(FAILED_BODY)
     expect(unread()).toContain(WORKER)
@@ -272,7 +277,8 @@ describe('muted worker turn end over the dashboard socket', () => {
     const ws = mount(false, true)
     send(ws, row('assistant'))
     send(ws, { type: 'chat_done', data: { slot: WORKER, ts: '2026-10-09T00:00:05Z', continuing: false, needs_input: true } })
-    expect(turnChimes()).toBe(1)
+    expect(turnChimes()).toBe(0)
+    expect(approvalChimes()).toBe(1)
     expect(postNativeNotification).toHaveBeenCalledTimes(1)
   })
 
@@ -280,7 +286,8 @@ describe('muted worker turn end over the dashboard socket', () => {
     const ws = mount(false, true)
     send(ws, row('error'))
     send(ws, done)
-    expect(turnChimes()).toBe(1)
+    expect(turnChimes()).toBe(0)
+    expect(approvalChimes()).toBe(1)
     expect(postNativeNotification).toHaveBeenCalledTimes(1)
     expect(toastBody()).toBe(FAILED_BODY)
     expect(unread()).toContain(WORKER)
