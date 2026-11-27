@@ -424,6 +424,11 @@ byte-order mark to the first field.
 
 Icons are `lucide-react` components with `className="lucide-inline"`. Never an
 emoji in the UI, never a hand-rolled SVG.
+Host code imports icons by name (`import { X } from 'lucide-react'`). The build
+rewrites each name to that icon's own module
+(`website/scripts/lib/lucideDeepImports.mjs`) and fails on any other import of
+the `lucide-react` barrel, which would pull every icon into the first load.
+Only `src/app-sdk/shared-modules.ts` imports the whole barrel, for installed apps.
 Where emoji may stay outside the web UI: [the 2026-11-18 emoji decision](../../decisions/2026-11-18-emoji-are-replaced-only-in-the-web-ui.md).
 
 Never hardcode a user-facing English string, and never format a date, number or
