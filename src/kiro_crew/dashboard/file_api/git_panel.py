@@ -246,26 +246,6 @@ def _porcelain_unquote(path: str) -> str:
     return out.decode("utf-8", "replace")
 
 
-def _numstat_new_path(path: str) -> str:
-    """Name the post-rename side of a numstat path (``d/{old => new}/f`` -> ``d/new/f``).
-
-    ``git diff --numstat`` folds a rename into one field, either
-    ``pre{old => new}post`` or ``old => new``; status rows carry the new path
-    only. A plain path (no rename, or ``diff.renames`` off) comes back unchanged.
-    """
-    arrow = " => "
-    start = path.find("{")
-    sep = path.find(arrow, start) if start >= 0 else -1
-    end = path.find("}", sep) if sep >= 0 else -1
-    if end >= 0:
-        pre, new, post = path[:start], path[sep + len(arrow) : end], path[end + 1 :]
-        # An emptied side leaves "pre/" + "/post": keep one separator.
-        if not new and post.startswith("/") and (not pre or pre.endswith("/")):
-            post = post[1:]
-        return pre + new + post
-    return path.partition(arrow)[2] or path
-
-
 def _worktree_probe_failure_is_empty_scope(git_cmd: list[str], base: str, env: dict) -> bool:
     """True when a failed ``--worktree`` probe hit the empty scope git creates lazily.
 
@@ -588,28 +568,30 @@ async def api_project_git_status(request: web.Request) -> web.Response:
         # Merge numstat for line counts (staged + unstaged vs HEAD)
         try:
             numstat_rc, numstat_out, _ = _run_git_bounded(
-                [*_git_cmd, "diff", "--numstat", "--no-textconv", "--no-ext-diff", "HEAD"],
+                [*_git_cmd, "diff", "--numstat", "-z", "--no-textconv", "--no-ext-diff", "HEAD"],
                 cwd=base,
                 env=_env,
                 timeout=10,
             )
             if numstat_rc == 0:
                 stats: dict[str, tuple[int | None, int | None]] = {}
-                for ns_line in numstat_out.splitlines():
-                    parts = ns_line.split("\t", 2)
-                    if len(parts) == 3:
-                        add_s, del_s, ns_path = parts
-                        adds = int(add_s) if add_s != "-" else None
-                        dels = int(del_s) if del_s != "-" else None
-                        # numstat C-quotes the same class of paths status does;
-                        # unquote so the merge key matches the parsed rows. A
-                        # renamed file is keyed by its new path; the whole field
-                        # stays a key (a plain file may be named "a => b") and a
-                        # real row for the new path is never overwritten.
-                        stats[_porcelain_unquote(ns_path)] = (adds, dels)
-                        stats.setdefault(
-                            _porcelain_unquote(_numstat_new_path(ns_path)), (adds, dels)
-                        )
+                # ``-z`` records end in NUL and name paths raw (never C-quoted):
+                # ``<added>\t<deleted>\t<path>``, or for a rename an empty path
+                # field followed by the old and the new path as two more records.
+                records = numstat_out.split("\0")
+                idx = 0
+                while idx < len(records):
+                    parts = records[idx].split("\t", 2)
+                    idx += 1
+                    if len(parts) != 3:
+                        continue
+                    add_s, del_s, ns_path = parts
+                    if not ns_path:
+                        ns_path = records[idx + 1] if idx + 1 < len(records) else ""
+                        idx += 2
+                    adds = int(add_s) if add_s != "-" else None
+                    dels = int(del_s) if del_s != "-" else None
+                    stats[ns_path] = (adds, dels)
                 for f in files:
                     if f["path"] in stats:
                         adds, dels = stats[f["path"]]
