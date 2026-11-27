@@ -11,10 +11,17 @@
 #                                                older engines prefix with
 #                                                DOCKER_BUILDKIT=1)
 #
-# Base: python:3.12-slim-trixie is pinned (not bare -slim) because kiro-cli's
-# gnu builds enforce a glibc floor of 2.34 on x86_64 and 2.39 on aarch64;
-# trixie ships 2.41 so ONE base covers both architectures. The wheel itself is
-# py3-none-any — multi-arch needs no compilation.
+# Base: Amazon Linux 2023 from its canonical registry, public.ecr.aws (anyone
+# can pull it anonymously), pinned by the multi-arch INDEX digest so the
+# builder's platform still selects the per-arch manifest. AL2023 ships glibc
+# 2.34. kiro-cli's gnu binaries reference nothing newer than GLIBC_2.34 on
+# x86_64 and GLIBC_2.30 on aarch64 (read from the 2.37.1 binaries' symbol
+# versions), so 2.34 covers both. Its install.sh refuses aarch64 below 2.39,
+# which is why the binaries are installed directly below rather than through
+# it. Python 3.12 comes from the AL2023 repos. The wheel itself is
+# py3-none-any — multi-arch needs no compilation. To bump:
+# `docker buildx imagetools inspect public.ecr.aws/amazonlinux/amazonlinux:2023`
+# and update the digest.
 #
 # Security posture:
 #   - Non-root user (kirocrew, uid 1000). All state lives under
@@ -35,7 +42,37 @@
 #     /usr/local/share/kirocrew/kiro-cli-version and (when the lane passes
 #     KIRO_CLI_VERSION) in the dev.kirocrew.kiro-cli.version OCI label.
 
-FROM python:3.12-slim-trixie
+# tini, built from source in a throwaway stage: AL2023 has no tini package.
+# Only the binary is carried into the final image; the compiler and the
+# source stay here.
+#
+# Pinned like every other fetched input. The release is krallin/tini v0.19.0
+# (https://github.com/krallin/tini/releases/tag/v0.19.0, the project's latest
+# release, tag commit de40ad007797e0dcd8b7126f27bb87401d224240). The release
+# page publishes checksums for its prebuilt binaries only, not for the source
+# archive, so the sha256 below was computed from two separate downloads of the
+# tag's source archive and its unpacked tree was diffed against a clone of the
+# tag commit, with no difference. Bumping TINI_VERSION means recomputing the
+# sha256 the same way in the same change. ARG defaults are overridable, so
+# never pass these as --build-arg: an override silently defeats the pin.
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023@sha256:5c38fd85b00ce8c094315d9b71f671f880052314a22bd25f1a027821bf61d9d7 AS tini-builder
+
+ARG TINI_VERSION=0.19.0
+ARG TINI_SRC_SHA256=0fd35a7030052acd9f58948d1d900fe1e432ee37103c5561554408bdac6bbf0d
+
+RUN set -eux; \
+    dnf install -y --setopt=install_weak_deps=False cmake gcc gzip make tar; \
+    curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://github.com/krallin/tini/archive/refs/tags/v${TINI_VERSION}.tar.gz" \
+        -o /tmp/tini.tar.gz; \
+    echo "${TINI_SRC_SHA256}  /tmp/tini.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/tini.tar.gz -C /tmp; \
+    cmake -S "/tmp/tini-${TINI_VERSION}" -B /tmp/tini-build -DCMAKE_BUILD_TYPE=Release; \
+    make -C /tmp/tini-build tini; \
+    install -m 0755 /tmp/tini-build/tini /usr/local/bin/tini; \
+    /usr/local/bin/tini --version
+
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023@sha256:5c38fd85b00ce8c094315d9b71f671f880052314a22bd25f1a027821bf61d9d7
 
 # TARGETARCH is set by buildx: amd64 | arm64. Mapped to kiro-cli's
 # x86_64 / aarch64 artifact names below.
@@ -64,29 +101,47 @@ LABEL org.opencontainers.image.source="${SOURCE_REPO_URL}" \
       dev.kirocrew.kiro-cli.version="${KIRO_CLI_VERSION}"
 
 # Runtime toolset for agent sessions: git (repo work), curl (healthcheck +
-# fetches), ripgrep (agent search), unzip (kiro-cli archive), tini (PID 1:
+# fetches), ripgrep (agent search), unzip (kiro-cli archive). tini (PID 1:
 # reap zombies from agent subprocess trees + forward SIGTERM so
 # `docker stop` shuts the gateway down gracefully instead of SIGKILL after
-# the timeout).
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+# the timeout) comes from the tini-builder stage, copied in just below.
+#
+# AL2023 additions: python3.12 + pip (the base python3 is 3.9, so python3,
+# python and pip are linked to 3.12 for the layers below and the entrypoint),
+# shadow-utils (useradd), util-linux (runuser in the KAS step), and
+# findutils/procps-ng/tar/gzip, which Debian slim carried and the AL2023 base
+# does not. curl-minimal is already in the base and is named to keep this list
+# the whole runtime toolset.
+RUN dnf install -y --setopt=install_weak_deps=False \
+        python3.12 \
+        python3.12-pip \
         ca-certificates \
-        curl \
+        curl-minimal \
+        findutils \
         git \
+        gzip \
+        procps-ng \
         ripgrep \
-        tini \
+        shadow-utils \
+        tar \
         unzip \
-    && rm -rf /var/lib/apt/lists/*
+        util-linux \
+    && dnf clean all \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
+    && ln -sf /usr/bin/pip3.12 /usr/local/bin/pip
+
+# tini from the builder stage above. The entrypoint execs it after the
+# credential scrub (see the ENTRYPOINT note at the end of this file).
+COPY --from=tini-builder /usr/local/bin/tini /usr/local/bin/tini
 
 # kiro-cli — the agent runtime KiroCrew drives over ACP; chat sessions
-# require it. Every kiro-cli* binary the release ships (kiro-cli, and
-# kiro-cli-chat / kiro-cli-term where present) ends up in /usr/local/bin.
-# Older installers honour Q_INSTALL_GLOBAL; newer ones read
-# KIRO_CLI_INSTALL_GLOBAL and otherwise install into $HOME/.local/bin, so
-# both are set and anything that still lands in $HOME/.local/bin is MOVED
-# (never linked: the home is the volume) into /usr/local/bin. Q_SKIP_SETUP
-# and KIRO_CLI_NO_MODIFY_PATH skip dotfile/shell edits that are meaningless
-# in a container.
+# require it. The three binaries the release ships (kiro-cli, kiro-cli-chat,
+# kiro-cli-term) are installed straight into /usr/local/bin, outside the home
+# volume. That is all the release's install.sh does for a global install with
+# setup skipped, but install.sh also refuses aarch64 hosts below glibc 2.39,
+# and AL2023 has 2.34 while the aarch64 binaries need only 2.30. `kiro-cli acp`
+# dispatches to kiro-cli-chat as a sibling on PATH, so both are asserted.
 #
 # Supply-chain discipline (image inputs must be verifiable):
 #   1. Read the version from packaging/kiro-cli-version and the per-arch
@@ -123,15 +178,13 @@ RUN --mount=type=bind,source=packaging,target=/tmp/kiro-cli-pin \
         -o /tmp/kirocli.zip; \
     echo "${SHA256}  /tmp/kirocli.zip" | sha256sum -c -; \
     unzip -q /tmp/kirocli.zip -d /tmp; \
-    Q_INSTALL_GLOBAL=1 Q_SKIP_SETUP=1 KIRO_CLI_INSTALL_GLOBAL=1 KIRO_CLI_NO_MODIFY_PATH=1 \
-        /tmp/kirocli/install.sh; \
-    for bin in "${HOME}"/.local/bin/kiro-cli*; do \
-        [ -e "${bin}" ] || continue; \
-        mv -f "${bin}" /usr/local/bin/; \
+    for bin in kiro-cli kiro-cli-chat kiro-cli-term; do \
+        install -m 0755 "/tmp/kirocli/bin/${bin}" /usr/local/bin/; \
     done; \
     rm -rf /tmp/kirocli /tmp/kirocli.zip; \
     mkdir -p /usr/local/share/kirocrew; \
     printf '%s\n' "${RESOLVED}" > /usr/local/share/kirocrew/kiro-cli-version; \
+    test -x /usr/local/bin/kiro-cli-chat; \
     test -x /usr/local/bin/kiro-cli; \
     kiro-cli --version
 

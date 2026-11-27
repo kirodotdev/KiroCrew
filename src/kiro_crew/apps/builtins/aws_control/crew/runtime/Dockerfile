@@ -5,7 +5,8 @@
 # owner included: the owner's control plane stays on the owner's own machine and
 # no part of it is in this image.
 #
-# AWS CLI v2 is NOT in Debian apt, so it is fetched and unpacked in a throwaway
+# AWS CLI v2 is pinned to a reviewed upstream release rather than taken from the
+# distro repos, so it is fetched and unpacked in a throwaway
 # builder stage and only the installed tree is carried into the final image with
 # a COPY --from below. The builder's installer (the unzip step, the ./aws/install
 # scaffolding, the downloaded zip) never reaches the final image this way.
@@ -19,16 +20,17 @@
 # the builder (TARGETARCH) and NEVER pinned, exactly as for kiro-cli. ARG
 # defaults are overridable, so never pass these as --build-arg: an override
 # silently defeats the pin.
-FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS awscli-builder
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023@sha256:5c38fd85b00ce8c094315d9b71f671f880052314a22bd25f1a027821bf61d9d7 AS awscli-builder
 
 ARG TARGETARCH
 ARG AWSCLI_VERSION=2.34.0
 ARG AWSCLI_SHA256_X86_64=f7137e1c4d6d5cae31fbdcfd1fe03784b71e46aead36ba046674a694e1623aa6
 ARG AWSCLI_SHA256_AARCH64=d1abb2e8fcbc9e7ac3b6acf92bf886af67dfb4d30d77b766cc8a56bd00009aeb
 
+# curl comes from the base (curl-minimal); unzip does not.
 RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl unzip; \
+    dnf install -y --setopt=install_weak_deps=False ca-certificates unzip; \
+    dnf clean all; \
     case "${TARGETARCH:-amd64}" in \
       amd64) AWS_ARCH=x86_64;  AWS_SHA256="${AWSCLI_SHA256_X86_64}" ;; \
       arm64) AWS_ARCH=aarch64; AWS_SHA256="${AWSCLI_SHA256_AARCH64}" ;; \
@@ -41,20 +43,19 @@ RUN set -eux; \
     /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli; \
     /usr/local/bin/aws --version
 
-# Base image: bookworm ships glibc 2.36. The floor for the kiro-cli gnu builds is
-# 2.30, not the 2.39 the installer claims, so slim is new enough.
+# Base image: Amazon Linux 2023 from its canonical registry, public.ecr.aws,
+# which anyone can pull anonymously. AL2023 ships glibc 2.34. The floor for the
+# kiro-cli gnu builds is 2.30 (the newest GLIBC_ symbol version the binaries
+# reference), not the 2.39 the installer claims, so 2.34 is new enough.
+# Python 3.12 comes from the AL2023 repos (python3.12 below).
 #
 # Pinned by manifest-list digest, not only by tag: a tag can move, and nothing
-# would detect that the built image differs from the reviewed one. Not
-# hypothetical -- while adding this pin, bare `3.12-slim` had already moved to
-# trixie (Debian 13), a different release from the bookworm this file's glibc
-# reasoning was reviewed against. The tag names the bookworm variant explicitly
-# so the digest and the human-readable name cannot disagree. The digest names
-# the multi-arch INDEX, so the builder's platform still selects the right
+# would detect that the built image differs from the reviewed one. The digest
+# names the multi-arch INDEX, so the builder's platform still selects the right
 # per-arch manifest (and sets TARGETARCH). To bump:
-# `docker buildx imagetools inspect python:3.12-slim-bookworm` and update the
-# digest, keeping tag and digest in step.
-FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+# `docker buildx imagetools inspect public.ecr.aws/amazonlinux/amazonlinux:2023`
+# and update the digest in both stages, keeping them in step.
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023@sha256:5c38fd85b00ce8c094315d9b71f671f880052314a22bd25f1a027821bf61d9d7
 
 # Architecture comes from the builder, it is NEVER pinned here. An earlier build
 # hardcoded arm64 in two places and cost two separate deploy failures: the image
@@ -81,7 +82,7 @@ ARG KIRO_SHA256_AARCH64=49395d0491e6d9e46ce9b900f5e819573bd313751a5b0b6906899a92
 
 # GitHub CLI. A crew can clone a repo with git, but cannot open a pull request
 # without gh, so it belongs in a base whose whole point is real crew work. It is
-# not in Debian apt, and it ships per-arch tarballs with a PUBLISHED
+# not in the AL2023 repos, and it ships per-arch tarballs with a PUBLISHED
 # checksums.txt, so it follows the identical pinning discipline as kiro-cli:
 # version pinned, per-arch sha256 recorded here, arch resolved from TARGETARCH
 # and never pinned. The checksums below are the linux_amd64 / linux_arm64
@@ -93,31 +94,47 @@ ARG GH_SHA256_X86_64=9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293
 ARG GH_SHA256_AARCH64=b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f
 
 # The real CLI toolchain an agent needs to do work: version control (git),
-# JSON handling (jq), archive tools (unzip, xz-utils), a pager and process
-# listing for interactive-shaped tools (less, procps -> ps), patch/file
+# JSON handling (jq), archive tools (unzip, xz, tar, gzip), a pager and process
+# listing for interactive-shaped tools (less, procps-ng -> ps), patch/file
 # utilities, and an SSH client for git-over-ssh remotes.
 #
-# curl and xz-utils are KEPT in the final image, which REVERSES the earlier
+# curl and xz are KEPT in the final image, which REVERSES the earlier
 # design where they were installed only to fetch kiro-cli and then purged (the
 # purge is removed below). That reversal is deliberate: an agent doing real work
 # routinely needs curl, and there is no separate download-only-then-drop tool to
-# protect any more. Everything installed here is meant to stay in the final
-# image; nothing in this layer is build-time-only, so there is no purge to keep.
-# --no-install-recommends holds the size delta down.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+# protect any more. Everything installed here stays in the final image, so
+# there is no purge to keep.
+# install_weak_deps=False holds the size delta down.
+#
+# The AL2023 base carries no tar, gzip, find, ps or useradd, so tar/gzip (the
+# kiro-cli and gh unpacks below, and crew work), findutils (crew work, and the
+# MicroVM layer's skills-readable check), shadow-utils (the useradd below) and
+# Python 3.12 itself are named here.
+# curl-minimal is already in the base and is named so this list stays the whole
+# toolchain. python3/python/pip are linked to 3.12 because the AL2023 default
+# python3 is 3.9 and the layers below call bare `python` and `pip`.
+RUN dnf install -y --setopt=install_weak_deps=False \
+        python3.12 \
+        python3.12-pip \
         ca-certificates \
-        curl \
+        curl-minimal \
         file \
+        findutils \
         git \
+        gzip \
         jq \
         less \
-        openssh-client \
+        openssh-clients \
         patch \
-        procps \
+        procps-ng \
+        shadow-utils \
+        tar \
         unzip \
-        xz-utils \
-    && rm -rf /var/lib/apt/lists/*
+        xz \
+    && dnf clean all \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
+    && ln -sf /usr/bin/pip3.12 /usr/local/bin/pip
 
 # The installed AWS CLI v2 tree, carried over from the throwaway builder stage so
 # the installer tooling (the zip, unzip, ./aws/install scaffolding) never enters
@@ -161,7 +178,7 @@ RUN set -eux; \
     kiro-cli --version
 
 # GitHub CLI, unpacked from its pinned per-arch tarball. Uses the curl and tar
-# already in the image (curl is now kept, tar ships in the base). Only the gh
+# already in the image (both installed by the package layer above). Only the gh
 # binary is installed; the rest of the tarball (man pages, completions) is
 # dropped with the temp dir.
 RUN set -eux; \
@@ -180,8 +197,8 @@ RUN set -eux; \
     test -x /usr/local/bin/gh; \
     gh --version
 
-# No download tool is purged here on purpose: curl and xz-utils are now part of
-# the toolchain the running crew is expected to use (see the apt layer above),
+# No download tool is purged here on purpose: curl and xz are now part of
+# the toolchain the running crew is expected to use (see the package layer above),
 # not build-time-only artifacts. The earlier revision purged them because they
 # existed solely to fetch kiro-cli.
 

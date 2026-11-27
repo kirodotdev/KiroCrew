@@ -10,12 +10,12 @@ started.
 Two regressions are possible here and BOTH are silent -- the image still
 builds, still boots, and still passes every functional gate:
 
-**Dropping a tool.** ``--no-install-recommends`` means a package removed from
-the apt operand list simply is not there. Nothing in the serving code imports
+**Dropping a tool.** ``install_weak_deps=False`` means a package removed from
+the ``dnf install`` operand list simply is not there. Nothing in the serving code imports
 ``git``, so no import error, no failing test, no smaller-image alarm: only a
 crew, at run time, discovers the tool is gone.
 
-**Purging a kept tool.** ``curl`` and ``xz-utils`` are part of the toolchain a
+**Purging a kept tool.** ``curl-minimal`` and ``xz`` are part of the toolchain a
 running crew uses, not build-time helpers that exist only to fetch
 ``kiro-cli``, so the recipe installs them and keeps them. A cleanup pass
 reading the install layer alone sees a fetch-then-keep and can "tidy" it into a
@@ -23,8 +23,8 @@ fetch-then-purge, taking ``curl`` back out of the image.
 :func:`test_kept_tools_are_never_purged` makes that boundary enforceable rather
 than a comment someone has to notice.
 
-**Why the pinning half is here too.** ``aws`` and ``gh`` are not in Debian
-apt, so each is fetched from an upstream URL and must carry a pinned version
+**Why the pinning half is here too.** ``aws`` and ``gh`` are not taken
+from the distro repos, so each is fetched from an upstream URL and must carry a pinned version
 plus a per-architecture ``sha256``. A bump that updates the version and only
 ONE of the two checksums breaks the build on exactly one architecture, which
 on a single-arch CI run is invisible.
@@ -57,29 +57,33 @@ CREW_DOCKERFILE = (
     / "Dockerfile"
 )
 
-#: ``apt package -> the executable a crew actually calls``.
+#: ``dnf package -> the executable a crew actually calls``.
 #:
 #: The two names differ often enough that asserting only one of them is a real
-#: hole: ``procps`` provides ``ps``, ``xz-utils`` provides ``xz``,
-#: ``openssh-client`` provides ``ssh``. The package name is what the recipe
+#: hole: ``procps-ng`` provides ``ps``, ``curl-minimal`` provides ``curl``,
+#: ``openssh-clients`` provides ``ssh``. The package name is what the recipe
 #: says, so that is what is asserted here; the executable is recorded beside it
 #: so a reader can tell WHY the package is in the list, and so removing a
 #: package cannot be defended as "nothing calls that".
-APT_TOOLS: dict[str, str] = {
+PACKAGE_TOOLS: dict[str, str] = {
     "ca-certificates": "(TLS trust store)",
-    "curl": "curl",
+    "curl-minimal": "curl",
     "file": "file",
+    "findutils": "find",
     "git": "git",
+    "gzip": "gzip",
     "jq": "jq",
     "less": "less",
-    "openssh-client": "ssh",
+    "openssh-clients": "ssh",
     "patch": "patch",
-    "procps": "ps",
+    "procps-ng": "ps",
+    "python3.12": "python",
+    "tar": "tar",
     "unzip": "unzip",
-    "xz-utils": "xz",
+    "xz": "xz",
 }
 
-#: Tools that are NOT in Debian apt and are therefore fetched from upstream,
+#: Tools that are NOT taken from the distro repos and are fetched from upstream,
 #: mapped to the ``ARG`` prefix carrying their version and checksums.
 #:
 #: ``aws`` arrives as a ``COPY --from`` out of a throwaway builder stage rather
@@ -95,7 +99,7 @@ FETCHED_TOOLS: dict[str, str] = {
 #: Packages installed for the build and legitimately absent from the final
 #: image. The builder stage unpacks the AWS CLI zip, so ``unzip`` there is
 #: build-time-only -- but the FINAL stage installs ``unzip`` for the crew too,
-#: which is why it appears in :data:`APT_TOOLS` as well. Nothing in the final
+#: which is why it appears in :data:`PACKAGE_TOOLS` as well. Nothing in the final
 #: stage is build-time-only, which is the whole reason there is no purge.
 BUILDER_ONLY_PURGE_EXEMPT: frozenset[str] = frozenset()
 
@@ -103,7 +107,7 @@ BUILDER_ONLY_PURGE_EXEMPT: frozenset[str] = frozenset()
 def _final_stage_instructions(dockerfile: Path) -> list[str]:
     """Instructions belonging to the LAST build stage only.
 
-    A multi-stage recipe's earlier stages are discarded, so an ``apt-get
+    A multi-stage recipe's earlier stages are discarded, so a ``dnf
     install`` in the ``awscli-builder`` stage says nothing about what the crew
     can call. Splitting on the last ``FROM`` is what keeps this contract from
     passing on a tool that only ever existed in a throwaway stage.
@@ -116,15 +120,15 @@ def _final_stage_instructions(dockerfile: Path) -> list[str]:
     return instructions[last_from + 1 :]
 
 
-def _apt_install_operands(instructions: list[str]) -> set[str]:
-    """Every package named by an ``apt-get install`` in these instructions."""
+def _dnf_install_operands(instructions: list[str]) -> set[str]:
+    """Every package named by a ``dnf install`` in these instructions."""
     packages: set[str] = set()
     for inst in instructions:
-        if "apt-get install" not in inst:
+        if "dnf install" not in inst:
             continue
-        tail = inst.split("apt-get install", 1)[1]
-        # Stop at the next chained command: `&& rm -rf /var/lib/apt/lists/*`
-        # names paths, not packages, and would otherwise be read as one.
+        tail = inst.split("dnf install", 1)[1]
+        # Stop at the next chained command: `&& dnf clean all` names no
+        # packages and would otherwise be read as two.
         tail = re.split(r"&&|;", tail)[0]
         for token in tail.split():
             if token.startswith("-"):
@@ -135,8 +139,8 @@ def _apt_install_operands(instructions: list[str]) -> set[str]:
 
 def test_final_stage_installs_the_whole_toolchain() -> None:
     """Every tool a crew is expected to have is installed in the final stage."""
-    installed = _apt_install_operands(_final_stage_instructions(CREW_DOCKERFILE))
-    missing = {pkg: binary for pkg, binary in APT_TOOLS.items() if pkg not in installed}
+    installed = _dnf_install_operands(_final_stage_instructions(CREW_DOCKERFILE))
+    missing = {pkg: binary for pkg, binary in PACKAGE_TOOLS.items() if pkg not in installed}
     assert not missing, (
         "the crew base image no longer installs "
         + ", ".join(f"{pkg} (provides {binary})" for pkg, binary in sorted(missing.items()))
@@ -148,16 +152,16 @@ def test_final_stage_installs_the_whole_toolchain() -> None:
 def test_kept_tools_are_never_purged() -> None:
     """No tool installed for the crew is removed again later in the recipe.
 
-    ``curl`` and ``xz-utils`` are the ones at risk: they are the only kept
+    ``curl-minimal`` and ``xz`` are the ones at risk: they are the only kept
     packages that a fetch step also uses, so they read as build-time helpers to
     anyone scanning the install layer alone. They are toolchain, so any
-    ``apt-get purge`` / ``apt-get remove`` naming a kept package is a defect.
+    ``dnf remove`` / ``dnf erase`` / ``rpm -e`` naming a kept package is a defect.
     """
     offenders: dict[str, str] = {}
     for inst in _final_stage_instructions(CREW_DOCKERFILE):
-        if not re.search(r"apt-get\s+(purge|remove)", inst):
+        if not re.search(r"\bdnf\s+(remove|erase|autoremove)\b|\brpm\s+-e\b", inst):
             continue
-        for pkg in APT_TOOLS:
+        for pkg in PACKAGE_TOOLS:
             if pkg in BUILDER_ONLY_PURGE_EXEMPT:
                 continue
             if re.search(rf"\b{re.escape(pkg)}\b", inst):
@@ -165,7 +169,7 @@ def test_kept_tools_are_never_purged() -> None:
     assert not offenders, (
         "the recipe installs these for the crew and then purges them again: "
         + ", ".join(sorted(offenders))
-        + f" -- {sorted(offenders.values())[0][:120]!r}. curl and xz-utils are "
+        + f" -- {sorted(offenders.values())[0][:120]!r}. curl and xz are "
         "part of the toolchain, not fetch-only helpers; purging them takes the "
         "them puts the old design back and a crew loses the tool at run time"
     )
