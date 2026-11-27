@@ -1,7 +1,7 @@
 import type { MotionValue } from 'motion-dom'
 import type { Dispatch, SetStateAction, MutableRefObject, RefObject } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { useLayoutEffect, useRef, useState } from 'react'
+import { startTransition, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { KiroCrewAgent } from '../../../components/AgentSelector'
 import type { MobileNavRailRenderer } from '../../../components/MobileNavRailContext'
@@ -25,11 +25,18 @@ import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
 import { GuideRevealScope } from '../../../guide/GuideRevealScope'
 import { OffScreenOverlayScope } from '../../../components/overlayRoot'
+import { whenIdle } from '../../../lib/whenIdle'
+
+/** Longest the phone waits for an idle moment to build the drawer's session list. */
+const PANE_PREWARM_IDLE_TIMEOUT_MS = 4000
 
 interface SessionsSidebarChromeProps {
   embedMode?: 'chat' | 'sessions'
   mode?: string
   activeSlot: string | null
+  /** The open session's loaded transcript has been rendered: the phone holds
+   *  the drawer's idle-time list build until then. */
+  transcriptShown: boolean
   connected: boolean
   creatingSlot: boolean
   dispatch: AppDispatch
@@ -87,7 +94,9 @@ interface SessionsSidebarChromeProps {
   winW: number
   closeSidebar: () => void
   containerH: number
-  drawerDragging: boolean
+  /** Whether a drag owns the drawer, read at click time (a ref, so a drag
+   *  does not re-render the page). */
+  drawerDragging: { readonly current: boolean }
   drawerMounted: boolean
   drawerPanelRef: MutableRefObject<HTMLDivElement | null>
   drawerScrim: MotionValue<number>
@@ -135,7 +144,7 @@ export function AdoptPaneHost({ host }: { host: HTMLElement | null }) {
  * The sessions chrome around the chat pane: the phone drawer and its scrim, the desktop sidebar toggle and its recents flyout, the sidebar or drawer itself (or the embedded sessions list), the phone top bar, and the tag popover.
  */
 export default function SessionsSidebarChrome({
-  embedMode, mode, activeSlot, connected, creatingSlot, dispatch, filteredSlots, personSlots, isMobile, keyboardInset, mobileNavRail, surfaceUnreadSlots, titleInTopbar, topbarSlot, topbarTrailSlot, vv,
+  embedMode, mode, activeSlot, transcriptShown, connected, creatingSlot, dispatch, filteredSlots, personSlots, isMobile, keyboardInset, mobileNavRail, surfaceUnreadSlots, titleInTopbar, topbarSlot, topbarTrailSlot, vv,
   activityOpen, selectFromSidebar, history, historyHasMore, navigateToEmbeddedSlot, openEmbeddedCrewWindow, splitMode, defaultAgent, installedAgents, sidebarAgents, sidebarChoices, setActionError, showActionError,
   canStageSessionRef, chatPaneEl, stageSessionRef, openSlotInNewTab, ownsSessionTabs, activePoppedOut, focusActivePopout, openActivePopout, splitFeatureEnabled, currentSlot, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarDragging, setSidebarWidth, sidebarAutoHidden, sidebarDragging, splitAnchorForActive, effectiveSidebarWidth, toggleAct,
@@ -195,6 +204,18 @@ export default function SessionsSidebarChrome({
   const [paneOpened, setPaneOpened] = useState(drawerOpen)
   if (drawerOpen && !paneOpened) setPaneOpened(true)
   const keptPane = keepPaneMounted && paneHost != null
+  // Phone: build the kept list at the first idle moment rather than inside the
+  // first swipe that reveals the drawer. Built there, its mount was one long
+  // task under the finger, followed by a run
+  // of follow-up renders while the panel was still being dragged. Held until
+  // the session's transcript is on screen: the transcript renders at deferred
+  // priority, and a build started while it was still arriving was rendered
+  // together with it, so the session took longer to appear. A transition, so
+  // the build yields to anything the user does meanwhile.
+  useEffect(() => {
+    if (!isMobile || !keptPane || paneOpened || !transcriptShown) return
+    return whenIdle(() => startTransition(() => setPaneOpened(true)), PANE_PREWARM_IDLE_TIMEOUT_MS)
+  }, [isMobile, keptPane, paneOpened, transcriptShown])
   const paneSlot = keptPane ? <AdoptPaneHost host={paneHost} /> : sessionsPane
   return (
     <>
@@ -225,7 +246,7 @@ export default function SessionsSidebarChrome({
             // Ignored while a drag owns the panel: the release that ends a
             // close gesture lands here as a click, and treating it as a
             // tap-to-dismiss would run a second close over the settle.
-            onClick={() => { if (!drawerDragging) closeSidebar() }}
+            onClick={() => { if (!drawerDragging.current) closeSidebar() }}
           />
         )}
       </AnimatePresence>

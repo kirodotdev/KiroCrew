@@ -53,7 +53,7 @@ describe('useDrawerSwipe', () => {
     }))
   }
 
-  /** Dispatch inside act(): the axis lock flips React state mid-gesture. */
+  /** Dispatch inside act(): the axis lock can mount the consumer's panel mid-gesture. */
   function fire(target: EventTarget, e: TouchEvent) {
     act(() => { target.dispatchEvent(e) })
   }
@@ -70,6 +70,25 @@ describe('useDrawerSwipe', () => {
     expect(x.get()).toBe(CLOSED + 20)
     fire(el, touch('touchmove', 240))
     expect(x.get()).toBe(CLOSED + 200)
+  })
+
+  it('reports the drag through a ref, without re-rendering the consumer', () => {
+    // The consumer of the chat drawer is the whole chat page: a render when the
+    // drag locks and another when it ends ran under the finger.
+    let renders = 0
+    const { result } = renderHook(() => {
+      renders++
+      return useDrawerSwipe(ref, { enabled: true, open: true, x, onGestureOpen, onSettle })
+    })
+    const before = renders
+    expect(result.current.current).toBe(false)
+    fire(el, touch('touchstart', 300, 0, 0))
+    fire(el, touch('touchmove', 280, 0, 16))   // leftward on an open panel: locks a close
+    expect(result.current.current).toBe(true)
+    fire(el, touch('touchmove', 200, 0, 32))
+    fire(el, touch('touchend', 200, 0, 48))
+    expect(result.current.current).toBe(false)
+    expect(renders).toBe(before)
   })
 
   it('leaves a drag on a pinch-zoomed page to the browser, which pans the view', () => {

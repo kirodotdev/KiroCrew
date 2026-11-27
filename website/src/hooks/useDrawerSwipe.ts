@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { animate, type MotionValue } from 'framer-motion'
 import { holdStreamingFlushes, releaseStreamingFlushes } from '../lib/streamHold'
 import { deepActiveElement } from '../utils/editableTarget'
@@ -919,12 +919,17 @@ interface DrawerSwipeOptions {
   onCommit?: (open: boolean) => void
 }
 
-/** @returns whether a drag currently owns the panel (suppress transitions). */
+/**
+ * @returns a ref whose `current` says whether a drag owns the panel right now.
+ * A ref rather than state: the drag starting and ending must not re-render the
+ * consumer (for the chat drawer that is the whole chat page, under the finger).
+ * Read it in a handler, at the moment it matters.
+ */
 export function useDrawerSwipe(
   ref: React.RefObject<HTMLElement | null>,
   { enabled, side = 'left', travel, open, x, onGestureOpen, onSettle, onCommit }: DrawerSwipeOptions,
-): boolean {
-  const [dragging, setDragging] = useState(false)
+): { readonly current: boolean } {
+  const dragging = useRef(false)
 
   // Everything the move handler reads lives in a ref. A touchmove fires at
   // frame rate and this hook is bound inside the chat pane, so a re-render per
@@ -1122,7 +1127,7 @@ export function useDrawerSwipe(
     const reset = () => {
       phase.current = 'idle'
       endSuppression()
-      setDragging(false)
+      dragging.current = false
     }
 
     /**
@@ -1294,7 +1299,7 @@ export function useDrawerSwipe(
         // compositor settle is not an animation ON the value at all, which is
         // why this goes through takeOverDrawer rather than `x.stop()`.
         takeOverDrawer(x)
-        setDragging(true)
+        dragging.current = true
         if (!openRef.current) {
           // Seat the panel offscreen BEFORE it mounts, so the first painted
           // frame is the closed offset rather than a flash at rest position.
@@ -1382,7 +1387,7 @@ export function useDrawerSwipe(
       // armed on a timer: these listeners live on `window`, so a deferred
       // release would outlive the hook and eat a tap on whatever replaced it.
       suppressing.current?.release()
-      setDragging(false)
+      dragging.current = false
     }
     // `open` is intentionally absent — see the header note. The callbacks are
     // held in refs for the same reason.
