@@ -270,3 +270,97 @@ def test_the_chat_stream_redacts_a_glued_chain(size: int) -> None:
     parts = ["hf_" + synth(34, ALNUM, 100 + k) for k in range(10)]
     text = "tokens: " + "".join(parts) + " end"
     assert _kept(parts, _streamed(security.StreamRedactor(), text, size)) == []
+
+
+def _reference_formats(text, rows, final, right_blocked=None):  # type: ignore[no-untyped-def]
+    """``tokens.detect_formats`` before its ``_body_end`` hand-off was inlined."""
+    from kiro_crew.security.redaction_structured import tokens
+    from kiro_crew.security.redaction_structured.model import SECRET, Hit
+
+    n, hits, opens = len(text), [], []
+    for head, members in tokens.cached(rows, tokens._prefix_groups):
+        if head not in text:
+            continue
+        for prefix, row in members:
+            glued = row.checksum is not None
+            i = text.find(prefix)
+            while i != -1:
+                if glued or i == 0 or text[i - 1] not in row.left:
+                    r = tokens.run_end(text, i, row.run_chars, row.max_total + 1)
+                    if not final and r == n and r - i <= row.max_total:
+                        opens.append(i)
+                    else:
+                        e = tokens._body_end(text, i, prefix, row)
+                        if e is None:
+                            pass
+                        elif glued or e == n or text[e] not in row.right:
+                            hits.append(Hit(i, e, row.id, row.tier, "token_format", row.certainty))
+                        elif right_blocked is not None and row.tier == SECRET:
+                            right_blocked.append((i, e, row))
+                i = text.find(prefix, i + 1)
+    return hits, opens
+
+
+def _equivalence_corpus() -> list[tuple[str, int | None]]:
+    """``(text, split)``: glued and split inputs; *split* streams it in two pieces
+    there instead of at every chunk size."""
+    rng = random.Random(2026)
+    hf = ["hf_" + synth(34, ALNUM, 100 + k) for k in range(30)]
+    texts = ["tokens: " + "".join(p.values[0]) + " end" for p in GLUED]  # type: ignore[arg-type]
+    texts.append("key " + _SK + jwt() + " end")
+    texts += ["tokens: " + "".join(hf[:count]) + " end" for count in (10, 14, 30)]
+    texts.append(
+        "Cookie: session="
+        + "".join(rng.choice(ALNUM) for _ in range(4200))
+        + "; session_id="
+        + synth(64, ALNUM, 4)
+        + "; theme=dark\nok\n"
+    )
+    texts += [_PEM, "a " + _PEM + _SK + " b " + _PEM]
+    corpus: list[tuple[str, int | None]] = [(text, None) for text in texts]
+    chain = "tokens: " + "".join(hf[:14]) + "/"
+    for label in ("Authorization:", "authorization:"):
+        text = chain + label + " " * 40 + "Bearer " + synth(30, ALNUM, 300) + " end"
+        corpus += [(text, len(chain) + k) for k in range(len(label))]
+    return corpus
+
+
+def _equivalence_outputs(corpus: list[tuple[str, int | None]]) -> list[str]:
+    from kiro_crew import security
+
+    rng = random.Random(7)
+    out = []
+    for text, split in corpus:
+        out += [redact_credentials(text)[0], redact(text)[0]]
+        for make in (security.StreamRedactor, StreamRedactor):
+            if split is not None:
+                stream = make()
+                out.append(stream.feed(text[:split]) + stream.feed(text[split:]) + stream.flush())
+                continue
+            sizes = (64,) if len(text) > 2000 else (1, 7, 64)
+            out += [_streamed(make(), text, size) for size in sizes]
+            cuts = sorted(rng.sample(range(1, len(text)), 6))
+            stream = make()
+            pieces = [text[a:b] for a, b in zip([0, *cuts], [*cuts, len(text)])]
+            out.append("".join(stream.feed(c) for c in pieces) + stream.flush())
+    return out
+
+
+def test_the_fast_glued_paths_match_the_full_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The literal-part gate in ``detect_glued`` and the inlined format hand-off skip
+    only work that reads nothing: every output equals the full scan's."""
+    from kiro_crew.security.redaction_structured import engine, tokens
+
+    corpus = _equivalence_corpus()
+    fast = _equivalence_outputs(corpus)
+    full_groups = tokens._glued_groups
+
+    def no_gate(rows):  # type: ignore[no-untyped-def]
+        return tuple(
+            (head, tuple((p, row, None) for p, row, _gate in members))
+            for head, members in full_groups(rows)
+        )
+
+    monkeypatch.setattr(tokens, "_glued_groups", no_gate)
+    monkeypatch.setattr(engine, "detect_formats", _reference_formats)
+    assert _equivalence_outputs(corpus) == fast

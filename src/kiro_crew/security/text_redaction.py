@@ -759,7 +759,9 @@ class StreamRedactor:
             # redacted alone, and a glued token is read only beside its neighbour.
             # Drop the chain behind the tag, failing closed, as an over-long
             # STRONG anchor does; the text before it is committed as usual.
-            chain = _glued_chain(_batch_spans(self._buf), _token_start(self._buf, i), i)
+            # One plan read per cut: the chain check and the floor repair below share it.
+            spans = _batch_spans(self._buf)
+            chain = _glued_chain(spans, _token_start(self._buf, i), i)
             if chain is not None:
                 chain_start, chain_end = chain
                 # Only through the chain; what follows it stays buffered. A run
@@ -794,7 +796,7 @@ class StreamRedactor:
             # would split (an AWS key-value pair, a private-key body a PEM hold kept
             # buffered, a token in a long unspaced run): its halves would stream with
             # no anchor left to redact them.
-            for start, end in _batch_spans(self._buf):
+            for start, end in spans:
                 if start < i < end:
                     i = end
 

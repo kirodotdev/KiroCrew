@@ -102,10 +102,18 @@ def detect_formats(
                     if not final and r == n and r - i <= row.max_total:
                         opens.append(i)
                     else:
-                        e = _body_end(text, i, prefix, row)
+                        # _body_end, inline: this loop is the plan's hottest.
+                        e = _match_parts(text, i + len(prefix), row.parts)
                         if e is None:
                             pass
-                        elif glued or e == n or text[e] not in row.right:
+                        elif row.checksum is not None:  # glued
+                            if CHECKSUMS[row.checksum](text[i:e]):
+                                hits.append(
+                                    Hit(i, e, row.id, row.tier, "token_format", row.certainty)
+                                )
+                        elif row.tier == SECRET and is_placeholder_body(text[i + len(prefix) : e]):
+                            pass
+                        elif e == n or text[e] not in row.right:
                             hits.append(Hit(i, e, row.id, row.tier, "token_format", row.certainty))
                         elif right_blocked is not None and row.tier == SECRET:
                             right_blocked.append((i, e, row))
@@ -120,6 +128,30 @@ _GLUED_HOLD = 16
 # length, so the bound keeps the scan linear. Past it the rest of the run is
 # redacted whole, so the bound fails closed.
 _GLUED_JOSE_TRIES = 8
+
+
+def _glued_groups(
+    rows: tuple[FormatRow, ...],
+) -> tuple[tuple[str, tuple[tuple[str, FormatRow, tuple[tuple[str, ...], int] | None], ...]], ...]:
+    """:func:`_prefix_groups` for the rows :func:`detect_glued` reads (Secret, no
+    checksum), each with its first literal part's literals and how far past the
+    prefix that part can start; ``None`` for a row with no literal part."""
+    out = []
+    for head, members in _prefix_groups(rows):
+        kept = []
+        for prefix, row in members:
+            if row.tier != SECRET or row.checksum is not None:
+                continue  # a checksum row already reads a token glued to a word
+            gate, reach = None, 0
+            for part in row.parts:
+                if part.is_literal:
+                    gate = None if "" in part.literals else (part.literals, reach)
+                    break
+                reach += part.max  # run_end reads a part at most this long
+            kept.append((prefix, row, gate))
+        if kept:
+            out.append((head, tuple(kept)))
+    return tuple(out)
 
 
 def detect_glued(
@@ -150,7 +182,7 @@ def detect_glued(
     heap = spans + [(i, e) for i, e, _row in right_blocked]
     heapq.heapify(heap)
     opens: list[int] = []
-    groups = cached(rows, _prefix_groups)
+    groups = cached(rows, _glued_groups)
     hold = cached(jose_rows, _jose_plan)[2] if jose_rows else 0
     done = 0  # every start before this has been searched: each position once
     run_from, run_to, tries = -1, -1, 0  # the JOSE run read last, and its starts tried
@@ -169,10 +201,19 @@ def detect_glued(
         for head, members in groups:
             if head not in area:
                 continue
-            for prefix, row in members:
-                if row.tier != SECRET or row.checksum is not None:
-                    continue  # a checksum row already reads a token glued to a word
-                i = text.find(prefix, lo, e + len(prefix))
+            for prefix, row, gate in members:
+                stop = e + len(prefix)
+                first = lo
+                if gate is not None and not any(
+                    text.find(lit, lo + len(prefix), stop + gate[1] + len(lit)) != -1
+                    for lit in gate[0]
+                ):
+                    # No start here can reach the row's literal part, so none reads a
+                    # token: only a run still open at the end of the text can matter.
+                    if final:
+                        continue
+                    first = max(lo, n - row.max_total)
+                i = text.find(prefix, first, stop)
                 while i != -1:
                     if text[i - 1] in row.left:  # else the plain scan read it
                         r = run_end(text, i, row.run_chars, row.max_total + 1)
