@@ -1397,7 +1397,7 @@ export default function SchedulePage() {
       />
 
       <Dialog open={batchConfirm} onOpenChange={next => { if (!next && !batchDeleting) closeBatchConfirm() }}>
-        <DialogContent maxWidth={460}>
+        <DialogContent maxWidth={460} onCloseAutoFocus={batchMenuLayer.onDialogCloseAutoFocus}>
           <DialogHeader>
             <Trash2 size={16} className="text-danger shrink-0" aria-hidden="true" />
             <DialogTitle>
@@ -1457,7 +1457,7 @@ export default function SchedulePage() {
         </DialogContent>
       </Dialog>
 
-      <BatchRunConfirmDialog ids={runConfirmIds} skipped={runSkipped} busy={batchBusy} onClose={closeRunConfirm} onConfirm={ids => void applyBatch('run', ids)} />
+      <BatchRunConfirmDialog ids={runConfirmIds} skipped={runSkipped} busy={batchBusy} onClose={closeRunConfirm} onCloseAutoFocus={batchMenuLayer.onDialogCloseAutoFocus} onConfirm={ids => void applyBatch('run', ids)} />
     </div>
   )
 }

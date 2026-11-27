@@ -176,6 +176,21 @@ describe('SchedulePage batch actions', () => {
     expect(api.runCron).toHaveBeenCalledWith('a')
   })
 
+  /** Cancel the open confirm dialog and run the focus restore Radix schedules
+   *  one macrotask after its content unmounts. The restore is what the hand-back
+   *  to the trigger has to survive, so the timers are faked from the click on
+   *  and run to the end here, with nothing awaited in between. */
+  function cancelDialogAndSettleFocus(dialog: HTMLElement) {
+    vi.useFakeTimers()
+    try {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      act(() => { vi.runOnlyPendingTimers() })
+    } finally {
+      vi.useRealTimers()
+    }
+  }
+
   it('returns focus to Actions after the delete confirm when a click alone opened the menu', async () => {
     await renderChecked(['Alpha job'])
     const trigger = screen.getByLabelText('Actions for the checked jobs')
@@ -183,10 +198,18 @@ describe('SchedulePage batch actions', () => {
     fireEvent.click(trigger, { detail: 0 })
     fireEvent.click(await screen.findByRole('menuitem', { name: /^Delete 1 selected$/ }))
 
-    const dialog = await screen.findByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    await waitFor(() => expect(document.activeElement).toBe(trigger))
+    cancelDialogAndSettleFocus(await screen.findByRole('dialog'))
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('returns focus to Actions after the Run now confirm, on a keyboard-opened menu', async () => {
+    await renderChecked(['Alpha job'])
+    const trigger = screen.getByLabelText('Actions for the checked jobs')
+    openMenu()
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^Run Now/ }))
+
+    cancelDialogAndSettleFocus(await screen.findByRole('dialog'))
+    expect(document.activeElement).toBe(trigger)
   })
 
   it('lists at most five skipped jobs in the Run now confirm, then the rest as a count', async () => {
