@@ -110,6 +110,24 @@ REGISTERED_CAPABILITIES: tuple[str, ...] = (
     "tenant_nonce",
 )
 
+#: The request that opens a stateless-era MCP connection instead of ``initialize``.
+_ERA_PROBE_METHOD = "server/discover"
+_JSONRPC_METHOD_NOT_FOUND = -32601
+
+
+def _is_era_probe(msg: dict[str, Any]) -> bool:
+    """Whether *msg* is a ``server/discover`` request (it has an id to answer)."""
+    return msg.get("method") == _ERA_PROBE_METHOD and msg.get("id") is not None
+
+
+def _method_not_found(msg: dict[str, Any]) -> dict[str, Any]:
+    """The JSON-RPC "method not found" answer to request *msg*."""
+    return {
+        "jsonrpc": "2.0",
+        "id": msg.get("id"),
+        "error": {"code": _JSONRPC_METHOD_NOT_FOUND, "message": "Method not found"},
+    }
+
 
 async def _handle_connection(
     reader: asyncio.StreamReader,
@@ -531,6 +549,22 @@ async def _handle_connection(
                     # attach_stub + create_task overhead).
                     _emit_backend_acquire_metric(_acquire_ms, warm=not _was_spawned)
                 await _write_json_line(writer, {"type": "ready"})
+                continue
+
+            # The stateless MCP era opens with ``server/discover`` instead of
+            # ``initialize``. A backend pipe serves the era of its FIRST
+            # request, and everything here (the init cache other stubs are
+            # answered from, the permit held until the first handshake, the
+            # handshake replay after a restart) is built on the handshake era.
+            # Forwarded, the probe left the permit held for the whole init
+            # deadline, and a probe that the client gave up on still locked
+            # the pipe, so its fallback ``initialize`` got -32022. Method not
+            # found is the answer every client treats as "use initialize".
+            if _is_era_probe(msg):
+                try:
+                    await _write_json_line(writer, _method_not_found(msg))
+                except (OSError, ConnectionError):
+                    return
                 continue
 
             # Lazy backend spawn on first forwarded message. The pool

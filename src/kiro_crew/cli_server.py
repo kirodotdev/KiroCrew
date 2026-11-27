@@ -960,6 +960,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.cli_server_stop import (  # noqa: F401
         _MAX_ECHOED_NAME_LEN,
         _SHUTDOWN_RESPONSE_MAX_BYTES,
+        _STOP_TREE_TIMEOUT_SECS,
         _SUPERVISOR_SEARCH_DEPTH,
         _config_dir_owner,
         _desktop_supervisor_pid,

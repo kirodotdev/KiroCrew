@@ -214,8 +214,10 @@ def backend_rss_kb(pid: Optional[int]) -> int:
     :meth:`BackendPool.metrics_snapshot_async` and the exported pool gauges
     (``metrics/mcp_gateway_gauges.py``), with
     :meth:`BackendPool.live_pooled_backends` as the shared population, so both
-    report the same memory figure. Linux only (the subtree walk reads
-    ``/proc``); elsewhere it returns -1. Blocking: call it off the event loop.
+    report the same memory figure. Linux walks ``/proc``; macOS and Windows use
+    the runtime watchdog's tree sum, which on macOS is the footprint (it counts
+    compressed and swapped pages), so a macOS figure is not a Linux RSS.
+    Blocking: call it off the event loop.
 
     A pooled MCP backend is frequently a thin launcher (e.g.
     a ``slack-mcp`` launcher or an ``example-mcp`` shim) whose real
@@ -233,7 +235,15 @@ def backend_rss_kb(pid: Optional[int]) -> int:
     the summed KiB (descendants that vanish mid-walk are simply skipped, so the
     result degrades gracefully to parent-only when ``children`` is unreadable).
     """
-    return platform_compat.proc_subtree_sample(pid, jiffies=False, counts=False).rss_kb
+    rss_kb = platform_compat.proc_subtree_sample(pid, jiffies=False, counts=False).rss_kb
+    if rss_kb >= 0 or not pid or platform_compat.IS_LINUX:
+        return rss_kb
+    # No ``/proc``: the macOS footprint walk and the Windows validated walk the
+    # runtime watchdog already sums a process tree with.
+    from kiro_crew.acp.runtime_process_tree import _get_rss_tree_mb
+
+    mb = _get_rss_tree_mb(pid)
+    return -1 if mb is None else int(mb * 1024)
 
 
 # --- PoolKey ----------------------------------------------------------------

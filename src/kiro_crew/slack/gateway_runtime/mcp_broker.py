@@ -392,7 +392,7 @@ async def _init_mcp_gateway(
         except Exception:
             logger.debug("mcp launch approvals: SEL write failed", exc_info=True)
 
-    from kiro_crew.mcp_gateway.admission import derive_spawn_gate_ceiling
+    from kiro_crew.mcp_gateway.admission import derive_resident_ceiling, derive_spawn_gate_ceiling
     from kiro_crew.subagent import subagent_count_ceiling
 
     # From config alone, not the subagent manager: this runs on the boot path
@@ -403,7 +403,7 @@ async def _init_mcp_gateway(
         GatewaySpec(
             socket_path=socket_path,
             idle_timeout_secs=cfg_gw.idle_timeout_secs,
-            max_backends=cfg_gw.max_backends,
+            max_backends=derive_resident_ceiling(cfg_gw.max_backends, len(stubs)),
             mcp_target_env=target_env,
             # The exact work dir this rewrite wrote into every stub, so the
             # daemon spawns backends there without resolving it a second time.

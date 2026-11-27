@@ -62,10 +62,15 @@ _DEFAULT_INITIALIZE_TIMEOUT_SECS = 10.0
 # takes about 3s then takes 13-15s, overruns a 10s budget, is reaped while it is
 # about to answer, and fails the session's turn. On Windows a single cold start
 # can overrun 10s on its own (no POSIX page cache, heavier process creation),
-# which is where this floor first applied. 30s covers the observed burst with
-# room to spare; a hung backend still fails, only 20s later. See
+# which is where this floor first applied. A first run through ``npx`` or
+# ``uvx`` also resolves and downloads the server before it answers: a server
+# that took 45 s to start was reaped at a 30 s floor every time, and each
+# re-attempt started cold again. 90 s is the agent's own wait for a starting
+# server (``agent_sdk.mcp_problems.MCP_SERVER_WAIT_SECS``); a hung backend still fails,
+# only later. The spawn permit it holds is bounded separately
+# (``admission.SPAWN_PERMIT_INIT_WINDOW_SECS``). See
 # ``_effective_initialize_timeout_secs``.
-_INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS = 30.0
+_INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS = 90.0
 
 #: The start of the reason ``_init_deadline`` fails a backend with; the stub
 #: hands it to its host as ``backend init failed: <reason>``. A KAS session reads
