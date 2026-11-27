@@ -2022,12 +2022,15 @@ jobs:
           # through the tee.
           CORE_EXPORTS="$(python scripts/ci/coverage_core.py exports)"
           eval "$CORE_EXPORTS"
-          # `not at_recursion_limit`: a test that fills the stack to the recursion
-          # limit leaves a sys.monitoring callback no frame to run in, and a
-          # `with` block can then end without its exit. Those tests run in the
-          # step after this one, on the C tracer.
+          # Under sysmon the lane also deselects `at_recursion_limit`: a test that
+          # fills the stack to the recursion limit leaves a sys.monitoring
+          # callback no frame to run in, and a `with` block can then end without
+          # its exit. Those tests run in the step after this one, on the C
+          # tracer. On the C tracer (a push, or the switch off) the script
+          # prints nothing and the expression is the one the other arms use.
+          AT_LIMIT="$(python scripts/ci/coverage_core.py lane-marker)"
           COVERAGE_LOG="$RUNNER_TEMP/pytest-coverage.log"
-          python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv and not at_recursion_limit" \
+          python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv${AT_LIMIT:+ and $AT_LIMIT}" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
             --file-shard-pins scripts/ci_file_shard_pins.txt \
             --cov=kiro_crew --cov=sage_lib \
@@ -2081,14 +2084,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      # The tests the step above deselects, every one of them, on one shard.
-      # They run on the C tracer, which needs no Python frame at the depth they
-      # work at, with branch measurement set as the shards set it so the data
-      # appends to this shard's file and Coverage Gate's totals keep their
-      # lines. Full-suite runs only: a reduced or leaf run measures nothing and
-      # deselects nothing. The files come from the marker's own text in the
-      # tree; pytest then selects by the marker, and exits non-zero when it
-      # selects no test, so a marker that names nothing cannot pass.
+      # The tests the step above deselects under sysmon, every one of them, on
+      # one shard. They run on the C tracer, which needs no Python frame at the
+      # depth they work at, with branch measurement set as the shards set it so
+      # the data appends to this shard's file and Coverage Gate's totals keep
+      # their lines. Full-suite runs only: a reduced or leaf run measures
+      # nothing and deselects nothing. On a run that deselected nothing (a
+      # push, or the switch off) the script lists no file and the step ends
+      # there. The files come from the marker's own text in the tree; pytest
+      # then selects by the marker, and exits non-zero when it selects no
+      # test, so a marker that names nothing cannot pass.
       - name: Run the recursion-limit tests on the C tracer
         if: ${{ matrix.group == 1 && steps.scope.outputs.reduced == 'false' }}
         shell: /usr/local/bin/ci-shell {0}
@@ -2099,9 +2104,9 @@ jobs:
           CI_COVERAGE_SYSMON: ${{ vars.CI_COVERAGE_SYSMON }}
         run: |
           echo "::remove-matcher owner=python::"
-          MARKED="$(python scripts/ci/coverage_core.py marked-files)"
+          MARKED="$(python scripts/ci/coverage_core.py deselected-files)"
           if [ -z "$MARKED" ]; then
-            echo "No test carries the at_recursion_limit marker; the shards deselected nothing."
+            echo "The shards deselected no at_recursion_limit test on this run; nothing to run here."
             exit 0
           fi
           mapfile -t FILES <<< "$MARKED"

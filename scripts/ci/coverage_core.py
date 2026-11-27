@@ -16,7 +16,7 @@ exports nothing and a pull-request run measures as a push does. Unset, or any
 other value, leaves it on. The steps hand the variable to this script in their
 environment, where an unset variable arrives as an empty string.
 
-Three subcommands, called from a lane's own ``run`` script:
+Four subcommands, called from a lane's own ``run`` script:
 
 ``exports [--core sysmon|ctrace]``
     Prints the shell ``export`` line for the run's event when it is one that
@@ -39,9 +39,16 @@ Three subcommands, called from a lane's own ``run`` script:
       warning for "the sysmon core was asked for and another core measured
       instead".
 
-``marked-files``
+``lane-marker``
+    Prints ``not at_recursion_limit`` when this run measures with ``sysmon``,
+    and nothing otherwise. The lane adds it to its ``-m`` expression, so with
+    the switch off, or on a push, the lane selects exactly what it selects
+    without this script.
+
+``deselected-files``
     Prints every test file under pytest's ``testpaths`` that names the
-    ``at_recursion_limit`` marker, one per line.
+    ``at_recursion_limit`` marker, one per line, when this run deselected the
+    marker; nothing when it did not, and the C tracer step then has no work.
 
 A step that starts its measured pytest from another script instead of its own
 shell (``scripts/ci_main_red_skip.py measure``) gets the same variables from
@@ -58,9 +65,9 @@ room for it: the callback fails with ``RecursionError`` at whatever instruction
 it fires on, and when that is the first instruction of a ``with`` block's
 cleanup the block's exit never runs. Production is not monitored, so the lock it
 would have released stays held only under measurement, and the test hangs. The
-C tracer needs no Python frame. So the lanes deselect the marker from the run
-they measure with ``sysmon`` and run exactly those tests in a second step on the
-C tracer; they are never left unrun.
+C tracer needs no Python frame. So a lane that measures with ``sysmon``
+deselects the marker and runs exactly those tests in a second step on the C
+tracer; they are never left unrun. A lane on the C tracer deselects nothing.
 """
 
 from __future__ import annotations
@@ -136,6 +143,11 @@ def test_sources(root: Path = ROOT) -> Iterator[tuple[str, str]]:
                 continue
 
 
+def lane_marker(event: str, switch: str = "") -> str:
+    """What a lane adds to its ``-m`` expression: the deselect under ``sysmon``, else nothing."""
+    return f"not {MARKER}" if switches(event, switch) else ""
+
+
 def marked_files(root: Path = ROOT) -> list[str]:
     """Every test file under pytest's ``testpaths`` that names the marker, repo-relative."""
     needle = f"mark.{MARKER}"
@@ -175,13 +187,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     check.add_argument("log", type=Path, help="the step's pytest output")
     for command in (export, check):
         command.add_argument("--core", choices=sorted(CORE_ENV), default="sysmon")
-    commands.add_parser("marked-files", help=f"print the test files that name {MARKER}")
+    commands.add_parser("lane-marker", help="print the lane's deselect for this run, if any")
+    commands.add_parser(
+        "deselected-files", help=f"print the files that name {MARKER}, if this run deselected it"
+    )
     args = parser.parse_args(argv)
-    if args.command == "marked-files":
-        print("\n".join(marked_files()))
-        return 0
     event = os.environ.get("GITHUB_EVENT_NAME", "")
     switch = os.environ.get(SWITCH_VARIABLE, "")
+    if args.command == "lane-marker":
+        marker = lane_marker(event, switch)
+        if marker:
+            print(marker)
+        return 0
+    if args.command == "deselected-files":
+        if lane_marker(event, switch):
+            print("\n".join(marked_files()))
+        return 0
     if args.command == "exports":
         line = exports(event, args.core, switch)
         if line:

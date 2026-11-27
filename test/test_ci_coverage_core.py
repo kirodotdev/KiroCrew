@@ -522,6 +522,8 @@ def test_every_lane_shell_stops_on_a_failed_pipeline():
 # ── Tests at the recursion limit never run under sysmon, and always run ────
 
 MARKER = coverage_core.MARKER
+#: A lane's deselect: text added to its ``-m`` expression only when a variable is set.
+CONDITIONAL = re.compile(r"\$\{(\w+):\+ and \$(\w+)\}$")
 
 
 def _named_test_files(line: str) -> set[str]:
@@ -530,12 +532,47 @@ def _named_test_files(line: str) -> set[str]:
     return {word.split("::")[0] for word in words if word.split("::")[0].endswith(".py")}
 
 
+def _deselect(line: str) -> tuple[str, str] | None:
+    """``(variable, the expression without it)`` when the line's ``-m`` ends in a deselect."""
+    expression = _marker_expression(line)
+    found = CONDITIONAL.search(expression)
+    if not found or found.group(1) != found.group(2):
+        return None
+    return found.group(1), expression[: found.start()]
+
+
+def _selects_the_marker(step: dict) -> bool:
+    lines = _measured_pytest(_commands(step["run"]))
+    return any(_marker_expression(line).startswith(MARKER) for line in lines)
+
+
+@pytest.mark.parametrize("switch", ["", *OFF])
+@pytest.mark.parametrize("event", [*TRIGGERS, "", "schedule"])
+def test_a_lane_deselects_the_marker_exactly_when_it_measures_with_sysmon(
+    event, switch, monkeypatch, capsys
+):
+    on = coverage_core.switches(event, switch)
+    assert coverage_core.lane_marker(event, switch) == (f"not {MARKER}" if on else "")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event)
+    monkeypatch.setenv(SWITCH, switch)
+    assert coverage_core.main(["lane-marker"]) == 0
+    assert capsys.readouterr().out.strip() == coverage_core.lane_marker(event, switch)
+    assert coverage_core.main(["deselected-files"]) == 0
+    listed = capsys.readouterr().out.split()
+    assert listed == (coverage_core.marked_files() if on else [])
+
+
 def test_a_sysmon_step_deselects_the_marker_or_names_files_that_do_not_carry_it():
     marked = set(coverage_core.marked_files())
     assert marked, "the tree has a test at the recursion limit"
     for job_id, job in LANES.items():
-        for line in _measured_pytest(_commands(_measuring_step(job)["run"])):
-            if f"not {MARKER}" in _marker_expression(line):
+        commands = _commands(_measuring_step(job)["run"])
+        for line in _measured_pytest(commands):
+            deselect = _deselect(line)
+            if deselect:
+                # The variable holds what the script prints for this run, and nothing else.
+                capture = f'{deselect[0]}="$(python {SCRIPT} lane-marker)"'
+                assert capture in commands[: commands.index(line)], job_id
                 continue
             named = _named_test_files(line)
             assert named, f"{job_id}: selects by marker alone and does not deselect {MARKER}"
@@ -547,29 +584,30 @@ def test_every_deselected_test_runs_in_a_c_tracer_step_before_the_data_is_upload
     for job_id, job in LANES.items():
         steps = job["steps"]
         lane_step = _measuring_step(job)
-        for line in _measured_pytest(_commands(lane_step["run"])):
-            expression = _marker_expression(line)
-            if f"not {MARKER}" not in expression:
+        commands = _commands(lane_step["run"])
+        for line in _measured_pytest(commands):
+            deselect = _deselect(line)
+            if not deselect:
                 continue
             deselecting += 1
-            kept = expression.replace(f" and not {MARKER}", "")
-            assert MARKER not in kept, f"{job_id}: {expression!r} is not `<rest> and not {MARKER}`"
-            (second,) = [
-                s
-                for s in _measuring_steps(job, "ctrace")
-                if any(
-                    _marker_expression(m).startswith(MARKER)
-                    for m in _measured_pytest(_commands(s["run"]))
-                )
-            ]
-            commands = _commands(second["run"])
-            (measured,) = _measured_pytest(commands)
+            kept = deselect[1]
+            assert MARKER not in kept, f"{job_id}: {kept!r} names the marker unconditionally"
+            # With nothing deselected the lane selects what its unmeasured arms select.
+            others = {
+                _marker_expression(c)
+                for c in commands
+                if re.search(r"\bpytest\b", c) and "--no-cov" in c and _marker_expression(c)
+            }
+            assert others == {kept}, (job_id, others)
+            (second,) = [s for s in _measuring_steps(job, "ctrace") if _selects_the_marker(s)]
+            second_commands = _commands(second["run"])
+            (measured,) = _measured_pytest(second_commands)
             # Together the two expressions select what `kept` alone selects: nothing is lost.
             assert _marker_expression(measured) == f"{MARKER} and {kept}", job_id
             assert "--cov-append" in measured.split(), "the lane's own data must survive"
             assert set(re.findall(r"--cov=\S+", measured)) == set(re.findall(r"--cov=\S+", line))
-            listed = [c for c in commands if f"python {SCRIPT} marked-files" in c]
-            assert listed and commands.index(listed[0]) < commands.index(measured), job_id
+            listed = [c for c in second_commands if f"python {SCRIPT} deselected-files" in c]
+            assert listed and second_commands.index(listed[0]) < second_commands.index(measured)
             assert not _named_test_files(measured), "the files come from the marker, not a list"
             (upload,) = [
                 s for s in steps if _uses(s, "upload-artifact") and "coverage" in s["with"]["name"]
@@ -652,6 +690,24 @@ def _run_lane(
     return result, seen
 
 
+def _arguments(tmp_path: Path) -> list[str]:
+    """The stand-in pytest's command lines, one per call."""
+    record = tmp_path / "args-of-pytest"
+    return record.read_text(encoding="utf-8").splitlines() if record.exists() else []
+
+
+def _runs(name: str, event: str, switch: str = "") -> bool:
+    """Whether the step starts pytest at all: the marker's step only when it was deselected."""
+    return not _selects_the_marker(STEPS[name]) or coverage_core.switches(event, switch)
+
+
+def _lane_expression(name: str, deselected: bool) -> str:
+    """The ``-m`` words the lane's measured pytest gets, with or without the deselect."""
+    (line,) = [m for m in _measured_pytest(_commands(STEPS[name]["run"])) if _deselect(m)]
+    kept = _deselect(line)[1]
+    return f"-m {kept} and not {MARKER} " if deselected else f"-m {kept} "
+
+
 lane_bodies = pytest.mark.skipif(
     sys.platform != "linux", reason="the lane steps read /proc and run on Linux runners"
 )
@@ -663,9 +719,30 @@ lane_bodies = pytest.mark.skipif(
 def test_a_step_measures_with_what_its_event_exports_and_passes(name, event, tmp_path):
     result, seen = _run_lane(STEPS[name], tmp_path, event, CLEAN)
     assert result.returncode == 0, result.stdout + result.stderr
+    if not _runs(name, event):
+        assert seen == [], "nothing was deselected on this run, so the step has no test to run"
+        return
     expected = _seen(event, _core(STEPS[name]))
     assert seen == [expected], "pytest ran with another environment, or an empty variable"
     assert CLEAN in result.stdout, "the tee must still show pytest's output in the job log"
+
+
+@lane_bodies
+@pytest.mark.parametrize("switch", ["", OFF[0]])
+@pytest.mark.parametrize("event", TRIGGERS)
+def test_the_lane_that_deselects_does_so_only_under_sysmon(event, switch, tmp_path):
+    """Off, or on a push, its pytest gets the expression it has without this change."""
+    (name,) = [
+        n
+        for n, step in STEPS.items()
+        if any(_deselect(m) for m in _measured_pytest(_commands(step["run"])))
+    ]
+    result, _ = _run_lane(STEPS[name], tmp_path, event, CLEAN, switch=switch)
+    assert result.returncode == 0, result.stdout + result.stderr
+    (arguments,) = _arguments(tmp_path)
+    on = coverage_core.switches(event, switch)
+    assert _lane_expression(name, on) in arguments, arguments
+    assert (MARKER in arguments) is on
 
 
 @lane_bodies
@@ -674,6 +751,9 @@ def test_a_step_measures_with_what_its_event_exports_and_passes(name, event, tmp
 def test_a_step_with_the_switch_off_measures_as_a_push_does(name, event, tmp_path):
     result, seen = _run_lane(STEPS[name], tmp_path, event, FELL_BACK, switch=OFF[0])
     assert result.returncode == 0, result.stdout + result.stderr
+    if not _runs(name, event, OFF[0]):
+        assert seen == [], "with the switch off nothing is deselected and nothing runs here"
+        return
     assert seen == [_seen("push", _core(STEPS[name]))] == ["<unset> <unset>"]
 
 
@@ -694,6 +774,9 @@ def test_a_step_fails_on_the_fallback_warning_exactly_when_it_switched_to_sysmon
 @pytest.mark.parametrize("event", TRIGGERS)
 def test_a_step_fails_when_pytest_printed_nothing(name, event, tmp_path):
     result, _ = _run_lane(STEPS[name], tmp_path, event, "")
+    if not _runs(name, event):
+        assert result.returncode == 0, result.stdout + result.stderr
+        return
     assert result.returncode != 0 and "is empty" in result.stdout, result.stdout + result.stderr
 
 
