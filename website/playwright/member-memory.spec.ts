@@ -303,6 +303,12 @@ test('private backup staging can be cancelled and a replaced experience can be r
   const analysisEditor = await editorMemory(page, owner.name)
   await analysisEditor.getByTestId('next-memory-tab-recovery').click()
   await expect(analysisEditor.getByText('Explore memory', { exact: true })).toBeVisible()
+  // The backups and retired cards sit above the analysis card and load on their
+  // own. A scroll taken while either still says "Loading…" is undone when its
+  // list arrives and pushes the analysis card down, so wait for both first.
+  const recoveryPanel = analysisEditor.getByTestId('next-memory-recovery')
+  await expect(recoveryPanel.getByRole('button', { name: 'Restore backup', exact: true })).toHaveCount(1)
+  await expect(recoveryPanel.getByRole('status').filter({ hasText: 'Loading…' })).toHaveCount(0)
   const countBy = analysisEditor.getByRole('combobox', { name: 'Count by', exact: true })
   await expect(countBy).toBeVisible()
   await countBy.scrollIntoViewIfNeeded()
