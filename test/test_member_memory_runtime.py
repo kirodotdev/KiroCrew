@@ -1153,7 +1153,10 @@ async def test_private_consolidation_uses_separate_bound_process_and_cleans_it_u
 
 
 @pytest.mark.asyncio
-async def test_private_consolidation_pass_reuses_one_runtime_and_retires_it(member_stores):
+async def test_private_consolidation_pass_reuses_one_runtime_and_retires_it(
+    member_stores, monkeypatch
+):
+    from kiro_crew.dashboard.handlers import usage as usage_handlers
     from kiro_crew.llm_helpers import (
         background_turn,
         begin_member_consolidation_pass,
@@ -1174,6 +1177,15 @@ async def test_private_consolidation_pass_reuses_one_runtime_and_retires_it(memb
         client.session_id = f"sid-{order.count('fresh') + 1}"
 
     client.new_conversation = _new_conversation
+
+    async def _account(*_args, **_kwargs):
+        order.append(f"account {client.session_id}")
+
+    from kiro_crew.llm_helpers_parts import background_turns
+
+    monkeypatch.setattr(background_turns, "usage_has_billing", lambda _usage: True)
+    monkeypatch.setattr(background_turns, "_record_background_crew_log", lambda *a, **k: None)
+    monkeypatch.setattr(usage_handlers, "persist_token_record_async", _account)
     sessions = MagicMock(
         get_or_create=AsyncMock(return_value=(client, True, False)),
         remove=AsyncMock(side_effect=lambda _key: order.append("remove")),
@@ -1187,9 +1199,12 @@ async def test_private_consolidation_pass_reuses_one_runtime_and_retires_it(memb
         ):
             pass
     pass_key = sessions.get_or_create.call_args.args[0]
-    # Each call started on an empty conversation of the same runtime; nothing retired yet.
+    # Each call is accounted on its own conversation, then the next one starts empty on
+    # the same runtime and the conversation it left is deleted; nothing is retired yet.
     assert {c.args[0] for c in sessions.get_or_create.call_args_list} == {pass_key}
-    assert order == ["fresh"] * 3
+    assert order == [
+        step for n in (1, 2, 3) for step in (f"account sid-{n}", "fresh", f"cleanup sid-{n}")
+    ]
     assert private_memory_store_for_session(pass_key) == writer
     # Another store's call in the same pass keeps the one-call path.
     async with background_turn(

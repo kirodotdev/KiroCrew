@@ -117,15 +117,23 @@ async def _retire_member_call(
 
 
 async def _fresh_member_conversation(client: Any, key: str) -> bool:
-    """Empty *client*'s conversation for the pass's next call; False when it cannot."""
+    """Empty *client*'s conversation for the pass's next call; False when it cannot.
+
+    The conversation it leaves is deleted from the backend's own store, as the
+    retirement of a one-call runtime deletes it: a persistent provider's
+    ``new_conversation`` keeps the old record.
+    """
     new_conversation = getattr(client, "new_conversation", None)
     if not callable(new_conversation):
         return False
+    retired_session_id = str(getattr(client, "session_id", "") or "")
     try:
         await new_conversation()
     except Exception:
         logger.debug("new_conversation failed for %s", key, exc_info=True)
         return False
+    if str(getattr(client, "session_id", "") or "") != retired_session_id:
+        await _delete_retired_conversation_record(client, retired_session_id, key)
     return True
 
 
@@ -968,7 +976,6 @@ async def background_turn(
         # of it, the fresh conversation, runs while the permit is still held, so
         # no waiter can take the key between this turn and the reset.
         fresh = False
-        keep_for_pass = False
         try:
             # On a backend with no shared runtime, ``_bg``'s one-liners wait on
             # this very entry (``_ProviderBgSession``) and the reset fallback would
@@ -983,15 +990,6 @@ async def background_turn(
             )
             if fresh:
                 await _start_fresh_conversation(sessions, key, client)
-            # A member pass's runtime is emptied here, under the permit, for the
-            # pass's next call; the pass retires it once it ends.
-            member_pass = _member_pass.get() if memory_store else None
-            keep_for_pass = (
-                member_pass is not None
-                and member_pass.ready
-                and member_pass.key == key
-                and await _fresh_member_conversation(client, key)
-            )
         finally:
             try:
                 sessions.release(key)
@@ -1040,8 +1038,15 @@ async def background_turn(
                 logger.debug("background turn accounting failed task=%s", task, exc_info=True)
         finally:
             try:
-                if keep_for_pass and member_pass is not None:
-                    member_pass.client = client  # retired with the pass
+                # A member pass keeps its runtime for the pass's next call, on an
+                # empty conversation started only after this turn is accounted
+                # for. The key is the pass's own, so no other caller waits on it.
+                member_pass = _member_pass.get() if memory_store else None
+                if member_pass is not None and member_pass.ready and member_pass.key == key:
+                    # Set first: a cancelled refresh still leaves it to the pass to retire.
+                    member_pass.client = client
+                    if not await _fresh_member_conversation(client, key):
+                        await _retire_member_call(sessions, key, memory_store, log, client=client)
                 elif memory_store:
                     await _retire_member_call(sessions, key, memory_store, log, client=client)
                 elif fresh:
