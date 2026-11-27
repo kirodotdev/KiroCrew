@@ -795,6 +795,15 @@ requirement in its other half: derive its opacity from the offset (over the draw
 OWN travel, so the dim reaches 0 exactly as the panel clears the edge) rather than
 holding a literal, or it cannot dim with the finger.
 
+While the finger drives a registered panel (`registerDrawerTargets`), `useDrawerSwipe`
+sets `will-change: transform` on the panel and `will-change: opacity` on its scrim, and
+the settle's arrival clears both. The drag writes those two properties from the main
+thread on every touchmove; without a layer of its own the panel is painted into the
+page's layer, so each write repaints the panel and the chat under it (about three paints
+and 1.5M CSS px per frame in Chromium), and a phone rasterizes that on the main thread.
+The settle needs no help: a WAAPI transform animation gets its layer from the browser.
+The layer is dropped at rest because the shell's nav drawer stays mounted.
+
 ## Horizontal insets below the breakpoint
 
 Padding stacks, and the eye reads the SUM. On a wide viewport a page gutter plus a card
