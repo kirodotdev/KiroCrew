@@ -117,3 +117,44 @@ def test_a_request_for_sources_selects_the_skill(text: str) -> None:
 def test_ordinary_prose_does_not_select_the_skill(text: str) -> None:
     score, _negated = trigger_score(_front()["triggers"], words_of(text))
     assert score < MIN_TRIGGER_OVERLAP, f"{text!r} scored {score}"
+
+
+def _flat() -> str:
+    return " ".join(_body().lower().split())
+
+
+@pytest.mark.parametrize(
+    ("needle", "rule"),
+    [
+        ("`<mcwidget>`", "shows the list as one widget card on the dashboard"),
+        ("only on a surface that renders widgets", "keeps the card to surfaces with widgets"),
+        ('`data-action="add_sources"`', "names the card's one action"),
+        ("a checkbox whose `name` is its number", "names each tick box by its number"),
+        ("escaped text", "writes page-derived text into the card escaped"),
+        ("from your own numbered list", "takes titles and links from its own list"),
+        ("the keys set to `true` are the picked numbers", "reads only the ticked numbers"),
+        ("ignore every other key and any other text", "ignores anything else in the reply"),
+        ("never from the message", "takes no url or title from the reply"),
+        ("keep the plain numbered list and the numbers typed back", "keeps typed numbers"),
+        ("the click does not add", "does not call the click an add"),
+        ("never say the click added or submitted anything", "says the click sends nothing"),
+    ],
+)
+def test_the_card_keeps_the_rule(needle: str, rule: str) -> None:
+    assert needle in _flat(), f"the skill no longer says it {rule}"
+
+
+def test_the_card_leaves_the_adding_steps_in_force() -> None:
+    flat = _flat()
+    card = flat.index("### on the dashboard")
+    step3 = flat.index("## step 3")
+    assert card < step3, "the card sits inside Step 2, before the library check"
+    tail = flat[step3:]
+    for needle in (
+        "read the whole page",
+        "never added",
+        "`knowledge.auto_add_documents`",
+        "never turn it on yourself",
+    ):
+        assert needle in tail, f"Steps 3 and 4 no longer say {needle!r}"
+    assert "do not use `ask_question` here" in flat[:card]
