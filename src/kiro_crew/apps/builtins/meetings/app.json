@@ -37,7 +37,8 @@
     "api": [
       "/api/apps/meetings",
       "/api/apps/meetings/*",
-      "/api/ws/stt"
+      "/api/ws/stt",
+      "/api/sandbox-doc"
     ],
     "network": true,
     "storage": true,

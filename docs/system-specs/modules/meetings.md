@@ -1002,16 +1002,26 @@ broadcast bar remains available when speech input is unavailable.
   `website/src/apps/meetings/lib/sketchSrcdoc.ts`. The markup is never mounted
   into the dashboard's own DOM.
 
-  1. **Null-origin sandbox.** `srcDoc` iframe with `sandbox="allow-scripts"` and
+  1. **Null-origin sandbox.** An iframe with `sandbox="allow-scripts"` and
      **no** `allow-same-origin`, so nothing in the frame can read this page, its
-     cookies, or the gateway. A test pins the absence of `allow-same-origin`.
+     cookies, or the gateway. A test pins the absence of `allow-same-origin`. The
+     document is minted to a single-use `/sandbox-doc/` URL (`useSandboxDoc`), not
+     set as `srcdoc`: a `srcdoc` document inherits the dashboard's own script
+     policy, which allows inline script, while a fetched one runs only under its
+     own policy (control 2) and the URL's `sandbox` header. The frame answers the
+     host's ping, so a reload onto the spent URL re-mints
+     (`useFrameAliveRecovery`). `app.json` declares `/api/sandbox-doc` in
+     `permissions.api`: the wheel copy's page calls it as the signed-in user and
+     needs no grant, but the app repository's page calls it through the App Kit's
+     scoped API, which admits only declared paths, and the two manifests stay
+     identical for E9.
   2. **Egress-denying CSP.** The sandbox says nothing about OUTBOUND requests, so
      a `<meta>` CSP is emitted as the first child of `<head>` (ahead of every
      model byte — a meta policy only binds from where it is parsed):
      `default-src 'none'`, `connect-src 'none'`, `img-src data:`, `font-src
      data:`, `form-action 'none'`, `base-uri 'none'`, `style-src
      'unsafe-inline'`, and `script-src` pinned to the SHA-256 of Kiro Crew's own
-     Mermaid bootstrap plus the single vendored same-origin Mermaid FILE, with no
+     Mermaid bootstrap and alive reply plus the single vendored same-origin Mermaid FILE, with no
      `'unsafe-inline'` (`cspFor`). An inline `<script>`, `on*` handler or
      `javascript:` URL in the model's markup is refused by the browser. The frame
      needs no network, so it is granted none.

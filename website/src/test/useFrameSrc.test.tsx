@@ -64,6 +64,7 @@ describe('sandbox-doc frames', () => {
 
   it('finds the callers this list was written against', () => {
     expect(callers).toEqual([
+      'apps/meetings/components/AgentPanel.tsx',
       'components/ArtifactBody.tsx',
       'components/WidgetFrame.tsx',
       'components/library/ArtifactThumbs.tsx',

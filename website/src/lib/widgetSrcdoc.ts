@@ -497,8 +497,9 @@ export const FRAME_ALIVE_MESSAGE_TYPE = 'mc-frame-alive'
  * else the frame holds after the browser reloads it on its own. A sandbox-doc
  * URL is single-use, so such a reload gets the gateway's 404, which has no
  * script and cannot answer (see `useFrameAliveRecovery`). Replies only to the
- * parent, and carries nothing but its type. */
-const FRAME_ALIVE_REPLY_BODY = `(function(){
+ * parent, and carries nothing but its type. Exported for the Meetings sketch
+ * frame, which admits it by hash rather than by nonce. */
+export const FRAME_ALIVE_REPLY_BODY = `(function(){
   window.addEventListener('message',function(e){
     var d=e.data;
     if(e.source!==parent||!d||d.type!=='${FRAME_PING_MESSAGE_TYPE}')return;
