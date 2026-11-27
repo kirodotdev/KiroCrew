@@ -72,6 +72,7 @@ const {
 const { boundShortcuts, createMachinePrefs } = require("./app-window-prefs");
 const { WORK_AREA_MARGIN, placeBesideAnchor } = require("./app-window-placement");
 const { SPAN_CHANNELS, createDisplayMemory, createSpans, spanKey } = require("./app-window-span");
+const { APP_VIEW_PATH, reportShortcutOpen } = require("./app-window-telemetry");
 const { shellShortcutReservations } = require("./shell-shortcut-reservations");
 const { loadDashboardWithToken } = require("./token-retry");
 
@@ -337,6 +338,16 @@ function createAppWindowHost(deps) {
     } catch {
       return null;
     }
+  }
+
+  /** A shortcut press, reported to this shell's own gateway only (`app-window-telemetry.js`). */
+  function reportShortcut(app) {
+    if (!backendOrigin || targetOf(app).instanceId !== SELF_GATEWAY) return;
+    const request = async () => {
+      const auth = await authFor(false);
+      return auth.value ? withAuth(APP_VIEW_PATH, auth) : null;
+    };
+    reportShortcutOpen({ app, fetchImpl, request, timeoutMs: PROBE_TIMEOUT_MS });
   }
 
   /** @returns {Promise<{state: "ok"|"unauthorized"|"unknown", body?: unknown}>} */
@@ -959,6 +970,7 @@ function createAppWindowHost(deps) {
   function deliverShortcut(app, shortcut) {
     const decl = declared(app, shortcut.window);
     if (!decl || suspended) return;
+    reportShortcut(app);
     if (isSpanning(decl)) {
       if (openWindow(app, decl, { focus: true })) spans.deliver(app, decl.id, CHANNELS.shortcut, shortcut.id);
       return;

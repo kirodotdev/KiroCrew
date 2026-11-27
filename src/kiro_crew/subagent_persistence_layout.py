@@ -422,6 +422,13 @@ def _agent_dir_under(base: Path, parent: Path, agent_id: str) -> Path:
     ):
         raise ValueError(f"Invalid agent_id: {agent_id!r}")
     resolved = (base / agent_id).resolve()
+    # The two resolves are separate, and on Windows either can come back with the
+    # ``\\?\`` prefix while a concurrent writer creates or removes a directory on the
+    # path, so both sides are folded before the containment check.
+    if platform_compat.names_a_verbatim_only_file(resolved):
+        raise ValueError(f"Invalid agent_id: {agent_id!r}")
+    resolved = platform_compat.strip_extended_length_prefix(resolved)
+    parent = platform_compat.strip_extended_length_prefix(parent)
     if resolved == parent or not resolved.is_relative_to(parent):
         raise ValueError(f"Path traversal blocked for agent_id: {agent_id!r}")
     return resolved

@@ -165,6 +165,27 @@ class TestBundledVersion:
     def test_none_for_an_empty_argv(self):
         assert harness_mod._bundled_codex_version([]) is None
 
+    @staticmethod
+    def _npm_windows_prefix(tmp_path: Path, shim_name: str) -> Path:
+        """`npm i -g` on Windows: a text shim in the prefix, the Codex nested in the adapter."""
+        prefix = tmp_path / "npm"
+        prefix.mkdir()
+        (prefix / shim_name).write_text("@ECHO off\r\n")
+        adapter = prefix / "node_modules" / "@agentclientprotocol" / "codex-acp"
+        (adapter / "dist").mkdir(parents=True)
+        (adapter / "dist" / "index.js").write_text("")
+        _write_manifest(adapter / "node_modules" / "@openai" / "codex", "@openai/codex", "0.50.1")
+        return prefix / shim_name
+
+    @pytest.mark.parametrize("shim_name", ["codex-acp.cmd", "codex-acp", "codex-acp.ps1"])
+    def test_an_npm_windows_shim_is_read_through_the_script_it_launches(self, tmp_path, shim_name):
+        shim = self._npm_windows_prefix(tmp_path, shim_name)
+        assert harness_mod._bundled_codex_version([str(shim)]) == (0, 50, 1)
+
+    def test_a_file_named_for_another_bin_is_not_taken_for_the_shim(self, tmp_path):
+        shim = self._npm_windows_prefix(tmp_path, "other.cmd")
+        assert harness_mod._bundled_codex_version([str(shim)]) is None
+
 
 class TestVersionChild:
     @staticmethod
