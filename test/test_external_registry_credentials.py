@@ -829,13 +829,17 @@ async def test_network_step_env_names_a_live_agent_only_for_a_step_that_keeps_it
     from kiro_crew.apps.registry_pipeline.subprocess_env import _git_network_step_env
 
     met = _agent_repair(monkeypatch)
-    started_with = {"HOME": "/home/op", "SSH_AUTH_SOCK": _STALE_AGENT_SOCK, "SSH_AGENT_PID": "4242"}
+    started_with = {
+        "HOME": "/tmp/op-home",
+        "SSH_AUTH_SOCK": _STALE_AGENT_SOCK,
+        "SSH_AGENT_PID": "4242",
+    }
     gateway_env = dict(started_with)
     step_env = await _git_network_step_env(
         gateway_env, _SSH_REGISTRY_URL, forward_applied=forward_applied
     )
     agent = {"SSH_AUTH_SOCK": _LIVE_AGENT_SOCK, "SSH_AGENT_PID": "4242"} if kept else {}
-    assert step_env == {"HOME": "/home/op", **agent}
+    assert step_env == {"HOME": "/tmp/op-home", **agent}
     # No scan for a step that does not keep the agent: all a scan can do is find it one.
     assert met == ([_STALE_AGENT_SOCK] if kept else [])
     # The caller's env also serves the local steps, which keep the environment they had.
@@ -912,7 +916,7 @@ async def test_network_step_env_never_judges_the_socket_the_gateway_named(monkey
 
     # The scan is the guard's: it finds nothing, as the real one does for a live socket.
     monkeypatch.setattr(subprocess_env, "agent_socket_refusal", _must_not_judge, raising=False)
-    own = "/home/op/.agent/shared.sock"
+    own = "/tmp/op-agent/shared.sock"
     step_env = await subprocess_env._git_network_step_env(
         {"SSH_AUTH_SOCK": own}, _SSH_REGISTRY_URL, forward_applied=[True]
     )
