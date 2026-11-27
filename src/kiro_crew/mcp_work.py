@@ -1085,15 +1085,17 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # A code channel's conductor reads published fields only (a derived
             # state, no status and no bars), so its own read has nothing to
             # evaluate. The gateway evaluates the stored bars and answers verdicts.
-            # It runs each done item's checks in turn (up to two subprocesses, each
-            # bounded by the evaluator's own timeout), so the read waits for them all.
+            # It runs each done item's checks in turn (up to three subprocesses: a
+            # pr_checks bar reads the PR head around its check, and a pending draft
+            # adds a probe in place of the second read; each is bounded by the
+            # evaluator's own timeout), so the read waits for them all.
             # shortcut: capped at an hour; a board that needs longer is evaluated by
             # item_id, one item per call.
             rows = resp.get("items") or []
             done = sum(1 for row in rows if isinstance(row, dict) and row.get("state") == "done")
             if args.get("item_id") is not None:
                 done = 1
-            per_item = 2 * _skill_script("accept_eval").TIMEOUT_SECS
+            per_item = 3 * _skill_script("accept_eval").TIMEOUT_SECS
             wait = min(3600, 30 + per_item * max(done, 1))
             if args.get("item_id") is not None:
                 one = urlencode({"item_id": args["item_id"]})

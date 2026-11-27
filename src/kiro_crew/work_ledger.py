@@ -1108,7 +1108,9 @@ from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
 from kiro_crew.work_ledger_rules import (  # noqa: E402, F401
     _WARNED_DEPTH_FALLBACKS,
     _decided_after_report,
+    _file_pins_concrete,
     _is_placeholder,
+    _is_zoned_instant,
     _report_clock,
     _require_acceptance,
     _require_artifacts,

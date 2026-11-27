@@ -32,7 +32,12 @@ from kiro_crew.skills import _BUILTIN_SKILLS_DIR
 SCRIPT = Path(_BUILTIN_SKILLS_DIR) / "goal-conductor" / "scripts" / "accept_eval.py"
 
 REPO = "owner/name"
-MERGED_ARGV = ["gh", "pr", "view", "42", "--repo", REPO, "--json", "state", "-q", ".state"]
+MERGED_ARGV = ["gh", "pr", "view", "42", "--repo", REPO, "--json", "state,headRefOid,mergeCommit"]
+
+
+def _view(state: str, head: str = "a" * 40, merge: str = "c" * 40) -> str:
+    """What ``gh pr view --json state,headRefOid,mergeCommit`` prints."""
+    return json.dumps({"state": state, "headRefOid": head, "mergeCommit": {"oid": merge}})
 
 
 class _Proc:
@@ -134,7 +139,7 @@ _HOSTILE_EXTRAS = {
 
 def test_pr_merged_runs_only_its_fixed_template(monkeypatch):
     mod = _load()
-    seen = _wire(mod, monkeypatch, [_Proc(0, "MERGED\n")])
+    seen = _wire(mod, monkeypatch, [_Proc(0, _view("MERGED"))])
     verdict, _ = mod._evaluate(
         {"accept": {"kind": "pr_merged", "pr": 42, "repo": REPO, **_HOSTILE_EXTRAS}}
     )
@@ -144,9 +149,9 @@ def test_pr_merged_runs_only_its_fixed_template(monkeypatch):
 
 def test_every_argv_element_is_a_template_literal_or_a_validated_field(monkeypatch):
     mod = _load()
-    seen = _wire(mod, monkeypatch, [_Proc(0, "MERGED")])
+    seen = _wire(mod, monkeypatch, [_Proc(0, _view("MERGED"))])
     mod._evaluate({"accept": {"kind": "pr_merged", "pr": 42, "repo": REPO, **_HOSTILE_EXTRAS}})
-    literals = {"gh", "pr", "view", "--repo", "--json", "state", "-q", ".state"}
+    literals = {"gh", "pr", "view", "--repo", "--json", "state,headRefOid,mergeCommit"}
     validated = {"42", REPO}
     [argv] = seen
     assert argv[0] in mod._SELF_BUILT_COMMANDS
@@ -176,12 +181,14 @@ def test_the_ledger_mirror_uses_the_evaluators_own_pattern():
 @pytest.mark.parametrize(
     ("stdout", "verdict"),
     [
-        ("MERGED\n", "pass"),
-        ("merged", "pass"),
-        ("OPEN\n", "pending"),
-        ("CLOSED\n", "fail"),
+        (_view("MERGED") + "\n", "pass"),
+        (_view("merged"), "pass"),
+        (_view("OPEN"), "pending"),
+        (_view("CLOSED", merge=""), "fail"),
         ("", "error"),
-        ("SOMETHING_NEW\n", "error"),
+        ("MERGED\n", "error"),
+        (_view("SOMETHING_NEW"), "error"),
+        ("[]", "error"),
     ],
 )
 def test_pr_merged_maps_each_state_to_one_verdict(monkeypatch, stdout, verdict):
